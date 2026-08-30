@@ -722,11 +722,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
 
     if (intent.type === "dictate") {
+      const state = useWorkspace.getState();
+      if (state.isFinalized && !allowEditSigned) {
+        return { ok: false, message: "Report is finalized — read-only" };
+      }
+      if (studyLock.status === "locked-by-other") {
+        return { ok: false, message: "Study is locked by another user — read-only" };
+      }
       const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
       if (!text) return { ok: false, message: "Nothing to insert" };
-      const state = useWorkspace.getState();
       const mode = intent.mode;
-      const voiceSource = "manual" as const;
+      const voiceSource = "radiologist-voice" as const;
       if (intent.target === "findings") {
         const prev = state.findingsText;
         if (mode === "replace") {
@@ -921,7 +927,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
 
     return { ok: false, message: "Unrecognized voice intent" };
-  }, [voiceSettings.autoPunctuation, focusReportField]);
+  }, [voiceSettings.autoPunctuation, focusReportField, allowEditSigned, studyLock.status]);
 
   const voiceSession = useVoiceSession({
     studyId: studyId ?? undefined,
@@ -930,7 +936,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     getContext: () => ({
       studyId: studyId ?? null,
       dirty: useWorkspace.getState().isDirty,
-      isLocked: studyLock.status === "locked-by-other",
+      // Voice safety treats isLocked as read-only for dictate/finalize — include finalized.
+      isLocked: studyLock.status === "locked-by-other" || isFinalized
+        || (workflow.currentRow?.status === "REPORT_FINAL" && !allowEditSigned),
       lockedByOther: studyLock.status === "locked-by-other",
       lockLost: studyLock.status === "expired-lost" || studyLock.status === "connection-lost",
       canVerify: canVerifyRef.current,
@@ -939,17 +947,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       confirmationPolicy: voiceSettings.confirmationPolicy,
     }),
     execute: executeVoiceCommand,
-    cleanupDictation: async (raw) => {
-      try {
-        const res = await api.post<{ cleaned?: string; text?: string }>(
-          "/api/radiology/report-generator/voice-cleanup",
-          { rawTranscript: raw, draftId, studyId, patientId: workflow.currentRow?.patientId },
-        );
-        return (res.cleaned ?? res.text ?? raw).trim() || raw;
-      } catch {
-        return raw;
-      }
-    },
+    // Deterministic normalization only — do not send dictation to an AI rewrite model.
     onAudit: (commandType, outcome) => {
       api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch((err) => console.warn("[VoiceAudit] Failed:", err));
     },

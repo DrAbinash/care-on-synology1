@@ -21,7 +21,7 @@ describe("normalization", () => {
 
   it("dictation normalization: spoken punctuation, conservative casing", () => {
     expect(normalizeDictationText("small disc bulge at l4 l5 full stop", { autoPunctuation: true }))
-      .toBe("Small disc bulge at l4 l5.");
+      .toBe("Small disc bulge at L4-L5.");
     expect(normalizeDictationText("no acute infarct comma no bleed", { autoPunctuation: true }))
       .toBe("No acute infarct, no bleed.");
     expect(normalizeDictationText("first line new line second line", { autoPunctuation: false }))

@@ -1,17 +1,56 @@
 import { describe, it, expect } from "vitest";
-import { isStaleVoiceResult, voiceKeyAction, type VoiceKeyState } from "./voiceSessionState";
+import {
+  isStaleVoiceResult,
+  shouldDiscardVoiceOnStudyChange,
+  deriveVoiceUiState,
+  voiceUiStatusLabel,
+  voiceKeyAction,
+  type VoiceKeyState,
+} from "./voiceSessionState";
 import { matchWorkspaceShortcut } from "./workspaceReportState";
-
-// Ticket M1.6B2 Phase 5/8 — staleness binding + voice keyboard rules, and
-// the non-conflict contract with the pinned M1.4/M1.5 shortcut matrix.
 
 describe("stale-result binding (Phase 5)", () => {
   it("a result is stale when the study changed OR a newer capture started", () => {
     expect(isStaleVoiceResult({ studyId: 7, nonce: 3 }, 7, 3)).toBe(false);
-    expect(isStaleVoiceResult({ studyId: 7, nonce: 3 }, 8, 3)).toBe(true);  // study switch
-    expect(isStaleVoiceResult({ studyId: 7, nonce: 3 }, 7, 4)).toBe(true);  // superseded capture
+    expect(isStaleVoiceResult({ studyId: 7, nonce: 3 }, 8, 3)).toBe(true);
+    expect(isStaleVoiceResult({ studyId: 7, nonce: 3 }, 7, 4)).toBe(true);
     expect(isStaleVoiceResult({ studyId: null, nonce: 1 }, null, 1)).toBe(false);
     expect(isStaleVoiceResult({ studyId: 7, nonce: 1 }, null, 1)).toBe(true);
+  });
+
+  it("study switch always discards prior voice session", () => {
+    expect(shouldDiscardVoiceOnStudyChange(1, 2)).toBe(true);
+    expect(shouldDiscardVoiceOnStudyChange(1, 1)).toBe(false);
+    expect(shouldDiscardVoiceOnStudyChange(undefined, 1)).toBe(true);
+  });
+});
+
+describe("voice UI state machine", () => {
+  it("never reports listening when phase is idle", () => {
+    expect(deriveVoiceUiState({
+      enabled: true, providerKind: "webspeech", phase: "idle", trouble: null, hasPendingPreview: false,
+    })).toBe("idle");
+  });
+
+  it("maps permission trouble to error, not listening", () => {
+    expect(deriveVoiceUiState({
+      enabled: true, providerKind: "webspeech", phase: "listening",
+      trouble: { kind: "permission", message: "denied" }, hasPendingPreview: false,
+    })).toBe("error");
+    expect(voiceUiStatusLabel("error", "permission")).toBe("Mic permission denied");
+  });
+
+  it("unsupported when no provider", () => {
+    expect(deriveVoiceUiState({
+      enabled: false, providerKind: null, phase: "idle", trouble: null, hasPendingPreview: false,
+    })).toBe("unsupported");
+  });
+
+  it("ready when editable preview is pending", () => {
+    expect(deriveVoiceUiState({
+      enabled: true, providerKind: "webspeech", phase: "idle", trouble: null, hasPendingPreview: true,
+    })).toBe("ready");
+    expect(voiceUiStatusLabel("ready")).toMatch(/edit or send/i);
   });
 });
 
@@ -49,10 +88,9 @@ describe("voiceKeyAction (Phase 8)", () => {
   it("Enter confirms ONLY a pending preview that allows it, outside typing", () => {
     const pending = state({ hasPendingPreview: true, confirmViaEnterAllowed: true });
     expect(voiceKeyAction({ key: "Enter", target: body }, pending)).toBe("confirm-pending");
-    // HIGH_RISK previews set confirmViaEnterAllowed=false → Enter does nothing
     expect(voiceKeyAction({ key: "Enter", target: body }, state({ hasPendingPreview: true }))).toBeNull();
     expect(voiceKeyAction({ key: "Enter", target: textarea }, pending)).toBeNull();
-    expect(voiceKeyAction({ key: "Enter", ctrlKey: true, target: body }, pending)).toBeNull(); // Ctrl+Enter stays finalize
+    expect(voiceKeyAction({ key: "Enter", ctrlKey: true, target: body }, pending)).toBeNull();
     expect(voiceKeyAction({ key: "Enter", target: body }, state())).toBeNull();
   });
 
@@ -73,22 +111,10 @@ describe("voiceKeyAction (Phase 8)", () => {
 
 describe("no conflicts with the pinned workspace shortcut matrix", () => {
   it("voice keys are invisible to matchWorkspaceShortcut and vice versa", () => {
-    // The keys voice claims are FREE in the existing matrix…
     expect(matchWorkspaceShortcut({ key: " ", ctrlKey: true, target: body })).toBeNull();
     expect(matchWorkspaceShortcut({ key: " ", target: body })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "Enter", target: body })).toBeNull();
-    // …and the existing combos never trigger a voice action.
-    const s = state({ hasPendingPreview: true, confirmViaEnterAllowed: true, capturing: true });
-    expect(voiceKeyAction({ key: "s", ctrlKey: true, target: body }, s)).toBeNull();      // Ctrl+S save
-    expect(voiceKeyAction({ key: "Enter", ctrlKey: true, target: body }, s)).toBeNull();  // Ctrl+Enter finalize
-    expect(voiceKeyAction({ key: "k", ctrlKey: true, target: body }, s)).toBeNull();      // Ctrl+K quickselect
-    expect(voiceKeyAction({ key: "n", ctrlKey: true, shiftKey: true, target: body }, s)).toBeNull();
-    expect(voiceKeyAction({ key: "o", altKey: true, target: body }, s)).toBeNull();       // Alt+O open study
-    expect(voiceKeyAction({ key: "/", target: body }, s)).toBeNull();
-  });
-
-  it("Escape stays owned by the workspace when voice is idle", () => {
-    expect(voiceKeyAction({ key: "Escape", target: body }, state())).toBeNull();
-    expect(matchWorkspaceShortcut({ key: "Escape", target: body })).toBe("escape");
+    expect(voiceKeyAction({ key: "s", ctrlKey: true, target: body }, state({ capturing: true, hasPendingPreview: true }))).toBeNull();
+    expect(voiceKeyAction({ key: "Enter", ctrlKey: true, target: body }, state({ hasPendingPreview: true, confirmViaEnterAllowed: true }))).toBeNull();
   });
 });

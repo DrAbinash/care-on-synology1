@@ -275,11 +275,17 @@ function createWebSpeechProvider(): TranscriptionProvider {
       let aborted = false;
       let sawAnyResult = false;
       let lastStartAt = Date.now();
+      /** Bounded silence restarts — never infinite loops on a dead engine. */
+      let silenceRestartCount = 0;
+      const MAX_SILENCE_RESTARTS = 40;
+      /** Highest ResultList index already committed (Chrome ResultList is cumulative). */
+      let committedResultIndex = -1;
 
       // Any surfaced error terminates the session — no silent restart loops.
       const fail = (message: string, opts?: { permission?: boolean; offline?: boolean }) => {
         if (aborted) return;
         aborted = true;
+        stopped = true;
         window.clearTimeout(watchdog);
         recognition.onend = null;
         try { recognition.abort(); } catch { /* not started */ }
@@ -302,44 +308,71 @@ function createWebSpeechProvider(): TranscriptionProvider {
       recognition.onresult = (e: SpeechRecognitionEvent) => {
         engineSignal();
         sawAnyResult = true;
+        silenceRestartCount = 0; // speech activity resets the silence-restart budget
         let interim = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
+        // Prefer engine's resultIndex, but never re-commit earlier finals.
+        const startIndex = Math.max(e.resultIndex, committedResultIndex + 1);
+        for (let i = startIndex; i < e.results.length; i++) {
           const result = e.results[i];
           const alt = result[0];
           if (!alt) continue;
           if (result.isFinal) {
+            const piece = alt.transcript.replace(/\s+/g, " ").trim();
+            if (!piece) {
+              committedResultIndex = i;
+              continue;
+            }
             if (continuous) {
               // Hands-free: each final result IS one utterance.
-              const t = alt.transcript.trim();
-              if (t) {
-                cb.onResult({
-                  transcript: t,
-                  providerConfidence: typeof alt.confidence === "number" && alt.confidence > 0 ? alt.confidence : null,
-                });
-              }
+              cb.onResult({
+                transcript: piece,
+                providerConfidence: typeof alt.confidence === "number" && alt.confidence > 0 ? alt.confidence : null,
+              });
             } else {
-              finalText += alt.transcript + " ";
+              // Commit finals once — skip exact trailing duplicates from engine restarts.
+              const next = finalText.trim();
+              if (!next) {
+                finalText = piece + " ";
+              } else if (next.endsWith(piece) || piece === next) {
+                /* already committed */
+              } else if (piece.startsWith(next) && piece.length > next.length) {
+                finalText = piece + " ";
+              } else {
+                finalText = `${next} ${piece} `;
+              }
               if (typeof alt.confidence === "number" && alt.confidence > 0) {
                 confidenceSum += alt.confidence;
                 confidenceCount += 1;
               }
             }
+            committedResultIndex = i;
           } else {
             interim += alt.transcript;
           }
         }
-        cb.onInterim(interim);
+        // Display: committed finals + current interim (interim never written into finals here).
+        if (!continuous) {
+          const committed = finalText.trim();
+          const live = interim.trim();
+          cb.onInterim(committed && live ? `${committed} ${live}` : (live || committed));
+        } else {
+          cb.onInterim(interim);
+        }
       };
 
       recognition.onerror = (e: SpeechRecognitionErrorEvent) => {
         engineSignal();
-        if (aborted || e.error === "no-speech" || e.error === "aborted") return;
+        if (aborted || e.error === "aborted") return;
+        // no-speech: engine may still end and restart via onend — do not fail the session.
+        if (e.error === "no-speech") return;
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
           fail("Microphone access was denied. Allow the microphone in your browser's site settings.", { permission: true });
         } else if (e.error === "network") {
           fail("Speech service unreachable — check the network connection.", { offline: true });
+        } else if (e.error === "audio-capture") {
+          fail("Could not capture audio from the microphone.");
         } else {
-          fail(`Speech recognition error: ${e.error}`);
+          fail("Speech recognition failed. Try again or switch provider in Voice settings.");
         }
       };
 
@@ -348,15 +381,20 @@ function createWebSpeechProvider(): TranscriptionProvider {
         if (aborted) return;
         if (!stopped) {
           // The engine ends sessions on its own after silence — restart so a
-          // held push-to-talk keeps capturing until the user releases. But an
-          // IMMEDIATE end with no results means the speech service is dead
-          // (headless/offline browsers do this without any error event) —
-          // surface that instead of restarting forever.
+          // held push-to-talk / continuous Listen keeps capturing until Stop.
+          // Explicit Stop sets stopped=true and prevents restart.
           if (!sawAnyResult && Date.now() - lastStartAt < 1500) {
             fail("The browser's speech service is unavailable here — try the server provider or check connectivity.", { offline: true });
             return;
           }
+          if (silenceRestartCount >= MAX_SILENCE_RESTARTS) {
+            fail("Dictation stopped after repeated silence restarts. Click Listen to continue.");
+            return;
+          }
+          silenceRestartCount += 1;
           lastStartAt = Date.now();
+          // New recognition session → fresh ResultList; keep finalText.
+          committedResultIndex = -1;
           try { recognition.start(); } catch { /* already restarted */ }
           return;
         }
@@ -373,12 +411,14 @@ function createWebSpeechProvider(): TranscriptionProvider {
 
       return {
         stop: () => {
+          // Explicit Stop always terminates recognition and blocks auto-restart.
           stopped = true;
           if (!continuous) cb.onStatus("processing");
           try { recognition.stop(); } catch { /* not started */ }
         },
         abort: () => {
           aborted = true;
+          stopped = true;
           window.clearTimeout(watchdog);
           recognition.onend = null;
           try { recognition.abort(); } catch { /* not started */ }

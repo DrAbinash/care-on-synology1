@@ -1,5 +1,5 @@
 /**
- * voiceSessionState.ts — Ticket M1.6B2 Phase 5/8.
+ * voiceSessionState.ts — Ticket M1.6B2 Phase 5/8 + radiology dictation hardening.
  *
  * Pure session-state rules for the voice layer: study/nonce binding (stale
  * results after a study switch are DISCARDED, never executed) and the
@@ -17,13 +17,65 @@ export interface VoiceCaptureBinding {
 }
 
 /** A transcription result is stale when the workspace moved on — different
- *  study OR a newer capture generation. Stale results must be discarded. */
+ *  study OR a newer capture generation. Stale results must never execute. */
 export function isStaleVoiceResult(
   bound: VoiceCaptureBinding,
   currentStudyId: number | null,
   currentNonce: number,
 ): boolean {
   return bound.studyId !== currentStudyId || bound.nonce !== currentNonce;
+}
+
+/** Study/patient change must discard any unsaved dictation preview. */
+export function shouldDiscardVoiceOnStudyChange(
+  previousStudyId: number | null | undefined,
+  nextStudyId: number | null | undefined,
+): boolean {
+  return previousStudyId !== nextStudyId;
+}
+
+// ── Deterministic UI state machine (dictation hardening) ─────────────────────
+
+/** Explicit voice UI states — never show Listening when the recognizer stopped. */
+export type VoiceUiState =
+  | "idle"
+  | "unsupported"
+  | "requesting-permission"
+  | "listening"
+  | "processing"
+  | "ready"
+  | "error";
+
+export function deriveVoiceUiState(input: {
+  enabled: boolean;
+  providerKind: string | null;
+  phase: "idle" | "listening" | "processing" | "requesting-permission";
+  trouble: { kind: string; message: string } | null;
+  hasPendingPreview: boolean;
+}): VoiceUiState {
+  if (!input.enabled || input.providerKind == null) return "unsupported";
+  if (input.trouble) return "error";
+  if (input.phase === "requesting-permission") return "requesting-permission";
+  if (input.phase === "listening") return "listening";
+  if (input.phase === "processing") return "processing";
+  if (input.hasPendingPreview) return "ready";
+  return "idle";
+}
+
+export function voiceUiStatusLabel(state: VoiceUiState, troubleKind?: string | null): string {
+  switch (state) {
+    case "unsupported": return "Voice unavailable";
+    case "error":
+      return troubleKind === "permission" ? "Mic permission denied"
+        : troubleKind === "offline" ? "Offline"
+        : "Error";
+    case "requesting-permission": return "Requesting mic…";
+    case "listening": return "Listening…";
+    case "processing": return "Processing…";
+    case "ready": return "Ready — edit or send";
+    case "idle":
+    default: return "Ready";
+  }
 }
 
 // ── Voice keyboard controls (Phase 8) ────────────────────────────────────────
