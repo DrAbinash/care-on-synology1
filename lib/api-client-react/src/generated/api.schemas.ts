@@ -371,21 +371,9 @@ export interface CreateBillBody {
   clientRef?: string;
 }
 
-export type UpdateBillBodyStatus =
-  (typeof UpdateBillBodyStatus)[keyof typeof UpdateBillBodyStatus];
-
-export const UpdateBillBodyStatus = {
-  draft: "draft",
-  pending: "pending",
-  partial: "partial",
-  paid: "paid",
-  cancelled: "cancelled",
-} as const;
-
 export interface UpdateBillBody {
   /** @minimum 0 */
   discount?: number;
-  status?: UpdateBillBodyStatus;
   dueDate?: string | null;
 }
 

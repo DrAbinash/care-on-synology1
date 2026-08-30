@@ -1159,9 +1159,6 @@ export const updateBillBodyDiscountMin = 0;
 
 export const UpdateBillBody = zod.object({
   discount: zod.number().min(updateBillBodyDiscountMin).optional(),
-  status: zod
-    .enum(["draft", "pending", "partial", "paid", "cancelled"])
-    .optional(),
   dueDate: zod.string().nullish(),
 });
 

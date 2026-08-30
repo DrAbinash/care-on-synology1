@@ -2718,13 +2718,14 @@ components:
 
     UpdateBillBody:
       type: object
+      description: >
+        Generic bill edit. Status transitions (paid / cancelled / partial) are
+        NOT accepted here — use POST /bills/{id}/cancel, payment collection, or
+        POST /bills/{id}/refund so cascade/audit/accounting side effects run.
       properties:
         discount:
           type: number
           minimum: 0
-        status:
-          type: string
-          enum: [draft, pending, partial, paid, cancelled]
         dueDate:
           type: string
           nullable: true

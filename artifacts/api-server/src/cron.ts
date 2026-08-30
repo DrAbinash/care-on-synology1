@@ -1362,7 +1362,7 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     db.select().from(commissionRulesTable).orderBy(commissionRulesTable.id),
     db.select({ id: testsTable.id, name: testsTable.name, category: testsTable.category, testType: testsTable.testType }).from(testsTable),
     db.select().from(orderTestsTable).where(and(inArray(orderTestsTable.orderId, orderIds), ne(orderTestsTable.status, "cancelled"))),
-    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
+    db.select({ orderId: billsTable.orderId, status: billsTable.status, paid: billsTable.paidAmount, balance: billsTable.balanceAmount, total: billsTable.totalAmount, discount: billsTable.discount }).from(billsTable).where(inArray(billsTable.orderId, orderIds)),
     db.select({ orderTestId: testTokensTable.orderTestId }).from(testTokensTable).where(and(inArray(testTokensTable.orderId, orderIds), sql`${testTokensTable.priority} > 0`)),
     db.select({ orderId: commissionStatusEventsTable.orderId, newStatus: commissionStatusEventsTable.newStatus, createdAt: commissionStatusEventsTable.createdAt }).from(commissionStatusEventsTable).where(inArray(commissionStatusEventsTable.orderId, orderIds)),
   ]);
@@ -1370,12 +1370,13 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
   const testAliasIndex = buildTestNameAliasIndex(tests);
   const doctorMap = new Map(doctors.map(d => [d.id, d]));
   const billByOrderRaw = indexCommissionBillsByOrderId(bills);
-  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; discount: number }>();
+  const billByOrder = new Map<number, { status: string | null; paid: string; balance: string; total: string; discount: number }>();
   for (const [oid, b] of billByOrderRaw) {
     billByOrder.set(oid, {
       status: b.status ?? null,
       paid: b.paid,
       balance: b.balance,
+      total: b.total,
       discount: Number(b.discount ?? 0),
     });
   }
@@ -1428,7 +1429,9 @@ async function fireCommissionReconcile(): Promise<{ transitions: number }> {
     const { held, reason } = computeCommissionHold({
       cfg: { policy, minAmount },
       hasBill: true, billStatus: bill?.status ?? null,
-      paidAmount: Number(bill?.paid ?? 0), balanceAmount: Number(bill?.balance ?? 0),
+      paidAmount: Number(bill?.paid ?? 0),
+      balanceAmount: Number(bill?.balance ?? 0),
+      totalAmount: Number(bill?.total ?? 0),
       reportFinalized: rep?.finalized ?? false, reportDelivered: rep?.delivered ?? false,
       commissionAmount: netCommission,
     });
