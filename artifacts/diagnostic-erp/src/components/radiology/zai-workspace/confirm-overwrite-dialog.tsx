@@ -75,6 +75,11 @@ export function ConfirmOverwriteDialog() {
                   <div data-testid="same-slot-new">{sameSlot.newText}</div>
                 </div>
               ) : null}
+              {pendingPatch.vacatedObservationId ? (
+                <div className="text-[10px] text-amber-800/90" data-testid="same-slot-vacate-note">
+                  Replacing will remove the previous observation row. Linked measurements move to this finding when possible; otherwise they detach.
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">

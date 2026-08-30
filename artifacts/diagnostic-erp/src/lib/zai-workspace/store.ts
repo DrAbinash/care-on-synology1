@@ -77,10 +77,15 @@ import {
   extractRecordedHashes,
   reconcilePatchAgainstNarrative,
   stampVoiceAuthoredProvenance,
+  stripContribution,
   type LedgerHydrationResult,
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
+import {
+  defaultImpressionFromFindings,
+  observationSlotKey,
+} from "@/lib/findingComposerModel";
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import { anchorsEqual } from "@/lib/observationAnchor";
@@ -165,8 +170,8 @@ export type PendingPathologyPatch = {
   state?: string;
   measurement?: string;
   /**
-   * Same-slot replace: observation being vacated so force-confirm / cancel can
-   * remap evidence (measurements / key images) onto the incoming survivor id.
+   * Same-slot / composer slot-change: observation being vacated so force-confirm
+   * or cancel can remap evidence (measurements / key images) onto the survivor.
    */
   vacatedObservationId?: string;
 };
@@ -395,7 +400,23 @@ export type WorkspaceStore = S & {
    * Non-overridden slots restore replacedBaseline, same as removeObservation.
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
-  removeObservation: (id: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  /**
+   * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
+   * When editingId's clinical slot changes to an occupied sibling, updates that sibling
+   * and removes the previous observation after remapping evidence onto the survivor.
+   * Same-slot edits preserve observation id + evidence.
+   */
+  applyComposerFinding: (opts: PendingPathologyPatch & {
+    editingId?: string | null;
+    force?: boolean;
+  }) => "applied" | "pending" | "blocked";
+  /**
+   * Toggle Impression participation by clearing/setting lastRendered.impression
+   * (existing CARE semantics — no parallel boolean). Marks impressionNeedsRefresh.
+   * Never silently overwrites manually protected Impression text.
+   */
+  setObservationImpressionParticipation: (id: string, include: boolean) => "applied" | "blocked" | "missing";
   refreshImpressionFromLedger: () => void;
   hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
   serializeObservationLedger: () => SerializedObservationLedger;
@@ -814,8 +835,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   confirmOverwriteAndApply: () => {
     const pendingPatch = get().pendingPathologyPatch;
     if (pendingPatch) {
+      const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim() || null;
+      const survivorId = (pendingPatch.id ?? "").trim() || null;
       get().undoLastPatch();
       get().applyPathologyOverlay({ ...pendingPatch, force: true });
+      if (vacatedId && survivorId && vacatedId !== survivorId) {
+        const stillVacated = get().appliedPathologyPatches.some((p) => p.id === vacatedId);
+        if (stillVacated) {
+          get().removeObservation(vacatedId, { remapEvidenceTo: survivorId });
+        }
+      }
       set({ confirmOverwriteOpen: false, pendingPathologyPatch: null });
       return;
     }
@@ -1403,9 +1432,168 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   serializeCoverageMarks: () => get().coverageMarks,
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
   dismissLedgerHydrationWarning: () => set({ ledgerHydrationWarning: null }),
-  removeObservation: (id) => {
+  applyComposerFinding: (opts) => {
+    if (get().isFinalized) return "blocked";
+    const editingId = (opts.editingId ?? opts.id ?? "").trim() || null;
+    const existing = editingId
+      ? get().appliedPathologyPatches.find((p) => p.id === editingId)
+      : undefined;
+
+    // Build incoming observation to compare slot keys.
+    const draftId = editingId || opts.id || `composer_${Date.now().toString(36)}`;
+    const incomingObs = observationFromPending(
+      { ...opts, id: draftId },
+      get().reportingContext.region,
+      get().activeAnchor,
+    );
+    const existingSlot = existing?.observation ? observationSlotKey(existing.observation) : "";
+    const incomingSlot = observationSlotKey(incomingObs);
+    const slotChanged = Boolean(existing && existingSlot && incomingSlot && existingSlot !== incomingSlot);
+
+    if (existing && slotChanged) {
+      // Target slot may already have a sibling — let same-slot engine resolve
+      // without binding to the old id first.
+      const siblings = findSameSlotSiblings(
+        get().appliedPathologyPatches.filter((p) => p.id !== editingId),
+        incomingObs,
+      );
+      if (siblings.length > 0) {
+        const survivorId = siblings[0]!.id;
+        // Occupied: apply toward sibling id; stash vacated id for confirm path.
+        const status = get().applyPathologyOverlay({
+          ...opts,
+          id: survivorId,
+          force: opts.force,
+          vacatedObservationId: editingId!,
+        });
+        if (status === "applied") {
+          const stillThere = get().appliedPathologyPatches.some((p) => p.id === editingId);
+          if (stillThere) {
+            get().removeObservation(editingId!, { remapEvidenceTo: survivorId });
+          }
+        }
+        // pending: vacatedObservationId rides on pendingPathologyPatch for confirmOverwriteAndApply
+        return status;
+      }
+      // Empty target slot: move in place (preserve id + evidence), but strip
+      // the previous generated Findings sentence first so old-level prose does
+      // not linger under the new ownership.
+      const oldFindings = (existing.lastRendered.findings ?? "").trim();
+      if (oldFindings) {
+        const stripped = stripContribution(
+          get().findingsText,
+          oldFindings,
+          get().fieldProvenance.findings,
+        );
+        if (stripped.outcome === "removed") {
+          set({ findingsText: stripped.text });
+        } else if (contributionPresent(get().findingsText, oldFindings)) {
+          // Manual / unproven — do not silently leave contradictory levels.
+          return "blocked";
+        }
+      }
+      const oldImp = (existing.lastRendered.impression ?? "").trim();
+      if (oldImp && !contributionProtected(oldImp, get().fieldProvenance.impression)) {
+        const strippedImp = stripContribution(
+          get().impressionText,
+          oldImp,
+          get().fieldProvenance.impression,
+        );
+        if (strippedImp.outcome === "removed") {
+          set({ impressionText: strippedImp.text });
+        }
+      } else if (oldImp && contributionProtected(oldImp, get().fieldProvenance.impression)) {
+        return "blocked";
+      }
+    }
+
+    return get().applyPathologyOverlay({
+      ...opts,
+      id: editingId || draftId,
+      force: opts.force,
+    });
+  },
+
+  setObservationImpressionParticipation: (id, include) => {
+    if (get().isFinalized) return "blocked";
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
+
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+
+    const currentImp = (patch.lastRendered.impression ?? patch.templates.impression ?? "").trim();
+    let nextTemplates = { ...patch.templates };
+    let nextLast = { ...patch.lastRendered };
+    let nextSections = [...(patch.observation?.sectionsOwned ?? ["findings"])];
+    let nextImpressionText = get().impressionText;
+    let nextProv = { ...get().fieldProvenance };
+
+    if (!include) {
+      // Exclude: clear impression contribution; strip generated line if not manual.
+      if (currentImp && !contributionProtected(currentImp, get().fieldProvenance.impression)) {
+        const stripped = stripContribution(nextImpressionText, currentImp, nextProv.impression);
+        if (stripped.outcome === "removed") {
+          nextImpressionText = stripped.text;
+        }
+      }
+      nextTemplates = { ...nextTemplates, impression: "" };
+      nextLast = { ...nextLast, impression: "" };
+      nextSections = nextSections.filter((s) => s !== "impression");
+      if (!nextSections.includes("findings")) nextSections.push("findings");
+    } else {
+      // Include: ensure impression template exists; mark stale — do not overwrite manual Impression.
+      let imp = (patch.templates.impression || patch.lastRendered.impression || "").trim();
+      if (!imp) {
+        imp = defaultImpressionFromFindings(patch.lastRendered.findings || patch.templates.findings || "");
+      }
+      nextTemplates = { ...nextTemplates, impression: imp };
+      nextLast = { ...nextLast, impression: imp };
+      if (!nextSections.includes("impression")) nextSections = [...nextSections, "impression"];
+      // Do not silently merge into Impression narrative — set impressionNeedsRefresh instead.
+    }
+
+    const nextObs = patch.observation
+      ? { ...patch.observation, sectionsOwned: nextSections as CanonicalObservation["sectionsOwned"] }
+      : patch.observation;
+
+    const nextPatches = get().appliedPathologyPatches.map((p) =>
+      p.id === id
+        ? {
+          ...p,
+          templates: nextTemplates,
+          lastRendered: nextLast,
+          observation: nextObs,
+        }
+        : p,
+    );
+
+    set({
+      lastPatchSnapshot: snap,
+      appliedPathologyPatches: nextPatches,
+      impressionText: nextImpressionText,
+      fieldProvenance: nextProv,
+      // Always surface refresh after participation change (include or exclude).
+      impressionNeedsRefresh: true,
+      isDirty: true,
+      selectedObservationId: id,
+    });
+    return "applied";
+  },
+
+  removeObservation: (id, opts) => {
+    const patch = get().appliedPathologyPatches.find((p) => p.id === id);
+    if (!patch) return "missing";
+    const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
@@ -1418,10 +1606,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
     const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
-    const detachedMs = detachStructuredMeasurementsFromObservation(
-      get().structuredViewerMeasurements,
-      id,
-    );
+    let nextMs = get().structuredViewerMeasurements;
+    if (remapTo) {
+      nextMs = remapStructuredMeasurementsObservationId(nextMs, id, remapTo).state;
+    } else {
+      nextMs = detachStructuredMeasurementsFromObservation(nextMs, id).state;
+    }
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
@@ -1430,13 +1620,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: result.narrative.recommendation,
       fieldProvenance: result.provenance,
       appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
-      selectedObservationId: get().selectedObservationId === id ? null : get().selectedObservationId,
-      structuredViewerMeasurements: detachedMs.state,
+      selectedObservationId: get().selectedObservationId === id
+        ? (remapTo || null)
+        : get().selectedObservationId,
+      structuredViewerMeasurements: nextMs,
       lastPatchSnapshot: snap,
       isDirty: true,
     });
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+      if (remapTo) {
+        window.dispatchEvent(new CustomEvent("care:observation-reassigned", {
+          detail: { fromObservationId: id, toObservationId: remapTo },
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+      }
     }
     return result.outcome;
   },
