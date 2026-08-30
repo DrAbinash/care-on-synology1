@@ -596,14 +596,19 @@ export function renderReportDocument(
     </div>
     ${model.clinic.address ? `<div class="hdr-address-bar">${escapeHtml(model.clinic.address)}</div>` : ""}
     <hr class="hdr-rule" />` : "";
-  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
-    <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
-    <div class="letterpad-disclaimer">${escapeHtml(pad.disclaimer)}</div>
-  </div>` : "";
   const classicFooterHtml = footerCfg.show ? `<div class="ftr">${escapeHtml(model.footerNote ?? "")} • ${escapeHtml(model.typeLabel)} • ${escapeHtml(model.statusLabel)} • Generated ${escapeHtml(model.generatedAtLabel)}</div>` : "";
   const letterPadSignatures = model.signatures.filter((s) => s.name || s.imageDataUrl).length > 0
     ? model.signatures
     : [{ name: pad.radiologist, qualification: pad.credentials, label: "Signed:", whenLabel: "" }];
+  // Letter-pad: signature sits in the footer block, immediately above the blue bar.
+  const letterPadSigHtml = signatureCfg.show
+    ? `<div class="sigs">${signaturesHtml(letterPadSignatures, signatureCfg.showImage)}</div>`
+    : "";
+  const letterPadFooterHtml = footerCfg.show ? `<div class="letterpad-footer-block">
+    ${letterPadSigHtml}
+    <div class="letterpad-services">${escapeHtml(pad.servicesRow1)}<br/>${escapeHtml(pad.servicesRow2)}</div>
+    <div class="letterpad-disclaimer">${escapeHtml(pad.disclaimer)}</div>
+  </div>` : letterPadSigHtml;
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -952,13 +957,14 @@ export function renderReportDocument(
     .letterpad-sheet > thead > tr > td,
     .letterpad-sheet > tbody > tr > td,
     .letterpad-sheet > tfoot > tr > td { padding: 0; border: none; vertical-align: top; }
-    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .letterpad-services { background: #0f2d6e; color: #fff; text-align: center; padding: 6px 8px; font-size: 6.5px; font-weight: 700; letter-spacing: 0.04em; line-height: 1.45; margin-top: 1mm; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .letterpad-disclaimer { font-size: 7.5px; color: #334155; text-align: center; padding: 6px 12px 4px; font-style: italic; }
     .letterpad-footer-block { break-inside: avoid; page-break-inside: avoid; page-break-before: avoid; }
-    /* Keep radiologist name/degree with the body on page 1, just above footer. */
+    /* Signature flush above the blue services bar (right lowermost). */
     .letterpad .sigs {
-      margin-top: auto;
-      margin-bottom: 2mm;
+      margin-top: 0;
+      margin-bottom: 0.5mm;
+      padding-top: 2mm;
       justify-content: flex-end;
       page-break-inside: avoid;
       page-break-before: avoid;
@@ -967,10 +973,10 @@ export function renderReportDocument(
       position: relative;
       z-index: 2;
     }
-    .letterpad .sigbox { text-align: right; margin-left: auto; }
+    .letterpad .sigbox { text-align: right; margin-left: auto; margin-bottom: 0; padding-bottom: 0; }
     .letterpad .sigline { display: none; }
-    .letterpad .signame { letter-spacing: 0 !important; }
-    .letterpad .sigmeta { letter-spacing: 0 !important; word-spacing: normal !important; }
+    .letterpad .signame { letter-spacing: 0 !important; line-height: 1.15; }
+    .letterpad .sigmeta { letter-spacing: 0 !important; word-spacing: normal !important; line-height: 1.15; margin: 0; }
     ` : ""}
 
     /* ── Print rules (Phase 7: widows/orphans, no split images, no blank pages) ── */
@@ -1010,7 +1016,7 @@ export function renderReportDocument(
       ${sidePanel ? railBlock : ""}
     </div>
     ${overflowBlock}
-    ${signatureCfg.show ? `<div class="sigs">${signaturesHtml(letterPad ? letterPadSignatures : model.signatures, signatureCfg.showImage)}</div>` : ""}
+    ${letterPad ? "" : (signatureCfg.show ? `<div class="sigs">${signaturesHtml(model.signatures, signatureCfg.showImage)}</div>` : "")}
     ${qrHtml}
     ${letterPad ? `</td></tr></tbody><tfoot><tr><td>${letterPadFooterHtml}</td></tr></tfoot></table>` : classicFooterHtml}
   </div>

@@ -709,7 +709,7 @@ export function generateReportPDF(
 
   // Reserve a strip above the services bar for name + degree so signature
   // never orphans alone onto page 2 and never overlaps the KEY IMAGES rail.
-  const SIG_RESERVE_MM = settings.signature.enabled ? 20 : 0;
+  const SIG_RESERVE_MM = settings.signature.enabled ? 12 : 0;
   const contentBottom = pageH - m.bottom + 1 - SIG_RESERVE_MM;
 
   // Draw KEY IMAGES on page 1 immediately (below demography / beside title+body).
@@ -816,7 +816,7 @@ export function generateReportPDF(
   // Do not re-draw the rail or push body Y from railBottomY — that parked
   // images/impression overlaps onto page 2 in long reports.
 
-  // ── SIGNATURE — always right-lowermost just above the blue services bar.
+  // ── SIGNATURE — flush right, immediately above the blue services bar.
   // Never flow under mid-page content beside the KEY IMAGES rail (that overlaps
   // the image stack). Never call ensureSpace here: that orphaned name/degree
   // onto a blank page 2.
@@ -829,10 +829,14 @@ export function generateReportPDF(
 
     doc.setPage(bodyPage);
     const footerTop = pageH - m.bottom + 1; // top edge of navy services bar
-    const sigBlockH = sig.imageDataUrl ? 22 : 14;
-    const parkedY = footerTop - sigBlockH - 2;
-    // Always park above the blue bar on the right — never mid-rail.
-    let sigY = parkedY;
+    const hasDetails =
+      (sig.showQualification && !!sig.qualification) ||
+      (sig.showRegistrationNo && !!sig.registrationNo);
+    // Name + optional degree baselines; last line sits ~1.2mm above the blue bar.
+    const GAP_ABOVE_BAR_MM = 1.2;
+    const textBlockH = lineH + (hasDetails ? lineH : 0);
+    const imageH = sig.imageDataUrl ? 12 : 0;
+    let sigY = footerTop - GAP_ABOVE_BAR_MM - textBlockH - imageH;
     const sigRight = pageW - m.right;
 
     if (sig.imageDataUrl) {
@@ -856,6 +860,7 @@ export function generateReportPDF(
     if (sig.showRegistrationNo && sig.registrationNo) details.push(`Reg. No: ${sig.registrationNo}`);
     if (details.length) {
       doc.text(details.join(", "), sigRight, sigY, { align: "right" });
+      sigY += lineH;
     }
     y = Math.max(y, sigY);
   }
