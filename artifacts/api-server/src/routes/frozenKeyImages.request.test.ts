@@ -282,4 +282,27 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
       .set({ status: "DRAFT", finalReportId: null })
       .where(eq(radiologyReportDraftsTable.id, draftId));
   });
+
+  it("PUT/DELETE cannot mutate another draft's finalized key image by id alone", async () => {
+    await db
+      .update(radiologyReportDraftsTable)
+      .set({ status: "FINAL", finalReportId: 999002 })
+      .where(eq(radiologyReportDraftsTable.id, otherDraftId));
+
+    const put = await request(app)
+      .put(`/api/radiology/report-generator/key-images/${otherImageId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ caption: "cross-draft hack" });
+    expect(put.status).toBe(409);
+
+    const del = await request(app)
+      .delete(`/api/radiology/report-generator/key-images/${otherImageId}`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(del.status).toBe(409);
+
+    await db
+      .update(radiologyReportDraftsTable)
+      .set({ status: "DRAFT", finalReportId: null })
+      .where(eq(radiologyReportDraftsTable.id, otherDraftId));
+  });
 });

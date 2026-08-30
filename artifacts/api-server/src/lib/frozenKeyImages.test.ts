@@ -1,7 +1,7 @@
 /**
  * Server-side frozen key image resolution + detach + integrity semantics.
  */
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID, randomFillSync } from "node:crypto";
@@ -9,6 +9,7 @@ import sharp from "sharp";
 import { db } from "@workspace/db";
 import { radiologyReportDraftsTable, radiologyReportKeyImagesTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
+import * as reportImages from "./reportImages";
 import {
   buildObservationCaption,
   detachKeyImagesFromObservation,
@@ -290,12 +291,78 @@ describe.skipIf(!hasDb)("frozenKeyImages DB", () => {
       })
       .returning();
 
-    const result = await resolveDraftPrintKeyImagesDetailed(draft.id);
-    expect(result.source).toBe("frozen");
-    expect(result.integrityOk).toBe(true);
-    expect(result.images).toHaveLength(1);
-    expect(result.images[0].src.startsWith("data:image/")).toBe(true);
-    expect(result.images[0].caption).toBe("Final frozen");
+    // Defining acceptance: Orthanc renderer hard-fails; frozen evidence must still print.
+    const orthancSpy = vi
+      .spyOn(reportImages, "resolveDraftKeyImages")
+      .mockRejectedValue(new Error("Orthanc unavailable (simulated)"));
+
+    try {
+      const result = await resolveDraftPrintKeyImagesDetailed(draft.id);
+      expect(result.source).toBe("frozen");
+      expect(result.integrityOk).toBe(true);
+      expect(result.images).toHaveLength(1);
+      expect(result.images[0].src.startsWith("data:image/")).toBe(true);
+      expect(result.images[0].caption).toBe("Final frozen");
+      expect(orthancSpy).not.toHaveBeenCalled();
+    } finally {
+      orthancSpy.mockRestore();
+    }
+
+    await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, row.id));
+    await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, draft.id));
+  });
+
+  it("missing frozen file never calls Orthanc even when Orthanc would fail", async () => {
+    const [draft] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        status: "FINAL",
+        finalReportId: 9_900_002,
+        studyName: "Frozen missing no Orthanc",
+        modality: "MR",
+        rawFindings: "x",
+        impression: "[]",
+      })
+      .returning();
+
+    const [row] = await db
+      .insert(radiologyReportKeyImagesTable)
+      .values({
+        draftId: draft.id,
+        imageUrl: `/uploads/radiology-key-images/${randomUUID()}-gone.jpg`,
+        thumbnailUrl: `/uploads/radiology-key-images/${randomUUID()}-gone-thumb.jpg`,
+        caption: "Lost evidence",
+        includeInReport: true,
+        sourceType: "VIEWPORT_CAPTURE",
+        sopInstanceUid: "1.2.840.must.not.hydrate",
+      })
+      .returning();
+
+    const orthancSpy = vi
+      .spyOn(reportImages, "resolveDraftKeyImages")
+      .mockResolvedValue([
+        {
+          src: "data:image/jpeg;base64,ORTHANC_SHOULD_NOT_APPEAR",
+          caption: "live pacs",
+          displayOrder: 0,
+          sopInstanceUid: "1.2.840.must.not.hydrate",
+          isKeyImage: true,
+          framing: null,
+        },
+      ]);
+
+    try {
+      const result = await resolveDraftPrintKeyImagesDetailed(draft.id);
+      expect(result.source).toBe("frozen");
+      expect(result.integrityOk).toBe(false);
+      expect(result.images).toHaveLength(1);
+      expect(result.images[0].src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
+      expect(result.images[0].sopInstanceUid).toBeNull();
+      expect(result.images[0].src).not.toContain("ORTHANC_SHOULD_NOT_APPEAR");
+      expect(orthancSpy).not.toHaveBeenCalled();
+    } finally {
+      orthancSpy.mockRestore();
+    }
 
     await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, row.id));
     await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, draft.id));
