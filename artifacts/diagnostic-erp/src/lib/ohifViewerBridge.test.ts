@@ -79,6 +79,69 @@ describe("ohifViewerBridge", () => {
     );
     expect(stale).toBe("ignored");
     expect(onCapture).not.toHaveBeenCalled();
+    expect(pending.has("good")).toBe(true);
+  });
+
+  it("clears pending capture requestId on oversize / bad MIME / malformed / handler throw", async () => {
+    const pending = new Set<string>(["a", "b", "c", "d"]);
+    const huge = "x".repeat(8_000_001);
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "viewport-capture-result",
+        version: 1,
+        requestId: "a",
+        studyInstanceUID: "1.2.3",
+        imageData: huge,
+      },
+      { pendingCaptureRequestIds: pending },
+    );
+    expect(pending.has("a")).toBe(false);
+
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "viewport-capture-result",
+        version: 1,
+        requestId: "b",
+        studyInstanceUID: "1.2.3",
+        mimeType: "application/pdf",
+        imageData: "data:application/pdf;base64,abc",
+      },
+      { pendingCaptureRequestIds: pending },
+    );
+    expect(pending.has("b")).toBe(false);
+
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "viewport-capture-result",
+        version: 1,
+        requestId: "c",
+        studyInstanceUID: "1.2.3",
+        imageData: null as unknown as string,
+      },
+      { pendingCaptureRequestIds: pending },
+    );
+    expect(pending.has("c")).toBe(false);
+
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "viewport-capture-result",
+        version: 1,
+        requestId: "d",
+        studyInstanceUID: "1.2.3",
+        imageData: `data:image/jpeg;base64,${btoa("x")}`,
+      },
+      {
+        pendingCaptureRequestIds: pending,
+        onViewportCaptureResult: async () => {
+          throw new Error("boom");
+        },
+      },
+    );
+    expect(pending.has("d")).toBe(false);
   });
 
   it("accepts capture when requestId is pending and clears it", async () => {

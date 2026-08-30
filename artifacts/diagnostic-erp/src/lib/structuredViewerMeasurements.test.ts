@@ -364,6 +364,23 @@ describe("viewer row hydration gate (empty first success)", () => {
     expect(events.filter((e) => e.rowId === 10 || e.rowId === 11).every((e) => e.mode === "historical")).toBe(true);
     expect(events.find((e) => e.rowId === 12)?.mode).toBe("new_event");
   });
+
+  it("switching study resets hydration state (known ids + hydrationComplete)", () => {
+    // Study A: empty hydrate then new row
+    const studyA = simulateHydrationPasses([
+      [],
+      [{ id: 1, status: "pending" }],
+    ]);
+    expect(studyA[0].mode).toBe("new_event");
+
+    // Study B starts fresh — first successful rows are historical again
+    const studyB = simulateHydrationPasses([
+      [{ id: 1, status: "pending" }], // same numeric id, new study
+      [{ id: 1, status: "pending" }, { id: 2, status: "pending" }],
+    ]);
+    expect(studyB.find((e) => e.rowId === 1 && e.hydrationCompleteBefore === false)?.mode).toBe("historical");
+    expect(studyB.find((e) => e.rowId === 2)?.mode).toBe("new_event");
+  });
 });
 
 describe("canal capture arm watermark", () => {

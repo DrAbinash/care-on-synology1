@@ -274,21 +274,32 @@ export async function handleCareOhifMessage(
     if (ctx.pendingCaptureRequestIds && !ctx.pendingCaptureRequestIds.has(rid)) {
       return "ignored"; // stale / unknown
     }
-    if (msg.error) {
+    const clearPending = () => {
       ctx.pendingCaptureRequestIds?.delete(rid);
+    };
+    if (msg.error) {
+      clearPending();
       return "error";
     }
-    if (!msg.imageData || typeof msg.imageData !== "string") return "error";
-    if (msg.imageData.length > MAX_CAPTURE_DATA_URL_CHARS) return "error";
+    if (!msg.imageData || typeof msg.imageData !== "string") {
+      clearPending();
+      return "error";
+    }
+    if (msg.imageData.length > MAX_CAPTURE_DATA_URL_CHARS) {
+      clearPending();
+      return "error";
+    }
     const mime = (msg.mimeType || "image/jpeg").toLowerCase();
     if (!mime.startsWith("image/jpeg") && !mime.startsWith("image/png") && !mime.startsWith("image/webp")) {
+      clearPending();
       return "error";
     }
     try {
       await ctx.onViewportCaptureResult?.(msg);
-      ctx.pendingCaptureRequestIds?.delete(rid);
+      clearPending();
       return "ok";
     } catch {
+      clearPending();
       return "error";
     }
   }
