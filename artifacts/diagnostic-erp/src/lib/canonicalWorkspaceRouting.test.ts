@@ -284,10 +284,16 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     expect(provider).not.toMatch(/api[_-]key/i);      // no keys in the frontend
   });
 
-  it("the embedded viewer exposes only its existing operations to voice", () => {
+  it("the embedded viewer exposes existing operations plus jump-back helpers to voice", () => {
     const viewer = read("components/EmbeddedWadoViewer.tsx");
     expect(viewer).toContain("useImperativeHandle");
-    expect(viewer).toMatch(/\{ nextFrame, prevFrame, zoomIn, zoomOut, resetView \}/);
+    expect(viewer).toContain("nextFrame");
+    expect(viewer).toContain("prevFrame");
+    expect(viewer).toContain("zoomIn");
+    expect(viewer).toContain("zoomOut");
+    expect(viewer).toContain("resetView");
+    expect(viewer).toContain("goToAnchor");
+    expect(viewer).toContain("getOhifWindow");
   });
 
   it("voice quick-search drives the panel's ONE search state via externalSearch (legacy)", () => {

@@ -5,7 +5,7 @@
  * Provenance enables optional FRAMES jump-back (↗).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -92,6 +92,7 @@ export default function SpineCanalApBox({
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [captureLevel, setCaptureLevel] = useState<string | null>(null);
+  const consumedViewerRowIdsRef = useRef<Set<number>>(new Set());
 
   const viewerQ = useViewerMeasurements(studyInstanceUID);
 
@@ -126,11 +127,12 @@ export default function SpineCanalApBox({
     setCaptureLevel(canalIntentLevel);
   }, [measurementIntent, canalIntentLevel, segment]);
 
-  // When capture mode is on, assign the newest viewer measurement to that level.
+  // When capture mode is on, assign the newest *unconsumed* viewer measurement to that level.
   useEffect(() => {
-    if (!captureLevel || !viewerQ.data?.length || !segment) return;
+    if (disabled || !captureLevel || !viewerQ.data?.length || !segment) return;
     const pending = [...viewerQ.data]
       .filter((m) => m.status !== "ignored")
+      .filter((m) => !consumedViewerRowIdsRef.current.has(m.id))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     const newest = pending[0];
     if (!newest) return;
@@ -150,6 +152,7 @@ export default function SpineCanalApBox({
       setCaptureLevel(null);
       return;
     }
+    consumedViewerRowIdsRef.current.add(newest.id);
     setValues((prev) => ({ ...prev, [captureLevel]: applied.value }));
     setCanalApCellProvenance(captureLevel, {
       ...applied.provenance,
@@ -161,13 +164,14 @@ export default function SpineCanalApBox({
       viewer: newest.viewerName ?? "viewer",
       capturedAt: newest.createdAt ?? new Date().toISOString(),
       annotationId: newest.id != null ? String(newest.id) : null,
+      measurementId: newest.measurementId ?? null,
     });
     setCaptureLevel(null);
     toast({
       title: `Assigned ${captureLevel}`,
       description: `${num} mm from viewer measurement`,
     });
-  }, [captureLevel, viewerQ.data, toast, provenance, segment, studyInstanceUID]);
+  }, [captureLevel, viewerQ.data, toast, provenance, segment, studyInstanceUID, disabled]);
 
   if (!segment || levels.length === 0) return null;
   const activeSegment: CanalSegment = segment;

@@ -2403,7 +2403,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
 
   // Bridge viewer_measurements → MEASURE rail (Zustand) + structured measurements.
+  // Harden: only apply *current* Measure intent to NEW rows; never reclassify existing ones.
   useEffect(() => {
+    if (isLocked || isFinalized) return;
     const rows = viewerMeasurementsQ.data ?? [];
     const mapped = rows
       .filter((m) => m.status !== "ignored")
@@ -2425,18 +2427,46 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     useWorkspace.getState().setMeasurements(mapped);
 
     const store = useWorkspace.getState();
+    const existingItems = store.structuredViewerMeasurements.items;
     for (const m of rows) {
       if (m.status === "ignored") continue;
+      let ann: { annotationId?: string; intent?: string } | null = null;
+      try {
+        ann = m.imageCoordinates ? JSON.parse(m.imageCoordinates) as { annotationId?: string; intent?: string } : null;
+      } catch {
+        ann = null;
+      }
+      const prior = existingItems.find(
+        (x) =>
+          x.viewerMeasurementRowId === m.id
+          || (ann?.annotationId && x.viewerAnnotationId === ann.annotationId),
+      );
+      const intentFromRow =
+        (ann?.intent === "CANAL_AP"
+          || ann?.intent === "LESION"
+          || ann?.intent === "MIDLINE_SHIFT"
+          || ann?.intent === "OTHER")
+          ? ann.intent
+          : null;
+      const intent = prior
+        ? (intentFromRow ?? (typeof prior.concept === "string" ? prior.concept as import("@/lib/structuredViewerMeasurements").MeasurementIntent : null))
+        : (intentFromRow ?? store.measurementIntent);
       const payload = structuredFromViewerRow({
         row: m,
-        intent: store.measurementIntent,
-        canalLevel: store.canalIntentLevel,
-        selectedObservationId: store.selectedObservationId,
+        intent,
+        canalLevel: prior?.spinalLevel ?? store.canalIntentLevel,
+        selectedObservationId: prior?.observationId ?? store.selectedObservationId,
         activeAnchor: store.activeAnchor,
       });
+      if (prior) {
+        payload.concept = prior.concept;
+        payload.observationId = prior.observationId ?? payload.observationId;
+        payload.spinalLevel = prior.spinalLevel ?? payload.spinalLevel;
+        payload.manualOverride = prior.manualOverride;
+      }
       store.upsertStructuredViewerMeasurement(payload);
     }
-  }, [viewerMeasurementsQ.data]);
+  }, [viewerMeasurementsQ.data, isLocked, isFinalized]);
 
   const canalApByLevel = useMemo(() => {
     const out: Record<string, number | null> = {};
@@ -2453,9 +2483,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // OHIF postMessage → viewer_measurements / report image-references / capture
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());
+  const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (!uid) return;
+    const mutationsAllowed = !(isLocked || isFinalized);
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
       patientId: workflow.currentRow?.patientId ?? null,
@@ -2463,10 +2495,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       draftId: draftId ?? null,
       getImageRefs: () => imageRefs,
       pendingCaptureRequestIds: ohifCapturePendingRef.current,
+      mutationsAllowed,
       onMeasurementSaved: () => {
+        if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] });
       },
       onKeyImageSaved: () => {
+        if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
         toast({ title: "Key image added from viewer" });
       },
@@ -2474,12 +2509,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
       },
       onMeasurementDeleted: (annotationId) => {
+        if (!mutationsAllowed) return;
         const prev = useWorkspace.getState().structuredViewerMeasurements;
         useWorkspace.getState().setStructuredViewerMeasurements(
           removeStructuredMeasurementByAnnotation(prev, annotationId),
         );
       },
       onViewportCaptureResult: async (msg) => {
+        if (!mutationsAllowed) return;
         const blob = captureResultToBlob(msg);
         if (!blob) {
           toast({
@@ -2539,15 +2576,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     qc,
     toast,
     saveDraft,
+    isLocked,
+    isFinalized,
   ]);
 
   // Caption refresh: linked observation text changed + captionManual=false → refresh.
+  // Harden: skip images already in-flight to avoid PUT storms.
   useEffect(() => {
     if (!draftId || isLocked || isFinalized) return;
     const items = frozenKeyImagesQ.data?.items ?? [];
     const patches = useWorkspace.getState().appliedPathologyPatches;
     for (const img of items) {
       if (!img.observationId || img.captionManual) continue;
+      if (captionRefreshInFlightRef.current.has(img.id)) continue;
       const patch = patches.find((p) => p.id === img.observationId);
       if (!patch) continue;
       const next = buildObservationKeyImageCaption({
@@ -2563,13 +2604,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         nextAutoCaption: next,
       });
       if (refreshed === (img.caption || "")) continue;
+      captionRefreshInFlightRef.current.add(img.id);
       void api
         .put(`/api/radiology/report-generator/key-images/${img.id}`, {
           caption: refreshed,
           captionManual: false,
         })
         .then(() => qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }))
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          captionRefreshInFlightRef.current.delete(img.id);
+        });
     }
   }, [
     draftId,

@@ -114,6 +114,45 @@ describe("ohifViewerBridge", () => {
     expect(pending.has("live")).toBe(false);
   });
 
+  it("ignores mutating events when mutationsAllowed=false", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "measurement",
+        studyInstanceUID: "1.2.3",
+        label: "L4-L5",
+        value: 6.8,
+        intent: "CANAL_AP",
+      },
+      { patientId: 1, studyInstanceUID: "1.2.3", mutationsAllowed: false },
+    );
+    expect(r).toBe("ignored");
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("binds patientId from CARE context, ignoring hostile message override", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "measurement",
+        studyInstanceUID: "1.2.3",
+        label: "lesion",
+        value: 10,
+        patientId: 999,
+        studyId: 888,
+      },
+      { patientId: 42, studyId: 7, studyInstanceUID: "1.2.3" },
+    );
+    expect(r).toBe("ok");
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/radiology-lesions/viewer-measurements",
+      expect.objectContaining({
+        patientId: 42,
+        studyId: 7,
+      }),
+    );
+  });
+
   it("does not tag unlabeled disc-level ruler as CANAL_AP without intent", async () => {
     const r = await handleCareOhifMessage(
       {

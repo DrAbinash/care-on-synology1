@@ -143,12 +143,26 @@ export type OhifBridgeContext = {
   onViewportCaptureResult?: (msg: CareOhifViewportCaptureResult) => void | Promise<void>;
   onMeasurementDeleted?: (annotationId: string) => void;
   allowedOrigins?: string[] | null;
+  /** When false, ignore mutating OHIF events (measurement/key-image/capture/delete). */
+  mutationsAllowed?: boolean;
 };
 
 export async function handleCareOhifMessage(
   msg: CareOhifMessage,
   ctx: OhifBridgeContext,
 ): Promise<"ok" | "ignored" | "error"> {
+  // Finalize / lock gate — refuse mutating events after report is locked.
+  if (ctx.mutationsAllowed === false) {
+    if (
+      msg.type === "measurement"
+      || msg.type === "key-image"
+      || msg.type === "viewport-capture-result"
+      || msg.type === "measurement-deleted"
+    ) {
+      return "ignored";
+    }
+  }
+
   if (ctx.studyInstanceUID && "studyInstanceUID" in msg && msg.studyInstanceUID
     && msg.type !== "measurement-deleted"
     && msg.studyInstanceUID !== ctx.studyInstanceUID) {
@@ -194,7 +208,8 @@ export async function handleCareOhifMessage(
   }
 
   if (msg.type === "measurement") {
-    const patientId = msg.patientId ?? ctx.patientId;
+    // Never trust iframe-supplied patient/study ids — bind to CARE session context.
+    const patientId = ctx.patientId;
     if (!patientId) return "error";
     const label = msg.label ?? "";
     const level = discLevelFromLabel(label);
@@ -210,7 +225,7 @@ export async function handleCareOhifMessage(
     try {
       await api.post("/api/radiology-lesions/viewer-measurements", {
         patientId,
-        studyId: msg.studyId ?? ctx.studyId ?? undefined,
+        studyId: ctx.studyId ?? undefined,
         studyInstanceUID: msg.studyInstanceUID,
         seriesInstanceUID: msg.seriesInstanceUID,
         sopInstanceUID: msg.sopInstanceUID,
@@ -238,7 +253,7 @@ export async function handleCareOhifMessage(
       "/api/radiology/report-generator/image-references",
       buildImageRefPayload({
         draftId,
-        studyId: msg.studyId ?? ctx.studyId ?? null,
+        studyId: ctx.studyId ?? null,
         studyInstanceUID: msg.studyInstanceUID,
         seriesInstanceUID: msg.seriesInstanceUID,
         sopInstanceUID: msg.sopInstanceUID,

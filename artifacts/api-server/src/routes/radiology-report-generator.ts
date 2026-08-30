@@ -3483,6 +3483,34 @@ radiologyReportGeneratorRouter.post("/spinal-measurements", async (req: StaffAut
   const parsed = SpinalMeasurementSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid body", issues: parsed.error.issues }); return; }
   const d = parsed.data;
+
+  // Harden: refuse canal mutation when draft/worklist is finalized or locked by another.
+  if (d.worklistId != null && req.staffSession) {
+    const gate = await checkWriteLock(d.worklistId, req.staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({
+        error: "LOCKED_BY_OTHER",
+        lockedBy: gate.lockedBy,
+        message: `This study is currently being reported by ${gate.lockedBy}. Canal measurements were not saved.`,
+      });
+      return;
+    }
+  }
+  try {
+    await assertDraftWritable({
+      draftId: d.draftId ?? null,
+      worklistId: d.worklistId ?? null,
+      studyId: d.studyId,
+      patientId: d.patientId ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
   // Check existing for this study + level
   const existing = await db.select({ id: spinalMeasurementsTable.id }).from(spinalMeasurementsTable).where(
     and(eq(spinalMeasurementsTable.studyId, d.studyId), eq(spinalMeasurementsTable.vertebraLevel, d.vertebraLevel))
@@ -3539,6 +3567,41 @@ radiologyReportGeneratorRouter.post("/spinal-measurements", async (req: StaffAut
 radiologyReportGeneratorRouter.delete("/spinal-measurements/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ error: "Invalid id" }); return; }
+  const userName = req.staffSession?.subjectName;
+  if (!userName) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const [existing] = await db
+    .select({
+      id: spinalMeasurementsTable.id,
+      draftId: spinalMeasurementsTable.draftId,
+      worklistId: spinalMeasurementsTable.worklistId,
+      studyId: spinalMeasurementsTable.studyId,
+      patientId: spinalMeasurementsTable.patientId,
+    })
+    .from(spinalMeasurementsTable)
+    .where(eq(spinalMeasurementsTable.id, id))
+    .limit(1);
+  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
+  if (existing.worklistId != null && req.staffSession) {
+    const gate = await checkWriteLock(existing.worklistId, req.staffSession.subjectId);
+    if (gate.blocked) {
+      res.status(409).json({ error: "LOCKED_BY_OTHER", lockedBy: gate.lockedBy });
+      return;
+    }
+  }
+  try {
+    await assertDraftWritable({
+      draftId: existing.draftId ?? null,
+      worklistId: existing.worklistId ?? null,
+      studyId: existing.studyId,
+      patientId: existing.patientId ?? null,
+    });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
   await db.delete(spinalMeasurementsTable).where(eq(spinalMeasurementsTable.id, id));
   res.json({ success: true });
 });
