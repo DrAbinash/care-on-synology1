@@ -185,7 +185,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
-import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture } from "@/lib/ohifViewerBridge";
+import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture, deriveOhifAllowedOrigins } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -1917,7 +1917,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             })
             : undefined,
           observationLedger: useWorkspace.getState().serializeObservationLedger(),
-          viewerMeasurements: useWorkspace.getState().structuredViewerMeasurements,
+          viewerMeasurements: (() => {
+            const s = useWorkspace.getState().structuredViewerMeasurements;
+            // Harden: bound payload size for draft structured_json.
+            if (!s?.items || s.items.length <= 400) return s;
+            return { ...s, items: s.items.slice(-400) };
+          })(),
           canalApProvenance: useWorkspace.getState().canalApProvenance,
         } as any),
         { shouldRetry: isTransientError },
@@ -2488,6 +2493,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (!uid) return;
     const mutationsAllowed = !(isLocked || isFinalized);
+    const ohifOrigins = deriveOhifAllowedOrigins({
+      pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+      ohifLaunchUrl:
+        typeof window !== "undefined"
+          ? (window.localStorage.getItem("care_ohif_launch_url") || null)
+          : null,
+      extraOrigins:
+        typeof import.meta !== "undefined"
+          && typeof (import.meta as ImportMeta & { env?: { VITE_OHIF_ALLOWED_ORIGINS?: string } }).env?.VITE_OHIF_ALLOWED_ORIGINS === "string"
+          ? (import.meta as ImportMeta & { env: { VITE_OHIF_ALLOWED_ORIGINS: string } }).env.VITE_OHIF_ALLOWED_ORIGINS
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+    });
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
       patientId: workflow.currentRow?.patientId ?? null,
@@ -2496,6 +2516,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       getImageRefs: () => imageRefs,
       pendingCaptureRequestIds: ohifCapturePendingRef.current,
       mutationsAllowed,
+      allowedOrigins: ohifOrigins,
       onMeasurementSaved: () => {
         if (!mutationsAllowed) return;
         void qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] });
@@ -2510,10 +2531,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       },
       onMeasurementDeleted: (annotationId) => {
         if (!mutationsAllowed) return;
-        const prev = useWorkspace.getState().structuredViewerMeasurements;
-        useWorkspace.getState().setStructuredViewerMeasurements(
+        const store = useWorkspace.getState();
+        const prev = store.structuredViewerMeasurements;
+        const hit = prev.items.find((x) => x.viewerAnnotationId === annotationId);
+        store.setStructuredViewerMeasurements(
           removeStructuredMeasurementByAnnotation(prev, annotationId),
         );
+        // Persist ignore so refetch does not rehydrate the deleted annotation.
+        if (hit?.viewerMeasurementRowId) {
+          void api
+            .patch(`/api/radiology-lesions/viewer-measurements/${hit.viewerMeasurementRowId}`, {
+              status: "ignored",
+            })
+            .then(() => qc.invalidateQueries({ queryKey: ["viewer-measurements", uid] }))
+            .catch(() => undefined);
+        }
       },
       onViewportCaptureResult: async (msg) => {
         if (!mutationsAllowed) return;

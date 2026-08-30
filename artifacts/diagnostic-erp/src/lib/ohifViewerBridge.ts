@@ -118,6 +118,37 @@ export function isAllowedOhifOrigin(origin: string, allowlist: string[] | null |
   return allowlist.some((o) => o === origin || o === "*");
 }
 
+/**
+ * Build an OHIF postMessage origin allowlist.
+ * Returns null when OHIF origin is unknown (dev: accept any) so we do not
+ * accidentally block a cross-origin iframe before its launch URL is known.
+ */
+export function deriveOhifAllowedOrigins(opts: {
+  pageOrigin?: string | null;
+  ohifLaunchUrl?: string | null;
+  extraOrigins?: string[] | null;
+}): string[] | null {
+  const out = new Set<string>();
+  const page = (opts.pageOrigin || "").trim();
+  if (page) out.add(page);
+  const launch = (opts.ohifLaunchUrl || "").trim();
+  if (launch) {
+    try {
+      out.add(new URL(launch).origin);
+    } catch {
+      /* ignore bad URL */
+    }
+  }
+  for (const e of opts.extraOrigins ?? []) {
+    const t = (e || "").trim();
+    if (t) out.add(t);
+  }
+  if (!launch && (!opts.extraOrigins || opts.extraOrigins.length === 0)) {
+    return null;
+  }
+  return out.size > 0 ? [...out] : null;
+}
+
 export function ohifActiveAnchorToViewport(msg: CareOhifActiveAnchorMessage): ViewportContext {
   return {
     studyInstanceUID: msg.studyInstanceUID,

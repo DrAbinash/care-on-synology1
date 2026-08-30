@@ -3,6 +3,7 @@ import {
   isCareOhifMessage,
   CARE_OHIF_SOURCE,
   isAllowedOhifOrigin,
+  deriveOhifAllowedOrigins,
   handleCareOhifMessage,
   captureResultToBlob,
   requestOhifNavigateToAnchor,
@@ -112,6 +113,16 @@ describe("ohifViewerBridge", () => {
     expect(r).toBe("ok");
     expect(onCapture).toHaveBeenCalledOnce();
     expect(pending.has("live")).toBe(false);
+  });
+
+  it("deriveOhifAllowedOrigins returns null until OHIF URL/extra is known", () => {
+    expect(deriveOhifAllowedOrigins({ pageOrigin: "https://erp.example" })).toBeNull();
+    expect(
+      deriveOhifAllowedOrigins({
+        pageOrigin: "https://erp.example",
+        ohifLaunchUrl: "https://ohif.example/viewer",
+      }),
+    ).toEqual(expect.arrayContaining(["https://erp.example", "https://ohif.example"]));
   });
 
   it("ignores mutating events when mutationsAllowed=false", async () => {

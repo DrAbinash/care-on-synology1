@@ -250,6 +250,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   // to mixed-content blocking, so prefer the selected network route, falling
   // back to the legacy static LAN URL from /ohif-launch.
   const bestOhifUrl = embedPlan?.finalLaunchUrl ?? launchData?.ohifUrl ?? null;
+  useEffect(() => {
+    if (!bestOhifUrl) return;
+    try {
+      localStorage.setItem("care_ohif_launch_url", bestOhifUrl);
+    } catch {
+      /* private mode */
+    }
+  }, [bestOhifUrl]);
 
   const chooseNetworkMode = (next: NetworkMode) => {
     writeViewerNetworkMode(next);
