@@ -297,6 +297,8 @@ interface S {
   impressionNeedsRefresh: boolean;
   /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
   activeAnchor: ObservationAnchor | null;
+  /** Selected ledger observation for key-image attach (Reporting Canvas R2). */
+  selectedObservationId: string | null;
   /** Expected study UID for activeAnchor rejection across study switches. */
   activeStudyInstanceUID: string | null;
   /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
@@ -357,6 +359,7 @@ export type WorkspaceStore = S & {
   hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
   serializeObservationLedger: () => SerializedObservationLedger;
   setActiveAnchor: (anchor: ObservationAnchor | null) => void;
+  setSelectedObservationId: (id: string | null) => void;
   setCoverageMark: (regionKey: string, status: CoverageMark["status"], reason?: string) => void;
   /** Focus / jump: promote unopened → viewed only; never downgrade or dirty. */
   touchCoverageViewed: (regionKey: string) => void;
@@ -416,7 +419,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
-  activeAnchor: null, activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
+  activeAnchor: null, selectedObservationId: null, activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
   appliedFormatName: null,
   ownershipReviewWarnings: [], ledgerHydrationWarning: null,
   voiceComposerObservations: [], voiceComposerTranscriptHistory: [],
@@ -449,7 +452,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -1082,6 +1085,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ activeAnchor: anchor });
   },
+  setSelectedObservationId: (id) => {
+    if (get().selectedObservationId === id) return;
+    set({ selectedObservationId: id });
+  },
   setCoverageMark: (regionKey, status, reason) => {
     const scope = coverageScopeKey(get().reportingContext.region);
     const base = get().coverageMarks.length ? get().coverageMarks : defaultCoverageMarks(scope);
@@ -1142,9 +1149,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: result.narrative.recommendation,
       fieldProvenance: result.provenance,
       appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
+      selectedObservationId: get().selectedObservationId === id ? null : get().selectedObservationId,
       lastPatchSnapshot: snap,
       isDirty: true,
     });
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+    }
     return result.outcome;
   },
   undoLastPatch: () => {

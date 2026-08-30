@@ -146,9 +146,10 @@ export const radiologyReportPreferencesTable = pgTable(
   }),
 );
 
-// radiology_report_key_images — screenshots captured from DICOM viewer or
-// uploaded by the technician / radiologist to annotate the report.
-// Only JPG/PNG/WebP screenshots (not raw DICOM data) are stored here.
+// radiology_report_key_images — frozen viewport / upload artifacts for reports.
+// Only JPG/PNG/WebP screenshots (not raw DICOM data) are stored on disk.
+// Reporting Canvas R2 uses these as printable evidence; DICOM UID refs live in
+// radiology_image_references for provenance/navigation and legacy reports.
 export const radiologyReportKeyImagesTable = pgTable(
   "radiology_report_key_images",
   {
@@ -160,10 +161,25 @@ export const radiologyReportKeyImagesTable = pgTable(
     imageUrl: text("image_url").notNull(),
     thumbnailUrl: text("thumbnail_url"),
     caption: text("caption").notNull().default(""),
+    /** When true, observation edits must not overwrite caption. */
+    captionManual: boolean("caption_manual").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
     includeInReport: boolean("include_in_report").notNull().default(true),
-    // UPLOAD | PACS_SCREENSHOT
+    // VIEWPORT_CAPTURE | DICOM | UPLOAD | PACS_SCREENSHOT
     sourceType: text("source_type").notNull().default("UPLOAD"),
+    /** Ledger observation id (CanonicalObservation.id); null = report-level. */
+    observationId: text("observation_id"),
+    studyInstanceUid: text("study_instance_uid"),
+    seriesInstanceUid: text("series_instance_uid"),
+    sopInstanceUid: text("sop_instance_uid"),
+    frameNumber: integer("frame_number"),
+    instanceNumber: integer("instance_number"),
+    seriesDescription: text("series_description"),
+    modality: text("modality"),
+    viewer: text("viewer"),
+    viewportSnapshotJson: text("viewport_snapshot_json"),
+    annotationMetadataJson: text("annotation_metadata_json"),
+    capturedAt: timestamp("captured_at", { withTimezone: true }),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
@@ -174,6 +190,7 @@ export const radiologyReportKeyImagesTable = pgTable(
   (t) => ({
     byDraft: index("rad_key_images_draft_idx").on(t.draftId),
     byStudy: index("rad_key_images_study_idx").on(t.studyId),
+    byObservation: index("rad_key_images_observation_idx").on(t.observationId),
   }),
 );
 

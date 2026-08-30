@@ -69,7 +69,13 @@ import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
 } from "../lib/institutionalReportStyle";
-import { resolveDraftKeyImages } from "../lib/reportImages";
+import { resolveDraftPrintKeyImages } from "../lib/frozenKeyImages";
+import {
+  detachKeyImagesFromObservation,
+  isSafeKeyImageFilename,
+} from "../lib/frozenKeyImages";
+import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import {
   parseImpressionBullets,
   parseImpressionStyle,
@@ -107,9 +113,9 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
-
-const ARTIFACT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const KEY_IMAGE_DIR = path.resolve(ARTIFACT_ROOT, "data", "uploads", "radiology-key-images");
+// Match app.ts artifactDir: package root (…/artifacts/api-server), not src/.
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const KEY_IMAGE_DIR = path.resolve(PACKAGE_ROOT, "data", "uploads", "radiology-key-images");
 
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MIME_TO_EXT: Record<string, string> = {
@@ -117,6 +123,8 @@ const MIME_TO_EXT: Record<string, string> = {
   "image/png": ".png",
   "image/webp": ".webp",
 };
+const MAX_KEY_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_KEY_IMAGE_EDGE_PX = 4096;
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -130,15 +138,50 @@ const upload = multer({
     },
     filename: (_req, file, cb) => {
       const ext = MIME_TO_EXT[file.mimetype] ?? ".jpg";
-      cb(null, `rkg-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+      cb(null, `${randomUUID()}${ext}`);
     },
   }),
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_IMAGE_MIME.has(file.mimetype)) cb(null, true);
     else cb(new Error("Only JPG, PNG, and WebP images are accepted"));
   },
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MAX_KEY_IMAGE_BYTES },
 });
+
+async function keyImagesLocked(draftId: number): Promise<boolean> {
+  return draftImageRefsLocked(draftId);
+}
+const KEY_IMAGE_LOCKED_MSG = "Report finalized — its images can no longer be modified";
+
+async function makeKeyImageThumbnail(absPath: string): Promise<string | null> {
+  try {
+    const thumbName = `${path.parse(absPath).name}-thumb.jpg`;
+    const thumbPath = path.join(KEY_IMAGE_DIR, thumbName);
+    await sharp(absPath)
+      .rotate()
+      .resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toFile(thumbPath);
+    return `/uploads/radiology-key-images/${thumbName}`;
+  } catch {
+    return null;
+  }
+}
+
+async function validateStoredImage(absPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const meta = await sharp(absPath).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    if (w < 1 || h < 1) return { ok: false, error: "Invalid image dimensions" };
+    if (w > MAX_KEY_IMAGE_EDGE_PX || h > MAX_KEY_IMAGE_EDGE_PX) {
+      return { ok: false, error: `Image dimensions exceed ${MAX_KEY_IMAGE_EDGE_PX}px` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Unreadable image file" };
+  }
+}
 
 // ── Template library ──────────────────────────────────────────────────────────
 
@@ -2134,7 +2177,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   ].filter(Boolean).join("\n");
 
   let keyImages: ReportKeyImageModel[] = [];
-  try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
+  try { keyImages = await resolveDraftPrintKeyImages(id); } catch { keyImages = []; }
 
   const likeFinal = req.query.likeFinal === "true";
 
@@ -2272,7 +2315,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   res.send(renderReportDocument(model, template, { customCss }));
 });
 
-// POST /key-images — multipart upload
+// POST /key-images — multipart upload (VIEWPORT_CAPTURE | UPLOAD | …)
 radiologyReportGeneratorRouter.post(
   "/key-images",
   upload.single("image"),
@@ -2282,36 +2325,121 @@ radiologyReportGeneratorRouter.post(
       return;
     }
 
-    const imageUrl = `/uploads/radiology-key-images/${req.file.filename}`;
     const draftId = req.body.draftId ? Number(req.body.draftId) : null;
+    if (!draftId || !Number.isFinite(draftId)) {
+      await fs.unlink(req.file.path).catch(() => undefined);
+      res.status(400).json({ success: false, error: "draftId is required" });
+      return;
+    }
+
+    if (await keyImagesLocked(draftId)) {
+      await fs.unlink(req.file.path).catch(() => undefined);
+      res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+      return;
+    }
+
+    try {
+      await assertDraftWritable({ draftId });
+    } catch (err) {
+      await fs.unlink(req.file.path).catch(() => undefined);
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    if (!isSafeKeyImageFilename(req.file.filename)) {
+      await fs.unlink(req.file.path).catch(() => undefined);
+      res.status(400).json({ success: false, error: "Invalid filename" });
+      return;
+    }
+
+    const dimCheck = await validateStoredImage(req.file.path);
+    if (!dimCheck.ok) {
+      await fs.unlink(req.file.path).catch(() => undefined);
+      res.status(400).json({ success: false, error: dimCheck.error });
+      return;
+    }
+
+    const sourceTypeRaw = String(req.body.sourceType || "UPLOAD").trim().toUpperCase();
+    const sourceType = ["VIEWPORT_CAPTURE", "DICOM", "UPLOAD", "PACS_SCREENSHOT"].includes(sourceTypeRaw)
+      ? sourceTypeRaw
+      : "UPLOAD";
+
     const studyId = req.body.studyId ? Number(req.body.studyId) : null;
     const patientId = req.body.patientId ? Number(req.body.patientId) : null;
+    const observationId = typeof req.body.observationId === "string" && req.body.observationId.trim()
+      ? req.body.observationId.trim().slice(0, 120)
+      : null;
+
+    let sortOrder = req.body.sortOrder ? Number(req.body.sortOrder) : NaN;
+    if (!Number.isFinite(sortOrder)) {
+      const existing = await db
+        .select({ sortOrder: radiologyReportKeyImagesTable.sortOrder })
+        .from(radiologyReportKeyImagesTable)
+        .where(eq(radiologyReportKeyImagesTable.draftId, draftId));
+      sortOrder = existing.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1;
+    }
+
+    const imageUrl = `/uploads/radiology-key-images/${req.file.filename}`;
+    let thumbnailUrl = imageUrl;
+    const thumb = await makeKeyImageThumbnail(req.file.path);
+    if (thumb) thumbnailUrl = thumb;
+
+    const frameNumber = req.body.frameNumber ? Number(req.body.frameNumber) : null;
+    const instanceNumber = req.body.instanceNumber ? Number(req.body.instanceNumber) : null;
+    const includeInReport = req.body.includeInReport === "false" || req.body.includeInReport === false
+      ? false
+      : true;
+    const captionManual = req.body.captionManual === "true" || req.body.captionManual === true;
 
     const [row] = await db
       .insert(radiologyReportKeyImagesTable)
       .values({
         draftId,
-        studyId,
-        patientId,
-        accessionNumber: req.body.accessionNumber ?? null,
+        studyId: Number.isFinite(studyId as number) ? studyId : null,
+        patientId: Number.isFinite(patientId as number) ? patientId : null,
+        accessionNumber: req.body.accessionNumber ? String(req.body.accessionNumber).slice(0, 64) : null,
         imageUrl,
-        thumbnailUrl: imageUrl,
-        caption: req.body.caption ?? "",
-        sortOrder: req.body.sortOrder ? Number(req.body.sortOrder) : 0,
-        includeInReport: true,
-        sourceType: "UPLOAD",
+        thumbnailUrl,
+        caption: String(req.body.caption ?? "").slice(0, 500),
+        captionManual,
+        sortOrder,
+        includeInReport,
+        sourceType,
+        observationId,
+        studyInstanceUid: req.body.studyInstanceUID || req.body.studyInstanceUid || null,
+        seriesInstanceUid: req.body.seriesInstanceUID || req.body.seriesInstanceUid || null,
+        sopInstanceUid: req.body.sopInstanceUID || req.body.sopInstanceUid || null,
+        frameNumber: Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null,
+        instanceNumber: Number.isFinite(instanceNumber as number) ? Math.floor(instanceNumber as number) : null,
+        seriesDescription: req.body.seriesDescription ? String(req.body.seriesDescription).slice(0, 200) : null,
+        modality: req.body.modality ? String(req.body.modality).slice(0, 16) : null,
+        viewer: req.body.viewer ? String(req.body.viewer).slice(0, 16) : null,
+        viewportSnapshotJson: req.body.viewportSnapshotJson
+          ? String(req.body.viewportSnapshotJson).slice(0, 4000)
+          : null,
+        annotationMetadataJson: req.body.annotationMetadataJson
+          ? String(req.body.annotationMetadataJson).slice(0, 8000)
+          : null,
+        capturedAt: req.body.capturedAt ? new Date(String(req.body.capturedAt)) : new Date(),
         createdBy: req.staffSession?.subjectName ?? null,
       })
       .returning();
 
-    res.json({ success: true, item: row });
+    res.status(201).json({ success: true, item: row });
   },
 );
 
 // GET /key-images?draftId=&studyId=
-radiologyReportGeneratorRouter.get("/key-images", async (req: Request, res: Response) => {
+radiologyReportGeneratorRouter.get("/key-images", async (req: StaffAuthRequest, res: Response) => {
   const draftId = req.query.draftId ? Number(req.query.draftId) : null;
   const studyId = req.query.studyId ? Number(req.query.studyId) : null;
+  if (!draftId && !studyId) {
+    res.status(400).json({ success: false, error: "draftId or studyId required" });
+    return;
+  }
 
   const conditions = [];
   if (draftId) conditions.push(eq(radiologyReportKeyImagesTable.draftId, draftId));
@@ -2321,7 +2449,7 @@ radiologyReportGeneratorRouter.get("/key-images", async (req: Request, res: Resp
     .select()
     .from(radiologyReportKeyImagesTable)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(radiologyReportKeyImagesTable.sortOrder);
+    .orderBy(asc(radiologyReportKeyImagesTable.sortOrder), asc(radiologyReportKeyImagesTable.id));
 
   res.json({ success: true, items: rows });
 });
@@ -2329,11 +2457,13 @@ radiologyReportGeneratorRouter.get("/key-images", async (req: Request, res: Resp
 // PUT /key-images/:id
 const UpdateKeyImageBody = z.object({
   caption: z.string().max(500).optional(),
+  captionManual: z.boolean().optional(),
   includeInReport: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
+  observationId: z.string().max(120).nullable().optional(),
 });
 
-radiologyReportGeneratorRouter.put("/key-images/:id", async (req: Request, res: Response) => {
+radiologyReportGeneratorRouter.put("/key-images/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
 
@@ -2343,9 +2473,25 @@ radiologyReportGeneratorRouter.put("/key-images/:id", async (req: Request, res: 
     return;
   }
 
+  const [existing] = await db
+    .select()
+    .from(radiologyReportKeyImagesTable)
+    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .limit(1);
+  if (!existing) { res.status(404).json({ success: false, error: "Image not found" }); return; }
+  if (existing.draftId && await keyImagesLocked(existing.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+
+  const patch: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.caption !== undefined && parsed.data.captionManual === undefined) {
+    patch.captionManual = true;
+  }
+
   const [updated] = await db
     .update(radiologyReportKeyImagesTable)
-    .set(parsed.data)
+    .set(patch)
     .where(eq(radiologyReportKeyImagesTable.id, id))
     .returning();
 
@@ -2353,10 +2499,71 @@ radiologyReportGeneratorRouter.put("/key-images/:id", async (req: Request, res: 
   res.json({ success: true, item: updated });
 });
 
+// POST /key-images/reorder
+radiologyReportGeneratorRouter.post("/key-images/reorder", async (req: StaffAuthRequest, res: Response) => {
+  const schema = z.object({
+    draftId: z.number().int(),
+    orderedIds: z.array(z.number().int()).max(100),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: "Invalid body" });
+    return;
+  }
+  if (await keyImagesLocked(parsed.data.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < parsed.data.orderedIds.length; i++) {
+      await tx
+        .update(radiologyReportKeyImagesTable)
+        .set({ sortOrder: i })
+        .where(
+          and(
+            eq(radiologyReportKeyImagesTable.id, parsed.data.orderedIds[i]),
+            eq(radiologyReportKeyImagesTable.draftId, parsed.data.draftId),
+          ),
+        );
+    }
+  });
+  res.json({ success: true });
+});
+
+// POST /key-images/detach-observation — observation delete: unlink, do not destroy files
+radiologyReportGeneratorRouter.post("/key-images/detach-observation", async (req: StaffAuthRequest, res: Response) => {
+  const schema = z.object({
+    draftId: z.number().int(),
+    observationId: z.string().min(1).max(120),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: "Invalid body" });
+    return;
+  }
+  if (await keyImagesLocked(parsed.data.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  const count = await detachKeyImagesFromObservation(parsed.data);
+  res.json({ success: true, detached: count });
+});
+
 // DELETE /key-images/:id
 radiologyReportGeneratorRouter.delete("/key-images/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
+
+  const [existing] = await db
+    .select()
+    .from(radiologyReportKeyImagesTable)
+    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .limit(1);
+  if (!existing) { res.status(404).json({ success: false, error: "Image not found" }); return; }
+  if (existing.draftId && await keyImagesLocked(existing.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
 
   const [deleted] = await db
     .delete(radiologyReportKeyImagesTable)
@@ -2365,9 +2572,10 @@ radiologyReportGeneratorRouter.delete("/key-images/:id", async (req: StaffAuthRe
 
   if (!deleted) { res.status(404).json({ success: false, error: "Image not found" }); return; }
 
-  // Best-effort file removal — ignore errors
-  if (deleted.imageUrl) {
-    const filename = path.basename(deleted.imageUrl);
+  for (const url of [deleted.imageUrl, deleted.thumbnailUrl]) {
+    if (!url) continue;
+    const filename = path.basename(url);
+    if (!isSafeKeyImageFilename(filename)) continue;
     void fs.unlink(path.join(KEY_IMAGE_DIR, filename)).catch(() => undefined);
   }
 

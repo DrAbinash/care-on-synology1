@@ -68,7 +68,7 @@ import {
   renderReportDocument,
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
-import { resolveReportKeyImages } from "../lib/reportImages";
+import { resolveReportPrintKeyImages } from "../lib/frozenKeyImages";
 import {
   REPORT_HEADER_SCALE_KEY,
   REPORT_LOGO_SCALE_KEY,
@@ -2714,7 +2714,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   let keyImages: ReportKeyImageModel[] = [];
   if (r.type === "radiology") {
     try {
-      keyImages = await resolveReportKeyImages([
+      keyImages = await resolveReportPrintKeyImages([
         version?.rootReportId ?? reportId,
         version?.resolvedReportId ?? reportId,
         reportId,
