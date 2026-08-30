@@ -30,20 +30,32 @@ export function WholeReportFormatControl({
   const appliedFormatReportTitle = useWorkspaceSelector((s) => s.appliedFormatReportTitle);
   const applyFormatById = useWorkspace((s) => s.applyFormatById);
   const isFinalized = useWorkspaceSelector((s) => s.isFinalized);
+  const activeStudy = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
+  const effectiveModality = (modality ?? activeStudy?.modality ?? null) as
+    | "MR"
+    | "CT"
+    | "US"
+    | "XR"
+    | "MG"
+    | null;
 
   const formatLookup = useMemo(
     () =>
       lookupFormatsForPicker(
         reportFormats,
-        (modality as "MR" | "CT" | "US" | "XR" | "MG" | undefined) ?? undefined,
+        effectiveModality ?? undefined,
         reportingContext,
         {
           protocolName: reportingContext.protocolName,
-          studyDescription: reportingContext.studyDescription ?? studyDescription ?? undefined,
-          bodyPartFallback: bodyPartFallback ?? reportingContext.region,
+          studyDescription:
+            reportingContext.studyDescription
+            ?? studyDescription
+            ?? activeStudy?.studyDescription
+            ?? undefined,
+          bodyPartFallback: bodyPartFallback ?? reportingContext.region ?? activeStudy?.bodyPart,
         },
       ),
-    [reportFormats, modality, reportingContext, studyDescription, bodyPartFallback],
+    [reportFormats, effectiveModality, reportingContext, studyDescription, bodyPartFallback, activeStudy],
   );
 
   // Prefer region-scoped formats; when unresolved, allow modality-wide so

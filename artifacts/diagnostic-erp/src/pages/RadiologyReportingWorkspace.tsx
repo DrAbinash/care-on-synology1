@@ -1089,28 +1089,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
   }, [workspaceEntry?.autoLinkMeta, studyId, toast]);
 
-  // Whole-report format apply bridge: region sync + autosave generation bump.
-  // Format apply never mutates DICOM/ERP identity — only CARE reporting region.
-  useEffect(() => {
-    setFormatApplyBridge({
-      availableRegions: () => studySetup.availableRegions,
-      currentRegion: () => studySetup.matchedStudyRegion,
-      applyReportingRegion: (regionName) => {
-        studySetup.selectPrimaryRegion(regionName);
-      },
-      invalidatePendingAutosave: () => {
-        // Bump generation so any in-flight silent save from pre-format text is discarded.
-        // The autosave effect also clears/reschedules when technique/findings deps change.
-        saveGenerationRef.current += 1;
-      },
-    });
-    return () => setFormatApplyBridge(null);
-  }, [
-    studySetup.availableRegions,
-    studySetup.matchedStudyRegion,
-    studySetup.selectPrimaryRegion,
-  ]);
-
   // Reset patient-specific editor state when switching studies
   useEffect(() => {
     saveGenerationRef.current += 1;
@@ -1241,6 +1219,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     techniqueProvenance,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
+
+  // Whole-report format apply bridge: region sync + autosave generation bump.
+  // Format apply never mutates DICOM/ERP identity — only CARE reporting region.
+  useEffect(() => {
+    setFormatApplyBridge({
+      availableRegions: () => studySetup.availableRegions,
+      currentRegion: () => studySetup.matchedStudyRegion,
+      applyReportingRegion: (regionName) => {
+        studySetup.selectPrimaryRegion(regionName);
+      },
+      invalidatePendingAutosave: () => {
+        // Bump generation so any in-flight silent save from pre-format text is discarded.
+        // The autosave effect also clears/reschedules when technique/findings deps change.
+        saveGenerationRef.current += 1;
+      },
+    });
+    return () => setFormatApplyBridge(null);
+  }, [
+    studySetup.availableRegions,
+    studySetup.matchedStudyRegion,
+    studySetup.selectPrimaryRegion,
+  ]);
 
   const { data: composerConfig } = useQuery<{ enabled: boolean; composerModel?: string }>({
     queryKey: ["voice-composer-config"],
