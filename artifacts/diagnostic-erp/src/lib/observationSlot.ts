@@ -481,6 +481,149 @@ export function ownershipFromObservation(obs: CanonicalObservation): PathologyOw
   };
 }
 
+/**
+ * Same-slot replacement plan for structured finding insertion.
+ *
+ * Slot identity is already CARE's `slotKey` / `observationsMutuallyExclusive`
+ * (region|concept|level|laterality). Severity and measurement values do NOT
+ * define a new slot. When a mutex sibling exists, prefer updating that
+ * observation in place (stable id) so measurements / key images / anchors
+ * stay linked.
+ *
+ * Legacy / unstructured (no resolved concept) → no silent sibling replacement.
+ */
+export type SameSlotSibling = {
+  id: string;
+  observation: CanonicalObservation;
+  lastRendered: PathologyIncoming;
+  protected: boolean;
+  source: InsertSource;
+};
+
+export type SameSlotPlan =
+  | { action: "insert"; reason: "no-sibling" | "unstructured" }
+  | {
+    action: "noop";
+    existingId: string;
+    existing: SameSlotSibling;
+  }
+  | {
+    action: "update";
+    existingId: string;
+    existing: SameSlotSibling;
+    /** Extra mutex siblings (same slot) that are superseded by this update. */
+    supersededIds: string[];
+    requiresConfirmation: boolean;
+  };
+
+function renderedEqual(a: string | undefined, b: string | undefined): boolean {
+  return normalizeForDedupe(a ?? "") === normalizeForDedupe(b ?? "");
+}
+
+/** Find ledger patches that share the clinical slot with `incoming`. */
+export function findSameSlotSiblings(
+  patches: ReadonlyArray<{
+    id: string;
+    observation?: CanonicalObservation;
+    lastRendered?: PathologyIncoming;
+    protected?: boolean;
+    source?: InsertSource;
+  }>,
+  incoming: Pick<CanonicalObservation, "region" | "concept" | "level" | "laterality">,
+): SameSlotSibling[] {
+  if (!incoming.concept) return [];
+  const out: SameSlotSibling[] = [];
+  for (const p of patches) {
+    const other = p.observation;
+    if (!other?.concept) continue;
+    if (!observationsMutuallyExclusive(incoming, other)) continue;
+    out.push({
+      id: p.id,
+      observation: other,
+      lastRendered: p.lastRendered ?? {},
+      protected: Boolean(p.protected),
+      source: p.source ?? "quick-findings",
+    });
+  }
+  return out;
+}
+
+/**
+ * Prefer the oldest stable sibling as the identity to preserve (createdAt, then id).
+ * Caller must pass siblings from findSameSlotSiblings.
+ */
+export function pickSameSlotPrimary(siblings: readonly SameSlotSibling[]): SameSlotSibling | null {
+  if (siblings.length === 0) return null;
+  return [...siblings].sort((a, b) => {
+    const ac = a.observation.createdAt ?? "";
+    const bc = b.observation.createdAt ?? "";
+    if (ac && bc && ac !== bc) return ac.localeCompare(bc);
+    return a.id.localeCompare(b.id);
+  })[0] ?? null;
+}
+
+export function planSameSlotReplacement(input: {
+  incoming: CanonicalObservation;
+  incomingFindings?: string | null;
+  incomingImpression?: string | null;
+  siblings: readonly SameSlotSibling[];
+  /** True when findings/impression contribution has meaningful manual edits. */
+  contributionIsManual?: boolean;
+  force?: boolean;
+}): SameSlotPlan {
+  if (!hasStructuredOwnership(input.incoming)) {
+    return { action: "insert", reason: "unstructured" };
+  }
+  if (input.siblings.length === 0) {
+    return { action: "insert", reason: "no-sibling" };
+  }
+  const primary = pickSameSlotPrimary(input.siblings);
+  if (!primary) return { action: "insert", reason: "no-sibling" };
+
+  const sameFindings = renderedEqual(primary.lastRendered.findings, input.incomingFindings ?? "");
+  const sameImpression = renderedEqual(
+    primary.lastRendered.impression,
+    input.incomingImpression ?? primary.lastRendered.impression ?? "",
+  );
+  // Exact re-click of the same structured finding → idempotent.
+  if (sameFindings && sameImpression) {
+    return { action: "noop", existingId: primary.id, existing: primary };
+  }
+
+  const requiresConfirmation = Boolean(
+    !input.force
+    && (primary.protected || input.contributionIsManual),
+  );
+  const supersededIds = input.siblings.filter((s) => s.id !== primary.id).map((s) => s.id);
+  return {
+    action: "update",
+    existingId: primary.id,
+    existing: primary,
+    supersededIds,
+    requiresConfirmation,
+  };
+}
+
+/**
+ * Merge incoming observation onto the preserved sibling identity.
+ * Keeps id, anchor, createdAt; refreshes text-driving fields + updatedAt.
+ */
+export function mergeObservationInPlace(
+  existing: CanonicalObservation,
+  incoming: CanonicalObservation,
+): CanonicalObservation {
+  return {
+    ...incoming,
+    id: existing.id || incoming.id,
+    // Evidence / jump-back must survive severity/text changes.
+    anchor: existing.anchor ?? incoming.anchor,
+    createdAt: existing.createdAt ?? incoming.createdAt,
+    updatedAt: incoming.updatedAt ?? new Date().toISOString(),
+    // Measurement string on the observation is instance data — keep unless incoming sets one.
+    measurement: (incoming.measurement ?? "").trim() || existing.measurement,
+  };
+}
+
 export function templatesFromObservation(lastRendered: PathologyIncoming): PathologyIncoming {
   return {
     findings: lastRendered.findings,

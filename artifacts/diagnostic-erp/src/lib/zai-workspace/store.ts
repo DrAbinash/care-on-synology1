@@ -49,8 +49,11 @@ import {
   buildCanonicalObservation,
   contributionPresent,
   contributionProtected,
+  findSameSlotSiblings,
+  mergeObservationInPlace,
   observationsMutuallyExclusive,
   ownershipFromObservation,
+  planSameSlotReplacement,
   type CanonicalObservation,
 } from "@/lib/observationSlot";
 import {
@@ -820,23 +823,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const pendingPatch = get().pendingPathologyPatch;
     if (pendingPatch) {
       get().undoLastPatch();
-      const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
-      const patchId = pendingPatch.id || observation.id || `pending_${Date.now().toString(36)}`;
-      const templates = pendingPatch.templates ?? pendingPatch.incoming;
+      const patchId = pendingPatch.id || `pending_${Date.now().toString(36)}`;
+      // Same-slot update: undo already restored the prior observation with this id.
+      // Do not re-insert the pending row (that would orphan mild text under a moderate lastRendered).
+      const restoredSameSlot = get().appliedPathologyPatches.some((p) => p.id === patchId);
+      if (!restoredSameSlot) {
+        // Legacy QS ambiguous path: keep the chip selected but blocked from narrative.
+        const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
+        const templates = pendingPatch.templates ?? pendingPatch.incoming;
+        set({
+          appliedPathologyPatches: [
+            ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
+            {
+              id: patchId,
+              ownership: pendingPatch.ownership,
+              templates,
+              lastRendered: pendingPatch.incoming,
+              source: pendingPatch.source,
+              observation: { ...observation, id: patchId },
+              replacedBaseline: { findings: [], impression: [] },
+              protected: false,
+            },
+          ],
+        });
+      }
       set({
-        appliedPathologyPatches: [
-          ...get().appliedPathologyPatches.filter((p) => p.id !== patchId),
-          {
-            id: patchId,
-            ownership: pendingPatch.ownership,
-            templates,
-            lastRendered: pendingPatch.incoming,
-            source: pendingPatch.source,
-            observation: { ...observation, id: patchId },
-            replacedBaseline: { findings: [], impression: [] },
-            protected: false,
-          },
-        ],
         confirmOverwriteOpen: false,
         pendingPathologyPatch: null,
       });
@@ -845,11 +856,57 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ confirmOverwriteOpen: false, pendingFormatIds: [], pendingPathologyPatch: null });
   },
   applyPathologyOverlay: (opts) => {
+    if (get().isFinalized) return "applied";
+
     const templates = opts.templates ?? opts.incoming;
-    const patchId = opts.id ?? `patch_${Date.now().toString(36)}`;
-    const observation = observationFromPending({ ...opts, id: patchId }, get().reportingContext.region, get().activeAnchor);
+    const draftId = opts.id ?? `patch_${Date.now().toString(36)}`;
+    let observation = observationFromPending(
+      { ...opts, id: draftId },
+      get().reportingContext.region,
+      get().activeAnchor,
+    );
+    const incoming = applySideToIncoming(
+      templates,
+      observation.supportsLaterality ? (opts.side ?? "") : "",
+    );
+
+    // Same-slot plan — reuse CARE mutex identity; preserve observation id when updating.
+    const slotSiblings = findSameSlotSiblings(
+      get().appliedPathologyPatches.filter((p) => p.id !== draftId),
+      observation,
+    );
+    const contributionIsManual = Boolean(
+      slotSiblings.some((s) => s.protected)
+      || slotSiblings.some((s) =>
+        contributionProtected(s.lastRendered.findings, get().fieldProvenance.findings)
+        || contributionProtected(s.lastRendered.impression, get().fieldProvenance.impression)),
+    );
+    const plan = planSameSlotReplacement({
+      incoming: observation,
+      incomingFindings: incoming.findings,
+      incomingImpression: incoming.impression,
+      siblings: slotSiblings,
+      contributionIsManual,
+      force: opts.force,
+    });
+
+    if (plan.action === "noop") {
+      // Exact re-click: focus existing observation, no duplicate row.
+      set({ selectedObservationId: plan.existingId });
+      return "applied";
+    }
+
+    const stableId = plan.action === "update" ? plan.existingId : draftId;
+    if (plan.action === "update") {
+      observation = mergeObservationInPlace(plan.existing.observation, {
+        ...observation,
+        id: plan.existingId,
+      });
+    } else {
+      observation = { ...observation, id: stableId };
+    }
     const ownership = ownershipFromObservation(observation);
-    const incoming = applySideToIncoming(templates, observation.supportsLaterality ? (opts.side ?? "") : "");
+
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
@@ -862,18 +919,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
     };
 
-    const siblings = get().appliedPathologyPatches.filter((p) => {
-      if (p.id === patchId) return false;
-      const other = toLedgerPatch(p).observation;
-      return observationsMutuallyExclusive(observation, other);
-    });
+    const dropIds = new Set<string>([stableId]);
+    if (plan.action === "update") {
+      dropIds.add(plan.existingId);
+      for (const id of plan.supersededIds) dropIds.add(id);
+    } else {
+      // Unstructured / no sibling: keep prior mutex drop for callers that
+      // still pass matching conflictGroup without a resolved concept — rare.
+      for (const p of get().appliedPathologyPatches) {
+        if (p.id === stableId) continue;
+        const other = toLedgerPatch(p).observation;
+        if (observationsMutuallyExclusive(observation, other)) dropIds.add(p.id);
+      }
+    }
 
-    let narrative = narrativeFromState(get());
-    let provenance = get().fieldProvenance;
-    // Drop mutex siblings from the ledger only. Do not pre-strip their
+    const narrative = narrativeFromState(get());
+    const provenance = get().fieldProvenance;
+    // Drop same-slot siblings from the ledger only. Do not pre-strip their
     // sentences — structured overlay owns replacement and records
     // replacedBaseline so deselect can restore a normal/baseline.
-    let patches = get().appliedPathologyPatches.filter((p) => p.id !== patchId && !siblings.some((s) => s.id === p.id));
+    // CRITICAL: do NOT invent a new observation id when updating a slot —
+    // measurements / key images / anchors are keyed by observation id.
+    let patches = get().appliedPathologyPatches.filter((p) => !dropIds.has(p.id));
+
+    const needsSlotConfirm = plan.action === "update" && plan.requiresConfirmation && !opts.force;
 
     const result = overlayPathology({
       existing: narrative,
@@ -881,7 +950,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ownership,
       provenance,
       source: opts.source,
-      force: opts.force,
+      force: opts.force || (plan.action === "update" && !needsSlotConfirm),
     });
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
     const lastRendered: PathologyIncoming = {
@@ -891,16 +960,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendation: renderedInField(incoming.recommendation, result.narrative.recommendation) || incoming.recommendation,
     };
     const nextPatch: AppliedPathologyPatch = {
-      id: patchId,
+      id: stableId,
       ownership,
       templates,
       lastRendered,
       source: opts.source,
-      observation,
+      observation: { ...observation, id: stableId },
       replacedBaseline: replaced,
+      // Same-slot auto-update clears prior protected flag; confirm path may restore via undo.
       protected: false,
     };
-    const nextPatches = [...patches.filter((p) => p.id !== patchId), nextPatch];
+    const nextPatches = [...patches.filter((p) => p.id !== stableId), nextPatch];
     const siblingHits = detectUnownedSiblingConflictsForLedger({
       findings: result.narrative.findings,
       patches: nextPatches.map(toLedgerPatch),
@@ -910,7 +980,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       token: w.token,
       hint: UNOWNED_SIBLING_HINT,
     }));
-    if (result.ambiguous && !opts.force) {
+    if ((result.ambiguous || needsSlotConfirm) && !opts.force) {
       set({
         clinicalHistoryText: result.narrative.clinicalHistory,
         techniqueText: result.narrative.technique,
@@ -923,7 +993,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         appliedPathologyPatches: nextPatches,
         ownershipReviewWarnings,
         confirmOverwriteOpen: true,
-        pendingPathologyPatch: { ...opts, incoming, templates, ownership, id: patchId },
+        pendingPathologyPatch: {
+          ...opts,
+          incoming,
+          templates,
+          ownership,
+          id: stableId,
+          // Same-slot confirm copy (consumed by ConfirmOverwriteDialog).
+          ...(plan.action === "update"
+            ? {
+              level: observation.level || plan.existing.observation.level,
+              concept: observation.concept,
+              label: opts.label,
+              findingsText: incoming.findings,
+            }
+            : {}),
+        },
+        selectedObservationId: stableId,
       });
       return "pending";
     }
@@ -938,6 +1024,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastPatchSnapshot: snap,
       appliedPathologyPatches: nextPatches,
       ownershipReviewWarnings,
+      selectedObservationId: stableId,
       impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
         result.narrative.impression,
         nextPatches.map(toLedgerPatch),
