@@ -80,6 +80,18 @@ export interface EmbeddedViewerHandle {
   zoomIn: () => void;
   zoomOut: () => void;
   resetView: () => void;
+  /**
+   * FRAMES jump-back: select series/SOP/frame from provenance.
+   * Returns false when UIDs are missing or not found in the loaded study.
+   */
+  goToAnchor: (anchor: {
+    studyInstanceUID?: string | null;
+    seriesInstanceUID?: string | null;
+    sopInstanceUID?: string | null;
+    frameNumber?: number | null;
+  }) => boolean;
+  /** OHIF iframe contentWindow when OHIF mode is active (cross-origin OK for postMessage). */
+  getOhifWindow: () => Window | null;
 }
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
@@ -184,6 +196,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
   const framesViewportRef = useRef<HTMLDivElement>(null);
+  const ohifIframeRef = useRef<HTMLIFrameElement>(null);
 
   const { data: launchData } = useQuery<ViewerLaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
@@ -356,7 +369,46 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const prevFrame = () => setSelectedInstIdx((i) => Math.max(i - 1, 0));
 
   // M1.6B2 — same setters the toolbar buttons call, nothing more.
-  useImperativeHandle(controlRef, () => ({ nextFrame, prevFrame, zoomIn, zoomOut, resetView }));
+  useImperativeHandle(controlRef, () => ({
+    nextFrame,
+    prevFrame,
+    zoomIn,
+    zoomOut,
+    resetView,
+    goToAnchor: (anchor) => {
+      if (
+        anchor.studyInstanceUID
+        && studyInstanceUID
+        && anchor.studyInstanceUID !== studyInstanceUID
+      ) {
+        return false;
+      }
+      if (anchor.seriesInstanceUID) {
+        const seriesHit = series.find((s) => s.uid === anchor.seriesInstanceUID);
+        if (!seriesHit) return false;
+        if (selectedSeriesUID !== anchor.seriesInstanceUID) {
+          setSelectedSeriesUID(anchor.seriesInstanceUID);
+        }
+      }
+      if (anchor.sopInstanceUID) {
+        const idx = instances.findIndex((i) => i.uid === anchor.sopInstanceUID);
+        if (idx >= 0) {
+          setSelectedInstIdx(idx);
+          return true;
+        }
+        // Series may still be loading — remember intent via frameNumber fallback
+      }
+      if (anchor.frameNumber != null && Number.isFinite(anchor.frameNumber)) {
+        const idx = Math.max(0, Math.min(instances.length - 1, Math.floor(anchor.frameNumber) - 1));
+        if (instances.length > 0) {
+          setSelectedInstIdx(idx);
+          return true;
+        }
+      }
+      return Boolean(anchor.seriesInstanceUID);
+    },
+    getOhifWindow: () => ohifIframeRef.current?.contentWindow ?? null,
+  }));
 
   // Escape exits near-fullscreen overlay (column expand is restored via its own control).
   useEffect(() => {
@@ -502,9 +554,10 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50"
               data-testid="ohif-capture-fallback-hint"
             >
-              Annotated OHIF capture is not available in this viewer mode. Switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+              Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
             </div>
             <iframe
+              ref={ohifIframeRef}
               title="OHIF viewer"
               src={embedPlan.finalLaunchUrl}
               className="flex-1 w-full min-h-0 h-full border-0 bg-black"
@@ -579,6 +632,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
              than showing a dead end; "open in new tab" always works even if
              embedding doesn't. */
           <iframe
+            ref={ohifIframeRef}
             title="OHIF viewer"
             src={bestOhifUrl}
             className="flex-1 w-full min-h-0 h-full border-0 bg-black"

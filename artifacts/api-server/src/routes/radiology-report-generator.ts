@@ -103,6 +103,7 @@ import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCac
 import {
   persistCareStructuredFormatState,
   persistCareObservationLedger,
+  persistCareViewerMeasurements,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -1612,6 +1613,8 @@ const SaveDraftBody = z.object({
     updatedAt: z.string().optional(),
   }).nullish(),
   observationLedger: z.unknown().optional(),
+  viewerMeasurements: z.unknown().optional(),
+  canalApProvenance: z.unknown().optional(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1874,6 +1877,21 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] observation ledger persist failed (non-fatal):",
+        err,
+      );
+    }
+  }
+
+  if (draft?.id && (rest.viewerMeasurements != null || rest.canalApProvenance != null)) {
+    try {
+      await persistCareViewerMeasurements(
+        draft.id,
+        rest.viewerMeasurements ?? undefined,
+        rest.canalApProvenance ?? undefined,
+      );
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] viewer measurements persist failed (non-fatal):",
         err,
       );
     }
@@ -2194,7 +2212,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
   }
 
-  // Disc-level canal AP table from spinal_measurements (LS / cervical).
+  // Disc-level canal AP table from spinal_measurements (LS / cervical / dorsal).
   let spinalTableHtml = "";
   const spinalStudyKey = draft.studyId ?? worklist?.studyId ?? null;
   if (spinalStudyKey) {
@@ -2208,23 +2226,34 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
       const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
       const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
+      const DORSAL = [
+        "D1-D2", "D2-D3", "D3-D4", "D4-D5", "D5-D6", "D6-D7",
+        "D7-D8", "D8-D9", "D9-D10", "D10-D11", "D11-D12",
+      ];
       const byLevel = new Map(
         spinalRows
           .filter((r) => r.canalAP?.trim())
           .map((r) => [r.vertebraLevel, r.canalAP!.trim()] as const),
       );
-      const pick = (levels: string[]) => levels.filter((l) => byLevel.has(l));
-      const lumbarHit = pick(LUMBAR);
-      const cervicalHit = pick(CERVICAL);
-      const levels = lumbarHit.length >= cervicalHit.length && lumbarHit.length > 0
-        ? LUMBAR
-        : cervicalHit.length > 0
-          ? CERVICAL
-          : [];
+      const count = (levels: string[]) => levels.filter((l) => byLevel.has(l)).length;
+      const lumbarHit = count(LUMBAR);
+      const cervicalHit = count(CERVICAL);
+      const dorsalHit = count(DORSAL);
+      let levels: string[] = [];
+      let title = "";
+      if (lumbarHit === 0 && cervicalHit === 0 && dorsalHit === 0) {
+        levels = [];
+      } else if (lumbarHit >= cervicalHit && lumbarHit >= dorsalHit) {
+        levels = LUMBAR;
+        title = "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
+      } else if (cervicalHit >= dorsalHit) {
+        levels = CERVICAL;
+        title = "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS";
+      } else {
+        levels = DORSAL;
+        title = "DORSAL CANAL AP DIAMETER AT D1 TO D12 LEVELS";
+      }
       if (levels.some((l) => byLevel.has(l))) {
-        const title = levels[0].startsWith("C")
-          ? "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS"
-          : "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
         const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
         const td = levels
           .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(byLevel.get(l) || "—")}</td>`)
