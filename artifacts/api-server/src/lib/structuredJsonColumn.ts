@@ -11,6 +11,9 @@
 export const STRUCTURED_JSON_ENVELOPE_KIND = "care.structured_json_envelope";
 export const CARE_STRUCTURED_FORMAT_STATE_KIND = "care.structured_format_state";
 
+/** Cap draft-scoped care.viewer_measurements.v1 items (matches ERP autosave bound). */
+export const MAX_CARE_VIEWER_MEASUREMENT_ITEMS = 400;
+
 export type CareStructuredFormatState = {
   kind: typeof CARE_STRUCTURED_FORMAT_STATE_KIND;
   formatId: number;
@@ -32,6 +35,14 @@ export type StructuredJsonEnvelope = {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Keep the newest N items when a draft payload is oversized. */
+export function boundCareViewerMeasurements(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const items = raw.items;
+  if (!Array.isArray(items) || items.length <= MAX_CARE_VIEWER_MEASUREMENT_ITEMS) return raw;
+  return { ...raw, items: items.slice(-MAX_CARE_VIEWER_MEASUREMENT_ITEMS) };
 }
 
 export function isStructuredJsonEnvelope(v: unknown): v is StructuredJsonEnvelope {
@@ -99,7 +110,7 @@ export function composeStructuredJsonColumn(opts: {
     ? opts.observationLedger
     : extractCareObservationLedger(opts.existing);
   const viewerMs = opts.viewerMeasurements !== undefined
-    ? opts.viewerMeasurements
+    ? boundCareViewerMeasurements(opts.viewerMeasurements)
     : extractCareViewerMeasurements(opts.existing);
   const canalProv = opts.canalApProvenance !== undefined
     ? opts.canalApProvenance

@@ -520,6 +520,12 @@ radiologyLesionsRouter.post("/viewer-measurements", async (req, res) => {
           .limit(80);
         const hit = candidates.find((c) => annotationIdFromCoords(c.imageCoordinates) === ann);
         if (hit) {
+          // Harden: deleted annotations are PATCHed to status=ignored. A stale
+          // OHIF re-post must not rehydrate them on refetch.
+          if (hit.status === "ignored") {
+            out.push(hit);
+            continue;
+          }
           const [updated] = await db
             .update(viewerMeasurementsTable)
             .set(rowValues)

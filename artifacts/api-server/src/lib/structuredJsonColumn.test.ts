@@ -78,4 +78,17 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect((col as { careViewerMeasurements?: unknown }).careViewerMeasurements).toEqual(ms);
     expect((col as { careCanalApProvenance?: unknown }).careCanalApProvenance).toEqual(canal);
   });
+
+  it("bounds oversized viewer measurement payloads to the newest items", () => {
+    const items = Array.from({ length: 450 }, (_, i) => ({ id: `m-${i}` }));
+    const col = composeStructuredJsonColumn({
+      existing: null,
+      formatState: FORMAT,
+      viewerMeasurements: { kind: "care.viewer_measurements.v1", version: 1, items },
+    });
+    const stored = (col as { careViewerMeasurements?: { items: unknown[] } }).careViewerMeasurements;
+    expect(stored?.items).toHaveLength(400);
+    expect(stored?.items[0]).toEqual({ id: "m-50" });
+    expect(stored?.items[399]).toEqual({ id: "m-449" });
+  });
 });
