@@ -485,20 +485,62 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
           /* Every configured OHIF route is plain http, and this page is https
              — the browser refuses to frame an http endpoint inside an https
              page, no matter which network the client is actually on. */
-          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm">
+          <div
+            className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-black text-white/60 text-sm"
+            data-testid="ohif-mixed-content-blocked"
+          >
             <AlertTriangle className="h-8 w-8" />
             <p className="font-medium">OHIF cannot be embedded here</p>
-            <p className="text-xs text-white/40 max-w-xs">
-              This page is HTTPS but every configured OHIF route (LAN{embedPlan.probeResults.some((r) => r.mode === "TAILSCALE") ? ", Tailscale" : ""}) is HTTP.
-              Add an HTTPS OHIF URL for at least one route in PACS / DICOM Settings → Viewer Network Routes (e.g. via
-              <code className="mx-1">tailscale serve</code> or a reverse proxy), or open it in a new tab.
+            <p className="text-xs text-white/40 max-w-sm">
+              This ERP page is HTTPS, but the selected route (
+              <span className="text-emerald-400 font-semibold">{networkMode}</span>
+              ) is HTTP — browsers block that embed.
             </p>
-            {bestOhifUrl && (
-              <Button size="sm" variant="outline" className="h-7 text-xs mt-1"
-                onClick={() => window.open(bestOhifUrl, "_blank")}>
-                <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open OHIF in new tab
-              </Button>
-            )}
+            <p className="text-xs text-white/50 max-w-sm">
+              Use the <span className="text-white font-medium">LAN | Tailscale | Auto</span> toggle
+              in the DICOM Viewer toolbar above (next to OHIF / Frames). On{" "}
+              <code className="text-white/70">caredeoghar.com</code>, pick{" "}
+              <span className="text-white font-medium">Tailscale</span> only if that route is HTTPS
+              (via <code className="mx-0.5">tailscale serve</code>).
+            </p>
+            <p className="text-[11px] text-white/35 max-w-sm">
+              Configure HTTPS bases in Settings → PACS / DICOM → Viewer Network Routes
+              (<code className="mx-0.5">ohif_base_url_tailscale</code> or a reverse-proxied LAN URL).
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
+              {networkMode !== "TAILSCALE" && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 text-xs"
+                  data-testid="ohif-try-tailscale"
+                  onClick={() => chooseNetworkMode("TAILSCALE")}
+                >
+                  Try Tailscale
+                </Button>
+              )}
+              {networkMode !== "AUTO" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  data-testid="ohif-try-auto"
+                  onClick={() => chooseNetworkMode("AUTO")}
+                >
+                  Try Auto
+                </Button>
+              )}
+              {bestOhifUrl && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => window.open(bestOhifUrl, "_blank")}
+                >
+                  <ExternalLink className="h-3.5 w-3.5 mr-1" /> Open OHIF in new tab
+                </Button>
+              )}
+            </div>
           </div>
         ) : bestOhifUrl ? (
           /* planStudyLaunch didn't succeed (e.g. no reachable network probed
