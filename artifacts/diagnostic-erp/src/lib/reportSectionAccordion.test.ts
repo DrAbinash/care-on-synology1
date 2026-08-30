@@ -35,6 +35,7 @@ describe("major section order", () => {
       "recommendation",
       "report",
     ]);
+    expect(REPORT_SECTIONS.find((s) => s.id === "region")?.label).toBe("Region / Study");
   });
 
   it("maps Alt+1…9 onto those sections and ignores anything else", () => {
