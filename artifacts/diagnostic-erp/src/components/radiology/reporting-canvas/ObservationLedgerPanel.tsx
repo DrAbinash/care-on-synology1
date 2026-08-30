@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import { formatAnchorChip } from "@/lib/observationAnchor";
 import { normalizeForDedupe } from "@/lib/reportFieldMerge";
@@ -10,11 +10,16 @@ export function ObservationLedgerPanel({
   findingsText,
   selectedId,
   onSelect,
+  keyImageCounts,
+  onOpenKeyImages,
 }: {
   patches: AppliedPathologyPatch[];
   findingsText: string;
   selectedId?: string | null;
   onSelect: (id: string | null) => void;
+  /** Map observationId → attached frozen key image count. */
+  keyImageCounts?: Record<string, number>;
+  onOpenKeyImages?: (observationId: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white" data-testid="observation-ledger-panel">
@@ -33,13 +38,14 @@ export function ObservationLedgerPanel({
               && findingsText
               && findingsText.toLowerCase().includes((p.lastRendered.findings ?? "").slice(0, 40).toLowerCase()),
             );
+            const imgCount = keyImageCounts?.[p.id] ?? 0;
             return (
               <button
                 key={p.id}
                 type="button"
                 className={[
                   "block w-full px-2 py-1.5 text-left hover:bg-slate-50",
-                  active ? "bg-sky-50" : "",
+                  active ? "bg-sky-50 ring-1 ring-inset ring-sky-300" : "",
                   p.stale ? "border-l-2 border-amber-400" : "",
                   p.protected ? "border-l-2 border-violet-400" : "",
                 ].join(" ")}
@@ -68,12 +74,35 @@ export function ObservationLedgerPanel({
                       <span>{obs.severity}</span>
                     </>
                   ) : null}
+                  {imgCount > 0 ? (
+                    <span
+                      role="link"
+                      tabIndex={0}
+                      className="ml-auto rounded bg-sky-100 px-1 text-[8px] font-bold text-sky-800"
+                      data-testid={`ledger-key-image-badge-${p.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenKeyImages?.(p.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onOpenKeyImages?.(p.id);
+                        }
+                      }}
+                      title="Show attached key images"
+                    >
+                      📷 {imgCount}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-0.5 flex flex-wrap gap-1 text-[8px] text-slate-500">
                   <span>src: {p.source}</span>
                   {p.protected ? <span className="text-violet-700">MANUAL</span> : null}
                   {p.stale ? <span className="text-amber-700">STALE</span> : null}
                   {inNarrative ? <span className="text-emerald-700">WIRED</span> : <span>PARTIAL</span>}
+                  {active ? <span className="text-sky-700">SELECTED</span> : null}
                 </div>
                 {obs?.anchor ? (
                   <div className="mt-0.5 font-mono text-[8px] text-sky-800">{formatAnchorChip(obs.anchor)}</div>

@@ -144,6 +144,12 @@ import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/Embe
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
 import ReportImagePicker from "@/components/radiology/ReportImagePicker";
 import ReportImagePanel from "@/components/radiology/ReportImagePanel";
+import FrozenKeyImagesRail, {
+  uploadFrozenKeyImage,
+  useFrozenKeyImages,
+  frozenKeyImagesQueryKey,
+} from "@/components/radiology/FrozenKeyImagesRail";
+import { buildObservationKeyImageCaption } from "@/lib/keyImageCaption";
 import ComparisonPanel from "@/components/radiology/ComparisonPanel";
 import FollowUpPanel from "@/components/radiology/FollowUpPanel";
 import FinalizeSignDialog from "@/components/radiology/FinalizeSignDialog";
@@ -524,6 +530,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
   const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
+  const selectedObservationId = useWorkspace((s: WorkspaceStore) => s.selectedObservationId);
   const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
   const workspaceMeasurements = useWorkspace((s: WorkspaceStore) => s.measurements);
   const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
@@ -975,6 +982,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [patientJumpFilter, setPatientJumpFilter] = useState("");
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [keyImageFilterObsId, setKeyImageFilterObsId] = useState<string | null>(null);
 
   // Viewer focus — collapse app sidebar via Layout; sticky while writing
   const [viewerFocusMode, setViewerFocusMode] = useState(false);
@@ -2324,6 +2333,43 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     enabled: !!draftId,
   });
 
+  const frozenKeyImagesQ = useFrozenKeyImages(draftId);
+  const frozenKeyImages = frozenKeyImagesQ.data?.items ?? [];
+  const keyImageCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const img of frozenKeyImages) {
+      if (!img.observationId) continue;
+      counts[img.observationId] = (counts[img.observationId] ?? 0) + 1;
+    }
+    return counts;
+  }, [frozenKeyImages]);
+  const observationLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    for (const p of appliedPathologyPatches) {
+      const obs = p.observation;
+      labels[p.id] = [obs?.level, obs?.laterality, obs?.concept].filter(Boolean).join(" ") || p.id;
+    }
+    return labels;
+  }, [appliedPathologyPatches]);
+
+  // Detach frozen key images when an observation is removed (preserve evidence).
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const observationId = (ev as CustomEvent<{ observationId?: string }>).detail?.observationId;
+      const id = draftId;
+      if (!observationId || !id || isLocked || isFinalized) return;
+      void api
+        .post("/api/radiology/report-generator/key-images/detach-observation", {
+          draftId: id,
+          observationId,
+        })
+        .then(() => qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) }))
+        .catch(() => undefined);
+    };
+    window.addEventListener("care:observation-removed", handler as EventListener);
+    return () => window.removeEventListener("care:observation-removed", handler as EventListener);
+  }, [draftId, isLocked, isFinalized, qc]);
+
   const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
 
   // Bridge viewer_measurements → MEASURE rail (Zustand). Previously setMeasurements was never called.
@@ -2602,6 +2648,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           measurements = canalApToPdfRows(segment, values);
         } catch { /* omit measurements section */ }
       }
+      const frozenForPdf = frozenKeyImages
+        .filter((img) => img.includeInReport)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      let frozenDataUrls: string[] = [];
+      if (frozenForPdf.length > 0) {
+        frozenDataUrls = (
+          await Promise.all(
+            frozenForPdf.map(async (img) => {
+              try {
+                const res = await fetch(img.imageUrl);
+                if (!res.ok) return null;
+                const blob = await res.blob();
+                return await new Promise<string | null>((resolve) => {
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(String(reader.result || "") || null);
+                  reader.onerror = () => resolve(null);
+                  reader.readAsDataURL(blob);
+                });
+              } catch {
+                return null;
+              }
+            }),
+          )
+        ).filter((u): u is string => Boolean(u));
+      }
       await exportRadiologyReportToPdf({
         patientName: canonicalDemography.patientName,
         age: canonicalDemography.age,
@@ -2622,6 +2693,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         headingCase,
         dicomWebBase: BROWSER_DICOMWEB_BASE,
         imageRefs,
+        frozenKeyImages: frozenDataUrls,
         clinic: clinicSettings ?? null,
         letterhead: activeStandardLetterhead(presentationTemplates),
         showLetterpadHeader,
@@ -2639,7 +2711,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [
     canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
     impressionText, recommendationText, studyNameForExport, headingCase,
-    imageRefs, clinicSettings, toast, workflow.currentRow,
+    imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
     useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
     studyId, studySetup.matchedStudyRegion,
   ]);
@@ -3446,6 +3518,75 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onViewportContextChange={(ctx) => {
                         useWorkspace.getState().setActiveAnchor(ctx ? viewportToAnchor(ctx) : null);
                       }}
+                      captureBusy={captureBusy}
+                      onCaptureViewport={
+                        isLocked || isFinalized
+                          ? undefined
+                          : async (payload) => {
+                              setCaptureBusy(true);
+                              try {
+                                let id = draftId;
+                                if (!id) id = await saveDraft({ silent: true });
+                                if (!id) {
+                                  toast({ title: "Could not save draft", description: "Save a draft before capturing key images.", variant: "destructive" });
+                                  return;
+                                }
+                                const selectedId = useWorkspace.getState().selectedObservationId;
+                                const selectedPatch = selectedId
+                                  ? useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === selectedId)
+                                  : null;
+                                const caption = selectedPatch
+                                  ? buildObservationKeyImageCaption({
+                                      level: selectedPatch.observation?.level,
+                                      laterality: selectedPatch.observation?.laterality,
+                                      concept: selectedPatch.observation?.concept,
+                                      region: selectedPatch.observation?.region,
+                                      lastRenderedFindings: selectedPatch.lastRendered.findings,
+                                    })
+                                  : (payload.context.seriesDescription
+                                    ? `${payload.context.seriesDescription}${payload.context.frameNumber ? ` · Image ${payload.context.frameNumber}` : ""}`
+                                    : "Key image (viewport capture)");
+
+                                const fd = new FormData();
+                                fd.append("image", payload.blob, "capture.jpg");
+                                fd.append("draftId", String(id));
+                                if (workflow.currentRow?.studyId ?? studyId) {
+                                  fd.append("studyId", String(workflow.currentRow?.studyId ?? studyId));
+                                }
+                                if (workflow.currentRow?.patientId) {
+                                  fd.append("patientId", String(workflow.currentRow.patientId));
+                                }
+                                fd.append("sourceType", "VIEWPORT_CAPTURE");
+                                fd.append("caption", caption);
+                                fd.append("captionManual", "false");
+                                fd.append("includeInReport", "true");
+                                if (selectedId) fd.append("observationId", selectedId);
+                                if (payload.context.studyInstanceUID) fd.append("studyInstanceUID", payload.context.studyInstanceUID);
+                                if (payload.context.seriesInstanceUID) fd.append("seriesInstanceUID", payload.context.seriesInstanceUID);
+                                if (payload.context.sopInstanceUID) fd.append("sopInstanceUID", payload.context.sopInstanceUID);
+                                if (payload.context.frameNumber != null) fd.append("frameNumber", String(payload.context.frameNumber));
+                                if (payload.context.instanceNumber != null) fd.append("instanceNumber", String(payload.context.instanceNumber));
+                                if (payload.context.seriesDescription) fd.append("seriesDescription", payload.context.seriesDescription);
+                                if (payload.context.modality) fd.append("modality", payload.context.modality);
+                                fd.append("viewer", payload.context.viewer || "frames");
+                                fd.append("viewportSnapshotJson", payload.snapshotJson);
+                                fd.append("capturedAt", new Date().toISOString());
+
+                                await uploadFrozenKeyImage(fd);
+                                void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
+                                toast({
+                                  title: "Key image captured",
+                                  description: selectedId
+                                    ? "Attached to selected observation (Frames has no annotation overlays)."
+                                    : "Saved as report-level evidence (Frames has no annotation overlays).",
+                                });
+                              } catch (e) {
+                                toast({ title: "Capture failed", description: String(e), variant: "destructive" });
+                              } finally {
+                                setCaptureBusy(false);
+                              }
+                            }
+                      }
                       onAddCurrentFrameToReport={
                         isLocked || isFinalized
                           ? undefined
@@ -3483,6 +3624,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   </div>
                   {!viewerColumnExpanded && workflow.currentRow && (
                     <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
+                      <FrozenKeyImagesRail
+                        draftId={draftId ?? null}
+                        disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
+                        filterObservationId={keyImageFilterObsId}
+                        observationLabels={observationLabels}
+                        onFocusObservation={(id) => {
+                          useWorkspace.getState().setSelectedObservationId(id);
+                          setKeyImageFilterObsId(id);
+                        }}
+                      />
+                      {keyImageFilterObsId ? (
+                        <div className="px-2 pb-1">
+                          <button
+                            type="button"
+                            className="text-[10px] text-sky-700 underline"
+                            onClick={() => setKeyImageFilterObsId(null)}
+                          >
+                            Clear key-image filter
+                          </button>
+                        </div>
+                      ) : null}
                       <ReportImagePicker
                         draftId={draftId ?? null}
                         studyId={studyId ?? null}
@@ -3862,8 +4024,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <ObservationLedgerPanel
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}
-                      selectedId={null}
+                      selectedId={selectedObservationId}
+                      keyImageCounts={keyImageCounts}
+                      onOpenKeyImages={(id) => {
+                        setKeyImageFilterObsId(id);
+                        useWorkspace.getState().setSelectedObservationId(id);
+                      }}
                       onSelect={(id) => {
+                        useWorkspace.getState().setSelectedObservationId(id);
                         const p = useWorkspace.getState().appliedPathologyPatches.find((x) => x.id === id);
                         const level = (p?.observation?.level ?? p?.ownership.anatomicalSection ?? "").trim();
                         if (level) {

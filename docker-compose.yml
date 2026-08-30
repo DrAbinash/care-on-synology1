@@ -390,6 +390,11 @@ services:
       WADO_URL: ${WADO_URL:-}
     volumes:
       - object_storage:/app/data/object-storage
+      # Persistent uploads tree (Docker named volume → container /app/data/uploads).
+      # Includes radiology-key-images/ (Phase 1 frozen evidence). Host path is the
+      # Docker volume data dir (Synology typically under /volume1/@docker/volumes/
+      # <project>_uploads_data/_data). DB backup alone is NOT sufficient for
+      # frozen key-image evidence — include this volume in backup/restore.
       - uploads_data:/app/data/uploads
       # Backup destination — was completely MISSING, and it is the reason
       # every "successful" scheduled backup has never actually reached the

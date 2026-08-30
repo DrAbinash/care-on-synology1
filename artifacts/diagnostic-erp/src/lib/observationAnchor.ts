@@ -14,6 +14,7 @@ export type ObservationAnchor = {
   instanceNumber?: number;
   seriesDescription?: string;
   totalFrames?: number;
+  modality?: string;
   viewer?: ObservationViewerKind;
   capturedAt: string;
 };
@@ -27,6 +28,7 @@ export type ViewportContext = {
   instanceNumber?: number;
   seriesDescription?: string;
   totalFrames?: number;
+  modality?: string;
   viewer: ObservationViewerKind;
 };
 
@@ -39,6 +41,7 @@ export function viewportToAnchor(ctx: ViewportContext): ObservationAnchor {
     instanceNumber: ctx.instanceNumber,
     seriesDescription: ctx.seriesDescription,
     totalFrames: ctx.totalFrames,
+    modality: ctx.modality,
     viewer: ctx.viewer,
     capturedAt: new Date().toISOString(),
   };
@@ -54,6 +57,7 @@ export function anchorsEqual(a: ObservationAnchor | null | undefined, b: Observa
     && (a.frameNumber ?? 0) === (b.frameNumber ?? 0)
     && (a.instanceNumber ?? 0) === (b.instanceNumber ?? 0)
     && (a.seriesDescription ?? "") === (b.seriesDescription ?? "")
+    && (a.modality ?? "") === (b.modality ?? "")
     && (a.viewer ?? "") === (b.viewer ?? "")
   );
 }
@@ -68,6 +72,7 @@ export function viewportContextsEqual(a: ViewportContext | null | undefined, b: 
     && (a.frameNumber ?? 0) === (b.frameNumber ?? 0)
     && (a.instanceNumber ?? 0) === (b.instanceNumber ?? 0)
     && (a.seriesDescription ?? "") === (b.seriesDescription ?? "")
+    && (a.modality ?? "") === (b.modality ?? "")
     && a.viewer === b.viewer
     && (a.totalFrames ?? 0) === (b.totalFrames ?? 0)
   );
@@ -110,6 +115,7 @@ export function coerceObservationAnchor(raw: unknown): ObservationAnchor | undef
     instanceNumber: typeof o.instanceNumber === "number" ? o.instanceNumber : undefined,
     seriesDescription: o.seriesDescription,
     totalFrames: typeof o.totalFrames === "number" ? o.totalFrames : undefined,
+    modality: typeof o.modality === "string" ? o.modality : undefined,
     viewer: o.viewer === "frames" || o.viewer === "ohif" || o.viewer === "weasis" ? o.viewer : undefined,
     capturedAt: typeof o.capturedAt === "string" ? o.capturedAt : new Date().toISOString(),
   };

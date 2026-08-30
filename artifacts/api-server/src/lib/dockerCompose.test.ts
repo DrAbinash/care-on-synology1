@@ -147,4 +147,9 @@ describe("docker-compose.yml — the backup destination is a real bind mount, no
     expect(apiBlock).toContain("object_storage:/app/data/object-storage");
     expect(apiBlock).toContain("uploads_data:/app/data/uploads");
   });
+
+  test("uploads volume comment documents radiology-key-images durability", () => {
+    expect(apiBlock).toMatch(/radiology-key-images/);
+    expect(apiBlock).toMatch(/DB backup alone is NOT sufficient/i);
+  });
 });

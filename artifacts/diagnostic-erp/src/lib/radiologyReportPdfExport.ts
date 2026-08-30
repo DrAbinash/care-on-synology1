@@ -243,6 +243,11 @@ export interface RadiologyPdfExportInput {
   headingCase?: "all_caps" | "title_case";
   dicomWebBase: string | null;
   imageRefs: ReportImageRef[];
+  /**
+   * Frozen viewport artifacts (data URLs). When non-empty, these are used for
+   * the KEY IMAGES rail instead of live Orthanc rendering of imageRefs.
+   */
+  frozenKeyImages?: string[];
   clinic: PrintClinic;
   letterhead?: CareLetterpadChrome;
   /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */
@@ -252,7 +257,10 @@ export interface RadiologyPdfExportInput {
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
-  const keyImages = await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
+  const keyImages =
+    input.frozenKeyImages && input.frozenKeyImages.length > 0
+      ? input.frozenKeyImages
+      : await fetchKeyImageDataUrls(input.dicomWebBase, input.imageRefs);
   const settings = loadPrintSettings();
   const measurements = input.measurements?.filter((m) => m.label && m.value) ?? [];
   generateReportPDF(

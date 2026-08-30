@@ -23,7 +23,6 @@
 import { Router, type Request, type Response } from "express";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -69,7 +68,22 @@ import {
   applyInstitutionalTemplateOverrides,
   buildReportSurfaceCss,
 } from "../lib/institutionalReportStyle";
-import { resolveDraftKeyImages } from "../lib/reportImages";
+import {
+  resolveDraftPrintKeyImagesDetailed,
+  frozenIntegrityBannerHtml,
+  detachKeyImagesFromObservation,
+  isSafeKeyImageFilename,
+  FROZEN_KEY_IMAGE_DIR,
+  normalizeKeyImageForPrint,
+  parseViewportSnapshotJson,
+  parseAnnotationMetadataJson,
+  parseCapturedAt,
+  parseViewer,
+  parseModality,
+  isReasonableDicomUid,
+} from "../lib/frozenKeyImages";
+import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import {
   parseImpressionBullets,
   parseImpressionStyle,
@@ -107,9 +121,8 @@ import { DrizzleStructuredReportCatalogPort } from "../lib/structuredReport/cata
 import { radiologyQuickFindingsTable } from "@workspace/db/schema";
 
 // ── Upload directory ──────────────────────────────────────────────────────────
-
-const ARTIFACT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const KEY_IMAGE_DIR = path.resolve(ARTIFACT_ROOT, "data", "uploads", "radiology-key-images");
+// Persistent in Docker via uploads_data → /app/data/uploads (incl. radiology-key-images).
+const KEY_IMAGE_DIR = FROZEN_KEY_IMAGE_DIR;
 
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MIME_TO_EXT: Record<string, string> = {
@@ -117,6 +130,9 @@ const MIME_TO_EXT: Record<string, string> = {
   "image/png": ".png",
   "image/webp": ".webp",
 };
+const MAX_KEY_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Pre-normalize inbound edge cap (reject absurd uploads before sharp work). */
+const MAX_KEY_IMAGE_EDGE_PX = 8192;
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -130,15 +146,113 @@ const upload = multer({
     },
     filename: (_req, file, cb) => {
       const ext = MIME_TO_EXT[file.mimetype] ?? ".jpg";
-      cb(null, `rkg-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+      cb(null, `${randomUUID()}${ext}`);
     },
   }),
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_IMAGE_MIME.has(file.mimetype)) cb(null, true);
     else cb(new Error("Only JPG, PNG, and WebP images are accepted"));
   },
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MAX_KEY_IMAGE_BYTES },
 });
+
+async function keyImagesLocked(draftId: number): Promise<boolean> {
+  return draftImageRefsLocked(draftId);
+}
+const KEY_IMAGE_LOCKED_MSG = "Report finalized — its images can no longer be modified";
+
+async function unlinkKeyImageArtifacts(...absPaths: Array<string | null | undefined>): Promise<void> {
+  for (const p of absPaths) {
+    if (!p) continue;
+    await fs.unlink(p).catch(() => undefined);
+  }
+}
+
+/** Draft must exist for read paths (FINAL drafts remain readable). */
+async function assertDraftExists(draftId: number): Promise<void> {
+  const [draft] = await db
+    .select({ id: radiologyReportDraftsTable.id })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft) {
+    throw new RadiologyIdentityError(404, "DRAFT_NOT_FOUND", "Draft not found.");
+  }
+}
+
+/**
+ * When the draft already has an observation ledger, reject observationIds that
+ * are not present on that ledger. Empty/missing ledgers allow the link (capture
+ * may happen before the observation is persisted).
+ */
+async function assertObservationBelongsToDraft(draftId: number, observationId: string | null): Promise<void> {
+  if (!observationId) return;
+  const [draft] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+  if (!draft?.structuredJson) return;
+  let parsed: unknown = draft.structuredJson;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return;
+  const root = parsed as Record<string, unknown>;
+  const ledger =
+    (root.observationLedger as Record<string, unknown> | undefined) ||
+    (root.kind === "care.observation_ledger.v1" ? root : null) ||
+    (Array.isArray(root.parts)
+      ? (root.parts as Array<Record<string, unknown>>).find((p) => p?.kind === "care.observation_ledger.v1")
+      : null);
+  if (!ledger || typeof ledger !== "object") return;
+  const patches = Array.isArray((ledger as { patches?: unknown }).patches)
+    ? ((ledger as { patches: Array<{ id?: string }> }).patches)
+    : [];
+  if (patches.length === 0) return;
+  const ids = new Set(patches.map((p) => p?.id).filter(Boolean));
+  if (!ids.has(observationId)) {
+    throw new RadiologyIdentityError(
+      400,
+      "OBSERVATION_NOT_ON_DRAFT",
+      "observationId does not belong to this draft's observation ledger.",
+    );
+  }
+}
+
+async function makeKeyImageThumbnail(absPath: string): Promise<string | null> {
+  try {
+    const thumbName = `${path.parse(absPath).name}-thumb.jpg`;
+    const thumbPath = path.join(KEY_IMAGE_DIR, thumbName);
+    await sharp(absPath)
+      .rotate()
+      .resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toFile(thumbPath);
+    return `/uploads/radiology-key-images/${thumbName}`;
+  } catch {
+    return null;
+  }
+}
+
+async function validateStoredImage(absPath: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const meta = await sharp(absPath).metadata();
+    const w = meta.width ?? 0;
+    const h = meta.height ?? 0;
+    if (w < 1 || h < 1) return { ok: false, error: "Invalid image dimensions" };
+    if (w > MAX_KEY_IMAGE_EDGE_PX || h > MAX_KEY_IMAGE_EDGE_PX) {
+      return { ok: false, error: `Image dimensions exceed ${MAX_KEY_IMAGE_EDGE_PX}px` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Unreadable image file" };
+  }
+}
 
 // ── Template library ──────────────────────────────────────────────────────────
 
@@ -2134,7 +2248,16 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   ].filter(Boolean).join("\n");
 
   let keyImages: ReportKeyImageModel[] = [];
-  try { keyImages = await resolveDraftKeyImages(id); } catch { keyImages = []; }
+  let frozenIntegrityBanner = "";
+  try {
+    const resolved = await resolveDraftPrintKeyImagesDetailed(id);
+    keyImages = resolved.images;
+    if (resolved.source === "frozen" && !resolved.integrityOk) {
+      frozenIntegrityBanner = frozenIntegrityBannerHtml(resolved.unavailableFrozenCount);
+    }
+  } catch {
+    keyImages = [];
+  }
 
   const likeFinal = req.query.likeFinal === "true";
 
@@ -2196,6 +2319,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     ],
     bodyHtml,
     keyImages,
+    safeguardBannerHtml: frozenIntegrityBanner || undefined,
     stamp: likeFinal
       ? { kind: "pending", label: "" }
       : { kind: "draft", label: "DRAFT (not signed)" },
@@ -2272,7 +2396,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   res.send(renderReportDocument(model, template, { customCss }));
 });
 
-// POST /key-images — multipart upload
+// POST /key-images — multipart upload (VIEWPORT_CAPTURE | UPLOAD | …)
 radiologyReportGeneratorRouter.post(
   "/key-images",
   upload.single("image"),
@@ -2282,36 +2406,209 @@ radiologyReportGeneratorRouter.post(
       return;
     }
 
-    const imageUrl = `/uploads/radiology-key-images/${req.file.filename}`;
+    let absPath = req.file.path;
+    let thumbAbs: string | null = null;
+    const cleanupOrphans = async () => {
+      await unlinkKeyImageArtifacts(absPath, thumbAbs);
+    };
+
     const draftId = req.body.draftId ? Number(req.body.draftId) : null;
+    if (!draftId || !Number.isFinite(draftId)) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: "draftId is required" });
+      return;
+    }
+
+    if (await keyImagesLocked(draftId)) {
+      await cleanupOrphans();
+      res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+      return;
+    }
+
+    try {
+      await assertDraftWritable({
+        draftId,
+        studyId: req.body.studyId ? Number(req.body.studyId) : null,
+        patientId: req.body.patientId ? Number(req.body.patientId) : null,
+      });
+    } catch (err) {
+      await cleanupOrphans();
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    if (!isSafeKeyImageFilename(req.file.filename)) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: "Invalid filename" });
+      return;
+    }
+
+    const dimCheck = await validateStoredImage(absPath);
+    if (!dimCheck.ok) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: dimCheck.error });
+      return;
+    }
+
+    const studyUid = req.body.studyInstanceUID || req.body.studyInstanceUid || null;
+    const seriesUid = req.body.seriesInstanceUID || req.body.seriesInstanceUid || null;
+    const sopUid = req.body.sopInstanceUID || req.body.sopInstanceUid || null;
+    for (const [label, uid] of [
+      ["studyInstanceUID", studyUid],
+      ["seriesInstanceUID", seriesUid],
+      ["sopInstanceUID", sopUid],
+    ] as const) {
+      if (!isReasonableDicomUid(uid)) {
+        await cleanupOrphans();
+        res.status(400).json({ success: false, error: `Invalid ${label}` });
+        return;
+      }
+    }
+
+    const snap = parseViewportSnapshotJson(req.body.viewportSnapshotJson);
+    if (!snap.ok) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: snap.error });
+      return;
+    }
+    const ann = parseAnnotationMetadataJson(req.body.annotationMetadataJson);
+    if (!ann.ok) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: ann.error });
+      return;
+    }
+    const captured = parseCapturedAt(req.body.capturedAt);
+    if (!captured.ok) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: captured.error });
+      return;
+    }
+    const viewerParsed = parseViewer(req.body.viewer);
+    if (!viewerParsed.ok) {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: viewerParsed.error });
+      return;
+    }
+
+    const observationId = typeof req.body.observationId === "string" && req.body.observationId.trim()
+      ? req.body.observationId.trim().slice(0, 120)
+      : null;
+    try {
+      await assertObservationBelongsToDraft(draftId, observationId);
+    } catch (err) {
+      await cleanupOrphans();
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    // Normalize to bounded print JPEG (autorotate + max edge) before persist.
+    let normalized;
+    try {
+      normalized = await normalizeKeyImageForPrint(absPath);
+      absPath = normalized.absPath;
+    } catch {
+      await cleanupOrphans();
+      res.status(400).json({ success: false, error: "Could not normalize image for storage" });
+      return;
+    }
+
+    const sourceTypeRaw = String(req.body.sourceType || "UPLOAD").trim().toUpperCase();
+    const sourceType = ["VIEWPORT_CAPTURE", "DICOM", "UPLOAD", "PACS_SCREENSHOT"].includes(sourceTypeRaw)
+      ? sourceTypeRaw
+      : "UPLOAD";
+
     const studyId = req.body.studyId ? Number(req.body.studyId) : null;
     const patientId = req.body.patientId ? Number(req.body.patientId) : null;
 
-    const [row] = await db
-      .insert(radiologyReportKeyImagesTable)
-      .values({
-        draftId,
-        studyId,
-        patientId,
-        accessionNumber: req.body.accessionNumber ?? null,
-        imageUrl,
-        thumbnailUrl: imageUrl,
-        caption: req.body.caption ?? "",
-        sortOrder: req.body.sortOrder ? Number(req.body.sortOrder) : 0,
-        includeInReport: true,
-        sourceType: "UPLOAD",
-        createdBy: req.staffSession?.subjectName ?? null,
-      })
-      .returning();
+    let sortOrder = req.body.sortOrder ? Number(req.body.sortOrder) : NaN;
+    if (!Number.isFinite(sortOrder)) {
+      const existing = await db
+        .select({ sortOrder: radiologyReportKeyImagesTable.sortOrder })
+        .from(radiologyReportKeyImagesTable)
+        .where(eq(radiologyReportKeyImagesTable.draftId, draftId));
+      sortOrder = existing.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1;
+    }
 
-    res.json({ success: true, item: row });
+    const imageUrl = `/uploads/radiology-key-images/${normalized.filename}`;
+    let thumbnailUrl = imageUrl;
+    const thumb = await makeKeyImageThumbnail(absPath);
+    if (thumb) {
+      thumbnailUrl = thumb;
+      thumbAbs = path.join(KEY_IMAGE_DIR, path.basename(thumb));
+    }
+
+    const frameNumber = req.body.frameNumber ? Number(req.body.frameNumber) : null;
+    const instanceNumber = req.body.instanceNumber ? Number(req.body.instanceNumber) : null;
+    const includeInReport = req.body.includeInReport === "false" || req.body.includeInReport === false
+      ? false
+      : true;
+    const captionManual = req.body.captionManual === "true" || req.body.captionManual === true;
+
+    try {
+      const [row] = await db
+        .insert(radiologyReportKeyImagesTable)
+        .values({
+          draftId,
+          studyId: Number.isFinite(studyId as number) ? studyId : null,
+          patientId: Number.isFinite(patientId as number) ? patientId : null,
+          accessionNumber: req.body.accessionNumber ? String(req.body.accessionNumber).slice(0, 64) : null,
+          imageUrl,
+          thumbnailUrl,
+          caption: String(req.body.caption ?? "").slice(0, 500),
+          captionManual,
+          sortOrder,
+          includeInReport,
+          sourceType,
+          observationId,
+          studyInstanceUid: studyUid ? String(studyUid).slice(0, 128) : null,
+          seriesInstanceUid: seriesUid ? String(seriesUid).slice(0, 128) : null,
+          sopInstanceUid: sopUid ? String(sopUid).slice(0, 128) : null,
+          frameNumber: Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null,
+          instanceNumber: Number.isFinite(instanceNumber as number) ? Math.floor(instanceNumber as number) : null,
+          seriesDescription: req.body.seriesDescription ? String(req.body.seriesDescription).slice(0, 200) : null,
+          modality: parseModality(req.body.modality),
+          viewer: viewerParsed.viewer,
+          viewportSnapshotJson: snap.json || null,
+          annotationMetadataJson: ann.json,
+          capturedAt: captured.date,
+          createdBy: req.staffSession?.subjectName ?? null,
+        })
+        .returning();
+
+      res.status(201).json({ success: true, item: row });
+    } catch (err) {
+      await cleanupOrphans();
+      throw err;
+    }
   },
 );
 
 // GET /key-images?draftId=&studyId=
-radiologyReportGeneratorRouter.get("/key-images", async (req: Request, res: Response) => {
+radiologyReportGeneratorRouter.get("/key-images", async (req: StaffAuthRequest, res: Response) => {
   const draftId = req.query.draftId ? Number(req.query.draftId) : null;
   const studyId = req.query.studyId ? Number(req.query.studyId) : null;
+  if (!draftId && !studyId) {
+    res.status(400).json({ success: false, error: "draftId or studyId required" });
+    return;
+  }
+
+  if (draftId) {
+    try {
+      await assertDraftExists(draftId);
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  }
 
   const conditions = [];
   if (draftId) conditions.push(eq(radiologyReportKeyImagesTable.draftId, draftId));
@@ -2321,19 +2618,22 @@ radiologyReportGeneratorRouter.get("/key-images", async (req: Request, res: Resp
     .select()
     .from(radiologyReportKeyImagesTable)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(radiologyReportKeyImagesTable.sortOrder);
+    .orderBy(asc(radiologyReportKeyImagesTable.sortOrder), asc(radiologyReportKeyImagesTable.id));
 
+  // When both filters supplied, require the row to match both (no cross-draft leak by studyId alone).
   res.json({ success: true, items: rows });
 });
 
 // PUT /key-images/:id
 const UpdateKeyImageBody = z.object({
   caption: z.string().max(500).optional(),
+  captionManual: z.boolean().optional(),
   includeInReport: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
+  observationId: z.string().max(120).nullable().optional(),
 });
 
-radiologyReportGeneratorRouter.put("/key-images/:id", async (req: Request, res: Response) => {
+radiologyReportGeneratorRouter.put("/key-images/:id", async (req: StaffAuthRequest, res: Response) => {
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
 
@@ -2343,14 +2643,127 @@ radiologyReportGeneratorRouter.put("/key-images/:id", async (req: Request, res: 
     return;
   }
 
+  const [existing] = await db
+    .select()
+    .from(radiologyReportKeyImagesTable)
+    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .limit(1);
+  if (!existing) { res.status(404).json({ success: false, error: "Image not found" }); return; }
+  if (!existing.draftId) {
+    res.status(409).json({ success: false, error: "Key image has no draft ownership" });
+    return;
+  }
+  if (await keyImagesLocked(existing.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  try {
+    await assertDraftWritable({ draftId: existing.draftId });
+    if (parsed.data.observationId !== undefined) {
+      await assertObservationBelongsToDraft(existing.draftId, parsed.data.observationId);
+    }
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
+  const patch: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.caption !== undefined && parsed.data.captionManual === undefined) {
+    patch.captionManual = true;
+  }
+
   const [updated] = await db
     .update(radiologyReportKeyImagesTable)
-    .set(parsed.data)
-    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .set(patch)
+    .where(and(
+      eq(radiologyReportKeyImagesTable.id, id),
+      eq(radiologyReportKeyImagesTable.draftId, existing.draftId),
+    ))
     .returning();
 
   if (!updated) { res.status(404).json({ success: false, error: "Image not found" }); return; }
   res.json({ success: true, item: updated });
+});
+
+// POST /key-images/reorder
+radiologyReportGeneratorRouter.post("/key-images/reorder", async (req: StaffAuthRequest, res: Response) => {
+  const schema = z.object({
+    draftId: z.number().int(),
+    orderedIds: z.array(z.number().int()).max(100),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: "Invalid body" });
+    return;
+  }
+  try {
+    await assertDraftWritable({ draftId: parsed.data.draftId });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+  if (await keyImagesLocked(parsed.data.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  const draftRows = await db
+    .select({ id: radiologyReportKeyImagesTable.id })
+    .from(radiologyReportKeyImagesTable)
+    .where(eq(radiologyReportKeyImagesTable.draftId, parsed.data.draftId));
+  const owned = new Set(draftRows.map((r) => r.id));
+  const foreign = parsed.data.orderedIds.filter((oid) => !owned.has(oid));
+  if (foreign.length > 0) {
+    res.status(400).json({ success: false, error: "orderedIds must reference this draft's images only" });
+    return;
+  }
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < parsed.data.orderedIds.length; i++) {
+      await tx
+        .update(radiologyReportKeyImagesTable)
+        .set({ sortOrder: i })
+        .where(
+          and(
+            eq(radiologyReportKeyImagesTable.id, parsed.data.orderedIds[i]),
+            eq(radiologyReportKeyImagesTable.draftId, parsed.data.draftId),
+          ),
+        );
+    }
+  });
+  res.json({ success: true });
+});
+
+// POST /key-images/detach-observation — observation delete: unlink, do not destroy files
+radiologyReportGeneratorRouter.post("/key-images/detach-observation", async (req: StaffAuthRequest, res: Response) => {
+  const schema = z.object({
+    draftId: z.number().int(),
+    observationId: z.string().min(1).max(120),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: "Invalid body" });
+    return;
+  }
+  try {
+    await assertDraftWritable({ draftId: parsed.data.draftId });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+  if (await keyImagesLocked(parsed.data.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  const count = await detachKeyImagesFromObservation(parsed.data);
+  res.json({ success: true, detached: count });
 });
 
 // DELETE /key-images/:id
@@ -2358,16 +2771,49 @@ radiologyReportGeneratorRouter.delete("/key-images/:id", async (req: StaffAuthRe
   const id = Number(req.params.id);
   if (!id) { res.status(400).json({ success: false, error: "Invalid id" }); return; }
 
+  const [existing] = await db
+    .select()
+    .from(radiologyReportKeyImagesTable)
+    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .limit(1);
+  if (!existing) { res.status(404).json({ success: false, error: "Image not found" }); return; }
+  if (!existing.draftId) {
+    res.status(409).json({ success: false, error: "Key image has no draft ownership" });
+    return;
+  }
+  if (await keyImagesLocked(existing.draftId)) {
+    res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+    return;
+  }
+  try {
+    await assertDraftWritable({ draftId: existing.draftId });
+  } catch (err) {
+    if (err instanceof RadiologyIdentityError) {
+      res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+      return;
+    }
+    throw err;
+  }
+
   const [deleted] = await db
     .delete(radiologyReportKeyImagesTable)
-    .where(eq(radiologyReportKeyImagesTable.id, id))
+    .where(and(
+      eq(radiologyReportKeyImagesTable.id, id),
+      eq(radiologyReportKeyImagesTable.draftId, existing.draftId),
+    ))
     .returning();
 
   if (!deleted) { res.status(404).json({ success: false, error: "Image not found" }); return; }
 
-  // Best-effort file removal — ignore errors
-  if (deleted.imageUrl) {
-    const filename = path.basename(deleted.imageUrl);
+  for (const url of [deleted.imageUrl, deleted.thumbnailUrl]) {
+    if (!url) continue;
+    if (url === deleted.imageUrl && deleted.thumbnailUrl === deleted.imageUrl) {
+      // same file referenced twice — delete once below
+    }
+    const filename = path.basename(url);
+    if (!isSafeKeyImageFilename(filename)) continue;
+    // Only delete files under our controlled key-image dir (never shared/legacy paths).
+    if (!url.startsWith("/uploads/radiology-key-images/")) continue;
     void fs.unlink(path.join(KEY_IMAGE_DIR, filename)).catch(() => undefined);
   }
 

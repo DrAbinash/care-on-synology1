@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
-  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink,
+  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera,
 } from "lucide-react";
+import { captureFramesViewport } from "@/lib/framesViewportCapture";
 import { BROWSER_DICOMWEB_BASE, dicomWebFetch, withDicomWebAuth } from "@/lib/browserDicomWeb";
 import { planStudyLaunch, localStorageRouteCache, type StudyLaunchResult, type NetworkMode } from "@/lib/studyLaunchService";
 import type { ViewportContext } from "@/lib/observationAnchor";
@@ -101,7 +102,18 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   }) => void;
   /** FRAMES-first live viewport context for Reporting Canvas R2 activeAnchor. */
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange }, ref) {
+  /**
+   * Frozen viewport capture (Phase 1). Returns JPEG blobs of the displayed
+   * FRAMES image (zoom/pan/WL applied). No annotation overlays exist in FRAMES.
+   */
+  onCaptureViewport?: (payload: {
+    blob: Blob;
+    mimeType: string;
+    snapshotJson: string;
+    context: ViewportContext;
+  }) => void | Promise<void>;
+  captureBusy?: boolean;
+}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }, ref) {
   if (!studyInstanceUID) {
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
@@ -121,13 +133,15 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       onColumnExpandedChange={onColumnExpandedChange}
       onAddCurrentFrameToReport={onAddCurrentFrameToReport}
       onViewportContextChange={onViewportContextChange}
+      onCaptureViewport={onCaptureViewport}
+      captureBusy={captureBusy}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -141,6 +155,13 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     frameNumber: number;
   }) => void;
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
+  onCaptureViewport?: (payload: {
+    blob: Blob;
+    mimeType: string;
+    snapshotJson: string;
+    context: ViewportContext;
+  }) => void | Promise<void>;
+  captureBusy?: boolean;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -162,6 +183,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
 
   const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startPanX: 0, startPanY: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const framesViewportRef = useRef<HTMLDivElement>(null);
 
   const { data: launchData } = useQuery<ViewerLaunchData>({
     queryKey: ["viewer-launch", studyInstanceUID],
@@ -279,6 +301,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
       instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
       seriesDescription: seriesMeta?.description ?? undefined,
       totalFrames: instances.length || seriesMeta?.numInstances || undefined,
+      modality: seriesMeta?.modality ?? undefined,
       viewer: "frames",
     };
     if (viewportContextsEqual(lastViewportRef.current, next)) return;
@@ -474,13 +497,21 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               : `Connecting via ${networkMode === "TAILSCALE" ? "Tailscale" : networkMode}…`}
           </div>
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
-          <iframe
-            title="OHIF viewer"
-            src={embedPlan.finalLaunchUrl}
-            className="flex-1 w-full min-h-0 h-full border-0 bg-black"
-            allow="fullscreen"
-            data-testid="ohif-embed"
-          />
+          <div className="flex-1 min-h-0 flex flex-col bg-black">
+            <div
+              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50"
+              data-testid="ohif-capture-fallback-hint"
+            >
+              Annotated OHIF capture is not available in this viewer mode. Switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
+            </div>
+            <iframe
+              title="OHIF viewer"
+              src={embedPlan.finalLaunchUrl}
+              className="flex-1 w-full min-h-0 h-full border-0 bg-black"
+              allow="fullscreen"
+              data-testid="ohif-embed"
+            />
+          </div>
         ) : embedPlan?.errorCode === "MIXED_CONTENT_BLOCKED" ? (
           /* Every configured OHIF route is plain http, and this page is https
              — the browser refuses to frame an http endpoint inside an https
@@ -624,6 +655,56 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 Add to report
               </Button>
             )}
+            {onCaptureViewport && selectedSeriesUID && instances[selectedInstIdx] && (
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 px-2 text-[10px] gap-1"
+                data-testid="frames-capture-key-image"
+                title="Capture visible viewport as frozen key image (no annotation overlays in Frames)"
+                disabled={!!captureBusy || !frameUrl}
+                onClick={async () => {
+                  const img = imgRef.current;
+                  const viewport = framesViewportRef.current;
+                  if (!img || !viewport || !img.complete || !img.naturalWidth) return;
+                  const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
+                  const inst = instances[selectedInstIdx];
+                  try {
+                    const result = await captureFramesViewport({
+                      img,
+                      viewport,
+                      zoom,
+                      panX,
+                      panY,
+                      brightness,
+                      contrast,
+                    });
+                    const context: ViewportContext = {
+                      studyInstanceUID,
+                      seriesInstanceUID: selectedSeriesUID,
+                      sopInstanceUID: inst.uid,
+                      frameNumber: selectedInstIdx + 1,
+                      instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+                      seriesDescription: seriesMeta?.description ?? undefined,
+                      totalFrames: instances.length || seriesMeta?.numInstances || undefined,
+                      modality: seriesMeta?.modality ?? undefined,
+                      viewer: "frames",
+                    };
+                    await onCaptureViewport({
+                      blob: result.blob,
+                      mimeType: result.mimeType,
+                      snapshotJson: JSON.stringify(result.snapshot),
+                      context,
+                    });
+                  } catch (e) {
+                    console.warn("[frames] viewport capture failed", e instanceof Error ? e.message : "unknown");
+                  }
+                }}
+              >
+                <Camera className="h-3.5 w-3.5" />
+                {captureBusy ? "Capturing…" : "Capture key image"}
+              </Button>
+            )}
             <div className="flex-1" />
             <span className="text-[10px] text-muted-foreground">B:{brightness}% C:{contrast}%</span>
             {bestOhifUrl && (
@@ -633,8 +714,10 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
             )}
           </div>
 
-          {/* Canvas */}
+          {/* Canvas — FRAMES viewport (overflow-hidden). Capture uses this rect. */}
           <div
+            ref={framesViewportRef}
+            data-testid="frames-viewport"
             className="flex-1 relative overflow-hidden bg-black flex items-center justify-center cursor-grab active:cursor-grabbing"
             onDoubleClick={() => setIsExpanded((v) => !v)}
             onMouseDown={handleMouseDown}
@@ -656,7 +739,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 src={frameUrl}
                 alt="DICOM frame"
                 className="max-w-none select-none"
-                style={{ transform: imageTransform, filter: imageFilter }}
+                style={{ transform: imageTransform, transformOrigin: "50% 50%", filter: imageFilter }}
                 draggable={false}
               />
             ) : (
