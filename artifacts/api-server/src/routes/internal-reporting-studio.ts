@@ -22,6 +22,7 @@ import {
   billsTable,
   billPaymentLinksTable,
   testsTable,
+  patientsTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, gte, notInArray, sql, desc } from "drizzle-orm";
 import { safeEqual } from "../lib/internalApiKeyAuth";
@@ -179,7 +180,10 @@ router.get("/worklist", async (req, res) => {
       .select({
         id: radiologyWorklistTable.id,
         accessionNumber: radiologyWorklistTable.accessionNumber,
+        patientId: radiologyWorklistTable.patientId,
         patientName: radiologyWorklistTable.patientName,
+        patientPhone: patientsTable.phone,
+        patientAddress: patientsTable.address,
         age: radiologyWorklistTable.age,
         sex: radiologyWorklistTable.sex,
         referringDoctor: radiologyWorklistTable.referringDoctor,
@@ -190,11 +194,14 @@ router.get("/worklist", async (req, res) => {
         studyId: radiologyWorklistTable.studyId,
         testName: testsTable.name,
         billId: radiologyStudiesTable.billId,
+        billNumber: billsTable.billNumber,
         billedTestName: testsTable.name,
       })
       .from(radiologyWorklistTable)
       .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
       .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
+      .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
+      .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
       .where(and(...conds))
       .orderBy(desc(radiologyWorklistTable.updatedAt))
       .limit(500);
@@ -209,6 +216,13 @@ router.get("/worklist", async (req, res) => {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
         patientName: r.patientName,
+        // USG Studio v6 bridge extension — additive, optional for callers:
+        // bill-desk demographics so Form F and the patient header never need
+        // retyping. Studios built against PR #639 ignore unknown keys.
+        patientId: r.patientId ?? null,
+        patientPhone: r.patientPhone ?? "",
+        patientAddress: r.patientAddress ?? "",
+        billNumber: r.billNumber ?? "",
         patientAge: r.age ?? "",
         patientGender: r.sex ?? "",
         referringDoctor: r.referringDoctor ?? "",

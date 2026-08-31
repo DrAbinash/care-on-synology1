@@ -58,6 +58,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
         dateOfBirth: "1970-01-01",
         gender: "female",
         phone: "9000000001",
+        address: "Bridge Test Lane 1, Deoghar",
       })
       .returning();
     patientId = patient.id;
@@ -197,6 +198,19 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(row.modality).toBe("MR");
     expect(row.billingStatus).toBe("PAID");
     expect(row.testName).toContain("MRI Brain");
+  });
+
+  test("worklist carries bill-desk demographics (USG Studio v6 bridge extension)", async () => {
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.patientId).toBe(patientId);
+    expect(row.patientPhone).toBe("9000000001");
+    expect(row.patientAddress).toBe("Bridge Test Lane 1, Deoghar");
+    expect(row.billNumber).toBe(`BILL-RS-${marker}`);
   });
 
   test("billing-status maps accessions", async () => {
