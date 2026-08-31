@@ -719,11 +719,14 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
           if (hit.studyInstanceUID && existingUids.has(hit.studyInstanceUID)) continue;
           const accKey = hit.accessionNumber.trim().toUpperCase();
           if (accKey && existingAcc.has(accKey)) continue;
+          // Ephemeral Orthanc-only row — not a DB worklist record. Cast via
+          // unknown because several join/lock fields are intentionally null.
           filtered.push({
             id: orthancEphemeralWorklistId(hit.studyInstanceUID),
             studyId: null,
             patientId: null,
             dicomPatientId: null,
+            patientMatchStatus: "UNMATCHED",
             patientName: hit.patientName || "Unknown",
             age: null,
             sex: null,
@@ -754,11 +757,11 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
             aiFeedbackAt: null,
             reportId: null,
             deliveryStatus: null,
-            matchScore: null,
-            matchPoints: null,
+            matchScore: "RED",
+            matchPoints: 0,
             matchReasons: null,
             matchWarnings: null,
-            matchDecision: null,
+            matchDecision: "PENDING",
             matchApprovedBy: null,
             matchApprovedAt: null,
             matchOverrideReason: null,
@@ -784,7 +787,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
             usgMeasurementCount: 0,
             usgKeyImageCount: 0,
             usgReportStatus: null,
-          } as typeof rowsWithExpiry[number]);
+          } as unknown as (typeof rowsWithExpiry)[number]);
           existingUids.add(hit.studyInstanceUID);
           if (accKey) existingAcc.add(accKey);
         }
