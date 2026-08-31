@@ -9,6 +9,8 @@ import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormatsForPicker } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 import { FileText } from "lucide-react";
+import { REPORT_FORMAT_SETTINGS } from "@/lib/reportSectionAccordion";
+import { SectionSettingsLink } from "@/components/radiology/zai-workspace/section-settings-link";
 
 export type WholeReportFormatControlProps = {
   reportingContext: ReportingStudyContext;
@@ -84,6 +86,10 @@ export function WholeReportFormatControl({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800">
             Report Format
           </span>
+          <SectionSettingsLink
+            {...REPORT_FORMAT_SETTINGS}
+            testId="report-format-settings-link"
+          />
         </div>
         {appliedLabel ? (
           <span
