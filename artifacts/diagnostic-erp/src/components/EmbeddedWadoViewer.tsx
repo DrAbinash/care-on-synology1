@@ -99,6 +99,8 @@ export interface EmbeddedViewerHandle {
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   studyInstanceUID: string | null;
+  /** When UID is missing, resolve from Orthanc via this worklist row id. */
+  worklistId?: number | null;
   accessionNumber?: string | null;
   patientName?: string | null;
   /**
@@ -130,19 +132,54 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   captureBusy?: boolean;
   /** Ask CARE OHIF extension for annotated viewport capture (parent registers requestId). */
   onRequestOhifAnnotatedCapture?: () => void;
-}>(function EmbeddedWadoViewer({ studyInstanceUID, accessionNumber, patientName, columnExpanded = false, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }, ref) {
-  if (!studyInstanceUID) {
+}>(function EmbeddedWadoViewer({
+  studyInstanceUID,
+  worklistId,
+  accessionNumber,
+  patientName,
+  columnExpanded = false,
+  onColumnExpandedChange,
+  onAddCurrentFrameToReport,
+  onViewportContextChange,
+  onCaptureViewport,
+  captureBusy,
+  onRequestOhifAnnotatedCapture,
+}, ref) {
+  const initialUid = (studyInstanceUID ?? "").trim();
+  const canResolve = !initialUid && typeof worklistId === "number" && worklistId > 0;
+
+  const { data: resolved, isFetching: resolving, isError: resolveFailed } = useQuery({
+    queryKey: ["resolve-study-uid", worklistId],
+    enabled: canResolve,
+    queryFn: () => api.post<{ studyInstanceUID: string | null; error?: string }>(
+      `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
+      {},
+    ),
+    retry: 1,
+    staleTime: 60_000,
+  });
+
+  const effectiveUid = initialUid || (resolved?.studyInstanceUID ?? "").trim();
+
+  if (!effectiveUid) {
     return (
-      <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm">
+      <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm px-4 text-center">
         <AlertTriangle className="h-8 w-8" />
         <p>No StudyInstanceUID available for this worklist entry.</p>
+        {canResolve && resolving ? (
+          <p className="text-xs">Looking up study in Orthanc archive…</p>
+        ) : canResolve && resolveFailed ? (
+          <p className="text-xs">Orthanc lookup failed. Try Search Orthanc archive on the worklist with the scan date.</p>
+        ) : accessionNumber ? (
+          <p className="text-xs">Accession {accessionNumber} — images may exist in Orthanc but are not linked yet.</p>
+        ) : null}
       </div>
     );
   }
 
   return (
     <ViewerContent
-      studyInstanceUID={studyInstanceUID}
+      studyInstanceUID={effectiveUid}
       accessionNumber={accessionNumber}
       patientName={patientName}
       controlRef={ref}

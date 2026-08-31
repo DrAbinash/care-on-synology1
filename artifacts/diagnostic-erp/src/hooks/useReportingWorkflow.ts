@@ -9,7 +9,8 @@ import {
 } from "@/lib/reportingWorkflow";
 import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
 import { isUltrasoundModality } from "@/lib/usgModality";
-import { toISTDateStr } from "@/lib/dateRangePresets";
+import { toISTDateStr, studyDateInRange } from "@/lib/dateRangePresets";
+import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
 
 /**
  * useReportingWorkflow — Ticket M1.5 Phase 2: the ONE workflow controller for
@@ -58,6 +59,10 @@ export interface ReportingWorkflowOptions {
   /** Inclusive IST calendar-day bounds (YYYY-MM-DD). Empty = no date bound. */
   dateFrom?: string;
   dateTo?: string;
+  /** Server-side patient/accession search (not client-only). */
+  search?: string;
+  /** When true + search/date set, merge Orthanc archive hits. */
+  searchOrthanc?: boolean;
 }
 
 function matchesQueueModality(modality: string | null | undefined, filter: string): boolean {
@@ -71,13 +76,13 @@ function matchesQueueModality(modality: string | null | undefined, filter: strin
   return m.startsWith(filter.toUpperCase());
 }
 
-function matchesQueueDate(createdAt: string | undefined, dateFrom: string, dateTo: string): boolean {
-  if (!dateFrom && !dateTo) return true;
-  if (!createdAt) return false;
-  const d = toISTDateStr(createdAt);
-  if (dateFrom && d < dateFrom) return false;
-  if (dateTo && d > dateTo) return false;
-  return true;
+function matchesQueueDate(
+  studyDate: string | null | undefined,
+  createdAt: string | undefined,
+  dateFrom: string,
+  dateTo: string,
+): boolean {
+  return studyDateInRange(studyDate, createdAt, dateFrom, dateTo);
 }
 
 export function useReportingWorkflow(currentStudyId: number | undefined, options: ReportingWorkflowOptions = {}) {
@@ -88,15 +93,43 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     modalityFilter = "all",
     dateFrom = "",
     dateTo = "",
+    search = "",
+    searchOrthanc = true,
   } = options;
   const qc = useQueryClient();
 
-  // Same key as pages/RadiologyWorklist.tsx — shared cache, no second fetch.
+  const includeOrthanc = shouldIncludeOrthanc({
+    enabled: searchOrthanc,
+    dateFrom: search.trim() ? "" : dateFrom,
+    dateTo: search.trim() ? "" : dateTo,
+    search,
+  }) || Boolean(search.trim());
+
+  const worklistQueryKey = [
+    "radiology-pacs-worklist",
+    {
+      modality: modalityFilter,
+      dateFrom: search.trim() ? "" : dateFrom,
+      dateTo: search.trim() ? "" : dateTo,
+      search: search.trim(),
+      orthanc: includeOrthanc,
+    },
+  ] as const;
+
+  // Shared cache with PACS Worklist when filters match.
   const { data: fullQueueRaw, isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
-    queryKey: ["radiology-pacs-worklist"],
-    queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>("/api/radiology/pacs-worklist")),
+    queryKey: worklistQueryKey,
+    queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>(
+      buildPacsWorklistUrl({
+        modality: modalityFilter,
+        dateFrom: search.trim() ? undefined : (dateFrom || undefined),
+        dateTo: search.trim() ? undefined : (dateTo || undefined),
+        search: search.trim() || undefined,
+        orthanc: includeOrthanc,
+      }),
+    )),
     refetchInterval: 30_000,
-    placeholderData: (prev) => prev, // background refresh never blanks the strip
+    placeholderData: (prev) => prev,
   });
 
   // The ACTIVE queue is the scoped one; parked pruning below deliberately
@@ -112,9 +145,16 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   const queue = useMemo(
     () => filterQueueByScope(fullQueue, scope, myName, myUserId).filter((s) =>
       matchesQueueModality(s.modality, modalityFilter)
-      && matchesQueueDate(s.createdAt ?? (s as { receivedAt?: string }).receivedAt, dateFrom, dateTo),
+      && (search.trim()
+        ? true
+        : matchesQueueDate(
+          (s as { studyDate?: string | null }).studyDate,
+          s.createdAt ?? (s as { receivedAt?: string }).receivedAt,
+          dateFrom,
+          dateTo,
+        )),
     ),
-    [fullQueue, scope, myName, myUserId, modalityFilter, dateFrom, dateTo],
+    [fullQueue, scope, myName, myUserId, modalityFilter, dateFrom, dateTo, search],
   );
 
   const [parked, setParked] = useState<ParkedStudy[]>(readParked);

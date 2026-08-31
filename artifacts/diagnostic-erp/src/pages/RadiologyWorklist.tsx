@@ -8,7 +8,8 @@ import { launchViewer, recordFailedLaunch, recordSuccessfulLaunch, resolveActive
 import { launchRadiologyStudy } from "@/lib/studyLaunchService";
 import { normalizeModality, isUltrasoundModality } from "@/lib/usgModality";
 import { sanitizeDicomSex } from "@workspace/pathology";
-import { DATE_PRESETS, toISTDateStr } from "@/lib/dateRangePresets";
+import { DATE_PRESETS, studyDateInRange } from "@/lib/dateRangePresets";
+import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -759,6 +760,7 @@ export default function RadiologyWorklist() {
   const [autoLinking, setAutoLinking] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [searchOrthanc, setSearchOrthanc] = useState(true);
   function setDatePreset(from: string, to: string) {
     setDateFrom(from);
     setDateTo(to);
@@ -808,10 +810,35 @@ export default function RadiologyWorklist() {
   const col = columnVisibility;
 
   const overnightMode = aiDraftFilter === "overnight";
+  const includeOrthanc = shouldIncludeOrthanc({
+    enabled: searchOrthanc,
+    dateFrom,
+    dateTo,
+    search,
+  });
+
+  const worklistFetchParams = {
+    overnightDrafts: overnightMode,
+    modality: modalityFilter,
+    status: statusFilter,
+    search: search.trim(),
+    dateFrom,
+    dateTo,
+    orthanc: includeOrthanc,
+  };
+
   const { data: entries = [], isLoading, isError, error, refetch } = useQuery<WorklistEntry[]>({
-    queryKey: ["radiology-pacs-worklist", { overnightDrafts: overnightMode }],
+    queryKey: ["radiology-pacs-worklist", worklistFetchParams],
     queryFn: async () => {
-      const url = overnightMode ? `/api/radiology/pacs-worklist?overnightDrafts=1` : `/api/radiology/pacs-worklist`;
+      const url = buildPacsWorklistUrl({
+        overnightDrafts: overnightMode,
+        modality: modalityFilter !== "all" ? modalityFilter : undefined,
+        status: statusFilter !== "all" ? statusFilter : undefined,
+        search: search.trim() || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        orthanc: includeOrthanc,
+      });
       console.log("[PACS-WORKLIST] Fetching:", url);
       const session = readStaffSession();
       console.log("[PACS-WORKLIST] Auth token present:", !!session?.token, "| role:", session?.user?.role);
@@ -1127,14 +1154,10 @@ export default function RadiologyWorklist() {
       if (aiComposeFilter === "none" && st !== "NONE") return false;
     }
 
-    // Client-side date-range filter (IST calendar day), keyed off study received time.
-    // Overnight AI Drafts uses its own study-age chips; custom chip reuses these dates.
+    // Date filter uses DICOM study scan date (studyDate), not ERP received time.
     if (!overnightMode || overnightAgeChip === "custom") {
       if (dateFrom || dateTo) {
-        const entryDate = e.createdAt ? toISTDateStr(e.createdAt) : null;
-        if (!entryDate) return false;
-        if (dateFrom && entryDate < dateFrom) return false;
-        if (dateTo && entryDate > dateTo) return false;
+        if (!studyDateInRange(e.studyDate, e.createdAt, dateFrom, dateTo)) return false;
       }
     }
 
@@ -1644,6 +1667,16 @@ export default function RadiologyWorklist() {
                       </Button>
                     ))}
                   </div>
+                  <label className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={searchOrthanc}
+                      onChange={(e) => setSearchOrthanc(e.target.checked)}
+                      className="h-3 w-3"
+                      data-testid="search-orthanc-archive"
+                    />
+                    Search Orthanc archive (back dates)
+                  </label>
                 </PopoverContent>
               </Popover>
 
@@ -1823,7 +1856,12 @@ export default function RadiologyWorklist() {
               <div className="flex flex-col items-center justify-center flex-1 py-16 gap-2 text-muted-foreground">
                 <ScanSearch className="h-10 w-10" />
                 <p className="text-sm font-semibold">No studies match your filters</p>
-                <p className="text-xs">{entries.length} total in database. Try clearing search or changing filters.</p>
+                <p className="text-xs">
+                  {entries.length} loaded
+                  {countData?.totalRows != null ? ` · ${countData.totalRows} total in database` : ""}.
+                  {includeOrthanc ? " Orthanc archive included." : ""}
+                  {" "}Try clearing search, widening dates, or enabling Orthanc archive.
+                </p>
                 <Button variant="outline" size="sm" className="mt-2" onClick={() => { setSearch(""); setStatusFilter("all"); setModalityFilter("all"); }}>
                   Clear All Filters
                 </Button>

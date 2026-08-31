@@ -50,6 +50,34 @@ export function shiftISODate(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Converts DICOM study date (YYYYMMDD or YYYY-MM-DD) to IST calendar-day "YYYY-MM-DD". */
+export function studyDateToISO(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const t = raw.trim();
+  const compact = t.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+  const digits = t.replace(/\D/g, "");
+  if (digits.length >= 8) {
+    return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  }
+  return null;
+}
+
+/** True when study scan date (not received time) falls in [dateFrom, dateTo] (IST YYYY-MM-DD). */
+export function studyDateInRange(
+  studyDate: string | null | undefined,
+  createdAt: string | null | undefined,
+  dateFrom: string,
+  dateTo: string,
+): boolean {
+  const iso = studyDateToISO(studyDate) ?? (createdAt ? toISTDateStr(createdAt) : null);
+  if (!iso) return false;
+  if (dateFrom && iso < dateFrom) return false;
+  if (dateTo && iso > dateTo) return false;
+  return true;
+}
+
 export const DATE_PRESETS = [
   { label: "Today", from: () => todayISO(), to: () => todayISO() },
   { label: "Yesterday", from: () => daysAgoISO(1), to: () => daysAgoISO(1) },
