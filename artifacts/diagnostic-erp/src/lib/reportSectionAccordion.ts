@@ -44,6 +44,31 @@ export const REPORT_SECTIONS: readonly ReportSectionMeta[] = [
   { id: "report", label: "Report / Layout / Export", accent: "rose" },
 ] as const;
 
+/** Compact header deep-links to the admin page that fills each section. */
+export type SectionSettingsLinkSpec = { href: string; label: string };
+
+/**
+ * Where radiologists configure the content behind each accordion section.
+ * Paths must match App.tsx / RadiologySettingsCenter tabs.
+ */
+export const REPORT_SECTION_SETTINGS: Record<ReportSectionId, SectionSettingsLinkSpec> = {
+  demography: { href: "/settings?tab=clinic", label: "Clinic" },
+  refDoctor: { href: "/doctors", label: "Doctors" },
+  region: { href: "/settings/radiology?tab=quick-select", label: "Settings" },
+  history: { href: "/settings/radiology?tab=quick-select", label: "History chips" },
+  technique: { href: "/settings/radiology?tab=quick-select", label: "Protocols" },
+  findings: { href: "/settings/radiology?tab=quick-select", label: "Quick Select" },
+  impression: { href: "/settings/radiology?tab=quick-select", label: "Quick Select" },
+  recommendation: { href: "/settings/radiology?tab=style", label: "Chips" },
+  report: { href: "/settings/radiology?tab=style", label: "Layout" },
+};
+
+/** Report Format sits outside the accordion but needs the same affordance. */
+export const REPORT_FORMAT_SETTINGS: SectionSettingsLinkSpec = {
+  href: "/settings/radiology?tab=content-catalog",
+  label: "Catalog",
+};
+
 /**
  * Accordion transition. Clicking a different header moves focus there;
  * clicking the header of the already-open section collapses everything, which
@@ -78,6 +103,13 @@ export const FINDINGS_TOOLS: readonly FindingsToolMeta[] = [
   { id: "structured", label: "Structured" },
   { id: "suggestions", label: "Suggestions" },
 ] as const;
+
+/** Nested Findings tools (macros / quick select) deep-links. */
+export const FINDINGS_TOOL_SETTINGS: Partial<Record<FindingsToolId | "macros", SectionSettingsLinkSpec>> = {
+  macros: { href: "/settings/radiology?tab=quick-select", label: "Macros" },
+  quickSelect: { href: "/settings/radiology?tab=quick-select", label: "Quick Select" },
+  structured: { href: "/radiology/structured-report-templates", label: "Templates" },
+};
 
 /** Only one drawer open at a time; re-clicking the open tab hides the drawer. */
 export function nextFindingsTool(

@@ -27,6 +27,8 @@ import {
 } from "@/lib/findingsMacros";
 import { upsertChocolateTileOnServer } from "@/lib/chocolateMacrosApi";
 import type { MacroSectionsOwned } from "@/lib/chocolateMacroOwnership";
+import { FINDINGS_TOOL_SETTINGS } from "@/lib/reportSectionAccordion";
+import { SectionSettingsLink } from "@/components/radiology/zai-workspace/section-settings-link";
 
 const PALETTES = [
   "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white text-indigo-900 hover:border-indigo-500 hover:shadow-indigo-200/50",
@@ -292,8 +294,15 @@ export function ChocolateBoxMacros({
       className="space-y-1.5 rounded-xl border border-indigo-200/70 bg-gradient-to-r from-indigo-50/80 via-violet-50/50 to-fuchsia-50/40 p-2 shadow-sm"
       data-testid="chocolate-box"
     >
-      <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-800">
-        {label} macros
+      <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-indigo-800">
+        <span>{label} macros</span>
+        {FINDINGS_TOOL_SETTINGS.macros ? (
+          <SectionSettingsLink
+            {...FINDINGS_TOOL_SETTINGS.macros}
+            testId="chocolate-macros-settings-link"
+            className="normal-case tracking-normal font-medium"
+          />
+        ) : null}
       </div>
       <div className="flex flex-wrap gap-1.5">
         {tiles.map((tile, i) => {

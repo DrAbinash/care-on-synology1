@@ -3,11 +3,14 @@ import { Check, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   FINDINGS_TOOLS,
+  FINDINGS_TOOL_SETTINGS,
+  REPORT_SECTION_SETTINGS,
   type FindingsToolId,
   type ReportSectionAccent,
   type ReportSectionId,
   type SectionStatus,
 } from "@/lib/reportSectionAccordion";
+import { SectionSettingsLink } from "./section-settings-link";
 
 /**
  * Compact accordion chrome for the main reporting pane.
@@ -122,6 +125,10 @@ export function ReportAccordionSection({
           ) : null}
           <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">⌥{index}</span>
         </button>
+        <SectionSettingsLink
+          {...REPORT_SECTION_SETTINGS[id]}
+          testId={`report-section-settings-${id}`}
+        />
         {showBody && headerExtra}
       </div>
       <div
@@ -154,6 +161,8 @@ interface ToolTabsProps {
  * the open tab closes the drawer and gives the height back to the editor.
  */
 export function FindingsToolTabs({ active, onSelect, badges, unavailable }: ToolTabsProps) {
+  const qsSettings = FINDINGS_TOOL_SETTINGS.quickSelect;
+  const structuredSettings = FINDINGS_TOOL_SETTINGS.structured;
   return (
     <div
       className="flex flex-wrap items-center gap-1 rounded-lg border border-border/70 bg-muted/30 p-1"
@@ -197,6 +206,12 @@ export function FindingsToolTabs({ active, onSelect, badges, unavailable }: Tool
           </button>
         );
       })}
+      {qsSettings ? (
+        <SectionSettingsLink {...qsSettings} testId="findings-tool-settings-quickSelect" />
+      ) : null}
+      {structuredSettings ? (
+        <SectionSettingsLink {...structuredSettings} testId="findings-tool-settings-structured" />
+      ) : null}
       {active && (
         <button
           type="button"

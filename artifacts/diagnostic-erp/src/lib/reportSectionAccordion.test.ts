@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   FINDINGS_TOOLS,
+  FINDINGS_TOOL_SETTINGS,
+  REPORT_FORMAT_SETTINGS,
   REPORT_SECTIONS,
+  REPORT_SECTION_SETTINGS,
   clip,
   countAssisted,
   formatProvenanceSummary,
@@ -44,6 +47,19 @@ describe("major section order", () => {
     expect(sectionForAltDigit("9")).toBe("report");
     expect(sectionForAltDigit("0")).toBeNull();
     expect(sectionForAltDigit("x")).toBeNull();
+  });
+});
+
+describe("section settings deep-links", () => {
+  it("covers every accordion section with a non-empty settings href", () => {
+    for (const section of REPORT_SECTIONS) {
+      const link = REPORT_SECTION_SETTINGS[section.id];
+      expect(link.href.startsWith("/")).toBe(true);
+      expect(link.label.trim().length).toBeGreaterThan(0);
+    }
+    expect(REPORT_FORMAT_SETTINGS.href.startsWith("/")).toBe(true);
+    expect(FINDINGS_TOOL_SETTINGS.macros?.href).toContain("quick-select");
+    expect(FINDINGS_TOOL_SETTINGS.quickSelect?.href).toContain("quick-select");
   });
 });
 
