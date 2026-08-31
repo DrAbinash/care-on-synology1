@@ -36,6 +36,7 @@ import {
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import crypto from "node:crypto";
+import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { todayIST } from "../lib/istDate";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority } from "../lib/studyPriorityEngine";
@@ -486,23 +487,50 @@ radiologyRouter.get("/pacs-worklist-stream", async (req, res): Promise<void> => 
   });
 });
 
-// GET /api/radiology/pacs-worklist?status=&modality=&search=
+// GET /api/radiology/pacs-worklist?status=&modality=&search=&dateFrom=&dateTo=&orthanc=1
 // Staff-authenticated view of radiology_worklist (PACS-pushed studies).
+// dateFrom/dateTo filter on DICOM studyDate (YYYYMMDD), not received createdAt.
+// orthanc=1 merges live Orthanc C-FIND hits for back-date / archive search.
 // Different from /api/radiology/worklist which queries radiology_studies (RIS-driven).
 radiologyRouter.get("/pacs-worklist", async (req, res) => {
   try {
     const status = (req.query.status as string) || "";
     const modality = (req.query.modality as string) || "";
     const search = (req.query.search as string)?.trim() || "";
+    const dateFrom = (req.query.dateFrom as string)?.trim() || "";
+    const dateTo = (req.query.dateTo as string)?.trim() || "";
+    const includeOrthanc = req.query.orthanc === "1" || req.query.orthanc === "true";
     const unlinkedOnly =
       req.query.unlinked === "1" || req.query.unlinked === "true" || req.query.filter === "unbilled";
 
-    req.log.info({ status: status || "all", modality: modality || "all", search: search || "", unlinkedOnly }, "[pacs-worklist] route hit — staff auth passed");
+    const toCompact = (iso: string) => iso.replace(/-/g, "");
+
+    req.log.info({
+      status: status || "all",
+      modality: modality || "all",
+      search: search || "",
+      dateFrom: dateFrom || "",
+      dateTo: dateTo || "",
+      includeOrthanc,
+      unlinkedOnly,
+    }, "[pacs-worklist] route hit — staff auth passed");
 
     const conds: ReturnType<typeof eq>[] = [];
     if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
     if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
     if (unlinkedOnly) conds.push(isNull(radiologyWorklistTable.studyId));
+    if (dateFrom) conds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
+    if (dateTo) conds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
+    if (search) {
+      const pattern = `%${search}%`;
+      conds.push(or(
+        ilike(radiologyWorklistTable.patientName, pattern),
+        ilike(radiologyWorklistTable.accessionNumber, pattern),
+        ilike(radiologyWorklistTable.studyDescription, pattern),
+        ilike(radiologyWorklistTable.referringDoctor, pattern),
+        ilike(radiologyWorklistTable.dicomPatientId, pattern),
+      )!);
+    }
 
     const coreSelect = {
       id: radiologyWorklistTable.id,
@@ -618,8 +646,12 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
         .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
-        .orderBy(desc(radiologyWorklistTable.createdAt))
-        .limit(500);
+        .orderBy(
+          dateFrom || dateTo
+            ? desc(radiologyWorklistTable.studyDate)
+            : desc(radiologyWorklistTable.createdAt),
+        )
+        .limit(dateFrom || dateTo || search ? 1000 : 500);
 
     let rows;
     try {
@@ -641,20 +673,131 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     }));
 
     let filtered = rowsWithExpiry;
-    if (search) {
-      const s = search.toLowerCase();
-      filtered = rowsWithExpiry.filter((r) =>
-        (r.patientName ?? "").toLowerCase().includes(s) ||
-        (r.accessionNumber ?? "").toLowerCase().includes(s) ||
-        (r.studyDescription ?? "").toLowerCase().includes(s) ||
-        ((r as any).testName ?? "").toLowerCase().includes(s) ||
-        (r.referringDoctor ?? "").toLowerCase().includes(s) ||
-        ((r as any).uhid ?? "").toLowerCase().includes(s) ||
-        ((r as any).billNumber ?? "").toLowerCase().includes(s)
-      );
+
+    // Backfill missing UIDs from matching Orthanc rows (same accession).
+    if (includeOrthanc && filtered.some((r) => !r.studyInstanceUID?.trim())) {
+      const orthancForBackfill = await findOrthancStudies({
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        patientName: search || undefined,
+        modality: modality && modality !== "all" ? modality : undefined,
+        limit: 100,
+      });
+      if (orthancForBackfill.rows.length > 0) {
+        const byAcc = new Map(
+          orthancForBackfill.rows
+            .filter((o) => o.accessionNumber.trim())
+            .map((o) => [o.accessionNumber.trim().toUpperCase(), o.studyInstanceUID]),
+        );
+        filtered = filtered.map((r) => {
+          if (r.studyInstanceUID?.trim()) return r;
+          const acc = (r.accessionNumber ?? "").trim().toUpperCase();
+          const uid = acc ? byAcc.get(acc) : undefined;
+          if (!uid) return r;
+          return { ...r, studyInstanceUID: uid };
+        });
+      }
     }
 
-    req.log.info({ rowsReturned: filtered.length, rawRows: rows.length, status: status || "all", modality: modality || "all" }, "[pacs-worklist] query complete");
+    if (includeOrthanc) {
+      const orthanc = await findOrthancStudies({
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        patientName: search || undefined,
+        modality: modality && modality !== "all" ? modality : undefined,
+        limit: 200,
+      });
+      if (orthanc.rows.length > 0) {
+        const existingUids = new Set(
+          filtered.map((r) => (r.studyInstanceUID ?? "").trim()).filter(Boolean),
+        );
+        const existingAcc = new Set(
+          filtered.map((r) => (r.accessionNumber ?? "").trim().toUpperCase()).filter(Boolean),
+        );
+        const now = new Date().toISOString();
+        for (const hit of orthanc.rows) {
+          if (hit.studyInstanceUID && existingUids.has(hit.studyInstanceUID)) continue;
+          const accKey = hit.accessionNumber.trim().toUpperCase();
+          if (accKey && existingAcc.has(accKey)) continue;
+          filtered.push({
+            id: orthancEphemeralWorklistId(hit.studyInstanceUID),
+            studyId: null,
+            patientId: null,
+            dicomPatientId: null,
+            patientName: hit.patientName || "Unknown",
+            age: null,
+            sex: null,
+            modality: hit.modality || "OT",
+            studyDescription: hit.studyDescription,
+            studyDate: hit.studyDate.replace(/-/g, ""),
+            accessionNumber: hit.accessionNumber,
+            studyInstanceUID: hit.studyInstanceUID,
+            aeTitle: null,
+            ipAddress: null,
+            port: null,
+            referringDoctor: hit.referringDoctor,
+            weasisUrl: null,
+            sourcePacs: "ORTHANC_LIVE",
+            sourceAeTitle: null,
+            dicomMetadata: null,
+            status: "ORTHANC_ONLY",
+            assignedRadiologist: null,
+            assignedRadiologistId: null,
+            assignedAt: null,
+            assignedByName: null,
+            aiDraftStatus: "NONE",
+            aiDraftJson: null,
+            aiComposeStatus: "NONE",
+            aiComposeJobId: null,
+            aiComposeUpdatedAt: null,
+            aiFeedback: null,
+            aiFeedbackAt: null,
+            reportId: null,
+            deliveryStatus: null,
+            matchScore: null,
+            matchPoints: null,
+            matchReasons: null,
+            matchWarnings: null,
+            matchDecision: null,
+            matchApprovedBy: null,
+            matchApprovedAt: null,
+            matchOverrideReason: null,
+            createdAt: now,
+            updatedAt: now,
+            lockUserId: null,
+            lockUserName: null,
+            lockTime: null,
+            lockLastActivityAt: null,
+            lockWorkstation: null,
+            lockTtlSeconds,
+            lockExpiresAt: null,
+            uhid: null,
+            billNumber: null,
+            testName: null,
+            billedTestName: null,
+            billedPatientName: null,
+            billedPatientUHID: null,
+            billedAccessionNumber: null,
+            billedModality: null,
+            billedStudyDate: null,
+            priority: null,
+            usgMeasurementCount: 0,
+            usgKeyImageCount: 0,
+            usgReportStatus: null,
+          } as typeof rowsWithExpiry[number]);
+          existingUids.add(hit.studyInstanceUID);
+          if (accKey) existingAcc.add(accKey);
+        }
+      }
+    }
+
+    req.log.info({
+      rowsReturned: filtered.length,
+      rawRows: rows.length,
+      status: status || "all",
+      modality: modality || "all",
+      includeOrthanc,
+    }, "[pacs-worklist] query complete");
 
     // Correct legacy empty READY pointers for ALL worklist views (not only overnight).
     // Job completion used to write READY even with zero usable draft content.
@@ -704,6 +847,80 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     const message = err?.message || "Internal server error";
     res.status(500).json({ error: message, message, stack: err?.stack });
   }
+});
+
+
+/**
+ * POST /api/radiology/pacs-worklist/:id/resolve-study-uid
+ * When a worklist row lacks StudyInstanceUID, look it up in Orthanc by accession
+ * or patient name + study date, persist on the row, and return the UID.
+ */
+radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid worklist id" });
+    return;
+  }
+
+  const [row] = await db
+    .select({
+      id: radiologyWorklistTable.id,
+      studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+      accessionNumber: radiologyWorklistTable.accessionNumber,
+      patientName: radiologyWorklistTable.patientName,
+      studyDate: radiologyWorklistTable.studyDate,
+      modality: radiologyWorklistTable.modality,
+    })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, id))
+    .limit(1);
+
+  if (!row) {
+    res.status(404).json({ error: "Worklist entry not found" });
+    return;
+  }
+
+  const existing = (row.studyInstanceUID ?? "").trim();
+  if (existing) {
+    res.json({ studyInstanceUID: existing, source: "worklist", updated: false });
+    return;
+  }
+
+  const studyDateIso = row.studyDate?.match(/^(\d{4})(\d{2})(\d{2})$/)
+    ? `${row.studyDate.slice(0, 4)}-${row.studyDate.slice(4, 6)}-${row.studyDate.slice(6, 8)}`
+    : undefined;
+
+  const orthanc = await findOrthancStudies({
+    accessionNumber: row.accessionNumber?.trim() || undefined,
+    patientName: !row.accessionNumber?.trim() ? (row.patientName?.trim() || undefined) : undefined,
+    dateExact: studyDateIso,
+    modality: row.modality?.trim() || undefined,
+    limit: 5,
+  });
+
+  if (orthanc.error && orthanc.rows.length === 0) {
+    res.status(502).json({ error: orthanc.error, studyInstanceUID: null });
+    return;
+  }
+
+  let hit = orthanc.rows[0];
+  if (row.accessionNumber?.trim()) {
+    const acc = row.accessionNumber.trim().toUpperCase();
+    hit = orthanc.rows.find((r) => r.accessionNumber.trim().toUpperCase() === acc) ?? hit;
+  }
+
+  const uid = hit?.studyInstanceUID?.trim();
+  if (!uid) {
+    res.status(404).json({ error: "Study not found in Orthanc archive", studyInstanceUID: null });
+    return;
+  }
+
+  await db
+    .update(radiologyWorklistTable)
+    .set({ studyInstanceUID: uid, updatedAt: new Date() })
+    .where(eq(radiologyWorklistTable.id, id));
+
+  res.json({ studyInstanceUID: uid, source: "orthanc", updated: true });
 });
 
 
