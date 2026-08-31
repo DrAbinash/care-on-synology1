@@ -38,7 +38,9 @@ export interface QueueStudy {
   // M1.6B1 — canonical id-based assignment (name above stays the mirror).
   assignedRadiologistId?: number | null;
   assignedAt?: string | null;
-  // Study-received timestamp, used by the queue's date-range filter.
+  // Study scan date (DICOM studyDate), not ERP received time.
+  studyDate?: string | null;
+  /** Study-received timestamp — fallback when studyDate missing. */
   createdAt?: string;
 }
 

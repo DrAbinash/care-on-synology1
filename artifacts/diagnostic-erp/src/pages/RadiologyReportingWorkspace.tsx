@@ -516,6 +516,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch { /* ignore */ }
     return "queue";
   });
+  const [patientJumpFilter, setPatientJumpFilter] = useState("");
   const queueDateRange = useMemo(() => {
     if (datePreset === "today") return { from: todayISO(), to: todayISO() };
     if (datePreset === "yesterday") return { from: daysAgoISO(1), to: daysAgoISO(1) };
@@ -577,6 +578,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     modalityFilter: queueModality,
     dateFrom: queueDateRange.from,
     dateTo: queueDateRange.to,
+    search: patientJumpFilter,
+    searchOrthanc: true,
   });
 
   // 2. Study lock (claim/heartbeat/release)
@@ -999,7 +1002,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [reportImagesOpen, setReportImagesOpen] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [patientJumpFilter, setPatientJumpFilter] = useState("");
   const [captureBusy, setCaptureBusy] = useState(false);
   const [keyImageFilterObsId, setKeyImageFilterObsId] = useState<string | null>(null);
 
@@ -1767,6 +1769,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const jumpQueue = useMemo(() => {
     const q = patientJumpFilter.trim().toLowerCase();
     if (!q) return studies;
+    // Server search (workflow) already filters when patientJumpFilter is set;
+    // keep a light client pass for nested Study shape / stale rows.
     return studies.filter((s: Study) => {
       const patient = s.patient?.name ?? "";
       const hay = `${patient} ${s.modality ?? ""} ${s.accession ?? ""} ${s.studyDescription ?? ""}`.toLowerCase();
@@ -3894,6 +3898,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
                       studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
+                      worklistId={workflow.currentRow?.id ?? studyId ?? null}
                       accessionNumber={workflow.currentRow?.accessionNumber ?? null}
                       patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
