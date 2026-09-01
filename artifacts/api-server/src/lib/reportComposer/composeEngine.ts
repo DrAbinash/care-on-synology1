@@ -9,6 +9,7 @@ import {
   parseComposerDraftJson,
 } from "./types";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
+import { buildCareSystemPrompt } from "./persona";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 
 export type ComposeRunResult = {
@@ -21,24 +22,22 @@ export type ComposeRunResult = {
   rawLength?: number;
 };
 
+// ─── CARE Radiology Persona ─────────────────────────────────────────────
+// PR P0-3 (#657): the system prompt is now assembled from persona modules
+// (MASTER + STYLE + SAFETY + modality/family-specific) based on the frozen
+// snapshot's canonical study context. Persona selection happens BEFORE the
+// worker call and uses the frozen snapshot — no live reread of frontend
+// state. See persona/index.ts and persona/router.ts.
+//
+// The old buildSystemPrompt(kind) function is replaced by
+// buildCareSystemPrompt(kind, snapshot) which is imported above.
+
+/** @deprecated Use buildCareSystemPrompt(kind, snapshot) from persona/index.ts. Kept for backward compat with external callers. */
 function buildSystemPrompt(kind: AiComposeJobKind): string {
-  return [
-    "You are a radiology report composition assistant.",
-    "The radiologist has already supplied the clinical observations.",
-    "Your job is to organize, rephrase, and structure those observations into a polished radiology report.",
-    "NEVER invent pathology, laterality, spinal levels, measurements, grades, or recommendations not supported by the input.",
-    "Remove contradictory normal statements only when the input pathology clearly replaces them.",
-    "Preserve unrelated normal anatomy.",
-    "Return ONLY valid JSON with keys: findings, impression, recommendation, unresolvedQuestions, warnings.",
-    kind === "IMPRESSION"
-      ? "Generate or refine Impression only from the supplied Findings; leave findings unchanged in the JSON (copy input findings)."
-      : "",
-    kind === "SELECTION_EDIT" || kind === "SECTION_EDIT" || kind === "REPHRASE" || kind === "SHORTEN" || kind === "EXPAND" || kind === "TRANSLATE"
-      ? "Apply the instruction only to the selected/target text. Preserve meaning, laterality, levels, and numbers."
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  // Legacy fallback: if a caller passes no snapshot context, assemble the
+  // base persona (MASTER + STYLE + SAFETY) without modality routing.
+  // This path is NOT used by runReportComposer (which always has a snapshot).
+  return buildCareSystemPrompt(kind, {} as ComposerInputSnapshot);
 }
 
 export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
@@ -206,7 +205,11 @@ export async function runReportComposer(opts: {
     return { ok: false, safeError: "composer_endpoint_blocked", latencyMs: Date.now() - started };
   }
 
-  const system = buildSystemPrompt(opts.kind);
+  // PR P0-3 (#657): build CARE persona system prompt from the frozen
+  // snapshot's canonical study context. Persona selection happens here
+  // (before the worker call) and uses the frozen snapshot — no live
+  // reread of frontend state.
+  const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
   const user = buildUserPrompt(opts.kind, opts.snapshot);
   const primary = await callOllama({
     endpoint: runtime.endpoint,
