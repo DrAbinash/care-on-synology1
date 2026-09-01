@@ -111,7 +111,7 @@ reportComposerRouter.get("/latest", async (req, res): Promise<void> => {
   res.json({ ok: true, job: publicJobView(job) });
 });
 
-/** Client reports live editor hashes → may flip READY to STALE_READY. */
+/** Client reports live editor hashes + live canonical inputHash → may flip READY to STALE_READY. */
 reportComposerRouter.post("/jobs/:id/freshness", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
     res.status(403).json({ ok: false, error: "AI reporting permission required" });
@@ -125,12 +125,30 @@ reportComposerRouter.post("/jobs/:id/freshness", async (req, res): Promise<void>
   const findingsHash = hashText(findings);
   const impressionHash = hashText(impression);
   const recommendationHash = hashText(recommendation);
+  // NOTE: server recomputes a *narrative-only* reportRevision here for legacy
+  // backward compatibility — it does NOT include observations or study context.
+  // New clients MUST send `reportRevision` (computed via `computeSnapshotHashes`
+  // on the client, which includes obsCanon) so observation changes also flip
+  // READY → STALE_READY per PR #654.
   const reportRevision = hashText(`${findingsHash}:${impressionHash}:${recommendationHash}:`);
+  // PR #656: new clients also send `inputHash` computed via the client-side
+  // `computeSnapshotHashes` over the FULL live canonical snapshot (modality,
+  // region, regions, bodyPart, family, spineSegment, protocol, reportTitle +
+  // clinicalHistory + technique + findings + impression + recommendation +
+  // observations + selectionText + instruction + templateSections +
+  // jobKindHint). When present, a mismatch against the stored enqueue-time
+  // inputHash flips READY → STALE_READY so study-identity changes (Plain →
+  // Contrast, region add/remove, bodyPart change, etc.) cannot be silently
+  // applied as if current. Optional — legacy clients omit and retain the
+  // reportRevision-only behavior.
+  const inputHashRaw = b.inputHash;
+  const inputHash = typeof inputHashRaw === "string" && inputHashRaw.length > 0 ? inputHashRaw : undefined;
   const result = await evaluateJobFreshness(id, {
     findingsHash,
     impressionHash,
     recommendationHash,
     reportRevision: b.reportRevision ? String(b.reportRevision) : reportRevision,
+    ...(inputHash !== undefined ? { inputHash } : {}),
   });
   res.json({ ok: true, ...result });
 });

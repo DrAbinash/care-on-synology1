@@ -40,7 +40,29 @@ export const reportComposerApi = {
     );
   },
 
-  freshness(id: number, body: { findings: string; impression: string; recommendation: string; reportRevision?: string }) {
+  freshness(
+    id: number,
+    body: {
+      findings: string;
+      impression: string;
+      recommendation: string;
+      reportRevision?: string;
+      /**
+       * PR #656: live `inputHash` recomputed by the client via
+       * `computeSnapshotHashes` over the full canonical snapshot (modality,
+       * region, regions, bodyPart, family, spineSegment, protocol,
+       * reportTitle + clinicalHistory + technique + findings + impression +
+       * recommendation + observations + selectionText + instruction +
+       * templateSections + jobKindHint). When present, the server compares
+       * it against the stored enqueue-time `inputHash` and flips READY →
+       * STALE_READY on mismatch so study-identity changes (Plain → Contrast,
+       * region add/remove, bodyPart change, etc.) cannot be silently applied
+       * as if current. Optional for backward compatibility — legacy clients
+       * omit and retain the reportRevision-only behavior.
+       */
+      inputHash?: string;
+    },
+  ) {
     return api.post<{ ok: boolean; status: string; stale: boolean }>(
       `/api/radiology/report-composer/jobs/${id}/freshness`,
       body,
