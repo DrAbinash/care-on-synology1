@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
-import type { VoiceObservation } from "@/lib/voiceReportComposer/types";
+import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
   computeSnapshotHashes,
   materializeAcceptedText,
@@ -41,7 +41,7 @@ export function useReportComposer(opts: {
   const techniqueText = useWorkspace((s) => s.techniqueText);
   const clinicalHistoryText = useWorkspace((s) => s.clinicalHistoryText);
   const fieldProvenance = useWorkspace((s) => s.fieldProvenance);
-  const voiceObs = useWorkspace((s) => s.voiceComposerObservations);
+  const appliedPathologyPatches = useWorkspace((s) => s.appliedPathologyPatches);
   const applyAiComposerAccepted = useWorkspace((s) => s.applyAiComposerAccepted);
   const undoLastPatch = useWorkspace((s) => s.undoLastPatch);
 
@@ -59,12 +59,18 @@ export function useReportComposer(opts: {
       if (["READY", "STALE_READY", "FAILED", "APPLIED", "DISCARDED", "CANCELLED", "OBSOLETE"].includes(res.job.status)) {
         stopPoll();
         if (res.job.status === "READY" || res.job.status === "STALE_READY") {
-          // Freshness check against live editor
+          // Freshness check against the live editor + live canonical ledger.
+          // Both narrative text and the structured observation ledger are
+          // part of `reportRevision`; a change to either (e.g. swapping
+          // "mild" for "moderate" on an L4-L5 disc bulge observation) will
+          // produce a different revision and the previously-queued READY
+          // draft becomes STALE_READY so it is not blindly applied.
+          const liveObservations = deriveComposeObservations(appliedPathologyPatches);
           const hashes = await computeSnapshotHashes({
             findings: findingsText,
             impression: impressionText,
             recommendation: recommendationText,
-            observations: [],
+            observations: liveObservations,
           });
           const fr = await reportComposerApi.freshness(id, {
             findings: findingsText,
@@ -86,7 +92,7 @@ export function useReportComposer(opts: {
         }
       }
     }
-  }, [findingsText, impressionText, recommendationText, opts.modality, stopPoll, toast]);
+  }, [findingsText, impressionText, recommendationText, appliedPathologyPatches, opts.modality, stopPoll, toast]);
 
   const startPoll = useCallback((id: number) => {
     stopPoll();
@@ -117,17 +123,16 @@ export function useReportComposer(opts: {
   }, [opts.worklistId, startPoll, stopPoll]);
 
   const buildSnapshot = useCallback(async (extra?: Partial<ComposerInputSnapshot>, jobKind?: JobKind): Promise<ComposerInputSnapshot> => {
-    const observations: ComposeObservation[] = (voiceObs ?? []).map((o: VoiceObservation) => ({
-      concept: o.concept,
-      source: "voice" as const,
-      level: o.level,
-      laterality: o.laterality,
-      findingsText: o.findingsText,
-      impressionText: o.impressionText,
-      anatomicalSection: o.anatomicalSection,
-      conflictGroup: o.conflictGroup,
-      baselineReplaces: o.baselineReplaces,
-    }));
+    // Canonical observations are derived from the live workspace observation
+    // ledger (`appliedPathologyPatches`). This is the single authoritative
+    // observation store in CARE — Quick Select, Finding Composer, structured
+    // macros / Chocolate bundles, MRI lumbar level canvas, pathology overlay,
+    // and committed Voice Composer plans all write into it through the
+    // existing `apply*` entrypoints. Voice observations are already members
+    // of the ledger (id `voice-*`, source `radiologist-voice`), so they are
+    // included here automatically and do NOT need a second pass through
+    // `voiceComposerObservations`.
+    const observations: ComposeObservation[] = deriveComposeObservations(appliedPathologyPatches);
     const snap: ComposerInputSnapshot = {
       studyId: opts.studyId,
       worklistId: opts.worklistId,
@@ -156,7 +161,7 @@ export function useReportComposer(opts: {
     return snap;
   }, [
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
-    fieldProvenance, voiceObs, opts,
+    fieldProvenance, appliedPathologyPatches, opts,
   ]);
 
   const enqueue = useCallback(async (jobKind: JobKind = "FULL_REPORT", extra?: Partial<ComposerInputSnapshot>) => {
