@@ -41,7 +41,7 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
     .join(" ");
 }
 
-function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
+export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
   const obs = (snapshot.observations ?? [])
     .map((o) => {
       // Compact clinical line:
@@ -83,18 +83,41 @@ function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot
     );
   }
 
+  // ─── Canonical STUDY CONTEXT block ────────────────────────────────────
+  // Render only non-empty pieces. Region / family / spineSegment / bodyPart /
+  // protocol / reportTitle all come from the resolved ReportingStudyContext
+  // (no DICOM re-parsing). `studyType` (= DICOM StudyDescription) is included
+  // as secondary descriptive provenance only — it never overrides resolved
+  // CARE context.
+  const studyCtxLines: string[] = [];
+  if (snapshot.modality) studyCtxLines.push(`Modality: ${snapshot.modality}`);
+  if (snapshot.region) studyCtxLines.push(`Primary region: ${snapshot.region}`);
+  const additionalRegions = (snapshot.regions ?? []).filter(
+    (r) => r && r !== snapshot.region,
+  );
+  if (additionalRegions.length > 0) {
+    studyCtxLines.push(`Additional regions: ${additionalRegions.join(", ")}`);
+  }
+  if (snapshot.bodyPart) studyCtxLines.push(`Body part: ${snapshot.bodyPart}`);
+  if (snapshot.family) studyCtxLines.push(`Family: ${snapshot.family}`);
+  if (snapshot.spineSegment) studyCtxLines.push(`Spine segment: ${snapshot.spineSegment}`);
+  if (snapshot.protocol) studyCtxLines.push(`Protocol: ${snapshot.protocol}`);
+  if (snapshot.reportTitle) studyCtxLines.push(`Report title: ${snapshot.reportTitle}`);
+  if (snapshot.studyType) studyCtxLines.push(`DICOM study description: ${snapshot.studyType}`);
+  if ((snapshot.templateSections ?? []).length > 0) {
+    studyCtxLines.push(`Template sections: ${(snapshot.templateSections ?? []).join(", ")}`);
+  }
+  const studyCtxBlock = studyCtxLines.length > 0
+    ? ["STUDY CONTEXT", ...studyCtxLines].join("\n")
+    : "";
+
   return [
-    `Modality: ${snapshot.modality ?? ""}`,
-    `Region: ${snapshot.region ?? ""}`,
-    `Study type: ${snapshot.studyType ?? ""}`,
-    `Protocol: ${snapshot.protocol ?? ""}`,
-    `Title: ${snapshot.reportTitle ?? ""}`,
-    `Template sections: ${(snapshot.templateSections ?? []).join(", ")}`,
+    studyCtxBlock || "STUDY CONTEXT\n(none)",
     "",
     "Clinical history:",
     snapshot.clinicalHistory || "(none)",
     "",
-    "Technique:",
+    "Current technique:",
     snapshot.technique || "(none)",
     "",
     "Current Findings:",

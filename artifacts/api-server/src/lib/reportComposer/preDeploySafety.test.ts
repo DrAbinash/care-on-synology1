@@ -236,3 +236,81 @@ describe("pre-deploy safety contracts — client/server canonical observation dr
     expect(adapter).not.toMatch(/findingsText\s*=\s*[^;]*baselineReplaces/);
   });
 });
+
+describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2)", () => {
+  // PR P0-2 wires the canonical ReportingStudyContext into the AI Report
+  // Composer snapshot. These contracts guard against future drift on the
+  // new context fields and the canonicalStudyContextHashPayload helper.
+
+  it("13a. ComposerInputSnapshotSchema declares regions/bodyPart/family/spineSegment on both sides", async () => {
+    const apiTypes = readFileSync(join(__dirname, "types.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiTypes).toMatch(/regions:\s*z\.array\(z\.string\(\)\)\.optional\(\)/);
+    expect(apiTypes).toMatch(/bodyPart:\s*z\.string\(\)\.optional\(\)/);
+    expect(apiTypes).toMatch(/family:\s*z\.string\(\)\.optional\(\)/);
+    expect(apiTypes).toMatch(/spineSegment:\s*z\.string\(\)\.optional\(\)/);
+    expect(erpTypes).toMatch(/regions\?:\s*string\[\]/);
+    expect(erpTypes).toMatch(/bodyPart\?:\s*string/);
+    expect(erpTypes).toMatch(/family\?:\s*string/);
+    expect(erpTypes).toMatch(/spineSegment\?:\s*string/);
+  });
+
+  it("13b. canonicalStudyContextHashPayload is mirrored verbatim client/server", async () => {
+    const apiSnapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiSnapshot).toContain("export function canonicalStudyContextHashPayload");
+    expect(erpTypes).toContain("export function canonicalStudyContextHashPayload");
+    // Both sides MUST include the same axes: modality, region, regions,
+    // bodyPart, family, spineSegment, protocol, reportTitle.
+    const axes = ["modality", "region", "regions", "bodyPart", "family", "spineSegment", "protocol", "reportTitle"];
+    for (const axis of axes) {
+      const re = new RegExp(`norm\\(s\\.?2?\\)?\\.${axis}|norm\\(s\\.${axis}\\)|s\\.${axis}`);
+      expect(apiSnapshot).toMatch(re);
+      expect(erpTypes).toMatch(re);
+    }
+  });
+
+  it("13c. computeSnapshotHashes includes studyCtxCanon in inputHash on both sides", async () => {
+    const apiSnapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiSnapshot).toMatch(/const studyCtxCanon = canonicalStudyContextHashPayload\(snapshot\);/);
+    expect(erpTypes).toMatch(/const studyCtxCanon = canonicalStudyContextHashPayload\(snapshot\);/);
+    expect(apiSnapshot).toMatch(/studyCtxCanon,/);
+    expect(erpTypes).toMatch(/studyCtxCanon,/);
+    // And studyCtxCanon MUST NOT appear inside the reportRevision computation
+    // (reportRevision guards the clinically EDITABLE report state only —
+    // study-context changes are STUDY IDENTITY captured by inputHash).
+    expect(apiSnapshot).toMatch(/reportRevision = hashText\(`\$\{findingsHash\}:\$\{impressionHash\}:\$\{recommendationHash\}:\$\{obsCanon\}`\)/);
+    expect(erpTypes).toMatch(/reportRevision = await hashText\(`\$\{findingsHash\}:\$\{impressionHash\}:\$\{recommendationHash\}:\$\{obsCanon\}`\)/);
+  });
+
+  it("13d. RadiologyReportingWorkspace passes canonical protocol + reportTitle to useReportComposer (no `protocol: undefined`)", async () => {
+    const workspace = readFileSync(join(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+    // PR P0-2 explicit defect: `protocol: undefined` MUST be gone.
+    expect(workspace).not.toMatch(/protocol:\s*undefined/);
+    // Protocol MUST be wired to the resolved ReportingStudyContext.protocolName.
+    expect(workspace).toMatch(/protocol:\s*composerCtx\.protocolName/);
+    // reportTitle MUST use resolvePrintedReportTitle(appliedFormatReportTitle, ...),
+    // NOT raw workflow.currentRow?.studyDescription.
+    expect(workspace).toMatch(/resolvePrintedReportTitle\(\s*appliedFormatReportTitle/);
+    // regions / bodyPart / family / spineSegment MUST be wired from composerCtx.
+    expect(workspace).toMatch(/regions:\s*composerCtx\.regions/);
+    expect(workspace).toMatch(/bodyPart:\s*composerCtx\.bodyPart/);
+    expect(workspace).toMatch(/family:\s*composerCtx\.family/);
+    expect(workspace).toMatch(/spineSegment:\s*composerCtx\.spineSegment/);
+  });
+
+  it("13e. composeEngine prompt renders STUDY CONTEXT block with region/protocol/reportTitle", async () => {
+    const engine = readFileSync(join(__dirname, "composeEngine.ts"), "utf8");
+    expect(engine).toMatch(/STUDY CONTEXT/);
+    expect(engine).toMatch(/Primary region:/);
+    expect(engine).toMatch(/Additional regions:/);
+    expect(engine).toMatch(/Family:/);
+    expect(engine).toMatch(/Spine segment:/);
+    expect(engine).toMatch(/Protocol:/);
+    expect(engine).toMatch(/Report title:/);
+    // DICOM StudyDescription is rendered as secondary provenance, never as
+    // the primary region.
+    expect(engine).toMatch(/DICOM study description:/);
+  });
+});

@@ -30,9 +30,24 @@ export const ComposerInputSnapshotSchema = z.object({
   worklistId: z.number().nullable().optional(),
   reportId: z.number().nullable().optional(),
   modality: z.string().optional(),
+  /** Primary reporting region. Mirrors ReportingStudyContext.region. */
   region: z.string().optional(),
+  /** All selected reporting regions (multi-select, primary first). Mirrors
+   * ReportingStudyContext.regions. Optional for backward compatibility —
+   * old snapshots without it still parse. */
+  regions: z.array(z.string()).optional(),
+  /** Structured-template bodyPart code (BRAIN, SPINE_CERVICAL, …). */
+  bodyPart: z.string().optional(),
+  /** Reporting family ("brain"|"spine"|"chest"|"abdomen"|"unknown"). */
+  family: z.string().optional(),
+  /** Spine segment ("cervical"|"dorsal"|"lumbar"|"whole"|"generic"). */
+  spineSegment: z.string().optional(),
+  /** DICOM / worklist StudyDescription — descriptive provenance only. */
   studyType: z.string().optional(),
+  /** Resolved protocol / sub-technique name. Source: ReportingStudyContext.protocolName. */
   protocol: z.string().optional(),
+  /** Resolved printed report heading (NOT library/display format name).
+   * Source: resolvePrintedReportTitle(appliedFormatReportTitle, fallback). */
   reportTitle: z.string().optional(),
   clinicalHistory: z.string().default(""),
   technique: z.string().default(""),

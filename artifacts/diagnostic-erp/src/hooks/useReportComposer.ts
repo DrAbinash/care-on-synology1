@@ -22,9 +22,25 @@ export function useReportComposer(opts: {
   studyId: number | null;
   reportId: number | null;
   modality?: string;
+  /** Primary reporting region. Mirrors ReportingStudyContext.region. */
   region?: string;
+  /** All selected reporting regions (multi-select, primary first). Mirrors
+   * ReportingStudyContext.regions. Carries screening context. */
+  regions?: string[];
+  /** Structured-template bodyPart code (BRAIN, SPINE_CERVICAL, …). */
+  bodyPart?: string;
+  /** Reporting family ("brain" | "spine" | "chest" | "abdomen" | "unknown"). */
+  family?: string;
+  /** Spine segment ("cervical" | "dorsal" | "lumbar" | "whole" | "generic"). */
+  spineSegment?: string;
+  /** DICOM / worklist StudyDescription — descriptive provenance only. */
   studyType?: string;
+  /** Resolved protocol / sub-technique name (e.g. "Plain", "Epilepsy Protocol").
+   * Source: ReportingStudyContext.protocolName (which is activeProtocol?.name).
+   * Never inferred from StudyDescription. */
   protocol?: string;
+  /** Resolved printed report heading (NOT library/display format name).
+   * Source: resolvePrintedReportTitle(appliedFormatReportTitle, fallback). */
   reportTitle?: string;
   isFinalized: boolean;
 }) {
@@ -139,6 +155,10 @@ export function useReportComposer(opts: {
       reportId: opts.reportId,
       modality: opts.modality,
       region: opts.region,
+      regions: opts.regions,
+      bodyPart: opts.bodyPart,
+      family: opts.family,
+      spineSegment: opts.spineSegment,
       studyType: opts.studyType,
       protocol: opts.protocol,
       reportTitle: opts.reportTitle,

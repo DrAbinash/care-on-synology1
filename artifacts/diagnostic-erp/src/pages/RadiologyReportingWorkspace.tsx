@@ -1397,15 +1397,42 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch { /* ignore */ }
   };
   const aiFinalizeBypassRef = useRef(false);
+  // ─── Background AI Report Composer — canonical study context ────────────
+  // The composer MUST receive the SAME canonical study identity the workspace
+  // already resolved centrally through ReportingStudyContext. We never re-parse
+  // DICOM strings or invent context. Sources:
+  //   modality     ← workflow.currentRow.modality (also stored on ctx.modality)
+  //   region       ← studySetup.studyContext.region (canonical primary region)
+  //   regions      ← studySetup.studyContext.regions (multi-region + screening)
+  //   bodyPart     ← studySetup.studyContext.bodyPart (BRAIN / SPINE_CERVICAL / …)
+  //   family       ← studySetup.studyContext.family ("brain"|"spine"|…)
+  //   spineSegment ← studySetup.studyContext.spineSegment
+  //   protocol     ← studySetup.studyContext.protocolName (resolved from
+  //                  activeProtocol.name) — never inferred from StudyDescription
+  //   reportTitle  ← resolvePrintedReportTitle(appliedFormatReportTitle, fallback)
+  //                  — the PRINTED heading, not the library/display format name
+  //   studyType    ← workflow.currentRow.studyDescription (DICOM provenance,
+  //                  secondary descriptive context only)
+  const composerCtx = studySetup.studyContext;
+  const composerReportTitle = resolvePrintedReportTitle(
+    appliedFormatReportTitle,
+    studySetup.testName
+      ?? workflow.currentRow?.studyDescription
+      ?? "",
+  );
   const reportComposer = useReportComposer({
     worklistId: studyId ?? null,
     studyId: workflow.currentRow?.studyId ?? null,
     reportId: linkedReportIdRef.current,
-    modality: workflow.currentRow?.modality ?? undefined,
-    region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
+    modality: composerCtx.modality ?? workflow.currentRow?.modality ?? undefined,
+    region: composerCtx.region ?? studySetup.matchedStudyRegion ?? studySetup.studyRegions[0],
+    regions: composerCtx.regions,
+    bodyPart: composerCtx.bodyPart ?? undefined,
+    family: composerCtx.family,
+    spineSegment: composerCtx.spineSegment ?? undefined,
     studyType: workflow.currentRow?.studyDescription ?? undefined,
-    protocol: undefined,
-    reportTitle: workflow.currentRow?.studyDescription ?? undefined,
+    protocol: composerCtx.protocolName ?? undefined,
+    reportTitle: composerReportTitle || undefined,
     isFinalized,
   });
 

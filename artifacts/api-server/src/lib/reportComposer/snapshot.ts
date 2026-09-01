@@ -71,6 +71,36 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
   ].join("\u001f");
 }
 
+/**
+ * Canonical study-context payload used in `inputHash` (NOT `reportRevision`).
+ * MUST be mirrored verbatim by the client (diagnostic-erp/src/lib/
+ * reportComposer/types.ts `canonicalStudyContextHashPayload`).
+ *
+ * Includes every study-context field that materially changes what study the AI
+ * is composing for: modality, region, regions, bodyPart, family, spineSegment,
+ * protocol, reportTitle. Changes to ANY of these fields MUST invalidate the
+ * frozen AI input hash.
+ *
+ * Intentionally NOT part of `reportRevision` — see client docstring for the
+ * rationale. In short: `reportRevision` guards the clinically EDITABLE report
+ * state; study context is STUDY IDENTITY captured at enqueue time per Model B
+ * (frozen snapshot = authoritative AI input, Guard 8).
+ */
+export function canonicalStudyContextHashPayload(s: ComposerInputSnapshot): string {
+  const norm = (s2: string | null | undefined): string =>
+    (s2 ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return [
+    norm(s.modality),
+    norm(s.region),
+    (s.regions ?? []).map(norm).join(","),
+    norm(s.bodyPart),
+    norm(s.family),
+    norm(s.spineSegment),
+    norm(s.protocol),
+    norm(s.reportTitle),
+  ].join("\u001f");
+}
+
 /** Deduplicate observations by canonical identity (region|concept|level|laterality). */
 export function dedupeObservations(obs: ComposeObservation[]): ComposeObservation[] {
   const seen = new Set<string>();
@@ -102,9 +132,15 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
   const obsCanon = dedupeObservations(snapshot.observations ?? [])
     .map((o) => canonicalObservationHashPayload(o))
     .join("\n");
+  // Study context (modality/region/regions/bodyPart/family/spineSegment/
+  // protocol/reportTitle) is part of `inputHash` so the frozen snapshot is
+  // self-describing — but intentionally NOT part of `reportRevision` (see
+  // `canonicalStudyContextHashPayload` docstring for the rationale).
+  const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
   const inputHash = hashText(
     [
       snapshot.jobKindHint ?? "",
+      studyCtxCanon,
       snapshot.clinicalHistory ?? "",
       snapshot.technique ?? "",
       snapshot.findings ?? "",

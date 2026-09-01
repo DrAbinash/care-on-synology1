@@ -26,9 +26,32 @@ export type ComposerInputSnapshot = {
   worklistId?: number | null;
   reportId?: number | null;
   modality?: string;
+  /** Primary reporting region (e.g. "LS Spine", "Brain"). Mirrors
+   * `ReportingStudyContext.region`. */
   region?: string;
+  /** All selected reporting regions (multi-select, primary first). Mirrors
+   * `ReportingStudyContext.regions`. Carries screening context (e.g.
+   * ["LS Spine", "Whole Spine Screening"]). Optional for backward
+   * compatibility — old snapshots without it still parse. */
+  regions?: string[];
+  /** Structured-template bodyPart code (BRAIN, SPINE_CERVICAL, …). Mirrors
+   * `ReportingStudyContext.bodyPart`. */
+  bodyPart?: string;
+  /** Reporting family ("brain" | "spine" | "chest" | "abdomen" | "unknown").
+   * Mirrors `ReportingStudyContext.family`. */
+  family?: string;
+  /** Spine segment ("cervical" | "dorsal" | "lumbar" | "whole" | "generic" | null).
+   * Mirrors `ReportingStudyContext.spineSegment`. */
+  spineSegment?: string;
+  /** DICOM / worklist StudyDescription — descriptive provenance only. Never
+   * overrides resolved `region`/`family`/`bodyPart`/`protocol`. */
   studyType?: string;
+  /** Resolved protocol / sub-technique name (e.g. "Plain", "Epilepsy Protocol").
+   * Source precedence: `ReportingStudyContext.protocolName` (which is
+   * `activeProtocol?.name`). Never inferred from StudyDescription. */
   protocol?: string;
+  /** Resolved printed report heading (NOT the library/display format name).
+   * Source: `resolvePrintedReportTitle(appliedFormatReportTitle, fallback)`. */
   reportTitle?: string;
   clinicalHistory?: string;
   technique?: string;
@@ -184,6 +207,48 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
   ].join("\u001f");
 }
 
+/**
+ * Canonical study-context payload used in `inputHash` (NOT `reportRevision`).
+ *
+ * Includes every study-context field that materially changes what study the AI
+ * is composing for: modality, region, regions, bodyPart, family, spineSegment,
+ * protocol, reportTitle. Changes to ANY of these fields MUST invalidate the
+ * frozen AI input hash so the worker cannot re-use a stale snapshot.
+ *
+ * These fields are intentionally NOT part of `reportRevision`:
+ *   - `reportRevision` represents the clinically EDITABLE report state
+ *     (findings/impression/recommendation text + canonical observations).
+ *     Changes to the editable state mark a READY draft STALE so blind-apply
+ *     is blocked.
+ *   - Study context (modality / region / protocol / title) is NOT something
+ *     the radiologist edits inside the Findings/Impression fields — it is the
+ *     STUDY IDENTITY. A change of study identity is captured by `inputHash`
+ *     (which guards the frozen snapshot end-to-end), not by `reportRevision`
+ *     (which guards the editable report text).
+ *
+ * The freshness endpoint (`POST /api/radiology/report-composer/jobs/:id/freshness`)
+ * compares `reportRevision` to detect post-enqueue narrative edits; it does
+ * NOT re-check study context because that is captured in the frozen
+ * `inputHash` at enqueue time. This preserves Model B (frozen snapshot =
+ * authoritative AI input) per Guard 8.
+ *
+ * MUST be mirrored verbatim by the server (api-server snapshot.ts).
+ */
+export function canonicalStudyContextHashPayload(s: ComposerInputSnapshot): string {
+  const norm = (s2: string | null | undefined): string =>
+    (s2 ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return [
+    norm(s.modality),
+    norm(s.region),
+    (s.regions ?? []).map(norm).join(","),
+    norm(s.bodyPart),
+    norm(s.family),
+    norm(s.spineSegment),
+    norm(s.protocol),
+    norm(s.reportTitle),
+  ].join("\u001f");
+}
+
 export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Promise<{
   findingsHash: string;
   impressionHash: string;
@@ -203,9 +268,15 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   const obsCanon = dedupeObservations(snapshot.observations ?? [])
     .map((o) => canonicalObservationHashPayload(o))
     .join("\n");
+  // Study context (modality/region/regions/bodyPart/family/spineSegment/
+  // protocol/reportTitle) is part of `inputHash` so the frozen snapshot is
+  // self-describing — but intentionally NOT part of `reportRevision` (see
+  // `canonicalStudyContextHashPayload` docstring for the rationale).
+  const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
   const inputHash = await hashText(
     [
       snapshot.jobKindHint ?? "",
+      studyCtxCanon,
       snapshot.clinicalHistory ?? "",
       snapshot.technique ?? "",
       snapshot.findings ?? "",
