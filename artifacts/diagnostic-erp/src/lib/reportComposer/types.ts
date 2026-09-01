@@ -6,6 +6,11 @@ export type ComposeObservation = {
   id?: string;
   concept: string;
   source?: "quick-select" | "quick-findings" | "macro" | "manual" | "voice" | "structured";
+  /** Canonical reporting region (e.g. "LS Spine", "Brain"). Carried into the
+   * composer API so client + server share a single canonical identity
+   * (region|concept|level|laterality) for dedupe + snapshot hashing. Optional
+   * for backward compatibility — old snapshots without it still parse. */
+  region?: string | null;
   level?: string | null;
   severity?: string | null;
   laterality?: string | null;
@@ -111,17 +116,72 @@ export function dedupeObservations(obs: ComposeObservation[]): ComposeObservatio
   const seen = new Set<string>();
   const out: ComposeObservation[] = [];
   for (const o of obs) {
-    const key = [
-      (o.conflictGroup || o.concept || "").toLowerCase(),
-      (o.level || "").toLowerCase(),
-      (o.laterality || "").toLowerCase(),
-      normalizeForHash(o.findingsText).toLowerCase(),
-    ].join("|");
+    const key = canonicalObservationKey(o);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(o);
   }
   return out;
+}
+
+/**
+ * Canonical observation identity — MUST be mirrored verbatim by the server
+ * (api-server/src/lib/reportComposer/snapshot.ts). Used for both dedupe and
+ * snapshot hashing.
+ *
+ * Identity: region | concept | level | laterality
+ *   - matches CARE's `CanonicalObservation.slotKey` (region|concept|level|laterality)
+ *     for structured observations.
+ *   - severity, measurement, source, conflictGroup, anatomicalSection are
+ *     intentionally NOT part of identity — same-slot replacement already
+ *     guarantees ≤1 active row per slot in the live ledger.
+ *
+ * For legacy / unstructured rows (no concept AND no region) we fall back to
+ * normalized findings text so duplicate voice commits collapse, but never
+ * collapse two clinically distinct observations just because their text or
+ * concept matches.
+ */
+export function canonicalObservationKey(o: ComposeObservation): string {
+  const norm = (s: string | null | undefined): string =>
+    (s ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim().toLowerCase();
+  const region = norm(o.region);
+  const concept = norm(o.concept);
+  const level = norm(o.level);
+  const laterality = norm(o.laterality);
+  if (region || concept || level || laterality) {
+    return `slot::${region}|${concept}|${level}|${laterality}`;
+  }
+  // Legacy / unstructured — fall back to normalized findings text only.
+  return `text::${norm(o.findingsText)}`;
+}
+
+/**
+ * Canonical observation payload used in snapshot hashing. Includes every field
+ * that materially changes the clinical meaning of an observation:
+ *   region, concept, level, laterality, severity, anatomicalSection,
+ *   findingsText, impressionText
+ *
+ * `id`, `source`, `conflictGroup`, `baselineReplaces` are intentionally
+ * excluded — they are bookkeeping/provenance, not clinical content. Changing
+ * them MUST NOT alter the snapshot hash (otherwise swapping a quick-select
+ * observation for a macro observation at the same clinical slot would mark
+ * the prior READY draft STALE without any actual clinical change).
+ *
+ * MUST be mirrored verbatim by the server (api-server snapshot.ts).
+ */
+export function canonicalObservationHashPayload(o: ComposeObservation): string {
+  const norm = (s: string | null | undefined): string =>
+    (s ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return [
+    norm(o.region),
+    norm(o.concept),
+    norm(o.level),
+    norm(o.laterality),
+    norm(o.severity),
+    norm(o.anatomicalSection),
+    norm(o.findingsText),
+    norm(o.impressionText),
+  ].join("\u001f");
 }
 
 export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Promise<{
@@ -134,8 +194,14 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   const findingsHash = await hashText(snapshot.findings ?? "");
   const impressionHash = await hashText(snapshot.impression ?? "");
   const recommendationHash = await hashText(snapshot.recommendation ?? "");
+  // Observations contribute their full canonical payload (region, concept,
+  // level, laterality, severity, anatomicalSection, findingsText,
+  // impressionText). Changes to ANY of those fields MUST invalidate prior
+  // READY drafts — e.g. right → left laterality change with identical findings
+  // text, or mild → moderate severity change with identical findings text,
+  // both produce a different reportRevision so blind-apply is blocked.
   const obsCanon = dedupeObservations(snapshot.observations ?? [])
-    .map((o) => `${o.concept}|${o.level ?? ""}|${o.findingsText}`)
+    .map((o) => canonicalObservationHashPayload(o))
     .join("\n");
   const inputHash = await hashText(
     [

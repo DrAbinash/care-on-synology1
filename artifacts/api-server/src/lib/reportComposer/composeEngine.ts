@@ -43,10 +43,27 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
 
 function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
   const obs = (snapshot.observations ?? [])
-    .map(
-      (o) =>
-        `- [${o.source ?? "obs"}] ${o.concept}${o.level ? ` @ ${o.level}` : ""}: ${o.findingsText}`,
-    )
+    .map((o) => {
+      // Compact clinical line:
+      //   [source] Region | Anatomical Section | Level | Concept | Laterality
+      // then a Findings line, then (if present) an Impression line.
+      // Empty pieces are omitted. Internal metadata (slotKey, conflictGroup,
+      // bundleId, sectionsOwned) is intentionally omitted — the composer needs
+      // clinical identity, not ownership bookkeeping.
+      const head: string[] = [];
+      if (o.region) head.push(o.region);
+      if (o.anatomicalSection) head.push(o.anatomicalSection);
+      if (o.level) head.push(o.level);
+      head.push(o.concept);
+      if (o.laterality) head.push(o.laterality);
+      const header = `- [${o.source ?? "obs"}] ${head.join(" | ")}`;
+      const findings = o.findingsText?.trim() ?? "";
+      const impression = o.impressionText?.trim();
+      if (impression) {
+        return `${header}\n  Findings: ${findings}\n  Impression: ${impression}`;
+      }
+      return `${header}\n  ${findings}`;
+    })
     .join("\n");
 
   if (kind === "SELECTION_EDIT" || kind === "REPHRASE" || kind === "SHORTEN" || kind === "EXPAND" || kind === "TRANSLATE" || kind === "SECTION_EDIT") {
