@@ -662,3 +662,146 @@ describe("composeStudyContext — regression guards", () => {
     }
   });
 });
+
+// ─── PR #656 — final freshness hardening (cross-package) ─────────────────
+//
+// PR #656 closes the final P0-2 blocker: study-context changes (Plain →
+// Contrast, LS Spine + Screening → LS Spine only, bodyPart/family/
+// spineSegment change, reportTitle change) MUST flip READY → STALE_READY
+// even when narrative text + observations are byte-identical. The server's
+// pure `isComposeJobStale` helper accepts the client-computed live
+// `inputHash` and compares it against the stored enqueue-time inputHash.
+//
+// These cross-package tests live here (on the diagnostic-erp side) because
+// api-server's tsconfig enforces `rootDir: "src"` and refuses cross-package
+// test imports — but diagnostic-erp can import from api-server freely.
+
+import { isComposeJobStale as serverIsComposeJobStale } from "../../../../api-server/src/lib/reportComposer/snapshot";
+
+describe("PR #656 — freshness hardening (cross-package: client hashes → server stale-decision)", () => {
+  it("client inputHash change (Plain → Contrast) flips server READY → STALE_READY", async () => {
+    // Client enqueues a Plain study.
+    const enqueue = snapshotWith({
+      modality: "MR",
+      region: "Brain",
+      regions: ["Brain"],
+      bodyPart: "BRAIN",
+      family: "brain",
+      protocol: "Plain",
+      reportTitle: "MRI BRAIN PLAIN",
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+      recommendation: "",
+      observations: [],
+    });
+    const enqueueHashes = await computeSnapshotHashes(enqueue);
+
+    // Live: protocol changed to Contrast, narrative + observations identical.
+    const live = snapshotWith({
+      modality: "MR",
+      region: "Brain",
+      regions: ["Brain"],
+      bodyPart: "BRAIN",
+      family: "brain",
+      protocol: "Contrast",
+      reportTitle: "MRI BRAIN WITH CONTRAST",
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+      recommendation: "",
+      observations: [],
+    });
+    const liveHashes = await computeSnapshotHashes(live);
+
+    // Sanity: inputHash differs (study context changed).
+    expect(enqueueHashes.inputHash).not.toBe(liveHashes.inputHash);
+    // Sanity: reportRevision identical (no narrative / observation change).
+    expect(enqueueHashes.reportRevision).toBe(liveHashes.reportRevision);
+
+    // Server-side pure stale-decision: MUST return stale=true because the
+    // live inputHash differs from the stored enqueue-time inputHash.
+    const { stale } = serverIsComposeJobStale({
+      jobStatus: "READY",
+      storedReportRevision: enqueueHashes.reportRevision,
+      storedFindingsHash: enqueueHashes.findingsHash,
+      storedImpressionHash: enqueueHashes.impressionHash,
+      storedInputHash: enqueueHashes.inputHash,
+      current: {
+        findingsHash: liveHashes.findingsHash,
+        impressionHash: liveHashes.impressionHash,
+        reportRevision: liveHashes.reportRevision,
+        inputHash: liveHashes.inputHash,
+      },
+    });
+    expect(stale).toBe(true);
+  });
+
+  it("client inputHash unchanged + reportRevision unchanged → server stays READY (not stale)", async () => {
+    const snap = snapshotWith({
+      modality: "MR",
+      region: "Brain",
+      regions: ["Brain"],
+      bodyPart: "BRAIN",
+      family: "brain",
+      protocol: "Plain",
+      reportTitle: "MRI BRAIN PLAIN",
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+      recommendation: "",
+      observations: [],
+    });
+    const enqueueHashes = await computeSnapshotHashes(snap);
+    const liveHashes = await computeSnapshotHashes(snap);
+
+    const { stale } = serverIsComposeJobStale({
+      jobStatus: "READY",
+      storedReportRevision: enqueueHashes.reportRevision,
+      storedFindingsHash: enqueueHashes.findingsHash,
+      storedImpressionHash: enqueueHashes.impressionHash,
+      storedInputHash: enqueueHashes.inputHash,
+      current: {
+        findingsHash: liveHashes.findingsHash,
+        impressionHash: liveHashes.impressionHash,
+        reportRevision: liveHashes.reportRevision,
+        inputHash: liveHashes.inputHash,
+      },
+    });
+    expect(stale).toBe(false);
+  });
+
+  it("legacy freshness (no inputHash) cannot detect context-only change (backward compatible)", async () => {
+    // Same scenario as the first test, but the client OMITS inputHash
+    // (simulating a pre-PR #656 client). The server MUST NOT report stale
+    // based on context change alone — it lacks the inputHash to compare.
+    const enqueue = snapshotWith({
+      protocol: "Plain",
+      reportTitle: "MRI BRAIN PLAIN",
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+    });
+    const enqueueHashes = await computeSnapshotHashes(enqueue);
+    const live = snapshotWith({
+      protocol: "Contrast",
+      reportTitle: "MRI BRAIN WITH CONTRAST",
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+    });
+    const liveHashes = await computeSnapshotHashes(live);
+
+    const { stale } = serverIsComposeJobStale({
+      jobStatus: "READY",
+      storedReportRevision: enqueueHashes.reportRevision,
+      storedFindingsHash: enqueueHashes.findingsHash,
+      storedImpressionHash: enqueueHashes.impressionHash,
+      storedInputHash: enqueueHashes.inputHash,
+      current: {
+        findingsHash: liveHashes.findingsHash,
+        impressionHash: liveHashes.impressionHash,
+        reportRevision: liveHashes.reportRevision,
+        // inputHash intentionally omitted — legacy client.
+      },
+    });
+    // Legacy client cannot detect context change. New clients always
+    // provide inputHash so this case does NOT arise in production.
+    expect(stale).toBe(false);
+  });
+});

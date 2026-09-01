@@ -25,7 +25,7 @@ import {
   type ComposerInputSnapshot,
   type TrackedChange,
 } from "./types";
-import { computeSnapshotHashes, dedupeObservations, summarizeSources } from "./snapshot";
+import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarizeSources } from "./snapshot";
 import { runReportComposer } from "./composeEngine";
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges } from "./trackedChanges";
@@ -414,20 +414,67 @@ export async function getLatestComposeJob(worklistId: number) {
   return job ?? null;
 }
 
-/** Evaluate STALE against client-provided current hashes (live editor). Never mutates report. */
+/**
+ * Evaluate STALE against client-provided current hashes (live editor + live
+ * canonical study context). Never mutates report.
+ *
+ * Two invalidation axes (PR #656 final safety hardening):
+ *
+ *  1. `reportRevision` (clinically EDITABLE report state — findings text,
+ *     impression text, recommendation text, canonical observations).
+ *     Captures radiologist edits to the report content while the AI was
+ *     composing. Was already validated by PR #654.
+ *
+ *  2. `inputHash` (full frozen AI input — including canonical STUDY CONTEXT
+ *     such as modality, region, regions, bodyPart, family, spineSegment,
+ *     protocol, reportTitle). Captures study-identity changes such as
+ *     Plain → Contrast, or LS Spine + Whole Spine Screening → LS Spine only,
+ *     even when the narrative text and observations did NOT change.
+ *     Without this axis a READY draft generated for "MRI Brain Plain" would
+ *     remain blindly applicable after the radiologist switched the protocol
+ *     to "MRI Brain Contrast" — that is unsafe and exactly the blocker
+ *     PR #656 fixes.
+ *
+ * Backward compatibility:
+ *  - If `current.inputHash` is absent (legacy client), only axis 1 is
+ *    enforced. New clients always provide `inputHash`.
+ *
+ * Model B preserved:
+ *  - The worker still uses the frozen enqueue-time snapshot to compose.
+ *  - This function ONLY performs apply/review freshness safety.
+ *  - No live reread of workspace context happens by the worker.
+ *
+ * The pure stale-decision is delegated to `isComposeJobStale` in
+ * `snapshot.ts` so it can be unit-tested without a live database.
+ */
 export async function evaluateJobFreshness(
   jobId: number,
-  current: { findingsHash: string; impressionHash: string; recommendationHash: string; reportRevision: string },
+  current: {
+    findingsHash: string;
+    impressionHash: string;
+    recommendationHash: string;
+    reportRevision: string;
+    /** Optional live `inputHash` recomputed by the client from the SAME
+     * canonical snapshot fields the client used at enqueue time. When
+     * present, a mismatch against the job's stored `inputHash` flips
+     * READY → STALE_READY so study-context changes cannot be silently
+     * applied as if current. Backward compatible — legacy clients omit. */
+    inputHash?: string;
+  },
 ): Promise<{ status: AiComposeJobStatus; stale: boolean }> {
   const job = await getComposeJob(jobId);
   if (!job) return { status: "FAILED", stale: false };
   if (!["READY", "STALE_READY"].includes(job.status)) {
     return { status: job.status as AiComposeJobStatus, stale: false };
   }
-  const stale =
-    current.reportRevision !== job.sourceReportRevision ||
-    current.findingsHash !== job.sourceFindingsHash ||
-    current.impressionHash !== job.sourceImpressionHash;
+  const { stale } = isComposeJobStale({
+    jobStatus: job.status,
+    storedReportRevision: job.sourceReportRevision,
+    storedFindingsHash: job.sourceFindingsHash,
+    storedImpressionHash: job.sourceImpressionHash,
+    storedInputHash: job.inputHash,
+    current,
+  });
   if (stale && job.status === "READY") {
     await db
       .update(aiReportComposeJobsTable)

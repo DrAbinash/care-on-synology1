@@ -75,24 +75,49 @@ export function useReportComposer(opts: {
       if (["READY", "STALE_READY", "FAILED", "APPLIED", "DISCARDED", "CANCELLED", "OBSOLETE"].includes(res.job.status)) {
         stopPoll();
         if (res.job.status === "READY" || res.job.status === "STALE_READY") {
-          // Freshness check against the live editor + live canonical ledger.
-          // Both narrative text and the structured observation ledger are
-          // part of `reportRevision`; a change to either (e.g. swapping
-          // "mild" for "moderate" on an L4-L5 disc bulge observation) will
-          // produce a different revision and the previously-queued READY
-          // draft becomes STALE_READY so it is not blindly applied.
+          // Freshness check against the live editor + live canonical ledger +
+          // live canonical study context. Three invalidation axes:
+          //   1. Narrative text change (findings/impression/recommendation).
+          //   2. Canonical observation change (PR #654) — captured in
+          //      `reportRevision` via `obsCanon` inside `computeSnapshotHashes`.
+          //   3. Canonical study-context change (PR #656) — modality, region,
+          //      regions, bodyPart, family, spineSegment, protocol,
+          //      reportTitle. Captured in `inputHash` via
+          //      `canonicalStudyContextHashPayload` inside `computeSnapshotHashes`.
+          //      WITHOUT this axis a Plain → Contrast protocol change with
+          //      identical narrative text + identical observations would
+          //      leave a READY draft silently applicable, which is unsafe.
+          // The full snapshot we hash here MUST mirror the enqueue-time
+          // snapshot shape — same canonical context fields, same observations,
+          // same narrative. `computeSnapshotHashes` produces a hash that is
+          // identical on client and server (mirrored verbatim in
+          // api-server/src/lib/reportComposer/snapshot.ts).
           const liveObservations = deriveComposeObservations(appliedPathologyPatches);
-          const hashes = await computeSnapshotHashes({
+          const liveSnapshot: ComposerInputSnapshot = {
+            modality: opts.modality,
+            region: opts.region,
+            regions: opts.regions,
+            bodyPart: opts.bodyPart,
+            family: opts.family,
+            spineSegment: opts.spineSegment,
+            studyType: opts.studyType,
+            protocol: opts.protocol,
+            reportTitle: opts.reportTitle,
+            clinicalHistory: clinicalHistoryText,
+            technique: techniqueText,
             findings: findingsText,
             impression: impressionText,
             recommendation: recommendationText,
             observations: liveObservations,
-          });
+            jobKindHint: res.job.jobKind ?? "FULL_REPORT",
+          };
+          const hashes = await computeSnapshotHashes(liveSnapshot);
           const fr = await reportComposerApi.freshness(id, {
             findings: findingsText,
             impression: impressionText,
             recommendation: recommendationText,
             reportRevision: hashes.reportRevision,
+            inputHash: hashes.inputHash,
           });
           if (fr.stale && res.job.status === "READY") {
             const again = await reportComposerApi.getJob(id);
@@ -108,7 +133,10 @@ export function useReportComposer(opts: {
         }
       }
     }
-  }, [findingsText, impressionText, recommendationText, appliedPathologyPatches, opts.modality, stopPoll, toast]);
+  }, [
+    findingsText, impressionText, recommendationText, clinicalHistoryText, techniqueText,
+    appliedPathologyPatches, opts, stopPoll, toast,
+  ]);
 
   const startPoll = useCallback((id: number) => {
     stopPoll();

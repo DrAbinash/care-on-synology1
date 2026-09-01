@@ -114,6 +114,60 @@ export function dedupeObservations(obs: ComposeObservation[]): ComposeObservatio
   return out;
 }
 
+/**
+ * Pure stale-decision for the READY → STALE_READY freshness path.
+ *
+ * Two invalidation axes (PR #656 final safety hardening):
+ *   1. `reportRevision` — clinically EDITABLE report state (findings text +
+ *      impression text + recommendation text + canonical observations).
+ *      Captures radiologist edits to the report content while the AI was
+ *      composing. Already validated by PR #654.
+ *   2. `inputHash` — full frozen AI input including canonical STUDY CONTEXT
+ *      (modality, region, regions, bodyPart, family, spineSegment, protocol,
+ *      reportTitle). Captures study-identity changes such as Plain → Contrast,
+ *      or LS Spine + Whole Spine Screening → LS Spine only, even when the
+ *      narrative text and observations did NOT change.
+ *
+ * Backward compatibility:
+ *   - If `current.inputHash` is absent (legacy client), only axis 1 is
+ *     enforced. New clients always provide `inputHash`.
+ *
+ * This pure helper is exported so the freshness decision can be unit-tested
+ * WITHOUT a live database. The DB-backed `evaluateJobFreshness` in
+ * `jobService.ts` wraps this helper and performs the actual STALE_READY
+ * status mutation.
+ */
+export function isComposeJobStale(opts: {
+  jobStatus: string;
+  storedReportRevision: string;
+  storedFindingsHash: string;
+  storedImpressionHash: string;
+  storedInputHash: string;
+  current: {
+    findingsHash: string;
+    impressionHash: string;
+    reportRevision: string;
+    inputHash?: string;
+  };
+}): { stale: boolean } {
+  // Only READY / STALE_READY jobs are eligible for stale evaluation. Other
+  // terminal states (FAILED, APPLIED, DISCARDED, CANCELLED, OBSOLETE) are
+  // not subject to freshness checks.
+  if (opts.jobStatus !== "READY" && opts.jobStatus !== "STALE_READY") {
+    return { stale: false };
+  }
+  const stale =
+    opts.current.reportRevision !== opts.storedReportRevision ||
+    opts.current.findingsHash !== opts.storedFindingsHash ||
+    opts.current.impressionHash !== opts.storedImpressionHash ||
+    // PR #656: study-context change invalidates a READY draft even when the
+    // editable narrative text + observations are byte-identical. Optional —
+    // legacy clients without `inputHash` retain the reportRevision-only
+    // behavior.
+    (opts.current.inputHash !== undefined && opts.current.inputHash !== opts.storedInputHash);
+  return { stale };
+}
+
 export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
   findingsHash: string;
   impressionHash: string;

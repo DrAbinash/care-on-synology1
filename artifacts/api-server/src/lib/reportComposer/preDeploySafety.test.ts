@@ -314,3 +314,66 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
     expect(engine).toMatch(/DICOM study description:/);
   });
 });
+
+describe("pre-deploy safety contracts — PR #656 freshness hardening (study-context axis)", () => {
+  // PR #656 closes the final P0-2 blocker: study-context changes (Plain →
+  // Contrast, LS Spine + Screening → LS Spine only, bodyPart/family/
+  // spineSegment change, reportTitle change) MUST flip READY → STALE_READY
+  // even when narrative text + observations are byte-identical. Without this
+  // axis a READY draft generated for "MRI Brain Plain" would remain blindly
+  // applicable after the radiologist switched the protocol to "MRI Brain
+  // Contrast" — that is unsafe and exactly what PR #656 fixes.
+
+  it("14a. evaluateJobFreshness accepts an optional `inputHash` parameter", async () => {
+    const jobService = readFileSync(join(__dirname, "jobService.ts"), "utf8");
+    // The current parameter shape MUST include inputHash as optional.
+    expect(jobService).toMatch(/inputHash\?:\s*string/);
+    // And the stale-decision MUST delegate to isComposeJobStale which compares
+    // inputHash against the stored job.inputHash.
+    expect(jobService).toMatch(/isComposeJobStale\(/);
+    expect(jobService).toMatch(/storedInputHash:\s*job\.inputHash/);
+  });
+
+  it("14b. isComposeJobStale pure helper is exported from snapshot.ts (unit-testable without DB)", async () => {
+    const snapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    expect(snapshot).toContain("export function isComposeJobStale");
+    // The helper MUST validate BOTH axes:
+    //   1. reportRevision (clinically editable report state).
+    //   2. inputHash (canonical study context — PR #656 addition).
+    expect(snapshot).toMatch(/opts\.current\.reportRevision !== opts\.storedReportRevision/);
+    expect(snapshot).toMatch(/opts\.current\.inputHash !== undefined && opts\.current\.inputHash !== opts\.storedInputHash/);
+    // The inputHash axis MUST be optional (legacy clients omit it).
+    expect(snapshot).toMatch(/opts\.current\.inputHash !== undefined/);
+  });
+
+  it("14c. server /freshness route extracts inputHash from request body (backward compatible)", async () => {
+    const route = readFileSync(join(__dirname, "..", "..", "routes", "reportComposer.ts"), "utf8");
+    // The route MUST read `inputHash` from the request body.
+    expect(route).toMatch(/b\.inputHash/);
+    // And MUST default to undefined when absent or empty (legacy clients).
+    expect(route).toMatch(/typeof inputHashRaw === "string" && inputHashRaw\.length > 0 \? inputHashRaw : undefined/);
+    // And MUST spread inputHash conditionally into evaluateJobFreshness's current.
+    expect(route).toMatch(/\.\.\.\(inputHash !== undefined \? \{ inputHash \} : \{\}\)/);
+  });
+
+  it("14d. client freshness API accepts optional inputHash", async () => {
+    const erpApi = readFileSync(join(ERP_SRC, "lib/reportComposer/api.ts"), "utf8");
+    expect(erpApi).toMatch(/inputHash\?:\s*string/);
+  });
+
+  it("14e. useReportComposer.refreshJob sends live inputHash computed from canonical snapshot", async () => {
+    const hook = readFileSync(join(ERP_SRC, "hooks/useReportComposer.ts"), "utf8");
+    // The refreshJob MUST build a full live snapshot (context + observations
+    // + narrative) and compute its hashes via computeSnapshotHashes.
+    expect(hook).toMatch(/liveSnapshot: ComposerInputSnapshot/);
+    expect(hook).toMatch(/modality:\s*opts\.modality/);
+    expect(hook).toMatch(/regions:\s*opts\.regions/);
+    expect(hook).toMatch(/bodyPart:\s*opts\.bodyPart/);
+    expect(hook).toMatch(/family:\s*opts\.family/);
+    expect(hook).toMatch(/spineSegment:\s*opts\.spineSegment/);
+    expect(hook).toMatch(/protocol:\s*opts\.protocol/);
+    expect(hook).toMatch(/reportTitle:\s*opts\.reportTitle/);
+    // And MUST send inputHash to the freshness endpoint.
+    expect(hook).toMatch(/inputHash:\s*hashes\.inputHash/);
+  });
+});
