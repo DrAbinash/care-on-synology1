@@ -126,7 +126,10 @@ describe("§S 3. MRI LS Spine", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.levelChanges).toContain("L5-S1");
-    expect(v.ok).toBe(false);
+    // PR #657 hardening: advisory warning, NOT a hard blocking error.
+    expect(v.errors).not.toContain("level_change");
+    expect(v.warnings.some((w) => w.includes("levels"))).toBe(true);
+    expect(v.ok).toBe(true);
   });
 });
 
@@ -201,7 +204,10 @@ describe("§S 6. Laterality — no side swapping", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.lateralitySwaps).toContain("right→left");
-    expect(v.ok).toBe(false);
+    // PR #657 hardening: advisory warning, NOT a hard blocking error.
+    expect(v.errors).not.toContain("laterality_swap");
+    expect(v.warnings.some((w) => w.includes("laterality"))).toBe(true);
+    expect(v.ok).toBe(true);
   });
 
   it("validation does NOT flag when both sides are present in input", () => {
@@ -239,7 +245,10 @@ describe("§S 7. Severity — no severe upgrade", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.severityEscalations).toContain("mild→severe");
-    expect(v.ok).toBe(false);
+    // PR #657 hardening: advisory warning, NOT a hard blocking error.
+    expect(v.errors).not.toContain("severity_escalation");
+    expect(v.warnings.some((w) => w.includes("severity"))).toBe(true);
+    expect(v.ok).toBe(true);
   });
 
   it("validation does NOT flag when severity matches input", () => {
@@ -570,5 +579,151 @@ describe("§S 17. PR #654 + #656 hashes remain unchanged", () => {
     // across two calls with the same snapshot.
     const h2 = computeSnapshotHashes({ ...snap });
     expect(h.inputHash).toBe(h2.inputHash);
+  });
+});
+
+// ─── PR #657 hardening: validator advisory-only behavior ─────────────────
+//
+// The laterality / spinal-level / severity regex heuristics are ADVISORY
+// WARNINGS, NOT hard blocking errors. In multi-finding reports a legitimate
+// right-sided finding + separate left-sided finding can trigger a false
+// positive. These tests verify the advisory-only behavior.
+
+describe("PR #657 hardening — validator advisory-only (A–E)", () => {
+  // A. right lesion + separate left lesion in input/output → no hard error
+  it("A. right + left separate findings → no hard error", () => {
+    const snap = snapshot({
+      modality: "MR",
+      region: "Brain",
+      family: "brain",
+      findings: "Acute right MCA territory infarct. Chronic left MCA territory infarct.",
+      observations: [
+        { concept: "infarct", source: "quick-findings", laterality: "right", findingsText: "Acute right MCA territory infarct." },
+        { concept: "infarct", source: "quick-findings", laterality: "left", findingsText: "Chronic left MCA territory infarct." },
+      ],
+    });
+    const draft = {
+      findings: "Acute right MCA territory infarct. Chronic left MCA territory infarct.",
+      impression: "Right acute MCA infarct. Left chronic MCA infarct.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const v = validateComposerOutput(snap, draft);
+    // Both "right" and "left" are in the input corpus → no swap detected.
+    expect(v.lateralitySwaps).toEqual([]);
+    expect(v.errors).not.toContain("laterality_swap");
+    expect(v.ok).toBe(true);
+  });
+
+  // B. mild L4-L5 + severe L5-S1 preserved → no hard error
+  it("B. mild L4-L5 + severe L5-S1 preserved → no hard error", () => {
+    const snap = snapshot({
+      modality: "MR",
+      region: "LS Spine",
+      family: "spine",
+      spineSegment: "lumbar",
+      findings: "Mild disc bulge at L4-L5. Severe canal stenosis at L5-S1.",
+      observations: [
+        { concept: "disc_contour", source: "quick-findings", level: "L4-L5", severity: "mild", findingsText: "Mild disc bulge at L4-L5." },
+        { concept: "canal_stenosis", source: "quick-findings", level: "L5-S1", severity: "severe", findingsText: "Severe canal stenosis at L5-S1." },
+      ],
+    });
+    const draft = {
+      findings: "Mild disc bulge at L4-L5. Severe canal stenosis at L5-S1.",
+      impression: "Mild disc bulge at L4-L5. Severe canal stenosis at L5-S1.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const v = validateComposerOutput(snap, draft);
+    // Both "mild" and "severe" are in the input corpus → no escalation.
+    expect(v.severityEscalations).toEqual([]);
+    // Both L4-L5 and L5-S1 are in the input corpus → no level change.
+    expect(v.levelChanges).toEqual([]);
+    expect(v.errors).not.toContain("severity_escalation");
+    expect(v.errors).not.toContain("level_change");
+    expect(v.ok).toBe(true);
+  });
+
+  // C. true simple right→left single-finding swap → warning (not hard error)
+  it("C. true right→left single-finding swap → advisory warning", () => {
+    const snap = snapshot({
+      findings: "Acute right MCA territory infarct.",
+      observations: [
+        { concept: "infarct", source: "quick-findings", laterality: "right", findingsText: "Acute right MCA territory infarct." },
+      ],
+    });
+    const draft = {
+      findings: "Acute left MCA territory infarct.",
+      impression: "Acute left MCA territory infarct.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const v = validateComposerOutput(snap, draft);
+    // The heuristic DOES detect the swap.
+    expect(v.lateralitySwaps).toContain("right→left");
+    // But it is an advisory warning, NOT a hard error.
+    expect(v.errors).not.toContain("laterality_swap");
+    expect(v.warnings.some((w) => w.includes("laterality"))).toBe(true);
+    // ok remains true — the system-prompt safety rules are the primary guard.
+    expect(v.ok).toBe(true);
+  });
+
+  // D. true L4-L5→L3-L4 single-finding mutation → warning (not hard error)
+  it("D. true L4-L5→L3-L4 single-finding mutation → advisory warning", () => {
+    const snap = snapshot({
+      modality: "MR",
+      region: "LS Spine",
+      family: "spine",
+      spineSegment: "lumbar",
+      findings: "Disc bulge at L4-L5.",
+      observations: [
+        { concept: "disc_contour", source: "quick-findings", level: "L4-L5", findingsText: "Disc bulge at L4-L5." },
+      ],
+    });
+    const draft = {
+      findings: "Disc bulge at L3-L4.",
+      impression: "Disc bulge at L3-L4.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const v = validateComposerOutput(snap, draft);
+    // The heuristic DOES detect the level change (L3-L4 not in input).
+    expect(v.levelChanges).toContain("L3-L4");
+    // But it is an advisory warning, NOT a hard error.
+    expect(v.errors).not.toContain("level_change");
+    expect(v.warnings.some((w) => w.includes("levels"))).toBe(true);
+    expect(v.ok).toBe(true);
+  });
+
+  // E. true mild→severe single-finding mutation → warning (not hard error)
+  it("E. true mild→severe single-finding mutation → advisory warning", () => {
+    const snap = snapshot({
+      modality: "MR",
+      region: "LS Spine",
+      family: "spine",
+      spineSegment: "lumbar",
+      findings: "Mild diffuse disc bulge at L4-L5.",
+      observations: [
+        { concept: "disc_contour", source: "quick-findings", level: "L4-L5", severity: "mild", findingsText: "Mild diffuse disc bulge at L4-L5." },
+      ],
+    });
+    const draft = {
+      findings: "Severe diffuse disc bulge at L4-L5.",
+      impression: "Severe disc bulge at L4-L5.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const v = validateComposerOutput(snap, draft);
+    // The heuristic DOES detect the escalation.
+    expect(v.severityEscalations).toContain("mild→severe");
+    // But it is an advisory warning, NOT a hard error.
+    expect(v.errors).not.toContain("severity_escalation");
+    expect(v.warnings.some((w) => w.includes("severity"))).toBe(true);
+    expect(v.ok).toBe(true);
   });
 });

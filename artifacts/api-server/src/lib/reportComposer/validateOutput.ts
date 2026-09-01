@@ -214,24 +214,33 @@ export function validateComposerOutput(
   }
 
   // PR #657: laterality swap detection.
+  // PR #657 hardening: these global regex heuristics are ADVISORY WARNINGS
+  // only, NOT hard blocking errors. In multi-finding reports a legitimate
+  // right-sided finding + separate left-sided finding can trigger a false
+  // positive. We do NOT let these heuristics become hard blocking clinical
+  // errors unless a future slot-specific deterministic mapping can prove
+  // the conflict. The system-prompt safety rules remain the primary guard.
   lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
   if (lateralitySwaps.length > 0) {
-    errors.push("laterality_swap");
-    warnings.push(`AI swapped laterality: ${lateralitySwaps.join(", ")}`);
+    warnings.push(`AI may have swapped laterality (advisory): ${lateralitySwaps.join(", ")}`);
   }
 
   // PR #657: level change detection.
+  // PR #657 hardening: advisory warning only — a new level in the output may
+  // be a legitimate additional finding, not necessarily a mutation of an
+  // existing one. The system-prompt safety rules remain the primary guard.
   levelChanges.push(...detectLevelChanges(corpus, output));
   if (levelChanges.length > 0) {
-    errors.push("level_change");
-    warnings.push(`AI introduced spinal levels not in input: ${levelChanges.join(", ")}`);
+    warnings.push(`AI may have introduced levels not in input (advisory): ${levelChanges.join(", ")}`);
   }
 
   // PR #657: severity escalation detection.
+  // PR #657 hardening: advisory warning only — a mild finding at one level
+  // + a severe finding at another is legitimate. The system-prompt safety
+  // rules remain the primary guard.
   severityEscalations.push(...detectSeverityEscalations(corpus, output));
   if (severityEscalations.length > 0) {
-    errors.push("severity_escalation");
-    warnings.push(`AI escalated severity: ${severityEscalations.join(", ")}`);
+    warnings.push(`AI may have escalated severity (advisory): ${severityEscalations.join(", ")}`);
   }
 
   // Recommendation should stay empty unless input supports it (history/findings mention follow-up cues)

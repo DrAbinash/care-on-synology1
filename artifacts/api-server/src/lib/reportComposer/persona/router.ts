@@ -43,8 +43,13 @@ export function selectPersonaModules(snapshot: ComposerInputSnapshot): string[] 
   const modality = (snapshot.modality ?? "").toUpperCase();
   const family = (snapshot.family ?? "").toLowerCase();
 
-  // Mammography: modality MG or family breast.
-  if (modality === "MG" || modality === "DX" && family === "breast" || family === "breast") {
+  // Mammography: (modality === "MG") OR (modality === "DX" && family === "breast") OR (family === "breast")
+  // Parenthesized explicitly for clarity — PR #657 hardening.
+  // The third clause (family === "breast") makes the second clause
+  // (modality === "DX" && family === "breast") technically redundant, but
+  // all three are kept explicit so the intent is unambiguous and future
+  // edits can safely narrow the condition if needed.
+  if ((modality === "MG") || (modality === "DX" && family === "breast") || (family === "breast")) {
     modules.push(CARE_MAMMOGRAPHY);
     return modules;
   }
