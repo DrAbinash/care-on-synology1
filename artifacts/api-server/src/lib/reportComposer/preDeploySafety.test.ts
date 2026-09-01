@@ -177,3 +177,62 @@ describe("pre-deploy safety contracts — handler registration", () => {
     expect(cron).toContain("async function fireAiReportComposeTick");
   });
 });
+
+describe("pre-deploy safety contracts — client/server canonical observation drift (12)", () => {
+  // The client (diagnostic-erp/src/lib/reportComposer/types.ts) and the
+  // server (api-server/src/lib/reportComposer/snapshot.ts) MUST define
+  // canonical observation identity + hash payload with identical semantics.
+  // Any drift would let a snapshot validate on one side but be marked STALE
+  // on the other — a silent freshness bug that wastes AI runs and confuses
+  // radiologists. This contract is enforced both by source-text inspection
+  // here and by a runtime equivalence test in
+  // `artifacts/diagnostic-erp/src/lib/reportComposer/composeObservations.test.ts > hash-canonical F`.
+
+  it("12a. ComposeObservation schema declares `region` on both sides", async () => {
+    const apiTypes = readFileSync(join(__dirname, "types.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiTypes).toMatch(/region:\s*z\.string\(\)\.nullable\(\)\.optional\(\)/);
+    expect(erpTypes).toMatch(/region\?:\s*string \| null/);
+  });
+
+  it("12b. canonicalObservationKey + canonicalObservationHashPayload are mirrored verbatim", async () => {
+    const apiSnapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+
+    // Both sides MUST export canonicalObservationKey with the same identity
+    // axes (region | concept | level | laterality).
+    expect(apiSnapshot).toContain("export function canonicalObservationKey");
+    expect(erpTypes).toContain("export function canonicalObservationKey");
+    expect(apiSnapshot).toMatch(/region.*concept.*level.*laterality/s);
+    expect(erpTypes).toMatch(/region.*concept.*level.*laterality/s);
+
+    // Both sides MUST export canonicalObservationHashPayload with the same
+    // payload axes (region, concept, level, laterality, severity,
+    // anatomicalSection, findingsText, impressionText).
+    expect(apiSnapshot).toContain("export function canonicalObservationHashPayload");
+    expect(erpTypes).toContain("export function canonicalObservationHashPayload");
+    expect(apiSnapshot).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\)/s);
+    expect(erpTypes).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\)/s);
+  });
+
+  it("12c. computeSnapshotHashes consumes canonicalObservationHashPayload on both sides", async () => {
+    const apiSnapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiSnapshot).toMatch(/dedupeObservations\(snapshot\.observations \?\? \[\]\)\s*\.map\(\(o\) => canonicalObservationHashPayload\(o\)\)/);
+    expect(erpTypes).toMatch(/dedupeObservations\(snapshot\.observations \?\? \[\]\)\s*\.map\(\(o\) => canonicalObservationHashPayload\(o\)\)/);
+  });
+
+  it("12d. baselineReplaces is NEVER used as findingsText in the adapter", async () => {
+    const adapter = readFileSync(join(ERP_SRC, "lib/reportComposer/composeObservations.ts"), "utf8");
+    // Strict lookup order: lastRendered.findings OR templates.findings.
+    expect(adapter).toMatch(/lastRenderedFindings \|\| templateFindings/);
+    // baselineReplaces MUST NOT appear as a fallback for findingsText.
+    // Specifically, the unsafe expression `?? observation?.baselineReplaces`
+    // (or any equivalent baseline fallback in the findings lookup) MUST NOT
+    // be present. The adapter MAY still carry baselineReplaces on the
+    // ComposeObservation object as provenance (the schema allows it) — that
+    // is fine as long as it is never read as the active findings text.
+    expect(adapter).not.toMatch(/\?\?\s*observation\?\.baselineReplaces/);
+    expect(adapter).not.toMatch(/findingsText\s*=\s*[^;]*baselineReplaces/);
+  });
+});

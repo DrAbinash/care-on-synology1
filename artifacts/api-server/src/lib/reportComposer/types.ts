@@ -8,6 +8,11 @@ export const ComposeObservationSchema = z.object({
   id: z.string().optional(),
   concept: z.string().min(1),
   source: z.enum(["quick-select", "quick-findings", "macro", "manual", "voice", "structured"]).optional(),
+  /** Canonical reporting region (e.g. "LS Spine", "Brain"). Optional for
+   * backward compatibility with snapshots produced before this field was
+   * introduced. When present, it participates in canonical observation
+   * identity (region|concept|level|laterality) for dedupe + hashing. */
+  region: z.string().nullable().optional(),
   level: z.string().nullable().optional(),
   severity: z.string().nullable().optional(),
   laterality: z.string().nullable().optional(),

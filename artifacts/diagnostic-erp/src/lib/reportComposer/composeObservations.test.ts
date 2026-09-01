@@ -37,8 +37,16 @@ import {
 import {
   computeSnapshotHashes,
   dedupeObservations,
+  canonicalObservationKey,
+  canonicalObservationHashPayload,
   type ComposeObservation,
 } from "@/lib/reportComposer/types";
+import {
+  canonicalObservationKey as serverCanonicalObservationKey,
+  canonicalObservationHashPayload as serverCanonicalObservationHashPayload,
+  dedupeObservations as serverDedupeObservations,
+  computeSnapshotHashes as serverComputeSnapshotHashes,
+} from "../../../../api-server/src/lib/reportComposer/snapshot";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 
 const ANCHOR: ObservationAnchor = {
@@ -618,5 +626,492 @@ describe("composeObservations — regression guards", () => {
     expect(composed).toHaveLength(1);
     expect(composed[0]!.id).toBe("active-canal");
     expect(composed[0]!.concept).toBe("canal_stenosis");
+  });
+});
+
+describe("composeObservations — review hardening (PR #654 review)", () => {
+  beforeEach(() => resetWorkspace("LS Spine"));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // ============================================================
+  // Hardening §1 — Canonical dedupe identity (region|concept|level|laterality)
+  // ============================================================
+
+  it("dedupe-identity A. same concept + same level + same laterality in two different regions survives as 2 observations", () => {
+    // LS Spine L4-L5 disc bulge (right) + Cervical Spine C4-C5 disc bulge (right)
+    // — concept/level/laterality all identical, only region differs. They MUST
+    // survive as two distinct clinical observations.
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "ls-l45-right",
+          ownership: { conflictGroup: "disc_contour", slotKey: "LS Spine|disc_contour|L4-L5|right" },
+          templates: { findings: "Right disc bulge at L4-L5." },
+          lastRendered: { findings: "Right disc bulge at L4-L5." },
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "ls-l45-right",
+            region: "LS Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            laterality: "right",
+            supportsLaterality: true,
+            properties: "side",
+            findingsText: "Right disc bulge at L4-L5.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+        {
+          id: "cs-c45-right",
+          ownership: { conflictGroup: "disc_contour", slotKey: "Cervical Spine|disc_contour|C4-C5|right" },
+          templates: { findings: "Right disc bulge at C4-C5." },
+          lastRendered: { findings: "Right disc bulge at C4-C5." },
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "cs-c45-right",
+            region: "Cervical Spine",
+            concept: "disc_contour",
+            level: "C4-C5",
+            laterality: "right",
+            supportsLaterality: true,
+            properties: "side",
+            findingsText: "Right disc bulge at C4-C5.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    // Even though level differs here, the canonical key also includes region.
+    // To prove the region point cleanly: same concept + same level + same
+    // laterality but different region must still survive as 2.
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "ls-l45-right-2",
+          ownership: { conflictGroup: "disc_contour", slotKey: "LS Spine|disc_contour|L4-L5|right" },
+          templates: { findings: "Right disc bulge at L4-L5 (LS)." },
+          lastRendered: { findings: "Right disc bulge at L4-L5 (LS)." },
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "ls-l45-right-2",
+            region: "LS Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            laterality: "right",
+            supportsLaterality: true,
+            properties: "side",
+            findingsText: "Right disc bulge at L4-L5 (LS).",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+        {
+          id: "cs-l45-right-2",
+          // NOTE: same concept + same level + same laterality, only region differs.
+          // CARE's slotKey for this would be "Cervical Spine|disc_contour|L4-L5|right"
+          // — clinically nonsense but the test isolates region as a keying axis.
+          ownership: { conflictGroup: "disc_contour", slotKey: "Cervical Spine|disc_contour|L4-L5|right" },
+          templates: { findings: "Right disc bulge at L4-L5 (CS)." },
+          lastRendered: { findings: "Right disc bulge at L4-L5 (CS)." },
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "cs-l45-right-2",
+            region: "Cervical Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            laterality: "right",
+            supportsLaterality: true,
+            properties: "side",
+            findingsText: "Right disc bulge at L4-L5 (CS).",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    const composed = composeObservationsFromStore();
+    expect(composed).toHaveLength(2);
+    expect(composed.map((o) => o.region).sort()).toEqual(["Cervical Spine", "LS Spine"]);
+  });
+
+  it("dedupe-identity B. same concept in different anatomical sections (no level/laterality) survives when clinically distinct via region", () => {
+    // Brain fazekas vs Whole Spine fazekas — concept matches, no level, no
+    // laterality. Region alone must keep them distinct.
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "brain-fazekas",
+          ownership: { conflictGroup: "fazekas", slotKey: "Brain|fazekas|*|*" },
+          templates: { findings: "Confluent white matter lesions, Fazekas grade 2." },
+          lastRendered: { findings: "Confluent white matter lesions, Fazekas grade 2." },
+          source: "quick-select",
+          observation: buildCanonicalObservation({
+            id: "brain-fazekas",
+            region: "Brain",
+            concept: "fazekas",
+            findingsText: "Confluent white matter lesions, Fazekas grade 2.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+        {
+          id: "spine-fazekas",
+          ownership: { conflictGroup: "fazekas", slotKey: "Whole Spine|fazekas|*|*" },
+          templates: { findings: "Confluent spinal cord lesions, Fazekas grade 2." },
+          lastRendered: { findings: "Confluent spinal cord lesions, Fazekas grade 2." },
+          source: "quick-select",
+          observation: buildCanonicalObservation({
+            id: "spine-fazekas",
+            region: "Whole Spine",
+            concept: "fazekas",
+            findingsText: "Confluent spinal cord lesions, Fazekas grade 2.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    const composed = composeObservationsFromStore();
+    expect(composed).toHaveLength(2);
+  });
+
+  it("dedupe-identity C. existing Fazekas same-slot replacement still produces one observation", () => {
+    resetWorkspace("Brain");
+    const f1 = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Fazekas 1")!;
+    useWorkspace.getState().applyPathologyOverlay({
+      id: "qs-fazekas-1",
+      incoming: { findings: f1.sentence, impression: f1.impressionSentence },
+      templates: { findings: f1.sentence, impression: f1.impressionSentence },
+      ownership: { conflictGroup: f1.conflictGroup, anatomicalSection: f1.anatomicalSection },
+      source: "quick-select",
+      region: "Brain",
+      concept: "fazekas",
+      label: f1.label,
+      findingsText: f1.sentence,
+    });
+    useWorkspace.getState().applyPathologyOverlay({
+      id: "qs-fazekas-2",
+      incoming: { findings: FAZEKAS2.sentence, impression: FAZEKAS2.impressionSentence },
+      templates: { findings: FAZEKAS2.sentence, impression: FAZEKAS2.impressionSentence },
+      ownership: { conflictGroup: FAZEKAS2.conflictGroup, anatomicalSection: FAZEKAS2.anatomicalSection },
+      source: "quick-select",
+      region: "Brain",
+      concept: "fazekas",
+      label: FAZEKAS2.label,
+      findingsText: FAZEKAS2.sentence,
+    });
+    const composed = composeObservationsFromStore();
+    expect(composed).toHaveLength(1);
+    expect(composed[0]!.findingsText).toMatch(/Fazekas grade 2/i);
+    expect(composed[0]!.region).toBe("Brain");
+  });
+
+  it("dedupe-identity D. right/left infarcts remain separate under canonical key", () => {
+    const right: ComposeObservation = {
+      region: "Brain",
+      concept: "infarct",
+      source: "quick-findings",
+      laterality: "right",
+      findingsText: "Acute MCA territory infarct.",
+      conflictGroup: "infarct",
+    };
+    const left: ComposeObservation = {
+      region: "Brain",
+      concept: "infarct",
+      source: "quick-findings",
+      laterality: "left",
+      findingsText: "Acute MCA territory infarct.",
+      conflictGroup: "infarct",
+    };
+    expect(canonicalObservationKey(right)).not.toBe(canonicalObservationKey(left));
+    expect(dedupeObservations([right, left])).toHaveLength(2);
+  });
+
+  // ============================================================
+  // Hardening §2 — baselineReplaces safety
+  // ============================================================
+
+  it("baselineReplaces-safety: patch with concept=disc_contour, baselineReplaces='No significant disc bulge.', no lastRendered/templates findings is OMITTED (never surfaced as active finding)", () => {
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "bulge-baseline-only",
+          ownership: { conflictGroup: "disc_contour", slotKey: "LS Spine|disc_contour|L4-L5|*" },
+          templates: {}, // no findings template
+          lastRendered: {}, // no rendered findings
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "bulge-baseline-only",
+            region: "LS Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            baselineReplaces: "No significant disc bulge.",
+            findingsText: "", // explicitly empty — represents a patch that has
+            // structural identity but no committed Findings sentence yet.
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    const composed = composeObservationsFromStore();
+    // The patch MUST be omitted — there is no active Findings contribution.
+    expect(composed).toEqual([]);
+  });
+
+  it("baselineReplaces-safety: a patch with concept=disc_contour AND a real lastRendered.findings does NOT leak 'No significant disc bulge.' as findingsText", () => {
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "bulge-active",
+          ownership: { conflictGroup: "disc_contour", slotKey: "LS Spine|disc_contour|L4-L5|*" },
+          templates: { findings: "Diffuse disc bulge at L4-L5 indenting the thecal sac." },
+          lastRendered: { findings: "Diffuse disc bulge at L4-L5 indenting the thecal sac." },
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "bulge-active",
+            region: "LS Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            baselineReplaces: "No significant disc bulge.",
+            findingsText: "Diffuse disc bulge at L4-L5 indenting the thecal sac.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    const composed = composeObservationsFromStore();
+    expect(composed).toHaveLength(1);
+    expect(composed[0]!.findingsText).toMatch(/Diffuse disc bulge at L4-L5/i);
+    expect(composed[0]!.findingsText).not.toMatch(/No significant disc bulge/i);
+    // baselineReplaces IS still carried for provenance/ownership on the
+    // ComposeObservation (the schema allows it), but it MUST NOT appear as
+    // findingsText.
+    expect(composed[0]!.baselineReplaces).toBe("No significant disc bulge.");
+  });
+
+  it("baselineReplaces-safety: templates.findings is used as fallback when lastRendered.findings is absent (radiologist-authored template, NOT baseline)", () => {
+    useWorkspace.setState({
+      appliedPathologyPatches: [
+        {
+          id: "bulge-template-only",
+          ownership: { conflictGroup: "disc_contour", slotKey: "LS Spine|disc_contour|L4-L5|*" },
+          templates: { findings: "Mild diffuse disc bulge at L4-L5." },
+          lastRendered: {}, // e.g. freshly-hydrated draft where lastRendered is empty
+          source: "quick-findings",
+          observation: buildCanonicalObservation({
+            id: "bulge-template-only",
+            region: "LS Spine",
+            concept: "disc_contour",
+            level: "L4-L5",
+            baselineReplaces: "No significant disc bulge.",
+            findingsText: "Mild diffuse disc bulge at L4-L5.",
+          }),
+          replacedBaseline: { findings: [], impression: [] },
+          protected: false,
+        },
+      ],
+    });
+    const composed = composeObservationsFromStore();
+    expect(composed).toHaveLength(1);
+    expect(composed[0]!.findingsText).toBe("Mild diffuse disc bulge at L4-L5.");
+    expect(composed[0]!.findingsText).not.toMatch(/No significant disc bulge/i);
+  });
+
+  // ============================================================
+  // Hardening §3 — Snapshot hashing / freshness canonicalization
+  // ============================================================
+
+  it("hash-canonical A. right → left laterality change with identical findingsText changes reportRevision", async () => {
+    const base: ComposeObservation = {
+      region: "Brain",
+      concept: "infarct",
+      source: "quick-findings",
+      laterality: "right",
+      findingsText: "Acute MCA territory infarct.",
+    };
+    const flipped: ComposeObservation = { ...base, laterality: "left" };
+    expect(canonicalObservationHashPayload(base)).not.toBe(canonicalObservationHashPayload(flipped));
+    const h1 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [base] });
+    const h2 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [flipped] });
+    expect(h1.reportRevision).not.toBe(h2.reportRevision);
+  });
+
+  it("hash-canonical B. mild → moderate severity metadata change with identical findingsText changes reportRevision", async () => {
+    const mild: ComposeObservation = {
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-findings",
+      level: "L4-L5",
+      severity: "mild",
+      findingsText: "Diffuse disc bulge at L4-L5.",
+    };
+    const moderate: ComposeObservation = { ...mild, severity: "moderate" };
+    expect(canonicalObservationHashPayload(mild)).not.toBe(canonicalObservationHashPayload(moderate));
+    const h1 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [mild] });
+    const h2 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [moderate] });
+    expect(h1.reportRevision).not.toBe(h2.reportRevision);
+  });
+
+  it("hash-canonical C. region change with otherwise identical observation changes reportRevision", async () => {
+    const ls: ComposeObservation = {
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-findings",
+      level: "L4-L5",
+      findingsText: "Disc bulge indenting the thecal sac.",
+    };
+    const cs: ComposeObservation = { ...ls, region: "Cervical Spine" };
+    expect(canonicalObservationHashPayload(ls)).not.toBe(canonicalObservationHashPayload(cs));
+    const h1 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [ls] });
+    const h2 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [cs] });
+    expect(h1.reportRevision).not.toBe(h2.reportRevision);
+  });
+
+  it("hash-canonical D. impression contribution change changes reportRevision", async () => {
+    const without: ComposeObservation = {
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-findings",
+      level: "L4-L5",
+      findingsText: "Disc bulge at L4-L5.",
+    };
+    const withImpression: ComposeObservation = { ...without, impressionText: "Mild disc bulge at L4-L5." };
+    expect(canonicalObservationHashPayload(without)).not.toBe(canonicalObservationHashPayload(withImpression));
+    const h1 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [without] });
+    const h2 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [withImpression] });
+    expect(h1.reportRevision).not.toBe(h2.reportRevision);
+  });
+
+  it("hash-canonical E. unchanged observation yields identical hash", async () => {
+    const obs: ComposeObservation = {
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-findings",
+      level: "L4-L5",
+      laterality: "right",
+      severity: "mild",
+      anatomicalSection: "disc",
+      findingsText: "Diffuse disc bulge at L4-L5.",
+      impressionText: "Mild disc bulge at L4-L5.",
+    };
+    const h1 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [obs] });
+    const h2 = await computeSnapshotHashes({ findings: "F", impression: "I", recommendation: "R", observations: [{ ...obs }] });
+    expect(h1.reportRevision).toBe(h2.reportRevision);
+    expect(h1.inputHash).toBe(h2.inputHash);
+  });
+
+  it("hash-canonical F. browser/client and API-server canonicalization remain equivalent (no drift)", async () => {
+    const obs: ComposeObservation = {
+      id: "obs-1",
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-findings",
+      level: "L4-L5",
+      laterality: "right",
+      severity: "mild",
+      anatomicalSection: "disc",
+      findingsText: "Diffuse disc bulge at L4-L5.",
+      impressionText: "Mild disc bulge at L4-L5.",
+      conflictGroup: "disc bulge",
+      baselineReplaces: "No significant disc bulge.",
+    };
+
+    // 1. Canonical identity (dedupe key) — client vs server MUST match.
+    expect(canonicalObservationKey(obs)).toBe(serverCanonicalObservationKey(obs));
+
+    // 2. Canonical hash payload — client vs server MUST match.
+    expect(canonicalObservationHashPayload(obs)).toBe(serverCanonicalObservationHashPayload(obs));
+
+    // 3. Dedupe output — client vs server MUST match.
+    const list = [obs, { ...obs, id: "obs-1-dup" }];
+    expect(dedupeObservations(list)).toEqual(serverDedupeObservations(list));
+
+    // 4. Compute full snapshot hashes — client uses async WebCrypto SHA-256
+    //    (truncated to 32 hex chars); server uses Node crypto SHA-256 truncated
+    //    to 32 hex chars. Both must produce identical digest for the same
+    //    canonical observation payload.
+    const snap = {
+      findings: "Findings narrative.",
+      impression: "Impression narrative.",
+      recommendation: "Recommendation narrative.",
+      observations: [obs],
+      jobKindHint: "FULL_REPORT" as const,
+      clinicalHistory: "History.",
+      technique: "Technique.",
+      templateSections: [],
+    };
+    const clientHash = await computeSnapshotHashes(snap);
+    const serverHash = serverComputeSnapshotHashes(snap);
+    expect(clientHash.findingsHash).toBe(serverHash.findingsHash);
+    expect(clientHash.impressionHash).toBe(serverHash.impressionHash);
+    expect(clientHash.recommendationHash).toBe(serverHash.recommendationHash);
+    expect(clientHash.inputHash).toBe(serverHash.inputHash);
+    expect(clientHash.reportRevision).toBe(serverHash.reportRevision);
+  });
+
+  it("hash-canonical backward compatibility: old snapshot without `region` still parses and hashes cleanly", async () => {
+    // Simulate a snapshot produced by a pre-hardening client (no `region`
+    // field on observations). The schema must still accept it, the hash
+    // must still compute, and the canonical key must fall back to the
+    // legacy findings-text path when no structured identity is present.
+    const legacyObs = {
+      concept: "disc_contour",
+      source: "quick-findings" as const,
+      level: "L4-L5",
+      findingsText: "Disc bulge at L4-L5.",
+      // intentionally no region, no laterality, no severity, no impressionText
+    };
+    const key = canonicalObservationKey(legacyObs);
+    expect(key.startsWith("slot::")).toBe(true); // concept+level present → structured path
+    const h = await computeSnapshotHashes({
+      findings: "F",
+      impression: "I",
+      recommendation: "R",
+      observations: [legacyObs],
+    });
+    expect(h.reportRevision).toBeTruthy();
+    // And server-side canonicalization must agree.
+    expect(serverCanonicalObservationKey(legacyObs)).toBe(key);
+    expect(serverCanonicalObservationHashPayload(legacyObs)).toBe(canonicalObservationHashPayload(legacyObs));
+  });
+
+  // ============================================================
+  // Hardening §4 — Prompt rendering includes region
+  // ============================================================
+
+  it("prompt-rendering: region appears in the compact observation line", () => {
+    const line = renderComposeObservationLine({
+      region: "LS Spine",
+      concept: "disc_contour",
+      source: "quick-select",
+      anatomicalSection: "disc",
+      level: "L4-L5",
+      laterality: "bilateral",
+      findingsText: "Diffuse disc bulge with bilateral foraminal narrowing.",
+      impressionText: "Mild disc bulge at L4-L5.",
+    });
+    expect(line).toContain("[quick-select]");
+    expect(line).toContain("LS Spine | disc | L4-L5 | disc_contour | bilateral");
+    expect(line).toContain("Diffuse disc bulge with bilateral foraminal narrowing.");
+    expect(line).toContain("Impression: Mild disc bulge at L4-L5.");
+  });
+
+  it("prompt-rendering: empty pieces are omitted (no orphan separators)", () => {
+    const line = renderComposeObservationLine({
+      region: "Brain",
+      concept: "fazekas",
+      source: "quick-select",
+      findingsText: "Confluent white matter lesions, Fazekas grade 2.",
+    });
+    expect(line).toBe("- [quick-select] Brain | fazekas\n  Confluent white matter lesions, Fazekas grade 2.");
+    expect(line).not.toMatch(/\| {2,}/); // no orphan separators from missing pieces
+    expect(line).not.toContain("undefined");
+    expect(line).not.toContain("null");
   });
 });

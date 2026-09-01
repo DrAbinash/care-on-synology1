@@ -20,13 +20,17 @@
  *    composer runs (`applyPathologyOverlay` drops same-slot siblings when the
  *    survivor id is the incoming id; `removeMacroBundle` / `removeObservation`
  *    strip explicit rows). We do not re-implement that here.
- *  - Same-slot dedupe uses `CanonicalObservation.slotKey`
- *    (region|concept|level|laterality). When two patches share a slotKey the
- *    survivor is the one still present in the ledger — i.e. by the time
- *    `deriveComposeObservations` is called there is exactly one row per slot
- *    for structured observations. Legacy unstructured patches (no slotKey or
- *    wildcard slotKey) are deduped by normalized findings text to avoid
- *    double-counting voice rows.
+ *  - Clinical-identity dedupe uses `canonicalObservationKey(obs)` defined in
+ *    `reportComposer/types.ts` (region|concept|level|laterality) — the SAME
+ *    canonical identity the client + server hash use. We do NOT maintain a
+ *    parallel identity algorithm here. Legacy / unstructured rows fall back to
+ *    normalized findings text so duplicate voice commits collapse, but two
+ *    clinically distinct observations never collapse just because their text
+ *    or concept matches.
+ *  - `baselineReplaces` is NEVER used as the active findings text. It is
+ *    baseline text that is being REPLACED by the active pathology — surfacing
+ *    it as findingsText would feed Ollama the prior normal anatomy as the
+ *    current pathology. See `patchToComposeObservation` for the safe lookup.
  *  - Voice observations are already members of `appliedPathologyPatches`
  *    (id `voice-*`, source `radiologist-voice`). The adapter renders them
  *    with `source: "voice"`. No separate voiceComposerObservations pass is
@@ -36,6 +40,7 @@ import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import type { CanonicalObservation } from "@/lib/observationSlot";
 import type { InsertSource } from "@/lib/reportFieldMerge";
 import type { ComposeObservation } from "./types";
+import { canonicalObservationKey } from "./types";
 
 /**
  * Map CARE's broad `InsertSource` union down to the smaller enum the composer
@@ -68,19 +73,45 @@ export function mapInsertSourceToComposeSource(
 
 /**
  * Build a single ComposeObservation from a canonical ledger patch.
- * Returns null when the patch has no usable findings text (e.g. legacy rows
- * with only impression templates) — those rows still contribute to narrative
- * via the Findings/Impression snapshot, but cannot ground the composer as a
- * standalone observation.
+ *
+ * Returns null when the patch has no usable ACTIVE findings contribution.
+ *
+ * Findings text lookup order (strict):
+ *   1. `patch.lastRendered.findings` — the active Findings sentence this
+ *      observation contributed to the current narrative. This is the only
+ *      safe source of active findings text.
+ *   2. `patch.templates.findings` — the original template the radiologist
+ *      committed. Safe because templates are the radiologist-authored
+ *      contribution that was merged into Findings (or would be if the field
+ *      were empty). Used when lastRendered is absent (e.g. a patch that was
+ *      committed but never re-rendered against the live narrative, such as
+ *      a freshly-hydrated draft where lastRendered is empty for a still-
+ *      pending observation).
+ *
+ * NEVER used as findingsText:
+ *   - `observation.baselineReplaces` — this is the prior BASELINE text being
+ *     REPLACED by the active pathology. Surfacing it would tell the AI that
+ *     the active disc_contour finding is "No significant disc bulge." — i.e.
+ *     it would treat the replaced normal as the current abnormal.
+ *
+ * If neither lastRendered.findings nor templates.findings is present, the
+ * patch is omitted from ComposeObservation — it still contributes to the
+ * composer via the Findings/Impression narrative snapshot.
  */
 function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObservation | null {
   const observation: CanonicalObservation | undefined = patch.observation;
-  const findingsText = (patch.lastRendered?.findings ?? observation?.baselineReplaces ?? "").trim();
+
+  // STRICT active-findings lookup. baselineReplaces is intentionally
+  // excluded — see function docstring.
+  const lastRenderedFindings = (patch.lastRendered?.findings ?? "").trim();
+  const templateFindings = (patch.templates?.findings ?? "").trim();
+  const findingsText = lastRenderedFindings || templateFindings;
   if (!findingsText) return null;
 
   const source = mapInsertSourceToComposeSource(patch.source);
-  const impressionText = patch.lastRendered?.impression?.trim() || undefined;
-  const recommendationText = patch.lastRendered?.recommendation?.trim() || undefined;
+  const impressionText = patch.lastRendered?.impression?.trim()
+    || patch.templates?.impression?.trim()
+    || undefined;
 
   const obs: ComposeObservation = {
     concept: observation?.concept ?? patch.ownership?.conflictGroup ?? patch.id,
@@ -91,6 +122,7 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
   // Optional fields — only carried when meaningful so we don't bloat the
   // composer API contract.
   if (observation?.id) obs.id = observation.id;
+  if (observation?.region) obs.region = observation.region;
   if (observation?.level) obs.level = observation.level;
   if (observation?.laterality) obs.laterality = observation.laterality;
   if (observation?.severity) obs.severity = observation.severity;
@@ -108,37 +140,6 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
   // Defensive: ensure `concept` is never empty (zod schema requires min(1)).
   if (!obs.concept) obs.concept = patch.id;
   return obs;
-}
-
-/**
- * Stable lowercase key used for clinical-identity dedupe.
- *
- * Uses `slotKey` (region|concept|level|laterality) when the observation has
- * one — that is CARE's canonical slot identity, already honored by
- * `applyPathologyOverlay` for same-sibling replacement. Falls back to
- * normalized findings text for legacy / unstructured patches (no concept).
- *
- * Severity, measurement, and findings wording are intentionally NOT part of
- * the key — the ledger already guarantees at most one active row per slotKey.
- * For unstructured rows, identical findings text means duplicate voice commits.
- */
-function dedupeKey(obs: ComposeObservation): string {
-  const slot = [
-    (obs.conflictGroup || obs.concept || "").toLowerCase(),
-    (obs.level || "").toLowerCase(),
-    (obs.laterality || "").toLowerCase(),
-  ].join("|");
-  // If we have a real (non-wildcard) clinical slot, use it.
-  if (slot.replace(/\|/g, "").length > 0) {
-    return `slot::${slot}`;
-  }
-  // Legacy / unstructured — dedupe by normalized findings text only.
-  const norm = (obs.findingsText || "")
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .trim()
-    .toLowerCase();
-  return `text::${norm}`;
 }
 
 /**
@@ -173,7 +174,7 @@ export function deriveComposeObservations(
     const obs = patchToComposeObservation(patch);
     if (!obs) continue;
 
-    const key = dedupeKey(obs);
+    const key = canonicalObservationKey(obs);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(obs);
@@ -186,16 +187,18 @@ export function deriveComposeObservations(
  * Compact one-line rendering of an observation for the composer prompt.
  *
  * Format:
- *   [source] Region | Level | Concept | Laterality
+ *   [source] Region | Anatomical Section | Level | Concept | Laterality
  *   Findings text.
+ *   (Impression text.)
  *
- * Intentionally omits internal metadata (slotKey, conflictGroup, bundleId,
- * sectionsOwned) — those are ownership details, not clinical content. The
- * composer only needs the clinical identity + the radiologist's findings
- * wording.
+ * Empty pieces are omitted. Internal metadata (slotKey, conflictGroup,
+ * bundleId, sectionsOwned) is intentionally NOT rendered — those are
+ * ownership bookkeeping, not clinical content. The composer only needs the
+ * clinical identity + the radiologist's findings wording.
  */
 export function renderComposeObservationLine(obs: ComposeObservation): string {
   const parts: string[] = [];
+  if (obs.region) parts.push(obs.region);
   if (obs.anatomicalSection) parts.push(obs.anatomicalSection);
   if (obs.level) parts.push(obs.level);
   parts.push(obs.concept);

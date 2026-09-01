@@ -44,12 +44,14 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
 function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
   const obs = (snapshot.observations ?? [])
     .map((o) => {
-      // Compact clinical line: [source] Region | Level | Concept | Laterality
+      // Compact clinical line:
+      //   [source] Region | Anatomical Section | Level | Concept | Laterality
       // then a Findings line, then (if present) an Impression line.
-      // Internal metadata (slotKey, conflictGroup, bundleId, sectionsOwned)
-      // is intentionally omitted — the composer needs clinical identity, not
-      // ownership bookkeeping.
+      // Empty pieces are omitted. Internal metadata (slotKey, conflictGroup,
+      // bundleId, sectionsOwned) is intentionally omitted — the composer needs
+      // clinical identity, not ownership bookkeeping.
       const head: string[] = [];
+      if (o.region) head.push(o.region);
       if (o.anatomicalSection) head.push(o.anatomicalSection);
       if (o.level) head.push(o.level);
       head.push(o.concept);
