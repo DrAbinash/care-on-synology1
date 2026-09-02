@@ -50,7 +50,7 @@ export function canonicalObservationKey(o: ComposeObservation): string {
  *
  * Includes every field that materially changes the clinical meaning of an
  * observation: region, concept, level, laterality, severity,
- * anatomicalSection, findingsText, impressionText.
+ * anatomicalSection, findingsText, impressionText, recommendationText.
  *
  * Excludes id / source / conflictGroup / baselineReplaces — those are
  * provenance/bookkeeping, not clinical content. Changing them MUST NOT alter
@@ -68,6 +68,7 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
     norm(o.anatomicalSection),
     norm(o.findingsText),
     norm(o.impressionText),
+    norm(o.recommendationText),
   ].join("\u001f");
 }
 
@@ -180,9 +181,10 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
   const recommendationHash = hashText(snapshot.recommendation ?? "");
   // Observations contribute their full canonical payload (region, concept,
   // level, laterality, severity, anatomicalSection, findingsText,
-  // impressionText). Changes to ANY of those fields MUST invalidate prior
-  // READY drafts. This MUST be mirrored verbatim by the client
-  // (diagnostic-erp/src/lib/reportComposer/types.ts `computeSnapshotHashes`).
+  // impressionText, recommendationText). Changes to ANY of those fields MUST
+  // invalidate prior READY drafts. This MUST be mirrored verbatim by the
+  // client (diagnostic-erp/src/lib/reportComposer/types.ts
+  // `computeSnapshotHashes`).
   const obsCanon = dedupeObservations(snapshot.observations ?? [])
     .map((o) => canonicalObservationHashPayload(o))
     .join("\n");

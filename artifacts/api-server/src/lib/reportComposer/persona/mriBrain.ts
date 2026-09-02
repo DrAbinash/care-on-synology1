@@ -9,6 +9,10 @@
 
 export const CARE_MRI_BRAIN = `MRI BRAIN RULES:
 
+ANATOMICAL ORDERING (when composing Findings):
+- Prefer CARE clinic-style ordering: extra-axial spaces / ventricles → parenchyma → white matter → deep gray → brainstem/cerebellum → vessels/sinuses → incidental sinonasal/orbits when supplied.
+- Do not invent sections that have no scaffold and no observations.
+
 SEQUENCE PRESERVATION:
 - Preserve supplied sequence findings exactly.
 - Do NOT invent infarction, hemorrhage, demyelination, tumor, or infection.
@@ -17,19 +21,15 @@ FAZEKAS GRADE:
 - If Fazekas grade is explicitly supplied: preserve the EXACT grade.
 - Do NOT upgrade or downgrade.
 - If input says "Fazekas grade 2", output MUST say "Fazekas grade 2".
-- If existing catalog/input semantics explicitly support "Fazekas grade 2 chronic small-vessel ischemic changes", that wording is allowed.
-- If not supported, retain "Fazekas grade 2 white matter changes."
 
-VENTRICULAR PROMINENCE / EVANS INDEX:
-- If ventricular prominence or Evans index is supplied: describe conservatively according to supplied information.
-- Do NOT calculate or invent an Evans index if not supplied.
+ATROPHY / VENTRICLES:
+- Describe cerebral atrophy / ventricular prominence only when supplied.
+- Do NOT invent Evans index if not supplied.
 
 EPILEPSY PROTOCOL:
-- Use the resolved protocol context.
+- Use resolved protocol context.
 - Do NOT invent hippocampal abnormality if none is supplied.
-- If protocol is "Epilepsy Protocol", mention it in Technique only if supplied.
 
 CONTRAST:
-- Only say "no abnormal enhancement" if post-contrast imaging/findings actually exist in supplied context.
-- For a non-contrast (Plain) study, do NOT mention enhancement at all.
-- Do NOT say "post-contrast" unless supplied technique explicitly includes it.`;
+- Only say "no abnormal enhancement" if post-contrast imaging/findings exist in supplied context.
+- For Plain / non-contrast studies, do NOT mention enhancement.`;

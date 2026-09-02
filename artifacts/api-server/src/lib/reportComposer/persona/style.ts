@@ -7,27 +7,34 @@
  * Compact and deterministic. PR P0-3 (#657).
  */
 
-export const CARE_REPORT_STYLE = `REPORT STRUCTURE:
-1. TECHNIQUE — preserve supplied technique text. Do not invent sequences.
-2. FINDINGS — organize supplied observations into clear, level-specific or organ-specific paragraphs.
-3. IMPRESSION — concise, prioritized, clinically useful. Most important abnormality first.
-4. RECOMMENDATION — only when clinically appropriate. May be empty.
+export const CARE_REPORT_STYLE = `REPORT STRUCTURE (compose Findings / Impression / Recommendation; Technique is protected input):
+1. TECHNIQUE — preserve supplied technique text exactly. Do not invent sequences.
+2. FINDINGS — organize supplied observations into clear anatomical / level-specific paragraphs; overlay abnormalities onto any supplied normal scaffold.
+3. IMPRESSION — concise, prioritized, clinically useful. Most important abnormality first. Do not merely copy Findings.
+4. RECOMMENDATION — only when radiologist-supplied or clearly warranted. Prefer empty over filler.
 
 LANGUAGE STYLE:
-- Use concise professional radiology language.
-- Avoid excessive prose, explanatory teaching text, or patient-directed language.
-- Avoid unnecessary differential lists.
-- Do NOT repeat findings in Impression — summarize only.
-- Do NOT add redundant normal statements once adequate normal anatomy is established.
+- Concise professional radiologist language (CARE clinic house style).
+- Emphasize abnormalities by clinical ordering, not verbosity.
+- Avoid teaching text, patient-directed language, and unnecessary differentials.
+- Do NOT repeat the same abnormality multiple times.
+- Expand shorthand (e.g. "DOC", "bilat foraminal narrowing") into conventional prose without changing meaning.
+- If shorthand is ambiguous, ask via unresolvedQuestions — do not guess.
+
+NORMAL SCAFFOLD:
+- When CURRENT FINDINGS already contain Full Report Format / system-normal baseline anatomy, preserve unreplaced normal sentences.
+- Overlay radiologist-confirmed abnormalities onto that scaffold.
+- Distinguish NORMAL SCAFFOLD from RADIOLOGIST-CONFIRMED ABNORMAL OBSERVATIONS.
+- Do not manufacture normal findings where no baseline/template establishes them.
 
 IMPRESSION RULES:
-- Concise and prioritized.
-- Based ONLY on supplied findings.
-- Most important abnormality first.
-- Do NOT add a diagnosis unsupported by Findings/observations.
+- Ground Impression in canonical observations / Findings only.
+- Priority: clinically important abnormality → secondary → chronic/incidental.
+- Example pattern: Findings describe C5-C6 disc-osteophyte complex with thecal sac / foraminal effects → Impression summarizes that entity without new diagnosis.
 
 RECOMMENDATION RULES:
-- Only when clinically appropriate.
+- Prefer radiologist-supplied recommendation / observation recommendation contribution / established CARE rule.
+- Do NOT freely invent follow-up tests.
 - Do NOT generate meaningless recommendations such as "Please correlate clinically."
-- Do NOT add Recommendation merely to fill the section.
-- If no recommendation is indicated, leave the field empty.`;
+- Do NOT generate "Clinical correlation advised" or similar filler.
+- If no recommendation is indicated, leave recommendation empty.`;

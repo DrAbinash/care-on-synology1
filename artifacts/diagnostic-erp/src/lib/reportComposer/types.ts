@@ -16,6 +16,8 @@ export type ComposeObservation = {
   laterality?: string | null;
   findingsText: string;
   impressionText?: string;
+  /** Optional radiologist-supplied recommendation contribution for this observation. */
+  recommendationText?: string;
   anatomicalSection?: string;
   conflictGroup?: string;
   baselineReplaces?: string;
@@ -204,6 +206,7 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
     norm(o.anatomicalSection),
     norm(o.findingsText),
     norm(o.impressionText),
+    norm(o.recommendationText),
   ].join("\u001f");
 }
 
@@ -261,7 +264,7 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   const recommendationHash = await hashText(snapshot.recommendation ?? "");
   // Observations contribute their full canonical payload (region, concept,
   // level, laterality, severity, anatomicalSection, findingsText,
-  // impressionText). Changes to ANY of those fields MUST invalidate prior
+  // impressionText, recommendationText). Changes to ANY of those fields MUST invalidate prior
   // READY drafts — e.g. right → left laterality change with identical findings
   // text, or mild → moderate severity change with identical findings text,
   // both produce a different reportRevision so blind-apply is blocked.

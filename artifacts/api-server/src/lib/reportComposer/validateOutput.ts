@@ -78,11 +78,34 @@ function groundedCorpus(snapshot: ComposerInputSnapshot): string {
     snapshot.impression,
     snapshot.recommendation,
     snapshot.clinicalHistory,
+    snapshot.technique,
     ...(snapshot.observations ?? []).map((o: ComposeObservation) =>
-      [o.concept, o.findingsText, o.impressionText ?? ""].join(" "),
+      [o.concept, o.findingsText, o.impressionText ?? "", o.recommendationText ?? ""].join(" "),
     ),
   ];
   return parts.join("\n").toLowerCase();
+}
+
+const MEASUREMENT_TOKEN_RE = /\b\d+(?:\.\d+)?\s*(?:mm|cm|ml|cc|hu)\b/gi;
+const FILLER_RECOMMENDATION_RE =
+  /^(please\s+)?(clinical\s+correlation(\s+is)?\s+advised\.?|correlate\s+clinically\.?|clinical\s+correlation\.?)$/i;
+
+function extractMeasurementTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(MEASUREMENT_TOKEN_RE)) {
+    if (m[0]) out.add(m[0].toLowerCase().replace(/\s+/g, ""));
+  }
+  return out;
+}
+
+function detectMissingMeasurements(inputCorpus: string, outputText: string): string[] {
+  const input = extractMeasurementTokens(inputCorpus);
+  const output = extractMeasurementTokens(outputText);
+  const missing: string[] = [];
+  for (const t of input) {
+    if (!output.has(t)) missing.push(t);
+  }
+  return missing;
 }
 
 /**
@@ -182,6 +205,8 @@ function detectSeverityEscalations(inputCorpus: string, outputText: string): str
  * Flag abnormality terms that appear in AI output but nowhere in radiologist-supplied input.
  *
  * PR #657: also detects laterality swaps, level changes, and severity escalations.
+ * Draft-composer hardening: measurement drop advisories, screening wording,
+ * filler recommendation clearing, impression grounding.
  */
 export function validateComposerOutput(
   snapshot: ComposerInputSnapshot,
@@ -213,43 +238,70 @@ export function validateComposerOutput(
     );
   }
 
-  // PR #657: laterality swap detection.
-  // PR #657 hardening: these global regex heuristics are ADVISORY WARNINGS
-  // only, NOT hard blocking errors. In multi-finding reports a legitimate
-  // right-sided finding + separate left-sided finding can trigger a false
-  // positive. We do NOT let these heuristics become hard blocking clinical
-  // errors unless a future slot-specific deterministic mapping can prove
-  // the conflict. The system-prompt safety rules remain the primary guard.
+  // Advisory heuristics (multi-finding false positives possible).
   lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
   if (lateralitySwaps.length > 0) {
     warnings.push(`AI may have swapped laterality (advisory): ${lateralitySwaps.join(", ")}`);
   }
 
-  // PR #657: level change detection.
-  // PR #657 hardening: advisory warning only — a new level in the output may
-  // be a legitimate additional finding, not necessarily a mutation of an
-  // existing one. The system-prompt safety rules remain the primary guard.
   levelChanges.push(...detectLevelChanges(corpus, output));
   if (levelChanges.length > 0) {
     warnings.push(`AI may have introduced levels not in input (advisory): ${levelChanges.join(", ")}`);
   }
 
-  // PR #657: severity escalation detection.
-  // PR #657 hardening: advisory warning only — a mild finding at one level
-  // + a severe finding at another is legitimate. The system-prompt safety
-  // rules remain the primary guard.
   severityEscalations.push(...detectSeverityEscalations(corpus, output));
   if (severityEscalations.length > 0) {
     warnings.push(`AI may have escalated severity (advisory): ${severityEscalations.join(", ")}`);
   }
 
-  // Recommendation should stay empty unless input supports it (history/findings mention follow-up cues)
+  const missingMeasurements = detectMissingMeasurements(corpus, output);
+  if (missingMeasurements.length > 0) {
+    warnings.push(`AI may have dropped measurements (advisory): ${missingMeasurements.join(", ")}`);
+  }
+
+  const hasScreening = (snapshot.regions ?? []).some((r) => /screening/i.test(r))
+    || /screening/i.test(snapshot.protocol ?? "")
+    || /screening/i.test(snapshot.reportTitle ?? "");
+  if (hasScreening) {
+    const draftFindingsLower = draft.findings.toLowerCase();
+    const techAndFindings = `${snapshot.technique}\n${draft.findings}`.toLowerCase();
+    const hasLimitedWording = /limited[\s-]*(planar|sequence)/i.test(techAndFindings);
+    const claimsFullWholeSpine = /multiplanar\s+multisequence.*whole\s+spine|whole\s+spine\s+mri/i.test(
+      draftFindingsLower,
+    );
+    // Warn when draft Findings describe screening as a full diagnostic whole-spine
+    // study, even if Technique already carries limited-sequence wording.
+    if (claimsFullWholeSpine && (!hasLimitedWording || /whole\s+spine\s+mri/i.test(draftFindingsLower))) {
+      warnings.push("screening_wording_may_be_missing");
+    }
+  }
+
   if (draft.recommendation.trim()) {
-    const support =
-      /follow[\s-]?up|recommend|suggest|correlate|further|clinical correlation/i.test(corpus) ||
-      (unsupportedMentions.length === 0 && lateralitySwaps.length === 0 && levelChanges.length === 0 && severityEscalations.length === 0);
-    if (!support) {
-      warnings.push("recommendation_not_clearly_supported");
+    if (FILLER_RECOMMENDATION_RE.test(draft.recommendation.trim())) {
+      draft.recommendation = "";
+      warnings.push("filler_recommendation_cleared");
+    } else {
+      const support =
+        /follow[\s-]?up|recommend|suggest|further|mri|ct|repeat|correlation/i.test(corpus)
+        || (snapshot.observations ?? []).some((o) => (o.recommendationText ?? "").trim().length > 0);
+      if (!support) {
+        warnings.push("recommendation_not_clearly_supported");
+      }
+    }
+  }
+
+  if (draft.impression.trim() && unsupportedMentions.length === 0) {
+    const impLower = draft.impression.toLowerCase();
+    const grounded = groundedCorpus({
+      ...snapshot,
+      findings: `${snapshot.findings}\n${draft.findings}`,
+    });
+    for (const hint of ABNORMALITY_HINTS) {
+      if (impLower.includes(hint) && !grounded.includes(hint)) {
+        errors.push("impression_ungrounded");
+        warnings.push(`Impression mentions '${hint}' not grounded in Findings/observations`);
+        break;
+      }
     }
   }
 

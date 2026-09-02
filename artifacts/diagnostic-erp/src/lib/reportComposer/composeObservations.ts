@@ -112,6 +112,9 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
   const impressionText = patch.lastRendered?.impression?.trim()
     || patch.templates?.impression?.trim()
     || undefined;
+  const recommendationText = patch.lastRendered?.recommendation?.trim()
+    || patch.templates?.recommendation?.trim()
+    || undefined;
 
   const obs: ComposeObservation = {
     concept: observation?.concept ?? patch.ownership?.conflictGroup ?? patch.id,
@@ -130,12 +133,7 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
   if (observation?.conflictGroup) obs.conflictGroup = observation.conflictGroup;
   if (observation?.baselineReplaces) obs.baselineReplaces = observation.baselineReplaces;
   if (impressionText) obs.impressionText = impressionText;
-  // `recommendationText` is intentionally NOT added to `ComposeObservation`
-  // (the schema does not currently expose it). Recommendation narrative is
-  // still grounded via `snapshot.recommendation`. Carrying recommendationText
-  // here would be safe but contract-expanding — P0-1 keeps the contract stable.
-  // The text is preserved on `patch.lastRendered.recommendation` if a future
-  // PR chooses to extend `ComposeObservation`.
+  if (recommendationText) obs.recommendationText = recommendationText;
 
   // Defensive: ensure `concept` is never empty (zod schema requires min(1)).
   if (!obs.concept) obs.concept = patch.id;

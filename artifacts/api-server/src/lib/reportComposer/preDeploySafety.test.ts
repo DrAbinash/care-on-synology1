@@ -208,11 +208,11 @@ describe("pre-deploy safety contracts — client/server canonical observation dr
 
     // Both sides MUST export canonicalObservationHashPayload with the same
     // payload axes (region, concept, level, laterality, severity,
-    // anatomicalSection, findingsText, impressionText).
+    // anatomicalSection, findingsText, impressionText, recommendationText).
     expect(apiSnapshot).toContain("export function canonicalObservationHashPayload");
     expect(erpTypes).toContain("export function canonicalObservationHashPayload");
-    expect(apiSnapshot).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\)/s);
-    expect(erpTypes).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\)/s);
+    expect(apiSnapshot).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\).*norm\(o\.recommendationText\)/s);
+    expect(erpTypes).toMatch(/norm\(o\.region\).*norm\(o\.concept\).*norm\(o\.level\).*norm\(o\.laterality\).*norm\(o\.severity\).*norm\(o\.anatomicalSection\).*norm\(o\.findingsText\).*norm\(o\.impressionText\).*norm\(o\.recommendationText\)/s);
   });
 
   it("12c. computeSnapshotHashes consumes canonicalObservationHashPayload on both sides", async () => {
@@ -300,18 +300,21 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
     expect(workspace).toMatch(/spineSegment:\s*composerCtx\.spineSegment/);
   });
 
-  it("13e. composeEngine prompt renders STUDY CONTEXT block with region/protocol/reportTitle", async () => {
+  it("13e. radiologist draft context prompt renders study identity with region/protocol/reportTitle", async () => {
+    const draftCtx = readFileSync(join(__dirname, "buildRadiologistDraftContext.ts"), "utf8");
     const engine = readFileSync(join(__dirname, "composeEngine.ts"), "utf8");
-    expect(engine).toMatch(/STUDY CONTEXT/);
-    expect(engine).toMatch(/Primary region:/);
-    expect(engine).toMatch(/Additional regions:/);
-    expect(engine).toMatch(/Family:/);
-    expect(engine).toMatch(/Spine segment:/);
-    expect(engine).toMatch(/Protocol:/);
-    expect(engine).toMatch(/Report title:/);
+    expect(engine).toMatch(/buildRadiologistDraftContext/);
+    expect(engine).toMatch(/renderRadiologistDraftContextPrompt/);
+    expect(draftCtx).toMatch(/STUDY IDENTITY/);
+    expect(draftCtx).toMatch(/Primary region:/);
+    expect(draftCtx).toMatch(/Additional regions:/);
+    expect(draftCtx).toMatch(/Family:/);
+    expect(draftCtx).toMatch(/Spine segment:/);
+    expect(draftCtx).toMatch(/Protocol:/);
+    expect(draftCtx).toMatch(/Report title:/);
     // DICOM StudyDescription is rendered as secondary provenance, never as
     // the primary region.
-    expect(engine).toMatch(/DICOM study description:/);
+    expect(draftCtx).toMatch(/DICOM study description:/);
   });
 });
 

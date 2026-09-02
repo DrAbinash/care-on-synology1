@@ -59,9 +59,11 @@ export function buildCareSystemPrompt(
       );
       break;
     default:
-      // FULL_REPORT — no additional task instruction needed; the persona
-      // modules + the user prompt's "Task: Compose full Findings, Impression,
-      // and optional Recommendation." line covers it.
+      parts.push(
+        "TASK: Draft a COMPLETE radiologist-quality report (Findings, Impression, optional Recommendation) " +
+          "from the CLINICAL TRUTH block. Preserve technique. Overlay abnormalities onto any normal scaffold. " +
+          "Do not invent pathology, laterality, levels, measurements, or filler recommendations.",
+      );
       break;
   }
 
