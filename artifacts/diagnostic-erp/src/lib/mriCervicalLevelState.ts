@@ -362,34 +362,66 @@ export function buildCervicalLevelApplyBundle(opts: {
   const ligament = CERVICAL_LIGAMENT_OPTIONS.find((o) => o.id === sel.ligament);
 
   // 1. Disc morphology / contour
+  //
+  // CLINICAL CONCEPT MAPPING:
+  //   - desiccation → disc_signal (NOT disc_contour — desiccation is a signal
+  //     abnormality, not a contour abnormality. Distinct ownership slot.)
+  //   - disc-osteophyte complex → disc_contour (the osteophyte contributes to
+  //     the disc contour; clinical ownership is the same as a bulge)
+  //   - normal/bulge/protrusion/extrusion → disc_contour
   if (morph) {
-    let findings: string;
-    let impression = "";
-    if (morph.id === "normal") {
-      findings = `At ${level}, disc height and signal are preserved with no herniation.`;
-    } else {
-      findings = `At ${level}, ${morph.findings} is noted.`;
-      impression = `${level}: ${morph.findings}.`;
-    }
-    observations.push({
-      id: cervicalPatchId(level, "disc_contour"),
-      incoming: { findings, impression },
-      templates: { findings, impression },
-      ownership: {
-        anatomicalSection: level,
-        conflictGroup: "disc_contour",
-        baselineReplaces: CERVICAL_LEVEL_DISC_BASELINE,
-        concept: "disc_contour",
+    if (morph.id === "desiccation") {
+      // Desiccation is disc_signal — a separate ownership slot from disc_contour.
+      const findings = `At ${level}, ${morph.findings}.`;
+      const impression = `${level}: ${morph.findings}.`;
+      observations.push({
+        id: cervicalPatchId(level, "disc_signal"),
+        incoming: { findings, impression },
+        templates: { findings, impression },
+        ownership: {
+          anatomicalSection: level,
+          conflictGroup: "disc_signal",
+          baselineReplaces: CERVICAL_LEVEL_DISC_BASELINE,
+          concept: "disc_signal",
+          level,
+        },
+        source: "structured-template",
+        region,
         level,
-      },
-      source: "structured-template",
-      region,
-      level,
-      concept: "disc_contour",
-      label: `${level} disc_contour`,
-      findingsText: findings,
-      bundleId,
-    });
+        concept: "disc_signal",
+        label: `${level} disc_signal`,
+        findingsText: findings,
+        bundleId,
+      });
+    } else {
+      let findings: string;
+      let impression = "";
+      if (morph.id === "normal") {
+        findings = `At ${level}, disc height and signal are preserved with no herniation.`;
+      } else {
+        findings = `At ${level}, ${morph.findings} is noted.`;
+        impression = `${level}: ${morph.findings}.`;
+      }
+      observations.push({
+        id: cervicalPatchId(level, "disc_contour"),
+        incoming: { findings, impression },
+        templates: { findings, impression },
+        ownership: {
+          anatomicalSection: level,
+          conflictGroup: "disc_contour",
+          baselineReplaces: CERVICAL_LEVEL_DISC_BASELINE,
+          concept: "disc_contour",
+          level,
+        },
+        source: "structured-template",
+        region,
+        level,
+        concept: "disc_contour",
+        label: `${level} disc_contour`,
+        findingsText: findings,
+        bundleId,
+      });
+    }
   }
 
   // 2. Canal / thecal sac

@@ -319,34 +319,62 @@ export function buildDorsalLevelApplyBundle(opts: {
   const infection = DORSAL_INFECTION_OPTIONS.find((o) => o.id === sel.infection);
 
   // 1. Disc morphology / contour
+  //
+  // CLINICAL CONCEPT MAPPING (same as cervical):
+  //   - desiccation → disc_signal (NOT disc_contour — distinct ownership slot)
+  //   - normal/bulge/protrusion/extrusion → disc_contour
   if (morph) {
-    let findings: string;
-    let impression = "";
-    if (morph.id === "normal") {
-      findings = `At ${level}, disc height and signal are preserved with no herniation.`;
-    } else {
-      findings = `At ${level}, ${morph.findings} is noted.`;
-      impression = `${level}: ${morph.findings}.`;
-    }
-    observations.push({
-      id: dorsalPatchId(level, "disc_contour"),
-      incoming: { findings, impression },
-      templates: { findings, impression },
-      ownership: {
-        anatomicalSection: level,
-        conflictGroup: "disc_contour",
-        baselineReplaces: DORSAL_LEVEL_DISC_BASELINE,
-        concept: "disc_contour",
+    if (morph.id === "desiccation") {
+      const findings = `At ${level}, ${morph.findings}.`;
+      const impression = `${level}: ${morph.findings}.`;
+      observations.push({
+        id: dorsalPatchId(level, "disc_signal"),
+        incoming: { findings, impression },
+        templates: { findings, impression },
+        ownership: {
+          anatomicalSection: level,
+          conflictGroup: "disc_signal",
+          baselineReplaces: DORSAL_LEVEL_DISC_BASELINE,
+          concept: "disc_signal",
+          level,
+        },
+        source: "structured-template",
+        region,
         level,
-      },
-      source: "structured-template",
-      region,
-      level,
-      concept: "disc_contour",
-      label: `${level} disc_contour`,
-      findingsText: findings,
-      bundleId,
-    });
+        concept: "disc_signal",
+        label: `${level} disc_signal`,
+        findingsText: findings,
+        bundleId,
+      });
+    } else {
+      let findings: string;
+      let impression = "";
+      if (morph.id === "normal") {
+        findings = `At ${level}, disc height and signal are preserved with no herniation.`;
+      } else {
+        findings = `At ${level}, ${morph.findings} is noted.`;
+        impression = `${level}: ${morph.findings}.`;
+      }
+      observations.push({
+        id: dorsalPatchId(level, "disc_contour"),
+        incoming: { findings, impression },
+        templates: { findings, impression },
+        ownership: {
+          anatomicalSection: level,
+          conflictGroup: "disc_contour",
+          baselineReplaces: DORSAL_LEVEL_DISC_BASELINE,
+          concept: "disc_contour",
+          level,
+        },
+        source: "structured-template",
+        region,
+        level,
+        concept: "disc_contour",
+        label: `${level} disc_contour`,
+        findingsText: findings,
+        bundleId,
+      });
+    }
   }
 
   // 2. Canal / thecal sac
