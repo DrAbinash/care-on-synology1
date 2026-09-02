@@ -136,15 +136,14 @@ export function calculateMatchScore(dicom: DicomInput, bill: BilledTestInput): M
     warnings.push("Accession number differs or is missing on one record");
   }
 
-  // 2. Patient ID / UHID matching
+  // 2. Patient ID / UHID matching (external identifiers only).
+  // Do NOT award points when DICOM PatientID equals patients.id (internal PK):
+  // modality PatientIDs are external and may numerically collide with serial PKs.
   const cleanDicomPid = (dicom.dicomPatientId || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   const cleanBillPid = (bill.patientUHID || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   if (cleanDicomPid && cleanBillPid && cleanDicomPid === cleanBillPid) {
     points += 30;
     reasons.push("Patient ID / UHID matches exactly");
-  } else if (cleanDicomPid && bill.patientId && String(bill.patientId) === dicom.dicomPatientId) {
-    points += 30;
-    reasons.push("Patient ID matches internal database ID");
   }
 
   // 3. Name Similarity matching (DICOM-aware)
