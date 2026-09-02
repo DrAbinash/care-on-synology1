@@ -473,6 +473,142 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     modalities: ["MG", "US", "MR"],
     impressionworthyAbnormal: true,
   },
+
+  // ─── Canvas-compatible concepts (PR #664 compatibility) ───────────────
+  //
+  // These 7 concepts are emitted by the Cervical/Dorsal Canvas UI (PR #664)
+  // and MUST be in the concept canon so that:
+  //   1. resolveCanonicalConcept() recognizes them (slot identity)
+  //   2. isImpressionworthyAbnormal() returns true (system normal auto-yield)
+  //
+  // None of these are collapsed onto existing concepts — each is clinically
+  // distinct (see PR #664 compatibility matrix).
+
+  // 1. cord_compression — distinct from cord_signal
+  //    cord_compression = mechanical compression (may or may not have signal change)
+  //    cord_signal = T2 hyperintensity (myelopathic change, may exist without compression)
+  {
+    concept: "cord_compression",
+    label: "Cord Compression",
+    description: "Mechanical compression of the spinal cord at a disc level. Distinct from cord_signal (T2 signal change).",
+    aliases: [
+      "cord compression",
+      "cord_compression",
+      "spinal cord compression",
+      "cord compressed",
+    ],
+    regions: ["cervical spine", "dorsal spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 2. pll_thickening — distinct from ligamentum_flavum
+  //    PLL (posterior longitudinal ligament) and LF (ligamentum flavum) are
+  //    anatomically different ligaments. They MUST NOT be collapsed.
+  {
+    concept: "pll_thickening",
+    label: "PLL Thickening",
+    description: "Thickening/hypertrophy of the posterior longitudinal ligament (PLL). Distinct from ligamentum_flavum hypertrophy.",
+    aliases: [
+      "pll thickening",
+      "pll_thickening",
+      "posterior longitudinal ligament thickening",
+      "pll hypertrophy",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 3. endplate_erosion — infection-specific, distinct from endplate (Modic)
+  //    endplate_erosion = infective destruction of the vertebral endplate
+  //    endplate = Modic type 1/2/3 degenerative endplate changes
+  {
+    concept: "endplate_erosion",
+    label: "Endplate Erosion (Infective)",
+    description: "Infective erosion/destruction of the vertebral endplate. Distinct from degenerative Modic endplate changes.",
+    aliases: [
+      "endplate erosion",
+      "endplate_erosion",
+      "endplate destruction",
+      "vertebral endplate erosion",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 4. marrow_edema — infection/fracture-related, distinct ownership slot
+  //    May accompany compression fracture or spondylodiscitis.
+  {
+    concept: "marrow_edema",
+    label: "Vertebral Marrow Edema",
+    description: "Marrow edema in a vertebral body — seen in acute fracture, infection, or tumor. Distinct ownership slot.",
+    aliases: [
+      "marrow edema",
+      "marrow_edema",
+      "bone marrow edema",
+      "vertebral marrow edema",
+      "marrow oedema",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 5. vertebral_collapse — distinct from compression_fracture
+  //    vertebral_collapse can occur from infection/tumor WITHOUT an acute
+  //    compression fracture. MUST NOT collapse onto compression_fracture.
+  {
+    concept: "vertebral_collapse",
+    label: "Vertebral Body Collapse",
+    description: "Collapse of a vertebral body. May occur from infection, tumor, or chronic fracture — distinct from acute compression_fracture.",
+    aliases: [
+      "vertebral collapse",
+      "vertebral_collapse",
+      "vertebral body collapse",
+      "body collapse",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 6. paravertebral_collection — paravertebral location, clinically distinct
+  //    from epidural_collection (different anatomical compartment).
+  {
+    concept: "paravertebral_collection",
+    label: "Paravertebral Collection",
+    description: "Pre/paravertebral soft tissue collection (abscess/inflammation). Paravertebral location is clinically distinct from epidural.",
+    aliases: [
+      "paravertebral collection",
+      "paravertebral_collection",
+      "paravertebral abscess",
+      "prevertebral collection",
+      "paraspinal collection",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+
+  // 7. epidural_collection — epidural location, clinically distinct
+  //    from paravertebral_collection (different anatomical compartment).
+  {
+    concept: "epidural_collection",
+    label: "Epidural Collection",
+    description: "Epidural collection/abscess component. Epidural location is clinically distinct from paravertebral.",
+    aliases: [
+      "epidural collection",
+      "epidural_collection",
+      "epidural abscess",
+      "epidural component",
+      "epidural collection component",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
 ] as const;
 
 /**
