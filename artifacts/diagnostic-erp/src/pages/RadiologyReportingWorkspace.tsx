@@ -183,6 +183,7 @@ import {
   toDraftFormatState,
   type StructuredValues,
 } from "@/lib/structuredFormat";
+import { deriveStructuredObservations } from "@/lib/structuredFormat/structuredObservations";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
@@ -1467,7 +1468,56 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
     if (gen.techniqueText.trim()) ws.mergeField("technique", gen.techniqueText, "structured-template");
     if (gen.recommendationText.trim()) ws.mergeField("recommendation", gen.recommendationText, "structured-template");
-  }, [studySetup.selectedTemplate]);
+
+    // ─── Structured Reporting → Canonical Observation Ledger ─────────────
+    // PR #658 final convergence: structured format selections with
+    // canonicalKey now produce canonical observations via the EXISTING
+    // applyMacroBundle path. This closes the "Structured Reporting →
+    // Ledger changes: NONE" gap.
+    //
+    // Only ABNORMAL selections produce observations. Normal baseline text
+    // remains the responsibility of the Full Report Format (§5).
+    //
+    // The structured format continues to generate narrative text via the
+    // existing generateFromValues() path above — this adapter ONLY creates
+    // the canonical observation entries that the AI Composer and Impression
+    // refresh need.
+    //
+    // The previous structured-template observations are NOT removed here —
+    // applyMacroBundle's same-slot replacement engine handles that: when
+    // the same canonicalKey + level + laterality is re-applied, the old
+    // observation is replaced by the new one (same-slot replacement).
+    // When a toggle is turned OFF, the observation is not emitted, and the
+    // existing observation remains in the ledger until the radiologist
+    // explicitly removes it via Quick Select deselect / removeObservation.
+    // This is intentional — the structured format drives ADDITIONS, not
+    // removals. Removal semantics are owned by the observation ledger.
+    const region = studySetup.studyContext.region ?? "LS Spine";
+    const structuredPatches = deriveStructuredObservations(doc, values, region);
+    if (structuredPatches.length > 0) {
+      ws.applyMacroBundle({
+        bundleId: `structured-${tpl.id ?? "format"}-${Date.now().toString(36)}`,
+        observations: structuredPatches.map((p) => ({
+          incoming: { findings: p.findingsText, impression: p.impressionText },
+          templates: { findings: p.findingsText, impression: p.impressionText },
+          ownership: {
+            conflictGroup: p.conflictGroup,
+            concept: p.concept,
+          },
+          source: "structured-template",
+          region: p.region,
+          concept: p.concept,
+          level: p.level,
+          laterality: p.laterality,
+          severity: p.severity,
+          findingsText: p.findingsText,
+          supportsLaterality: Boolean(p.laterality),
+          properties: p.laterality ? "side" : undefined,
+          id: `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+        })),
+      });
+    }
+  }, [studySetup.selectedTemplate, studySetup.studyContext.region]);
 
   const scheduleStructuredApply = useDebouncedCallback((values: StructuredValues) => {
     applyStructuredGeneration(values);

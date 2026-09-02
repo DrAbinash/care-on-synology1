@@ -89,6 +89,15 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectOwnershipTile[] = [
   t("findings","Modic type 2 L4-L5","Modic type 2 endplate changes at L4-L5.",{mnemonic:"m2",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"endplate"}),
   t("findings","Facet arthropathy L4-L5","Facet arthropathy at L4-L5.",{mnemonic:"fa45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"facet"}),
   t("findings","Compression fracture L1","Acute compression fracture at L1 vertebral body with marrow edema on T2/STIR. Posterior wall intact.",{mnemonic:"cf",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"critical",conflictGroup:"compression fracture"}),
+  // ── High-value additions cross-referenced from DrAbinash/mri-reports ──
+  // These clinically distinct concepts coexist at the same level and must
+  // NOT be collapsed into generic "degenerative changes" (PR crosswalk §12).
+  t("findings","LF hypertrophy L4-L5","Ligamentum flavum hypertrophy at L4-L5.",{mnemonic:"lf45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"ligamentum_flavum"}),
+  t("findings","Foraminal stenosis L4-L5","{severity} {side} neural foraminal stenosis at L4-L5.",{mnemonic:"fs45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"foraminal_stenosis",properties:"side"}),
+  t("findings","Schmorl node L1","Schmorl node at L1 vertebral endplate.",{mnemonic:"sn1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"schmorl"}),
+  t("findings","Vertebral hemangioma L1","Vertebral hemangioma at L1 — typical T1/T2 hyperintense signal.",{mnemonic:"vh1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"normal",conflictGroup:"hemangioma"}),
+  t("findings","Loss of cervical lordosis","Evidence of loss of cervical lordosis — alignment alteration, ? due to spasm.",{mnemonic:"lcl",scopeModality:"MR",scopeBodyPart:"Cervical Spine",category:"abnormal",conflictGroup:"alignment"}),
+  t("findings","Disc desiccation L5-S1","Loss of T2 signal (desiccation) of the L5-S1 disc.",{mnemonic:"dd51",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",conflictGroup:"disc_signal"}),
   t("findings","Normal CT brain","Brain parenchyma shows normal attenuation. No evidence of acute hemorrhage or mass lesion.",{mnemonic:"nb",scopeModality:"CT",scopeBodyPart:"Brain",favorite:true,conflictGroup:"hemorrhage",baselineReplaces:"No evidence of acute hemorrhage or mass lesion."}),
   t("findings","Acute infarct (CT)","Loss of grey-white differentiation in the left MCA territory, consistent with acute infarct. Hyperdense MCA sign.",{mnemonic:"ai",scopeModality:"CT",scopeBodyPart:"Brain",category:"critical",favorite:true,conflictGroup:"infarct"}),
   t("findings","Acute ICH","Acute intraparenchymal hemorrhage in the right basal ganglia measuring ___ × ___ cm. Intraventricular extension. Mass effect with midline shift of ___ mm.",{mnemonic:"ih",scopeModality:"CT",scopeBodyPart:"Brain",category:"critical",conflictGroup:"hemorrhage"}),
