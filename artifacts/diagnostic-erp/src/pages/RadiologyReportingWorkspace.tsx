@@ -183,7 +183,7 @@ import {
   toDraftFormatState,
   type StructuredValues,
 } from "@/lib/structuredFormat";
-import { deriveStructuredObservations } from "@/lib/structuredFormat/structuredObservations";
+import { deriveStructuredObservations, computeStructuredRemovals } from "@/lib/structuredFormat/structuredObservations";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
@@ -1494,9 +1494,37 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // removals. Removal semantics are owned by the observation ledger.
     const region = studySetup.studyContext.region ?? "LS Spine";
     const structuredPatches = deriveStructuredObservations(doc, values, region);
+
+    // P0-C: Structured toggle-off → ledger removal.
+    // Ownership is scoped by EXPLICIT region + stable template identity
+    // (structuredOwnerKey). This prevents:
+    //   - Cross-region deletion (Brain apply can't remove LS Spine observations)
+    //   - Cross-template deletion (template A toggle-off can't remove template B)
+    //   - Deletion of QS/Voice/Macro observations (different source)
+    //   - Deletion of protected/manual observations
+    // The structuredOwnerKey is stable across toggle cycles — it uses the
+    // template ID, NOT a timestamp. This ensures that toggle-off correctly
+    // matches observations created by toggle-on of the SAME template.
+    const structuredOwnerKey = `structured-template-${tpl.id ?? "format"}`;
+    const removalIds = computeStructuredRemovals(
+      ws.appliedPathologyPatches.map((p) => ({
+        id: p.id,
+        source: p.source,
+        protected: p.protected,
+        region: p.observation?.region,
+        bundleId: p.observation?.bundleId,
+      })),
+      structuredPatches,
+      region,
+      structuredOwnerKey,
+    );
+    for (const id of removalIds) {
+      ws.removeObservation(id);
+    }
+
     if (structuredPatches.length > 0) {
       ws.applyMacroBundle({
-        bundleId: `structured-${tpl.id ?? "format"}-${Date.now().toString(36)}`,
+        bundleId: structuredOwnerKey,
         observations: structuredPatches.map((p) => ({
           incoming: { findings: p.findingsText, impression: p.impressionText },
           templates: { findings: p.findingsText, impression: p.impressionText },
@@ -1513,7 +1541,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           findingsText: p.findingsText,
           supportsLaterality: Boolean(p.laterality),
           properties: p.laterality ? "side" : undefined,
-          id: `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+          id: `structured-${p.region}-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
         })),
       });
     }

@@ -1681,42 +1681,132 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       return "blocked";
     }
     const region = get().reportingContext.region || "";
+
+    // P0-B FIX (PR #660 hardening): Separate NARRATIVE APPLICATION from
+    // LEDGER CANONICALIZATION to avoid double narrative mutation.
+    //
+    // OPTION A: applyPathologyOverlay is the SINGLE canonical application
+    // path for both narrative AND ledger. We do NOT install result.narrative
+    // into the workspace before calling applyPathologyOverlay — instead
+    // we strip old voice patches' narrative text FIRST, then let
+    // applyPathologyOverlay handle the narrative merge for each voice
+    // observation.
+    //
+    // Step 1: Strip old voice-* patches' narrative contributions from the
+    // live findings/impression text. This removes the old voice wording so
+    // applyPathologyOverlay can write the new wording without duplication.
+    const oldVoicePatches = get().appliedPathologyPatches.filter((p) => p.id.startsWith("voice-"));
+    let cleanFindings = get().findingsText;
+    let cleanImpression = get().impressionText;
+    let cleanTechnique = get().techniqueText;
+    let cleanRecommendation = get().recommendationText;
+    let cleanHistory = get().clinicalHistoryText;
+    for (const vp of oldVoicePatches) {
+      // Strip old voice findings text from narrative
+      if (vp.lastRendered.findings) {
+        cleanFindings = stripContribution(cleanFindings, vp.lastRendered.findings, get().fieldProvenance.findings).text;
+      }
+      if (vp.lastRendered.impression) {
+        cleanImpression = stripContribution(cleanImpression, vp.lastRendered.impression, get().fieldProvenance.impression).text;
+      }
+    }
+    // Also strip from result.narrative so the narrative we'll use for
+    // technique/recommendation/history (non-observation fields) doesn't
+    // contain old voice text.
+    // Note: applyChangePlan already computed result.narrative with the
+    // new voice text merged in. We use result.narrative for technique,
+    // recommendation, and clinicalHistory (non-observation narrative that
+    // applyPathologyOverlay does NOT manage). For findings and impression
+    // we use the cleaned text and let applyPathologyOverlay write the
+    // new voice observations into it.
+
+    // Step 2: Drop old voice patches from the ledger (keep non-voice patches).
     const kept = get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-"));
-    const voicePatches: AppliedPathologyPatch[] = (result.activeObservations ?? []).map((obs) => {
-      const observation = buildCanonicalObservation(observationInputFromVoice(obs, region));
-      return {
-        id: observation.id || `voice-${obs.concept ?? "obs"}`,
-        ownership: ownershipFromObservation(observation),
-        templates: { findings: obs.findingsText, impression: obs.impressionText },
-        lastRendered: { findings: obs.findingsText, impression: obs.impressionText },
-        source: "radiologist-voice",
-        observation,
-        replacedBaseline: { findings: [], impression: [] },
-        protected: false,
-      };
-    });
-    const written = {
-      findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
-      impression: (result.activeObservations ?? []).map((o) => o.impressionText).filter(Boolean).join("\n"),
-    };
+
+    // Step 3: Set the cleaned narrative + non-observation fields from
+    // result.narrative. applyPathologyOverlay will merge voice observation
+    // text into findings/impression.
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
-      findingsText: result.narrative.findings,
-      impressionText: result.narrative.impression,
+      // Use cleaned findings/impression (old voice text stripped) so
+      // applyPathologyOverlay writes new voice text without duplication.
+      findingsText: cleanFindings,
+      impressionText: cleanImpression,
       recommendationText: result.narrative.recommendation,
-      fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, written),
+      fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, {
+        findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
+        impression: (result.activeObservations ?? []).map((o) => o.impressionText).filter(Boolean).join("\n"),
+      }),
+      appliedPathologyPatches: kept,
       isDirty: true,
       lastPatchSnapshot: snap,
       voiceComposerObservations: result.activeObservations ?? [],
       voiceComposerTranscriptHistory: transcript
         ? [...get().voiceComposerTranscriptHistory, transcript]
         : get().voiceComposerTranscriptHistory,
-      appliedPathologyPatches: [...kept, ...voicePatches],
     });
+
+    // Step 4: Apply each voice observation through applyPathologyOverlay.
+    // This is the SINGLE canonical application path — it handles:
+    //   - narrative merge (findings/impression text)
+    //   - same-slot replacement (findSameSlotSiblings + planSameSlotReplacement)
+    //   - evidence remap (mergeObservationInPlace)
+    //   - protected/manual text preservation
+    //   - baseline replacement (baselineReplaces)
+    //   - provenance stamping
+    // NO double narrative application — the narrative is written ONLY here.
+    for (const obs of (result.activeObservations ?? [])) {
+      const observation = buildCanonicalObservation(observationInputFromVoice(obs, region));
+      // Use a level-inclusive ID so different levels don't collide.
+      const voiceId = `voice-${obs.concept ?? "obs"}-${obs.level ?? ""}-${obs.laterality ?? ""}`;
+      get().applyPathologyOverlay({
+        incoming: { findings: obs.findingsText, impression: obs.impressionText },
+        templates: { findings: obs.findingsText, impression: obs.impressionText },
+        ownership: ownershipFromObservation(observation),
+        source: "radiologist-voice",
+        region,
+        concept: observation.concept,
+        level: observation.level || undefined,
+        laterality: observation.laterality || undefined,
+        findingsText: obs.findingsText,
+        id: voiceId,
+        force: opts?.force,
+      });
+    }
+    // Restore the voice plan's pre-apply snapshot so undo restores the
+    // state BEFORE the voice plan was applied.
+    set({ lastPatchSnapshot: snap });
     return "applied";
   },
   applyAiComposerAccepted: (opts) => {
+    // P0-A STRATEGY: AI accepted wording is PRESENTATION, not CLINICAL TRUTH.
+    //
+    // This function intentionally does NOT modify appliedPathologyPatches.
+    // The canonical observation ledger remains the single source of clinical
+    // truth. AI paraphrasing changes the narrative wording but does NOT:
+    //   - create new clinical observations
+    //   - delete existing canonical observations
+    //   - mark observations stale (which would exclude them from AI view)
+    //
+    // deriveComposeObservations() uses lastRendered.findings || templates.findings
+    // (NOT live narrative matching), so AI paraphrasing does NOT cause
+    // observations to disappear from the AI's view on subsequent compose.
+    //
+    // The only consequence is that lastRendered.findings may no longer match
+    // the live narrative text — but that is a presentation concern, not a
+    // clinical truth concern. The observation's clinical identity (concept,
+    // level, laterality, severity) remains unchanged.
+    //
+    // On save/reopen: hydrateObservationLedger calls reconcilePatchAgainstNarrative
+    // which MAY mark a patch stale when lastRendered.findings no longer appears
+    // in the narrative AND the recorded hash disagrees. This is correct behavior:
+    // if the AI rephrased the text, the stale flag is set, but the observation
+    // is NOT deleted — it remains in the ledger with stale=true. The radiologist
+    // sees the stale warning and can decide to keep or remove it.
+    //
+    // This is the SAFEST non-destructive strategy: clinical truth is preserved,
+    // AI wording is applied as presentation, and the radiologist has the final say.
     const snap: PatchSnapshot = {
       clinicalHistoryText: get().clinicalHistoryText,
       techniqueText: get().techniqueText,
