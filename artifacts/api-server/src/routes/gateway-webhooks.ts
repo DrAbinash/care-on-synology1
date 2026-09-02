@@ -121,7 +121,13 @@ async function settleBill(opts: {
   gatewayName: string;
   patientName?: string | null;
   performedBy?: string;
-}): Promise<{ settled: boolean; alreadySettled: boolean; paymentId: number | null }> {
+}): Promise<{
+  settled: boolean;
+  alreadySettled: boolean;
+  paymentId: number | null;
+  /** True when settlement was refused because the bill is cancelled (terminal). */
+  rejectedCancelled?: boolean;
+}> {
   const { billId, amount, method, merchantRef, gatewayTxnId, gatewayName, patientName, performedBy = "Gateway Webhook" } = opts;
 
   const referenceNumber = merchantRef || gatewayTxnId;
@@ -135,6 +141,18 @@ async function settleBill(opts: {
       .for("update")
       .limit(1);
     if (!bill) return { settled: false, alreadySettled: false, paymentId: null };
+
+    // Terminal-state: cancelled bills must not be resurrected to paid/partial.
+    // Checked under FOR UPDATE so cancel-vs-webhook races cannot settle after cancel.
+    // Do not insert a payment row — log at the caller for diagnosis.
+    if (bill.status === "cancelled") {
+      return {
+        settled: false,
+        alreadySettled: false,
+        paymentId: null,
+        rejectedCancelled: true,
+      };
+    }
 
     // Idempotency guard — don't double-post the same gateway transaction,
     // whichever path (webhook/callback/poll) or era (pre/post-F1 keying)
@@ -303,7 +321,7 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       billCreatedByName: billForActor?.createdByName,
       fallback: "ICICI S2S Webhook",
     });
-    const { settled, alreadySettled, paymentId } = await settleBill({
+    const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
       billId,
       amount,
       method: "Online (ICICI Orange Pay)",
@@ -328,6 +346,11 @@ gatewayWebhookRouter.post("/icici-webhook", async (req, res): Promise<void> => {
       logger.info({ billId, amount, merchantTxnNo }, "[icici-webhook] Bill settled via S2S");
     } else if (alreadySettled) {
       logger.info({ billId, merchantTxnNo }, "[icici-webhook] Bill already settled — idempotent skip");
+    } else if (rejectedCancelled) {
+      logger.warn(
+        { billId, amount, merchantTxnNo, txnID },
+        "[icici-webhook] Settlement refused — bill is cancelled (terminal)",
+      );
     }
     return;
   }
@@ -440,7 +463,7 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       billCreatedByName: billForActor?.createdByName,
       fallback: "HDFC S2S Webhook",
     });
-    const { settled, alreadySettled, paymentId } = await settleBill({
+    const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
       billId,
       amount,
       method: "Online (HDFC SmartGateway)",
@@ -465,6 +488,11 @@ gatewayWebhookRouter.post("/hdfc-webhook", async (req, res): Promise<void> => {
       logger.info({ billId, amount, orderId }, "[hdfc-webhook] Bill settled via S2S");
     } else if (alreadySettled) {
       logger.info({ billId, orderId }, "[hdfc-webhook] Bill already settled — idempotent skip");
+    } else if (rejectedCancelled) {
+      logger.warn(
+        { billId, amount, orderId, txnId },
+        "[hdfc-webhook] Settlement refused — bill is cancelled (terminal)",
+      );
     }
     return;
   }
@@ -577,7 +605,7 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthR
         billCreatedByName,
         fallback: "Manual Reconciliation",
       });
-      const { settled, alreadySettled, paymentId } = await settleBill({
+      const { settled, alreadySettled, paymentId, rejectedCancelled } = await settleBill({
         billId,
         amount,
         method: `Online (${provider.displayName})`,
@@ -597,6 +625,23 @@ gatewayWebhookRouter.post("/reconcile", requireStaffAuth, async (req: StaffAuthR
           performedBy: collectorName,
           paymentId: paymentId ?? undefined,
         }).catch(() => {});
+      }
+
+      if (rejectedCancelled) {
+        logger.warn(
+          { billId, amount, bookingRef, gatewayId },
+          "[reconcile] Settlement refused — bill is cancelled (terminal)",
+        );
+        res.json({
+          reconciled: false,
+          alreadySettled: false,
+          rejectedCancelled: true,
+          message: "Bill is cancelled — settlement refused",
+          gateway: gatewayId,
+          bookingRef,
+          amount,
+        });
+        return;
       }
 
       res.json({

@@ -1400,6 +1400,23 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
 
       if (verification.success && verification.status === "paid") {
         await db.transaction(async (tx) => {
+          // Re-read under FOR UPDATE so cancel-vs-callback cannot resurrect
+          // a cancelled bill after the outer select.
+          const [lockedBill] = await tx
+            .select()
+            .from(billsTable)
+            .where(eq(billsTable.id, billId))
+            .for("update")
+            .limit(1);
+          if (!lockedBill) return;
+          if (lockedBill.status === "cancelled") {
+            logger.warn(
+              { billId, merchantTxnNo },
+              "[icici-callback] Settlement refused — bill is cancelled (terminal)",
+            );
+            return;
+          }
+
           // F1 canonical idempotency: key by our merchant reference, but also
           // match the provider txnID in either column so payments recorded by
           // the S2S webhook (including pre-F1 rows keyed by txnID) dedupe.
@@ -1420,7 +1437,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
             // initiate). Website booking confirmation below still uses Super Admin.
             const collectorName = resolveBillDeskCollector({
               requestPayload: logRecord?.requestPayload,
-              billCreatedByName: bill.createdByName,
+              billCreatedByName: lockedBill.createdByName,
             });
             const [insertedPay] = await tx.insert(paymentsTable).values({
               billId,
@@ -1433,9 +1450,9 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               recordedByName: collectorName,
             }).returning({ id: paymentsTable.id });
 
-            const newPaid = Number(bill.paidAmount) + collectAmount;
-            const refundAmount = Number(bill.refundAmount || 0);
-            const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refundAmount);
+            const newPaid = Number(lockedBill.paidAmount) + collectAmount;
+            const refundAmount = Number(lockedBill.refundAmount || 0);
+            const newBalance = Math.max(0, Number(lockedBill.totalAmount) - newPaid - refundAmount);
             const newStatus = newBalance <= 0.01 ? "paid" : "partial";
             await tx.update(billsTable).set({
               paidAmount: newPaid.toFixed(2),
@@ -1448,7 +1465,7 @@ async function handleIciciCallback(req: any, res: any, queryOrBody: Record<strin
               billId,
               amount: collectAmount,
               method: `Online (${provider.displayName})`,
-              billNumber: bill.billNumber,
+              billNumber: lockedBill.billNumber,
               patientName: logRecord ? logRecord.patientName : "Billing Desk Online",
               performedBy: collectorName,
               paymentId: insertedPay?.id,
