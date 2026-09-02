@@ -181,7 +181,7 @@ function applyStructuredValues(doc: StructuredFormatDoc, values: StructuredValue
         findingsText: p.findingsText,
         supportsLaterality: Boolean(p.laterality),
         properties: p.laterality ? "side" : undefined,
-        id: `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+        id: `structured-${p.region}-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
       })),
     });
   }

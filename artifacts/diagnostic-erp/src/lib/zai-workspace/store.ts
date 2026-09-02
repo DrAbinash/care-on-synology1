@@ -1682,43 +1682,57 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     const region = get().reportingContext.region || "";
 
-    // P0-B FIX: Route voice observations through applyPathologyOverlay so that
-    // same-slot replacement works correctly against existing Quick Select /
-    // Structured / Macro observations. Previously voice patches were built
-    // in isolation and concatenated via [...kept, ...voicePatches], bypassing
-    // the same-slot sibling detection and replacement engine. This caused
-    // duplicate observations for the same clinical slot.
+    // P0-B FIX (PR #660 hardening): Separate NARRATIVE APPLICATION from
+    // LEDGER CANONICALIZATION to avoid double narrative mutation.
     //
-    // Strategy: remove old voice-* patches, then apply each new voice
-    // observation through applyPathologyOverlay. This ensures:
-    //   1. Voice + Structured same-slot → ONE observation (replacement).
-    //   2. Voice + Quick Select same-slot → ONE observation (replacement).
-    //   3. Different levels → coexist (distinct slotKeys).
-    //   4. Left vs right laterality → coexist (distinct slotKeys).
-    //   5. Protected/manual text → preserved (applyPathologyOverlay respects
-    //      protected flag).
-    //   6. Evidence (anchor, measurements) → remapped via existing
-    //      planSameSlotReplacement + mergeObservationInPlace.
+    // OPTION A: applyPathologyOverlay is the SINGLE canonical application
+    // path for both narrative AND ledger. We do NOT install result.narrative
+    // into the workspace before calling applyPathologyOverlay — instead
+    // we strip old voice patches' narrative text FIRST, then let
+    // applyPathologyOverlay handle the narrative merge for each voice
+    // observation.
     //
-    // First: strip old voice patches' narrative contributions (their
-    // lastRendered text) so they don't linger when replaced by the new
-    // voice plan's narrative. The applyChangePlan result already has the
-    // correct narrative, so we trust it.
+    // Step 1: Strip old voice-* patches' narrative contributions from the
+    // live findings/impression text. This removes the old voice wording so
+    // applyPathologyOverlay can write the new wording without duplication.
     const oldVoicePatches = get().appliedPathologyPatches.filter((p) => p.id.startsWith("voice-"));
+    let cleanFindings = get().findingsText;
+    let cleanImpression = get().impressionText;
+    let cleanTechnique = get().techniqueText;
+    let cleanRecommendation = get().recommendationText;
+    let cleanHistory = get().clinicalHistoryText;
     for (const vp of oldVoicePatches) {
-      // Remove old voice narrative text — the new plan's narrative already
-      // reflects the intended state.
-      // We don't call removeObservation here because that would strip text
-      // from the narrative that applyChangePlan already correctly set.
-      // Instead we just drop the old voice patches from the array.
+      // Strip old voice findings text from narrative
+      if (vp.lastRendered.findings) {
+        cleanFindings = stripContribution(cleanFindings, vp.lastRendered.findings, get().fieldProvenance.findings).text;
+      }
+      if (vp.lastRendered.impression) {
+        cleanImpression = stripContribution(cleanImpression, vp.lastRendered.impression, get().fieldProvenance.impression).text;
+      }
     }
+    // Also strip from result.narrative so the narrative we'll use for
+    // technique/recommendation/history (non-observation fields) doesn't
+    // contain old voice text.
+    // Note: applyChangePlan already computed result.narrative with the
+    // new voice text merged in. We use result.narrative for technique,
+    // recommendation, and clinicalHistory (non-observation narrative that
+    // applyPathologyOverlay does NOT manage). For findings and impression
+    // we use the cleaned text and let applyPathologyOverlay write the
+    // new voice observations into it.
+
+    // Step 2: Drop old voice patches from the ledger (keep non-voice patches).
     const kept = get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-"));
-    // Temporarily set the kept patches + apply the narrative from applyChangePlan
+
+    // Step 3: Set the cleaned narrative + non-observation fields from
+    // result.narrative. applyPathologyOverlay will merge voice observation
+    // text into findings/impression.
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
-      findingsText: result.narrative.findings,
-      impressionText: result.narrative.impression,
+      // Use cleaned findings/impression (old voice text stripped) so
+      // applyPathologyOverlay writes new voice text without duplication.
+      findingsText: cleanFindings,
+      impressionText: cleanImpression,
       recommendationText: result.narrative.recommendation,
       fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, {
         findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
@@ -1733,17 +1747,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         : get().voiceComposerTranscriptHistory,
     });
 
-    // Now apply each voice observation through applyPathologyOverlay so
-    // same-slot replacement works correctly. If the same clinical slot is
-    // already occupied by a QS/Structured/Macro observation, the voice
-    // observation replaces it (stable id + evidence preserved).
-    //
-    // P0-B: We suppress applyPathologyOverlay's own lastPatchSnapshot
-    // because the voice plan already captured the pre-apply state in snap
-    // above. Without this, each applyPathologyOverlay call would overwrite
-    // the voice plan's undo snapshot, breaking single-undo semantics.
+    // Step 4: Apply each voice observation through applyPathologyOverlay.
+    // This is the SINGLE canonical application path — it handles:
+    //   - narrative merge (findings/impression text)
+    //   - same-slot replacement (findSameSlotSiblings + planSameSlotReplacement)
+    //   - evidence remap (mergeObservationInPlace)
+    //   - protected/manual text preservation
+    //   - baseline replacement (baselineReplaces)
+    //   - provenance stamping
+    // NO double narrative application — the narrative is written ONLY here.
     for (const obs of (result.activeObservations ?? [])) {
       const observation = buildCanonicalObservation(observationInputFromVoice(obs, region));
+      // Use a level-inclusive ID so different levels don't collide.
+      const voiceId = `voice-${obs.concept ?? "obs"}-${obs.level ?? ""}-${obs.laterality ?? ""}`;
       get().applyPathologyOverlay({
         incoming: { findings: obs.findingsText, impression: obs.impressionText },
         templates: { findings: obs.findingsText, impression: obs.impressionText },
@@ -1754,13 +1770,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         level: observation.level || undefined,
         laterality: observation.laterality || undefined,
         findingsText: obs.findingsText,
-        id: observation.id || `voice-${obs.concept ?? "obs"}`,
+        id: voiceId,
         force: opts?.force,
       });
     }
     // Restore the voice plan's pre-apply snapshot so undo restores the
-    // state BEFORE the voice plan was applied (not the intermediate state
-    // after applyPathologyOverlay ran).
+    // state BEFORE the voice plan was applied.
     set({ lastPatchSnapshot: snap });
     return "applied";
   },

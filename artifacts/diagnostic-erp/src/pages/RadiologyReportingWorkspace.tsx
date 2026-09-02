@@ -1505,6 +1505,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         id: p.id,
         source: p.source,
         protected: p.protected,
+        region: p.observation?.region,
       })),
       structuredPatches,
     );
@@ -1531,7 +1532,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           findingsText: p.findingsText,
           supportsLaterality: Boolean(p.laterality),
           properties: p.laterality ? "side" : undefined,
-          id: `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+          id: `structured-${p.region}-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
         })),
       });
     }

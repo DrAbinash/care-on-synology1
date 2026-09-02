@@ -268,30 +268,37 @@ function selectedOptionIds(field: FormatField, value: FieldValue | undefined): s
  * from the canonical ledger because the corresponding structured format
  * toggle/selection was turned OFF.
  *
- * This is a DIFF model:
- *   previous structured observation IDs (source = "structured-template")
- *   vs
- *   newly derived structured observation IDs
+ * SCOPING (PR #660 hardening): Removal is scoped to the SAME region as the
+ * newly derived patches. This prevents accidentally removing structured
+ * observations created by another structured template, another anatomical
+ * section, or another region (e.g. Brain structured apply must NOT remove
+ * LS Spine structured observations).
  *
- * For IDs that were previously owned by structured reporting but are no longer
- * in the newly derived set, the caller should call removeObservation on the
- * EXISTING safe removal path — but ONLY if:
+ * For IDs that were previously owned by structured reporting in the same
+ * region but are no longer in the newly derived set, the caller should call
+ * removeObservation on the EXISTING safe removal path — but ONLY if:
  *   - the observation is still owned by structured-template (not overridden
  *     by QS/Voice/Macro)
  *   - the observation is not protected/manual
+ *   - the observation is in the SAME region as the new patches
  *
  * @param existingPatches  The current appliedPathologyPatches from the store.
  * @param newPatches        The newly derived StructuredObservationPatch[].
  * @returns                 Array of observation IDs to remove.
  */
 export function computeStructuredRemovals(
-  existingPatches: Array<{ id: string; source: string; protected?: boolean }>,
+  existingPatches: Array<{ id: string; source: string; protected?: boolean; region?: string | null }>,
   newPatches: StructuredObservationPatch[],
 ): string[] {
+  // The region of the new patches (all new patches share the same region
+  // because deriveStructuredObservations takes a single region parameter).
+  const newRegion = newPatches.length > 0 ? (newPatches[0]!.region ?? "").toLowerCase() : "";
+
   // Build the set of new structured observation IDs.
+  // IDs include region to prevent cross-region collisions.
   const newIds = new Set(
     newPatches.map((p) =>
-      `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+      `structured-${p.region}-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
     ),
   );
 
@@ -300,10 +307,18 @@ export function computeStructuredRemovals(
   //   1. Were created by structured-template (source === "structured-template")
   //   2. Are NOT protected (manual edits survive)
   //   3. Are NOT in the new set (toggle was turned off)
+  //   4. Are in the SAME region as the new patches (cross-region protection)
   const toRemove: string[] = [];
   for (const patch of existingPatches) {
     if (patch.source !== "structured-template") continue;
     if (patch.protected) continue;
+    // SCOPE: only remove observations in the same region as the current
+    // structured format apply. Brain structured apply must NOT remove
+    // LS Spine structured observations.
+    if (newRegion) {
+      const patchRegion = (patch.region ?? "").toLowerCase();
+      if (patchRegion !== newRegion) continue;
+    }
     if (!newIds.has(patch.id)) {
       toRemove.push(patch.id);
     }
