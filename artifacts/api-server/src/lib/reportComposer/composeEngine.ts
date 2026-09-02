@@ -10,6 +10,10 @@ import {
 } from "./types";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
 import { buildCareSystemPrompt } from "./persona";
+import {
+  buildRadiologistDraftContext,
+  renderRadiologistDraftContextPrompt,
+} from "./buildRadiologistDraftContext";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 
 export type ComposeRunResult = {
@@ -41,30 +45,6 @@ function buildSystemPrompt(kind: AiComposeJobKind): string {
 }
 
 export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
-  const obs = (snapshot.observations ?? [])
-    .map((o) => {
-      // Compact clinical line:
-      //   [source] Region | Anatomical Section | Level | Concept | Laterality
-      // then a Findings line, then (if present) an Impression line.
-      // Empty pieces are omitted. Internal metadata (slotKey, conflictGroup,
-      // bundleId, sectionsOwned) is intentionally omitted — the composer needs
-      // clinical identity, not ownership bookkeeping.
-      const head: string[] = [];
-      if (o.region) head.push(o.region);
-      if (o.anatomicalSection) head.push(o.anatomicalSection);
-      if (o.level) head.push(o.level);
-      head.push(o.concept);
-      if (o.laterality) head.push(o.laterality);
-      const header = `- [${o.source ?? "obs"}] ${head.join(" | ")}`;
-      const findings = o.findingsText?.trim() ?? "";
-      const impression = o.impressionText?.trim();
-      if (impression) {
-        return `${header}\n  Findings: ${findings}\n  Impression: ${impression}`;
-      }
-      return `${header}\n  ${findings}`;
-    })
-    .join("\n");
-
   if (kind === "SELECTION_EDIT" || kind === "REPHRASE" || kind === "SHORTEN" || kind === "EXPAND" || kind === "TRANSLATE" || kind === "SECTION_EDIT") {
     return JSON.stringify(
       {
@@ -82,59 +62,9 @@ export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputS
     );
   }
 
-  // ─── Canonical STUDY CONTEXT block ────────────────────────────────────
-  // Render only non-empty pieces. Region / family / spineSegment / bodyPart /
-  // protocol / reportTitle all come from the resolved ReportingStudyContext
-  // (no DICOM re-parsing). `studyType` (= DICOM StudyDescription) is included
-  // as secondary descriptive provenance only — it never overrides resolved
-  // CARE context.
-  const studyCtxLines: string[] = [];
-  if (snapshot.modality) studyCtxLines.push(`Modality: ${snapshot.modality}`);
-  if (snapshot.region) studyCtxLines.push(`Primary region: ${snapshot.region}`);
-  const additionalRegions = (snapshot.regions ?? []).filter(
-    (r) => r && r !== snapshot.region,
-  );
-  if (additionalRegions.length > 0) {
-    studyCtxLines.push(`Additional regions: ${additionalRegions.join(", ")}`);
-  }
-  if (snapshot.bodyPart) studyCtxLines.push(`Body part: ${snapshot.bodyPart}`);
-  if (snapshot.family) studyCtxLines.push(`Family: ${snapshot.family}`);
-  if (snapshot.spineSegment) studyCtxLines.push(`Spine segment: ${snapshot.spineSegment}`);
-  if (snapshot.protocol) studyCtxLines.push(`Protocol: ${snapshot.protocol}`);
-  if (snapshot.reportTitle) studyCtxLines.push(`Report title: ${snapshot.reportTitle}`);
-  if (snapshot.studyType) studyCtxLines.push(`DICOM study description: ${snapshot.studyType}`);
-  if ((snapshot.templateSections ?? []).length > 0) {
-    studyCtxLines.push(`Template sections: ${(snapshot.templateSections ?? []).join(", ")}`);
-  }
-  const studyCtxBlock = studyCtxLines.length > 0
-    ? ["STUDY CONTEXT", ...studyCtxLines].join("\n")
-    : "";
-
-  return [
-    studyCtxBlock || "STUDY CONTEXT\n(none)",
-    "",
-    "Clinical history:",
-    snapshot.clinicalHistory || "(none)",
-    "",
-    "Current technique:",
-    snapshot.technique || "(none)",
-    "",
-    "Current Findings:",
-    snapshot.findings || "(empty)",
-    "",
-    "Current Impression:",
-    snapshot.impression || "(empty)",
-    "",
-    "Current Recommendation:",
-    snapshot.recommendation || "(empty)",
-    "",
-    "Canonical observations (deduped):",
-    obs || "(none)",
-    "",
-    kind === "IMPRESSION"
-      ? "Task: Generate Impression only from Findings/observations."
-      : "Task: Compose full Findings, Impression, and optional Recommendation.",
-  ].join("\n");
+  // Primary radiologist draft input — deterministic clinical truth block.
+  const draftCtx = buildRadiologistDraftContext(snapshot);
+  return renderRadiologistDraftContextPrompt(draftCtx, kind);
 }
 
 async function callOllama(opts: {

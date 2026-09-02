@@ -18,6 +18,8 @@ export const ComposeObservationSchema = z.object({
   laterality: z.string().nullable().optional(),
   findingsText: z.string().min(1),
   impressionText: z.string().optional(),
+  /** Optional radiologist-supplied recommendation contribution for this observation. */
+  recommendationText: z.string().optional(),
   anatomicalSection: z.string().optional(),
   conflictGroup: z.string().optional(),
   baselineReplaces: z.string().optional(),

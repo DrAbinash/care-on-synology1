@@ -173,7 +173,7 @@ export function ReportComposerAssistant(props: Props) {
           data-testid="compose-in-background"
         >
           {props.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
-          Compose in Background
+          Draft Report
         </Button>
         <Button
           type="button"

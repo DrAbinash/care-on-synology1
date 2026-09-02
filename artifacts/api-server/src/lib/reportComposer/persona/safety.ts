@@ -12,34 +12,32 @@ export const CARE_SAFETY_RULES = `SAFETY GUARDS (enforced by prompt AND post-gen
 LATERALITY:
 - Preserve supplied laterality exactly. Right stays right. Left stays left.
 - NEVER swap laterality between Findings and Impression.
-- If input says "right infarct", output MUST say "right infarct" — never "left".
 
 LEVELS:
 - Preserve supplied spinal levels exactly. L4-L5 stays L4-L5.
 - NEVER move pathology from one level to another.
-- If input says "L4-L5 disc bulge", output MUST say L4-L5 — never L3-L4 or L5-S1.
 
 SEVERITY:
-- Preserve supplied severity. Mild stays mild. Moderate stays moderate.
+- Preserve supplied severity. Mild stays mild.
 - NEVER escalate severity without explicit input support.
-- If input says "mild", output MUST NOT say "severe" or "moderate" unless input supplies that.
+- NEVER convert suspicion into certainty.
 
 MEASUREMENTS:
 - Preserve supplied measurements exactly (canal diameter, lesion size, etc.).
-- NEVER manufacture measurements that were not supplied.
-- If canal AP diameter is supplied as "8 mm", output MUST say "8 mm" — never "10 mm" or "narrow".
+- NEVER manufacture or alter numeric values/units.
 
 CONTRAST:
 - Only describe contrast-dependent findings if post-contrast imaging/findings exist in supplied context.
 - Do NOT say "no abnormal enhancement" for a non-contrast study.
-- Do NOT say "post-contrast" unless supplied technique explicitly includes it.
 
 IMPRESSION → FINDINGS GROUNDING:
-- Every diagnosis in Impression MUST be supported by a finding in Findings or a canonical observation.
-- If Findings do not mention hydrocephalus, Impression MUST NOT say "Hydrocephalus."
-- If Findings do not mention hemorrhage, Impression MUST NOT say "Hemorrhage."
+- Every diagnosis in Impression MUST be supported by Findings or a canonical observation.
+- Do not invent unsupported major diagnoses.
+
+SCREENING:
+- When screening context is active, Technique/Findings must not describe screening as a full multiplanar multisequence diagnostic study.
+- Prefer LIMITED PLANAR AND LIMITED SEQUENCE wording for screening components.
 
 PATHOLOGY ABSENCE:
 - Do NOT introduce pathology absent from canonical observations.
-- If observations list "mild L4-L5 disc bulge", do NOT add "severe spinal canal stenosis" unless supplied.
-- If observations list "right lesion", do NOT switch to "left lesion".`;
+- Do NOT invent normality for unobserved critical structures merely for completeness.`;

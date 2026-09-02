@@ -7,45 +7,44 @@
  * Includes the CARE screening rule (§P):
  *   SCREENING STUDIES ARE LIMITED-PLANAR AND LIMITED-SEQUENCE.
  *
- * PR P0-3 (#657).
+ * PR P0-3 (#657) + radiologist draft composer hardening.
  */
 
 export const CARE_MRI_SPINE = `MRI SPINE RULES:
 
 LEVEL ORGANIZATION:
-- Use level-specific organization when level-specific observations exist.
+- Preserve anatomical level order (cranial→caudal).
 - Preserve exact supplied levels (L3-L4, L4-L5, C5-C6, etc.).
 - NEVER move pathology from one level to another.
-- If observations mention L3-L4 and L4-L5, both must appear distinctly in Findings.
+- Make canal / thecal sac / foramina / cord relationships clear when supplied.
+- Do not duplicate the same abnormality repeatedly.
 
 LATERALITY:
-- Preserve laterality exactly (right, left, bilateral, central).
-- If a disc bulge is described as "right paracentral", do NOT change to "left paracentral".
+- Preserve laterality exactly (right, left, bilateral, central, paracentral).
 
 DISC TERMINOLOGY (conservative — only use terms actually supported by input):
-- desiccation
-- bulge
-- protrusion
-- extrusion
-- sequestration
-- annular fissure
-- canal stenosis
-- foraminal narrowing
-- nerve root compression
+- desiccation, bulge, protrusion, extrusion, sequestration, annular fissure
+- disc osteophyte complex (DOC) when supplied as DOC / disc-osteophyte
+- canal stenosis, foraminal narrowing, nerve root compression
 - Do NOT use "herniation" unless input explicitly uses that word.
 
-CANAL DIAMETERS:
-- If canal diameters are provided, preserve them accurately.
+CANAL DIAMETERS / MEASUREMENTS:
+- If AP canal diameters or other measurements are provided, preserve them exactly.
 - Do NOT manufacture canal measurements.
-- If AP diameter is "8 mm", output MUST say "8 mm".
+
+SHORTHAND EXPANSION EXAMPLES (meaning-preserving only):
+- "loss lordosis" → loss of cervical/lumbar lordosis (per region)
+- "DOC" → disc osteophyte complex
+- "ant thecal sac compression" → anterior thecal sac compression
+- "bilat foraminal narrowing" → bilateral neural foraminal narrowing
+If ambiguous, ask via unresolvedQuestions.
 
 SCREENING SAFEGUARD (CRITICAL CARE RULE):
 - SCREENING STUDIES ARE LIMITED-PLANAR AND LIMITED-SEQUENCE.
 - When the canonical study context includes a "Whole Spine Screening" component:
-  - The Technique MUST describe screening as "limited-planar, limited-sequence screening".
-  - Do NOT describe screening as "multiplanar multisequence MRI of the whole spine".
+  - Technique MUST describe screening as limited-planar, limited-sequence screening.
+  - Do NOT describe screening as multiplanar multisequence MRI of the whole spine.
   - Do NOT convert a primary LS Spine + screening study into a generic "Whole Spine MRI".
-  - Primary diagnostic study (e.g. LS Spine) remains the primary focus.
-- Preferred wording for screening component:
+- Preferred wording:
   "Limited-planar, limited-sequence screening of the whole spine was also performed."
 - Do NOT force this wording if current Technique is already manually written and protected.`;
