@@ -92,19 +92,25 @@ describe("§S C. Fazekas same-slot replacement", () => {
 // ─── §S D. Brain ventricles → hydrocephalus ──────────────────────────────
 
 describe("§S D. Ventricles → hydrocephalus baseline replacement", () => {
-  it("Ventricles and hydrocephalus share conflictGroup 'ventricular'", () => {
+  it("Ventricles and hydrocephalus have DIFFERENT conflictGroups but share the same anatomical section", () => {
     const ventricles = getConceptEntry("Brain", "ventricles");
     const hydrocephalus = getConceptEntry("Brain", "hydrocephalus");
     expect(ventricles).not.toBeNull();
     expect(hydrocephalus).not.toBeNull();
     // CARE's Quick Select: "Normal ventricles" has conflictGroup "ventricular"
-    // and baselineReplaces. "Hydrocephalus" has conflictGroup "hydrocephalus"
-    // and baselineReplaces the same normal ventricles text. In the anatomy
-    // catalog both map to the Ventricular System section.
+    // and "Hydrocephalus" has conflictGroup "hydrocephalus" — these are
+    // DIFFERENT conflictGroups. The baseline replacement is handled by
+    // CARE's Quick Select `baselineReplaces` field, NOT by conflictGroup
+    // identity. In the anatomy catalog both concepts map to the
+    // "Ventricular System & CSF Spaces" anatomical section — that is
+    // organizational, not a slot identity.
+    expect(ventricles!.conflictGroup).toBe("ventricular");
+    expect(hydrocephalus!.conflictGroup).toBe("hydrocephalus");
     expect(ventricles!.conflictGroup).not.toBe(hydrocephalus!.conflictGroup);
     // They ARE clinically distinct (different conflictGroups), but both
-    // occupy the Ventricular System anatomical section. CARE's Quick Select
-    // tiles handle the baseline replacement via baselineReplaces.
+    // occupy the same anatomical section. CARE's Quick Select tiles handle
+    // the baseline replacement via `baselineReplaces`, which is a text-level
+    // replacement mechanism — NOT a slot identity mechanism.
   });
 });
 
