@@ -212,6 +212,7 @@ export function QuickSelectStrip({
                   anatomicalSection: tile.anatomicalSection || undefined,
                   conflictGroup: tile.conflictGroup || undefined,
                   baselineReplaces: tile.baselineReplaces,
+                  concept: tile.concept,
                 };
                 const templates = field === "findings"
                   ? { findings: tile.sentence, impression: tile.impressionSentence }
@@ -223,6 +224,7 @@ export function QuickSelectStrip({
                   source: "quick-select",
                   id: `qs-${tile.id}`,
                   region: tile.scopeBodyPart,
+                  concept: tile.concept,
                   label: tile.label,
                   findingsText: tile.sentence,
                   supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),

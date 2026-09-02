@@ -88,6 +88,16 @@ import {
 } from "@/lib/findingComposerModel";
 import { generateLocalImpression } from "@/lib/generateLocalImpression";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
+import {
+  buildSystemNormalPatch,
+  findSystemNormalPatch,
+  hasImpressionworthyAbnormal,
+  impressionHasManualContribution,
+  isSystemNormalPatch,
+  SYSTEM_NORMAL_IMPRESSION_TEXT,
+  SYSTEM_NORMAL_PATCH_ID,
+} from "@/lib/conceptCanon/normalImpression";
+import { isImpressionworthyAbnormal } from "@/lib/conceptCanon/contentPacks";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
 import {
@@ -420,6 +430,22 @@ export type WorkspaceStore = S & {
   refreshImpressionFromLedger: () => void;
   hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
   serializeObservationLedger: () => SerializedObservationLedger;
+  /**
+   * PR #662 §2 — System-owned Normal Study impression.
+   *
+   * Seeds the system normal patch into `appliedPathologyPatches` and writes
+   * the canonical "Normal study." sentence into `impressionText` with
+   * provenance source = "system". Idempotent — calling when a system
+   * normal patch already exists is a no-op.
+   *
+   * NEVER called when the workspace has manual impression contributions
+   * (radiologist-owned) or any impression-worthy abnormal observation.
+   * Auto-yield is decided by `applyPathologyOverlay` / `removeObservation`
+   * based on patch identity, NOT by NLP on impression text.
+   */
+  seedSystemNormalImpression: () => void;
+  /** Withdraw the system normal patch (if present). Used by finalize / reset. */
+  withdrawSystemNormalImpression: () => void;
   setActiveAnchor: (anchor: ObservationAnchor | null) => void;
   setSelectedObservationId: (id: string | null) => void;
   setMeasurementIntent: (intent: MeasurementIntent | null) => void;
@@ -444,6 +470,30 @@ export type WorkspaceStore = S & {
   dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
+  /**
+   * PR #662 §3 — Fast per-level spine workflow.
+   *
+   * Apply multiple spine levels at once (e.g. L3-L4 bulge + L4-L5 bulge +
+   * L5-S1 protrusion). Internally calls `applyPathologyOverlay` once per
+   * level — there is no second batch mutation engine. Each resulting
+   * observation is independently owned and independently removable.
+   *
+   * Same-slot replacement, different-level coexistence, laterality,
+   * manual protection, measurements, anchors, and undo semantics are
+   * preserved exactly as in single-level apply.
+   */
+  applyMultiLevelSpine: (opts: {
+    bundleId?: string;
+    region: string;
+    levels: Array<{
+      level: string;
+      concept: string;
+      findingsText: string;
+      impressionText?: string;
+      laterality?: string;
+      severity?: string;
+    }>;
+  }) => "applied" | "pending";
   /** Apply accepted AI composer plain text in one atomic undo snapshot (Guard 9). */
   applyAiComposerAccepted: (opts: {
     findings: string;
@@ -533,7 +583,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => get().recomputeCopilot(), 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -993,6 +1043,46 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       observation.supportsLaterality ? (opts.side ?? "") : "",
     );
 
+    // PR #662 §2 — System normal auto-yield.
+    //
+    // When the incoming observation is impression-worthy abnormal (i.e. it
+    // carries an impression contribution and its concept is marked
+    // impression-worthy in the content packs), the system-owned normal
+    // impression patch yields BEFORE the overlay runs. We use the standard
+    // removeLedgerObservation path — it strips the system patch's
+    // lastRendered.impression from impressionText AND cleans up provenance
+    // in one atomic operation. No regex / NLP. Manual / protected
+    // impression text is NEVER touched — the system normal patch is the
+    // only contribution that auto-yields.
+    //
+    // This decision is based on the incoming patch's CONCEPT (identity),
+    // NOT on string matching of impressionText.
+    if (
+      isImpressionworthyAbnormal(observation.concept)
+      && (incoming.impression ?? "").trim()
+      && opts.source !== "system"
+    ) {
+      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+      if (systemNormal) {
+        const yieldResult = removeLedgerObservation(
+          narrativeFromState(get()),
+          get().fieldProvenance,
+          toLedgerPatch(systemNormal),
+        );
+        set({
+          impressionText: yieldResult.narrative.impression,
+          findingsText: yieldResult.narrative.findings,
+          recommendationText: yieldResult.narrative.recommendation,
+          techniqueText: yieldResult.narrative.technique,
+          clinicalHistoryText: yieldResult.narrative.clinicalHistory,
+          fieldProvenance: yieldResult.provenance,
+          appliedPathologyPatches: get().appliedPathologyPatches.filter(
+            (p) => p.id !== SYSTEM_NORMAL_PATCH_ID,
+          ),
+        });
+      }
+    }
+
     // Same-slot plan — CARE mutex identity. Incoming id is the survivor so Quick
     // Select selection / deselect-by-tile stay correct; evidence remaps onto it.
     const slotSiblings = findSameSlotSiblings(
@@ -1214,6 +1304,76 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return status;
   },
   /**
+   * PR #662 §3 — Fast per-level spine workflow.
+   *
+   * Apply multiple spine levels quickly. Each level is internally applied
+   * via applyPathologyOverlay — there is NO second batch mutation engine.
+   * Every resulting observation is independently owned, independently
+   * removable, and preserves same-slot replacement / different-level
+   * coexistence / laterality / manual protection / measurements / anchors
+   * / undo semantics exactly as in single-level apply.
+   *
+   * The caller passes a bundleId (auto-generated if absent) plus an array
+   * of level descriptors. Each descriptor carries:
+   *   - level     (e.g. "L3-L4", "C5-C6")
+   *   - concept   (canonical concept id; e.g. "disc_contour")
+   *   - findingsText  (composed findings sentence for this level)
+   *   - impressionText (optional; composed impression fragment)
+   *   - laterality / severity (optional metadata)
+   *
+   * Returns "applied" if every level applied cleanly, "pending" if any
+   * required user confirmation (e.g. protected same-slot confirmation).
+   */
+  applyMultiLevelSpine: (opts) => {
+    const bundleId = opts.bundleId || `spine-bundle_${Date.now().toString(36)}`;
+    let status: "applied" | "pending" = "applied";
+    const snap: PatchSnapshot = {
+      clinicalHistoryText: get().clinicalHistoryText,
+      techniqueText: get().techniqueText,
+      findingsText: get().findingsText,
+      impressionText: get().impressionText,
+      recommendationText: get().recommendationText,
+      fieldProvenance: { ...get().fieldProvenance },
+      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+      voiceComposerObservations: [...get().voiceComposerObservations],
+      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+    };
+    for (const entry of opts.levels) {
+      if (!entry.level || !entry.concept || !entry.findingsText.trim()) continue;
+      const id = `${bundleId}-${entry.concept}-${entry.level}`;
+      const r = get().applyPathologyOverlay({
+        incoming: {
+          findings: entry.findingsText,
+          impression: entry.impressionText,
+        },
+        templates: {
+          findings: entry.findingsText,
+          impression: entry.impressionText,
+        },
+        ownership: {
+          concept: entry.concept,
+          conflictGroup: entry.concept,
+          anatomicalSection: "disc",
+        },
+        source: "structured-template",
+        id,
+        region: opts.region,
+        concept: entry.concept,
+        level: entry.level,
+        laterality: entry.laterality,
+        severity: entry.severity,
+        label: `${entry.level} ${entry.concept}`,
+        findingsText: entry.findingsText,
+        bundleId,
+        supportsLaterality: Boolean(entry.laterality),
+        properties: entry.laterality ? "side" : undefined,
+      });
+      if (r === "pending") status = "pending";
+    }
+    set({ lastPatchSnapshot: snap });
+    return status;
+  },
+  /**
    * Bundle deselect: remove only this bundle's observations that are
    * (a) not protected and (b) not superseded by a newer QS/voice observation
    * on the same slotKey. Overridden slots keep the overriding observation's
@@ -1281,6 +1441,56 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       impressionText: next,
       fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
       impressionNeedsRefresh: false,
+      isDirty: true,
+    });
+  },
+  seedSystemNormalImpression: () => {
+    // Idempotent: if a system normal patch already exists, do nothing.
+    if (findSystemNormalPatch(get().appliedPathologyPatches)) return;
+    // Safety: never seed when impression-worthy abnormal observations exist.
+    if (hasImpressionworthyAbnormal(get().appliedPathologyPatches)) return;
+    // Safety: never seed when the radiologist has manually owned impression.
+    if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
+    // Safety: never seed on a finalized study.
+    if (get().isFinalized) return;
+    const region = get().reportingContext.region ?? "*";
+    const patch = buildSystemNormalPatch(region);
+    // Write the canonical "Normal study." line into impressionText with
+    // provenance source = "system". mergeReportFieldContentWithProvenance
+    // is the canonical path for inserting a contribution into a report
+    // field with provenance — same path used by every other producer.
+    const result = mergeReportFieldContentWithProvenance({
+      field: "impression",
+      existing: get().impressionText,
+      incoming: SYSTEM_NORMAL_IMPRESSION_TEXT,
+      source: "system",
+      existingProvenance: get().fieldProvenance.impression ?? {},
+    });
+    set({
+      impressionText: result.text,
+      fieldProvenance: { ...get().fieldProvenance, impression: result.provenance },
+      appliedPathologyPatches: [...get().appliedPathologyPatches, patch],
+      isDirty: true,
+    });
+  },
+  withdrawSystemNormalImpression: () => {
+    const existing = findSystemNormalPatch(get().appliedPathologyPatches);
+    if (!existing) return;
+    // Use removeLedgerObservation for atomic narrative + provenance cleanup.
+    // No regex / NLP — operates purely on patch identity.
+    const result = removeLedgerObservation(
+      narrativeFromState(get()),
+      get().fieldProvenance,
+      toLedgerPatch(existing),
+    );
+    set({
+      impressionText: result.narrative.impression,
+      findingsText: result.narrative.findings,
+      recommendationText: result.narrative.recommendation,
+      techniqueText: result.narrative.technique,
+      clinicalHistoryText: result.narrative.clinicalHistory,
+      fieldProvenance: result.provenance,
+      appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== SYSTEM_NORMAL_PATCH_ID),
       isDirty: true,
     });
   },
@@ -1636,6 +1846,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }));
       } else {
         window.dispatchEvent(new CustomEvent("care:observation-removed", { detail: { observationId: id } }));
+      }
+    }
+
+    // PR #662 §2 — System normal auto-return.
+    //
+    // After removing an impression-worthy abnormal observation, if NO other
+    // impression-worthy abnormal patches remain AND the radiologist has not
+    // manually owned the impression AND the workspace is not finalized,
+    // re-seed the system normal patch. The seed action itself is idempotent
+    // and re-checks every safety predicate before applying.
+    //
+    // Identity is decided by patch concept/source, NOT by string heuristics.
+    if (
+      !isSystemNormalPatch(patch)
+      && isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+      && !get().isFinalized
+    ) {
+      const remainingPatches = get().appliedPathologyPatches;
+      if (!hasImpressionworthyAbnormal(remainingPatches)) {
+        get().seedSystemNormalImpression();
       }
     }
     return result.outcome;

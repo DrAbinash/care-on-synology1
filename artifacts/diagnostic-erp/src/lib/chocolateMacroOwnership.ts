@@ -6,6 +6,8 @@
 export type MacroSectionsOwned = Array<"findings" | "impression" | "recommendation" | "technique">;
 
 export type ChocolateOwnership = {
+  /** Explicit canonical concept (preferred). See conceptCanon/contentPacks.ts. */
+  concept?: string;
   anatomicalSection?: string;
   conflictGroup?: string;
   baselineReplaces?: string;
@@ -18,6 +20,7 @@ export type ChocolateOwnership = {
 /** High-confidence built-in ownership only — never auto-assign from weak text. */
 const EXPLICIT_BUILTIN: Record<string, ChocolateOwnership> = {
   "brain-infarct": {
+    concept: "infarct",
     anatomicalSection: "mca",
     conflictGroup: "infarct",
     baselineReplaces: "No focal cortical or subcortical signal abnormality, mass lesion, or acute infarct identified",
@@ -25,12 +28,14 @@ const EXPLICIT_BUILTIN: Record<string, ChocolateOwnership> = {
     sectionsOwned: ["findings", "impression"],
   },
   "brain-pituitary": {
+    concept: "pituitary",
     anatomicalSection: "pituitary",
     conflictGroup: "pituitary",
     supportsLaterality: false,
     sectionsOwned: ["findings", "impression"],
   },
   "brain-normal": {
+    concept: "normal_study",
     anatomicalSection: "brain parenchyma",
     conflictGroup: "normal-brain",
     supportsLaterality: false,
@@ -38,12 +43,14 @@ const EXPLICIT_BUILTIN: Record<string, ChocolateOwnership> = {
     legacyAppend: false,
   },
   "spine-disc-bulge": {
+    concept: "disc_contour",
     anatomicalSection: "disc",
     conflictGroup: "disc-bulge",
     supportsLaterality: true,
     sectionsOwned: ["findings"],
   },
   "spine-normal": {
+    concept: "normal_study",
     anatomicalSection: "disc",
     conflictGroup: "normal-spine",
     supportsLaterality: false,
@@ -65,13 +72,15 @@ export function resolveChocolateOwnership(
   tile: { id: string; label?: string } & ChocolateOwnership,
 ): { ownership: ChocolateOwnership; mode: "explicit" | "builtin" | "legacy-append" } {
   const hasExplicit = Boolean(
-    (tile.anatomicalSection ?? "").trim()
+    (tile.concept ?? "").trim()
+    || (tile.anatomicalSection ?? "").trim()
     || (tile.conflictGroup ?? "").trim()
     || (tile.baselineReplaces ?? "").trim(),
   );
   if (hasExplicit && !tile.legacyAppend) {
     return {
       ownership: {
+        concept: tile.concept,
         anatomicalSection: tile.anatomicalSection,
         conflictGroup: tile.conflictGroup,
         baselineReplaces: tile.baselineReplaces,

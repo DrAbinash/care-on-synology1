@@ -19,6 +19,11 @@ import type { PathologyIncoming, PathologyOwnership } from "./pathologyPatch";
 import { fieldContainsContribution } from "./observationMatch";
 import type { ObservationAnchor } from "./observationAnchor";
 import { coerceObservationAnchor } from "./observationAnchor";
+import {
+  resolveCanonicalConcept,
+  canonicalConceptTokens,
+  generateConceptCanonRecord,
+} from "./conceptCanon/conceptCanon";
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
@@ -98,68 +103,23 @@ const REGION_NAMES = new Set([
   "chest", "abdomen", "knee", "shoulder", "breast", "ob", "pns", "pelvis",
 ]);
 
-/** Equivalence for mutex/slot identity only — not a new catalog. */
-const CONCEPT_CANON: Record<string, string> = {
-  fazekas: "fazekas",
-  ventricles: "ventricles",
-  ventricle: "ventricles",
-  ventricular: "ventricles",
-  hydrocephalus: "ventricles",
-  disc_contour: "disc_contour",
-  "disc-bulge": "disc_contour",
-  "disc bulge": "disc_contour",
-  "disc_bulge": "disc_contour",
-  "disc herniation": "disc_contour",
-  "disc-herniation": "disc_contour",
-  herniation: "disc_contour",
-  protrusion: "disc_contour",
-  "disc protrusion": "disc_contour",
-  "disc-protrusion": "disc_contour",
-  disc_signal: "disc_signal",
-  desiccation: "disc_signal",
-  disc_height: "disc_height",
-  "disc height": "disc_height",
-  canal_stenosis: "canal_stenosis",
-  "canal stenosis": "canal_stenosis",
-  foraminal_stenosis: "foraminal_stenosis",
-  "foraminal stenosis": "foraminal_stenosis",
-  "foraminal narrowing": "foraminal_stenosis",
-  root_contact: "root_contact",
-  "root contact": "root_contact",
-  root_compression: "root_contact",
-  "nerve root": "root_contact",
-  canal_ap: "canal_ap",
-  "canal ap": "canal_ap",
-  spondylolisthesis: "spondylolisthesis",
-  listhesis: "spondylolisthesis",
-  meniscus: "meniscus",
-  rotator_cuff: "rotator_cuff",
-  "rotator cuff": "rotator_cuff",
-  orbital: "orbital",
-  orbit: "orbital",
-  sinus: "sinus",
-  sinuses: "sinus",
-  osteophytes: "osteophytes",
-  osteophyte: "osteophytes",
-  facet_joint: "facet_joint",
-  facet: "facet_joint",
-  ligamentum_flavum: "ligamentum_flavum",
-  "ligamentum flavum": "ligamentum_flavum",
-  "lf hypertrophy": "ligamentum_flavum",
-  lfh: "ligamentum_flavum",
-  endplate: "endplate",
-  modic: "endplate",
-  senile_atrophy: "senile_atrophy",
-  senile: "senile_atrophy",
-  hemorrhage: "hemorrhage",
-  haemorrhage: "hemorrhage",
-  infarct: "infarct",
-  renal: "renal",
-  kidney: "renal",
-  hip: "hip",
-  menisci: "meniscus",
-};
+/**
+ * Concept canon — GENERATED at module load from clinical content packs.
+ *
+ * The source of truth is `CLINICAL_CONTENT_PACKS` in
+ * `conceptCanon/contentPacks.ts`. Editing that array is the ONLY way to
+ * add or modify clinical concept aliases. There is no second synonym engine.
+ *
+ * Kept as a const for fast lookup; the underlying record is frozen by the
+ * generator so accidental mutation fails loudly in strict mode.
+ */
+const CONCEPT_CANON: Readonly<Record<string, string>> = generateConceptCanonRecord();
 
+/**
+ * Regex hints for resolving concepts from narrative text when no explicit
+ * concept / conflictGroup was supplied. These remain narrowly-scoped
+ * (fazekas / ventricles / disc_contour) — broad fallback would be unsafe.
+ */
 const CONCEPT_HINTS: Array<{ concept: string; re: RegExp }> = [
   { concept: "fazekas", re: /\bfazekas\b/i },
   { concept: "ventricles", re: /\bhydrocephalus\b|\bnormal ventricles\b|\bventricular system\b/i },
@@ -236,12 +196,26 @@ export function normalizeLaterality(raw: string | null | undefined): string {
   return "";
 }
 
+/**
+ * Resolve a raw concept / alias string to its canonical concept id.
+ *
+ * Uses the content-pack-driven resolver first. If the input is unknown to
+ * the content packs but is NOT broad anatomy, we conservatively fall back
+ * to the slug-normalised input (preserves legacy behaviour where unknown
+ * strings like "compression fracture" became `compression_fracture`).
+ *
+ * Returns null only for empty input or broad-anatomy words — never maps an
+ * unknown input to a wrong canonical concept.
+ */
 function canonConcept(raw: string): string | null {
   const n = normalizeSlotPart(raw);
   if (!n || isBroadAnatomy(n)) return null;
-  if (CONCEPT_CANON[n]) return CONCEPT_CANON[n]!;
-  const spaced = n.replace(/_/g, " ");
-  if (CONCEPT_CANON[spaced]) return CONCEPT_CANON[spaced]!;
+  const fromPack = resolveCanonicalConcept(n);
+  if (fromPack) return fromPack;
+  // Conservative legacy fallback: slug-normalise unknown input.
+  // This preserves the historical behaviour where unknown-but-meaningful
+  // strings (e.g. "compression fracture") became unique concept ids
+  // rather than silently collapsing onto an unrelated canonical concept.
   return n.replace(/\s+/g, "_");
 }
 
@@ -372,19 +346,11 @@ export function observationsMutuallyExclusive(
   return true;
 }
 
-/** Tokens that identify a concept in narrative text, including CONCEPT_CANON synonyms. */
+/** Tokens that identify a concept in narrative text, sourced from content packs. */
 function conceptMatchTokens(concept: string): string[] {
-  const out: string[] = [];
-  const add = (raw: string) => {
-    const spaced = raw.replace(/[_-]+/g, " ").toLowerCase().trim();
-    if (spaced.length < 3 || isBroadAnatomy(spaced)) return;
-    if (!out.includes(spaced)) out.push(spaced);
-  };
-  add(concept);
-  for (const [k, v] of Object.entries(CONCEPT_CANON)) {
-    if (v === concept) add(k);
-  }
-  return out;
+  // Generated from CLINICAL_CONTENT_PACKS via conceptCanon — no second
+  // synonym list. Returns [] for unknown concepts (conservative).
+  return canonicalConceptTokens(concept).filter((t) => !isBroadAnatomy(t));
 }
 
 export function sentenceMatchesConcept(sentence: string, concept: string | null): boolean {

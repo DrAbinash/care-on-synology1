@@ -93,7 +93,7 @@ export interface MeasurementRow { id: string; name: string; value: number; unit:
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
-export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; properties?: string; }
+export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; /** Explicit canonical concept (preferred). See conceptCanon/contentPacks.ts. */ concept?: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; properties?: string; }
 export interface ReportFormat {
   id: string;
   name: string;
