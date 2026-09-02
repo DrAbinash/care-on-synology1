@@ -623,6 +623,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const resolved = resolveChocolateOwnership({
       id: full.id ?? "legacy",
       label: full.label,
+      concept: full.concept,
       anatomicalSection: full.anatomicalSection,
       conflictGroup: full.conflictGroup,
       baselineReplaces: full.baselineReplaces,
@@ -643,6 +644,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       incoming,
       templates: incoming,
       ownership: {
+        concept: ownership.concept,
         anatomicalSection: ownership.anatomicalSection,
         conflictGroup: ownership.conflictGroup,
         baselineReplaces: ownership.baselineReplaces,
@@ -651,6 +653,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       side: ownership.supportsLaterality ? undefined : "",
       id: full.id ? `choco-${full.id}` : undefined,
       region: useWorkspace.getState().reportingContext.region ?? "",
+      concept: ownership.concept,
       label: full.label,
       findingsText: tile.text,
       supportsLaterality: ownership.supportsLaterality,

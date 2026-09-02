@@ -233,7 +233,13 @@ describe("ownership golden cases A–J", () => {
     overlayTile(FAZEKAS2, "qf-2");
     expect(useWorkspace.getState().removeObservation("qf-2")).toBe("removed");
     expect(useWorkspace.getState().findingsText).not.toMatch(/Fazekas grade 2/i);
-    expect(useWorkspace.getState().appliedPathologyPatches).toHaveLength(0);
+    // PR #662 §2: after the last impression-worthy abnormal is removed, the
+    // system-owned normal impression auto-returns (id="system-normal-study").
+    // Filter it out to assert that no abnormal QS patches remain.
+    const remaining = useWorkspace.getState().appliedPathologyPatches.filter(
+      (p) => p.id !== "system-normal-study",
+    );
+    expect(remaining).toHaveLength(0);
   });
 
   it("C. normal ventricles → hydrocephalus replaces only ventricles", () => {
@@ -266,7 +272,14 @@ describe("ownership golden cases A–J", () => {
     useWorkspace.getState().setField("findings", edited);
     expect(useWorkspace.getState().removeObservation("qf-1")).toBe("preserved-manual");
     expect(useWorkspace.getState().findingsText).toContain("radiologist rewrite");
-    expect(useWorkspace.getState().appliedPathologyPatches).toHaveLength(0);
+    // PR #662 §2: system-owned normal impression auto-returns after the last
+    // impression-worthy abnormal observation is removed (id="system-normal-study").
+    // The manual findings edit does NOT block auto-return because it lives in
+    // the findings field, not the impression field (predicate is impression-only).
+    const remaining = useWorkspace.getState().appliedPathologyPatches.filter(
+      (p) => p.id !== "system-normal-study",
+    );
+    expect(remaining).toHaveLength(0);
   });
 
   it("J. manual text is never silently overwritten", () => {

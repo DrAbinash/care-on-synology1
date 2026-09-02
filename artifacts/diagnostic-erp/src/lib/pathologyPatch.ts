@@ -19,7 +19,7 @@ import {
 } from "./reportFieldMerge";
 import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
-import { stripNormalImpressionLines } from "./quickFindingsMerge";
+import { stripNormalImpressionLinesProvenanceAware } from "./quickFindingsMerge";
 import {
   buildCanonicalObservation,
   hasStructuredOwnership,
@@ -366,15 +366,29 @@ export function applyPathologyPatch(opts: {
     opts.provenance?.impression,
   );
   let impressionText = impression.text;
-  // Strip normal impression lines whenever the incoming text contains
-  // abnormal content (pathology terms OR non-empty abnormal findings text
-  // that replaces template normals). Also strip when the patch replaced
-  // any existing sentences (indicating template normal was overridden).
+  // PR #662 §2 — provenance-aware normal-impression stripping.
+  //
+  // When abnormal content is inserted, strip leftover template-default
+  // normal-impression lines (e.g. "Normal MRI Brain" applied by a Full
+  // Report Format). This is PROVENANCE-AWARE: only template / protocol /
+  // companion / ai-draft sources are auto-strippable. Sources that own
+  // their text (manual, radiologist-voice, quick-select, quick-findings,
+  // structured-template, macro, system) are NEVER stripped by this regex
+  // sweep — they survive intact and continue to be owned by their
+  // original producers.
+  //
+  // The system-owned normal patch is handled separately by
+  // `applyPathologyOverlay` (auto-yield via removeLedgerObservation) before
+  // this function is called. This regex sweep is only for non-patch
+  // template-default impression text.
   const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
   if (hasAbnormalContent) {
-    impressionText = stripNormalImpressionLines(
+    impressionText = stripNormalImpressionLinesProvenanceAware(
       splitToSentences(impressionText),
-      { onlyIfAbnormal: true },
+      {
+        onlyIfAbnormal: true,
+        provenance: opts.provenance?.impression,
+      },
     ).join("\n");
   }
 

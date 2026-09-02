@@ -46,6 +46,8 @@ export type ChocolateTile = {
   custom?: boolean;
   /** Server row id when synced to radiology_chocolate_findings. */
   serverId?: number;
+  /** Explicit canonical concept (preferred). See conceptCanon/contentPacks.ts. */
+  concept?: string;
   anatomicalSection?: string;
   conflictGroup?: string;
   baselineReplaces?: string;
@@ -283,6 +285,7 @@ function hydrateTile(raw: Partial<ChocolateTile> & { id: string; label: string; 
   return {
     ...builtin,
     ...raw,
+    concept: raw.concept ?? builtin?.concept,
     anatomicalSection: raw.anatomicalSection ?? builtin?.anatomicalSection,
     conflictGroup: raw.conflictGroup ?? builtin?.conflictGroup,
     baselineReplaces: raw.baselineReplaces ?? builtin?.baselineReplaces,
@@ -317,6 +320,7 @@ export function upsertChocolateTile(
   const text = input.text.trim();
   const tiles = loadChocolateTiles(key);
   const ownership: ChocolateOwnership = {
+    concept: input.concept,
     anatomicalSection: input.anatomicalSection,
     conflictGroup: input.conflictGroup,
     baselineReplaces: input.baselineReplaces,
@@ -346,7 +350,8 @@ export function upsertChocolateTile(
     impressionText: input.impressionText,
     ...ownership,
     legacyAppend: ownership.legacyAppend ?? !(
-      (ownership.anatomicalSection ?? "").trim()
+      (ownership.concept ?? "").trim()
+      || (ownership.anatomicalSection ?? "").trim()
       || (ownership.conflictGroup ?? "").trim()
     ),
   };
