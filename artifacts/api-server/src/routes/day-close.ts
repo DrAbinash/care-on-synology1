@@ -12,6 +12,12 @@ import { isCollectiblePayment } from "../lib/financialIntegrity";
 import { loadPostClosureActivity } from "../lib/postClosureActivity";
 import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
 import { computeStaffSlipFormula } from "../lib/staffSlipFormula";
+import {
+  computeGrossRestoreForTestCancelRefunds,
+  computeRefundsExcludedFromCollectible,
+  computeTestCancelRefundsAmount,
+  TEST_CANCEL_REFUND_NOTES_PREFIX,
+} from "../lib/dailySummaryCollectible";
 import { sendStaffDayCloseEmail, type StaffDayCloseEmailResult } from "../email";
 import { clinicSettingsTable } from "@workspace/db/schema";
 
@@ -781,6 +787,7 @@ async function summarizeUserWindow(
       billId: paymentsTable.billId,
       amount: paymentsTable.amount,
       method: paymentsTable.method,
+      notes: paymentsTable.notes,
       recordedByName: paymentsTable.recordedByName,
       settlementStatus: paymentsTable.settlementStatus,
     })
@@ -898,7 +905,7 @@ async function summarizeUserWindow(
     .from(billsTable)
     .where(cancelWhere);
   const cancelledBillIds = new Set(cancelledByMeRows.map((r) => r.id));
-  const cancelledBillsAmount = cancelledByMeRows.reduce((s, r) => s + n(r.totalAmount), 0);
+  const cancelledBillsAmountFull = cancelledByMeRows.reduce((s, r) => s + n(r.totalAmount), 0);
 
   // Dues collected: this staff's positive payments in the window on bills
   // created at or before the previous close (from). First-ever close has
@@ -927,14 +934,57 @@ async function summarizeUserWindow(
     }
   }
 
+  // Partial test-cancel auto-refunds: same attribution as my-daily-summary —
+  // canceller owns them; creator gross is restored so their slip is unchanged.
+  const testCancelRefundsByMe = computeTestCancelRefundsAmount(collectiblePays);
+  const cancelledBillsAmount = cancelledBillsAmountFull + testCancelRefundsByMe;
+
+  const testCancelOnMyBillsWhere = from
+    ? and(
+        eq(billsTable.createdByName, userName),
+        gt(billsTable.createdAt, from),
+        lte(billsTable.createdAt, to),
+        gt(paymentsTable.createdAt, from),
+        lte(paymentsTable.createdAt, to),
+        sql`${paymentsTable.amount}::numeric < 0`,
+        sql`${paymentsTable.notes} LIKE ${TEST_CANCEL_REFUND_NOTES_PREFIX + "%"}`,
+      )
+    : and(
+        eq(billsTable.createdByName, userName),
+        lte(billsTable.createdAt, to),
+        lte(paymentsTable.createdAt, to),
+        sql`${paymentsTable.amount}::numeric < 0`,
+        sql`${paymentsTable.notes} LIKE ${TEST_CANCEL_REFUND_NOTES_PREFIX + "%"}`,
+      );
+  const testCancelRefundsOnMyCreatedBills = await db
+    .select({
+      amount: paymentsTable.amount,
+      billId: paymentsTable.billId,
+      notes: paymentsTable.notes,
+    })
+    .from(paymentsTable)
+    .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .where(testCancelOnMyBillsWhere);
+  const grossRestore = computeGrossRestoreForTestCancelRefunds(
+    testCancelRefundsOnMyCreatedBills,
+    bills.map((b) => b.id),
+  );
+
   const refundsRecorded = collectiblePays
     .filter((p) => n(p.amount) < 0)
     .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
-  const refundsOnBillsICancelled = collectiblePays
-    .filter((p) => n(p.amount) < 0 && cancelledBillIds.has(p.billId))
-    .reduce((s, p) => s + Math.abs(n(p.amount)), 0);
+  const refundsOnBillsICancelled = computeRefundsExcludedFromCollectible(
+    collectiblePays.map((p) => ({
+      amount: p.amount,
+      billId: p.billId,
+      billStatus: null,
+      billCreatedAt: null,
+      notes: p.notes,
+    })),
+    cancelledBillIds,
+  );
   const formula = computeStaffSlipFormula({
-    billed: bills.reduce((s, b) => s + b.totalAmount, 0),
+    billed: bills.reduce((s, b) => s + b.totalAmount, 0) + grossRestore,
     duesCollected: dueReceived,
     cancelledBills: cancelledBillsAmount,
     refundsRecorded,

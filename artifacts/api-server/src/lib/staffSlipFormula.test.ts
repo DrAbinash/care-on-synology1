@@ -43,6 +43,32 @@ describe("computeStaffSlipFormula", () => {
     expect(vijay.expected).toBe(3_400);
   });
 
+  test("partial test cancel ₹1500: restore Vijay billed; Abinash owns cancel+refund", () => {
+    // Bill total mutated 10000→8500; restore +1500 on Vijay's slip.
+    const vijay = computeStaffSlipFormula({
+      billed: 8_500 + 1_500,
+      duesCollected: 0,
+      cancelledBills: 0,
+      refundsRecorded: 0,
+      refundsOnBillsICancelled: 0,
+      outstanding: 0,
+      expense: 0,
+    });
+    expect(vijay.expected).toBe(10_000);
+
+    const abinash = computeStaffSlipFormula({
+      billed: 0,
+      duesCollected: 0,
+      cancelledBills: 1_500,
+      refundsRecorded: 1_500,
+      refundsOnBillsICancelled: 1_500,
+      outstanding: 0,
+      expense: 0,
+    });
+    expect(abinash.refunds).toBe(0);
+    expect(abinash.expected).toBe(-1_500);
+  });
+
   test("old bill cancelled today by Vijay hits Vijay's expected, not the original creator", () => {
     const vijay = computeStaffSlipFormula({
       billed: 0,

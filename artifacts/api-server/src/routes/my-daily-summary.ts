@@ -7,7 +7,14 @@ import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { getTransporter, getEmailSettings } from "../email";
 import { classifyPaymentMethod, isPhysicalCash, isDigitalSettlement } from "../lib/paymentMethodClassifier";
 import { expenseDrawerOwnerEquals, expenseDrawerOwnerSql } from "../lib/expenseCashAttribution";
-import { computeRefundsOnBillsCancelledByMe, computeCollectibleForReconciliation } from "../lib/dailySummaryCollectible";
+import {
+  computeCollectibleForReconciliation,
+  computeGrossRestoreForTestCancelRefunds,
+  computeRefundsExcludedFromCollectible,
+  computeTestCancelRefundsAmount,
+  isTestCancelRefund,
+  TEST_CANCEL_REFUND_NOTES_PREFIX,
+} from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
 import {
@@ -154,6 +161,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       billNumber: billsTable.billNumber,
       amount: paymentsTable.amount,
       method: paymentsTable.method,
+      notes: paymentsTable.notes,
       recordedByName: paymentsTable.recordedByName,
       createdAt: paymentsTable.createdAt,
       billCreatedAt: billsTable.createdAt,
@@ -173,6 +181,28 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
     ))
     .orderBy(sql`${paymentsTable.createdAt} DESC`);
+
+  // Test-cancel auto-refunds on bills THIS staff created in the period
+  // (any recorder). Needed to restore creator gross when someone else
+  // partial-cancels tests on their bill — those refunds are not in
+  // allPaymentRows when viewing the creator.
+  const testCancelRefundsOnCreatedBills = await db
+    .select({
+      amount: paymentsTable.amount,
+      billId: paymentsTable.billId,
+      notes: paymentsTable.notes,
+    })
+    .from(paymentsTable)
+    .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .where(and(
+      gte(paymentsTable.createdAt, start),
+      lt(paymentsTable.createdAt, end),
+      sql`${paymentsTable.amount}::numeric < 0`,
+      sql`${paymentsTable.notes} LIKE ${TEST_CANCEL_REFUND_NOTES_PREFIX + "%"}`,
+      gte(billsTable.createdAt, start),
+      lt(billsTable.createdAt, end),
+      ...(staffName !== null ? [eq(billsTable.createdByName, staffName)] : []),
+    ));
 
   // ── Dues collected: payments in this range on bills created BEFORE start ─
   // "Dues collection" = a follow-up payment on an old outstanding/partial bill.
@@ -392,10 +422,19 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   //   = Net Collected on my bills
   // NOTE: totalAmount is stored post-discount (subtotal − discount + tax),
   // so "Gross Billed" here is net of discounts.
-  const grossBilledIncludingCancelled = allBillRows.reduce(
+  //
+  // Partial test cancel mutates totalAmount downward. Restore the auto-refund
+  // amount so the bill creator's gross (and expected cash) is unchanged when
+  // someone else cancels tests — accountability stays with the canceller.
+  const grossBilledRaw = allBillRows.reduce(
     (s, r) => s + Number(r.totalAmount),
     0,
   );
+  const grossRestoreForTestCancels = computeGrossRestoreForTestCancelRefunds(
+    testCancelRefundsOnCreatedBills,
+    allBillRows.map((r) => r.id),
+  );
+  const grossBilledIncludingCancelled = grossBilledRaw + grossRestoreForTestCancels;
   const cancelledOnMyBills = allBillRows
     .filter((r) => r.status === "cancelled")
     .reduce((s, r) => s + Number(r.totalAmount), 0);
@@ -461,26 +500,30 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
   const totalExpenses = cashExpenses + digitalExpenses;
   const totalReceived = paymentItems.reduce((s, p) => s + Number(p.amount), 0);
   const refundAmount = refundItems.reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-  // Refunds issued today whose bill is NOT cancelled — e.g. a staff member
-  // refunds money to a patient (partial refund, overcharge correction, test
-  // swap) without cancelling any test on the bill. These are invisible in
-  // both "Discounts Given" and "Cancellation Count" today, so flagged here
-  // as their own metric.
+  // Refunds issued today whose bill is NOT fully cancelled and is NOT a
+  // partial test-cancel auto-refund — e.g. overcharge correction without
+  // cancelling tests. Test-cancel refunds are attributed as cancellations.
   const refundsWithoutCancellationAmount = refundItems
-    .filter((p) => p.billStatus !== "cancelled")
+    .filter((p) => p.billStatus !== "cancelled" && !isTestCancelRefund(p.notes))
     .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-  const refundsWithoutCancellationCount = refundItems.filter((p) => p.billStatus !== "cancelled").length;
-  // Refunds this staff recorded on bills they cancelled — already removed from
-  // collectible via cancelledAmount; exclude so cancel+refund does not double-subtract.
+  const refundsWithoutCancellationCount = refundItems.filter(
+    (p) => p.billStatus !== "cancelled" && !isTestCancelRefund(p.notes),
+  ).length;
+  // Refunds this staff recorded on bills they fully cancelled, plus partial
+  // test-cancel auto-refunds they recorded — already in cancelledAmount;
+  // exclude so cancel+refund does not double-subtract.
   const cancelledByMeIds = cancelledByMe.map((r) => r.id);
-  const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
+  const testCancelRefundsByMe = computeTestCancelRefundsAmount(knownRefundItems);
+  const refundsOnBillsCancelledByMe = computeRefundsExcludedFromCollectible(
     knownRefundItems,
     cancelledByMeIds,
   );
   // Alias kept for older clients; semantics now follow canceller, not creator.
   const refundsOnCancelledBillsCreatedInPeriod = refundsOnBillsCancelledByMe;
-  // Bills CANCELLED BY this staff (accountability of canceller)
-  const cancelledAmount = cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0);
+  // Bills CANCELLED BY this staff + partial test-cancel refunds they paid out
+  // (accountability of canceller — not the original bill creator).
+  const cancelledAmount =
+    cancelledByMe.reduce((s, r) => s + Number(r.totalAmount), 0) + testCancelRefundsByMe;
   // FIXED: cashCollection now subtracts cash refunds (was previously gross cash in)
   const cashCollection = cashIn - cashRefunded;
   const netDigital = digitalIn - digitalRefunded;
@@ -1114,6 +1157,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           billId: paymentsTable.billId,
           billStatus: billsTable.status,
           billCreatedAt: billsTable.createdAt,
+          notes: paymentsTable.notes,
         })
         .from(paymentsTable)
         .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
@@ -1141,7 +1185,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
       `);
       const cashExpenses = Number(expRows.rows[0]?.cash_expenses ?? 0);
       const digitalExpenses = Number(expRows.rows[0]?.digital_expenses ?? 0);
-      const billsIncl = billsInRange.reduce((s, r) => s + Number(r.totalAmount), 0);
+      const billsInclRaw = billsInRange.reduce((s, r) => s + Number(r.totalAmount), 0);
       const outstandingBills = billsInRange.filter((r) => r.status !== "cancelled").reduce((s, r) => s + Number(r.balanceAmount ?? 0), 0);
       const cancelledInWindow = await db
         .select({ id: billsTable.id, totalAmount: billsTable.totalAmount })
@@ -1151,7 +1195,30 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           lt(billsTable.cancelledAt, end),
           ...(staffName !== null ? [eq(billsTable.cancelledByName, staffName)] : []),
         ));
-      const cancelledByStaff = cancelledInWindow.reduce((s, r) => s + Number(r.totalAmount), 0);
+      const testCancelRefundsOnCreatedBills = await db
+        .select({
+          amount: paymentsTable.amount,
+          billId: paymentsTable.billId,
+          notes: paymentsTable.notes,
+        })
+        .from(paymentsTable)
+        .innerJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+        .where(and(
+          gte(paymentsTable.createdAt, start),
+          lt(paymentsTable.createdAt, end),
+          sql`${paymentsTable.amount}::numeric < 0`,
+          sql`${paymentsTable.notes} LIKE ${TEST_CANCEL_REFUND_NOTES_PREFIX + "%"}`,
+          gte(billsTable.createdAt, start),
+          lt(billsTable.createdAt, end),
+          ...(staffName !== null ? [eq(billsTable.createdByName, staffName)] : []),
+        ));
+      const billsIncl = billsInclRaw + computeGrossRestoreForTestCancelRefunds(
+        testCancelRefundsOnCreatedBills,
+        billsInRange.map((r) => r.id),
+      );
+      const testCancelByStaff = computeTestCancelRefundsAmount(cashPayments);
+      const cancelledByStaff =
+        cancelledInWindow.reduce((s, r) => s + Number(r.totalAmount), 0) + testCancelByStaff;
 
       if (type === "expectedPhysicalCash") {
         result = {
@@ -1182,8 +1249,14 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
             ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
           ));
         const duesCollectedTotal = duesPaymentRowsForCollectible.reduce((s, r) => s + Number(r.paymentAmount), 0);
-        const refundsOnBillsCancelledByMe = computeRefundsOnBillsCancelledByMe(
-          cashPayments.map((p) => ({ amount: p.amount, billId: p.billId, billStatus: p.billStatus, billCreatedAt: p.billCreatedAt })),
+        const refundsOnBillsCancelledByMe = computeRefundsExcludedFromCollectible(
+          cashPayments.map((p) => ({
+            amount: p.amount,
+            billId: p.billId,
+            billStatus: p.billStatus,
+            billCreatedAt: p.billCreatedAt,
+            notes: p.notes,
+          })),
           cancelledInWindow.map((r) => r.id),
         );
         const collectibleAmount = computeCollectibleForReconciliation({
@@ -1218,6 +1291,7 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           billNumber: billsTable.billNumber,
           amount: paymentsTable.amount,
           method: paymentsTable.method,
+          notes: paymentsTable.notes,
           status: billsTable.status,
           patientFirstName: patientsTable.firstName,
           patientLastName: patientsTable.lastName,
@@ -1234,7 +1308,9 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
           ...(staffName !== null ? [eq(paymentsTable.recordedByName, staffName)] : []),
         ))
         .orderBy(sql`${paymentsTable.createdAt} DESC`);
-      const notCancelled = refundRows.filter((r) => r.status !== "cancelled");
+      const notCancelled = refundRows.filter(
+        (r) => r.status !== "cancelled" && !isTestCancelRefund(r.notes),
+      );
       result = {
         label: "Refunds (No Cancellation)",
         columns: ["Bill #", "Patient", "Amount", "Method", "Recorded By", "Refunded At"],
