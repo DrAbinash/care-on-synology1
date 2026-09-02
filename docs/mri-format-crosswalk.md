@@ -1,13 +1,19 @@
-# MRI Format Crosswalk: mri-reports → CARE
+# MRI Format Crosswalk: Actual Clinic Files → Old TypeScript → CARE
 
 ## Overview
 
-This document maps the clinical MRI report format library from the
-`DrAbinash/mri-reports` reference repository to CARE's existing Full Report
-Format / Quick Select / observation catalog.
+This document maps the doctor's ACTUAL clinic MRI report format files
+(now available in `docs/mri-report-formats/` — 320 Word/docx/pdf files)
+against the previous curated TypeScript library (DrAbinash/mri-reports) and
+CARE's current implementation.
 
-**Source repo:** `DrAbinash/mri-reports` (tagged `legacy-mri-reports`)
-**Target repo:** `DrAbinash/care-on-synology1`
+**Three sources compared:**
+- **SOURCE A** — Actual clinic MRI reference files in `docs/mri-report-formats/`
+  (320 files: .docx, .doc, .pdf, .jpg)
+- **SOURCE B** — Old curated DrAbinash/mri-reports TypeScript implementation
+  (src/lib/formats/mr*.ts + PHRASE_SEEDS)
+- **SOURCE C** — Current CARE implementation (Full Report Formats, Quick Select,
+  Finding Composer, observation catalog, Clinical Anatomy Context)
 
 ## 1. MRI Reference Repo Audit
 

@@ -32,26 +32,33 @@ import {
 // ─── §S A. MRI Brain Normal ──────────────────────────────────────────────
 
 describe("§S A. MRI Brain Normal — anatomy context", () => {
-  it("Brain anatomy has the expected anatomical sections", () => {
+  it("Brain anatomy has the expected anatomical sections (clinic-format ordering)", () => {
     const sections = BRAIN_ANATOMY.sections.map((s) => s.name);
-    expect(sections).toContain("White Matter");
-    expect(sections).toContain("Ventricular System");
-    expect(sections).toContain("Parenchyma");
-    expect(sections).toContain("Basal Ganglia");
+    // Clinic format ordering (from actual .docx files):
+    // Cerebral Hemispheres → Parenchymal Signal → Ventricular System → Midline →
+    // Deep Gray Matter → Posterior Fossa → Sellar → Orbit & Sinuses →
+    // Mesial Temporal → Extra-axial
+    expect(sections).toContain("Cerebral Hemispheres");
+    expect(sections).toContain("Parenchymal Signal");
+    expect(sections).toContain("Ventricular System & CSF Spaces");
+    expect(sections).toContain("Midline Structures");
+    expect(sections).toContain("Deep Gray Matter Structures");
     expect(sections).toContain("Posterior Fossa");
-    expect(sections).toContain("Sella");
-    expect(sections).toContain("Vessels");
-    expect(sections).toContain("Sinuses");
-    expect(sections).toContain("Mesial Temporal");
+    expect(sections).toContain("Sellar & Parasellar Regions");
+    expect(sections).toContain("Orbit & Paranasal Sinuses");
+    expect(sections).toContain("Mesial Temporal Structures");
     expect(sections).toContain("Extra-axial");
   });
 
-  it("White Matter section contains Fazekas and WMH concepts", () => {
-    const concepts = getConceptsForSection("Brain", "White Matter");
+  it("Parenchymal Signal section contains Fazekas and WMH concepts", () => {
+    const concepts = getConceptsForSection("Brain", "Parenchymal Signal");
     const conceptIds = concepts.map((c) => c.concept);
     expect(conceptIds).toContain("fazekas");
     expect(conceptIds).toContain("wmh");
     expect(conceptIds).toContain("svd");
+    // Clinic format also places DWI and SWI under Parenchymal Signal.
+    expect(conceptIds).toContain("dwi");
+    expect(conceptIds).toContain("swi");
   });
 });
 
@@ -104,17 +111,21 @@ describe("§S D. Ventricles → hydrocephalus baseline replacement", () => {
 // ─── §S E. MRI LS Spine Normal ────────────────────────────────────────────
 
 describe("§S E. MRI LS Spine Normal — anatomy context", () => {
-  it("LS Spine anatomy has the expected anatomical sections", () => {
+  it("LS Spine anatomy has the expected anatomical sections (clinic-format ordering)", () => {
     const sections = LS_SPINE_ANATOMY.sections.map((s) => s.name);
-    expect(sections).toContain("Intervertebral Disc");
+    // Clinic format ordering (from actual .docx files):
+    // Alignment → Vertebral Bodies → Intervertebral Discs → Spinal Canal →
+    // Neural Foramina → Facet Joints → Ligamentum Flavum → Conus & Cauda Equina →
+    // Paraspinal Structures
+    expect(sections).toContain("Alignment");
+    expect(sections).toContain("Vertebral Bodies");
+    expect(sections).toContain("Intervertebral Discs");
     expect(sections).toContain("Spinal Canal");
     expect(sections).toContain("Neural Foramina");
     expect(sections).toContain("Facet Joints");
     expect(sections).toContain("Ligamentum Flavum");
-    expect(sections).toContain("Vertebral Bodies");
     expect(sections).toContain("Conus & Cauda Equina");
-    expect(sections).toContain("Alignment");
-    expect(sections).toContain("Bone Marrow");
+    expect(sections).toContain("Paraspinal Structures");
   });
 });
 
@@ -193,7 +204,7 @@ describe("§S J. LS Spine + Whole Spine Screening (separate regions)", () => {
 
   it("WSS is limited-planar (only Alignment + Disc Contour)", () => {
     const wss = getClinicalAnatomyForRegion("Whole Spine Screening");
-    expect(wss!.sections.map((s) => s.name)).toEqual(["Alignment", "Intervertebral Disc"]);
+    expect(wss!.sections.map((s) => s.name)).toEqual(["Alignment", "Intervertebral Discs"]);
   });
 });
 

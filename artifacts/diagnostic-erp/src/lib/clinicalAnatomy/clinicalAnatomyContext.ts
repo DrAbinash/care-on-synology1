@@ -37,7 +37,7 @@ export type ClinicalConceptEntry = {
   /** Default conflictGroup (matches CARE's observationSlot conflictGroup). */
   conflictGroup: string;
   /** Source provenance — developer-only metadata. Never exposed in reports. */
-  referenceSource?: "mri-reports" | "care-catalog" | "both";
+  referenceSource?: "mri-reports" | "care-catalog" | "clinic-format" | "both";
 };
 
 export type ClinicalAnatomySection = {
@@ -55,12 +55,43 @@ export type ClinicalRegionAnatomy = {
 };
 
 // ─── Brain anatomy ────────────────────────────────────────────────────────
+// Section ordering follows the doctor's actual clinic report formats
+// (docs/mri-report-formats/mri brain normal 3T, FAZEKAS GRADE 1, etc.).
+// The clinic consistently uses: Cerebral Hemispheres → Parenchymal Signal →
+// Ventricular System → Midline → Deep Gray Matter → Posterior Fossa →
+// Sellar & Parasellar → Orbit & Sinuses → (Mesial Temporal for epilepsy) →
+// Extra-axial.
 
 export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
   region: "Brain",
   sections: [
     {
-      name: "White Matter",
+      name: "Cerebral Hemispheres",
+      concepts: [
+        {
+          concept: "parenchyma",
+          label: "Brain Parenchyma",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "parenchyma",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "atrophy",
+          label: "Cerebral Atrophy",
+          category: "abnormal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: true,
+          conflictGroup: "atrophy",
+          referenceSource: "both",
+        },
+      ],
+    },
+    {
+      name: "Parenchymal Signal",
       concepts: [
         {
           concept: "fazekas",
@@ -90,12 +121,52 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "fazekas",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "infarct",
+          label: "Infarct",
+          category: "critical",
+          levelSpecific: false,
+          lateralityApplicable: true,
+          severityApplicable: false,
+          conflictGroup: "infarct",
+          referenceSource: "both",
+        },
+        {
+          concept: "hemorrhage",
+          label: "Hemorrhage",
+          category: "critical",
+          levelSpecific: false,
+          lateralityApplicable: true,
+          severityApplicable: false,
+          conflictGroup: "hemorrhage",
+          referenceSource: "both",
+        },
+        {
+          concept: "dwi",
+          label: "Diffusion Imaging (DWI/ADC)",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "dwi",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "swi",
+          label: "Susceptibility Imaging (SWI/GRE)",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "swi",
+          referenceSource: "clinic-format",
         },
       ],
     },
     {
-      name: "Ventricular System",
+      name: "Ventricular System & CSF Spaces",
       concepts: [
         {
           concept: "ventricles",
@@ -120,62 +191,42 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
       ],
     },
     {
-      name: "Parenchyma",
+      name: "Midline Structures",
       concepts: [
         {
-          concept: "parenchyma",
-          label: "Brain Parenchyma",
+          concept: "midline",
+          label: "Midline Structures",
           category: "normal",
           levelSpecific: false,
           lateralityApplicable: false,
           severityApplicable: false,
-          conflictGroup: "parenchyma",
-          referenceSource: "mri-reports",
-        },
-        {
-          concept: "atrophy",
-          label: "Cerebral Atrophy",
-          category: "abnormal",
-          levelSpecific: false,
-          lateralityApplicable: false,
-          severityApplicable: true,
-          conflictGroup: "atrophy",
-          referenceSource: "both",
+          conflictGroup: "midline",
+          referenceSource: "clinic-format",
         },
       ],
     },
     {
-      name: "Basal Ganglia",
+      name: "Deep Gray Matter Structures",
       concepts: [
         {
           concept: "basal_ganglia",
-          label: "Basal Ganglia",
+          label: "Basal Ganglia & Thalami",
           category: "normal",
           levelSpecific: false,
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "basal_ganglia",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
         {
-          concept: "infarct",
-          label: "Infarct",
-          category: "critical",
+          concept: "corpus_callosum",
+          label: "Corpus Callosum",
+          category: "normal",
           levelSpecific: false,
-          lateralityApplicable: true,
+          lateralityApplicable: false,
           severityApplicable: false,
-          conflictGroup: "infarct",
-          referenceSource: "both",
-        },
-        {
-          concept: "hemorrhage",
-          label: "Hemorrhage",
-          category: "critical",
-          levelSpecific: false,
-          lateralityApplicable: true,
-          severityApplicable: false,
-          conflictGroup: "hemorrhage",
-          referenceSource: "both",
+          conflictGroup: "corpus_callosum",
+          referenceSource: "clinic-format",
         },
       ],
     },
@@ -190,12 +241,22 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "posterior_fossa",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "cord",
+          label: "Brainstem (Cord Signal)",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "cord",
+          referenceSource: "clinic-format",
         },
       ],
     },
     {
-      name: "Sella",
+      name: "Sellar & Parasellar Regions",
       concepts: [
         {
           concept: "sella",
@@ -205,7 +266,7 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "sella",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
         {
           concept: "empty_sella",
@@ -215,27 +276,12 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "empty_sella",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
       ],
     },
     {
-      name: "Vessels",
-      concepts: [
-        {
-          concept: "vessels",
-          label: "Intracranial Vessels",
-          category: "normal",
-          levelSpecific: false,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "vessels",
-          referenceSource: "mri-reports",
-        },
-      ],
-    },
-    {
-      name: "Sinuses",
+      name: "Orbit & Paranasal Sinuses",
       concepts: [
         {
           concept: "sinus",
@@ -247,10 +293,20 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           conflictGroup: "sinus",
           referenceSource: "both",
         },
+        {
+          concept: "orbital",
+          label: "Orbits",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: true,
+          severityApplicable: false,
+          conflictGroup: "orbital",
+          referenceSource: "both",
+        },
       ],
     },
     {
-      name: "Mesial Temporal",
+      name: "Mesial Temporal Structures",
       concepts: [
         {
           concept: "hippocampus",
@@ -260,7 +316,7 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: true,
           severityApplicable: false,
           conflictGroup: "hippocampus",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
       ],
     },
@@ -285,7 +341,7 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "dural_tail",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
       ],
     },
@@ -293,12 +349,117 @@ export const BRAIN_ANATOMY: ClinicalRegionAnatomy = {
 };
 
 // ─── LS Spine anatomy ────────────────────────────────────────────────────
+// Section ordering follows the doctor's actual clinic report formats
+// (docs/mri-report-formats/ls spine with wss AI.docx, LS SPINE FINDING SEVERE.docx).
+// The clinic uses: Alignment → Vertebral Bodies → Intervertebral Discs →
+// Spinal Canal → Neural Foramina → Facet Joints → Ligamentum Flavum →
+// Conus & Cauda Equina → Paraspinal Structures.
 
 export const LS_SPINE_ANATOMY: ClinicalRegionAnatomy = {
   region: "LS Spine",
   sections: [
     {
-      name: "Intervertebral Disc",
+      name: "Alignment",
+      concepts: [
+        {
+          concept: "alignment",
+          label: "Alignment",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "alignment",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "spondylolisthesis",
+          label: "Spondylolisthesis",
+          category: "abnormal",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: true,
+          conflictGroup: "spondylolisthesis",
+          referenceSource: "both",
+        },
+      ],
+    },
+    {
+      name: "Vertebral Bodies",
+      concepts: [
+        {
+          concept: "vertebrae",
+          label: "Vertebrae",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "vertebrae",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "endplate",
+          label: "Endplate (Modic) Changes",
+          category: "abnormal",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: true,
+          conflictGroup: "endplate",
+          referenceSource: "both",
+        },
+        {
+          concept: "fracture",
+          label: "Compression Fracture",
+          category: "critical",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: true,
+          conflictGroup: "compression fracture",
+          referenceSource: "both",
+        },
+        {
+          concept: "hemangioma",
+          label: "Vertebral Hemangioma",
+          category: "normal",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "hemangioma",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "schmorl",
+          label: "Schmorl Node",
+          category: "abnormal",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "schmorl",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "marrow",
+          label: "Bone Marrow",
+          category: "normal",
+          levelSpecific: false,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "marrow",
+          referenceSource: "clinic-format",
+        },
+        {
+          concept: "lesion",
+          label: "Bone Marrow Lesion",
+          category: "critical",
+          levelSpecific: true,
+          lateralityApplicable: false,
+          severityApplicable: false,
+          conflictGroup: "lesion",
+          referenceSource: "clinic-format",
+        },
+      ],
+    },
+    {
+      name: "Intervertebral Discs",
       concepts: [
         {
           concept: "disc_contour",
@@ -403,71 +564,6 @@ export const LS_SPINE_ANATOMY: ClinicalRegionAnatomy = {
       ],
     },
     {
-      name: "Vertebral Bodies",
-      concepts: [
-        {
-          concept: "vertebrae",
-          label: "Vertebrae",
-          category: "normal",
-          levelSpecific: false,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "vertebrae",
-          referenceSource: "mri-reports",
-        },
-        {
-          concept: "endplate",
-          label: "Endplate (Modic) Changes",
-          category: "abnormal",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: true,
-          conflictGroup: "endplate",
-          referenceSource: "both",
-        },
-        {
-          concept: "fracture",
-          label: "Compression Fracture",
-          category: "critical",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: true,
-          conflictGroup: "compression fracture",
-          referenceSource: "both",
-        },
-        {
-          concept: "spondylolisthesis",
-          label: "Spondylolisthesis",
-          category: "abnormal",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: true,
-          conflictGroup: "spondylolisthesis",
-          referenceSource: "both",
-        },
-        {
-          concept: "hemangioma",
-          label: "Vertebral Hemangioma",
-          category: "normal",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "hemangioma",
-          referenceSource: "mri-reports",
-        },
-        {
-          concept: "schmorl",
-          label: "Schmorl Node",
-          category: "abnormal",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "schmorl",
-          referenceSource: "mri-reports",
-        },
-      ],
-    },
-    {
       name: "Conus & Cauda Equina",
       concepts: [
         {
@@ -478,7 +574,7 @@ export const LS_SPINE_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "conus",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
         {
           concept: "cord",
@@ -488,47 +584,22 @@ export const LS_SPINE_ANATOMY: ClinicalRegionAnatomy = {
           lateralityApplicable: false,
           severityApplicable: false,
           conflictGroup: "cord",
-          referenceSource: "mri-reports",
+          referenceSource: "clinic-format",
         },
       ],
     },
     {
-      name: "Alignment",
+      name: "Paraspinal Structures",
       concepts: [
         {
-          concept: "alignment",
-          label: "Alignment",
+          concept: "paraspinal",
+          label: "Paraspinal Soft Tissues",
           category: "normal",
           levelSpecific: false,
           lateralityApplicable: false,
           severityApplicable: false,
-          conflictGroup: "alignment",
-          referenceSource: "mri-reports",
-        },
-      ],
-    },
-    {
-      name: "Bone Marrow",
-      concepts: [
-        {
-          concept: "marrow",
-          label: "Bone Marrow",
-          category: "normal",
-          levelSpecific: false,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "marrow",
-          referenceSource: "mri-reports",
-        },
-        {
-          concept: "lesion",
-          label: "Bone Marrow Lesion",
-          category: "critical",
-          levelSpecific: true,
-          lateralityApplicable: false,
-          severityApplicable: false,
-          conflictGroup: "lesion",
-          referenceSource: "mri-reports",
+          conflictGroup: "paraspinal",
+          referenceSource: "clinic-format",
         },
       ],
     },
@@ -570,7 +641,7 @@ export const WHOLE_SPINE_SCREENING_ANATOMY: ClinicalRegionAnatomy = {
       ],
     },
     {
-      name: "Intervertebral Disc",
+      name: "Intervertebral Discs",
       concepts: [
         {
           concept: "disc_contour",
