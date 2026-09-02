@@ -1496,18 +1496,27 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const structuredPatches = deriveStructuredObservations(doc, values, region);
 
     // P0-C: Structured toggle-off → ledger removal.
-    // Compute which previously-created structured observations are no longer
-    // selected and remove them safely through the EXISTING removeObservation
-    // path. Only removes observations still owned by structured-template
-    // (not overridden by QS/Voice/Macro). Protected/manual text survives.
+    // Ownership is scoped by EXPLICIT region + stable template identity
+    // (structuredOwnerKey). This prevents:
+    //   - Cross-region deletion (Brain apply can't remove LS Spine observations)
+    //   - Cross-template deletion (template A toggle-off can't remove template B)
+    //   - Deletion of QS/Voice/Macro observations (different source)
+    //   - Deletion of protected/manual observations
+    // The structuredOwnerKey is stable across toggle cycles — it uses the
+    // template ID, NOT a timestamp. This ensures that toggle-off correctly
+    // matches observations created by toggle-on of the SAME template.
+    const structuredOwnerKey = `structured-template-${tpl.id ?? "format"}`;
     const removalIds = computeStructuredRemovals(
       ws.appliedPathologyPatches.map((p) => ({
         id: p.id,
         source: p.source,
         protected: p.protected,
         region: p.observation?.region,
+        bundleId: p.observation?.bundleId,
       })),
       structuredPatches,
+      region,
+      structuredOwnerKey,
     );
     for (const id of removalIds) {
       ws.removeObservation(id);
@@ -1515,7 +1524,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
     if (structuredPatches.length > 0) {
       ws.applyMacroBundle({
-        bundleId: `structured-${tpl.id ?? "format"}-${Date.now().toString(36)}`,
+        bundleId: structuredOwnerKey,
         observations: structuredPatches.map((p) => ({
           incoming: { findings: p.findingsText, impression: p.impressionText },
           templates: { findings: p.findingsText, impression: p.impressionText },

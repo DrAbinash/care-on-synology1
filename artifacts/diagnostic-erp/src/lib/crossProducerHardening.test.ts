@@ -62,16 +62,22 @@ function lsSpineFormatDoc(): StructuredFormatDoc {
 }
 
 function applyStructured(doc: StructuredFormatDoc, values: StructuredValues, region: string) {
+  applyStructuredWithOwner(doc, values, region, "structured-template-test");
+}
+
+function applyStructuredWithOwner(doc: StructuredFormatDoc, values: StructuredValues, region: string, ownerKey: string) {
   const ws = useWorkspace.getState();
   const patches = deriveStructuredObservations(doc, values, region);
   const removalIds = computeStructuredRemovals(
-    ws.appliedPathologyPatches.map((p) => ({ id: p.id, source: p.source, protected: p.protected, region: p.observation?.region })),
+    ws.appliedPathologyPatches.map((p) => ({ id: p.id, source: p.source, protected: p.protected, region: p.observation?.region, bundleId: p.observation?.bundleId })),
     patches,
+    region,
+    ownerKey,
   );
   for (const id of removalIds) ws.removeObservation(id);
   if (patches.length > 0) {
     ws.applyMacroBundle({
-      bundleId: `structured-test-${Date.now().toString(36)}`,
+      bundleId: ownerKey,
       observations: patches.map((p) => ({
         incoming: { findings: p.findingsText, impression: p.impressionText },
         templates: { findings: p.findingsText, impression: p.impressionText },
@@ -422,6 +428,118 @@ describe("Structured removal scoping (A–E)", () => {
     const patches = useWorkspace.getState().appliedPathologyPatches;
     expect(patches.some((p) => p.observation?.concept === "disc_contour" && p.source === "structured-template")).toBe(false);
     expect(patches.some((p) => p.observation?.concept === "foraminal_stenosis")).toBe(true);
+  });
+
+  // 1. Brain structured observation exists. In LS Spine, toggle LAST abnormality OFF. Brain survives.
+  it("1. Empty newPatches: Brain observation survives LS Spine toggle-all-off", () => {
+    const doc = lsSpineFormatDoc();
+    // Create Brain observation
+    resetWorkspace("Brain");
+    applyStructured(doc, { morphology: "bulge" }, "Brain");
+    const brainPatches = useWorkspace.getState().appliedPathologyPatches;
+
+    // Switch to LS Spine with Brain patches still in ledger
+    useWorkspace.setState({
+      appliedPathologyPatches: brainPatches.map((p) => ({ ...p })),
+      reportingContext: buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS Spine",
+        regions: ["LS Spine"], source: "auto",
+      }),
+    });
+
+    // Toggle ALL LS Spine selections OFF → newPatches = []
+    applyStructured(doc, {}, "LS Spine");
+
+    // Brain observation MUST survive
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    expect(patches.some((p) => p.observation?.region === "Brain")).toBe(true);
+  });
+
+  // 2. WSS structured observation exists. In LS Spine, toggle LAST abnormality OFF. WSS survives.
+  it("2. Empty newPatches: WSS observation survives LS Spine toggle-all-off", () => {
+    const doc = lsSpineFormatDoc();
+    // Create WSS observation
+    applyStructuredWithOwner(doc, { morphology: "bulge" }, "Whole Spine Screening", "structured-template-wss");
+    const wssPatches = useWorkspace.getState().appliedPathologyPatches;
+    expect(wssPatches.some((p) => p.observation?.region === "Whole Spine Screening")).toBe(true);
+
+    // Toggle ALL LS Spine selections OFF → newPatches = []
+    applyStructured(doc, {}, "LS Spine");
+
+    // WSS observation MUST survive
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    expect(patches.some((p) => p.observation?.region === "Whole Spine Screening")).toBe(true);
+  });
+
+  // 3. Two structured templates in same region. Toggle all off in template A. Template B survives.
+  it("3. Same-region two-template: template A toggle-off → template B survives", () => {
+    const doc = lsSpineFormatDoc();
+    // Template A creates observation
+    applyStructuredWithOwner(doc, { morphology: "bulge" }, "LS Spine", "structured-template-A");
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.observation?.bundleId === "structured-template-A")).toBe(true);
+
+    // Template B creates observation
+    applyStructuredWithOwner(doc, { desiccation: true }, "LS Spine", "structured-template-B");
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.observation?.bundleId === "structured-template-B")).toBe(true);
+
+    // Toggle ALL off in template A → newPatches = []
+    applyStructuredWithOwner(doc, {}, "LS Spine", "structured-template-A");
+
+    // Template B's observation MUST survive
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    expect(patches.some((p) => p.observation?.bundleId === "structured-template-B")).toBe(true);
+  });
+
+  // 5. Only bulge ON. Turn bulge OFF so newPatches = []. Only that template's bulge removed.
+  it("5. Empty newPatches: only same-template bulge is removed", () => {
+    const doc = lsSpineFormatDoc();
+    applyStructured(doc, { morphology: "bulge" }, "LS Spine");
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.observation?.concept === "disc_contour")).toBe(true);
+
+    // Toggle ALL off → newPatches = []
+    applyStructured(doc, {}, "LS Spine");
+
+    // The bulge observation from THIS template should be removed
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) =>
+      p.observation?.concept === "disc_contour" && p.source === "structured-template"
+    )).toBe(false);
+  });
+
+  // 6. QS / Voice / Macro same-region observations survive structured toggle-off.
+  it("6. QS observation survives structured toggle-all-off", () => {
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming: { findings: "QS disc bulge at L4-L5." },
+      templates: { findings: "QS disc bulge at L4-L5." },
+      ownership: { conflictGroup: "disc_contour", concept: "disc_contour", level: "L4-L5" },
+      source: "quick-findings", region: "LS Spine", concept: "disc_contour",
+      level: "L4-L5", findingsText: "QS disc bulge at L4-L5.", id: "qs-bulge",
+    });
+
+    const doc = lsSpineFormatDoc();
+    // Toggle ALL off → newPatches = []
+    applyStructured(doc, {}, "LS Spine");
+
+    // QS observation MUST survive (different source)
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.id === "qs-bulge")).toBe(true);
+  });
+
+  // 7. Protected/manual structured wording survives.
+  it("7. Protected structured observation survives toggle-all-off", () => {
+    const doc = lsSpineFormatDoc();
+    applyStructured(doc, { morphology: "bulge" }, "LS Spine");
+    // Mark as protected
+    useWorkspace.setState({
+      appliedPathologyPatches: useWorkspace.getState().appliedPathologyPatches.map((p) =>
+        p.source === "structured-template" ? { ...p, protected: true } : p),
+    });
+
+    // Toggle ALL off → newPatches = []
+    applyStructured(doc, {}, "LS Spine");
+
+    // Protected observation MUST survive
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) =>
+      p.observation?.concept === "disc_contour" && p.protected === true
+    )).toBe(true);
   });
 });
 

@@ -268,31 +268,41 @@ function selectedOptionIds(field: FormatField, value: FieldValue | undefined): s
  * from the canonical ledger because the corresponding structured format
  * toggle/selection was turned OFF.
  *
- * SCOPING (PR #660 hardening): Removal is scoped to the SAME region as the
- * newly derived patches. This prevents accidentally removing structured
- * observations created by another structured template, another anatomical
- * section, or another region (e.g. Brain structured apply must NOT remove
- * LS Spine structured observations).
+ * OWNERSHIP SCOPING (PR #660 final hardening):
+ * Removal is scoped by EXPLICIT ownership context passed from the caller:
+ *   - region: the reporting region (prevents cross-region deletion)
+ *   - structuredOwnerKey: stable template identity (prevents cross-template
+ *     deletion within the same region)
  *
- * For IDs that were previously owned by structured reporting in the same
- * region but are no longer in the newly derived set, the caller should call
- * removeObservation on the EXISTING safe removal path — but ONLY if:
- *   - the observation is still owned by structured-template (not overridden
- *     by QS/Voice/Macro)
- *   - the observation is not protected/manual
- *   - the observation is in the SAME region as the new patches
+ * The caller MUST pass both fields explicitly — they are NOT inferred from
+ * newPatches (which may be empty when the last toggle is turned off).
  *
- * @param existingPatches  The current appliedPathologyPatches from the store.
- * @param newPatches        The newly derived StructuredObservationPatch[].
- * @returns                 Array of observation IDs to remove.
+ * Only observations that match ALL of these conditions are removed:
+ *   1. source === "structured-template"
+ *   2. NOT protected (manual edits survive)
+ *   3. observation.bundleId === structuredOwnerKey (same template)
+ *   4. observation.region === region (same region)
+ *   5. NOT in the newIds set (toggle was turned off)
+ *
+ * @param existingPatches     Current appliedPathologyPatches from the store.
+ * @param newPatches          Newly derived StructuredObservationPatch[].
+ * @param region              Explicit region from the caller (ReportingStudyContext.region).
+ * @param structuredOwnerKey  Stable template identity (e.g. "structured-template-42").
+ * @returns                   Array of observation IDs to remove.
  */
 export function computeStructuredRemovals(
-  existingPatches: Array<{ id: string; source: string; protected?: boolean; region?: string | null }>,
+  existingPatches: Array<{
+    id: string;
+    source: string;
+    protected?: boolean;
+    region?: string | null;
+    bundleId?: string | null;
+  }>,
   newPatches: StructuredObservationPatch[],
+  region: string,
+  structuredOwnerKey: string,
 ): string[] {
-  // The region of the new patches (all new patches share the same region
-  // because deriveStructuredObservations takes a single region parameter).
-  const newRegion = newPatches.length > 0 ? (newPatches[0]!.region ?? "").toLowerCase() : "";
+  const regionLower = region.toLowerCase();
 
   // Build the set of new structured observation IDs.
   // IDs include region to prevent cross-region collisions.
@@ -302,23 +312,24 @@ export function computeStructuredRemovals(
     ),
   );
 
-  // Find existing structured-template observations that are no longer in the
-  // new set. Only remove observations that:
-  //   1. Were created by structured-template (source === "structured-template")
-  //   2. Are NOT protected (manual edits survive)
-  //   3. Are NOT in the new set (toggle was turned off)
-  //   4. Are in the SAME region as the new patches (cross-region protection)
+  // Find existing structured-template observations that match the SAME
+  // ownership context (region + structuredOwnerKey) but are no longer in
+  // the new set. This prevents:
+  //   - Cross-region deletion (Brain apply can't remove LS Spine observations)
+  //   - Cross-template deletion (template A toggle-off can't remove template B)
+  //   - Deletion of QS/Voice/Macro observations (different source)
+  //   - Deletion of protected/manual observations
   const toRemove: string[] = [];
   for (const patch of existingPatches) {
     if (patch.source !== "structured-template") continue;
     if (patch.protected) continue;
-    // SCOPE: only remove observations in the same region as the current
-    // structured format apply. Brain structured apply must NOT remove
-    // LS Spine structured observations.
-    if (newRegion) {
-      const patchRegion = (patch.region ?? "").toLowerCase();
-      if (patchRegion !== newRegion) continue;
-    }
+    // SCOPE 1: Same region
+    const patchRegion = (patch.region ?? "").toLowerCase();
+    if (patchRegion !== regionLower) continue;
+    // SCOPE 2: Same structured owner key (template identity)
+    const patchBundleId = patch.bundleId ?? "";
+    if (patchBundleId !== structuredOwnerKey) continue;
+    // Only remove if NOT in the new set (toggle was turned off)
     if (!newIds.has(patch.id)) {
       toRemove.push(patch.id);
     }

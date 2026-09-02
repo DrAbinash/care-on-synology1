@@ -12,7 +12,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { adaptSectionsJson } from "@/lib/structuredFormat/adapter";
-import { deriveStructuredObservations } from "@/lib/structuredFormat/structuredObservations";
+import { deriveStructuredObservations, computeStructuredRemovals } from "@/lib/structuredFormat/structuredObservations";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import { extractCareObservationLedger, parseObservationLedger } from "@/lib/observationLedger";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
@@ -165,9 +165,21 @@ function brainFormatDoc(): StructuredFormatDoc {
 function applyStructuredValues(doc: StructuredFormatDoc, values: StructuredValues, region: string) {
   const ws = useWorkspace.getState();
   const patches = deriveStructuredObservations(doc, values, region);
+  const structuredOwnerKey = "structured-template-test";
+  // P0-C: compute removals scoped by explicit region + template identity
+  const removalIds = computeStructuredRemovals(
+    ws.appliedPathologyPatches.map((p) => ({
+      id: p.id, source: p.source, protected: p.protected,
+      region: p.observation?.region, bundleId: p.observation?.bundleId,
+    })),
+    patches,
+    region,
+    structuredOwnerKey,
+  );
+  for (const id of removalIds) ws.removeObservation(id);
   if (patches.length > 0) {
     ws.applyMacroBundle({
-      bundleId: `structured-test-${Date.now().toString(36)}`,
+      bundleId: structuredOwnerKey,
       observations: patches.map((p) => ({
         incoming: { findings: p.findingsText, impression: p.impressionText },
         templates: { findings: p.findingsText, impression: p.impressionText },
