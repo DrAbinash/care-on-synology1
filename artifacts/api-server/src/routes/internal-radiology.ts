@@ -197,6 +197,67 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     .where(eq(radiologyWorklistTable.id, worklistId));
 }
 
+/** Match Center explicit approval — persisted on radiology_worklist.match_decision. */
+export function isApprovedMatchDecision(decision: string | null | undefined): boolean {
+  return String(decision ?? "").toUpperCase() === "APPROVED";
+}
+
+type WorklistIntakeValues = {
+  studyId: number | null | undefined;
+  patientId: number | null;
+  dicomPatientId: string | null;
+  patientMatchStatus: string;
+  patientName: string;
+  age: string | null;
+  sex: string | null;
+  modality: string;
+  studyDescription: string | null;
+  studyDate: string | null;
+  accessionNumber: string | null;
+  studyInstanceUID: string | null | undefined;
+  aeTitle: string | null | undefined;
+  ipAddress: string | null | undefined;
+  port: number | null | undefined;
+  referringDoctor: string | null;
+  weasisUrl: string | null | undefined;
+  sourcePacs: string;
+  sourceAeTitle: string | null | undefined;
+  dicomMetadata: unknown;
+};
+
+/**
+ * Once Match Center has APPROVED a patient association, DICOM re-intake for the
+ * same StudyInstanceUID must refresh metadata without replacing patientId /
+ * identity linkage / approval state.
+ */
+export function preserveApprovedPatientAssociationOnReintake<T extends WorklistIntakeValues>(
+  existing: {
+    id: number;
+    patientId: number | null;
+    patientMatchStatus: string;
+    matchDecision: string | null;
+    studyId: number | null;
+  },
+  values: T,
+): T {
+  if (!isApprovedMatchDecision(existing.matchDecision)) return values;
+  logger.info(
+    {
+      worklistId: existing.id,
+      approvedPatientId: existing.patientId,
+      incomingPatientId: values.patientId,
+    },
+    "Re-intake preserving APPROVED patient association",
+  );
+  return {
+    ...values,
+    patientId: existing.patientId,
+    patientMatchStatus: existing.patientMatchStatus,
+    // Keep the billed-study link that was approved with this identity.
+    studyId: existing.studyId ?? values.studyId,
+  };
+}
+
 const router = Router();
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -453,20 +514,19 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     }
 
     // Patient Resolution
+    // DICOM PatientID is an external modality identifier. Match only against
+    // patients.patient_id (CARE UHID / patient-facing id). Never treat a
+    // numeric PatientID as patients.id — modality values can collide with
+    // the internal serial PK and silently bind the wrong patient.
     const rawDicomPatientId = patientId || null;
     let resolvedPatientId: number | null = null;
     let patientMatchStatus = "UNMATCHED";
 
     if (rawDicomPatientId) {
-      const numericId = Number(rawDicomPatientId);
-      const matchCond = Number.isInteger(numericId) && numericId > 0
-        ? or(eq(patientsTable.id, numericId), eq(patientsTable.patientId, rawDicomPatientId))
-        : eq(patientsTable.patientId, rawDicomPatientId);
-
       const [matched] = await db
         .select({ id: patientsTable.id })
         .from(patientsTable)
-        .where(matchCond!)
+        .where(eq(patientsTable.patientId, rawDicomPatientId))
         .limit(1);
 
       if (matched) {
@@ -745,19 +805,34 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     let row: typeof radiologyWorklistTable.$inferSelect;
 
     if (existing) {
+      const updateValues = preserveApprovedPatientAssociationOnReintake(existing, values);
       const [updated] = await db
         .update(radiologyWorklistTable)
-        .set({ ...values, updatedAt: new Date() })
+        .set({ ...updateValues, updatedAt: new Date() })
         .where(eq(radiologyWorklistTable.id, existing.id))
         .returning();
       row = updated;
-      logger.info({ worklistId: row.id, event: "updated" }, "Worklist entry updated");
+      logger.info(
+        {
+          worklistId: row.id,
+          event: "updated",
+          preservedApprovedPatient: isApprovedMatchDecision(existing.matchDecision),
+        },
+        "Worklist entry updated",
+      );
       await audit({
         worklistId: row.id,
         accessionNumber,
         action: "STUDY_RECEIVED",
         actor: "pacs",
-        details: { event: "updated", modality, studyDescription, sourcePacs, sourceAeTitle },
+        details: {
+          event: "updated",
+          modality,
+          studyDescription,
+          sourcePacs,
+          sourceAeTitle,
+          preservedApprovedPatient: isApprovedMatchDecision(existing.matchDecision),
+        },
       });
     } else {
       try {
@@ -791,19 +866,34 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
           .limit(1);
         if (!race) throw insertErr; // shouldn't happen, but don't swallow a real error
 
+        const updateValues = preserveApprovedPatientAssociationOnReintake(race, values);
         const [updated] = await db
           .update(radiologyWorklistTable)
-          .set({ ...values, updatedAt: new Date() })
+          .set({ ...updateValues, updatedAt: new Date() })
           .where(eq(radiologyWorklistTable.id, race.id))
           .returning();
         row = updated;
-        logger.info({ worklistId: row.id, event: "updated-after-race" }, "Worklist entry updated (race retry)");
+        logger.info(
+          {
+            worklistId: row.id,
+            event: "updated-after-race",
+            preservedApprovedPatient: isApprovedMatchDecision(race.matchDecision),
+          },
+          "Worklist entry updated (race retry)",
+        );
         await audit({
           worklistId: row.id,
           accessionNumber,
           action: "STUDY_RECEIVED",
           actor: "pacs",
-          details: { event: "updated-after-race", modality, studyDescription, sourcePacs, sourceAeTitle },
+          details: {
+            event: "updated-after-race",
+            modality,
+            studyDescription,
+            sourcePacs,
+            sourceAeTitle,
+            preservedApprovedPatient: isApprovedMatchDecision(race.matchDecision),
+          },
         });
       }
     }
@@ -849,11 +939,15 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       });
     }
 
-    // Run matching engine to compute and store match score / warnings
-    try {
-      await runMatchingEngineForWorklist(row.id);
-    } catch (matchErr) {
-      logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
+    // Run matching engine to compute and store match score / warnings.
+    // Skip when Match Center has already APPROVED identity — re-scoring must
+    // not downgrade match state on a locked patient association.
+    if (!isApprovedMatchDecision(row.matchDecision)) {
+      try {
+        await runMatchingEngineForWorklist(row.id);
+      } catch (matchErr) {
+        logger.error({ err: matchErr, worklistId: row.id }, "Intake matching engine execution failed");
+      }
     }
 
     // Wire Orthanc arrival → queue token done + MWL cleanup + live UI refresh
@@ -863,7 +957,8 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       orderTestId: rStudy?.orderTestId,
       billId: rStudy?.billId,
       department: rStudy?.department,
-      patientId: resolvedPatientId,
+      // Prefer the persisted worklist patient (may be APPROVED-preserved).
+      patientId: row.patientId ?? resolvedPatientId,
       patientName,
       modality,
       previousStudyStatus,

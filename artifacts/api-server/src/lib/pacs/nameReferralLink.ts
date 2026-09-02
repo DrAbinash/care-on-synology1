@@ -52,8 +52,7 @@ export function classifyMatchLane(match: MatchResult): MatchLane {
   const hasIdKey = match.reasons.some(
     (r) =>
       r.includes("Accession number matches exactly") ||
-      r.includes("Patient ID / UHID matches exactly") ||
-      r.includes("Patient ID matches internal database ID"),
+      r.includes("Patient ID / UHID matches exactly"),
   );
   return hasIdKey ? "id_keys" : "name_referral";
 }
