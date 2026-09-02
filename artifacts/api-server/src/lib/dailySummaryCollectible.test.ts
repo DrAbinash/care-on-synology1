@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   computeCollectibleForReconciliation,
+  computeGrossRestoreForTestCancelRefunds,
+  computeRefundsExcludedFromCollectible,
   computeRefundsOnBillsCancelledByMe,
   computeRefundsOnCancelledBillsCreatedInPeriod,
+  computeTestCancelRefundsAmount,
+  isTestCancelRefund,
 } from "./dailySummaryCollectible";
 
 const START = new Date("2026-08-01T00:00:00+05:30");
@@ -73,6 +77,87 @@ describe("computeRefundsOnBillsCancelledByMe", () => {
       [10],
     );
     expect(excluded).toBe(3400);
+  });
+});
+
+describe("partial test-cancel refund attribution", () => {
+  it("detects REFUND (test cancel) notes from cancel-refund-tests", () => {
+    expect(isTestCancelRefund("REFUND (test cancel): patient request")).toBe(true);
+    expect(isTestCancelRefund("REFUND: overcharge")).toBe(false);
+    expect(isTestCancelRefund(null)).toBe(false);
+  });
+
+  it("Abinash partial-cancels ₹1500 on Vijay's paid bill — Vijay unchanged, Abinash −1500, no Short", () => {
+    const testCancelRefund = {
+      amount: "-1500",
+      billId: 42,
+      billStatus: "paid",
+      billCreatedAt: CREATED_TODAY,
+      notes: "REFUND (test cancel): part cancel",
+    };
+
+    // Creator (Vijay): mutated total is 8500; restore +1500 → gross 10000 again.
+    const vijayGrossMutated = 8500;
+    const vijayRestore = computeGrossRestoreForTestCancelRefunds([testCancelRefund], [42]);
+    expect(vijayRestore).toBe(1500);
+    const vijay = computeCollectibleForReconciliation({
+      grossBilledIncludingCancelled: vijayGrossMutated + vijayRestore,
+      duesCollectedTotal: 0,
+      cancelledAmount: 0,
+      cashRefunded: 0,
+      digitalRefunded: 0,
+      refundsOnBillsCancelledByMe: 0,
+      outstanding: 0,
+    });
+    expect(vijay).toBe(10000);
+
+    // Canceller (Abinash): refund counts as cancelledAmount; exclude from refunds.
+    const abinashTestCancel = computeTestCancelRefundsAmount([testCancelRefund]);
+    const abinashExcluded = computeRefundsExcludedFromCollectible([testCancelRefund], []);
+    expect(abinashTestCancel).toBe(1500);
+    expect(abinashExcluded).toBe(1500);
+    const abinash = computeCollectibleForReconciliation({
+      grossBilledIncludingCancelled: 0,
+      duesCollectedTotal: 0,
+      cancelledAmount: abinashTestCancel,
+      cashRefunded: 1500,
+      digitalRefunded: 0,
+      refundsOnBillsCancelledByMe: abinashExcluded,
+      outstanding: 0,
+    });
+    expect(abinash).toBe(-1500);
+
+    // All-staff cross-check: restore + cancel + excluded refund → nets once.
+    const allStaff = computeCollectibleForReconciliation({
+      grossBilledIncludingCancelled: vijayGrossMutated + vijayRestore,
+      duesCollectedTotal: 0,
+      cancelledAmount: abinashTestCancel,
+      cashRefunded: 1500,
+      digitalRefunded: 0,
+      refundsOnBillsCancelledByMe: abinashExcluded,
+      outstanding: 0,
+    });
+    // physicalCashInHand = cashIn 10000 − refund 1500 = 8500
+    expect(allStaff).toBe(8500);
+  });
+
+  it("does not restore gross for test-cancel refunds on bills outside the gross set", () => {
+    const restore = computeGrossRestoreForTestCancelRefunds(
+      [{ amount: "-1500", billId: 99, notes: "REFUND (test cancel): x" }],
+      [42],
+    );
+    expect(restore).toBe(0);
+  });
+
+  it("de-dupes test-cancel refund when bill is also fully cancelled", () => {
+    const row = {
+      amount: "-1500",
+      billId: 10,
+      billStatus: "cancelled",
+      billCreatedAt: CREATED_TODAY,
+      notes: "REFUND (test cancel): then voided",
+    };
+    expect(computeRefundsExcludedFromCollectible([row], [10])).toBe(1500);
   });
 });
 

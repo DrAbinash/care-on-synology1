@@ -1004,6 +1004,8 @@ function ExpandableReconRow({
 //   not whoever created the bill. Vijay creates+collects ₹3400; Abinash
 //   cancels and pays the refund → Abinash's Cancelled Bills / expected cash,
 //   not Vijay's. An old bill cancelled today also hits the canceller's today.
+//   Same rule for partial test cancel (REFUND (test cancel)): restore creator
+//   gross by the refund amount; canceller takes cancelledAmount + excluded refund.
 //
 // ATTRIBUTION RULE (confirmed correct in backend):
 //   cashIn          = SUM(payments.amount > 0) WHERE recordedByName = thisStaff
