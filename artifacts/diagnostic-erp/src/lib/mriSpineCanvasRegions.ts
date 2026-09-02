@@ -128,22 +128,61 @@ export const MRI_DORSAL_ALL_REGIONS: MriDorsalRegionDef[] = [
 
 // ─── Cervical root inference ────────────────────────────────────────────
 
-/** Prefill suggestion for cervical exiting root — user may override. */
+/**
+ * Cervical exiting root inference.
+ *
+ * CERVICAL ROOT NUMBERING (clinically distinct from lumbar):
+ *   - Cervical roots C1–C7 exit ABOVE their namesake vertebra (the C(n) root
+ *     exits through the C(n-1)–C(n) foramen).
+ *   - C8 is unique: it exits BELOW C7, through the C7–T1 foramen.
+ *   - Thoracic/lumbar/sacral roots exit BELOW their namesake vertebra.
+ *
+ * Therefore at a cervical disc level C(n)–C(n+1):
+ *   - EXITING root = C(n+1)  — e.g., C5-C6 disc → exiting C6 root.
+ *   - Exception: C7-T1 disc → exiting C8 root (not T1).
+ *
+ * This is the OPPOSITE of lumbar convention, where L4-L5 disc affects the
+ * exiting L4 root (lumbar roots exit below their vertebra). The lumbar
+ * helpers in mriLumbarRegions.ts are intentionally NOT changed.
+ *
+ * Prefill suggestion only — user may override (exiting vs traversing
+ * distinction depends on herniation subtype: foraminal vs paracentral).
+ */
 export function inferCervicalExitingRoot(level: string): string {
-  const m = level.toUpperCase().match(/C(\d)/);
+  // C7-T1 is the C8 root level (C8 exits below C7).
+  if (/C7\s*[-–—]\s*T1/i.test(level)) return "C8";
+  const m = level.toUpperCase().match(/C(\d+)\s*[-–—]\s*C(\d+)/);
   if (!m) return "nerve";
-  return `C${m[1]}`;
+  // Exiting root = LOWER cervical number (cervical roots exit above their vertebra).
+  return `C${m[2]}`;
 }
 
-/** Prefill suggestion for cervical traversing root — user may override. */
+/**
+ * Cervical traversing root inference.
+ *
+ * The traversing root at C(n)–C(n+1) is C(n+2) — the root that descends
+ * past this disc level to exit at the NEXT foramen below.
+ *
+ *   C5-C6 → traversing C7  (descends to exit at C6-C7 foramen)
+ *   C6-C7 → traversing C8  (descends to exit at C7-T1 foramen)
+ *   C7-T1 → traversing T1  (descends to exit at T1-T2 foramen)
+ *
+ * NOTE: cervical disc herniations most commonly affect the EXITING root
+ * (which exits horizontally through the foramen at the disc level). The
+ * traversing root is less commonly compressed in cervical spine compared
+ * to lumbar spine, but the concept remains clinically useful for
+ * central/paracentral cervical herniations.
+ *
+ * Prefill suggestion only — user may override.
+ */
 export function inferCervicalTraversingRoot(level: string): string {
-  // For C7-T1, the traversing root is T1 (C8 is the cervical root but T1 is the next thoracic)
-  if (/C7.*T1/i.test(level)) return "T1";
-  const m = level.toUpperCase().match(/C(\d+)/);
+  // C7-T1: T1 root traverses past to exit at T1-T2 foramen.
+  if (/C7\s*[-–—]\s*T1/i.test(level)) return "T1";
+  const m = level.toUpperCase().match(/C(\d+)\s*[-–—]\s*C(\d+)/);
   if (!m) return "nerve";
-  const n = Number(m[1]);
-  if (n >= 7) return "C8";
-  return `C${n + 1}`;
+  const lower = Number(m[2]);
+  if (lower >= 7) return "C8";   // C6-C7 → traversing C8
+  return `C${lower + 1}`;        // C5-C6 → traversing C7
 }
 
 // ─── Dorsal root inference ──────────────────────────────────────────────

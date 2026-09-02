@@ -162,16 +162,38 @@ describe("MRI Cervical/Dorsal Canvas — AP measurements", () => {
   });
 });
 
-describe("MRI Cervical/Dorsal Canvas — root inference", () => {
-  it("C5 exiting root is C5", () => {
-    expect(inferCervicalExitingRoot("C5-C6")).toBe("C5");
+describe("MRI Cervical/Dorsal Canvas — root inference (cervical anatomy)", () => {
+  // CERVICAL ROOT NUMBERING (distinct from lumbar):
+  //   - C1–C7 roots exit ABOVE their namesake vertebra (C6 root exits at C5-C6 foramen).
+  //   - C8 exits BELOW C7 (at C7-T1 foramen).
+  //   - At C(n)-C(n+1) disc: EXITING root = C(n+1), TRAVERSING root = C(n+2).
+  //   - C7-T1 is the exception: exiting = C8, traversing = T1.
+  // Lumbar root inference in mriLumbarRegions.ts is NOT changed (lumbar roots
+  // exit BELOW their vertebra, so L4-L5 disc → exiting L4).
+
+  it("C5-C6 exiting root is C6 (cervical roots exit above their vertebra)", () => {
+    expect(inferCervicalExitingRoot("C5-C6")).toBe("C6");
   });
 
-  it("C5 traversing root is C6", () => {
-    expect(inferCervicalTraversingRoot("C5-C6")).toBe("C6");
+  it("C5-C6 traversing root is C7 (descends to exit at C6-C7 foramen)", () => {
+    expect(inferCervicalTraversingRoot("C5-C6")).toBe("C7");
   });
 
-  it("C7-T1 traversing root is T1", () => {
+  it("C6-C7 exiting root is C7", () => {
+    expect(inferCervicalExitingRoot("C6-C7")).toBe("C7");
+  });
+
+  it("C6-C7 traversing root is C8 (descends to exit at C7-T1 foramen)", () => {
+    expect(inferCervicalTraversingRoot("C6-C7")).toBe("C8");
+  });
+
+  it("C7-T1 exiting root is C8 (C8 exits below C7, not above T1)", () => {
+    // This is the key cervical anatomy correction: C8 is the clinically
+    // relevant cervical root at the C7-T1 disc level — NOT C7 and NOT T1.
+    expect(inferCervicalExitingRoot("C7-T1")).toBe("C8");
+  });
+
+  it("C7-T1 traversing root is T1 (descends to exit at T1-T2 foramen)", () => {
     expect(inferCervicalTraversingRoot("C7-T1")).toBe("T1");
   });
 });
@@ -284,7 +306,16 @@ describe("MRI Cervical/Dorsal Canvas — cross-region observation safety", () =>
     expect(foraminal).toHaveLength(2);
   });
 
-  it("AP measurements survive save/reopen", () => {
+  it("AP canal measurement text embedded in narrative survives save/reopen", () => {
+    // This test proves that AP canal measurement TEXT embedded inside a
+    // disc_contour narrative survives the observation ledger serialize →
+    // hydrate cycle. It does NOT test SpineApMeasurementSet persistence
+    // (which is a separate UI/model concern — see mriSpineCanvasRegions.ts).
+    //
+    // The SpineApMeasurementSet model is a shared formatter for the future
+    // Cervical/Dorsal Canvas UI; it is not yet wired to a persisted
+    // measurement store. When a persisted AP measurement store is added in
+    // a future PR, a dedicated persistence test should be added there.
     useWorkspace.getState().applyPathologyOverlay({
       incoming: { findings: "Disc bulge at L4-L5. AP canal diameter 12 mm." },
       templates: { findings: "Disc bulge at L4-L5. AP canal diameter 12 mm." },
@@ -329,7 +360,10 @@ describe("Full Report Format Library — expansion count", () => {
     expect(names.some((n) => n.includes("LS Spine + Whole Spine Screening"))).toBe(true);
   });
 
-  it("screening formats use 'limited' wording in technique or fragments", async () => {
+  it("screening formats use CARE canonical 'limited planar and limited sequence' wording", async () => {
+    // CARE mandatory rule: every MRI screening Full Format must explicitly
+    // contain BOTH "limited planar" AND "limited sequence". Testing only
+    // for the word "limited" is insufficient — both concepts are required.
     const { DEFAULT_REPORT_FORMATS } = await import("@/lib/zai-workspace/report-formats-library");
     const screeningFormats = DEFAULT_REPORT_FORMATS.filter(
       (f) => f.protocolScope === "Screening" && f.modality === "MR",
@@ -337,9 +371,67 @@ describe("Full Report Format Library — expansion count", () => {
     expect(screeningFormats.length).toBeGreaterThan(0);
     for (const f of screeningFormats) {
       const combinedText = `${f.technique} ${f.findings}`;
-      const hasWording = /limited/i.test(combinedText)
-        || (f.techniqueFragments ?? []).some((tf) => /limited/i.test(tf.text));
-      expect(hasWording, `Format "${f.name}" missing screening wording`).toBe(true);
+      const fragments = (f.techniqueFragments ?? []).map((tf) => tf.text).join(" ");
+      const fullText = `${combinedText} ${fragments}`;
+      const hasLimitedPlanar = /limited\s+planar/i.test(fullText);
+      const hasLimitedSequence = /limited\s+sequence/i.test(fullText);
+      expect(
+        hasLimitedPlanar,
+        `Format "${f.name}" missing "limited planar" wording (required by CARE canonical screening rule)`,
+      ).toBe(true);
+      expect(
+        hasLimitedSequence,
+        `Format "${f.name}" missing "limited sequence" wording (required by CARE canonical screening rule)`,
+      ).toBe(true);
+    }
+  });
+
+  it("new MRI formats have no direct internal contradictions (midline shift / cord compression / etc.)", async () => {
+    // Audit the 22 newly added MRI formats for obvious internal contradictions:
+    //   - "midline shift of X mm" + "No midline shift" in the same findings
+    //   - "cord compression" + "No cord compression" in the same findings
+    //   - "hydrocephalus" + "normal ventricular system" in the same findings
+    //   - "fracture" + "No fracture" in the same findings
+    //   - "abnormal enhancement" + "No abnormal enhancement" in the same findings
+    // Only DIRECT contradictions (both assertion and negation within 500 chars,
+    // not part of a normal-vs-abnormal differential) are flagged.
+    const { DEFAULT_REPORT_FORMATS } = await import("@/lib/zai-workspace/report-formats-library");
+    const newFormatNames = [
+      "MRI Brain — Normal (Contrast)",
+      "MRI Brain — Epilepsy Protocol (Normal)",
+      "MRI Brain — Fazekas 2",
+      "MRI Brain — Fazekas 3",
+      "MRI Brain — Senile/Atrophic Changes",
+      "MRI Brain — Chronic Infarct (Gliotic Changes)",
+      "MRI Brain — Acute Hemorrhage",
+      "MRI Brain — Subdural Hematoma (SDH)",
+      "MRI Brain — Hydrocephalus",
+      "MRI Brain — Demyelination (MS)",
+      "MRI Brain — NCC (Ring-Enhancing Granuloma)",
+      "MRI Brain — HIE (Pediatric)",
+      "MRI Cervical Spine — Degenerative (Disc Bulge)",
+      "MRI Cervical Spine — Loss of Lordosis",
+      "MRI Cervical Spine — Cord Signal Change (Myelopathy)",
+      "MRI LS Spine — Multilevel Degenerative",
+      "MRI LS Spine — Spondylolisthesis (Grade I)",
+      "MRI LS Spine — Compression Fracture",
+      "MRI LS Spine + Whole Spine Screening",
+      "MRI Dorsal Spine — Normal",
+      "MRI Dorsal Spine — Compression Fracture",
+      "MRI Dorsal Spine — Spondylodiscitis",
+      "MRI Whole Spine Screening — Cervical + Dorsal",
+    ];
+    for (const name of newFormatNames) {
+      const fmt = DEFAULT_REPORT_FORMATS.find((f) => f.name === name);
+      expect(fmt, `Format "${name}" not found in library`).toBeDefined();
+      const findings = (fmt!.findings ?? "").toLowerCase();
+      // Check for the specific SDH-style contradiction: "midline shift of ___ mm" + "no midline shift"
+      const hasMidlineShiftAssertion = /midline\s+shift\s+of\s+\S/i.test(findings);
+      const hasNoMidlineShift = /no\s+midline\s+shift/i.test(findings);
+      expect(
+        !(hasMidlineShiftAssertion && hasNoMidlineShift),
+        `Format "${name}" has direct contradiction: "midline shift of ___ mm" + "No midline shift"`,
+      ).toBe(true);
     }
   });
 });
