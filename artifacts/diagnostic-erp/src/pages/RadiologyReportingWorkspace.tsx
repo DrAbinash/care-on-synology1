@@ -183,7 +183,7 @@ import {
   toDraftFormatState,
   type StructuredValues,
 } from "@/lib/structuredFormat";
-import { deriveStructuredObservations } from "@/lib/structuredFormat/structuredObservations";
+import { deriveStructuredObservations, computeStructuredRemovals } from "@/lib/structuredFormat/structuredObservations";
 import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolbar";
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { useViewerMeasurements } from "@/components/radiology/ViewerMeasurementsPanel";
@@ -1494,6 +1494,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // removals. Removal semantics are owned by the observation ledger.
     const region = studySetup.studyContext.region ?? "LS Spine";
     const structuredPatches = deriveStructuredObservations(doc, values, region);
+
+    // P0-C: Structured toggle-off → ledger removal.
+    // Compute which previously-created structured observations are no longer
+    // selected and remove them safely through the EXISTING removeObservation
+    // path. Only removes observations still owned by structured-template
+    // (not overridden by QS/Voice/Macro). Protected/manual text survives.
+    const removalIds = computeStructuredRemovals(
+      ws.appliedPathologyPatches.map((p) => ({
+        id: p.id,
+        source: p.source,
+        protected: p.protected,
+      })),
+      structuredPatches,
+    );
+    for (const id of removalIds) {
+      ws.removeObservation(id);
+    }
+
     if (structuredPatches.length > 0) {
       ws.applyMacroBundle({
         bundleId: `structured-${tpl.id ?? "format"}-${Date.now().toString(36)}`,

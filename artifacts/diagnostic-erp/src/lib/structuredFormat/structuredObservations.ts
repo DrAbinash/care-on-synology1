@@ -262,3 +262,51 @@ function selectedOptionIds(field: FormatField, value: FieldValue | undefined): s
   const hit = field.options.find((o) => o.id === raw || o.value === raw);
   return hit ? [hit.id] : [];
 }
+
+/**
+ * P0-C: Compute the set of structured observation IDs that should be REMOVED
+ * from the canonical ledger because the corresponding structured format
+ * toggle/selection was turned OFF.
+ *
+ * This is a DIFF model:
+ *   previous structured observation IDs (source = "structured-template")
+ *   vs
+ *   newly derived structured observation IDs
+ *
+ * For IDs that were previously owned by structured reporting but are no longer
+ * in the newly derived set, the caller should call removeObservation on the
+ * EXISTING safe removal path — but ONLY if:
+ *   - the observation is still owned by structured-template (not overridden
+ *     by QS/Voice/Macro)
+ *   - the observation is not protected/manual
+ *
+ * @param existingPatches  The current appliedPathologyPatches from the store.
+ * @param newPatches        The newly derived StructuredObservationPatch[].
+ * @returns                 Array of observation IDs to remove.
+ */
+export function computeStructuredRemovals(
+  existingPatches: Array<{ id: string; source: string; protected?: boolean }>,
+  newPatches: StructuredObservationPatch[],
+): string[] {
+  // Build the set of new structured observation IDs.
+  const newIds = new Set(
+    newPatches.map((p) =>
+      `structured-${p.concept}-${p.level ?? ""}-${p.laterality ?? ""}`,
+    ),
+  );
+
+  // Find existing structured-template observations that are no longer in the
+  // new set. Only remove observations that:
+  //   1. Were created by structured-template (source === "structured-template")
+  //   2. Are NOT protected (manual edits survive)
+  //   3. Are NOT in the new set (toggle was turned off)
+  const toRemove: string[] = [];
+  for (const patch of existingPatches) {
+    if (patch.source !== "structured-template") continue;
+    if (patch.protected) continue;
+    if (!newIds.has(patch.id)) {
+      toRemove.push(patch.id);
+    }
+  }
+  return toRemove;
+}
