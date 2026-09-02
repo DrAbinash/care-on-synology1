@@ -191,16 +191,25 @@ import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine"
 import { subscribeCareOhifBridge, captureResultToBlob, requestOhifNavigateToAnchor, requestOhifViewportCapture, deriveOhifAllowedOrigins, resolveOhifTargetOrigin } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
+import {
+  isMriCervicalReportingContext,
+  isMriDorsalReportingContext,
+} from "@/lib/mriSpineCanvasRegions";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
+import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
+import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import {
   AnchorRail,
   CoverageCockpit,
   FindingComposer,
   GhostLayer,
   MriLumbarCanvas,
+  MriCervicalCanvas,
+  MriDorsalCanvas,
   ObservationLedgerPanel,
   ContradictionBanner,
   ImpressionStaleBanner,
+  SpineApCanalMeasurements,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import {
@@ -4558,6 +4567,133 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             }).banner}
                           </div>
                         ) : null}
+                        <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} />
+                      </>
+                    )}
+
+                    {/* ── MRI Cervical Spine Canvas ────────────────────────── */}
+                    {isMriCervicalReportingContext({
+                      modality: workflow.currentRow?.modality,
+                      region: studySetup.matchedStudyRegion,
+                      family: studySetup.studyContext?.family,
+                      spineSegment: studySetup.studyContext?.spineSegment,
+                      protocolName: studySetup.activeProtocol?.name ?? null,
+                      studyDescription: workflow.currentRow?.studyDescription ?? null,
+                    }) && (
+                      <>
+                        {(appliedFormatReportTitle || appliedFormatName) ? (
+                          <div
+                            className="mb-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-800"
+                            data-testid="r2-applied-format-cervical"
+                          >
+                            <span className="font-semibold">Format:</span>{" "}
+                            {appliedFormatName ?? appliedFormatReportTitle}
+                            {appliedPathologyPatches.some((p) => !p.stale) ? (
+                              <span className="ml-1 text-emerald-800">· modified</span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <MriCervicalCanvas
+                          patches={appliedPathologyPatches}
+                          findingsText={findingsText}
+                          disabled={isLocked || isFinalized}
+                          canalApByLevel={canalApByLevel}
+                          onFocusRegion={(key) => {
+                            useWorkspace.getState().touchCoverageViewed(key);
+                          }}
+                          onApplyLevel={(level, regionKey, sel) => {
+                            const { bundleId, observations } = buildCervicalLevelApplyBundle({
+                              level,
+                              sel,
+                              region: studySetup.matchedStudyRegion ?? "Cervical Spine",
+                            });
+                            if (observations.length === 0) return;
+                            useWorkspace.getState().applyMacroBundle({ bundleId, observations });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                          onInsertRegionPhrase={(regionKey, phrase, concept) => {
+                            useWorkspace.getState().applyPathologyOverlay({
+                              id: `r2-cerv-region-${regionKey}-${concept}`,
+                              incoming: { findings: phrase },
+                              templates: { findings: phrase },
+                              ownership: {
+                                anatomicalSection: regionKey,
+                                conflictGroup: concept,
+                                concept,
+                                baselineReplaces: "",
+                              },
+                              source: "structured-template",
+                              region: studySetup.matchedStudyRegion ?? "Cervical Spine",
+                              concept,
+                              label: `${regionKey} ${concept}`,
+                              findingsText: phrase,
+                            });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                        />
+                        <SpineApCanalMeasurements segment="cervical" disabled={isLocked || isFinalized} />
+                      </>
+                    )}
+
+                    {/* ── MRI Dorsal Spine Canvas ──────────────────────────── */}
+                    {isMriDorsalReportingContext({
+                      modality: workflow.currentRow?.modality,
+                      region: studySetup.matchedStudyRegion,
+                      family: studySetup.studyContext?.family,
+                      spineSegment: studySetup.studyContext?.spineSegment,
+                      protocolName: studySetup.activeProtocol?.name ?? null,
+                      studyDescription: workflow.currentRow?.studyDescription ?? null,
+                    }) && (
+                      <>
+                        {(appliedFormatReportTitle || appliedFormatName) ? (
+                          <div
+                            className="mb-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-800"
+                            data-testid="r2-applied-format-dorsal"
+                          >
+                            <span className="font-semibold">Format:</span>{" "}
+                            {appliedFormatName ?? appliedFormatReportTitle}
+                            {appliedPathologyPatches.some((p) => !p.stale) ? (
+                              <span className="ml-1 text-teal-800">· modified</span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <MriDorsalCanvas
+                          patches={appliedPathologyPatches}
+                          findingsText={findingsText}
+                          disabled={isLocked || isFinalized}
+                          onFocusRegion={(key) => {
+                            useWorkspace.getState().touchCoverageViewed(key);
+                          }}
+                          onApplyLevel={(level, regionKey, sel) => {
+                            const { bundleId, observations } = buildDorsalLevelApplyBundle({
+                              level,
+                              sel,
+                              region: studySetup.matchedStudyRegion ?? "Dorsal Spine",
+                            });
+                            if (observations.length === 0) return;
+                            useWorkspace.getState().applyMacroBundle({ bundleId, observations });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                          onInsertRegionPhrase={(regionKey, phrase, concept) => {
+                            useWorkspace.getState().applyPathologyOverlay({
+                              id: `r2-dors-region-${regionKey}-${concept}`,
+                              incoming: { findings: phrase },
+                              templates: { findings: phrase },
+                              ownership: {
+                                anatomicalSection: regionKey,
+                                conflictGroup: concept,
+                                concept,
+                                baselineReplaces: "",
+                              },
+                              source: "structured-template",
+                              region: studySetup.matchedStudyRegion ?? "Dorsal Spine",
+                              concept,
+                              label: `${regionKey} ${concept}`,
+                              findingsText: phrase,
+                            });
+                            useWorkspace.getState().setCoverageMark(regionKey, "partial");
+                          }}
+                        />
                       </>
                     )}
 
