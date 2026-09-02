@@ -1142,9 +1142,18 @@ router.post("/payments/:id/supersede", requireAdminRole, async (req, res) => {
       const newPaid = Math.max(0, Number(bill.paidAmount) - amount);
       const refund = Number(bill.refundAmount ?? 0);
       const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refund);
-      const newStatus = newBalance <= 0.01 ? "paid" : newPaid > 0 ? "partial" : "pending";
+      // Preserve cancelled terminal status (same rule as refund route).
+      const newStatus = bill.status === "cancelled"
+        ? "cancelled"
+        : newBalance <= 0.01 ? "paid" : newPaid > 0 ? "partial" : "pending";
       await tx.update(billsTable)
-        .set({ paidAmount: newPaid.toFixed(2), balanceAmount: newBalance.toFixed(2), status: newStatus, updatedAt: new Date() })
+        .set({
+          paidAmount: newPaid.toFixed(2),
+          // Cancelled bills keep balance at 0 even after money adjustments.
+          balanceAmount: bill.status === "cancelled" ? "0.00" : newBalance.toFixed(2),
+          status: newStatus,
+          updatedAt: new Date(),
+        })
         .where(eq(billsTable.id, bill.id));
 
       return { bill, amount, method: dup.method };

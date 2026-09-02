@@ -1380,6 +1380,14 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     return;
   }
 
+  // Terminal-state: cancelled bills must not regain an outstanding balance via
+  // ordinary money-field edits (discount → total/balance recompute). dueDate-only
+  // updates do not resurrect money state and remain allowed.
+  if (existingBill.status === "cancelled" && discount !== undefined) {
+    res.status(409).json({ error: "Bill is cancelled — money fields cannot be edited" });
+    return;
+  }
+
   const updateData: Record<string, unknown> = {};
   if (dueDate !== undefined) updateData.dueDate = dueDate;
   if (discount !== undefined) {
@@ -1433,7 +1441,42 @@ billsRouter.put("/:id", requireStaffSubPermission("/billing", "edit"), async (re
     return;
   }
 
-  const [updated] = await db.update(billsTable).set(updateData).where(eq(billsTable.id, paramsParsed.data.id)).returning();
+  // Money-field writes must re-check cancelled under FOR UPDATE so a concurrent
+  // cancel cannot leave balanceAmount > 0 on a terminal bill. dueDate-only
+  // updates skip the lock (they do not recreate outstanding balance).
+  let updated: typeof existingBill;
+  if (discount !== undefined) {
+    try {
+      const rows = await db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select()
+          .from(billsTable)
+          .where(eq(billsTable.id, paramsParsed.data.id))
+          .for("update")
+          .limit(1);
+        if (!locked) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
+        if (locked.status === "cancelled") {
+          throw Object.assign(new Error("Bill is cancelled — money fields cannot be edited"), { httpStatus: 409 });
+        }
+        return tx
+          .update(billsTable)
+          .set(updateData)
+          .where(eq(billsTable.id, paramsParsed.data.id))
+          .returning();
+      });
+      updated = rows[0]!;
+    } catch (err: unknown) {
+      const httpStatus = (err as { httpStatus?: number })?.httpStatus;
+      if (httpStatus) {
+        res.status(httpStatus).json({ error: err instanceof Error ? err.message : "Update failed" });
+        return;
+      }
+      throw err;
+    }
+  } else {
+    const rows = await db.update(billsTable).set(updateData).where(eq(billsTable.id, paramsParsed.data.id)).returning();
+    updated = rows[0]!;
+  }
 
   // Always-on advisory audit: a discount edit that exceeds 50% of the active
   // order_tests subtotal is flagged for CA review. Fires regardless of whether
@@ -2703,6 +2746,13 @@ paymentsRouter.post("/", async (req, res) => {
 
       if (!bill) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
 
+      // Terminal-state: cancelled is immutable for normal collection. Checked
+      // inside FOR UPDATE so cancel-vs-payment races cannot resurrect the bill
+      // after a concurrent cancel commits.
+      if (bill.status === "cancelled") {
+        throw Object.assign(new Error("Bill is cancelled — payment not allowed"), { httpStatus: 409 });
+      }
+
       // Idempotent on referenceNumber + collectible settlement
       if (referenceNumber) {
         const existing = await tx
@@ -3234,6 +3284,21 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
     if (verification.success && verification.status === "paid") {
       // Reconcile and save payment
       await db.transaction(async (tx) => {
+        const [lockedBill] = await tx
+          .select()
+          .from(billsTable)
+          .where(eq(billsTable.id, billId))
+          .for("update")
+          .limit(1);
+        if (!lockedBill) return;
+        if (lockedBill.status === "cancelled") {
+          logger.warn(
+            { billId, txnRef },
+            "Online payment poll refused settlement — bill is cancelled (terminal)",
+          );
+          return;
+        }
+
         // F1 canonical idempotency: match our merchant reference in either
         // identifier column so a payment recorded by the S2S webhook
         // (including pre-F1 rows keyed by the provider txnID) dedupes here.
@@ -3253,7 +3318,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
           const collectorName = resolveBillDeskCollector({
             requestPayload: logRecord.requestPayload,
             sessionName: req.staffSession?.subjectName,
-            billCreatedByName: bill.createdByName,
+            billCreatedByName: lockedBill.createdByName,
           });
           const [insertedPayment] = await tx.insert(paymentsTable).values({
             billId,
@@ -3265,9 +3330,9 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             recordedByName: collectorName,
           }).returning();
 
-          const newPaid = Number(bill.paidAmount) + collectAmount;
-          const refundAmount = Number(bill.refundAmount || 0);
-          const newBalance = Math.max(0, Number(bill.totalAmount) - newPaid - refundAmount);
+          const newPaid = Number(lockedBill.paidAmount) + collectAmount;
+          const refundAmount = Number(lockedBill.refundAmount || 0);
+          const newBalance = Math.max(0, Number(lockedBill.totalAmount) - newPaid - refundAmount);
           const newStatus = newBalance <= 0.01 ? "paid" : "partial";
           await tx.update(billsTable).set({
             paidAmount: newPaid.toFixed(2),
@@ -3280,7 +3345,7 @@ billsRouter.get("/gateway-payment-status/:txnRef", async (req: StaffAuthRequest,
             billId,
             amount: collectAmount,
             method: "Online (ICICI Orange Pay)",
-            billNumber: bill.billNumber,
+            billNumber: lockedBill.billNumber,
             patientName: logRecord.patientName,
             performedBy: collectorName,
             paymentId: insertedPayment.id,

@@ -75,7 +75,8 @@ vi.mock("@workspace/db/schema", () => ({
   clinicSettingsTable: { __name: "clinic_settings", iciciSecretKey: "icici_secret_key" },
 }));
 
-vi.mock("../lib/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+const { warnSpy } = vi.hoisted(() => ({ warnSpy: vi.fn() }));
+vi.mock("../lib/logger", () => ({ logger: { info: vi.fn(), warn: warnSpy, error: vi.fn() } }));
 const voucherCalls: Array<Record<string, unknown>> = [];
 vi.mock("../lib/auto-voucher", () => ({
   autoVoucherForPayment: vi.fn(async (opts: Record<string, unknown>) => { voucherCalls.push(opts); }),
@@ -128,6 +129,7 @@ beforeEach(() => {
     refundAmount: "0.00",
     billNumber: "0042",
     createdByName: "Desk Cashier",
+    status: "pending",
   };
   existingPayments = [];
   insertedPayments = [];
@@ -136,6 +138,7 @@ beforeEach(() => {
     requestPayload: JSON.stringify({ initiatedByName: "Desk Cashier", redirectUrl: "https://example.test" }),
   }];
   voucherCalls.length = 0;
+  warnSpy.mockClear();
 });
 
 describe("ICICI S2S webhook — canonical identifier keying", () => {
@@ -184,6 +187,24 @@ describe("ICICI S2S webhook — canonical identifier keying", () => {
     await iciciWebhook({ body: { merchantTxnNo: MERCHANT_REF, txnID: PROVIDER_TXN, amount: "500.00", txnStatus: "SUC" } }, makeRes());
     expect(insertedPayments).toHaveLength(0);
   });
+
+  test("cancelled bill: settlement refused — no payment insert, no status flip, warn logged", async () => {
+    billRow = {
+      id: 42,
+      paidAmount: "0.00",
+      totalAmount: "500.00",
+      refundAmount: "0.00",
+      balanceAmount: "0.00",
+      billNumber: "0042",
+      createdByName: "Desk Cashier",
+      status: "cancelled",
+    };
+    await iciciWebhook({ body: signedIciciBody({ merchantTxnNo: MERCHANT_REF, txnID: PROVIDER_TXN, amount: "500.00", txnStatus: "SUC" }) }, makeRes());
+    expect(insertedPayments).toHaveLength(0);
+    expect(billUpdates).toHaveLength(0);
+    expect(voucherCalls).toHaveLength(0);
+    expect(warnSpy.mock.calls.some((c) => String(c[1] ?? "").includes("cancelled"))).toBe(true);
+  });
 });
 
 describe("callback + poll paths share the same keying (source contracts)", () => {
@@ -201,7 +222,22 @@ describe("callback + poll paths share the same keying (source contracts)", () =>
     const src = read("./bills.ts");
     expect(src).toContain("eq(paymentsTable.gatewayTxnId, txnRef)");
     const pollIdx = src.indexOf("gateway-payment-status/:txnRef");
-    expect(src.slice(pollIdx, pollIdx + 4000)).toContain('settlementStatus: "captured"');
+    expect(src.slice(pollIdx, pollIdx + 8000)).toContain('settlementStatus: "captured"');
+    expect(src.slice(pollIdx, pollIdx + 8000)).toContain('lockedBill.status === "cancelled"');
+  });
+
+  test("public-booking BILLPAY callback refuses cancelled bills under FOR UPDATE", () => {
+    const booking = read("./public-booking.ts");
+    const billPayIdx = booking.indexOf('merchantTxnNo.startsWith("BILLPAY-")');
+    const slice = booking.slice(billPayIdx, billPayIdx + 8000);
+    expect(slice).toContain('lockedBill.status === "cancelled"');
+    expect(slice).toContain('.for("update")');
+  });
+
+  test("settleBill refuses cancelled terminal status", () => {
+    const webhooks = read("./gateway-webhooks.ts");
+    expect(webhooks).toContain('bill.status === "cancelled"');
+    expect(webhooks).toContain("rejectedCancelled: true");
   });
 
   test("Bill Desk initiate stores initiatedByName; poll/callback no longer hardcode Super Admin for BILLPAY", () => {
