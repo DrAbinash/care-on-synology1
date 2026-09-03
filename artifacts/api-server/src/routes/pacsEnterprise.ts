@@ -85,8 +85,9 @@ async function logPacsEvent(
 // ─── C-ECHO (Upgraded) ────────────────────────────────────────────────────────
 //
 // POST /api/radiology/modalities/:id/echo-test
-// Tries real DICOM C-ECHO via echoscu (DCMTK) if available on the server.
-// Falls back to TCP reachability probe when DCMTK is not installed.
+// Runs C-ECHO from the API runtime via the canonical DIMSE agent path
+// (same codepath as /nodes/:id/echo-test), so Calling AE is consistent.
+// Falls back to TCP reachability probe when DIMSE cannot run.
 
 router.post("/modalities/:id/echo-test", async (req, res) => {
   const id = Number(req.params.id);
@@ -111,64 +112,54 @@ router.post("/modalities/:id/echo-test", async (req, res) => {
     return;
   }
 
-  const aeTitle = modality.aeTitle ?? "DIAGNOCENTER";
+  const aeTitle = modality.aeTitle?.trim();
+  if (!aeTitle) {
+    res.status(400).json({
+      error:
+        "No Called AE title configured for this modality. Set the modality AE title (e.g. UIH) before C-ECHO.",
+    });
+    return;
+  }
   const start = Date.now();
 
-  // Detect whether echoscu (DCMTK) is installed on this server
-  let hasDcmtk = false;
-  try {
-    await execAsync("which echoscu", { timeout: 3000 });
-    hasDcmtk = true;
-  } catch {
-    hasDcmtk = false;
-  }
-
   let ok = false;
-  let testType: "DICOM_C_ECHO" | "TCP_FALLBACK" = "TCP_FALLBACK";
+  let testType: "DICOM_C_ECHO" | "TCP_FALLBACK" = "DICOM_C_ECHO";
   let message = "";
   let latencyMs = 0;
   let associationStatus: "ACCEPTED" | "REJECTED" | "UNREACHABLE" = "UNREACHABLE";
 
-  if (hasDcmtk) {
-    testType = "DICOM_C_ECHO";
-    try {
-      // -aec: called AE title (the target modality)
-      // -aet: calling AE title (us)
-      // Timeout flag: --timeout 5
-      const { stdout, stderr } = await execAsync(
-        `echoscu -aec "${aeTitle}" -aet "DIAGNOCENTER" --timeout 5 "${host}" ${port}`,
-        { timeout: 8000 },
-      );
-      latencyMs = Date.now() - start;
-      const output = (stdout + stderr).toLowerCase();
-      if (output.includes("association accepted") || output.includes("successful")) {
-        ok = true;
-        associationStatus = "ACCEPTED";
-        message = "DICOM C-ECHO successful — association accepted";
-      } else if (output.includes("association rejected") || output.includes("refused")) {
-        ok = false;
-        associationStatus = "REJECTED";
-        message = `DICOM C-ECHO rejected: ${stdout.trim() || stderr.trim()}`;
-      } else {
-        // echoscu exits 0 on success even with no output
-        ok = true;
-        associationStatus = "ACCEPTED";
-        message = "DICOM C-ECHO completed (echoscu exit 0)";
-      }
-    } catch (err: unknown) {
-      latencyMs = Date.now() - start;
-      const e = err as { code?: number; stderr?: string; message?: string };
-      ok = false;
-      associationStatus = "UNREACHABLE";
-      message = `DICOM C-ECHO failed: ${e.stderr ?? e.message ?? "unknown error"}`;
+  try {
+    // Canonical path: use the same DIMSE C-ECHO implementation as /nodes/:id/echo-test.
+    // This keeps Calling AE consistent (AGENT_AE_TITLE) and avoids shelling to echoscu.
+    const result = await testNodeConnection({
+      host,
+      port,
+      aeTitle,
+      modality: modality.modality ?? "OT",
+    });
+    latencyMs = result.latencyMs ?? Date.now() - start;
+    ok = result.ok;
+    if (result.ok) {
+      associationStatus = "ACCEPTED";
+      message = "DICOM C-ECHO successful — association accepted";
+    } else {
+      const detail = result.error ?? "unknown error";
+      const low = detail.toLowerCase();
+      associationStatus =
+        low.includes("reject") || low.includes("refused") || low.includes("not recognized")
+          ? "REJECTED"
+          : "UNREACHABLE";
+      message = `DICOM C-ECHO failed: ${detail}`;
     }
-  } else {
-    // TCP fallback
+  } catch (err: unknown) {
+    // Fallback when DIMSE module cannot run in this environment.
+    testType = "TCP_FALLBACK";
     const tcpResult = await tcpProbe(host, port, 5000, true);
     latencyMs = tcpResult.latencyMs ?? (Date.now() - start);
     ok = tcpResult.ok;
+    const e = err as { message?: string };
     message = tcpResult.ok
-      ? "TCP reachable — DICOM association not verified (install DCMTK on server for full C-ECHO)"
+      ? `TCP reachable — DIMSE C-ECHO unavailable in API runtime (${e.message ?? "unknown"}).`
       : tcpResult.message;
     associationStatus = tcpResult.ok ? "ACCEPTED" : "UNREACHABLE";
   }
@@ -219,7 +210,8 @@ router.post("/test-modality", async (req, res) => {
   }
 
   const { host, port, aeTitle: aeTitleOpt } = body.data;
-  const aeTitle = aeTitleOpt ?? "DIAGNOCENTER";
+  const aeTitle = aeTitleOpt?.trim() || "DIAGNOCENTER";
+  const callingAeTitle = process.env.AGENT_AE_TITLE?.trim() || "DIAGNO_AGENT";
   const start = Date.now();
 
   // Detect whether echoscu (DCMTK) is installed on this server
@@ -241,7 +233,7 @@ router.post("/test-modality", async (req, res) => {
     testType = "DICOM_C_ECHO";
     try {
       const { stdout, stderr } = await execAsync(
-        `echoscu -aec "${aeTitle}" -aet "DIAGNOCENTER" --timeout 5 "${host}" ${port}`,
+        `echoscu -aec "${aeTitle}" -aet "${callingAeTitle}" --timeout 5 "${host}" ${port}`,
         { timeout: 8000 },
       );
       latencyMs = Date.now() - start;
