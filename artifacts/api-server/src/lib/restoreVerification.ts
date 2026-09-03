@@ -45,7 +45,16 @@ export interface RestoreVerificationResult {
   durationMs: number;
 }
 
-const CORE_TABLES = [
+/**
+ * Tables the restore proof requires inside the THROWAWAY restored database.
+ * Deliberately radiology-integrity oriented — NOT the same list as the live
+ * smoke check `db.critical_tables` (users/patients/bills/…).
+ *
+ * A live PASS on critical tables + a restore FAIL on core_tables_exist is
+ * therefore expected when the backup artifact is unrestorable (e.g. DATA-ONLY)
+ * even though production itself is healthy.
+ */
+export const RESTORE_CORE_TABLES = [
   "patient_reports",
   "radiology_report_drafts",
   "patient_report_amendments",
@@ -53,7 +62,34 @@ const CORE_TABLES = [
   "radiology_worklist",
   "audit_logs",
   "radiology_redelivery_obligations",
-];
+] as const;
+
+/** @deprecated Use RESTORE_CORE_TABLES — kept as alias for existing imports. */
+export const CORE_TABLES = RESTORE_CORE_TABLES;
+
+/**
+ * True when SQL looks schema-complete (contains CREATE TABLE).
+ * DATA-ONLY fallback dumps emit TRUNCATE + INSERT only — they restore into an
+ * empty throwaway DB with zero tables, which previously surfaced only as the
+ * opaque `core_tables_exist` failure after a misleading `psql_restore` PASS
+ * (psql exits 0 without ON_ERROR_STOP even when every statement errors).
+ */
+export function sqlArtifactHasCreateTable(sqlText: string): boolean {
+  return /^\s*CREATE\s+TABLE\b/im.test(sqlText);
+}
+
+/** Pure evaluation of which restore-core tables are present (unit-tested). */
+export function evaluateCoreTablesPresent(foundTableNames: Iterable<string>): RestoreVerificationStep {
+  const found = new Set([...foundTableNames].map((t) => t.toLowerCase()));
+  const missing = RESTORE_CORE_TABLES.filter((t) => !found.has(t.toLowerCase()));
+  return {
+    name: "core_tables_exist",
+    ok: missing.length === 0,
+    detail: missing.length ? `missing: ${missing.join(", ")}` : `${RESTORE_CORE_TABLES.length} tables present`,
+  };
+}
+
+export { classifyRestoreVerifyDashboardStatus } from "./restoreVerifyStatus";
 
 function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; stdin?: string } = {}):
   Promise<{ code: number; stdout: string; stderr: string }> {
@@ -189,7 +225,34 @@ export async function runRestoreVerification(
       sqlPath = out;
     }
 
-    // 5. Restore into a THROWAWAY database.
+    // 4b. Refuse DATA-ONLY artifacts before touching a throwaway DB.
+    // Mirrors scripts/verify-backup-restore.sh §4 — without this, psql without
+    // ON_ERROR_STOP would exit 0 after failing every statement, and the only
+    // signal would be core_tables_exist (missing: …).
+    {
+      // Sample first 512 KiB only — real pg_dump emits CREATE TABLE in the
+      // schema section before COPY/INSERT data (avoids loading 100MB+ dumps).
+      const fh = await fs.open(sqlPath, "r");
+      try {
+        const buf = Buffer.alloc(512 * 1024);
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        const sample = buf.slice(0, bytesRead).toString("utf8");
+        if (!sqlArtifactHasCreateTable(sample)) {
+          return finish(
+            step(
+              "schema_complete_artifact",
+              false,
+              "DATA ONLY artifact — no CREATE TABLE (cannot rebuild empty DB; likely exportDatabaseSqlFallback). Re-take backup with pg_dump.",
+            ) && false,
+          );
+        }
+        step("schema_complete_artifact", true, "CREATE TABLE present");
+      } finally {
+        await fh.close().catch(() => undefined);
+      }
+    }
+
+    // 5. Restore into a THROWAWAY database (NEVER the live DATABASE_URL db name).
     try {
       await db.execute(sql.raw(`CREATE DATABASE ${throwawayDb}`));
       throwawayCreated = true;
@@ -197,28 +260,37 @@ export async function runRestoreVerification(
     } catch (err) {
       return finish(step("throwaway_created", false, `CREATE DATABASE failed (needs CREATEDB): ${err instanceof Error ? err.message : String(err)}`) && false);
     }
+    // ON_ERROR_STOP=1: a failed statement must fail the restore step. Without
+    // it, DATA-ONLY / broken dumps exit 0 and only fail later at core_tables.
     const restore = await run("psql", [
       "--host", parts.host, "--port", parts.port, "--username", parts.user,
       "--dbname", throwawayDb, "--file", sqlPath, "--quiet",
+      "-v", "ON_ERROR_STOP=1",
     ], { env: { ...process.env, PGPASSWORD: parts.password } });
-    if (!step("psql_restore", restore.code === 0, restore.code === 0 ? "restored" : restore.stderr.slice(-400))) return finish(false);
+    if (!step("psql_restore", restore.code === 0, restore.code === 0 ? "restored into throwaway DB (not live)" : restore.stderr.slice(-400))) return finish(false);
 
-    // 6+. Checks inside the restored database.
+    // 6+. Checks inside the RESTORED throwaway database (explicit database=
+    // throwawayDb — never parts.database / live).
     restoredPool = new Pool({
       host: parts.host, port: Number(parts.port), user: parts.user,
       password: parts.password, database: throwawayDb, max: 2,
     });
 
-    const missing: string[] = [];
-    for (const table of CORE_TABLES) {
+    const present: string[] = [];
+    for (const table of RESTORE_CORE_TABLES) {
       const r = await restoredPool.query("SELECT to_regclass($1) AS t", [`public.${table}`]);
-      if (!r.rows[0]?.t) missing.push(table);
+      if (r.rows[0]?.t) present.push(table);
     }
-    if (!step("core_tables_exist", missing.length === 0, missing.length ? `missing: ${missing.join(", ")}` : `${CORE_TABLES.length} tables present`)) return finish(false);
+    {
+      const coreStep = evaluateCoreTablesPresent(present);
+      steps.push(coreStep);
+      if (!coreStep.ok) return finish(false);
+    }
 
-    // Row-count sanity vs the SOURCE database.
+    // Row-count sanity vs the SOURCE (live) database — counts only; schema
+    // proof above already ran against the throwaway.
     const mismatches: string[] = [];
-    for (const table of CORE_TABLES) {
+    for (const table of RESTORE_CORE_TABLES) {
       const src = await db.execute(sql.raw(`SELECT count(*)::int AS c FROM ${table}`));
       const dst = await restoredPool.query(`SELECT count(*)::int AS c FROM ${table}`);
       const srcCount = Number((src.rows[0] as { c: number }).c);

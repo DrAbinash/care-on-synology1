@@ -11,9 +11,23 @@ import { resolve } from "node:path";
 import { DEFAULT_THRESHOLDS, type OpsCtx, type ProbeFn, type ProbeResult, type QueryFn } from "./operationsChecks";
 import type { OpsVersionInfo } from "./operationsHealth";
 
-/** version.json (best-effort) merged with env overrides — no secrets. */
+/** version.json (best-effort) merged with env overrides — no secrets.
+ *
+ * Dockerfile/compose defaults (`unknown`, `0`, `dev`, `0.0.0`) MUST NOT drown
+ * a stamped version.json when the image was rebuilt without deploy-synology
+ * build-args. Treat those placeholders as unset so the baked version.json can
+ * still surface ERP version / build / release name. Git SHA still requires a
+ * real build-arg (or version.json.gitCommit) — we never invent one.
+ */
 export function resolveVersionInfo(env: NodeJS.ProcessEnv = process.env): OpsVersionInfo {
-  let vj: { version?: string; buildNumber?: number; releaseName?: string } = {};
+  let vj: {
+    version?: string;
+    buildNumber?: number;
+    releaseName?: string;
+    gitCommit?: string;
+    gitBranch?: string;
+    buildDate?: string;
+  } = {};
   for (const p of [
     resolve(process.cwd(), "version.json"),
     "/app/version.json",
@@ -21,13 +35,18 @@ export function resolveVersionInfo(env: NodeJS.ProcessEnv = process.env): OpsVer
   ]) {
     try { vj = JSON.parse(readFileSync(p, "utf8")); break; } catch { /* try next path */ }
   }
+  const unset = (v: string | undefined | null, placeholders: string[]) => {
+    const t = (v ?? "").trim();
+    if (!t || placeholders.includes(t)) return undefined;
+    return t;
+  };
   return {
-    version: env.ERP_VERSION || vj.version || "0.0.0",
-    build: env.BUILD_NUMBER || String(vj.buildNumber ?? "0"),
-    releaseName: env.RELEASE_NAME || vj.releaseName || null,
-    commit: env.GIT_COMMIT || "unknown",
-    branch: env.GIT_BRANCH || null,
-    buildTime: env.BUILD_DATE || null,
+    version: unset(env.ERP_VERSION, ["0.0.0"]) || vj.version || "0.0.0",
+    build: unset(env.BUILD_NUMBER, ["0"]) || (vj.buildNumber != null ? String(vj.buildNumber) : "0"),
+    releaseName: unset(env.RELEASE_NAME, ["dev"]) || vj.releaseName || null,
+    commit: unset(env.GIT_COMMIT, ["unknown"]) || unset(vj.gitCommit, ["unknown"]) || "unknown",
+    branch: unset(env.GIT_BRANCH, ["unknown"]) || unset(vj.gitBranch, ["unknown"]) || null,
+    buildTime: unset(env.BUILD_DATE, ["unknown"]) || unset(vj.buildDate, ["unknown"]) || null,
     nodeEnv: env.NODE_ENV || "",
     uptimeSeconds: null,
   };
