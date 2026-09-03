@@ -14,7 +14,7 @@ describe("assertVisionCapableModel", () => {
   it("positively classifies qwen3-vl:8b via known name when /api/show is unavailable", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -38,7 +38,7 @@ describe("assertVisionCapableModel", () => {
   it("accepts when /api/show confirms vision", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -65,7 +65,7 @@ describe("assertVisionCapableModel", () => {
   it("rejects known text-only model", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -93,7 +93,7 @@ describe("assertVisionCapableModel", () => {
   it("rejects unknown model classification", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -124,7 +124,7 @@ describe("assertVisionCapableModel", () => {
   it("rejects configured model absent from Ollama", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -146,7 +146,7 @@ describe("assertVisionCapableModel", () => {
   it("fails closed on probe timeout for unknown models", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {
@@ -173,7 +173,7 @@ describe("assertVisionCapableModel", () => {
   it("rejects unknown when /api/show returns no capabilities array", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo) => {
+      vi.fn(async (input: string | URL) => {
         const url = String(input);
         if (url.includes("/api/tags")) {
           return {

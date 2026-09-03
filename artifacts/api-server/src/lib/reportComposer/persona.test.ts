@@ -203,10 +203,10 @@ describe("§S 6. Laterality — no side swapping", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.lateralitySwaps).toContain("right→left");
-    // PR #657 hardening: advisory warning, NOT a hard blocking error.
-    expect(v.errors).not.toContain("laterality_swap");
+    // Definite single-observation laterality swap → hard-block READY.
+    expect(v.errors).toContain("laterality_swap");
     expect(v.warnings.some((w) => w.includes("laterality"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.ok).toBe(false);
   });
 
   it("validation does NOT flag when both sides are present in input", () => {
@@ -244,10 +244,10 @@ describe("§S 7. Severity — no severe upgrade", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.severityEscalations).toContain("mild→severe");
-    // PR #657 hardening: advisory warning, NOT a hard blocking error.
-    expect(v.errors).not.toContain("severity_escalation");
+    // Definite same-slot mild→severe → hard-block READY.
+    expect(v.errors).toContain("severity_escalation");
     expect(v.warnings.some((w) => w.includes("severity"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.ok).toBe(false);
   });
 
   it("validation does NOT flag when severity matches input", () => {

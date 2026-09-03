@@ -297,10 +297,11 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
 
   it("13c3. composeEngine never fetches Orthanc middle slices for SELECTED_IMAGES", async () => {
     const engine = readFileSync(join(__dirname, "composeEngine.ts"), "utf8");
+    const vision = readFileSync(join(__dirname, "visionCapability.ts"), "utf8");
     expect(engine).toMatch(/resolveSelectedKeyImagesForCompose/);
-    expect(engine).toMatch(/vision_model_required/);
-    expect(engine).toMatch(/vision_capability_unverified/);
     expect(engine).toMatch(/assertVisionCapableModel/);
+    expect(vision).toMatch(/vision_model_required/);
+    expect(vision).toMatch(/vision_capability_unverified/);
     expect(engine).toMatch(/Never fetches Orthanc middle slices/);
     expect(engine).not.toMatch(/fetchMiddleSlice|middleSliceJpegs|getMiddleSlice/i);
     // Never silently inflate administrator runtime numCtx / timeout.
