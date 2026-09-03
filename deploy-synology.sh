@@ -67,6 +67,23 @@ else
 fi
 ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 
+# Stamp git/build metadata into version.json so Container Manager rebuilds that
+# bake /app/version.json (but forget compose build-args) still expose a real SHA
+# via resolveVersionInfo()'s version.json fallback — never invent a fake SHA.
+if command -v node >/dev/null 2>&1 && [ -f version.json ]; then
+  node -e "
+    const fs = require('fs');
+    const v = JSON.parse(fs.readFileSync('version.json','utf8'));
+    v.gitCommit = process.env.GIT_COMMIT || v.gitCommit || 'unknown';
+    v.gitBranch = process.env.GIT_BRANCH || v.gitBranch || 'unknown';
+    v.buildDate = process.env.BUILD_DATE || v.buildDate || null;
+    if (process.env.ERP_VERSION) v.version = process.env.ERP_VERSION;
+    if (process.env.BUILD_NUMBER) v.buildNumber = Number(process.env.BUILD_NUMBER);
+    if (process.env.RELEASE_NAME) v.releaseName = process.env.RELEASE_NAME;
+    fs.writeFileSync('version.json', JSON.stringify(v, null, 2) + '\n');
+  " && ok "Stamped git metadata into version.json for image bake"
+fi
+
 # ── Step 2b: Ensure .env (Hope↔Care keys included) ───────────────────────────
 # Operator should not have to invent secrets. If .env is missing, seed it from
 # the Synology template. If it exists but lacks Hope keys, append them so a

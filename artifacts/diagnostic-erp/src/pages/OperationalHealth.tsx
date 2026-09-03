@@ -215,6 +215,11 @@ export default function OperationalHealth() {
       {report && (
         <>
           <OverallBanner report={report} live={!ranReport} />
+          <p className="text-xs text-muted-foreground -mt-2">
+            {ranReport
+              ? "Showing the smoke-test run you just executed (persisted to history)."
+              : "Showing current live health (on-demand probes — not a historical smoke-test row)."}
+          </p>
 
           {/* Contextual actions — reuse existing routes; no new surfaces. The
               deeper PACS/viewer launchers (Orthanc/OHIF) live on Network
@@ -261,7 +266,10 @@ export default function OperationalHealth() {
           {/* Recent smoke-test history */}
           <Card>
             <CardContent className="p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Recent smoke-test runs</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Historical smoke-test runs</div>
+              <p className="text-[11px] text-muted-foreground mb-2">
+                Persisted results only — July (or older) rows mean no newer smoke-run was saved. They are not deleted. Live health is the banner above.
+              </p>
               {!history?.runs?.length && <div className="text-xs text-muted-foreground py-2">No persisted runs yet. Use “Run full smoke test” or the <code>pnpm smoke:production --save-result</code> CLI.</div>}
               {!!history?.runs?.length && (
                 <div className="overflow-x-auto">
