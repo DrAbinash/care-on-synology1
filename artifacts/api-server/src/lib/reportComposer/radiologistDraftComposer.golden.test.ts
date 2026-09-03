@@ -577,7 +577,7 @@ describe("Safety / clinic contracts — finalize + stale + filler recommendation
 });
 
 describe("UI primary action label", () => {
-  it("Draft Report is the primary compose action label", () => {
+  it("Draft from Observations / Selected Images are primary compose action labels", () => {
     const ui = readFileSync(
       join(
         __dirname,
@@ -585,7 +585,9 @@ describe("UI primary action label", () => {
       ),
       "utf8",
     );
-    expect(ui).toContain("Draft Report");
+    expect(ui).toContain("Draft from Observations");
+    expect(ui).toContain("Draft with Selected Images");
     expect(ui).toContain('data-testid="compose-in-background"');
+    expect(ui).toContain('data-testid="ai-compose-mode"');
   });
 });
