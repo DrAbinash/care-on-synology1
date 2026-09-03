@@ -41,7 +41,7 @@ export function RadiologyDeploymentPanel() {
     { label: "ORTHANC_INTERNAL_URL", value: data.orthancInternal.display, note: data.orthancInternal.networkNote },
     { label: "ORTHANC_WORKLIST_DIR (container)", value: data.deployment.orthancWorklistDir ?? "Not set — configure via deployment environment" },
     { label: "ORTHANC_WORKLIST_HOST_DIR (hint)", value: data.deployment.orthancWorklistHostHint ?? "Configured via deployment environment (if set)" },
-    { label: "MWL staging (container)", value: data.deployment.stagingDir ?? "Derived as sibling worklists-staging or unavailable" },
+    { label: "MWL staging (container)", value: data.deployment.stagingDir ?? "Default <ORTHANC_WORKLIST_DIR>/staging on the live mount" },
     { label: "PACS_PROVIDER", value: data.deployment.pacsProvider },
     { label: "Orthanc password", value: data.deployment.secrets.orthancPasswordSet ? "Set (hidden)" : "Not set" },
     { label: "INTERNAL_API_KEY", value: data.deployment.secrets.internalApiKeySet ? "Set (hidden)" : "Not set" },

@@ -205,8 +205,8 @@ async function probeOrthancPlugins(base: string | null): Promise<{
 }
 
 const SETUP_STEPS = [
-  "On the NAS/host: ensure live + staging folders exist on the SAME volume (default: …/orthanc/worklists and …/orthanc/worklists-staging).",
-  "In care.env: ORTHANC_WORKLIST_DIR=/orthanc-worklists and mount host worklists → /orthanc-worklists; mount staging → /worklists-staging.",
+  "On the NAS/host: ensure …/orthanc/worklists exists (staging is created as worklists/staging on that same folder).",
+  "In care.env: ORTHANC_WORKLIST_DIR=/orthanc-worklists and mount ONLY the host worklists folder → /orthanc-worklists (do not mount a separate worklists-staging volume — that causes EXDEV).",
   "Set ORTHANC_INTERNAL_URL to a URL care-api can reach (LAN IP when ERP and PACS are separate Compose networks — not an invented Docker DNS name).",
   "Restart care-api so mounts are active.",
   "In Orthanc (care-pacs): enable worklists plugin; keep care-mwl-guard healthy.",
@@ -227,7 +227,7 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
   const hostHint = process.env.ORTHANC_WORKLIST_HOST_DIR?.trim() || null;
   const staging = dir ? getMwlStagingDir() : null;
   const stagingHostHint = process.env.ORTHANC_WORKLIST_STAGING_HOST_DIR?.trim()
-    || (hostHint ? hostHint.replace(/\/?worklists\/?$/, "/worklists-staging") : null);
+    || (hostHint ? `${hostHint.replace(/\/$/, "")}/staging` : null);
   const orthancInternal = resolveOrthancInternalUrl();
 
   // 1 — Env configured
@@ -268,8 +268,10 @@ export async function getMwlDeploymentStatus(): Promise<MwlDeploymentStatus> {
       stagingWritable ? "pass" : "fail",
       stagingWritable
         ? `${staging}${stagingHostHint ? ` (host hint: ${stagingHostHint})` : ""}`
-        : `Cannot write to staging ${staging} — mount host worklists-staging at /worklists-staging`,
-      stagingWritable ? undefined : "Create /volume1/docker/care-pacs/orthanc/worklists-staging and mount it into care-api at /worklists-staging.",
+        : `Cannot write to staging ${staging} — ensure it is under the live worklists mount (default <live>/staging)`,
+      stagingWritable
+        ? undefined
+        : "Create writable staging under the live mount (e.g. /volume1/docker/care-pacs/orthanc/worklists/staging). Do not use a separate Docker bind for staging.",
     ));
   } else {
     checks.push(check("staging_dir", "Staging folder writable", "skip", "Skipped — live worklist dir not set"));

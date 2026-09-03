@@ -26,7 +26,7 @@ Legacy URLs redirect into the matching tab. Sidebar USG Admin / Quick Select ent
 
 ### Still deploy-only (not editable in ERP UI)
 - `ORTHANC_INTERNAL_URL`, Orthanc credentials, `INTERNAL_API_KEY`
-- Host mounts for `/orthanc-worklists` and `/worklists-staging`
+- Host mount for `/orthanc-worklists` (staging lives at `/orthanc-worklists/staging` on that same bind)
 - Orthanc `StorageDirectory` / `IndexDirectory` (care-pacs)
 - Orthanc worklists plugin + care-mwl-guard
 
@@ -67,7 +67,7 @@ Legacy URLs redirect into the matching tab. Sidebar USG Admin / Quick Select ent
 | Role | Container path | Host path |
 |------|----------------|-----------|
 | Live MWL | `/orthanc-worklists` | `/volume1/docker/care-pacs/orthanc/worklists` |
-| Staging | `/worklists-staging` | `/volume1/docker/care-pacs/orthanc/worklists-staging` |
+| Staging | `/orthanc-worklists/staging` | `/volume1/docker/care-pacs/orthanc/worklists/staging` (same bind as live) |
 | Quarantine (mwl-guard) | `/worklists-bad` (read-only) | `/volume1/docker/care-pacs/orthanc/worklists-bad` |
 | Internal Orthanc | `ORTHANC_INTERNAL_URL=http://172.16.1.139:8042` | Separate Docker network from care-api |
 

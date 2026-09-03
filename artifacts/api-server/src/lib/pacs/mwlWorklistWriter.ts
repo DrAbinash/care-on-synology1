@@ -109,13 +109,28 @@ function fileFor(accession: string): string | null {
   return path.join(dir, accession.replace(/[^A-Za-z0-9._-]/g, "_") + ".wl");
 }
 
-/** Staging dir outside Orthanc's watched folder (sibling `worklists-staging` or OS tmp). */
+/** Staging dir for dump2dcm output before atomic rename into Orthanc's watched folder.
+ *
+ * Must be on the SAME Docker bind mount as the live worklists directory so
+ * `rename()` is atomic. Separate binds (historical `/worklists-staging` vs
+ * `/orthanc-worklists`) cause EXDEV and are refused — never copyFile.
+ *
+ * Default: `<ORTHANC_WORKLIST_DIR>/staging` (subdirectory). Orthanc's worklists
+ * plugin uses a non-recursive directory_iterator and only loads `*.wl`, so
+ * staging/*.tmp files are not published to modalities.
+ *
+ * Override with ORTHANC_WORKLIST_STAGING_DIR when staging is a sibling under the
+ * same parent mount (e.g. /orthanc-mwl/worklists-staging next to …/worklists).
+ */
+export function resolveMwlStagingDir(liveDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.ORTHANC_WORKLIST_STAGING_DIR?.trim();
+  if (override) return path.resolve(override);
+  return path.resolve(path.join(liveDir, "staging"));
+}
+
 function stagingDir(): string {
   const live = worklistDir();
-  if (live) {
-    const sibling = path.join(path.dirname(live), "worklists-staging");
-    return sibling;
-  }
+  if (live) return resolveMwlStagingDir(live);
   return os.tmpdir();
 }
 
@@ -291,27 +306,50 @@ function validateDicomUidsWithDcmdump(filePath: string): Promise<boolean> {
   });
 }
 
+export type MwlPublishFailureReason =
+  | "dump2dcm"
+  | "validation"
+  | "atomic_rename"
+  | "staging_config"
+  | "io";
+
+export type MwlPublishResult =
+  | { ok: true }
+  | { ok: false; reason: MwlPublishFailureReason; detail: string; code?: string };
+
 /**
  * Atomically publish a worklist into Orthanc's watched folder:
- *   validate dump → dump2dcm into staging (outside watch) → validate DICOM →
- *   rename into live .wl (same filesystem required).
+ *   validate dump → dump2dcm into staging (outside Orthanc flat scan) →
+ *   validate DICOM → rename into live .wl (same filesystem required).
  *
  * Never copyFile into the watched folder (non-atomic; Orthanc could read a partial file).
  */
-async function publishWorklistAtomically(dumpText: string, finalPath: string): Promise<boolean> {
+export async function publishWorklistAtomically(dumpText: string, finalPath: string): Promise<MwlPublishResult> {
   assertValidMwlDump(dumpText);
-  const stageRoot = stagingDir();
-  // Staging must be outside the Orthanc Database/Directory folder.
   const liveDir = path.dirname(finalPath);
+  const stageRoot = resolveMwlStagingDir(liveDir);
+  // Staging must not be the Orthanc Database/Directory folder itself.
   if (path.resolve(stageRoot) === path.resolve(liveDir)) {
-    throw new Error("MWL staging dir must not equal Orthanc watched worklists dir");
+    return {
+      ok: false,
+      reason: "staging_config",
+      detail: "MWL staging dir must not equal Orthanc watched worklists dir",
+      code: "SAME_DIR",
+    };
   }
   await mkdir(stageRoot, { recursive: true }).catch(() => {});
   await mkdir(liveDir, { recursive: true }).catch(() => {});
   const stagePath = path.join(stageRoot, `${path.basename(finalPath)}.${process.pid}.${Date.now()}.tmp`);
   try {
-    const ok = await runDump2Dcm(dumpText, stagePath);
-    if (!ok) return false;
+    const converted = await runDump2Dcm(dumpText, stagePath);
+    if (!converted) {
+      await unlink(stagePath).catch(() => {});
+      return {
+        ok: false,
+        reason: "dump2dcm",
+        detail: "dump2dcm failed or is not installed / not on PATH",
+      };
+    }
 
     const dicomOk = await validateDicomUidsWithDcmdump(stagePath);
     if (!dicomOk) {
@@ -321,13 +359,20 @@ async function publishWorklistAtomically(dumpText: string, finalPath: string): P
       const st = await stat(stagePath).catch(() => null);
       if (!st || st.size <= 0) {
         await unlink(stagePath).catch(() => {});
-        return false;
+        return {
+          ok: false,
+          reason: "validation",
+          detail: "post-dump2dcm output missing or empty",
+        };
       }
-      // dcmdump missing or parse quirk: keep file only if size looks like a DICOM object
       if (st.size < 128) {
         await unlink(stagePath).catch(() => {});
         logger.warn({ stagePath, size: st.size }, "mwl: post-dump2dcm file too small — refusing publish");
-        return false;
+        return {
+          ok: false,
+          reason: "validation",
+          detail: `post-dump2dcm file too small (${st.size} bytes)`,
+        };
       }
       logger.warn({ stagePath }, "mwl: dcmdump validation unavailable/failed — proceeding on dump-text validation + size check");
     }
@@ -337,13 +382,20 @@ async function publishWorklistAtomically(dumpText: string, finalPath: string): P
     } catch (err) {
       // Cross-device rename is NOT atomically safe into Orthanc's watch folder.
       await unlink(stagePath).catch(() => {});
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const msg = err instanceof Error ? err.message : String(err);
       logger.warn(
-        { err, stagePath, finalPath },
-        "mwl: atomic rename failed (staging must be on the same filesystem as worklists) — refusing non-atomic copy",
+        { err, stagePath, finalPath, code },
+        "mwl: atomic publish/rename failed (staging must be on the same filesystem as worklists) — refusing non-atomic copy",
       );
-      return false;
+      return {
+        ok: false,
+        reason: "atomic_rename",
+        detail: msg,
+        code,
+      };
     }
-    return true;
+    return { ok: true };
   } catch (err) {
     await unlink(stagePath).catch(() => {});
     throw err;
@@ -358,9 +410,32 @@ export async function writeWorklistFile(p: MwlProcedure): Promise<boolean> {
     const out = fileFor(p.accessionNumber);
     if (!out) return false;
     const dump = buildDump(p);
-    const ok = await publishWorklistAtomically(dump, out);
-    if (!ok) logger.warn({ accession: p.accessionNumber }, "mwl: dump2dcm failed (is DCMTK installed?)");
-    return ok;
+    const result = await publishWorklistAtomically(dump, out);
+    if (!result.ok) {
+      if (result.reason === "dump2dcm") {
+        logger.warn(
+          { accession: p.accessionNumber, detail: result.detail },
+          "mwl: dump2dcm conversion failed (is DCMTK dump2dcm installed and on PATH?)",
+        );
+      } else if (result.reason === "validation") {
+        logger.warn(
+          { accession: p.accessionNumber, detail: result.detail },
+          "mwl: post-conversion validation failed — refusing publish",
+        );
+      } else if (result.reason === "atomic_rename") {
+        logger.warn(
+          { accession: p.accessionNumber, detail: result.detail, code: result.code },
+          "mwl: atomic publish/rename failed (EXDEV or I/O) — staging and live must share one Docker mount",
+        );
+      } else {
+        logger.warn(
+          { accession: p.accessionNumber, reason: result.reason, detail: result.detail },
+          "mwl: worklist publish failed",
+        );
+      }
+      return false;
+    }
+    return true;
   } catch (err) {
     logger.warn({ err, accession: p.accessionNumber }, "mwl: writeWorklistFile failed");
     return false;

@@ -113,6 +113,7 @@ If the USG cannot reach Orthanc directly, run the Windows MWL SCP agent (see Age
 | Symptom | Fix |
 |---------|-----|
 | No `.wl` files | Check ORTHANC_WORKLIST_DIR + volume mount; run Sync |
+| `EXDEV: cross-device link not permitted` on Sync | Staging and live were on separate Docker binds. Staging must be `<worklists>/staging` on the **same** mount. Remove any `worklists-staging:/worklists-staging` volume; recreate `care-api`. |
 | USG worklist empty | Plugin off, wrong folder, or files were moved to `worklists-bad`. Do not copy `-bad` back. Redeploy care-api, then Sync. DICOM/MWL port on this site is **5680**, not 8042. |
 | Study not in ERP | INTERNAL_API_KEY mismatch; check `care-erp-sync` container logs |
 | Patient name wrong on USG | Bill must include patient; accession must copy to study |
