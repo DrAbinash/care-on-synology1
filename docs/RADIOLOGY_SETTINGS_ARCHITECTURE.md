@@ -26,7 +26,7 @@ Legacy URLs redirect into the matching tab. Sidebar USG Admin / Quick Select ent
 
 ### Still deploy-only (not editable in ERP UI)
 - `ORTHANC_INTERNAL_URL`, Orthanc credentials, `INTERNAL_API_KEY`
-- Host mounts for `/orthanc-worklists` and `/worklists-staging`
+- Host mount for `/orthanc-worklists` (staging lives at `/orthanc-worklists/staging` on that same bind)
 - Orthanc `StorageDirectory` / `IndexDirectory` (care-pacs)
 - Orthanc worklists plugin + care-mwl-guard
 
