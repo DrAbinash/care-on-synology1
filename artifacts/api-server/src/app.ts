@@ -326,7 +326,7 @@ app.use("/uploads", (_req: Request, res: Response, next: NextFunction) => {
 // Reads the UI bundle directly from the paired USB key in the browser.
 app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
   res.send(`<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="sa-boot">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
@@ -335,10 +335,17 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body {
+    /* Pairing-page chrome ONLY. Unscoped button/body rules leaked into the
+       USB portal after login (PR #674 full-page boot): every HelpCircle
+       "why commission" control became a full-width amber button and body
+       overflow:hidden clipped the referral report. Released by removing
+       html.sa-boot when superadmin-ui.js is injected. */
+    html.sa-boot, html.sa-boot body {
       background: #0b0f19;
       color: #f1f5f9;
       font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    html.sa-boot body {
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -347,7 +354,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       margin: 0;
       overflow: hidden;
     }
-    .card {
+    html.sa-boot .card {
       background: rgba(17, 24, 39, 0.7);
       border: 1px solid rgba(251, 191, 36, 0.2);
       padding: 2.5rem;
@@ -358,7 +365,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 40px rgba(251, 191, 36, 0.05);
       backdrop-filter: blur(12px);
     }
-    .icon {
+    html.sa-boot .icon {
       font-size: 3rem;
       margin-bottom: 1rem;
       color: #fbbf24;
@@ -369,9 +376,9 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       0%, 100% { transform: scale(1); opacity: 1; }
       50% { transform: scale(1.05); opacity: 0.8; }
     }
-    h1 { font-size: 1.35rem; font-weight: 700; margin: 0 0 0.75rem 0; color: #fbbf24; tracking: -0.025em; }
-    p { font-size: 0.875rem; color: #94a3b8; line-height: 1.6; margin: 0 0 1.75rem 0; }
-    button {
+    html.sa-boot h1 { font-size: 1.35rem; font-weight: 700; margin: 0 0 0.75rem 0; color: #fbbf24; tracking: -0.025em; }
+    html.sa-boot p { font-size: 0.875rem; color: #94a3b8; line-height: 1.6; margin: 0 0 1.75rem 0; }
+    html.sa-boot button {
       background: linear-gradient(135deg, #fbbf24, #f59e0b);
       color: #0b0f19;
       border: none;
@@ -384,14 +391,14 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       transition: all 0.2s;
       box-shadow: 0 4px 14px rgba(251, 191, 36, 0.3);
     }
-    button:hover {
+    html.sa-boot button:hover {
       transform: translateY(-1px);
       box-shadow: 0 6px 20px rgba(251, 191, 36, 0.4);
     }
-    button:active {
+    html.sa-boot button:active {
       transform: translateY(0);
     }
-    #err {
+    html.sa-boot #err {
       color: #f87171;
       font-size: 0.8rem;
       margin-top: 1.25rem;
@@ -402,23 +409,32 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       border: 1px solid rgba(248, 113, 113, 0.2);
       display: none;
     }
-    .loading-dots {
+    html.sa-boot .loading-dots {
       display: inline-flex;
       gap: 4px;
     }
-    .loading-dots span {
+    html.sa-boot .loading-dots span {
       width: 6px;
       height: 6px;
       background-color: #fbbf24;
       border-radius: 50%;
       animation: dot-blink 1.4s infinite both;
     }
-    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    html.sa-boot .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    html.sa-boot .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes dot-blink {
       0%, 80%, 100% { opacity: 0.2; }
       40% { opacity: 1; }
     }
+    html:not(.sa-boot) body {
+      margin: 0;
+      min-height: 100%;
+      overflow: auto;
+      background: #0b0f19;
+      color: #f1f5f9;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    #root { min-height: 100%; width: 100%; }
   </style>
 </head>
 <body>
@@ -598,6 +614,10 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       // so operators can type their DB PIN without rebuilding the pen drive.
       installLoginPinFallbackShim();
 
+      // Drop pairing-page CSS before the USB UI mounts so portal buttons
+      // (HelpCircle, WhatsApp, column toggles) are not width:100% amber bars.
+      document.documentElement.classList.remove("sa-boot");
+
       const script = document.createElement("script");
       script.type = "text/javascript";
       script.textContent = code;
@@ -605,6 +625,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
 
       setTimeout(() => {
         if (!window.SuperAdminPortal) {
+          document.documentElement.classList.add("sa-boot");
           showError("UI script executed but SuperAdminPortal component was not found.");
           setPairVisible(true);
         }
