@@ -378,6 +378,10 @@ services:
       # Shared with care-pacs Orthanc worklists plugin (host path must match).
       # Live env uses /orthanc-worklists; compose also aliases /orthanc-mwl/worklists.
       ORTHANC_WORKLIST_DIR: ${ORTHANC_WORKLIST_DIR:-/orthanc-worklists}
+      # Optional override. Default staging is <ORTHANC_WORKLIST_DIR>/staging on the
+      # same bind mount (required for atomic rename). Do not point this at a
+      # different Docker volume — that reproduces production EXDEV.
+      ORTHANC_WORKLIST_STAGING_DIR: ${ORTHANC_WORKLIST_STAGING_DIR:-}
       ORTHANC_WORKLIST_BAD_DIR: ${ORTHANC_WORKLIST_BAD_DIR:-/worklists-bad}
       PACS_PROVIDER: ${PACS_PROVIDER:-orthanc}
       PACS_VIEWER_TYPE: ${PACS_VIEWER_TYPE:-ohif}
@@ -418,8 +422,9 @@ services:
       # Override BACKUP_HOST_DIR in .env only if your jobs use a different
       # destinationPath.
       - ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups
-      # Staging dir used by dump2dcm before atomic rename into the live folder.
-      - /volume1/docker/care-pacs/orthanc/worklists-staging:/worklists-staging
+      # Staging for atomic MWL publish lives UNDER the live worklists mount
+      # (<ORTHANC_WORKLIST_DIR>/staging) so rename() is same-filesystem.
+      # Do NOT bind a separate host path for staging — that caused production EXDEV.
       # Modality Worklist (.wl) — same host folder Orthanc worklists plugin reads.
       # care-pacs mounts this at /var/lib/orthanc/worklists.
       # Live .env may set ORTHANC_WORKLIST_DIR=/orthanc-worklists OR /orthanc-mwl/worklists;

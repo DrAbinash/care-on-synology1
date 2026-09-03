@@ -164,7 +164,7 @@ describe("Radiology E2E acceptance — failure safety (E)", () => {
     root = await mkdtemp(path.join(os.tmpdir(), "mwl-fail-"));
     live = path.join(root, "worklists");
     await mkdir(live, { recursive: true });
-    await mkdir(path.join(root, "worklists-staging"), { recursive: true });
+    await mkdir(path.join(live, "staging"), { recursive: true });
     process.env.ORTHANC_WORKLIST_DIR = live;
   });
 
@@ -204,8 +204,8 @@ describe("Radiology E2E acceptance — failure safety (E)", () => {
   });
 
   it("atomic rename EXDEV refuses copy fallback (probe)", async () => {
-    // Same-FS probe passes
-    const staging = path.join(root, "worklists-staging");
+    // Same-FS probe passes (staging under live)
+    const staging = path.join(live, "staging");
     const ok = await probeAtomicPublish(live, staging);
     expect(ok.ok).toBe(true);
 
