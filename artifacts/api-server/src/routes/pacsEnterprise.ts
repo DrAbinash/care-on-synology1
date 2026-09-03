@@ -14,6 +14,7 @@ import { tcpProbe } from "../lib/pacs/providers.js";
 import { testNodeConnection } from "../services/dicom-pull-agent/dimse-agent";
 import { getRadiologyConfig, validateRadiologyConfig, isDockerBridgeIp } from "../lib/pacs/pacsConfig.js";
 import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnabled, MWL_TERMINAL_STATUSES } from "../lib/pacs/mwlWorklistWriter.js";
+import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
 import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
@@ -1098,6 +1099,8 @@ router.post("/mwl-procedures", async (req, res) => {
 // Regenerate the whole worklist folder from the DB — initial population after
 // enabling the feature, and reconciliation if files drift. Removes terminal
 // procedures' files, (re)writes active ones.
+// Also re-resolves ScheduledStationAETitle from dicom_modalities when the row
+// still has null/"ANY" so Sync after configuring UIH MRI repairs live .wl files.
 router.post("/mwl-worklist/sync", async (_req, res) => {
   try {
     if (!isMwlEnabled()) {
@@ -1107,16 +1110,38 @@ router.post("/mwl-worklist/sync", async (_req, res) => {
     const rows = await db.select().from(radiologyScheduledProceduresTable).limit(5000);
     let written = 0;
     let removed = 0;
+    let stationsRepaired = 0;
     for (const row of rows) {
       if (MWL_TERMINAL_STATUSES.has((row.status || "").toUpperCase())) {
         await removeWorklistFile(row.accessionNumber);
         removed++;
-      } else if (await writeWorklistFile(row)) {
+        continue;
+      }
+
+      let stationAeTitle = row.stationAeTitle;
+      const needsStationRepair =
+        !stationAeTitle?.trim() || stationAeTitle.trim().toUpperCase() === "ANY";
+      if (needsStationRepair) {
+        const resolved = await resolveScheduledStationAeTitle({
+          modality: row.modality,
+          explicitAeTitle: null,
+        });
+        if (resolved.aeTitle) {
+          stationAeTitle = resolved.aeTitle;
+          await db
+            .update(radiologyScheduledProceduresTable)
+            .set({ stationAeTitle, updatedAt: new Date() })
+            .where(eq(radiologyScheduledProceduresTable.id, row.id));
+          stationsRepaired++;
+        }
+      }
+
+      if (await writeWorklistFile({ ...row, stationAeTitle })) {
         written++;
       }
     }
     recordMwlSyncResult({ written, removed, total: rows.length });
-    res.json({ total: rows.length, written, removed });
+    res.json({ total: rows.length, written, removed, stationsRepaired });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     recordMwlSyncResult({ written: 0, removed: 0, total: 0, error: message });

@@ -93,6 +93,9 @@ describe("MWL UIDs (Orthanc housekeeper requires non-empty Study/Series/SOP UIDs
     expect(dump).not.toMatch(/\(0020,000D\) UI \[\s*\]/);
     expect(dump).not.toMatch(/\(0020,000E\) UI \[\s*\]/);
     expect(dump).not.toMatch(/\(0008,0018\) UI \[\s*\]/);
+    // Unconfigured station AE must not invent literal ANY (Orthanc string match).
+    expect(dump).toMatch(/\(0040,0001\) AE \[\]/);
+    expect(dump).not.toMatch(/\(0040,0001\) AE \[ANY\]/);
   });
 });
 

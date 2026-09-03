@@ -38,9 +38,9 @@ const MWL_FIELDS: Array<{
   // Windows MWL agent itself, not stored in the ERP (nothing consumed them).
   {
     key: "mwl_default_station_ae_title",
-    label: "Default Station AE Title",
-    placeholder: "STATION01",
-    hint: "Scheduled station AE title pre-filled on new radiology orders",
+    label: "Default Station AE Title (legacy / Billing Desk hint)",
+    placeholder: "UIH",
+    hint: "Optional UI hint only. Live MWL (0040,0001) is resolved from Modalities (dicom_modalities.aeTitle) per modality — e.g. MR → UIH MRI → UIH. Do not rely on this global field for multi-scanner sites.",
   },
   {
     key: "mwl_default_modality",
@@ -55,6 +55,33 @@ const MWL_FIELDS: Array<{
     label: "Auto Accession Number Prefix",
     placeholder: "ACC",
     hint: "Short prefix prepended to auto-generated accession numbers (e.g. ACC, DCH, RAD)",
+  },
+];
+
+/** Orthanc MWL SCP identity — central, not per-test. Prefill placeholders only. */
+const ORTHANC_MWL_SERVER_FIELDS: Array<{
+  key: string;
+  label: string;
+  placeholder: string;
+  hint: string;
+}> = [
+  {
+    key: "orthanc_ae_title",
+    label: "MWL Server AE Title",
+    placeholder: "ORTHANC2",
+    hint: "Called AE Title the scanner uses for MWL C-FIND (Orthanc)",
+  },
+  {
+    key: "orthanc_ip",
+    label: "MWL Server IP / Host",
+    placeholder: "172.16.1.139",
+    hint: "NAS / Orthanc host the scanner queries",
+  },
+  {
+    key: "orthanc_dicom_port",
+    label: "MWL Server DICOM Port (published)",
+    placeholder: "5680",
+    hint: "Host-published DICOM port (compose maps this to Orthanc)",
   },
 ];
 
@@ -131,14 +158,20 @@ function ModalityCard({ m, onToggle, onDelete }: {
 function MwlSettingsTab({
   settings,
   onSave,
+  onSaveOrthanc,
 }: {
   settings: Setting[];
   onSave: (key: string, value: string) => void;
+  onSaveOrthanc: (key: string, value: string) => void;
 }) {
   // Build an editable state map from the current saved settings
   const savedMap: Record<string, string> = {};
   for (const s of settings.filter((s) => s.category === "mwl")) {
     savedMap[s.key] = s.value ?? "";
+  }
+  const orthancSaved: Record<string, string> = {};
+  for (const s of settings.filter((s) => s.category === "orthanc")) {
+    orthancSaved[s.key] = s.value ?? "";
   }
 
   const [values, setValues] = useState<Record<string, string>>(() => {
@@ -147,10 +180,16 @@ function MwlSettingsTab({
     return init;
   });
 
-  // Re-initialise when server data arrives (query refetch)
-  // This is intentionally done via a key approach in the parent — see below.
+  const [orthancValues, setOrthancValues] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const f of ORTHANC_MWL_SERVER_FIELDS) init[f.key] = orthancSaved[f.key] ?? "";
+    return init;
+  });
 
   const dirty = MWL_FIELDS.some((f) => values[f.key] !== (savedMap[f.key] ?? ""));
+  const orthancDirty = ORTHANC_MWL_SERVER_FIELDS.some(
+    (f) => orthancValues[f.key] !== (orthancSaved[f.key] ?? ""),
+  );
 
   function handleSave() {
     for (const f of MWL_FIELDS) {
@@ -161,16 +200,56 @@ function MwlSettingsTab({
     }
   }
 
+  function handleOrthancSave() {
+    for (const f of ORTHANC_MWL_SERVER_FIELDS) {
+      const current = orthancSaved[f.key] ?? "";
+      if (orthancValues[f.key] !== current) {
+        onSaveOrthanc(f.key, orthancValues[f.key] ?? "");
+      }
+    }
+  }
+
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border bg-card p-5 space-y-4">
+        <div className="flex items-center gap-2 mb-1">
+          <Radio size={16} className="text-primary" />
+          <h3 className="text-sm font-semibold">Orthanc MWL Server (central)</h3>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Called AE / host / port the scanner uses for MWL C-FIND. This is Orthanc&apos;s SCP identity —
+          not the scanner&apos;s ScheduledStationAETitle. Prefills are installation defaults; edit and save as needed.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {ORTHANC_MWL_SERVER_FIELDS.map((f) => (
+            <div key={f.key} className="space-y-1">
+              <label className="text-xs font-medium text-foreground">{f.label}</label>
+              <Input
+                value={orthancValues[f.key] ?? ""}
+                onChange={(e) => setOrthancValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+                className="h-9 text-sm font-mono"
+              />
+              {f.hint && <p className="text-[11px] text-muted-foreground">{f.hint}</p>}
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-end pt-2">
+          <Button size="sm" onClick={handleOrthancSave} disabled={!orthancDirty} className="h-8">
+            <Save size={13} className="mr-1" /> Save MWL Server
+          </Button>
+        </div>
+      </div>
+
       <div className="rounded-xl border bg-card p-5 space-y-4">
         <div className="flex items-center gap-2 mb-1">
           <Radio size={16} className="text-primary" />
           <h3 className="text-sm font-semibold">Modality Worklist (MWL) Settings</h3>
         </div>
         <p className="text-xs text-muted-foreground">
-          Configure the DICOM Modality Worklist SCP so imaging machines (CT, MRI, X-Ray)
-          can query scheduled studies directly from this ERP.
+          Scanner station AE for published worklists comes from{" "}
+          <strong>Modalities</strong> (one active station per modality with Auto Create Worklist).
+          Configure UIH MRI there so MRI studies publish <span className="font-mono">(0040,0001) AE [UIH]</span>.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -213,7 +292,7 @@ function MwlSettingsTab({
         <ul className="list-disc ml-4 mt-1 space-y-0.5">
           <li>Study Description (DICOM 0008,1030)</li>
           <li>Body Part Examined (DICOM 0018,0015)</li>
-          <li>Scheduled Station AE Title (DICOM 0040,0001)</li>
+          <li>Scheduled Station AE Title (DICOM 0040,0001) — auto-filled from Modalities when configured</li>
           <li>Referring Physician Name (DICOM 0008,0090)</li>
           <li>Modality must be one of: MR · CT · DX · CR · US · MG</li>
           <li>Patient sex, mobile number, and date of birth</li>
@@ -240,9 +319,10 @@ function DicomMwlTestsTab() {
     queryFn: () => api.get<{ tests: DiagnosticTest[] }>("/api/tests?limit=500").then((d) => d.tests ?? []),
   });
 
-  const { data: settings, isLoading: settingsLoading } = useQuery<{ dicomMwlTestIds?: string; dicomMwlTestDefaults?: string }>({
-    queryKey: ["clinic-settings"],
-    queryFn: () => api.get("/api/clinic-settings"),
+  // Persist under pacs_settings category "mwl" (clinic_settings never had these columns).
+  const { data: pacsSettings = [], isLoading: settingsLoading } = useQuery<Setting[]>({
+    queryKey: ["pacs-settings"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
   });
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -250,26 +330,36 @@ function DicomMwlTestsTab() {
   const [defaults, setDefaults] = useState<Record<string, MwlTestDefault>>({});
 
   useEffect(() => {
-    if (!settingsLoading && settings !== undefined) {
-      try {
-        const ids: number[] = JSON.parse(settings?.dicomMwlTestIds ?? "[]");
-        setSelectedIds(new Set(ids));
-      } catch { /* ignore */ }
-      try {
-        const d = JSON.parse(settings?.dicomMwlTestDefaults ?? "{}");
-        setDefaults(typeof d === "object" && d !== null ? d : {});
-      } catch { /* ignore */ }
-    }
-  }, [settings, settingsLoading]);
+    if (settingsLoading) return;
+    const idsRaw = pacsSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_ids")?.value ?? "[]";
+    const defRaw = pacsSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_defaults")?.value ?? "{}";
+    try {
+      const ids: number[] = JSON.parse(idsRaw);
+      setSelectedIds(new Set(ids));
+    } catch { /* ignore */ }
+    try {
+      const d = JSON.parse(defRaw);
+      setDefaults(typeof d === "object" && d !== null ? d : {});
+    } catch { /* ignore */ }
+  }, [pacsSettings, settingsLoading]);
 
   const saveMut = useMutation({
-    mutationFn: () =>
-      api.put("/api/clinic-settings", {
-        dicomMwlTestIds: JSON.stringify([...selectedIds]),
-        dicomMwlTestDefaults: JSON.stringify(defaults),
-      }),
+    mutationFn: async () => {
+      const upsert = (key: string, value: string) => {
+        const existing = pacsSettings.find((s) => s.category === "mwl" && s.key === key);
+        return api.post("/api/radiology/pacs-settings", {
+          ...(existing ? { id: existing.id } : {}),
+          key,
+          value,
+          category: "mwl",
+          isSecret: false,
+        });
+      };
+      await upsert("mwl_test_ids", JSON.stringify([...selectedIds]));
+      await upsert("mwl_test_defaults", JSON.stringify(defaults));
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["clinic-settings"] });
+      qc.invalidateQueries({ queryKey: ["pacs-settings"] });
       toast({ title: "DICOM MWL test list saved" });
     },
     onError: () => toast({ title: "Failed to save", variant: "destructive" }),
@@ -313,11 +403,13 @@ function DicomMwlTestsTab() {
         <div>
           <h3 className="font-semibold text-sm flex items-center gap-2">
             <ScanLine size={15} className="text-blue-600" />
-            DICOM MWL — Required Tests & Defaults
+            DICOM MWL — Optional Billing Desk prompts
           </h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Tick each test that needs DICOM Worklist. Set a default Body Part and Station AE Title
-            so Billing Desk auto-fills them — staff only need to type the Referring Doctor.
+            Optional: tick tests that should prompt for Body Part / Station AE / Referring Doctor at Billing Desk.
+            <strong className="font-medium text-foreground"> Primary station routing is Modalities</strong>
+            {" "}(MR → UIH MRI → AE UIH) — you do not need to type UIH on every MRI test.
+            Per-test Station AE here is an optional override only.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -395,11 +487,11 @@ function DicomMwlTestsTab() {
                           />
                         </div>
                         <div className="space-y-0.5">
-                          <p className="text-[10px] text-muted-foreground font-medium">Default Station AE Title</p>
+                          <p className="text-[10px] text-muted-foreground font-medium">Station AE override (optional)</p>
                           <Input
                             value={def.stationAE}
                             onChange={(e) => setDefault(t.id, "stationAE", e.target.value.toUpperCase())}
-                            placeholder="e.g. MRI_ROOM1"
+                            placeholder="leave blank → use Modalities"
                             className="h-7 text-xs font-mono"
                           />
                         </div>
@@ -433,11 +525,11 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
   const [newCat, setNewCat] = useState("general");
   const [newSecret, setNewSecret] = useState(false);
 
-  const [newMachineName, setNewMachineName] = useState("");
+  const [newMachineName, setNewMachineName] = useState("UIH MRI");
   const [newModCode, setNewModCode] = useState("MR");
-  const [newAeTitle, setNewAeTitle] = useState("");
-  const [newIp, setNewIp] = useState("");
-  const [newPort, setNewPort] = useState("");
+  const [newAeTitle, setNewAeTitle] = useState("UIH");
+  const [newIp, setNewIp] = useState("172.16.1.103");
+  const [newPort, setNewPort] = useState("3333");
   const [newLocation, setNewLocation] = useState("");
 
   const { data: settings = [], refetch: refetchSettings, isFetching: fetchingSettings } = useQuery<Setting[]>({
@@ -487,6 +579,17 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
       key,
       value,
       category: "mwl",
+      isSecret: false,
+    });
+  }
+
+  function saveOrthancKey(key: string, value: string) {
+    const existing = settings.find((s) => s.key === key && s.category === "orthanc");
+    upsertSetting.mutate({
+      ...(existing ? { id: existing.id } : {}),
+      key,
+      value,
+      category: "orthanc",
       isSecret: false,
     });
   }
@@ -626,15 +729,19 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
 
           {/* Add new modality (quick-add) */}
           <div className="rounded-xl border bg-card p-4 space-y-3">
-            <h3 className="text-sm font-semibold">Quick-Add Imaging Device</h3>
+            <h3 className="text-sm font-semibold">Quick-Add Imaging Device (MWL station)</h3>
+            <p className="text-xs text-muted-foreground">
+              Prefills are this clinic&apos;s installation defaults (UIH MRI). The Station AE Title becomes
+              DICOM <span className="font-mono">(0040,0001)</span> for that modality&apos;s worklists when Auto Create Worklist is on.
+            </p>
             <div className="flex flex-wrap gap-2">
-              <Input placeholder="Machine name" value={newMachineName} onChange={(e) => setNewMachineName(e.target.value)} className="w-40 h-8 text-sm" />
+              <Input placeholder="UIH MRI" value={newMachineName} onChange={(e) => setNewMachineName(e.target.value)} className="w-40 h-8 text-sm" />
               <select value={newModCode} onChange={(e) => setNewModCode(e.target.value)} className="h-8 text-sm border rounded-md px-2 bg-background">
                 {MODALITY_CODES.map((m) => <option key={m}>{m}</option>)}
               </select>
-              <Input placeholder="AE Title" value={newAeTitle} onChange={(e) => setNewAeTitle(e.target.value)} className="w-32 h-8 text-sm" />
-              <Input placeholder="IP Address" value={newIp} onChange={(e) => setNewIp(e.target.value)} className="w-36 h-8 text-sm" />
-              <Input placeholder="Port" value={newPort} onChange={(e) => setNewPort(e.target.value)} className="w-20 h-8 text-sm" type="number" />
+              <Input placeholder="UIH" value={newAeTitle} onChange={(e) => setNewAeTitle(e.target.value)} className="w-32 h-8 text-sm font-mono" />
+              <Input placeholder="172.16.1.103" value={newIp} onChange={(e) => setNewIp(e.target.value)} className="w-36 h-8 text-sm font-mono" />
+              <Input placeholder="3333" value={newPort} onChange={(e) => setNewPort(e.target.value)} className="w-20 h-8 text-sm" type="number" />
               <Input placeholder="Location (Room/Ward)" value={newLocation} onChange={(e) => setNewLocation(e.target.value)} className="w-36 h-8 text-sm" />
               <Button size="sm" className="h-8" onClick={() => {
                 if (!newMachineName.trim()) return;
@@ -642,8 +749,9 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
                   machineName: newMachineName.trim(), modality: newModCode,
                   aeTitle: newAeTitle || null, ipAddress: newIp || null,
                   port: newPort ? Number(newPort) : null, location: newLocation || null,
+                  autoCreateWorklist: true, isActive: true,
                 });
-                setNewMachineName(""); setNewAeTitle(""); setNewIp(""); setNewPort(""); setNewLocation("");
+                setNewMachineName("UIH MRI"); setNewAeTitle("UIH"); setNewIp("172.16.1.103"); setNewPort("3333"); setNewLocation("");
               }}>
                 <Plus size={13} />Add
               </Button>
@@ -674,6 +782,7 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
             key={settings.length}
             settings={settings}
             onSave={saveMwlKey}
+            onSaveOrthanc={saveOrthancKey}
           />
           <DicomMwlTestsTab />
         </div>

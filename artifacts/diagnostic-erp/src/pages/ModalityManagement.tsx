@@ -119,11 +119,11 @@ const MODALITY_LABELS: Record<string, string> = {
 };
 
 const BLANK_FORM: FormState = {
-  machineName: "",
+  machineName: "UIH MRI",
   modality: "MR",
-  aeTitle: "",
-  ipAddress: "",
-  port: 104,
+  aeTitle: "UIH",
+  ipAddress: "172.16.1.103",
+  port: 3333,
   location: "",
   manufacturer: "",
   autoSendEnabled: true,
@@ -144,6 +144,14 @@ const BLANK_FORM: FormState = {
   autoNotifyRadiologist: false,
   notes: "",
 };
+
+/** Installation presets — editable form defaults only; never hard-coded in MWL publish. */
+const CLINIC_MODALITY_PRESETS: Array<{ label: string; form: FormState }> = [
+  {
+    label: "UIH MRI",
+    form: { ...BLANK_FORM },
+  },
+];
 
 function modalityToForm(m: DicomModality): FormState {
   return {
@@ -236,7 +244,7 @@ function ModalityForm({
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-medium">Machine Name *</label>
-                <Input value={form.machineName} onChange={(e) => set("machineName", e.target.value)} placeholder="e.g. MRI Room 1" className="h-8 text-sm" />
+                <Input value={form.machineName} onChange={(e) => set("machineName", e.target.value)} placeholder="UIH MRI" className="h-8 text-sm" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium">Modality Type</label>
@@ -267,26 +275,30 @@ function ModalityForm({
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-1">
                 <label className="text-xs font-medium">IP Address</label>
-                <Input value={form.ipAddress ?? ""} onChange={(e) => set("ipAddress", e.target.value)} placeholder="192.168.1.100" className="h-8 text-sm font-mono" />
+                <Input value={form.ipAddress ?? ""} onChange={(e) => set("ipAddress", e.target.value)} placeholder="172.16.1.103" className="h-8 text-sm font-mono" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium">DICOM Port</label>
                 <Input
                   type="number"
-                  value={form.port ?? 104}
+                  value={form.port ?? 3333}
                   onChange={(e) => set("port", Number(e.target.value))}
-                  placeholder="104"
+                  placeholder="3333"
                   className="h-8 text-sm font-mono"
                 />
               </div>
               <div className="col-span-3 space-y-1">
-                <label className="text-xs font-medium">AE Title</label>
+                <label className="text-xs font-medium">Station AE Title (MWL 0040,0001)</label>
                 <Input
                   value={form.aeTitle ?? ""}
                   onChange={(e) => set("aeTitle", e.target.value.toUpperCase())}
-                  placeholder="e.g. MRI_ROOM1"
+                  placeholder="UIH"
                   className="h-8 text-sm font-mono"
                 />
+                <p className="text-[11px] text-muted-foreground">
+                  Used as ScheduledStationAETitle on Orthanc MWL for this modality when Auto Create Worklist is on.
+                  Example: MRI studies → AE UIH so the scanner&apos;s C-FIND (Station AE = UIH) matches.
+                </p>
               </div>
             </div>
           </section>
@@ -667,7 +679,30 @@ export function ModalityPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-end gap-2">
+      <div className="rounded-xl border bg-muted/40 p-4 text-xs text-muted-foreground space-y-1">
+        <p className="font-medium text-foreground text-sm">MWL station routing</p>
+        <p>
+          Each active device with <span className="font-mono">Auto Create Worklist</span> supplies
+          the default <span className="font-mono">ScheduledStationAETitle</span> for its modality
+          (e.g. MR → UIH MRI → AE <span className="font-mono">UIH</span>). Orthanc MWL SCP identity
+          (ORTHANC2 / NAS DICOM port) is separate — configure under Orthanc / network settings.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap justify-end gap-2">
+        {CLINIC_MODALITY_PRESETS.map((p) => (
+          <Button
+            key={p.label}
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setAddOpen(true);
+            }}
+            title={`Prefills Add Device with ${p.label} installation defaults (editable)`}
+          >
+            Prefill {p.label}
+          </Button>
+        ))}
         <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw size={14} className={isFetching ? "animate-spin" : ""} />
         </Button>
