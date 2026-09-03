@@ -13,6 +13,7 @@ import {
   runAllChecks, aggregateOverall, summarize,
   type OpsCheck, type OpsCheckDef, type OpsHealthReport, type OpsVersionInfo, type OpsRunTrigger,
 } from "./operationsHealth";
+import { classifyRestoreVerifyDashboardStatus } from "./restoreVerifyStatus";
 
 export interface ProbeResult {
   /** true when a response arrived with status < 500 (reachable, not erroring). */
@@ -603,7 +604,6 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       const detail = latest.detail as { steps?: Array<{ name: string; ok: boolean; detail: string }> } | null;
       const stepCount = detail?.steps?.length ?? 0;
       const failedSteps = detail?.steps?.filter((s) => !s.ok).map((s) => s.name) ?? [];
-      const { classifyRestoreVerifyDashboardStatus } = await import("./restoreVerification");
       return classifyRestoreVerifyDashboardStatus({
         status: String(latest.status ?? "unknown"),
         ranAt: new Date(latest.ran_at as string),

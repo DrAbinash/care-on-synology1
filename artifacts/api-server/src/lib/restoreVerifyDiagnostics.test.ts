@@ -131,11 +131,13 @@ describe("historical / stale restore result classification", () => {
     expect(r.message).toMatch(/no newer run/i);
   });
 
-  it("backup.restore_verified check uses the classifier", () => {
+  it("backup.restore_verified check uses the pure classifier (no heavy dynamic import)", () => {
     const def = CHECK_DEFS.find((d) => d.id === "backup.restore_verified");
     expect(def).toBeTruthy();
     const src = readFileSync(join(__dirname, "operationsChecks.ts"), "utf8");
+    expect(src).toContain('from "./restoreVerifyStatus"');
     expect(src).toContain("classifyRestoreVerifyDashboardStatus");
+    expect(src).not.toMatch(/await import\("\.\/restoreVerification"\)/);
   });
 });
 
