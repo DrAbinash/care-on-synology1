@@ -59,6 +59,7 @@ import {
 import { DEFAULT_INSTITUTIONAL_STYLE } from "../lib/institutionalReportStyle.js";
 import { publishRadiologyStudyToMwl } from "../lib/pacs/publishRadiologyStudyToMwl";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
+import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle";
 import { logger } from "../lib/logger";
 import { radiologyBroadcaster, type RadiologyUpdateEvent } from "../lib/radiologyBroadcast";
 
@@ -154,6 +155,20 @@ export async function generateStudiesForOrder(opts: {
     if (!RADIOLOGY_DEPARTMENTS.includes(department)) continue; // skip non-radiology tests
     const modality = MODALITY_MAP[department] ?? "OT";
 
+    // Resolve ScheduledStationAETitle from modality registry (or explicit bill fields)
+    // BEFORE insert so MRI→UIH (etc.) lands on the study row and the MWL .wl file.
+    let resolvedStationAe: string | null = opts.dicomFields?.scheduledStationAETitle?.trim() || null;
+    try {
+      const station = await resolveScheduledStationAeTitle({
+        modality,
+        explicitAeTitle: opts.dicomFields?.scheduledStationAETitle,
+        testId: ot.testId,
+      });
+      resolvedStationAe = station.aeTitle;
+    } catch {
+      // Never block study creation on station resolution failure
+    }
+
     // Resolve priority + reason BEFORE the insert so it lands in the single
     // INSERT for both branches — one committed write per study instead of an
     // insert followed by an applyPriorityToStudy UPDATE. Caller-supplied
@@ -198,7 +213,7 @@ export async function generateStudiesForOrder(opts: {
           priorityReason,
           ...(opts.dicomFields?.studyDescription ? { studyDescription: opts.dicomFields.studyDescription } : {}),
           ...(opts.dicomFields?.bodyPart ? { bodyPart: opts.dicomFields.bodyPart } : {}),
-          ...(opts.dicomFields?.scheduledStationAETitle ? { scheduledStationAETitle: opts.dicomFields.scheduledStationAETitle } : {}),
+          ...(resolvedStationAe ? { scheduledStationAETitle: resolvedStationAe } : {}),
           ...(opts.dicomFields?.referringDoctor ? { referringDoctor: opts.dicomFields.referringDoctor } : {}),
         }).returning();
 
@@ -228,7 +243,8 @@ export async function generateStudiesForOrder(opts: {
             studyDescription: opts.dicomFields?.studyDescription ?? ot.testName,
             referringDoctor: opts.dicomFields?.referringDoctor ?? row.referringDoctor ?? null,
             bodyPart: opts.dicomFields?.bodyPart ?? null,
-            stationAeTitle: opts.dicomFields?.scheduledStationAETitle ?? null,
+            stationAeTitle: resolvedStationAe,
+            testId: ot.testId,
           });
         } catch {
           // Never block study creation on MWL publish failure

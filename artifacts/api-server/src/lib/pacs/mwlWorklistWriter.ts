@@ -223,7 +223,10 @@ function buildDump(p: MwlProcedure): string {
     `(0040,0100) SQ`,
     `  (fffe,e000) na`,
     `    (0008,0060) CS [${modality}]`,
-    `    (0040,0001) AE [${esc(p.stationAeTitle) || "ANY"}]`,
+    // Never invent literal "ANY" — Orthanc matches AE titles as strings, so
+    // "ANY" does not satisfy a modality querying for its own AE (e.g. UIH).
+    // Empty = unconfigured station; configure dicom_modalities / study AE.
+    `    (0040,0001) AE [${esc(p.stationAeTitle)}]`,
     `    (0040,0002) DA [${digits(p.scheduledDate)}]`,
     `    (0040,0003) TM [${digits(p.scheduledTime)}]`,
     `    (0040,0007) LO [${desc}]`,

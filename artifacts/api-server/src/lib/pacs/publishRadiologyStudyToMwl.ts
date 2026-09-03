@@ -21,6 +21,7 @@ import { eq } from "drizzle-orm";
 import { genderToDicomSex } from "@workspace/pathology";
 import { logger } from "../logger";
 import { isMwlEnabled, writeWorklistFile, removeWorklistFile } from "./mwlWorklistWriter";
+import { resolveScheduledStationAeTitle } from "./resolveScheduledStationAeTitle";
 
 function yyyymmdd(d: Date = new Date()): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
@@ -61,6 +62,8 @@ export async function publishRadiologyStudyToMwl(opts: {
   referringDoctor?: string | null;
   bodyPart?: string | null;
   stationAeTitle?: string | null;
+  /** Optional catalog test id — used for per-test station AE defaults. */
+  testId?: number | null;
 }): Promise<PublishStudyToMwlResult> {
   const accessionNumber = opts.accessionNumber.trim();
   const empty: PublishStudyToMwlResult = {
@@ -72,6 +75,13 @@ export async function publishRadiologyStudyToMwl(opts: {
   if (!accessionNumber) return empty;
 
   try {
+    const stationResolved = await resolveScheduledStationAeTitle({
+      modality: opts.modality,
+      explicitAeTitle: opts.stationAeTitle,
+      testId: opts.testId,
+    });
+    const stationAeTitle = stationResolved.aeTitle;
+
     const [patient] = await db
       .select({
         uhid: patientsTable.patientId,
@@ -115,7 +125,7 @@ export async function publishRadiologyStudyToMwl(opts: {
             referringDoctor: opts.referringDoctor ?? null,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
-            stationAeTitle: opts.stationAeTitle ?? null,
+            stationAeTitle,
             bodyPartExamined: opts.bodyPart ?? null,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
@@ -144,7 +154,7 @@ export async function publishRadiologyStudyToMwl(opts: {
             referringDoctor: opts.referringDoctor ?? null,
             scheduledDate: yyyymmdd(),
             scheduledTime: hhmmss(),
-            stationAeTitle: opts.stationAeTitle ?? null,
+            stationAeTitle,
             bodyPartExamined: opts.bodyPart ?? null,
             sourceBillId: String(opts.billId),
             sourceOrderId: String(opts.orderId),
@@ -199,7 +209,7 @@ export async function publishRadiologyStudyToMwl(opts: {
           referringDoctor: row.referringDoctor,
           scheduledDate: row.scheduledDate,
           scheduledTime: row.scheduledTime,
-          stationAeTitle: row.stationAeTitle,
+          stationAeTitle: row.stationAeTitle ?? stationAeTitle,
           bodyPartExamined: row.bodyPartExamined,
           sourceBillId: row.sourceBillId ?? String(opts.billId),
           sourceOrderId: row.sourceOrderId ?? String(opts.orderId),
@@ -221,6 +231,9 @@ export async function publishRadiologyStudyToMwl(opts: {
         written,
         mwlEnabled: isMwlEnabled(),
         patientName,
+        stationAeTitle,
+        stationAeSource: stationResolved.source,
+        stationAeReason: stationResolved.reason,
       },
       "mwl: published radiology study to modality worklist source",
     );
@@ -251,6 +264,7 @@ export async function publishStudyRowToMwl(studyId: number): Promise<PublishStud
       referringDoctor: radiologyStudiesTable.referringDoctor,
       bodyPart: radiologyStudiesTable.bodyPart,
       stationAeTitle: radiologyStudiesTable.scheduledStationAETitle,
+      testId: radiologyStudiesTable.testId,
     })
     .from(radiologyStudiesTable)
     .where(eq(radiologyStudiesTable.id, studyId))
@@ -268,5 +282,6 @@ export async function publishStudyRowToMwl(studyId: number): Promise<PublishStud
     referringDoctor: study.referringDoctor,
     bodyPart: study.bodyPart,
     stationAeTitle: study.stationAeTitle,
+    testId: study.testId,
   });
 }

@@ -1125,14 +1125,24 @@ export default function BillingDesk() {
 
   const lastBillLocalRef = useRef<LastBill | null>(null);
 
-  // ── DICOM MWL fields (triggered by configured tests) ───────────────
+  // ── DICOM MWL fields (optional Billing Desk prompts from pacs_settings) ──
+  const { data: pacsMwlSettings = [] } = useQuery<Array<{ key: string; value: string | null; category: string }>>({
+    queryKey: ["pacs-settings-mwl-billing"],
+    queryFn: () => api.get("/api/radiology/pacs-settings"),
+    staleTime: 5 * 60_000,
+  });
   const dicomMwlTestIdSet: Set<number> = (() => {
-    try { return new Set(JSON.parse(clinic?.dicomMwlTestIds ?? "[]") as number[]); }
-    catch { return new Set(); }
+    try {
+      const raw = pacsMwlSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_ids")?.value ?? "[]";
+      return new Set(JSON.parse(raw) as number[]);
+    } catch { return new Set(); }
   })();
   const dicomMwlTestDefaults: Record<string, { bodyPart: string; stationAE: string }> = (() => {
-    try { const d = JSON.parse(clinic?.dicomMwlTestDefaults ?? "{}"); return typeof d === "object" && d !== null ? d : {}; }
-    catch { return {}; }
+    try {
+      const raw = pacsMwlSettings.find((s) => s.category === "mwl" && s.key === "mwl_test_defaults")?.value ?? "{}";
+      const d = JSON.parse(raw);
+      return typeof d === "object" && d !== null ? d : {};
+    } catch { return {}; }
   })();
   const needsDicom = dicomMwlTestIdSet.size > 0 && selectedTests.some((t) => dicomMwlTestIdSet.has(t.testId));
   const [dicomStudyDesc, setDicomStudyDesc] = useState("");
