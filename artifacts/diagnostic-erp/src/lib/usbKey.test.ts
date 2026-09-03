@@ -145,3 +145,52 @@ describe("usbKey pen-drive pairing gestures", () => {
     expect(idbOpens).toBe(opensAfterPreload);
   });
 });
+
+describe("openSuperAdminPortal Zero-Trace navigation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("opens /super-admin-portal/ in a new tab (never SPA path without slash)", async () => {
+    const open = vi.fn(() => ({ focus: () => undefined }));
+    vi.stubGlobal("window", {
+      open,
+      location: { assign: vi.fn(), hash: "" },
+    });
+    const mod = await import("./usbKey");
+    mod.openSuperAdminPortal("books");
+    expect(open).toHaveBeenCalledWith("/super-admin-portal/#books", "_blank", "noopener,noreferrer");
+    expect(window.location.assign).not.toHaveBeenCalled();
+  });
+
+  it("falls back to same-tab assign when popup is blocked", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("window", {
+      open: vi.fn(() => null),
+      location: { assign, hash: "" },
+    });
+    const mod = await import("./usbKey");
+    mod.openSuperAdminPortal();
+    expect(assign).toHaveBeenCalledWith("/super-admin-portal/");
+  });
+});
+
+describe("superadmin pendrive crash regression contracts", () => {
+  it("Layout must not SPA-navigate into /super-admin-portal under PermissionGuard", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const layout = readFileSync(join(__dirname, "../components/Layout.tsx"), "utf8");
+    const app = readFileSync(join(__dirname, "../App.tsx"), "utf8");
+    expect(layout).toMatch(/openSuperAdminPortal/);
+    expect(layout).not.toMatch(/navigate\(`\/super-admin-portal/);
+    // Must not inject USB UI createRoot into ERP document
+    expect(layout).not.toMatch(/tryReadUiFromPairedDir/);
+    expect(layout).toMatch(/Do NOT inject superadmin-ui\.js/);
+    // Guard must hard-redirect to full-page bootstrap, not bounce to "/"
+    expect(app).toMatch(/window\.location\.replace\(`\/super-admin-portal\//);
+    expect(app).not.toMatch(/normalizedRole !== "super_admin"[\s\S]{0,80}navigate\("\/"/);
+    // Embedded SuperAdminPortal route under Layout must be gone
+    expect(app).not.toMatch(/SuperAdminPortal/);
+  });
+});

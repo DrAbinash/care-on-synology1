@@ -422,7 +422,7 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
   </style>
 </head>
 <body>
-  <div id="root">
+  <div id="root" data-sa-bootstrap="1">
     <div class="card">
       <div class="icon">🔑</div>
       <h1 id="title">Super Admin Portal</h1>
