@@ -15,6 +15,11 @@ type Props = {
   isFinalized: boolean;
   minimized?: boolean;
   onMinimizedChange?: (minimized: boolean) => void;
+  /** Drafting mode — default TEXT_ONLY. */
+  aiMode: "TEXT_ONLY" | "SELECTED_IMAGES";
+  onAiModeChange: (mode: "TEXT_ONLY" | "SELECTED_IMAGES") => void;
+  primaryRegionLabel: string;
+  selectedKeyImageCount: number;
   onCompose: () => void;
   onImpression: () => void;
   onToggleReview: (open: boolean) => void;
@@ -98,6 +103,33 @@ function ChangeRow({
   );
 }
 
+function provenanceFromJob(job: ComposeJobView | null): {
+  aiMode?: string;
+  model?: string;
+  personaVersion?: string;
+  imagesLoaded?: number;
+  degradedReason?: string | null;
+  warnings?: string[];
+} {
+  const v = job?.validation as
+    | {
+        provenance?: {
+          aiMode?: string;
+          model?: string;
+          personaVersion?: string;
+          imagesLoaded?: number;
+          degradedReason?: string | null;
+        };
+        warnings?: string[];
+      }
+    | null
+    | undefined;
+  return {
+    ...(v?.provenance ?? {}),
+    warnings: v?.warnings,
+  };
+}
+
 export function ReportComposerAssistant(props: Props) {
   const sources = props.job?.sources ?? {};
   const sourceLine = [
@@ -114,6 +146,9 @@ export function ReportComposerAssistant(props: Props) {
     props.job &&
     ["READY"].includes(props.job.status) &&
     !props.isFinalized;
+
+  const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
+  const provenance = provenanceFromJob(props.job);
 
   if (props.minimized) {
     return (
@@ -163,17 +198,56 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       </div>
 
+      <div className="rounded-md border bg-white/70 dark:bg-background/40 px-2 py-1.5 space-y-1" data-testid="ai-compose-mode">
+        <div className="flex flex-wrap items-center gap-2 text-[10px]">
+          <span className="font-semibold text-muted-foreground uppercase tracking-wide">Mode</span>
+          <label className="inline-flex items-center gap-1 cursor-pointer">
+            <input
+              type="radio"
+              name="ai-compose-mode"
+              checked={props.aiMode === "TEXT_ONLY"}
+              onChange={() => props.onAiModeChange("TEXT_ONLY")}
+              data-testid="ai-mode-observations"
+            />
+            Draft from Observations
+          </label>
+          <label className={`inline-flex items-center gap-1 ${selectedImagesDisabled ? "opacity-50" : "cursor-pointer"}`}>
+            <input
+              type="radio"
+              name="ai-compose-mode"
+              checked={props.aiMode === "SELECTED_IMAGES"}
+              disabled={selectedImagesDisabled}
+              onChange={() => props.onAiModeChange("SELECTED_IMAGES")}
+              data-testid="ai-mode-selected-images"
+            />
+            Draft with Selected Images
+          </label>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Region: <span className="font-medium text-foreground">{props.primaryRegionLabel}</span>
+          {" · "}
+          AI-selected images: <span className="font-medium text-foreground">{props.selectedKeyImageCount}</span>
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          Selected images support the draft; radiologist observations remain authoritative.
+        </p>
+      </div>
+
       <div className="flex flex-wrap gap-1.5">
         <Button
           type="button"
           size="sm"
           className="h-8 text-xs gap-1"
-          disabled={props.busy || props.isFinalized}
+          disabled={
+            props.busy ||
+            props.isFinalized ||
+            (props.aiMode === "SELECTED_IMAGES" && selectedImagesDisabled)
+          }
           onClick={props.onCompose}
           data-testid="compose-in-background"
         >
           {props.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
-          Draft Report
+          {props.aiMode === "SELECTED_IMAGES" ? "Draft with Selected Images" : "Draft from Observations"}
         </Button>
         <Button
           type="button"
@@ -182,6 +256,7 @@ export function ReportComposerAssistant(props: Props) {
           className="h-8 text-xs"
           disabled={props.busy || props.isFinalized}
           onClick={props.onImpression}
+          title="Generate Impression is always text-only"
         >
           Generate Impression
         </Button>
@@ -213,17 +288,40 @@ export function ReportComposerAssistant(props: Props) {
       </div>
 
       {props.job?.safeError && props.job.status === "FAILED" && (
-        <p className="text-[11px] text-red-700">AI composition failed — report unchanged. ({props.job.safeError})</p>
+        <p className="text-[11px] text-red-700" data-testid="ai-compose-failed">
+          AI composition failed — report unchanged. ({props.job.safeError})
+          {provenance.degradedReason ? ` ${provenance.degradedReason}` : ""}
+        </p>
       )}
 
       {props.job?.status === "STALE_READY" && (
         <div className="rounded-md border border-orange-300 bg-orange-50 text-orange-950 p-2 text-[11px]">
-          <strong>STALE</strong> — report changed since this draft was requested. Compare or Regenerate. Blind apply is blocked.
+          <strong>STALE</strong> — report, observations, study context, or image selection changed since this draft. Compare or Regenerate. Blind apply is blocked.
+        </div>
+      )}
+
+      {(provenance.warnings?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px] space-y-0.5" data-testid="ai-validation-warnings">
+          <p className="font-semibold">Validation warnings</p>
+          <ul className="list-disc pl-4">
+            {provenance.warnings!.slice(0, 8).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
         </div>
       )}
 
       {props.reviewOpen && props.job && (
         <div className="space-y-2 border-t pt-2" data-testid="ai-report-review">
+          <div className="text-[10px] text-muted-foreground space-y-0.5" data-testid="ai-compose-provenance">
+            <p>
+              Provenance: {provenance.aiMode === "SELECTED_IMAGES" ? "Selected images" : "Observations only"}
+              {provenance.model ? ` · model ${provenance.model}` : ""}
+              {provenance.personaVersion ? ` · ${provenance.personaVersion}` : ""}
+              {typeof provenance.imagesLoaded === "number" ? ` · images loaded ${provenance.imagesLoaded}` : ""}
+            </p>
+            <p className="font-medium text-foreground">AI Draft — Requires Radiologist Review</p>
+          </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <Button
               type="button"

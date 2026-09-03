@@ -305,6 +305,41 @@ export function validateComposerOutput(
     }
   }
 
+  // Selected-image assisted mode hardening
+  if ((snapshot.aiMode ?? "TEXT_ONLY") === "SELECTED_IMAGES") {
+    const selectedCount = (snapshot.selectedKeyImages ?? []).length;
+    if (selectedCount === 0) {
+      errors.push("selected_images_empty");
+      warnings.push("Selected-image mode was requested but no key images were selected.");
+    }
+    const claimsComplete =
+      /complete\s+(mri|study|examination)|entire\s+(mri|study)|full\s+mri\s+dataset|reviewed\s+the\s+entire/i.test(
+        output,
+      );
+    if (claimsComplete) {
+      errors.push("selected_images_claimed_complete_review");
+      warnings.push("Selected-image draft claimed complete MRI review — blocked.");
+    }
+    if (
+      /\brestricted\s+diffusion\b|\bdiffusion\s+restriction\b/i.test(output) &&
+      !/\badc\b/i.test(corpus)
+    ) {
+      errors.push("unsupported_diffusion_restriction");
+      warnings.push("Diffusion restriction claimed without ADC evidence in observations.");
+    }
+    if (
+      /\bno\s+abnormal\s+enhancement\b|\bno\s+abnormal\s+contrast\s+enhancement\b/i.test(output) &&
+      !/\benhanc|post[\s-]?contrast|gadolinium/i.test(corpus)
+    ) {
+      errors.push("unsupported_enhancement_claim");
+      warnings.push("Enhancement claim without post-contrast evidence in observations.");
+    }
+    if (/\bmyelomalacia\b/i.test(output) && !/\bmyelomalacia\b/i.test(corpus)) {
+      errors.push("unsupported_myelomalacia");
+      warnings.push("Myelomalacia claimed without a supporting observation.");
+    }
+  }
+
   return {
     ok: errors.length === 0,
     warnings,

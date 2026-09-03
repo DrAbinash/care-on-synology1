@@ -27,6 +27,39 @@ export const ComposeObservationSchema = z.object({
 
 export type ComposeObservation = z.infer<typeof ComposeObservationSchema>;
 
+/** Conservative max selected key images for SELECTED_IMAGES compose mode. */
+export const COMPOSER_MAX_SELECTED_KEY_IMAGES = 4;
+
+export const ComposerAiModeSchema = z.enum(["TEXT_ONLY", "SELECTED_IMAGES"]);
+export type ComposerAiMode = z.infer<typeof ComposerAiModeSchema>;
+
+/**
+ * Stable metadata for radiologist-selected frozen key images.
+ * NEVER store base64 / blob URLs here — only IDs + safe audit metadata.
+ */
+export const SelectedKeyImageRefSchema = z.object({
+  keyImageId: z.number().int().positive(),
+  observationId: z.string().nullable().optional(),
+  seriesInstanceUid: z.string().nullable().optional(),
+  sopInstanceUid: z.string().nullable().optional(),
+  frameNumber: z.number().nullable().optional(),
+  seriesDescription: z.string().nullable().optional(),
+  caption: z.string().optional(),
+});
+export type SelectedKeyImageRef = z.infer<typeof SelectedKeyImageRefSchema>;
+
+/** Display-only provenance attached outside clinical Findings/Impression text. */
+export const ComposerEvidenceProvenanceSchema = z.object({
+  aiMode: ComposerAiModeSchema.optional(),
+  model: z.string().optional(),
+  personaVersion: z.string().optional(),
+  selectedKeyImageIds: z.array(z.number()).optional(),
+  imagesLoaded: z.number().optional(),
+  linkedObservationIds: z.array(z.string()).optional(),
+  degradedReason: z.string().nullable().optional(),
+});
+export type ComposerEvidenceProvenance = z.infer<typeof ComposerEvidenceProvenanceSchema>;
+
 export const ComposerInputSnapshotSchema = z.object({
   studyId: z.number().nullable().optional(),
   worklistId: z.number().nullable().optional(),
@@ -73,6 +106,17 @@ export const ComposerInputSnapshotSchema = z.object({
   instruction: z.string().optional(),
   targetLanguage: z.string().optional(),
   jobKindHint: z.string().optional(),
+  /**
+   * AI drafting mode. Optional for backward compatibility — absent/undefined
+   * means TEXT_ONLY (existing behaviour). SELECTED_IMAGES requires
+   * selectedKeyImages and a vision-capable local model.
+   */
+  aiMode: ComposerAiModeSchema.optional(),
+  /**
+   * Radiologist-selected frozen key-image refs (IDs + safe metadata only).
+   * Never base64. Optional — old snapshots without this field still parse.
+   */
+  selectedKeyImages: z.array(SelectedKeyImageRefSchema).optional(),
 });
 
 export function parseComposerSnapshot(

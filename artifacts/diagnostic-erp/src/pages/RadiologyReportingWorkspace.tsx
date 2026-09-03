@@ -1399,6 +1399,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [aiAssistantMinimized, setAiAssistantMinimized] = useState(() => {
     try { return localStorage.getItem("care_ai_assistant_minimized") === "1"; } catch { return false; }
   });
+  /** Background composer drafting mode — default TEXT_ONLY; never silently SELECTED_IMAGES. */
+  const [composerAiMode, setComposerAiMode] = useState<"TEXT_ONLY" | "SELECTED_IMAGES">("TEXT_ONLY");
+  /** Session AI selection of frozen key-image IDs (independent of includeInReport). */
+  const [aiSelectedKeyImageIds, setAiSelectedKeyImageIds] = useState<number[]>([]);
   const persistAiAssistantMinimized = (minimized: boolean) => {
     setAiAssistantMinimized(minimized);
     try {
@@ -1407,6 +1411,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch { /* ignore */ }
   };
   const aiFinalizeBypassRef = useRef(false);
+
+  // Clear AI image selection + reset mode when study/draft switches (wrong-patient guard).
+  useEffect(() => {
+    setAiSelectedKeyImageIds([]);
+    setComposerAiMode("TEXT_ONLY");
+  }, [studyId, draftId]);
+
   // ─── Background AI Report Composer — canonical study context ────────────
   // The composer MUST receive the SAME canonical study identity the workspace
   // already resolved centrally through ReportingStudyContext. We never re-parse
@@ -1430,6 +1441,55 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       ?? workflow.currentRow?.studyDescription
       ?? "",
   );
+  const composerPrimaryRegionLabel = useMemo(() => {
+    const family = (composerCtx.family ?? "").toLowerCase();
+    const segment = (composerCtx.spineSegment ?? "").toLowerCase();
+    if (family === "brain") return "MRI Brain";
+    if (family === "spine") {
+      if (segment === "cervical") return "MRI Cervical Spine";
+      if (segment === "dorsal") return "MRI Dorsal Spine";
+      if (segment === "lumbar") return "MRI Lumbosacral Spine";
+      return "MRI Spine";
+    }
+    return (
+      composerCtx.region
+      ?? studySetup.matchedStudyRegion
+      ?? studySetup.studyRegions[0]
+      ?? "Unknown region"
+    );
+  }, [composerCtx.family, composerCtx.spineSegment, composerCtx.region, studySetup.matchedStudyRegion, studySetup.studyRegions]);
+
+  // Same query key as the rail — React Query dedupes. Used to build AI-selected
+  // key-image refs (IDs + safe metadata only; never base64).
+  const composerKeyImagesQ = useFrozenKeyImages(draftId);
+  const composerSelectedKeyImages = useMemo(() => {
+    const items = composerKeyImagesQ.data?.items ?? [];
+    const byId = new Map(items.map((i) => [i.id, i]));
+    return aiSelectedKeyImageIds
+      .map((id) => byId.get(id))
+      .filter((img): img is NonNullable<typeof img> => !!img)
+      .map((img) => ({
+        keyImageId: img.id,
+        observationId: img.observationId ?? null,
+        seriesInstanceUid: img.seriesInstanceUid ?? null,
+        sopInstanceUid: img.sopInstanceUid ?? null,
+        frameNumber: img.frameNumber ?? null,
+        seriesDescription: img.seriesDescription ?? null,
+        caption: img.caption ?? "",
+      }));
+  }, [aiSelectedKeyImageIds, composerKeyImagesQ.data?.items]);
+
+  // Drop stale AI IDs that no longer exist on the draft (deleted images).
+  useEffect(() => {
+    const items = composerKeyImagesQ.data?.items;
+    if (!items) return;
+    const live = new Set(items.map((i) => i.id));
+    setAiSelectedKeyImageIds((prev) => {
+      const next = prev.filter((id) => live.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [composerKeyImagesQ.data?.items]);
+
   const reportComposer = useReportComposer({
     worklistId: studyId ?? null,
     studyId: workflow.currentRow?.studyId ?? null,
@@ -1444,6 +1504,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     protocol: composerCtx.protocolName ?? undefined,
     reportTitle: composerReportTitle || undefined,
     isFinalized,
+    aiMode: composerAiMode,
+    selectedKeyImages: composerSelectedKeyImages,
+    primaryRegionLabel: composerPrimaryRegionLabel,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -4172,6 +4235,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           useWorkspace.getState().setSelectedObservationId(id);
                           setKeyImageFilterObsId(id);
                         }}
+                        aiSelectedIds={aiSelectedKeyImageIds}
+                        onAiSelectedIdsChange={setAiSelectedKeyImageIds}
                       />
                       {keyImageFilterObsId ? (
                         <div className="px-2 pb-1">
@@ -5677,6 +5742,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           isFinalized={isFinalized}
           minimized={aiAssistantMinimized}
           onMinimizedChange={persistAiAssistantMinimized}
+          aiMode={composerAiMode}
+          onAiModeChange={setComposerAiMode}
+          primaryRegionLabel={composerPrimaryRegionLabel}
+          selectedKeyImageCount={composerSelectedKeyImages.length}
           onCompose={() => void reportComposer.composeFull()}
           onImpression={() => void reportComposer.composeImpression()}
           onToggleReview={reportComposer.setReviewOpen}

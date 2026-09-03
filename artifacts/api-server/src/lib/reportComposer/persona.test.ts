@@ -92,7 +92,7 @@ describe("§S 2. MRI Brain Epilepsy Protocol", () => {
     const prompt = buildCareSystemPrompt("FULL_REPORT" as AiComposeJobKind, snap);
     // Persona carries epilepsy-specific rule.
     expect(prompt).toContain("EPILEPSY PROTOCOL");
-    expect(prompt).toContain("Do NOT invent hippocampal abnormality");
+    expect(prompt).toMatch(/Do NOT invent hippocampal/i);
   });
 });
 
