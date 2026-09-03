@@ -371,7 +371,10 @@ describe("Golden H — Cervical multilevel + AP canal measurements", () => {
       unresolvedQuestions: [],
       warnings: [],
     });
-    expect(dropped.warnings.some((w) => /dropped measurements/i.test(w))).toBe(true);
+    // Multiple canal diameters → ambiguous correlation; remain advisory (not hard-fail).
+    expect(dropped.warnings.some((w) => /dropped measurements|measurement/i.test(w))).toBe(true);
+    expect(dropped.errors).not.toContain("measurement_mutation");
+    expect(dropped.ok).toBe(true);
   });
 });
 

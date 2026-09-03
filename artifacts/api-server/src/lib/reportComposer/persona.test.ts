@@ -126,10 +126,9 @@ describe("§S 3. MRI LS Spine", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.levelChanges).toContain("L5-S1");
-    // PR #657 hardening: advisory warning, NOT a hard blocking error.
-    expect(v.errors).not.toContain("level_change");
-    expect(v.warnings.some((w) => w.includes("levels"))).toBe(true);
-    expect(v.ok).toBe(true);
+    // Hardening: introduced spinal level absent from supplied observations blocks READY.
+    expect(v.errors).toContain("level_change");
+    expect(v.ok).toBe(false);
   });
 });
 
@@ -204,10 +203,10 @@ describe("§S 6. Laterality — no side swapping", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.lateralitySwaps).toContain("right→left");
-    // PR #657 hardening: advisory warning, NOT a hard blocking error.
-    expect(v.errors).not.toContain("laterality_swap");
+    // Definite single-observation laterality swap → hard-block READY.
+    expect(v.errors).toContain("laterality_swap");
     expect(v.warnings.some((w) => w.includes("laterality"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.ok).toBe(false);
   });
 
   it("validation does NOT flag when both sides are present in input", () => {
@@ -245,10 +244,10 @@ describe("§S 7. Severity — no severe upgrade", () => {
     };
     const v = validateComposerOutput(snap, draft);
     expect(v.severityEscalations).toContain("mild→severe");
-    // PR #657 hardening: advisory warning, NOT a hard blocking error.
-    expect(v.errors).not.toContain("severity_escalation");
+    // Definite same-slot mild→severe → hard-block READY.
+    expect(v.errors).toContain("severity_escalation");
     expect(v.warnings.some((w) => w.includes("severity"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.ok).toBe(false);
   });
 
   it("validation does NOT flag when severity matches input", () => {
@@ -637,8 +636,8 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
     expect(v.ok).toBe(true);
   });
 
-  // C. true simple right→left single-finding swap → warning (not hard error)
-  it("C. true right→left single-finding swap → advisory warning", () => {
+  // C. true simple right→left single-finding swap → HARD failure
+  it("C. true right→left single-finding swap → hard failure", () => {
     const snap = snapshot({
       findings: "Acute right MCA territory infarct.",
       observations: [
@@ -653,17 +652,13 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
       warnings: [],
     };
     const v = validateComposerOutput(snap, draft);
-    // The heuristic DOES detect the swap.
     expect(v.lateralitySwaps).toContain("right→left");
-    // But it is an advisory warning, NOT a hard error.
-    expect(v.errors).not.toContain("laterality_swap");
-    expect(v.warnings.some((w) => w.includes("laterality"))).toBe(true);
-    // ok remains true — the system-prompt safety rules are the primary guard.
-    expect(v.ok).toBe(true);
+    expect(v.errors).toContain("laterality_swap");
+    expect(v.ok).toBe(false);
   });
 
-  // D. true L4-L5→L3-L4 single-finding mutation → warning (not hard error)
-  it("D. true L4-L5→L3-L4 single-finding mutation → advisory warning", () => {
+  // D. true L4-L5→L3-L4 single-finding mutation → HARD failure
+  it("D. true L4-L5→L3-L4 single-finding mutation → hard failure", () => {
     const snap = snapshot({
       modality: "MR",
       region: "LS Spine",
@@ -682,16 +677,13 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
       warnings: [],
     };
     const v = validateComposerOutput(snap, draft);
-    // The heuristic DOES detect the level change (L3-L4 not in input).
     expect(v.levelChanges).toContain("L3-L4");
-    // But it is an advisory warning, NOT a hard error.
-    expect(v.errors).not.toContain("level_change");
-    expect(v.warnings.some((w) => w.includes("levels"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.errors).toContain("level_change");
+    expect(v.ok).toBe(false);
   });
 
-  // E. true mild→severe single-finding mutation → warning (not hard error)
-  it("E. true mild→severe single-finding mutation → advisory warning", () => {
+  // E. true mild→severe single-finding mutation → HARD failure
+  it("E. true mild→severe single-finding mutation → hard failure", () => {
     const snap = snapshot({
       modality: "MR",
       region: "LS Spine",
@@ -710,11 +702,8 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
       warnings: [],
     };
     const v = validateComposerOutput(snap, draft);
-    // The heuristic DOES detect the escalation.
     expect(v.severityEscalations).toContain("mild→severe");
-    // But it is an advisory warning, NOT a hard error.
-    expect(v.errors).not.toContain("severity_escalation");
-    expect(v.warnings.some((w) => w.includes("severity"))).toBe(true);
-    expect(v.ok).toBe(true);
+    expect(v.errors).toContain("severity_escalation");
+    expect(v.ok).toBe(false);
   });
 });

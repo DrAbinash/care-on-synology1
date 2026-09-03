@@ -1,12 +1,13 @@
 /**
  * Secure resolution of frozen key images for SELECTED_IMAGES compose mode.
  * Never trusts client URLs; never logs image bytes.
+ * Ownership is verified against authoritative draft/study context from the DB.
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { db } from "@workspace/db";
 import { radiologyReportKeyImagesTable } from "@workspace/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import {
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
   type ComposerInputSnapshot,
@@ -17,6 +18,10 @@ import {
   resolveKeyImageDiskPath,
   FROZEN_KEY_IMAGE_URL_PREFIX,
 } from "../frozenKeyImages";
+import {
+  verifyKeyImageRowOwnership,
+  type KeyImageOwnershipContext,
+} from "./keyImageOwnership";
 
 export const COMPOSER_MAX_IMAGE_BYTES = 2_500_000;
 export const COMPOSER_MAX_TOTAL_IMAGE_BYTES = 8_000_000;
@@ -55,11 +60,11 @@ function mimeFromFilename(name: string): "image/jpeg" | "image/png" | "image/web
 
 /**
  * Resolve and load selected frozen key images for a compose job.
- * Re-validates ownership against draftId / studyId / worklist linkage via draftId on rows.
+ * Re-validates ownership against authoritative draft/study/worklist/patient context.
  */
 export async function resolveSelectedKeyImagesForCompose(opts: {
   snapshot: ComposerInputSnapshot;
-  draftId?: number | null;
+  ownership: KeyImageOwnershipContext;
 }): Promise<ResolveComposeImagesResult> {
   const refs = opts.snapshot.selectedKeyImages ?? [];
   const ids = refs.map((r) => r.keyImageId);
@@ -90,6 +95,15 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
     };
   }
 
+  if (opts.ownership.draftId == null && opts.ownership.studyId == null) {
+    return {
+      ok: false,
+      safeError: "selected_images_ownership_unverified",
+      detail: "Cannot verify key-image ownership without an authoritative draft or study.",
+      selectedKeyImageIds,
+    };
+  }
+
   const rows = await db
     .select()
     .from(radiologyReportKeyImagesTable)
@@ -105,9 +119,6 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
   }
 
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const studyId = opts.snapshot.studyId ?? null;
-  const draftId = opts.draftId ?? null;
-
   const images: ResolvedComposeImage[] = [];
   const linkedObservationIds: string[] = [];
   let totalBytes = 0;
@@ -122,24 +133,25 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
       };
     }
 
-    // Ownership: must match study and/or draft from the frozen snapshot context.
-    if (studyId != null && row.studyId != null && row.studyId !== studyId) {
+    const owned = verifyKeyImageRowOwnership(
+      {
+        id: row.id,
+        draftId: row.draftId ?? null,
+        studyId: row.studyId ?? null,
+        patientId: row.patientId ?? null,
+      },
+      opts.ownership,
+    );
+    if (!owned.ok) {
       return {
         ok: false,
-        safeError: "selected_images_cross_study",
-        detail: "Selected key image does not belong to this study.",
-        selectedKeyImageIds,
-      };
-    }
-    if (draftId != null && row.draftId != null && row.draftId !== draftId) {
-      return {
-        ok: false,
-        safeError: "selected_images_cross_draft",
-        detail: "Selected key image does not belong to this draft.",
+        safeError: owned.safeError,
+        detail: owned.detail,
         selectedKeyImageIds,
       };
     }
 
+    // Never use client caption/UID metadata as ownership evidence — only for prompt context.
     const abs = resolveKeyImageDiskPath(row.imageUrl);
     if (!abs) {
       return {
@@ -196,7 +208,7 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
       };
     }
 
-    const obsId = row.observationId ?? ref.observationId ?? null;
+    const obsId = row.observationId ?? null;
     if (obsId) linkedObservationIds.push(obsId);
 
     images.push({
@@ -205,7 +217,7 @@ export async function resolveSelectedKeyImagesForCompose(opts: {
       base64: buf.toString("base64"),
       bytes: buf.byteLength,
       observationId: obsId,
-      caption: (ref.caption ?? row.caption ?? "").trim(),
+      caption: (row.caption ?? ref.caption ?? "").trim(),
     });
   }
 

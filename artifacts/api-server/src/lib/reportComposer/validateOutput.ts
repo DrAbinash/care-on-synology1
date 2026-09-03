@@ -201,6 +201,156 @@ function detectSeverityEscalations(inputCorpus: string, outputText: string): str
   return escalations;
 }
 
+function slotKey(o: ComposeObservation): string {
+  const norm = (s: string | null | undefined) =>
+    (s ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim().toLowerCase();
+  return `${norm(o.region)}|${norm(o.concept)}|${norm(o.level)}|${norm(o.laterality)}`;
+}
+
+function oppositeLaterality(lat: string): string | null {
+  const l = lat.toLowerCase();
+  if (l === "right") return "left";
+  if (l === "left") return "right";
+  return null;
+}
+
+/**
+ * Definite (hard-fail) clinical mutations using canonical observation slots.
+ * Returns only unambiguous cases; ambiguous multi-lesion stays advisory-only.
+ */
+export function detectDefiniteClinicalMutations(
+  snapshot: ComposerInputSnapshot,
+  draft: ComposerDraftOutput,
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const observations = snapshot.observations ?? [];
+  const output = [draft.findings, draft.impression, draft.recommendation].join("\n");
+  const outputLower = output.toLowerCase();
+  const scaffold = [snapshot.findings, snapshot.impression, snapshot.technique].join("\n");
+  const suppliedLevels = new Set<string>();
+  for (const lv of extractLevels(
+    [
+      scaffold,
+      ...observations.map((o) => [o.level, o.findingsText, o.impressionText].filter(Boolean).join(" ")),
+    ].join("\n"),
+  )) {
+    suppliedLevels.add(lv);
+  }
+
+  // 1) Unique supplied measurement disappears or changes
+  const inputMeasurements = extractMeasurementTokens(
+    [
+      scaffold,
+      ...observations.map((o) => [o.findingsText, o.impressionText].filter(Boolean).join(" ")),
+    ].join("\n"),
+  );
+  const outputMeasurements = extractMeasurementTokens(output);
+  if (inputMeasurements.size === 1) {
+    const only = [...inputMeasurements][0]!;
+    if (!outputMeasurements.has(only)) {
+      errors.push("measurement_mutation");
+      warnings.push(`Unique supplied measurement '${only}' was dropped or changed.`);
+    }
+  } else if (inputMeasurements.size > 1) {
+    // Multiple measurements: hard-fail only when ALL unique tokens from a single
+    // observation slot disappear; otherwise remain advisory (handled elsewhere).
+    for (const o of observations) {
+      const obsTokens = extractMeasurementTokens(
+        [o.findingsText, o.impressionText ?? ""].join(" "),
+      );
+      if (obsTokens.size !== 1) continue;
+      const tok = [...obsTokens][0]!;
+      // Unique across entire input?
+      let count = 0;
+      for (const t of inputMeasurements) if (t === tok) count += 1;
+      // extractMeasurementTokens is a Set so uniqueness is global
+      const appearsInOther = observations.some((other) => {
+        if (other === o) return false;
+        return extractMeasurementTokens(
+          [other.findingsText, other.impressionText ?? ""].join(" "),
+        ).has(tok);
+      });
+      if (!appearsInOther && !outputMeasurements.has(tok)) {
+        // Only hard-fail if this was the sole occurrence of this measurement token
+        // and the slot is uniquely identifiable.
+        const sameConcept = observations.filter((x) => slotKey(x) === slotKey(o));
+        if (sameConcept.length === 1) {
+          errors.push("measurement_mutation");
+          warnings.push(`Supplied measurement '${tok}' for slot ${slotKey(o)} was dropped or changed.`);
+        }
+      }
+    }
+  }
+
+  // 2) Single-observation right↔left swap (definite)
+  const lateralityObs = observations.filter(
+    (o) => o.laterality && /^(right|left)$/i.test(o.laterality.trim()),
+  );
+  if (lateralityObs.length === 1) {
+    const o = lateralityObs[0]!;
+    const from = o.laterality!.trim().toLowerCase();
+    const to = oppositeLaterality(from);
+    if (to) {
+      const outputHasTo = new RegExp(`\\b${to}\\b`, "i").test(outputLower);
+      const outputHasFrom = new RegExp(`\\b${from}\\b`, "i").test(outputLower);
+      if (outputHasTo && !outputHasFrom) {
+        errors.push("laterality_swap");
+        warnings.push(`Definite laterality swap detected: ${from}→${to}.`);
+      }
+    }
+  }
+
+  // 3) Output spinal level absent from all supplied observations/scaffold
+  const outputLevels = extractLevels(output);
+  const introduced = [...outputLevels].filter((lv) => !suppliedLevels.has(lv));
+  if (introduced.length > 0 && suppliedLevels.size > 0) {
+    errors.push("level_change");
+    warnings.push(
+      `Output spinal level absent from supplied observations/scaffold: ${introduced.join(", ")}.`,
+    );
+  }
+
+  // 4) mild→severe / moderate→severe within the same canonical observation slot
+  for (const o of observations) {
+    const sev = (o.severity ?? "").trim().toLowerCase();
+    if (!sev) continue;
+    const sameSlotPeers = observations.filter((x) => slotKey(x) === slotKey(o));
+    if (sameSlotPeers.length !== 1) continue; // ambiguous multi-slot
+    for (const [mild, severe] of [
+      ["mild", "severe"],
+      ["moderate", "severe"],
+      ["minimal", "severe"],
+    ] as const) {
+      if (sev !== mild) continue;
+      const level = (o.level ?? "").trim();
+      const concept = (o.concept ?? "").trim();
+      // Require the severe token near the same level/concept in output, and
+      // the original mild severity for this slot to be absent.
+      const severeNearSlot = level
+        ? new RegExp(`${severe}[\\s\\S]{0,40}${level.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${level.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]{0,40}${severe}`, "i")
+        : new RegExp(`\\b${severe}\\b`, "i");
+      const mildPresent = new RegExp(`\\b${mild}\\b`, "i").test(outputLower);
+      if (severeNearSlot.test(output) && !mildPresent) {
+        // If another observation already supplies `severe` at a different slot, skip (not definite).
+        const otherSevere = observations.some(
+          (x) => slotKey(x) !== slotKey(o) && (x.severity ?? "").toLowerCase() === severe,
+        );
+        if (!otherSevere) {
+          errors.push("severity_escalation");
+          warnings.push(
+            `Definite severity escalation in slot ${slotKey(o)}: ${mild}→${severe}` +
+              (concept ? ` (${concept})` : "") +
+              ".",
+          );
+        }
+      }
+    }
+  }
+
+  return { errors, warnings };
+}
+
 /**
  * Flag abnormality terms that appear in AI output but nowhere in radiologist-supplied input.
  *
@@ -238,7 +388,7 @@ export function validateComposerOutput(
     );
   }
 
-  // Advisory heuristics (multi-finding false positives possible).
+  // Advisory heuristics (multi-finding false positives possible) — keep warnings.
   lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
   if (lateralitySwaps.length > 0) {
     warnings.push(`AI may have swapped laterality (advisory): ${lateralitySwaps.join(", ")}`);
@@ -258,6 +408,16 @@ export function validateComposerOutput(
   if (missingMeasurements.length > 0) {
     warnings.push(`AI may have dropped measurements (advisory): ${missingMeasurements.join(", ")}`);
   }
+
+  // ── Definite clinical mutations → hard-block READY ─────────────────────
+  // Conservative: only hard-fail when correlation is unambiguous via canonical
+  // observation slots (region|concept|level|laterality). Bilateral / multilevel
+  // / multi-lesion ambiguity remains advisory (warnings above).
+  const definite = detectDefiniteClinicalMutations(snapshot, draft);
+  for (const e of definite.errors) {
+    if (!errors.includes(e)) errors.push(e);
+  }
+  for (const w of definite.warnings) warnings.push(w);
 
   const hasScreening = (snapshot.regions ?? []).some((r) => /screening/i.test(r))
     || /screening/i.test(snapshot.protocol ?? "")
