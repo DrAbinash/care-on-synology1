@@ -378,7 +378,11 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
     }
     html.sa-boot h1 { font-size: 1.35rem; font-weight: 700; margin: 0 0 0.75rem 0; color: #fbbf24; tracking: -0.025em; }
     html.sa-boot p { font-size: 0.875rem; color: #94a3b8; line-height: 1.6; margin: 0 0 1.75rem 0; }
-    html.sa-boot button {
+    /* NEVER style all button/input elements — the USB login PIN field has an
+       absolutely-positioned eye <button> that would become a solid amber
+       overlay (width:100%) and block typing. Pairing chrome is ID-scoped. */
+    html.sa-boot #pair-btn,
+    html.sa-boot #auth-btn {
       background: linear-gradient(135deg, #fbbf24, #f59e0b);
       color: #0b0f19;
       border: none;
@@ -391,11 +395,13 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       transition: all 0.2s;
       box-shadow: 0 4px 14px rgba(251, 191, 36, 0.3);
     }
-    html.sa-boot button:hover {
+    html.sa-boot #pair-btn:hover,
+    html.sa-boot #auth-btn:hover {
       transform: translateY(-1px);
       box-shadow: 0 6px 20px rgba(251, 191, 36, 0.4);
     }
-    html.sa-boot button:active {
+    html.sa-boot #pair-btn:active,
+    html.sa-boot #auth-btn:active {
       transform: translateY(0);
     }
     html.sa-boot #err {
@@ -614,8 +620,8 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       // so operators can type their DB PIN without rebuilding the pen drive.
       installLoginPinFallbackShim();
 
-      // Drop pairing-page CSS before the USB UI mounts so portal buttons
-      // (HelpCircle, WhatsApp, column toggles) are not width:100% amber bars.
+      // Drop pairing-page CSS before the USB UI mounts so login PIN (eye
+      // toggle), HelpCircle, and WhatsApp controls are not amber overlays.
       document.documentElement.classList.remove("sa-boot");
 
       const script = document.createElement("script");
@@ -646,8 +652,16 @@ app.get(/^\/super-admin-portal(\/.*)?$/, (_req: Request, res: Response) => {
       }
 
       function unlockPinInputs() {
-        if (!autoLoginFailedVisible()) return;
-        const inputs = document.querySelectorAll('input[type="password"], input[autocomplete="current-password"]');
+        // Unlock whenever the PIN field is on screen and auto-login is not
+        // mid-flight. The yellow overlay was CSS; disabled/readOnly is the
+        // older USB lock after a failed auto-login or PIN-only skip.
+        const attempting = Array.from(document.querySelectorAll("p, span, div")).some((el) => {
+          const t = (el.textContent || "").trim();
+          return t.startsWith("Auto-login via USB");
+        });
+        if (attempting) return;
+        if (!autoLoginFailedVisible() && !document.getElementById("pin")) return;
+        const inputs = document.querySelectorAll('#pin, input[type="password"], input[autocomplete="current-password"]');
         for (const inp of inputs) {
           if (inp.disabled) inp.disabled = false;
           if (inp.readOnly) inp.readOnly = false;
