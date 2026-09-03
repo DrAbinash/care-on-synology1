@@ -299,8 +299,23 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
     const engine = readFileSync(join(__dirname, "composeEngine.ts"), "utf8");
     expect(engine).toMatch(/resolveSelectedKeyImagesForCompose/);
     expect(engine).toMatch(/vision_model_required/);
+    expect(engine).toMatch(/vision_capability_unverified/);
+    expect(engine).toMatch(/assertVisionCapableModel/);
     expect(engine).toMatch(/Never fetches Orthanc middle slices/);
     expect(engine).not.toMatch(/fetchMiddleSlice|middleSliceJpegs|getMiddleSlice/i);
+    // Never silently inflate administrator runtime numCtx / timeout.
+    expect(engine).not.toMatch(/Math\.max\(\s*runtime\.numCtx/);
+    expect(engine).not.toMatch(/Math\.max\(\s*runtime\.timeoutMs/);
+    expect(engine).toMatch(/composer_num_ctx_insufficient/);
+  });
+
+  it("13c3b. SELECTED_IMAGES ownership resolves authoritative draft (never draftId: null alone)", () => {
+    const jobService = readFileSync(join(__dirname, "jobService.ts"), "utf8");
+    const resolve = readFileSync(join(__dirname, "resolveSelectedKeyImages.ts"), "utf8");
+    expect(jobService).toMatch(/resolveAuthoritativeComposeDraft/);
+    expect(jobService).toMatch(/ownership/);
+    expect(resolve).toMatch(/verifyKeyImageRowOwnership/);
+    expect(resolve).toMatch(/selected_images_ownership_unverified/);
   });
 
   it("13c4. ReportComposerAssistant exposes mode selector; workspace does not call legacy ai-reporting/draft for composer", async () => {

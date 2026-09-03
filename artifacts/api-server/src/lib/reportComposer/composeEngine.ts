@@ -5,7 +5,6 @@
  *
  * Never fetches Orthanc middle slices. Never stores base64 in snapshots.
  */
-import { classifyOllamaModelVisionByName } from "@workspace/ai-providers";
 import { resolveComposerRuntime } from "../voiceReportComposer/runtimeConfig";
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import {
@@ -21,6 +20,8 @@ import {
   renderRadiologistDraftContextPrompt,
 } from "./buildRadiologistDraftContext";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
+import { assertVisionCapableModel } from "./visionCapability";
+import type { KeyImageOwnershipContext } from "./keyImageOwnership";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 
 export type ComposeRunResult = {
@@ -151,7 +152,8 @@ export async function runReportComposer(opts: {
   kind: AiComposeJobKind;
   snapshot: ComposerInputSnapshot;
   allowDeterministicFallback?: boolean;
-  draftId?: number | null;
+  /** Authoritative ownership context for SELECTED_IMAGES (resolved server-side). */
+  ownership?: KeyImageOwnershipContext | null;
 }): Promise<ComposeRunResult> {
   const started = Date.now();
   const aiMode = effectiveAiMode(opts.kind, opts.snapshot);
@@ -211,9 +213,23 @@ export async function runReportComposer(opts: {
   let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model };
 
   if (aiMode === "SELECTED_IMAGES") {
+    const ownership = opts.ownership ?? null;
+    if (!ownership || (ownership.draftId == null && ownership.studyId == null)) {
+      return {
+        ok: false,
+        safeError: "selected_images_ownership_unverified",
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          model: runtime.model,
+          degradedReason: "Cannot verify key-image ownership without an authoritative draft or study.",
+        },
+      };
+    }
+
     const resolved = await resolveSelectedKeyImagesForCompose({
       snapshot: opts.snapshot,
-      draftId: opts.draftId ?? null,
+      ownership,
     });
     if (!resolved.ok) {
       return {
@@ -228,27 +244,51 @@ export async function runReportComposer(opts: {
       };
     }
 
-    // Prefer configured vision model for SELECTED_IMAGES; fall back to composer model
-    // only if it is itself vision-capable.
+    // Prefer configured vision model; only use composer model if positively vision-capable.
     const preferredVision = (runtime.visionModel || "").trim() || runtime.model;
-    const visionClass = classifyOllamaModelVisionByName(preferredVision);
-    const composerClass = classifyOllamaModelVisionByName(runtime.model);
     let visionModel = preferredVision;
-    if (visionClass === "text-only") {
-      if (composerClass === "vision") {
+    let visionOk = await assertVisionCapableModel({
+      endpoint: runtime.endpoint,
+      model: visionModel,
+    });
+    if (!visionOk.ok && preferredVision !== runtime.model && runtime.model) {
+      const alt = await assertVisionCapableModel({
+        endpoint: runtime.endpoint,
+        model: runtime.model,
+      });
+      if (alt.ok) {
         visionModel = runtime.model;
-      } else {
-        return {
-          ok: false,
-          safeError: "vision_model_required",
-          latencyMs: Date.now() - started,
-          provenance: {
-            ...baseProvenance,
-            model: preferredVision,
-            degradedReason: "Selected-image drafting requires a vision-capable local model.",
-          },
-        };
+        visionOk = alt;
       }
+    }
+    if (!visionOk.ok) {
+      return {
+        ok: false,
+        safeError: visionOk.safeError,
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          model: preferredVision,
+          degradedReason: visionOk.detail,
+        },
+      };
+    }
+
+    // Respect canonical runtime settings — never silently inflate numCtx/timeout.
+    // If the configured context window is below the clinic minimum for vision
+    // drafts, fail with an actionable error instead of mutating admin settings.
+    const MIN_VISION_NUM_CTX = 2048;
+    if (runtime.numCtx < MIN_VISION_NUM_CTX) {
+      return {
+        ok: false,
+        safeError: "composer_num_ctx_insufficient",
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          model: visionModel,
+          degradedReason: `Composer num_ctx (${runtime.numCtx}) is below the minimum required for selected-image drafting (${MIN_VISION_NUM_CTX}). Increase ollama_composer_num_ctx in clinic settings.`,
+        },
+      };
     }
 
     imagesBase64 = resolved.images.map((img) => img.base64);
@@ -267,9 +307,9 @@ export async function runReportComposer(opts: {
       model: visionModel,
       system,
       user,
-      numCtx: Math.max(runtime.numCtx, 8192),
+      numCtx: runtime.numCtx,
       temperature: runtime.temperature,
-      timeoutMs: Math.max(runtime.timeoutMs, 90_000),
+      timeoutMs: runtime.timeoutMs,
       images: imagesBase64,
     });
 

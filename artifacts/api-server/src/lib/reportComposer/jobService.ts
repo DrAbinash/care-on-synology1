@@ -337,11 +337,27 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: false, detail: "bad_stored_snapshot" };
   }
 
+  // Resolve authoritative draft for SELECTED_IMAGES ownership (never draftId: null).
+  const { resolveAuthoritativeComposeDraft } = await import("./resolveComposeDraft");
+  const authDraft = await resolveAuthoritativeComposeDraft({
+    worklistId: job.worklistId,
+    studyId: job.studyId ?? snapshot.studyId ?? null,
+  });
+  const ownership = {
+    draftId: authDraft?.draftId ?? null,
+    studyId: job.studyId ?? snapshot.studyId ?? authDraft?.studyId ?? null,
+    worklistId: job.worklistId ?? authDraft?.worklistId ?? null,
+    patientId: authDraft?.patientId ?? null,
+    draftStudyId: authDraft?.studyId ?? null,
+    draftWorklistId: authDraft?.worklistId ?? null,
+    draftPatientId: authDraft?.patientId ?? null,
+  };
+
   const run = await runReportComposer({
     kind: job.jobKind as AiComposeJobKind,
     snapshot,
     allowDeterministicFallback: true,
-    draftId: null,
+    ownership,
   });
 
   if (!run.ok || !run.draft) {
@@ -359,6 +375,8 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.safeError === "composer_model_not_configured" ||
       run.safeError === "malformed_json" ||
       run.safeError === "vision_model_required" ||
+      run.safeError === "vision_capability_unverified" ||
+      run.safeError === "composer_num_ctx_insufficient" ||
       run.safeError?.startsWith("selected_images_")
     ) {
       return { ok: true, detail: run.safeError };
