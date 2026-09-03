@@ -102,6 +102,31 @@ export function canonicalStudyContextHashPayload(s: ComposerInputSnapshot): stri
   ].join("\u001f");
 }
 
+/**
+ * Canonical selected-key-image payload for inputHash.
+ * MUST be mirrored by the client. Order-sensitive (add/remove/reorder invalidates).
+ * Captions participate so caption edits invalidate READY image-assisted drafts.
+ * Never includes bytes/base64.
+ */
+export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot): string {
+  const refs = s.selectedKeyImages ?? [];
+  const norm = (v: string | number | null | undefined): string =>
+    String(v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return refs
+    .map((r) =>
+      [
+        norm(r.keyImageId),
+        norm(r.observationId),
+        norm(r.seriesInstanceUid),
+        norm(r.sopInstanceUid),
+        norm(r.frameNumber),
+        norm(r.seriesDescription),
+        norm(r.caption),
+      ].join("\u001f"),
+    )
+    .join("\n");
+}
+
 /** Deduplicate observations by canonical identity (region|concept|level|laterality). */
 export function dedupeObservations(obs: ComposeObservation[]): ComposeObservation[] {
   const seen = new Set<string>();
@@ -193,6 +218,7 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
   // self-describing — but intentionally NOT part of `reportRevision` (see
   // `canonicalStudyContextHashPayload` docstring for the rationale).
   const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
+  const selectedImagesCanon = canonicalSelectedKeyImagesHashPayload(snapshot);
   const inputHash = hashText(
     [
       snapshot.jobKindHint ?? "",
@@ -206,6 +232,10 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
       snapshot.selectionText ?? "",
       snapshot.instruction ?? "",
       (snapshot.templateSections ?? []).join(","),
+      // Selected-image mode + ordered key-image refs participate in inputHash
+      // so add/remove/reorder/caption change invalidates READY drafts.
+      snapshot.aiMode ?? "TEXT_ONLY",
+      selectedImagesCanon,
     ].join("\u001e"),
   );
   // Revision is content-derived so multi-tab / unsaved editor state is self-describing.

@@ -73,7 +73,24 @@ export type ComposerInputSnapshot = {
   instruction?: string;
   targetLanguage?: string;
   jobKindHint?: string;
+  /** AI drafting mode. Absent/undefined = TEXT_ONLY (backward compatible). */
+  aiMode?: "TEXT_ONLY" | "SELECTED_IMAGES";
+  /**
+   * Radiologist-selected frozen key-image refs (IDs + safe metadata only).
+   * Never base64 / blob URLs. Optional — old snapshots without this still parse.
+   */
+  selectedKeyImages?: Array<{
+    keyImageId: number;
+    observationId?: string | null;
+    seriesInstanceUid?: string | null;
+    sopInstanceUid?: string | null;
+    frameNumber?: number | null;
+    seriesDescription?: string | null;
+    caption?: string;
+  }>;
 };
+
+export const COMPOSER_MAX_SELECTED_KEY_IMAGES = 4;
 
 export type TrackedChange = {
   id: string;
@@ -252,6 +269,26 @@ export function canonicalStudyContextHashPayload(s: ComposerInputSnapshot): stri
   ].join("\u001f");
 }
 
+/** MUST mirror server `canonicalSelectedKeyImagesHashPayload`. */
+export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot): string {
+  const refs = s.selectedKeyImages ?? [];
+  const norm = (v: string | number | null | undefined): string =>
+    String(v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return refs
+    .map((r) =>
+      [
+        norm(r.keyImageId),
+        norm(r.observationId),
+        norm(r.seriesInstanceUid),
+        norm(r.sopInstanceUid),
+        norm(r.frameNumber),
+        norm(r.seriesDescription),
+        norm(r.caption),
+      ].join("\u001f"),
+    )
+    .join("\n");
+}
+
 export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Promise<{
   findingsHash: string;
   impressionHash: string;
@@ -276,6 +313,7 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   // self-describing — but intentionally NOT part of `reportRevision` (see
   // `canonicalStudyContextHashPayload` docstring for the rationale).
   const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
+  const selectedImagesCanon = canonicalSelectedKeyImagesHashPayload(snapshot);
   const inputHash = await hashText(
     [
       snapshot.jobKindHint ?? "",
@@ -289,6 +327,8 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
       snapshot.selectionText ?? "",
       snapshot.instruction ?? "",
       (snapshot.templateSections ?? []).join(","),
+      snapshot.aiMode ?? "TEXT_ONLY",
+      selectedImagesCanon,
     ].join("\u001e"),
   );
   const reportRevision = await hashText(`${findingsHash}:${impressionHash}:${recommendationHash}:${obsCanon}`);

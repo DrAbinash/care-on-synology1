@@ -284,6 +284,36 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
     expect(erpTypes).toMatch(/reportRevision = await hashText\(`\$\{findingsHash\}:\$\{impressionHash\}:\$\{recommendationHash\}:\$\{obsCanon\}`\)/);
   });
 
+  it("13c2. selected-image mode + selectedImagesCanon participate in inputHash on both sides", async () => {
+    const apiSnapshot = readFileSync(join(__dirname, "snapshot.ts"), "utf8");
+    const erpTypes = readFileSync(join(ERP_SRC, "lib/reportComposer/types.ts"), "utf8");
+    expect(apiSnapshot).toContain("canonicalSelectedKeyImagesHashPayload");
+    expect(erpTypes).toContain("canonicalSelectedKeyImagesHashPayload");
+    expect(apiSnapshot).toMatch(/selectedImagesCanon/);
+    expect(erpTypes).toMatch(/selectedImagesCanon/);
+    expect(apiSnapshot).toMatch(/snapshot\.aiMode \?\? "TEXT_ONLY"/);
+    expect(erpTypes).toMatch(/snapshot\.aiMode \?\? "TEXT_ONLY"/);
+  });
+
+  it("13c3. composeEngine never fetches Orthanc middle slices for SELECTED_IMAGES", async () => {
+    const engine = readFileSync(join(__dirname, "composeEngine.ts"), "utf8");
+    expect(engine).toMatch(/resolveSelectedKeyImagesForCompose/);
+    expect(engine).toMatch(/vision_model_required/);
+    expect(engine).toMatch(/Never fetches Orthanc middle slices/);
+    expect(engine).not.toMatch(/fetchMiddleSlice|middleSliceJpegs|getMiddleSlice/i);
+  });
+
+  it("13c4. ReportComposerAssistant exposes mode selector; workspace does not call legacy ai-reporting/draft for composer", async () => {
+    const assistant = readFileSync(join(ERP_SRC, "components/radiology/ReportComposerAssistant.tsx"), "utf8");
+    const workspace = readFileSync(join(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+    expect(assistant).toMatch(/Draft from Observations/);
+    expect(assistant).toMatch(/Draft with Selected Images/);
+    expect(workspace).toMatch(/composerAiMode/);
+    expect(workspace).toMatch(/aiSelectedKeyImageIds/);
+    // Composer enqueue path is report-composer, not legacy draft
+    expect(workspace).toMatch(/useReportComposer/);
+  });
+
   it("13d. RadiologyReportingWorkspace passes canonical protocol + reportTitle to useReportComposer (no `protocol: undefined`)", async () => {
     const workspace = readFileSync(join(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
     // PR P0-2 explicit defect: `protocol: undefined` MUST be gone.

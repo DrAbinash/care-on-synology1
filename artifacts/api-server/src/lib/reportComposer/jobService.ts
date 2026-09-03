@@ -22,6 +22,7 @@ import {
 import { enqueueRadiologyJob } from "../radiologyJobs";
 import {
   ComposerInputSnapshotSchema,
+  COMPOSER_MAX_SELECTED_KEY_IMAGES,
   type ComposerInputSnapshot,
   type TrackedChange,
 } from "./types";
@@ -145,6 +146,49 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   };
   const jobKind = (args.jobKind ?? "FULL_REPORT") as AiComposeJobKind;
   snapshot.jobKindHint = jobKind;
+
+  // Normalize / gate AI mode: IMPRESSION + micro-edits are always text-only.
+  const textOnlyKinds = new Set([
+    "IMPRESSION",
+    "SELECTION_EDIT",
+    "SECTION_EDIT",
+    "REPHRASE",
+    "SHORTEN",
+    "EXPAND",
+    "TRANSLATE",
+  ]);
+  if (textOnlyKinds.has(jobKind) || !snapshot.aiMode) {
+    snapshot.aiMode = "TEXT_ONLY";
+    snapshot.selectedKeyImages = [];
+  }
+  if (snapshot.aiMode === "SELECTED_IMAGES") {
+    const refs = snapshot.selectedKeyImages ?? [];
+    if (refs.length === 0) {
+      return {
+        ok: false,
+        error: "Selected-image drafting requires at least one AI-selected key image.",
+        code: "selected_images_empty",
+      };
+    }
+    if (refs.length > COMPOSER_MAX_SELECTED_KEY_IMAGES) {
+      return {
+        ok: false,
+        error: `At most ${COMPOSER_MAX_SELECTED_KEY_IMAGES} key images may be selected for AI.`,
+        code: "selected_images_limit",
+      };
+    }
+    // Never persist base64 / data URLs in the frozen snapshot (client must not send them).
+    for (const ref of refs) {
+      const caption = ref.caption ?? "";
+      if (/^data:image\//i.test(caption) || caption.length > 2000) {
+        return {
+          ok: false,
+          error: "Invalid key-image metadata in composition snapshot.",
+          code: "bad_image_ref",
+        };
+      }
+    }
+  }
 
   const hashes = computeSnapshotHashes(snapshot);
 
@@ -297,12 +341,26 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     kind: job.jobKind as AiComposeJobKind,
     snapshot,
     allowDeterministicFallback: true,
+    draftId: null,
   });
 
   if (!run.ok || !run.draft) {
-    await failJob(job.id, job.worklistId, run.safeError ?? "compose_failed", run.model, run.fallbackUsed, run.latencyMs);
-    // Do not retry endlessly on config errors
-    if (run.safeError === "composer_model_not_configured" || run.safeError === "malformed_json") {
+    await failJob(
+      job.id,
+      job.worklistId,
+      run.safeError ?? "compose_failed",
+      run.model,
+      run.fallbackUsed,
+      run.latencyMs,
+      run.provenance ? { provenance: run.provenance } : undefined,
+    );
+    // Do not retry endlessly on config / vision / image resolution errors
+    if (
+      run.safeError === "composer_model_not_configured" ||
+      run.safeError === "malformed_json" ||
+      run.safeError === "vision_model_required" ||
+      run.safeError?.startsWith("selected_images_")
+    ) {
       return { ok: true, detail: run.safeError };
     }
     return { ok: false, detail: run.safeError };
@@ -317,7 +375,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.model,
       run.fallbackUsed,
       run.latencyMs,
-      validation,
+      { ...validation, provenance: run.provenance ?? null },
     );
     return { ok: true, detail: "validation_failed" };
   }
@@ -343,7 +401,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       proposedFindings: run.draft.findings,
       proposedImpression: run.draft.impression,
       proposedRecommendation: run.draft.recommendation,
-      validationJson: JSON.stringify(validation),
+      validationJson: JSON.stringify({ ...validation, provenance: run.provenance ?? null }),
       model: run.model ?? null,
       fallbackUsed: run.fallbackUsed ?? false,
       latencyMs: run.latencyMs ?? null,

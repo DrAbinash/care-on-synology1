@@ -43,6 +43,12 @@ export function useReportComposer(opts: {
    * Source: resolvePrintedReportTitle(appliedFormatReportTitle, fallback). */
   reportTitle?: string;
   isFinalized: boolean;
+  /** TEXT_ONLY (default) or SELECTED_IMAGES. */
+  aiMode?: "TEXT_ONLY" | "SELECTED_IMAGES";
+  /** Radiologist AI-selected frozen key images (IDs + metadata; never base64). */
+  selectedKeyImages?: ComposerInputSnapshot["selectedKeyImages"];
+  /** Human-readable primary region for UI (e.g. MRI Brain). */
+  primaryRegionLabel?: string;
 }) {
   const { toast } = useToast();
   const [job, setJob] = useState<ComposeJobView | null>(null);
@@ -110,6 +116,8 @@ export function useReportComposer(opts: {
             recommendation: recommendationText,
             observations: liveObservations,
             jobKindHint: res.job.jobKind ?? "FULL_REPORT",
+            aiMode: opts.aiMode ?? "TEXT_ONLY",
+            selectedKeyImages: opts.selectedKeyImages ?? [],
           };
           const hashes = await computeSnapshotHashes(liveSnapshot);
           const fr = await reportComposerApi.freshness(id, {
@@ -202,6 +210,8 @@ export function useReportComposer(opts: {
         recommendation: fieldProvenance.recommendation as Record<string, string[]> | undefined,
       },
       jobKindHint: jobKind ?? "FULL_REPORT",
+      aiMode: opts.aiMode ?? "TEXT_ONLY",
+      selectedKeyImages: opts.selectedKeyImages ?? [],
       ...extra,
     };
     const hashes = await computeSnapshotHashes(snap);
@@ -217,9 +227,33 @@ export function useReportComposer(opts: {
       toast({ title: "Report finalized", description: "Composition not allowed.", variant: "destructive" });
       return null;
     }
+    const effectiveMode =
+      jobKind === "FULL_REPORT"
+        ? (extra?.aiMode ?? opts.aiMode ?? "TEXT_ONLY")
+        : "TEXT_ONLY";
+    if (effectiveMode === "SELECTED_IMAGES") {
+      const imgs = extra?.selectedKeyImages ?? opts.selectedKeyImages ?? [];
+      if (imgs.length === 0) {
+        toast({
+          title: "No AI-selected images",
+          description: "Select frozen key images for AI, or use Draft from Observations.",
+          variant: "destructive",
+        });
+        return null;
+      }
+    }
     setBusy(true);
     try {
-      const snapshot = await buildSnapshot(extra, jobKind);
+      const snapshot = await buildSnapshot(
+        {
+          ...extra,
+          aiMode: effectiveMode,
+          selectedKeyImages: effectiveMode === "SELECTED_IMAGES"
+            ? (extra?.selectedKeyImages ?? opts.selectedKeyImages ?? [])
+            : [],
+        },
+        jobKind,
+      );
       const res = await reportComposerApi.enqueue({ snapshot, jobKind });
       if (!res.ok || !res.jobId) {
         toast({ title: "Compose failed", description: res.error ?? "Could not enqueue", variant: "destructive" });
@@ -246,7 +280,7 @@ export function useReportComposer(opts: {
     } finally {
       setBusy(false);
     }
-  }, [buildSnapshot, opts.isFinalized, refreshJob, startPoll, toast]);
+  }, [buildSnapshot, opts, refreshJob, startPoll, toast]);
 
   const updateLocalChanges = (changes: TrackedChange[]) => {
     setJob((j) => (j ? { ...j, trackedChanges: changes } : j));
@@ -365,9 +399,16 @@ export function useReportComposer(opts: {
     pendingCount,
     enqueue,
     composeFull: () => enqueue("FULL_REPORT"),
-    composeImpression: () => enqueue("IMPRESSION"),
+    composeImpression: () => enqueue("IMPRESSION", { aiMode: "TEXT_ONLY", selectedKeyImages: [] }),
     microEdit: (kind: JobKind, selectionText: string, selectionField: "FINDINGS" | "IMPRESSION" | "RECOMMENDATION", instruction: string, targetLanguage?: string) =>
-      enqueue(kind, { selectionText, selectionField, instruction, targetLanguage }),
+      enqueue(kind, {
+        selectionText,
+        selectionField,
+        instruction,
+        targetLanguage,
+        aiMode: "TEXT_ONLY",
+        selectedKeyImages: [],
+      }),
     acceptChange,
     rejectChange,
     acceptAllPending,
@@ -377,5 +418,8 @@ export function useReportComposer(opts: {
     regenerate,
     undoLastPatch,
     refreshJob,
+    aiMode: opts.aiMode ?? "TEXT_ONLY",
+    selectedKeyImageCount: opts.selectedKeyImages?.length ?? 0,
+    primaryRegionLabel: opts.primaryRegionLabel ?? opts.region ?? "Unknown region",
   };
 }

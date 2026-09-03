@@ -6,18 +6,20 @@
  */
 import type { AiComposeJobKind } from "@workspace/db/schema";
 import type { ComposerInputSnapshot } from "../types";
-import { selectPersonaModules, hasScreeningComponent } from "./router";
+import {
+  selectPersonaModules,
+  hasScreeningComponent,
+  CARE_PERSONA_VERSION,
+  resolvePrimaryRegionLabel,
+} from "./router";
 
 /**
  * Build the CARE system prompt for a given job kind + frozen snapshot.
  *
  * Assembly order:
- *   1. Persona modules (MASTER + STYLE + SAFETY + modality-specific)
+ *   1. Persona modules (MASTER + STYLE + SAFETY + modality/segment + selected-image)
  *   2. Screening safeguard (if applicable — §P)
  *   3. Job-kind-specific instruction
- *
- * Persona selection uses ONLY the frozen snapshot context. No live reread
- * of frontend state. No DICOM re-parsing.
  */
 export function buildCareSystemPrompt(
   kind: AiComposeJobKind,
@@ -26,25 +28,30 @@ export function buildCareSystemPrompt(
   const modules = selectPersonaModules(snapshot);
   const parts: string[] = [...modules];
 
-  // §P screening safeguard — explicit compact flag so the model cannot
-  // miss it. The MRI_SPINE persona already carries the full rule; this is
-  // a targeted reinforcement.
   if (hasScreeningComponent(snapshot)) {
     parts.push(
       "SCREENING CONTEXT ACTIVE: This study includes a Whole Spine Screening component. " +
       "Screening studies are LIMITED-PLANAR and LIMITED-SEQUENCE. " +
       "Do NOT describe screening as full multiplanar multisequence imaging. " +
-      "Use 'limited-planar, limited-sequence screening' wording in Technique.",
+      "Use 'limited-planar, limited-sequence screening' wording in Technique. " +
+      "Do NOT make full diagnostic claims about screening regions beyond supplied observations.",
     );
   }
 
-  // Job-kind-specific instruction (kept compact — the persona modules
-  // already carry the full rules).
+  if ((snapshot.aiMode ?? "TEXT_ONLY") === "SELECTED_IMAGES") {
+    parts.push(
+      `SELECTED-IMAGE CONTEXT: Primary region = ${resolvePrimaryRegionLabel(snapshot)}. ` +
+      `Selected frozen key images: ${(snapshot.selectedKeyImages ?? []).length}. ` +
+      "Observations remain the highest-priority clinical truth.",
+    );
+  }
+
   switch (kind) {
     case "IMPRESSION":
       parts.push(
         "TASK: Generate or refine Impression only from the supplied Findings/observations. " +
-        "Leave Findings unchanged in the JSON (copy input Findings).",
+        "Leave Findings unchanged in the JSON (copy input Findings). " +
+        "IMPRESSION jobs are text-only — do not require or claim image review.",
       );
       break;
     case "SELECTION_EDIT":
@@ -70,6 +77,23 @@ export function buildCareSystemPrompt(
   return parts.join("\n\n");
 }
 
-export { selectPersonaModules, hasScreeningComponent };
-export { CARE_RADIOLOGY_MASTER, CARE_REPORT_STYLE, CARE_SAFETY_RULES } from "./router";
-export { CARE_MRI_BRAIN, CARE_MRI_SPINE, CARE_CT, CARE_USG, CARE_MAMMOGRAPHY } from "./router";
+export {
+  selectPersonaModules,
+  hasScreeningComponent,
+  CARE_PERSONA_VERSION,
+  resolvePrimaryRegionLabel,
+};
+export {
+  CARE_RADIOLOGY_MASTER,
+  CARE_REPORT_STYLE,
+  CARE_SAFETY_RULES,
+  CARE_MRI_BRAIN,
+  CARE_MRI_SPINE,
+  CARE_CT,
+  CARE_USG,
+  CARE_MAMMOGRAPHY,
+  CARE_MRI_CERVICAL,
+  CARE_MRI_DORSAL,
+  CARE_MRI_LUMBAR,
+  CARE_SELECTED_IMAGE_ASSISTED,
+} from "./router";

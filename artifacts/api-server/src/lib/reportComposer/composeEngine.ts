@@ -1,19 +1,26 @@
 /**
- * Text Ollama call for background report composition (no DICOM pixels).
+ * Report composition engine — text-only by default; SELECTED_IMAGES mode
+ * attaches radiologist-selected frozen key images to a vision-capable
+ * local Ollama model via the canonical provider payload shape.
+ *
+ * Never fetches Orthanc middle slices. Never stores base64 in snapshots.
  */
+import { classifyOllamaModelVisionByName } from "@workspace/ai-providers";
 import { resolveComposerRuntime } from "../voiceReportComposer/runtimeConfig";
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
 import {
   ComposerInputSnapshot,
   ComposerDraftOutput,
+  ComposerEvidenceProvenance,
   parseComposerDraftJson,
 } from "./types";
 import { deterministicComposeFromSnapshot } from "./deterministicCompose";
-import { buildCareSystemPrompt } from "./persona";
+import { buildCareSystemPrompt, CARE_PERSONA_VERSION } from "./persona";
 import {
   buildRadiologistDraftContext,
   renderRadiologistDraftContextPrompt,
 } from "./buildRadiologistDraftContext";
+import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 
 export type ComposeRunResult = {
@@ -24,28 +31,24 @@ export type ComposeRunResult = {
   latencyMs?: number;
   safeError?: string;
   rawLength?: number;
+  provenance?: ComposerEvidenceProvenance;
 };
 
-// ─── CARE Radiology Persona ─────────────────────────────────────────────
-// PR P0-3 (#657): the system prompt is now assembled from persona modules
-// (MASTER + STYLE + SAFETY + modality/family-specific) based on the frozen
-// snapshot's canonical study context. Persona selection happens BEFORE the
-// worker call and uses the frozen snapshot — no live reread of frontend
-// state. See persona/index.ts and persona/router.ts.
-//
-// The old buildSystemPrompt(kind) function is replaced by
-// buildCareSystemPrompt(kind, snapshot) which is imported above.
-
-/** @deprecated Use buildCareSystemPrompt(kind, snapshot) from persona/index.ts. Kept for backward compat with external callers. */
+/** @deprecated Use buildCareSystemPrompt(kind, snapshot). */
 function buildSystemPrompt(kind: AiComposeJobKind): string {
-  // Legacy fallback: if a caller passes no snapshot context, assemble the
-  // base persona (MASTER + STYLE + SAFETY) without modality routing.
-  // This path is NOT used by runReportComposer (which always has a snapshot).
   return buildCareSystemPrompt(kind, {} as ComposerInputSnapshot);
 }
+void buildSystemPrompt;
 
 export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
-  if (kind === "SELECTION_EDIT" || kind === "REPHRASE" || kind === "SHORTEN" || kind === "EXPAND" || kind === "TRANSLATE" || kind === "SECTION_EDIT") {
+  if (
+    kind === "SELECTION_EDIT" ||
+    kind === "REPHRASE" ||
+    kind === "SHORTEN" ||
+    kind === "EXPAND" ||
+    kind === "TRANSLATE" ||
+    kind === "SECTION_EDIT"
+  ) {
     return JSON.stringify(
       {
         jobKind: kind,
@@ -62,9 +65,29 @@ export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputS
     );
   }
 
-  // Primary radiologist draft input — deterministic clinical truth block.
   const draftCtx = buildRadiologistDraftContext(snapshot);
-  return renderRadiologistDraftContextPrompt(draftCtx, kind);
+  let prompt = renderRadiologistDraftContextPrompt(draftCtx, kind);
+
+  if ((snapshot.aiMode ?? "TEXT_ONLY") === "SELECTED_IMAGES") {
+    const caps = (snapshot.selectedKeyImages ?? [])
+      .map((img, i) => {
+        const bits = [
+          `#${i + 1}`,
+          `keyImageId=${img.keyImageId}`,
+          img.observationId ? `linkedObservation=${img.observationId}` : null,
+          img.seriesDescription ? `series=${img.seriesDescription}` : null,
+          img.caption ? `caption=${img.caption}` : null,
+        ].filter(Boolean);
+        return `- ${bits.join(" | ")}`;
+      })
+      .join("\n");
+    prompt +=
+      `\n\nSELECTED KEY IMAGE METADATA (supporting evidence only; observations remain authoritative):\n` +
+      (caps || "- (none)") +
+      `\nDo NOT claim complete MRI review. Absence on these frames is not proof of normality.`;
+  }
+
+  return prompt;
 }
 
 async function callOllama(opts: {
@@ -75,8 +98,17 @@ async function callOllama(opts: {
   numCtx: number;
   temperature: number;
   timeoutMs: number;
+  /** Raw base64 without data: prefix (Ollama chat message.images). */
+  images?: string[];
 }): Promise<{ ok: boolean; text?: string; safeError?: string }> {
   try {
+    const userMessage: Record<string, unknown> = {
+      role: "user",
+      content: opts.user,
+    };
+    if (opts.images && opts.images.length > 0) {
+      userMessage.images = opts.images;
+    }
     const res = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -85,11 +117,9 @@ async function callOllama(opts: {
         model: opts.model,
         stream: false,
         format: "json",
+        think: false,
         options: { temperature: opts.temperature, num_ctx: opts.numCtx },
-        messages: [
-          { role: "system", content: opts.system },
-          { role: "user", content: opts.user },
-        ],
+        messages: [{ role: "system", content: opts.system }, userMessage],
       }),
     });
     if (!res.ok) {
@@ -106,17 +136,48 @@ async function callOllama(opts: {
   }
 }
 
-/** Deterministic fallback when model unavailable — organizes supplied observations only. */
 export { deterministicComposeFromSnapshot } from "./deterministicCompose";
+
+function effectiveAiMode(
+  kind: AiComposeJobKind,
+  snapshot: ComposerInputSnapshot,
+): "TEXT_ONLY" | "SELECTED_IMAGES" {
+  // Impression + micro-edits remain text-only even if snapshot carries images.
+  if (kind !== "FULL_REPORT") return "TEXT_ONLY";
+  return snapshot.aiMode === "SELECTED_IMAGES" ? "SELECTED_IMAGES" : "TEXT_ONLY";
+}
 
 export async function runReportComposer(opts: {
   kind: AiComposeJobKind;
   snapshot: ComposerInputSnapshot;
   allowDeterministicFallback?: boolean;
+  draftId?: number | null;
 }): Promise<ComposeRunResult> {
   const started = Date.now();
+  const aiMode = effectiveAiMode(opts.kind, opts.snapshot);
+  const baseProvenance: ComposerEvidenceProvenance = {
+    aiMode,
+    personaVersion: CARE_PERSONA_VERSION,
+    selectedKeyImageIds: (opts.snapshot.selectedKeyImages ?? []).map((r) => r.keyImageId),
+    imagesLoaded: 0,
+    linkedObservationIds: [],
+    degradedReason: null,
+  };
+
   const runtime = await resolveComposerRuntime(true);
   if (!runtime.enabled || !runtime.model) {
+    if (aiMode === "SELECTED_IMAGES") {
+      // Never silently claim image review via deterministic text fallback.
+      return {
+        ok: false,
+        safeError: "composer_model_not_configured",
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          degradedReason: "Selected-image drafting requires a configured local model.",
+        },
+      };
+    }
     if (opts.allowDeterministicFallback !== false) {
       const draft = deterministicComposeFromSnapshot(opts.snapshot, opts.kind);
       return {
@@ -125,20 +186,130 @@ export async function runReportComposer(opts: {
         model: "deterministic",
         fallbackUsed: true,
         latencyMs: Date.now() - started,
+        provenance: baseProvenance,
       };
     }
-    return { ok: false, safeError: "composer_model_not_configured", latencyMs: Date.now() - started };
+    return {
+      ok: false,
+      safeError: "composer_model_not_configured",
+      latencyMs: Date.now() - started,
+      provenance: baseProvenance,
+    };
   }
 
   const guard = validateOllamaUrl(runtime.endpoint, runtime.localOnly);
   if (!guard.ok) {
-    return { ok: false, safeError: "composer_endpoint_blocked", latencyMs: Date.now() - started };
+    return {
+      ok: false,
+      safeError: "composer_endpoint_blocked",
+      latencyMs: Date.now() - started,
+      provenance: baseProvenance,
+    };
   }
 
-  // PR P0-3 (#657): build CARE persona system prompt from the frozen
-  // snapshot's canonical study context. Persona selection happens here
-  // (before the worker call) and uses the frozen snapshot — no live
-  // reread of frontend state.
+  let imagesBase64: string[] = [];
+  let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model };
+
+  if (aiMode === "SELECTED_IMAGES") {
+    const resolved = await resolveSelectedKeyImagesForCompose({
+      snapshot: opts.snapshot,
+      draftId: opts.draftId ?? null,
+    });
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        safeError: resolved.safeError,
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          model: runtime.model,
+          degradedReason: resolved.detail ?? resolved.safeError,
+        },
+      };
+    }
+
+    // Prefer configured vision model for SELECTED_IMAGES; fall back to composer model
+    // only if it is itself vision-capable.
+    const preferredVision = (runtime.visionModel || "").trim() || runtime.model;
+    const visionClass = classifyOllamaModelVisionByName(preferredVision);
+    const composerClass = classifyOllamaModelVisionByName(runtime.model);
+    let visionModel = preferredVision;
+    if (visionClass === "text-only") {
+      if (composerClass === "vision") {
+        visionModel = runtime.model;
+      } else {
+        return {
+          ok: false,
+          safeError: "vision_model_required",
+          latencyMs: Date.now() - started,
+          provenance: {
+            ...baseProvenance,
+            model: preferredVision,
+            degradedReason: "Selected-image drafting requires a vision-capable local model.",
+          },
+        };
+      }
+    }
+
+    imagesBase64 = resolved.images.map((img) => img.base64);
+    provenance = {
+      ...baseProvenance,
+      model: visionModel,
+      imagesLoaded: resolved.images.length,
+      linkedObservationIds: resolved.linkedObservationIds,
+      selectedKeyImageIds: resolved.selectedKeyImageIds,
+    };
+
+    const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
+    const user = buildUserPrompt(opts.kind, opts.snapshot);
+    const primary = await callOllama({
+      endpoint: runtime.endpoint,
+      model: visionModel,
+      system,
+      user,
+      numCtx: Math.max(runtime.numCtx, 8192),
+      temperature: runtime.temperature,
+      timeoutMs: Math.max(runtime.timeoutMs, 90_000),
+      images: imagesBase64,
+    });
+
+    if (!primary.ok) {
+      return {
+        ok: false,
+        safeError: primary.safeError ?? "compose_failed",
+        latencyMs: Date.now() - started,
+        model: visionModel,
+        provenance: {
+          ...provenance,
+          degradedReason: primary.safeError ?? "compose_failed",
+        },
+      };
+    }
+
+    const draft = parseComposerDraftJson(primary.text ?? "");
+    if (!draft) {
+      return {
+        ok: false,
+        safeError: "malformed_json",
+        latencyMs: Date.now() - started,
+        model: visionModel,
+        rawLength: primary.text?.length ?? 0,
+        provenance,
+      };
+    }
+
+    return {
+      ok: true,
+      draft,
+      model: visionModel,
+      fallbackUsed: false,
+      latencyMs: Date.now() - started,
+      rawLength: primary.text?.length ?? 0,
+      provenance,
+    };
+  }
+
+  // ── TEXT_ONLY path (existing behaviour) ──────────────────────────────
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
   const user = buildUserPrompt(opts.kind, opts.snapshot);
   const primary = await callOllama({
@@ -175,6 +346,7 @@ export async function runReportComposer(opts: {
         latencyMs: Date.now() - started,
         model: runtime.model,
         fallbackUsed: true,
+        provenance: { ...baseProvenance, model: runtime.model },
       };
     }
   } else if (!primary.ok) {
@@ -187,6 +359,7 @@ export async function runReportComposer(opts: {
         fallbackUsed: true,
         latencyMs: Date.now() - started,
         safeError: primary.safeError,
+        provenance: { ...baseProvenance, model: "deterministic" },
       };
     }
     return {
@@ -194,6 +367,7 @@ export async function runReportComposer(opts: {
       safeError: primary.safeError ?? "compose_failed",
       latencyMs: Date.now() - started,
       model: runtime.model,
+      provenance: { ...baseProvenance, model: runtime.model },
     };
   }
 
@@ -206,10 +380,10 @@ export async function runReportComposer(opts: {
       model,
       fallbackUsed,
       rawLength: text?.length ?? 0,
+      provenance: { ...baseProvenance, model },
     };
   }
 
-  // Micro-edit: ensure proposed findings/impression only change selection field when possible
   if (opts.kind !== "FULL_REPORT" && opts.kind !== "IMPRESSION" && opts.snapshot.selectionText) {
     if (opts.snapshot.selectionField === "FINDINGS") {
       draft.findings = draft.findings || opts.snapshot.selectionText;
@@ -237,5 +411,6 @@ export async function runReportComposer(opts: {
     fallbackUsed,
     latencyMs: Date.now() - started,
     rawLength: text?.length ?? 0,
+    provenance: { ...baseProvenance, model },
   };
 }
