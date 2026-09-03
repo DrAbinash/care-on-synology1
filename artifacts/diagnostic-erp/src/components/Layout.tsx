@@ -126,9 +126,8 @@ import {
   unpairPenDrive,
   tryReadKeyFromPairedDir,
   beginEnsurePairedDirPermission,
-  tryReadUiFromPairedDir,
   tryReadApiFromPairedDir,
-  installSaLoginPinFallbackShim,
+  openSuperAdminPortal,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
 
@@ -699,6 +698,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     let apiUploaded = false;
 
     const cleanupUI = () => {
+      // Legacy: if an older session injected the USB UI script into the ERP
+      // document, remove it. New code never injects it (createRoot hijack).
       const script = document.getElementById("superadmin-plugin-ui-script");
       if (script) script.remove();
       if ((window as any).SuperAdminPortal) {
@@ -710,31 +711,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       window.dispatchEvent(new CustomEvent("superadmin-ui-unloaded"));
     };
 
-    const loadUI = async () => {
-      if ((window as any).SuperAdminPortal) return;
-      try {
-        const uiCode = await tryReadUiFromPairedDir();
-        if (uiCode && !stopped) {
-          installSaLoginPinFallbackShim();
-          const blob = new Blob([uiCode], { type: "text/javascript" });
-          const blobUrl = URL.createObjectURL(blob);
-          const script = document.createElement("script");
-          script.src = blobUrl;
-          script.id = "superadmin-plugin-ui-script";
-          script.onload = () => {
-            URL.revokeObjectURL(blobUrl);
-            window.dispatchEvent(new CustomEvent("superadmin-ui-loaded"));
-          };
-          script.onerror = () => {
-            URL.revokeObjectURL(blobUrl);
-            console.error("Failed to load Super Admin UI script from Blob");
-          };
-          document.body.appendChild(script);
-        }
-      } catch (err) {
-        console.error("Error loading UI plugin:", err);
-      }
-    };
+    /**
+     * Do NOT inject superadmin-ui.js into the billing ERP document.
+     * The USB Vite bundle calls createRoot(document.getElementById("root")),
+     * which replaces the ERP React tree and crashes the SPA. The portal UI
+     * loads only via the full-page /super-admin-portal/ Zero-Trace bootstrap.
+     * API plugin upload (handleBackendPlugin) is unaffected.
+     */
 
     const handleBackendPlugin = async (key: string) => {
       if (!apiUploaded) {
@@ -789,7 +772,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         return;
       }
       if (key === lastKey && getStoredUsbKey() !== null) {
-        await loadUI();
         await handleBackendPlugin(key);
         return;
       }
@@ -798,7 +780,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       if (ok) {
         storeUsbKey(key);
         lastKey = key;
-        await loadUI();
         await handleBackendPlugin(key);
       } else {
         if (getStoredUsbKey() !== null) clearUsbKey();
@@ -926,8 +907,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     }
   };
 
+  /** Full-page / new-tab Zero-Trace portal — never SPA-navigate under Layout. */
   const openSuperAdmin = (hash: string = "") => {
-    navigate(`/super-admin-portal${hash ? `#${hash}` : ""}`);
+    openSuperAdminPortal(hash);
   };
 
   // Super-admin modules surfaced inline in the ERP sidebar when the USB

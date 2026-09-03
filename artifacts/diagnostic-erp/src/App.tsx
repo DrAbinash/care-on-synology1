@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -333,9 +333,13 @@ function PermissionGuard() {
       navigate("/my-daily-summary", { replace: true });
       return;
     }
-    // Super Admin Portal is super_admin only
-    if (location.startsWith("/super-admin-portal") && normalizedRole !== "super_admin") {
-      navigate("/", { replace: true });
+    // Super Admin Portal is a Zero-Trace full-page bootstrap served by the API
+    // (/super-admin-portal/), NOT an ERP SPA route. Any leftover SPA navigation
+    // must hard-redirect to the real portal document (login), never bounce to
+    // "/" (which shows the ERP left sidebar).
+    if (location.startsWith("/super-admin-portal")) {
+      const hash = typeof window !== "undefined" ? window.location.hash : "";
+      window.location.replace(`/super-admin-portal/${hash}`);
       return;
     }
     // Redirect root "/" to user's default start page if configured and allowed
@@ -360,20 +364,6 @@ function PermissionGuard() {
 
 function Router() {
   const [location] = useLocation();
-  const [portalLoaded, setPortalLoaded] = useState(() => typeof window !== "undefined" && !!(window as any).SuperAdminPortal);
-
-  useEffect(() => {
-    const handleLoaded = () => setPortalLoaded(true);
-    const handleUnloaded = () => setPortalLoaded(false);
-
-    window.addEventListener("superadmin-ui-loaded", handleLoaded);
-    window.addEventListener("superadmin-ui-unloaded", handleUnloaded);
-
-    return () => {
-      window.removeEventListener("superadmin-ui-loaded", handleLoaded);
-      window.removeEventListener("superadmin-ui-unloaded", handleUnloaded);
-    };
-  }, []);
 
   return (
     <Suspense fallback={<PageLoader />}>
@@ -744,14 +734,6 @@ function Router() {
               </Route>
               <Route path="/whatsapp-chatbot" component={WhatsAppChatbot} />
               <Route path="/system-update" component={SystemUpdate} />
-              {portalLoaded && (window as any).SuperAdminPortal && (
-                <Route path="/super-admin-portal/:rest*">
-                  {() => {
-                    const PortalComponent = (window as any).SuperAdminPortal;
-                    return <PortalComponent />;
-                  }}
-                </Route>
-              )}
               <Route component={NotFound} />
             </Switch>
             </ModuleErrorBoundary>

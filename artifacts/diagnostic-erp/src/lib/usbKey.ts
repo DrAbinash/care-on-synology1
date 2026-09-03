@@ -368,6 +368,26 @@ export function installSaLoginPinFallbackShim(): void {
   };
 }
 
+/**
+ * Open the Zero-Trace Super Admin portal as a full document load.
+ * MUST NOT use SPA navigate() into the ERP Layout — that hits PermissionGuard
+ * (non–super_admin → "/") and can leave the operator on the left sidebar
+ * instead of the SA login. Also MUST NOT inject superadmin-ui.js into the ERP
+ * #root (USB UI createRoot hijacks the billing SPA).
+ *
+ * Matches Settings → "Open Super Admin Portal" (href="/super-admin-portal/").
+ */
+export function openSuperAdminPortal(hash: string = ""): void {
+  const fragment = hash ? (hash.startsWith("#") ? hash : `#${hash}`) : "";
+  const url = `/super-admin-portal/${fragment}`;
+  // Prefer a new tab (commented UX on sidebar modules). Fall back to same-tab
+  // full navigation if the popup is blocked.
+  const win = typeof window !== "undefined" ? window.open(url, "_blank", "noopener,noreferrer") : null;
+  if (!win && typeof window !== "undefined") {
+    window.location.assign(url);
+  }
+}
+
 export async function tryReadUiFromPairedDir(): Promise<string | null> {
   if (!isFsAccessSupported()) return null;
   let dir: FsDirectoryHandle | undefined;
