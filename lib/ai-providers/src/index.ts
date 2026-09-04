@@ -995,6 +995,35 @@ export async function generateAiResponse(
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
 
+  // Fail closed: clinical / PHI-bearing images must not leave the clinic.
+  // Local providers (ollama) are allowed; cloud providers are blocked regardless
+  // of env keys. Text-only prompts are unchanged.
+  if (imgs.length > 0 && providerName !== "ollama") {
+    return {
+      text: "",
+      success: false,
+      error: "Clinical images cannot be sent to cloud AI providers. Use local Ollama vision or a text-only request.",
+      diagnostics: {
+        provider: providerName,
+        resolvedEndpoint: null,
+        model: options?.model ?? null,
+        numberOfImages: imgs.length,
+        totalImageBytes,
+        promptLength: (prompt ?? "").length,
+        startedAt,
+        elapsedMs: 0,
+        httpStatus: null,
+        responseLength: 0,
+        finishReason: null,
+        errorClass: "PhiImageCloudBlocked",
+        errorCode: "PHI_IMAGE_CLOUD_BLOCKED",
+        errorMessage: "Clinical images cannot be sent to cloud AI providers.",
+        timeoutStage: null,
+        timeoutMsConfigured: options?.timeoutMs ?? null,
+      },
+    };
+  }
+
   let provider: AiProvider | null = null;
   let resolvedEndpoint: string | null = null;
   let runtimeModelHint: string | null = null;

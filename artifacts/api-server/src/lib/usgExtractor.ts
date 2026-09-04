@@ -25,7 +25,7 @@ import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 import { isFeatureEnabledServer } from "./featureFlags";
 import { ingestSrProvenance } from "./usgProvenanceIngest";
-import { geminiUsgOcr, geminiNormalizeMeasurements, type UsgMeasurementJson } from "@workspace/integrations-gemini-ai";
+import { geminiNormalizeMeasurements, type UsgMeasurementJson } from "@workspace/integrations-gemini-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -726,77 +726,13 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
       const dicomWebBase = pacsMap.get("dicom_web_base_url") || "";
 
       if (wadoBase && dicomWebBase) {
-        const instances = await fetchStudyInstances(dicomWebBase, studyInstanceUID, settings.maxFramesToOcr);
-        logger.info({ logId, instanceCount: instances.length }, "USG: fetching WADO frames for OCR");
-
-        for (const inst of instances) {
-          try {
-            const frame = await fetchWadoFrame(wadoBase, studyInstanceUID, inst.seriesUID, inst.sopUID);
-            if (!frame) { framesFailed++; continue; }
-            const ocr = await geminiUsgOcr(frame.base64, frame.mimeType);
-            framesProcessed++;
-            if (ocr.rawText) rawOcrTexts.push(ocr.rawText);
-            
-            // Record provenance for fields extracted in this frame!
-            for (const [k, v] of Object.entries(ocr)) {
-              if (k === "extraMeasurements" || k === "perFieldConfidence" || k === "rawText") continue;
-              if (v && typeof v === "string" && (!ocrResult || !ocrResult[k as keyof UsgMeasurementJson])) {
-                provenanceMap[k] = {
-                  studyInstanceUID,
-                  seriesInstanceUID: inst.seriesUID,
-                  sopInstanceUID: inst.sopUID,
-                  frameNumber: 1,
-                  sourceType: "OCR",
-                  sourceLabel: k.toUpperCase(),
-                  sourceConfidence: ocr.perFieldConfidence?.[k] || "medium",
-                  sourcePath: "Frame 1",
-                  rawExtractedValue: v,
-                  normalizedValue: v,
-                  unit: k === "fhr" ? "bpm" : "mm",
-                  extractedAt: new Date().toISOString(),
-                  extractedByEngineVersion: "1.5.0"
-                };
-              }
-            }
-
-            if (!ocrResult) {
-              ocrResult = ocr;
-            } else {
-              // Merge: take first non-empty value per field
-              for (const k of Object.keys(ocrResult) as (keyof UsgMeasurementJson)[]) {
-                if (k === "extraMeasurements" || k === "perFieldConfidence" || k === "rawText") continue;
-                if (!(ocrResult[k] as string) && (ocr[k] as string)) {
-                  (ocrResult[k] as string) = ocr[k] as string;
-                  if (ocr.perFieldConfidence[k as string]) {
-                    ocrResult.perFieldConfidence[k as string] = ocr.perFieldConfidence[k as string];
-                  }
-
-                  // Also record provenance here because this frame is supplying the value!
-                  provenanceMap[k as string] = {
-                    studyInstanceUID,
-                    seriesInstanceUID: inst.seriesUID,
-                    sopInstanceUID: inst.sopUID,
-                    frameNumber: 1,
-                    sourceType: "OCR",
-                    sourceLabel: (k as string).toUpperCase(),
-                    sourceConfidence: ocr.perFieldConfidence?.[k as string] || "medium",
-                    sourcePath: "Frame 1",
-                    rawExtractedValue: ocr[k as keyof UsgMeasurementJson],
-                    normalizedValue: ocr[k as keyof UsgMeasurementJson],
-                    unit: k === "fhr" ? "bpm" : "mm",
-                    extractedAt: new Date().toISOString(),
-                    extractedByEngineVersion: "1.5.0"
-                  };
-                }
-              }
-              // Merge extra measurements
-              Object.assign(ocrResult.extraMeasurements, ocr.extraMeasurements);
-            }
-          } catch (err) {
-            framesFailed++;
-            logger.warn({ err, logId }, "USG OCR frame failed");
-          }
-        }
+        // Fail closed: clinical USG frames must not be sent to cloud Gemini OCR.
+        // Local vision OCR is not wired on this path yet — skip image OCR and
+        // rely on SR / GE private / text normalization below.
+        logger.warn(
+          { logId, instanceHint: settings.maxFramesToOcr },
+          "USG: skipping WADO frame OCR — clinical images cannot route to cloud Gemini",
+        );
       } else {
         logger.info({ logId }, "USG: WADO/DICOMweb URLs not configured — skipping image OCR");
       }
