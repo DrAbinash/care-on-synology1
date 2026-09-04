@@ -32,7 +32,7 @@ describe("main reporting pane — progressive accordion", () => {
       "recommendation",
       "report",
     ]) {
-      expect(workspace).toContain(`accordionProps("${id}")`);
+      expect(workspace).toContain(`accordionProps("${id}"`);
     }
     // Progressive accordion remains the live pane (R2 pieces sit inside Findings).
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
@@ -42,15 +42,15 @@ describe("main reporting pane — progressive accordion", () => {
 
   it("keeps the clinical top-to-bottom order", () => {
     const order = [
-      'accordionProps("demography")',
-      'accordionProps("refDoctor")',
-      'accordionProps("region")',
-      'accordionProps("history")',
-      'accordionProps("technique")',
-      'accordionProps("findings")',
-      'accordionProps("impression")',
-      'accordionProps("recommendation")',
-      'accordionProps("report")',
+      'accordionProps("demography"',
+      'accordionProps("refDoctor"',
+      'accordionProps("region"',
+      'accordionProps("history"',
+      'accordionProps("technique"',
+      'accordionProps("findings"',
+      'accordionProps("impression"',
+      'accordionProps("recommendation"',
+      'accordionProps("report"',
     ].map(at);
     const sorted = [...order].sort((a, b) => a - b);
     expect(order).toEqual(sorted);
