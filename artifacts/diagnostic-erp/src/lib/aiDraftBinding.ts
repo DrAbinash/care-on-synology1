@@ -17,8 +17,21 @@ export interface BindableFinding {
 
 export type DraftAction = "accept" | "edit" | "ignore" | "reject";
 
-/** Only accept/edit insert content into the working draft. */
+/**
+ * Legacy: Accept/Edit immediately inserted into the working draft.
+ * Reporting Workspace now uses Composer-style review — see shouldStageOnAction.
+ * Keep this for non-workspace callers that still insert directly.
+ */
 export function shouldInsertOnAction(action: DraftAction): boolean {
+  return action === "accept" || action === "edit";
+}
+
+/**
+ * One AI Accept culture (Reporting Workspace): Accept/Edit STAGE proposals for
+ * Composer review/Apply. They must NOT silently write the report. Ignore/Reject
+ * only record feedback.
+ */
+export function shouldStageOnAction(action: DraftAction): boolean {
   return action === "accept" || action === "edit";
 }
 
