@@ -692,46 +692,8 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     }
     setSelectedChocolateFindings([]);
 
-    // List rows no longer carry aiDraftJson — hydrate from per-study detail.
-    let cancelled = false;
-    void (async () => {
-      try {
-        const draftRes = await api.get<{
-          draft?: {
-            findingsText?: string;
-            findings?: string;
-            impression?: string[] | string;
-            clinicalHistory?: string;
-            clinical_history?: string;
-            technique?: string;
-            recommendation?: string;
-          } | null;
-        }>(`/api/radiology/pacs-worklist/${study.id}/ai-draft`);
-        if (cancelled) return;
-        const draft = draftRes?.draft;
-        if (!draft) return;
-        const hist = draft.clinicalHistory ?? draft.clinical_history;
-        if (hist) setClinicalHistory(hist);
-        if (draft.technique) setTechnique(draft.technique);
-        const findings =
-          (typeof draft.findingsText === "string" && draft.findingsText.trim()
-            ? draft.findingsText
-            : typeof draft.findings === "string"
-              ? draft.findings
-              : "");
-        if (findings) setRawFindings(findings);
-        if (Array.isArray(draft.impression)) {
-          const lines = draft.impression.filter((s) => typeof s === "string" && s.trim());
-          if (lines.length) setImpression(lines);
-        } else if (typeof draft.impression === "string" && draft.impression.trim()) {
-          setImpression([draft.impression]);
-        }
-        if (draft.recommendation) setRecommendation(draft.recommendation);
-      } catch {
-        /* no draft / offline — leave builder defaults */
-      }
-    })();
-    return () => { cancelled = true; };
+    // Do not auto-apply AI draft into the editor on study select (AI must never
+    // silent-fill). Radiologist can load drafts explicitly via AI Draft actions.
   }, [study]);
 
   // Apply selected template

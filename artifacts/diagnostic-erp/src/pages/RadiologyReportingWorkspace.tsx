@@ -81,7 +81,6 @@ import {
 } from "@/lib/radiologyReportPrintLiveMerge";
 import {
   canHydrateDraftForPatient,
-  shouldApplyAsyncStudyResult,
   shouldCommitAutosave,
 } from "@/lib/radiologyWorkspaceSafety";
 import { activeStandardLetterhead, type PresentationTemplatesPayload } from "@/lib/careLetterpadChrome";
@@ -124,6 +123,7 @@ import {
   canVerifyReport, matchWorkspaceShortcut,
 } from "@/lib/workspaceReportState";
 import { createCommandDispatcher, type DispatchResult } from "@/lib/workspaceCommands";
+import { canLeaveStudy } from "@/lib/reportingWorkflow";
 import { resolveWorkspaceShortcut } from "@/lib/workspaceShortcutResolve";
 import {
   resolveReadingQueueModality,
@@ -234,7 +234,6 @@ import {
   resolveCanalSegment,
 } from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
-import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
 import { useReportComposer } from "@/hooks/useReportComposer";
@@ -1225,6 +1224,32 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).
   }, [studyId]);
 
+  // Arrival + wrong-patient cross-check (queue identity at transition vs loaded row).
+  useEffect(() => {
+    const row = workflow.currentRow;
+    if (!row?.id) return;
+    const expectation = workflow.markArrived(row.id);
+    if (
+      expectation && expectation.patientId != null
+      && row.patientId != null
+      && expectation.patientId !== row.patientId
+    ) {
+      toast({
+        title: "Patient identity mismatch",
+        description: `The queue listed patient #${expectation.patientId} for this study, but the loaded study belongs to patient #${row.patientId}. Verify the patient before reporting.`,
+        variant: "destructive",
+      });
+    }
+  }, [workflow.currentRow?.id, workflow.currentRow?.patientId, workflow, toast]);
+
+  // Browser tab close / hard navigation while dirty.
+  useEffect(() => {
+    if (!isDirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [isDirty]);
+
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
     if (!useStructured) return;
@@ -1944,17 +1969,41 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [selectStudy, navigate]);
 
   const goNextStudy = useCallback(() => {
+    const verdict = canLeaveStudy({
+      dirty: useWorkspace.getState().isDirty,
+      saving: autoSaveStatus === "saving",
+      finalizing: false,
+      viewerLaunching: false,
+      transitioning: workflow.transitioning,
+    });
+    if (verdict.kind === "blocked") {
+      toast({ title: verdict.reason });
+      return;
+    }
+    if (verdict.kind === "confirm" && !window.confirm(verdict.reason)) return;
     const next = workflow.peekNext();
     if (!next) { toast({ title: "End of queue" }); return; }
     workflow.beginTransition(studyId, next);
     openStudy(next.id);
-  }, [workflow, studyId, openStudy, toast]);
+  }, [workflow, studyId, openStudy, toast, autoSaveStatus]);
 
   const goPrevStudy = useCallback(() => {
+    const verdict = canLeaveStudy({
+      dirty: useWorkspace.getState().isDirty,
+      saving: autoSaveStatus === "saving",
+      finalizing: false,
+      viewerLaunching: false,
+      transitioning: workflow.transitioning,
+    });
+    if (verdict.kind === "blocked") {
+      toast({ title: verdict.reason });
+      return;
+    }
+    if (verdict.kind === "confirm" && !window.confirm(verdict.reason)) return;
     const prevId = workflow.beginPreviousTransition(studyId);
     if (prevId == null) { toast({ title: "No previous study in history" }); return; }
     openStudy(prevId);
-  }, [workflow, studyId, openStudy, toast]);
+  }, [workflow, studyId, openStudy, toast, autoSaveStatus]);
 
   const persistQueueModality = useCallback((value: string) => {
     const next = isReadingQueueModality(value) ? value : "MR";
@@ -2224,69 +2273,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       return;
     }
 
-    // No server draft — mark hydrated so protocol/template auto-select can run,
-    // then optionally fill from AI draft (fill-empty only after auto setup).
+    // No server draft — mark hydrated so protocol/template auto-select can run.
+    // Do NOT auto-apply AI draft text into the editor (AI must never silent-fill).
+    // Radiologist can still open AI draft via explicit composer / AI panel actions.
     hydratedDraftForStudyRef.current = studyId;
     setDraftHydratedStudyId(studyId);
     const row = workflow.currentRow;
-    const requestedStudyId = studyId;
     if (row) {
-      api.post<{
-        findings?: string;
-        draft?: string;
-        impression?: string;
-        recommendation?: string;
-        technique?: string;
-      }>("/api/ai-reporting/draft", {
-        studyInstanceUID: row.studyInstanceUID,
-        worklistId: (row as { worklistId?: number }).worklistId ?? (row as { id?: number }).id,
-        modality: row.modality,
-        studyDescription: row.studyDescription,
-        clinicalHistory: (row as { clinicalHistory?: string }).clinicalHistory,
-      }).then((draft: any) => {
-        if (!shouldApplyAsyncStudyResult(requestedStudyId, studyIdRef.current)) return;
-        if (!draft || typeof draft !== "object") return;
-        const state = useWorkspace.getState();
-        const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
-        // API historically returned `draft` for findings; accept both keys.
-        const findings = normStr(draft.findings ?? draft.draft);
-        const impressionText = normalizeImpressionLines(draft.impression).join("\n");
-        const studyCtx = { modality: row.modality, studyDescription: row.studyDescription };
-        // Fill-empty only so auto protocol/template win when AI is empty.
-        if (!state.findingsText.trim() && findings) state.setFieldIfEmpty("findings", findings, "ai-draft");
-        if (
-          !state.impressionText.trim()
-          && impressionText
-          && impressionMatchesStudyContext(impressionText, studyCtx)
-        ) {
-          state.setFieldIfEmpty("impression", impressionText, "ai-draft");
-        }
-        if (!state.recommendationText.trim() && normStr(draft.recommendation)) state.setFieldIfEmpty("recommendation", normStr(draft.recommendation), "ai-draft");
-        if (!state.techniqueText.trim() && normStr(draft.technique)) state.setFieldIfEmpty("technique", normStr(draft.technique), "ai-draft");
-        if (!state.clinicalHistoryText.trim()) state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
-      }).catch(() => {
-        if (!shouldApplyAsyncStudyResult(requestedStudyId, studyIdRef.current)) return;
-        // AI draft unavailable — still set clinical history from worklist
-        const state = useWorkspace.getState();
-        if (!state.clinicalHistoryText.trim()) {
-          state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
-        }
-        // One-time toast so the radiologist knows AI was expected but failed.
-        // Skip when the normal bootstrap already provided a complete report.
-        const hasBaseline = editorHasMeaningfulReportText({
-          technique: state.techniqueText,
-          findings: state.findingsText,
-          impression: state.impressionText,
-          recommendation: state.recommendationText,
-        });
-        const shown = sessionStorage.getItem(`ai-draft-err-${studyId}`);
-        if (!shown && !hasBaseline) {
-          toast({ title: "AI draft unavailable", description: "Report will start blank — use Start Report or type manually.", duration: 3000 });
-          sessionStorage.setItem(`ai-draft-err-${studyId}`, "1");
-        }
-      });
+      const state = useWorkspace.getState();
+      if (!state.clinicalHistoryText.trim()) {
+        state.setField("clinicalHistory", (row as { clinicalHistory?: string }).clinicalHistory ?? "");
+      }
     }
-  }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow, toast]);
+  }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow]);
 
   // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new+empty only) ──
   //
