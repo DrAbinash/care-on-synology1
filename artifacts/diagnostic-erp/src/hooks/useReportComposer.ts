@@ -327,6 +327,49 @@ export function useReportComposer(opts: {
       });
       return;
     }
+
+    // Re-check freshness at Apply time (poll stops on READY — edits after that
+    // would otherwise overwrite the live report with a stale AI draft).
+    const liveObservations = deriveComposeObservations(appliedPathologyPatches);
+    const liveSnapshot: ComposerInputSnapshot = {
+      modality: opts.modality,
+      region: opts.region,
+      regions: opts.regions,
+      bodyPart: opts.bodyPart,
+      family: opts.family,
+      spineSegment: opts.spineSegment,
+      studyType: opts.studyType,
+      protocol: opts.protocol,
+      reportTitle: opts.reportTitle,
+      clinicalHistory: clinicalHistoryText,
+      technique: techniqueText,
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+      observations: liveObservations,
+      jobKindHint: job.jobKind ?? "FULL_REPORT",
+      aiMode: opts.aiMode ?? "TEXT_ONLY",
+      selectedKeyImages: opts.selectedKeyImages ?? [],
+    };
+    const hashes = await computeSnapshotHashes(liveSnapshot);
+    const fr = await reportComposerApi.freshness(job.id, {
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+      reportRevision: hashes.reportRevision,
+      inputHash: hashes.inputHash,
+    });
+    if (fr.stale) {
+      const again = await reportComposerApi.getJob(job.id);
+      if (again.ok) setJob(again.job);
+      toast({
+        title: "STALE draft",
+        description: "Report changed since this draft. Compare or Regenerate — blind apply blocked.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const significantPending = job.trackedChanges.filter(
       (c) => c.reviewState === "PENDING" && c.clinicalSignificance,
     );
@@ -364,10 +407,24 @@ export function useReportComposer(opts: {
       changes: accepted,
     });
     applyAiComposerAccepted(text);
-    await reportComposerApi.confirmApplied(
+    const applied = await reportComposerApi.confirmApplied(
       job.id,
       accepted.map((c) => c.id),
+      hashes,
     );
+    if (!applied.ok) {
+      useWorkspace.getState().undoLastPatch();
+      const again = await reportComposerApi.getJob(job.id);
+      if (again.ok) setJob(again.job);
+      toast({
+        title: "Apply blocked",
+        description: applied.error === "stale_ready"
+          ? "Report changed during apply — restored previous text."
+          : (applied.error ?? "Server rejected apply"),
+        variant: "destructive",
+      });
+      return;
+    }
     const after = await reportComposerApi.getJob(job.id);
     if (after.ok) setJob(after.job);
     setReviewOpen(false);

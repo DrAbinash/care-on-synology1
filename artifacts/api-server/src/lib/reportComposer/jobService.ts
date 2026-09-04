@@ -600,11 +600,36 @@ export async function markComposeApplied(opts: {
   appliedByStaffId?: number | null;
   /** Client must confirm which change ids were accepted into canonical report. */
   acceptedChangeIds: string[];
+  /**
+   * Live hashes at Apply time (required for new clients). When provided,
+   * READY jobs that no longer match the live editor/ledger/study context
+   * are flipped to STALE_READY and Apply is rejected — closes the
+   * READY→edit→Apply race where poll already stopped.
+   */
+  findingsHash?: string;
+  impressionHash?: string;
+  recommendationHash?: string;
+  reportRevision?: string;
+  inputHash?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const job = await getComposeJob(opts.jobId);
   if (!job) return { ok: false, error: "not_found" };
   if (!["READY", "STALE_READY"].includes(job.status)) return { ok: false, error: "not_ready" };
   if (job.status === "STALE_READY") return { ok: false, error: "stale_ready" };
+
+  if (opts.reportRevision) {
+    const freshness = await evaluateJobFreshness(opts.jobId, {
+      findingsHash: opts.findingsHash ?? "",
+      impressionHash: opts.impressionHash ?? "",
+      recommendationHash: opts.recommendationHash ?? "",
+      reportRevision: opts.reportRevision,
+      ...(opts.inputHash ? { inputHash: opts.inputHash } : {}),
+    });
+    if (freshness.stale || freshness.status === "STALE_READY") {
+      return { ok: false, error: "stale_ready" };
+    }
+  }
+
   const persisted = await loadPersistedReportToken(job.reportId);
   if (persisted.finalized) return { ok: false, error: "finalized" };
 
