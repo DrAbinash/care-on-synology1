@@ -189,14 +189,25 @@ reportComposerRouter.post("/jobs/:id/applied", async (req, res): Promise<void> =
     return;
   }
   const meta = staffMeta(req as StaffAuthRequest);
-  const acceptedChangeIds = Array.isArray((req.body as { acceptedChangeIds?: string[] })?.acceptedChangeIds)
-    ? (req.body as { acceptedChangeIds: string[] }).acceptedChangeIds
-    : [];
+  const body = (req.body ?? {}) as {
+    acceptedChangeIds?: string[];
+    findingsHash?: string;
+    impressionHash?: string;
+    recommendationHash?: string;
+    reportRevision?: string;
+    inputHash?: string;
+  };
+  const acceptedChangeIds = Array.isArray(body.acceptedChangeIds) ? body.acceptedChangeIds : [];
   const result = await markComposeApplied({
     jobId: Number(req.params.id),
     appliedBy: meta.createdBy,
     appliedByStaffId: meta.createdByStaffId,
     acceptedChangeIds,
+    findingsHash: typeof body.findingsHash === "string" ? body.findingsHash : undefined,
+    impressionHash: typeof body.impressionHash === "string" ? body.impressionHash : undefined,
+    recommendationHash: typeof body.recommendationHash === "string" ? body.recommendationHash : undefined,
+    reportRevision: typeof body.reportRevision === "string" ? body.reportRevision : undefined,
+    inputHash: typeof body.inputHash === "string" ? body.inputHash : undefined,
   });
   if (!result.ok) {
     res.status(409).json(result);

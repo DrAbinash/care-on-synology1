@@ -83,10 +83,20 @@ export const reportComposerApi = {
     );
   },
 
-  confirmApplied(jobId: number, acceptedChangeIds: string[]) {
+  confirmApplied(
+    jobId: number,
+    acceptedChangeIds: string[],
+    hashes?: {
+      findingsHash: string;
+      impressionHash: string;
+      recommendationHash: string;
+      reportRevision: string;
+      inputHash: string;
+    },
+  ) {
     return api.post<{ ok: boolean; error?: string }>(
       `/api/radiology/report-composer/jobs/${jobId}/applied`,
-      { acceptedChangeIds },
+      { acceptedChangeIds, ...(hashes ?? {}) },
     );
   },
 

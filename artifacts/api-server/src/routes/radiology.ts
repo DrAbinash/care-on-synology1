@@ -42,6 +42,7 @@ import {
   mergeUsgAggregatesIntoRows,
 } from "../lib/pacsWorklistUsgAggregates.js";
 import { PACS_WORKLIST_DETAIL_SELECT } from "../lib/pacsWorklistDetailFields.js";
+import { worklistModalitySqlFilter } from "../lib/worklistModalityFilter.js";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority } from "../lib/studyPriorityEngine";
 import { getLockTtlSeconds } from "../lib/studyLocks";
@@ -537,7 +538,10 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
     const conds: ReturnType<typeof eq>[] = [];
     if (status && status !== "all") conds.push(eq(radiologyWorklistTable.status, status));
-    if (modality && modality !== "all") conds.push(eq(radiologyWorklistTable.modality, modality));
+    if (modality && modality !== "all") {
+      const modFilter = worklistModalitySqlFilter(radiologyWorklistTable.modality, modality);
+      if (modFilter) conds.push(modFilter as ReturnType<typeof eq>);
+    }
     if (unlinkedOnly) conds.push(isNull(radiologyWorklistTable.studyId));
     if (dateFrom) conds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
     if (dateTo) conds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
