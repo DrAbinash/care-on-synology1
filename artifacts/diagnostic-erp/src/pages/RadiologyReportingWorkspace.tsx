@@ -2571,10 +2571,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // 9. Invalidate queries
       qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
       qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
+
+      // 10. RIS throughput — auto-advance to the next eligible study.
+      // goNextStudy handles the transition lock + wrong-patient arrival
+      // cross-check and toasts "End of queue" when nothing eligible remains.
+      // The just-finalized study is excluded by identity (currentId), so the
+      // not-yet-rendered completedIds update cannot cause a self-advance.
+      if (result.advanceToNext) {
+        goNextStudy();
+      }
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh]);
+  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({

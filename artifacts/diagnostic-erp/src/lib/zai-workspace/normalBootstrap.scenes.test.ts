@@ -110,6 +110,10 @@ describe("workflow scenes — normal bootstrap → deviations → restoration", 
     expect(s.impressionText).toContain("Fazekas grade 2");
     // Normal impression yielded (no contradictory "Normal MRI brain").
     expect(s.impressionText).not.toContain("Normal MRI brain");
+    // Residual template normal line with intervening words must also yield
+    // (previously "No acute intracranial abnormality." survived next to the
+    // abnormal line — manual cleanup friction on every abnormal report).
+    expect(s.impressionText).not.toContain("No acute intracranial abnormality");
     // Untouched structures remain normal (slot isolation).
     expect(s.findingsText).toContain("Ventricular system and cisternal spaces are normal");
     expect(s.findingsText).toContain("No restricted diffusion");
@@ -139,6 +143,8 @@ describe("workflow scenes — normal bootstrap → deviations → restoration", 
     expect(s.findingsText).toContain("Conus medullaris at L1 with normal appearance");
     // Normal impression yielded for the abnormal report.
     expect(s.impressionText).not.toContain("Normal MRI of the lumbar");
+    // Residual contradictory normal line must yield as well.
+    expect(s.impressionText).not.toContain("No acute bony or disc abnormality");
 
     // Abnormal → normal: deselect restores the system-owned baseline.
     useWorkspace.getState().removeObservation("qf-disc-l45-scene");

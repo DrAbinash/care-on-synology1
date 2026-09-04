@@ -33,6 +33,8 @@ export type FinalizePromptResult = {
   notifyReferring: boolean;
   impressionReviewedAnyway?: boolean;
   impressionRefreshed?: boolean;
+  /** RIS throughput: open the next eligible study after finalize. */
+  advanceToNext?: boolean;
 };
 
 const CANCELLED: FinalizePromptResult = {
@@ -40,6 +42,7 @@ const CANCELLED: FinalizePromptResult = {
   signatureId: null,
   criticalAcknowledged: false,
   notifyReferring: false,
+  advanceToNext: false,
 };
 
 export function useFinalizeFlow() {

@@ -23,6 +23,23 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
 
+/** RIS throughput pref — auto-open the next eligible study after finalize. */
+const AUTO_ADVANCE_KEY = "care_auto_advance_after_finalize";
+
+export function loadAutoAdvanceAfterFinalize(): boolean {
+  try {
+    const raw = localStorage.getItem(AUTO_ADVANCE_KEY);
+    if (raw == null) return true; // default ON — clinic asked for fast output
+    return raw === "1" || raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+function saveAutoAdvanceAfterFinalize(v: boolean) {
+  try { localStorage.setItem(AUTO_ADVANCE_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+}
+
 export function loadSessionSignerId(): number | null {
   try {
     const raw = sessionStorage.getItem(SESSION_SIGNER_KEY);
@@ -88,6 +105,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [rememberSigner, setRememberSigner] = useState(true);
   const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
   const [impressionRefreshed, setImpressionRefreshed] = useState(false);
+  const [advanceToNext, setAdvanceToNext] = useState(loadAutoAdvanceAfterFinalize);
 
   useEffect(() => {
     if (!open || !input) return;
@@ -254,6 +272,18 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           </p>
         )}
 
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+          <Checkbox
+            checked={advanceToNext}
+            onCheckedChange={(v) => {
+              const next = v === true;
+              setAdvanceToNext(next);
+              saveAutoAdvanceAfterFinalize(next);
+            }}
+          />
+          <span>After finalize, open the next study in my queue automatically</span>
+        </label>
+
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
           <Button
@@ -270,6 +300,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 notifyReferring,
                 impressionReviewedAnyway,
                 impressionRefreshed,
+                advanceToNext,
               });
             }}
           >
