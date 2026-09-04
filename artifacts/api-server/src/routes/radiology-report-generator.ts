@@ -110,6 +110,7 @@ import {
   persistCareStructuredFormatState,
   persistCareObservationLedger,
   persistCareViewerMeasurements,
+  persistCareReportFormatIdentity,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -1621,6 +1622,15 @@ const SaveDraftBody = z.object({
   observationLedger: z.unknown().optional(),
   viewerMeasurements: z.unknown().optional(),
   canalApProvenance: z.unknown().optional(),
+  // Applied whole-report format identity — additive structured_json envelope
+  // key (careReportFormatIdentity) so save → reopen keeps the baseline format
+  // banner and the workspace never re-bootstraps a saved report.
+  reportFormatIdentity: z.object({
+    kind: z.literal("care.report_format_identity.v1"),
+    name: z.string().min(1),
+    reportTitle: z.string().optional(),
+    appliedAt: z.string().optional(),
+  }).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1898,6 +1908,23 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] viewer measurements persist failed (non-fatal):",
+        err,
+      );
+    }
+  }
+
+  if (draft?.id && rest.reportFormatIdentity != null) {
+    try {
+      await persistCareReportFormatIdentity(
+        draft.id,
+        {
+          ...rest.reportFormatIdentity,
+          appliedAt: rest.reportFormatIdentity.appliedAt ?? new Date().toISOString(),
+        },
+      );
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] report format identity persist failed (non-fatal):",
         err,
       );
     }

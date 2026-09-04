@@ -68,3 +68,29 @@ export async function persistCareViewerMeasurements(
     .set({ structuredJson: next })
     .where(eq(radiologyReportDraftsTable.id, draftId));
 }
+
+/**
+ * Persist the applied whole-report format identity (baseline banner /
+ * re-bootstrap guard) as an additive envelope key. Non-destructive: all other
+ * envelope keys (A4 cache, format state, ledger, measurements) are preserved.
+ */
+export async function persistCareReportFormatIdentity(
+  draftId: number,
+  reportFormatIdentity: unknown,
+): Promise<void> {
+  const [row] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.id, draftId))
+    .limit(1);
+
+  const next = composeStructuredJsonColumn({
+    existing: row?.structuredJson ?? null,
+    reportFormatIdentity,
+  });
+
+  await db
+    .update(radiologyReportDraftsTable)
+    .set({ structuredJson: next })
+    .where(eq(radiologyReportDraftsTable.id, draftId));
+}

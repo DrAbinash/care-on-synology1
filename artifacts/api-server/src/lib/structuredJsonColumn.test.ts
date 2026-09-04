@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  CARE_REPORT_FORMAT_IDENTITY_KIND,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
   STRUCTURED_JSON_ENVELOPE_KIND,
   composeStructuredJsonColumn,
   extractA4Cache,
+  extractCareReportFormatIdentity,
   extractCareStructuredFormat,
 } from "./structuredJsonColumn";
 
@@ -90,5 +92,51 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect(stored?.items).toHaveLength(400);
     expect(stored?.items[0]).toEqual({ id: "m-50" });
     expect(stored?.items[399]).toEqual({ id: "m-449" });
+  });
+
+  // ── careReportFormatIdentity (normal auto-bootstrap baseline) ────────────
+
+  const IDENTITY = {
+    kind: CARE_REPORT_FORMAT_IDENTITY_KIND,
+    name: "MRI Brain — Normal",
+    reportTitle: "MRI BRAIN PLAIN",
+    appliedAt: "2026-09-04T00:00:00.000Z",
+  } as const;
+
+  it("identity alone turns the column into an envelope without dropping legacy array", () => {
+    const col = composeStructuredJsonColumn({ existing: CACHE, reportFormatIdentity: IDENTITY });
+    expect(extractA4Cache(col)).toEqual(CACHE);
+    expect(extractCareReportFormatIdentity(col)).toEqual(IDENTITY);
+  });
+
+  it("identity round-trips alongside format state, ledger and measurements", () => {
+    const ledger = { kind: "care.observation_ledger.v1", version: 1, patches: [] };
+    const col = composeStructuredJsonColumn({
+      existing: CACHE,
+      formatState: FORMAT,
+      observationLedger: ledger,
+      reportFormatIdentity: IDENTITY,
+    });
+    expect(extractA4Cache(col)).toEqual(CACHE);
+    expect(extractCareStructuredFormat(col)).toEqual(FORMAT);
+    expect(extractCareReportFormatIdentity(col)).toEqual(IDENTITY);
+    // Saving again with the same identity is idempotent.
+    const again = composeStructuredJsonColumn({ existing: col, reportFormatIdentity: IDENTITY });
+    expect(again).toEqual(col);
+  });
+
+  it("identity is preserved when other keys are re-written (merge-preserving)", () => {
+    const withIdentity = composeStructuredJsonColumn({ existing: CACHE, reportFormatIdentity: IDENTITY });
+    const nextCache = [{ findingId: 3 }];
+    const regen = composeStructuredJsonColumn({ existing: withIdentity, a4Cache: nextCache });
+    expect(extractA4Cache(regen)).toEqual(nextCache);
+    expect(extractCareReportFormatIdentity(regen)).toEqual(IDENTITY);
+  });
+
+  it("malformed identity payloads are ignored, not persisted", () => {
+    expect(extractCareReportFormatIdentity(null)).toBeNull();
+    expect(extractCareReportFormatIdentity({ kind: CARE_REPORT_FORMAT_IDENTITY_KIND })).toBeNull();
+    expect(extractCareReportFormatIdentity({ kind: CARE_REPORT_FORMAT_IDENTITY_KIND, name: "  " })).toBeNull();
+    expect(extractCareReportFormatIdentity({ unrelated: true })).toBeNull();
   });
 });

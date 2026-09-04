@@ -100,4 +100,26 @@ describe("stripNormalImpressionLines", () => {
     );
     expect(out).toEqual(["Disc bulge at L4-L5."]);
   });
+
+  it("strips residual template normal lines with intervening words (normal-first overlay yield)", async () => {
+    const { stripNormalImpressionLines, isNormalImpressionLine } = await import("./quickFindingsMerge");
+    // Real format-library wording that previously survived next to an
+    // abnormal impression line (contradictory output → manual cleanup).
+    expect(isNormalImpressionLine("No acute bony or disc abnormality.")).toBe(true);
+    expect(isNormalImpressionLine("No acute intracranial abnormality.")).toBe(true);
+    expect(isNormalImpressionLine("No acute bony abnormalities.")).toBe(true);
+    // Abnormal / denial-only lines must never match.
+    expect(isNormalImpressionLine("No acute infarct or hemorrhage.")).toBe(false);
+    expect(isNormalImpressionLine("Moderate chronic small vessel ischemic disease (Fazekas grade 2).")).toBe(false);
+    expect(isNormalImpressionLine("Disc herniation at L4-L5 causing indentation on the thecal sac.")).toBe(false);
+
+    const out = stripNormalImpressionLines(
+      [
+        "No acute bony or disc abnormality.",
+        "Disc herniation at L4-L5 causing indentation on the thecal sac.",
+      ],
+      { onlyIfAbnormal: true },
+    );
+    expect(out).toEqual(["Disc herniation at L4-L5 causing indentation on the thecal sac."]);
+  });
 });
