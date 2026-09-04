@@ -30,14 +30,18 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
-  usgMeasurementsTable,
-  usgKeyImagesTable,
-  usgReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { todayIST } from "../lib/istDate";
+import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
+import {
+  fetchUsgAggregatesByWorklistIds,
+  mergeUsgAggregatesIntoRows,
+} from "../lib/pacsWorklistUsgAggregates.js";
+import { PACS_WORKLIST_DETAIL_SELECT } from "../lib/pacsWorklistDetailFields.js";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority } from "../lib/studyPriorityEngine";
 import { getLockTtlSeconds } from "../lib/studyLocks";
@@ -548,6 +552,9 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       )!);
     }
 
+    // Study-side patient (bill/RIS patient) — join instead of correlated subqueries.
+    const studyPatients = alias(patientsTable, "study_patients");
+
     const coreSelect = {
       id: radiologyWorklistTable.id,
       studyId: radiologyWorklistTable.studyId,
@@ -573,6 +580,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       weasisUrl: radiologyWorklistTable.weasisUrl,
       sourcePacs: radiologyWorklistTable.sourcePacs,
       sourceAeTitle: radiologyWorklistTable.sourceAeTitle,
+      // Selected for server-side READY refinement only — stripped before JSON response.
       dicomMetadata: radiologyWorklistTable.dicomMetadata,
       status: radiologyWorklistTable.status,
       assignedRadiologist: radiologyWorklistTable.assignedRadiologist,
@@ -581,6 +589,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       assignedAt: radiologyWorklistTable.assignedAt,
       assignedByName: radiologyWorklistTable.assignedByName,
       aiDraftStatus: radiologyWorklistTable.aiDraftStatus,
+      // Selected for server-side READY refinement / overnight attach — stripped before JSON.
       aiDraftJson: radiologyWorklistTable.aiDraftJson,
       aiComposeStatus: radiologyWorklistTable.aiComposeStatus,
       aiComposeJobId: radiologyWorklistTable.aiComposeJobId,
@@ -610,45 +619,24 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       billNumber: billsTable.billNumber,
       testName: testsTable.name,
       billedTestName: testsTable.name,
-      billedPatientName: sql<string | null>`(
-        select trim(concat(p.first_name, ' ', p.last_name))
-        from ${patientsTable} p
-        where p.id = ${radiologyStudiesTable.patientId}
-        limit 1
-      )`,
-      billedPatientUHID: sql<string | null>`(
-        select p.patient_id from ${patientsTable} p
-        where p.id = ${radiologyStudiesTable.patientId}
-        limit 1
-      )`,
+      billedPatientName: sql<string | null>`NULLIF(TRIM(CONCAT(
+        COALESCE(${studyPatients.firstName}, ''),
+        ' ',
+        COALESCE(${studyPatients.lastName}, '')
+      )), '')`,
+      billedPatientUHID: studyPatients.patientId,
       billedAccessionNumber: radiologyStudiesTable.accessionNumber,
       billedModality: radiologyStudiesTable.modality,
       billedStudyDate: radiologyStudiesTable.studyDate,
       priority: radiologyStudiesTable.priority,
     } as const;
 
-    // R2.0 — USG scalar subqueries. Optional: if usg_* tables lag migrations,
-    // we retry without them so the PACS worklist still loads.
-    const usgSelect = {
-      usgMeasurementCount: sql<number>`(
-        select count(*) from ${usgMeasurementsTable}
-        where ${usgMeasurementsTable.worklistId} = ${radiologyWorklistTable.id}
-      )`.mapWith(Number),
-      usgKeyImageCount: sql<number>`(
-        select count(*) from ${usgKeyImagesTable}
-        where ${usgKeyImagesTable.worklistId} = ${radiologyWorklistTable.id}
-      )`.mapWith(Number),
-      usgReportStatus: sql<string | null>`(
-        select ${usgReportDraftsTable.status} from ${usgReportDraftsTable}
-        where ${usgReportDraftsTable.worklistId} = ${radiologyWorklistTable.id}
-        order by ${usgReportDraftsTable.updatedAt} desc
-        limit 1
-      )`,
-    } as const;
-
-    const runQuery = (includeUsg: boolean) =>
+    // Core list query — no USG derived-table joins (those GROUP BY entire
+    // usg_* tables on every poll and worsen as side tables grow). USG
+    // counts/status are attached below, constrained to returned IDs.
+    const runCoreQuery = () =>
       db
-        .select(includeUsg ? { ...coreSelect, ...usgSelect } : {
+        .select({
           ...coreSelect,
           usgMeasurementCount: sql<number>`0`.mapWith(Number),
           usgKeyImageCount: sql<number>`0`.mapWith(Number),
@@ -657,6 +645,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .from(radiologyWorklistTable)
         .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
         .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
+        .leftJoin(studyPatients, eq(radiologyStudiesTable.patientId, studyPatients.id))
         .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
         .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
         .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
@@ -669,13 +658,15 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         )
         .limit(dateFrom || dateTo || search ? 1000 : 500);
 
-    let rows;
+    let rows = await runCoreQuery();
     try {
-      rows = await runQuery(true);
+      if (rows.length > 0) {
+        const aggs = await fetchUsgAggregatesByWorklistIds(rows.map((r) => r.id));
+        rows = mergeUsgAggregatesIntoRows(rows, aggs);
+      }
     } catch (usgErr) {
       if (!isSchemaDriftError(usgErr)) throw usgErr;
       req.log.warn({ err: usgErr }, "[pacs-worklist] USG tables/columns missing — serving without USG extras");
-      rows = await runQuery(false);
     }
 
     // M1.6A — serve lock expiry SERVER-computed (lock_last_activity_at +
@@ -851,14 +842,17 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         policies.filter((p) => p.mode === "night_batch").map((p) => normalizeAiModality(p.modality)),
       );
       const withAi = await attachOvernightAiToWorklist(filtered);
-      res.json(withAi.map((r) => ({
-        ...r,
-        overnightEligible: overnightMods.has(normalizeAiModality((r as { modality?: string }).modality ?? "")),
-      })));
+      // Overnight attach may still need aiDraftJson internally; strip before wire.
+      res.json(omitHeavyPacsWorklistRows(
+        withAi.map((r) => ({
+          ...r,
+          overnightEligible: overnightMods.has(normalizeAiModality((r as { modality?: string }).modality ?? "")),
+        })) as Array<Record<string, unknown>>,
+      ));
       return;
     }
 
-    res.json(filtered);
+    res.json(omitHeavyPacsWorklistRows(filtered as Array<Record<string, unknown>>));
   } catch (err: any) {
     req.log.error(err, "[pacs-worklist] Route Error");
     // Put the real Postgres/detail message in `error` so UI toasts are actionable
@@ -942,6 +936,25 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
   res.json({ studyInstanceUID: uid, source: "orthanc", updated: true });
 });
 
+
+/**
+ * GET /api/radiology/pacs-worklist/:id
+ * Narrow per-study detail — dicomMetadata + demographics for selected-study
+ * hydration. aiDraftJson is intentionally omitted; use /ai-draft.
+ */
+radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+
+  const [row] = await db
+    .select(PACS_WORKLIST_DETAIL_SELECT)
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, id))
+    .limit(1);
+
+  if (!row) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(row);
+});
 
 /**
  * GET /api/radiology/pacs-worklist/:id/ai-draft

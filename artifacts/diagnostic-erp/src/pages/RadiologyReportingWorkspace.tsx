@@ -124,6 +124,13 @@ import {
   canVerifyReport, matchWorkspaceShortcut,
 } from "@/lib/workspaceReportState";
 import { createCommandDispatcher, type DispatchResult } from "@/lib/workspaceCommands";
+import { resolveWorkspaceShortcut } from "@/lib/workspaceShortcutResolve";
+import {
+  resolveReadingQueueModality,
+  writeStoredReadingQueueModality,
+  isReadingQueueModality,
+  type ReadingQueueModality,
+} from "@/lib/readingQueueModality";
 import { loadReadingSession, toggleReadingSession, bumpSessionCompleted } from "@/lib/readingSession";
 import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
@@ -562,9 +569,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
 
-  const [queueModality, setQueueModality] = useState(() => {
-    try { return localStorage.getItem("care_reading_queue_modality") || "MR"; } catch { return "MR"; }
+  const [queueModality, setQueueModality] = useState<ReadingQueueModality>(() => {
+    const resolved = resolveReadingQueueModality({
+      search: typeof window !== "undefined" ? window.location.search : "",
+      storage: typeof window !== "undefined" ? window.localStorage : null,
+      fallback: "MR",
+    });
+    return resolved.modality;
   });
+  const modalityDeepLinkAppliedRef = useRef(false);
   const [datePreset, setDatePreset] = useState<ReadingQueueDatePreset>(() => {
     try {
       const stored = localStorage.getItem("care_reading_queue_date");
@@ -645,6 +658,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     search: patientJumpFilter,
     searchOrthanc: true,
   });
+
+  // Honour ?modality= deep links once: persist normalized choice + refresh queue.
+  useEffect(() => {
+    if (modalityDeepLinkAppliedRef.current) return;
+    modalityDeepLinkAppliedRef.current = true;
+    const resolved = resolveReadingQueueModality({
+      search: window.location.search,
+      storage: window.localStorage,
+      fallback: "MR",
+    });
+    if (!resolved.fromDeepLink) return;
+    setQueueModality(resolved.modality);
+    writeStoredReadingQueueModality(window.localStorage, resolved.modality);
+    workflow.refreshQueue();
+  }, [workflow]);
 
   // 2. Study lock (claim/heartbeat/release)
   const studyLock = useStudyLock(studyId, {
@@ -1929,8 +1957,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [workflow, studyId, openStudy, toast]);
 
   const persistQueueModality = useCallback((value: string) => {
-    setQueueModality(value);
-    try { localStorage.setItem("care_reading_queue_modality", value); } catch { /* ignore */ }
+    const next = isReadingQueueModality(value) ? value : "MR";
+    setQueueModality(next);
+    writeStoredReadingQueueModality(
+      typeof window !== "undefined" ? window.localStorage : null,
+      next,
+    );
   }, []);
 
   const persistDatePreset = useCallback((value: ReadingQueueDatePreset) => {
@@ -2726,25 +2758,54 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         return;
       }
 
-      // Route workflow commands through the dispatcher
-      const cmd = matchWorkspaceShortcut({
+      // Route workflow commands through the dispatcher (shortcut ID → command ID).
+      const shortcut = matchWorkspaceShortcut({
         key: e.key,
         ctrlKey: e.ctrlKey,
         shiftKey: e.shiftKey,
         metaKey: e.metaKey,
         altKey: e.altKey,
+        target: e.target as { tagName?: string } | null,
       });
-      if (cmd === "finalize" && !shouldHandleFinalizeShortcut(e)) {
+      const resolved = resolveWorkspaceShortcut(shortcut);
+      if (resolved?.kind === "layout") {
+        e.preventDefault();
+        if (resolved.action === "toggle-left-panel") {
+          leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse();
+        } else if (resolved.action === "toggle-right-panel") {
+          if (rightCollapsed) {
+            rightPanelRef.current?.expand();
+            setLegacyTab((t) => t ?? "links");
+          } else {
+            rightPanelRef.current?.collapse();
+          }
+        } else if (resolved.action === "toggle-viewer") {
+          setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+        } else if (resolved.action === "escape") {
+          rightPanelRef.current?.collapse();
+        }
         return;
       }
-      if (cmd === "finalize" && isAiInstructionTextarea(e.target)) {
+      if (resolved?.kind === "command") {
+        // Comfort polish (#678): Ctrl+Enter finalize must not fire in AI instruction
+        // textarea; that field owns Ctrl+Enter to Run.
+        if (resolved.command === "finalize" && !shouldHandleFinalizeShortcut(e)) {
+          return;
+        }
+        if (isAiInstructionTextarea(e.target)) {
+          return;
+        }
+        e.preventDefault();
+        commandDispatcher.dispatch(resolved.command);
         return;
       }
-      if (cmd) { e.preventDefault(); commandDispatcher.dispatch(cmd); return; }
 
-      // New features shortcuts
-      if (e.ctrlKey && e.key === "k") { e.preventDefault(); useWorkspace.getState().toggleCommandPalette(); return; }
-      if (shouldHandleFinalizeShortcut(e)) { e.preventDefault(); finalizeReport(); return; }
+      // New features shortcuts (not part of the workflow shortcut matrix)
+      if (e.ctrlKey && e.key === "k") {
+        e.preventDefault();
+        useWorkspace.getState().toggleCommandPalette();
+        return;
+      }
       if (shouldHandleAltUndoAbnormal(e)) {
         e.preventDefault();
         handleUndoLastAbnormal();
@@ -2775,19 +2836,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           setShortcutHelpOpen(true);
         }
       }
-      if (e.altKey && e.key === "\\") {
-        e.preventDefault();
-        setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
-      }
-      if (e.altKey && e.key === "[") {
-        e.preventDefault();
-        leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse();
-      }
-      if (e.altKey && e.key === "]") {
-        e.preventDefault();
-        rightPanelRef.current?.expand();
-        setLegacyTab((t) => t ?? "links");
-      }
       // Alt+1…9 jump to a major report section. Skip while typing so Option+digit
       // on Mac (¡™£¢∞§¶•ª) and other Alt combos in editors still produce text.
       if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
@@ -2813,7 +2861,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [
-    commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode,
+    commandDispatcher, leftCollapsed, rightCollapsed, showEmbeddedViewer, setLayoutMode,
     voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal,
   ]);
 
@@ -3219,6 +3267,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   );
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
+  // Heavy dicomMetadata is omitted from the polled list — fetch per-study detail.
+  const worklistDetailQ = useQuery<{
+    dicomMetadata?: string | Record<string, unknown> | null;
+    age?: string | null;
+  }>({
+    queryKey: ["pacs-worklist-detail", studyId],
+    queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
+    enabled: Number.isFinite(studyId) && (studyId as number) > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   const patientMasterQ = useQuery<{
     dateOfBirth?: string | null;
     ageValue?: number | null;
@@ -3251,12 +3311,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const canonicalDemography = useMemo(() => {
     const row = workflow.currentRow as Record<string, unknown> | null | undefined;
     const master = patientMasterQ.data ?? null;
+    const detailMeta = worklistDetailQ.data?.dicomMetadata;
+    let dicomMeta: Record<string, unknown> = {};
+    if (detailMeta && typeof detailMeta === "object") {
+      dicomMeta = detailMeta as Record<string, unknown>;
+    } else if (typeof detailMeta === "string" && detailMeta.trim()) {
+      try { dicomMeta = JSON.parse(detailMeta) as Record<string, unknown>; } catch { /* ignore */ }
+    } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
+      dicomMeta = row.dicomMetadata as Record<string, unknown>;
+    }
     const erpAge = resolveDisplayAge(
-      { age: row?.age, patientAge: row?.patientAge },
+      { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
-      row?.dicomMetadata && typeof row.dicomMetadata === "object"
-        ? String((row.dicomMetadata as Record<string, unknown>).PatientAge ?? "")
-        : null,
+      dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
     );
     const merged = mergeReportDemography({
       erp: {
@@ -3271,12 +3338,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         referringDoctor: row?.referringDoctor,
         dateOfBirth: master?.dateOfBirth,
       },
-      dicom: (row?.dicomMetadata as Record<string, unknown> | undefined) ?? {},
+      dicom: dicomMeta,
       overrides: demographyOverrides,
       referringDoctorCatalog: doctorCatalogLabels(doctorsCatalogQ.data ?? []),
     });
     return merged;
-  }, [workflow.currentRow, patientMasterQ.data, demographyOverrides, doctorsCatalogQ.data]);
+  }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
 
   const livePrintBodyHtml = useMemo(
     () =>
