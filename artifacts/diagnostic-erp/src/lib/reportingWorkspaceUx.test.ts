@@ -117,8 +117,8 @@ describe("AI Assistant multiline + minimize contracts", () => {
     expect(page).toMatch(/w-\[min\(520px,calc\(100vw-2rem\)\)\]/);
     expect(page).toMatch(/undo-last-abnormal/);
     expect(page).toMatch(/Undo Last Abnormal/);
-    expect(page).toMatch(/reporting-sticky-action-bar/);
-    expect(page).toMatch(/normal-baseline-badge/);
+    expect(page).toMatch(/ReportingStickyActionBar/);
+    expect(page).toMatch(/NormalBaselineBadge/);
     expect(page).toMatch(/shouldHandleAltUndoAbnormal/);
   });
 });
