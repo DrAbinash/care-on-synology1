@@ -51,6 +51,11 @@ interface SectionProps {
   /** Small controls kept on the header row (visible when expanded). */
   headerExtra?: ReactNode;
   /**
+   * Always-visible warning strip (even when collapsed) so validation /
+   * stale-Impression cues stay discoverable.
+   */
+  collapsedWarning?: ReactNode;
+  /**
    * When true, every section body stays visible (no collapse). Unused by the
    * live workspace — progressive accordion is the default.
    */
@@ -68,6 +73,7 @@ export function ReportAccordionSection({
   active,
   onActivate,
   headerExtra,
+  collapsedWarning,
   continuous = false,
   children,
 }: SectionProps) {
@@ -118,7 +124,7 @@ export function ReportAccordionSection({
               {summary}
             </span>
           )}
-          {status === "attention" ? (
+          {status === "attention" || collapsedWarning ? (
             <AlertTriangle size={11} className="shrink-0 text-amber-500" aria-label="Needs attention" />
           ) : status === "done" ? (
             <Check size={11} className="shrink-0 text-emerald-600" aria-label="Complete" />
@@ -131,6 +137,14 @@ export function ReportAccordionSection({
         />
         {showBody && headerExtra}
       </div>
+      {!showBody && collapsedWarning ? (
+        <div
+          className="mx-2 mb-1.5"
+          data-testid={`report-section-collapsed-warning-${id}`}
+        >
+          {collapsedWarning}
+        </div>
+      ) : null}
       <div
         id={`report-section-body-${id}`}
         data-testid={`report-section-body-${id}`}

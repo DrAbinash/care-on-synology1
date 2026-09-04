@@ -43,7 +43,7 @@
  *  13. Fatigue-aware session view (90-min 20-20-20)
  */
 
-import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
@@ -231,6 +231,37 @@ import { impressionMatchesStudyContext } from "@/lib/aiDraftStudyContext";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
 import { useReportComposer } from "@/hooks/useReportComposer";
+import {
+  readAiAssistantMinimizedPreference,
+  writeAiAssistantMinimizedPreference,
+} from "@/lib/aiAssistantPrefs";
+import {
+  canUndoLastAbnormal,
+  describeLastAbnormalForUndo,
+  describeRestoredBaseline,
+} from "@/lib/undoLastAbnormal";
+import {
+  readReportSectionCollapsePrefs,
+  writeReportSectionCollapsePrefs,
+  prefsAfterSectionActivate,
+  sectionsRequiringReveal,
+  type ReportSectionCollapsePrefs,
+} from "@/lib/reportSectionCollapsePrefs";
+import {
+  ABNORMAL_HIGHLIGHT_MS,
+  buildAbnormalHighlightFromPatch,
+  clearHighlightIfStudyChanged,
+  describeAbnormalReplacementToast,
+  type AbnormalHighlightState,
+} from "@/lib/abnormalSelectionFeedback";
+import {
+  shouldHandleAltUndoAbnormal,
+  shouldHandleFinalizeShortcut,
+  isAiInstructionTextarea,
+} from "@/lib/reportingWorkspaceShortcuts";
+import { ReportingStickyActionBar } from "@/components/radiology/ReportingStickyActionBar";
+import { NormalBaselineBadge } from "@/components/radiology/NormalBaselineBadge";
+import { isSystemNormalPatch } from "@/lib/conceptCanon/normalImpression";
 import { WhatsAppReportShareDialog } from "@/components/radiology/WhatsAppReportShareDialog";
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
@@ -366,7 +397,7 @@ import {
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
-  Trash2, MonitorPlay, Plus,
+  Trash2, MonitorPlay, Plus, Undo2,
 } from "lucide-react";
 
 /** Default Recommendation chips when `report_recommendation_chips` is unset. */
@@ -482,13 +513,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // or panel loses state and no effect re-inserts text on expand.
   // `activeFindingsTool` is the nested Findings assistance drawer and is
   // deliberately independent of the major accordion.
-  const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>("findings");
+  const [sectionCollapsePrefs, setSectionCollapsePrefs] = useState<ReportSectionCollapsePrefs>(() =>
+    readReportSectionCollapsePrefs(typeof window !== "undefined" ? window.localStorage : null),
+  );
+  const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>(
+    () => sectionCollapsePrefs.preferredActive || "findings",
+  );
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
   /** Shared anatomy chip selection — filters clinic tiles + Quick Select wall. */
   const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
+  const [abnormalHighlight, setAbnormalHighlight] = useState<AbnormalHighlightState | null>(null);
   const activateReportSection = useCallback((id: ReportSectionId) => {
-    setActiveReportSection((cur) => nextActiveSection(cur, id));
-  }, []);
+    setActiveReportSection((cur) => {
+      const next = nextActiveSection(cur, id);
+      const prefs = prefsAfterSectionActivate(sectionCollapsePrefs, next, cur);
+      setSectionCollapsePrefs(prefs);
+      writeReportSectionCollapsePrefs(
+        typeof window !== "undefined" ? window.localStorage : null,
+        prefs,
+      );
+      return next;
+    });
+  }, [sectionCollapsePrefs]);
   const selectFindingsTool = useCallback((id: FindingsToolId) => {
     setActiveFindingsTool((cur) => nextFindingsTool(cur, id));
   }, []);
@@ -567,6 +613,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
+  const lastPatchSnapshot = useWorkspace((s: WorkspaceStore) => s.lastPatchSnapshot);
   const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
   const selectedObservationId = useWorkspace((s: WorkspaceStore) => s.selectedObservationId);
   const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
@@ -1403,19 +1450,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const [microInstruction, setMicroInstruction] = useState("");
   const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
-  const [aiAssistantMinimized, setAiAssistantMinimized] = useState(() => {
-    try { return localStorage.getItem("care_ai_assistant_minimized") === "1"; } catch { return false; }
-  });
+  const [aiAssistantMinimized, setAiAssistantMinimized] = useState(() =>
+    readAiAssistantMinimizedPreference(typeof window !== "undefined" ? window.localStorage : null),
+  );
   /** Background composer drafting mode — default TEXT_ONLY; never silently SELECTED_IMAGES. */
   const [composerAiMode, setComposerAiMode] = useState<"TEXT_ONLY" | "SELECTED_IMAGES">("TEXT_ONLY");
   /** Session AI selection of frozen key-image IDs (independent of includeInReport). */
   const [aiSelectedKeyImageIds, setAiSelectedKeyImageIds] = useState<number[]>([]);
   const persistAiAssistantMinimized = (minimized: boolean) => {
     setAiAssistantMinimized(minimized);
-    try {
-      if (minimized) localStorage.setItem("care_ai_assistant_minimized", "1");
-      else localStorage.removeItem("care_ai_assistant_minimized");
-    } catch { /* ignore */ }
+    writeAiAssistantMinimizedPreference(
+      typeof window !== "undefined" ? window.localStorage : null,
+      minimized,
+    );
   };
   const aiFinalizeBypassRef = useRef(false);
 
@@ -1423,7 +1470,47 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   useEffect(() => {
     setAiSelectedKeyImageIds([]);
     setComposerAiMode("TEXT_ONLY");
+    setAbnormalHighlight((h) => clearHighlightIfStudyChanged(h, studyId != null ? String(studyId) : null));
   }, [studyId, draftId]);
+
+  const handleUndoLastAbnormal = useCallback(() => {
+    const ws = useWorkspace.getState();
+    const state = {
+      lastPatchSnapshot: ws.lastPatchSnapshot,
+      appliedPathologyPatches: ws.appliedPathologyPatches,
+      isFinalized: ws.isFinalized,
+    };
+    if (!canUndoLastAbnormal(state, { locked: isLocked })) return;
+    const restored = describeRestoredBaseline(state);
+    const label = describeLastAbnormalForUndo(state);
+    const ok = ws.undoLastPatch();
+    if (ok) {
+      toast({
+        title: "Abnormal undone",
+        description: `Restored: ${restored || label}`,
+        duration: 2800,
+      });
+    }
+  }, [isLocked, toast]);
+
+  const feedbackAfterAbnormalApply = useCallback(() => {
+    const patches = useWorkspace.getState().appliedPathologyPatches;
+    const last = [...patches].reverse().find((p) => !isSystemNormalPatch(p) && !p.stale);
+    if (!last) {
+      void saveDraftRef.current?.({ silent: true });
+      return;
+    }
+    const sid = studyId != null ? String(studyId) : null;
+    setAbnormalHighlight((prev) => buildAbnormalHighlightFromPatch(last, sid, prev?.token ?? 0));
+    const msg = describeAbnormalReplacementToast(last);
+    if (msg) {
+      toast({ title: msg, duration: 2200 });
+    }
+    window.setTimeout(() => {
+      setAbnormalHighlight((h) => (h && h.studyId === sid ? null : h));
+    }, ABNORMAL_HIGHLIGHT_MS);
+    void saveDraftRef.current?.({ silent: true });
+  }, [studyId, toast]);
 
   // ─── Background AI Report Composer — canonical study context ────────────
   // The composer MUST receive the SAME canonical study identity the workspace
@@ -2272,7 +2359,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const capturedGeneration = saveGenerationRef.current;
     const capturedPatientId = workflow.currentRow?.patientId ?? null;
     const offlineMsg = offlineBlockMessage(isOnline, "save");
-    if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return null; }
+    if (offlineMsg) {
+      setAutoSaveStatus("error");
+      toast({ title: "Offline", description: offlineMsg, variant: "destructive" });
+      return null;
+    }
+    setAutoSaveStatus("saving");
     try {
       const res = await retryWithBackoff(
         () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
@@ -2321,9 +2413,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const id = res?.draft?.id ?? res?.id ?? null;
       if (id) captureSavedDraftId(id);
       setLastSavedAt(new Date());
+      setAutoSaveStatus("saved");
       if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
       return id;
     } catch (err) {
+      setAutoSaveStatus("error");
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
       return null;
     }
@@ -2640,11 +2734,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         metaKey: e.metaKey,
         altKey: e.altKey,
       });
+      if (cmd === "finalize" && !shouldHandleFinalizeShortcut(e)) {
+        return;
+      }
+      if (cmd === "finalize" && isAiInstructionTextarea(e.target)) {
+        return;
+      }
       if (cmd) { e.preventDefault(); commandDispatcher.dispatch(cmd); return; }
 
       // New features shortcuts
       if (e.ctrlKey && e.key === "k") { e.preventDefault(); useWorkspace.getState().toggleCommandPalette(); return; }
-      if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); finalizeReport(); return; }
+      if (shouldHandleFinalizeShortcut(e)) { e.preventDefault(); finalizeReport(); return; }
+      if (shouldHandleAltUndoAbnormal(e)) {
+        e.preventDefault();
+        handleUndoLastAbnormal();
+        return;
+      }
       if (e.ctrlKey && e.shiftKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
         useWorkspace.getState().undoLastPatch();
@@ -2709,7 +2814,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     };
   }, [
     commandDispatcher, finalizeReport, leftCollapsed, showEmbeddedViewer, setLayoutMode,
-    voiceSession, voiceSettings.pttKey, focusVoiceBar,
+    voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal,
   ]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
@@ -3722,7 +3827,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return { index: idx + 1, label: meta.label, accent: meta.accent };
   };
   /** Shared props for every accordion header — keeps the nine call sites terse. */
-  const accordionProps = (id: ReportSectionId) => {
+  const accordionProps = (id: ReportSectionId, extra?: { collapsedWarning?: ReactNode }) => {
     const meta = sectionMeta(id);
     return {
       id,
@@ -3733,8 +3838,39 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       status: sectionStatus[id],
       active: activeReportSection === id,
       onActivate: activateReportSection,
+      collapsedWarning: extra?.collapsedWarning,
     };
   };
+
+  const impressionContradictionWarnings = useMemo(() => [
+    ...structuredCanalApContradiction(appliedPathologyPatches),
+    ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
+    ...validateReport({
+      findings: findingsText,
+      impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+    }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w)),
+  ], [appliedPathologyPatches, impressionText, findingsText]);
+
+  // Auto-reveal sections that carry validation / stale warnings so collapse
+  // never hides a blocker.
+  useEffect(() => {
+    const need = sectionsRequiringReveal({
+      impressionNeedsRefresh,
+      impressionHasContradiction: impressionContradictionWarnings.length > 0,
+      recommendationCritical: isCritical,
+    });
+    if (need.length === 0) return;
+    if (activeReportSection && need.includes(activeReportSection)) return;
+    // Prefer impression when both impression + recommendation need attention.
+    const target = need.includes("impression") ? "impression" : need[0]!;
+    setActiveReportSection(target);
+  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, activeReportSection]);
+
+  const undoLastAbnormalEnabled = canUndoLastAbnormal({
+    lastPatchSnapshot,
+    appliedPathologyPatches,
+    isFinalized,
+  }, { locked: isLocked });
 
   // ─── Auto-collapse panels on mobile ──────────────────────────────────────
   useEffect(() => {
@@ -4878,13 +5014,41 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       disabled={isLocked || isFinalized}
                       banner={composerBanner}
                       onApplied={(status) => {
-                        if (status === "applied") setComposerBanner(null);
+                        if (status === "applied") {
+                          setComposerBanner(null);
+                          feedbackAfterAbnormalApply();
+                        }
                         if (status === "pending") {
                           toast({ title: "Confirm replacement", description: "Same-slot finding needs confirmation." });
                         }
                       }}
                     />
 
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Observations
+                        </span>
+                        <NormalBaselineBadge
+                          appliedFormatName={appliedFormatName}
+                          appliedFormatReportTitle={appliedFormatReportTitle}
+                          appliedPathologyPatches={appliedPathologyPatches}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[10px] gap-1 shrink-0"
+                        data-testid="undo-last-abnormal"
+                        title="Restore the report state before the last abnormal selection. (Alt+U)"
+                        disabled={!undoLastAbnormalEnabled}
+                        onClick={handleUndoLastAbnormal}
+                      >
+                        <Undo2 className="h-3 w-3" />
+                        Undo Last Abnormal
+                      </Button>
+                    </div>
                     <ObservationLedgerPanel
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}
@@ -5087,7 +5251,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     ) : (
                       /* B. The editor is the hero. Its Quick Select tile wall moves
                          to the Quick Select drawer below (same component). */
-                      <FindingsEditor field="findings" label="" minHeight="220px" placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost." showGhost hideQuickSelect />
+                      <FindingsEditor
+                        field="findings"
+                        label=""
+                        minHeight="220px"
+                        placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost."
+                        showGhost
+                        hideQuickSelect
+                        transientHighlight={
+                          abnormalHighlight
+                            ? { needle: abnormalHighlight.needle, token: abnormalHighlight.token }
+                            : null
+                        }
+                      />
                     )}
                     {ledgerHydrationWarning && (
                       <div
@@ -5152,7 +5328,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           field="findings"
                           bodyPart={studySetup.matchedStudyRegion}
                           anatomyFilter={activeFindingsAnatomy}
-                          onAfterPick={() => { void saveDraft({ silent: true }); }}
+                          onAfterPick={() => { feedbackAfterAbnormalApply(); }}
                         />
                       </FindingsToolDrawer>
 
@@ -5333,21 +5509,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     </ReportAccordionSection>
 
                     {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
-                    <ReportAccordionSection {...accordionProps("impression")}>
+                    <ReportAccordionSection
+                      {...accordionProps("impression", {
+                        collapsedWarning: (impressionNeedsRefresh || impressionContradictionWarnings.length > 0) ? (
+                          <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[9px] text-amber-950" data-testid="impression-collapsed-warning">
+                            {impressionNeedsRefresh
+                              ? "⚠ Impression needs refresh — expand to review"
+                              : "⚠ Contradiction detected — expand to review"}
+                          </div>
+                        ) : null,
+                      })}
+                    >
                       <ImpressionStaleBanner
                         needsRefresh={impressionNeedsRefresh}
                         disabled={isLocked || isFinalized}
                         onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
                       />
                       <ContradictionBanner
-                        warnings={[
-                          ...structuredCanalApContradiction(appliedPathologyPatches),
-                          ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
-                          ...validateReport({
-                            findings: findingsText,
-                            impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
-                          }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w)),
-                        ]}
+                        warnings={impressionContradictionWarnings}
                       />
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
@@ -5605,6 +5784,21 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     />
                     </ReportAccordionSection>
                   </div>
+                  <ReportingStickyActionBar
+                    autoSaveStatus={autoSaveStatus}
+                    lastSavedAt={lastSavedAt}
+                    isDirty={isDirty}
+                    isOnline={isOnline}
+                    hasOfflineCopy={Boolean(draftBackup.peek() || draftBackup.restoreAvailable)}
+                    canUndoLastAbnormal={undoLastAbnormalEnabled}
+                    onUndoLastAbnormal={handleUndoLastAbnormal}
+                    onSave={() => { void saveDraft(); }}
+                    onFinalize={finalizeReport}
+                    onNextStudy={goNextStudy}
+                    finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
+                    finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Confirm & Sign"}
+                    saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
+                  />
                 </div>
                 {draftId ? (
                   <aside
@@ -5838,7 +6032,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
       {/* Background text Report Composer — assistant artifact until Apply */}
-      <div className="fixed bottom-4 left-4 z-40 w-[min(420px,calc(100vw-2rem))] shadow-lg pointer-events-auto">
+      <div
+        className={`fixed bottom-4 left-4 z-40 shadow-lg pointer-events-auto ${
+          aiAssistantMinimized
+            ? "w-auto max-w-[calc(100vw-2rem)]"
+            : "w-[min(520px,calc(100vw-2rem))]"
+        }`}
+      >
         <ReportComposerAssistant
           job={reportComposer.job}
           busy={reportComposer.busy}

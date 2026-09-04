@@ -29,6 +29,11 @@ interface Props {
   hideQuickSelect?: boolean;
   /** After a Quick Select tile is applied (e.g. silent draft persist). */
   onQuickSelectPick?: (field: Props["field"]) => void;
+  /**
+   * Transient display-only flash of an abnormal sentence after Quick Select /
+   * Finding Composer. Never written into clinical text / PDF.
+   */
+  transientHighlight?: { needle: string; token: number } | null;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -75,9 +80,13 @@ export function FindingsEditor({
   showGhost = false,
   hideQuickSelect = false,
   onQuickSelectPick,
+  transientHighlight = null,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
+  const [highlightActive, setHighlightActive] = useState(false);
+  const reduceMotion = typeof window !== "undefined"
+    && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
   const value = useWorkspaceSelector(s => s[`${field}Text` as "findingsText"] as string);
   const setField = useWorkspaceSelector(s => s.setField);
   const provenance = useWorkspaceSelector(s => s.fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE);
@@ -98,6 +107,29 @@ export function FindingsEditor({
     () => provenanceMapToSegments(typeof value === "string" ? value : "", provenance),
     [value, provenance],
   );
+
+  useEffect(() => {
+    if (field !== "findings") return;
+    if (!transientHighlight?.needle) {
+      setHighlightActive(false);
+      return;
+    }
+    setHighlightActive(true);
+    const ms = reduceMotion ? 400 : 1400;
+    const t = window.setTimeout(() => setHighlightActive(false), ms);
+    return () => window.clearTimeout(t);
+  }, [field, transientHighlight?.token, transientHighlight?.needle, reduceMotion]);
+
+  const highlightOverlay = useMemo(() => {
+    if (field !== "findings" || !highlightActive || !transientHighlight?.needle) return null;
+    const text = typeof value === "string" ? value : "";
+    const needle = transientHighlight.needle;
+    const idx = text.indexOf(needle);
+    if (idx < 0) return null;
+    const before = text.slice(0, idx);
+    const after = text.slice(idx + needle.length);
+    return { before, mid: needle, after };
+  }, [field, highlightActive, transientHighlight?.needle, value]);
   const assistedKinds = useMemo(() => uniqueAssistedSources(segments), [segments]);
   const showProvenanceUi = assistedKinds.size > 0;
   // Read-only attribution: CARE already knows how each segment got here, so the
@@ -222,6 +254,25 @@ export function FindingsEditor({
           })}
         </div>
         <div className="relative flex-1">
+          {highlightOverlay && (
+            <div
+              className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
+              data-testid="abnormal-highlight-overlay"
+              data-editor-only="abnormal-highlight"
+              aria-hidden
+            >
+              <span className="invisible">{highlightOverlay.before}</span>
+              <span
+                className={cn(
+                  "rounded-sm bg-amber-200/70 dark:bg-amber-700/40",
+                  !reduceMotion && "animate-pulse",
+                )}
+              >
+                {highlightOverlay.mid}
+              </span>
+              <span className="invisible">{highlightOverlay.after}</span>
+            </div>
+          )}
           <textarea
             ref={ref}
             value={value}
@@ -230,12 +281,12 @@ export function FindingsEditor({
             placeholder={placeholder ?? "Begin typing..."}
             spellCheck={false}
             aria-label={label}
-            className="w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50"
+            className="relative z-[2] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50"
             style={{ minHeight }}
             data-testid={`canonical-${field}-editor`}
           />
           {gt && gTarget === field && (
-            <div className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
+            <div className="pointer-events-none absolute inset-0 z-[3] px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
               <span className="invisible">{value}{value.endsWith("\n") ? "" : " "}</span>
               <span className="italic text-emerald-600/60">{gt}</span>
               <span className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-mono text-emerald-700 not-italic">Tab</span>
