@@ -26,3 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_radiology_worklist_study_id
 -- Common list filter: modality + study_date range / order
 CREATE INDEX IF NOT EXISTS idx_radiology_worklist_modality_study_date
   ON radiology_worklist (modality, study_date DESC);
+
+-- USG list aggregates: DISTINCT ON (worklist_id) … ORDER BY updated_at DESC
+-- needs a composite supporting index (worklist_id alone is insufficient).
+CREATE INDEX IF NOT EXISTS idx_usg_report_drafts_worklist_updated
+  ON usg_report_drafts (worklist_id, updated_at DESC);

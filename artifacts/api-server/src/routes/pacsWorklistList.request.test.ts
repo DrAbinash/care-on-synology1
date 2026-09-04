@@ -95,14 +95,29 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     expect(res.body).toHaveProperty("draft");
   });
 
-  it("per-study detail endpoint returns heavy blobs for selected study", async () => {
+  it("per-study detail returns dicomMetadata + demographics, not aiDraftJson", async () => {
     const res = await request(app)
       .get(`/api/radiology/pacs-worklist/${worklistId}`)
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     expect(res.body).toHaveProperty("id", worklistId);
     expect(res.body).toHaveProperty("dicomMetadata");
-    expect(res.body).toHaveProperty("aiDraftJson");
+    expect(res.body).toHaveProperty("patientName");
+    expect(res.body).toHaveProperty("age");
+    expect(res.body).toHaveProperty("sex");
+    expect(res.body).not.toHaveProperty("aiDraftJson");
     expect(String(res.body.dicomMetadata)).toContain("PatientAge");
+  });
+
+  it("list USG aggregates are present and numeric for seeded rows", async () => {
+    const res = await request(app)
+      .get("/api/radiology/pacs-worklist")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const row = (res.body as Array<Record<string, unknown>>).find((r) => r.id === worklistId);
+    expect(row).toBeTruthy();
+    expect(typeof row!.usgMeasurementCount).toBe("number");
+    expect(typeof row!.usgKeyImageCount).toBe("number");
+    expect(row).toHaveProperty("usgReportStatus");
   });
 });

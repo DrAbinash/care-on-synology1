@@ -18,3 +18,6 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_radiology_worklist_study_id
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_radiology_worklist_modality_study_date
   ON radiology_worklist (modality, study_date DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usg_report_drafts_worklist_updated
+  ON usg_report_drafts (worklist_id, updated_at DESC);

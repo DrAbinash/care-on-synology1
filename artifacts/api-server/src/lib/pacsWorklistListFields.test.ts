@@ -37,14 +37,12 @@ describe("omitHeavyPacsWorklistFields", () => {
 });
 
 describe("pacs-worklist list path contracts", () => {
-  it("route omits heavy blobs from list JSON and joins billed patient / USG aggs", () => {
+  it("route omits heavy blobs from list JSON and joins billed patient", () => {
     const src = readFileSync(join(__dirname, "../routes/radiology.ts"), "utf8");
     expect(src).toMatch(/omitHeavyPacsWorklistRows/);
     expect(src).toMatch(/alias\(patientsTable,\s*"study_patients"\)/);
-    expect(src).toMatch(/usg_meas\.cnt/);
-    expect(src).toMatch(/DISTINCT ON \(worklist_id\)/);
-    // Detail endpoints still expose heavy fields for selected-study hydration
+    expect(src).toMatch(/fetchUsgAggregatesByWorklistIds/);
     expect(src).toMatch(/pacs-worklist\/:id\/ai-draft/);
-    expect(src).toMatch(/radiologyRouter\.get\("\/pacs-worklist\/:id"/);
+    expect(src).toMatch(/PACS_WORKLIST_DETAIL_SELECT/);
   });
 });

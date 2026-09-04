@@ -30,9 +30,6 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
-  usgMeasurementsTable,
-  usgKeyImagesTable,
-  usgReportDraftsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -40,6 +37,11 @@ import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
+import {
+  fetchUsgAggregatesByWorklistIds,
+  mergeUsgAggregatesIntoRows,
+} from "../lib/pacsWorklistUsgAggregates.js";
+import { PACS_WORKLIST_DETAIL_SELECT } from "../lib/pacsWorklistDetailFields.js";
 import { FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth.js";
 import { computeStudyPriority } from "../lib/studyPriorityEngine";
 import { getLockTtlSeconds } from "../lib/studyLocks";
@@ -629,16 +631,12 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       priority: radiologyStudiesTable.priority,
     } as const;
 
-    // R2.0 — USG aggregates via joins (same semantics as correlated subqueries).
-    const usgSelect = {
-      usgMeasurementCount: sql<number>`COALESCE(usg_meas.cnt, 0)`.mapWith(Number),
-      usgKeyImageCount: sql<number>`COALESCE(usg_img.cnt, 0)`.mapWith(Number),
-      usgReportStatus: sql<string | null>`usg_rep.status`,
-    } as const;
-
-    const runQuery = (includeUsg: boolean) => {
-      let q = db
-        .select(includeUsg ? { ...coreSelect, ...usgSelect } : {
+    // Core list query — no USG derived-table joins (those GROUP BY entire
+    // usg_* tables on every poll and worsen as side tables grow). USG
+    // counts/status are attached below, constrained to returned IDs.
+    const runCoreQuery = () =>
+      db
+        .select({
           ...coreSelect,
           usgMeasurementCount: sql<number>`0`.mapWith(Number),
           usgKeyImageCount: sql<number>`0`.mapWith(Number),
@@ -651,35 +649,7 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
         .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
         .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
-        .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id));
-      if (includeUsg) {
-        q = q
-          .leftJoin(
-            sql`(
-              SELECT worklist_id, COUNT(*)::int AS cnt
-              FROM usg_measurements
-              GROUP BY worklist_id
-            ) AS usg_meas`,
-            sql`usg_meas.worklist_id = ${radiologyWorklistTable.id}`,
-          )
-          .leftJoin(
-            sql`(
-              SELECT worklist_id, COUNT(*)::int AS cnt
-              FROM usg_key_images
-              GROUP BY worklist_id
-            ) AS usg_img`,
-            sql`usg_img.worklist_id = ${radiologyWorklistTable.id}`,
-          )
-          .leftJoin(
-            sql`(
-              SELECT DISTINCT ON (worklist_id) worklist_id, status
-              FROM usg_report_drafts
-              ORDER BY worklist_id, updated_at DESC
-            ) AS usg_rep`,
-            sql`usg_rep.worklist_id = ${radiologyWorklistTable.id}`,
-          ) as typeof q;
-      }
-      return q
+        .leftJoin(testsTable, eq(radiologyStudiesTable.testId, testsTable.id))
         .where(conds.length > 0 ? and(...conds) : undefined)
         .orderBy(
           dateFrom || dateTo
@@ -687,15 +657,16 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
             : desc(radiologyWorklistTable.createdAt),
         )
         .limit(dateFrom || dateTo || search ? 1000 : 500);
-    };
 
-    let rows;
+    let rows = await runCoreQuery();
     try {
-      rows = await runQuery(true);
+      if (rows.length > 0) {
+        const aggs = await fetchUsgAggregatesByWorklistIds(rows.map((r) => r.id));
+        rows = mergeUsgAggregatesIntoRows(rows, aggs);
+      }
     } catch (usgErr) {
       if (!isSchemaDriftError(usgErr)) throw usgErr;
       req.log.warn({ err: usgErr }, "[pacs-worklist] USG tables/columns missing — serving without USG extras");
-      rows = await runQuery(false);
     }
 
     // M1.6A — serve lock expiry SERVER-computed (lock_last_activity_at +
@@ -968,15 +939,15 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
 
 /**
  * GET /api/radiology/pacs-worklist/:id
- * Narrow per-study detail — includes heavy blobs (dicomMetadata, aiDraftJson)
- * that are omitted from the polled list response.
+ * Narrow per-study detail — dicomMetadata + demographics for selected-study
+ * hydration. aiDraftJson is intentionally omitted; use /ai-draft.
  */
 radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [row] = await db
-    .select()
+    .select(PACS_WORKLIST_DETAIL_SELECT)
     .from(radiologyWorklistTable)
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
