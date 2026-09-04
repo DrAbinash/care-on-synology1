@@ -50,6 +50,11 @@ export interface ModeLayoutState {
 export interface WorkspaceLayoutPrefs {
   mode: WorkspaceLayoutMode;
   byMode: Record<WorkspaceLayoutMode, ModeLayoutState>;
+  /**
+   * Preferred layout mode per modality bucket (MR/CT/XR/US/MG/OTHER).
+   * Study-agnostic / protocol-agnostic — V1 memory only.
+   */
+  byModality: Record<string, WorkspaceLayoutMode>;
 }
 
 const DEFAULT_MODE_STATE: Record<WorkspaceLayoutMode, ModeLayoutState> = {
@@ -105,7 +110,55 @@ export function fallbackModeWhenPopupBlocked(mode: WorkspaceLayoutMode): Workspa
 export function defaultWorkspaceLayoutPrefs(): WorkspaceLayoutPrefs {
   const byMode = {} as Record<WorkspaceLayoutMode, ModeLayoutState>;
   for (const m of WORKSPACE_LAYOUT_MODES) byMode[m] = defaultModeState(m);
-  return { mode: DEFAULT_LAYOUT_MODE, byMode };
+  return { mode: DEFAULT_LAYOUT_MODE, byMode, byModality: {} };
+}
+
+/** Modality buckets for layout memory (not study/protocol specific). */
+export type LayoutModalityBucket = "MR" | "CT" | "XR" | "US" | "MG" | "OTHER";
+
+/**
+ * Bucket a raw worklist/DICOM modality into a layout preference key.
+ * XR covers CR/DX/XA/RF; US covers USG/Doppler aliases.
+ */
+export function layoutModalityBucket(raw: string | null | undefined): LayoutModalityBucket {
+  const v = (raw ?? "").trim().toUpperCase();
+  if (!v) return "OTHER";
+  if (v === "US" || v === "USG" || v.startsWith("US ") || v.includes("USG") || v.includes("ULTRASOUND") || v.includes("DOPPLER")) {
+    return "US";
+  }
+  if (v === "MR" || v.startsWith("MR")) return "MR";
+  if (v === "CT" || v.startsWith("CT")) return "CT";
+  if (v === "MG" || v.startsWith("MG") || v.includes("MAMMO")) return "MG";
+  if (
+    v === "XR" || v === "CR" || v === "DX" || v === "XA" || v === "RF"
+    || v === "XRAY" || v === "X-RAY" || v.startsWith("XR")
+  ) {
+    return "XR";
+  }
+  return "OTHER";
+}
+
+export function resolveLayoutModeForModality(
+  prefs: WorkspaceLayoutPrefs,
+  rawModality: string | null | undefined,
+): WorkspaceLayoutMode {
+  const bucket = layoutModalityBucket(rawModality);
+  const saved = prefs.byModality?.[bucket];
+  if (isWorkspaceLayoutMode(saved)) return saved;
+  return prefs.mode;
+}
+
+export function withModalityLayoutMode(
+  prefs: WorkspaceLayoutPrefs,
+  rawModality: string | null | undefined,
+  mode: WorkspaceLayoutMode,
+): WorkspaceLayoutPrefs {
+  const bucket = layoutModalityBucket(rawModality);
+  return {
+    ...prefs,
+    mode,
+    byModality: { ...(prefs.byModality ?? {}), [bucket]: mode },
+  };
 }
 
 function sanitizeModeState(raw: unknown, mode: WorkspaceLayoutMode): ModeLayoutState {
@@ -134,24 +187,38 @@ export function parseWorkspaceLayoutPrefs(json: string | null | undefined): Work
     const byMode = {} as Record<WorkspaceLayoutMode, ModeLayoutState>;
     const rawByMode = p.byMode && typeof p.byMode === "object" ? (p.byMode as Record<string, unknown>) : {};
     for (const m of WORKSPACE_LAYOUT_MODES) byMode[m] = sanitizeModeState(rawByMode[m], m);
-    return { mode, byMode };
+    const byModality: Record<string, WorkspaceLayoutMode> = {};
+    const rawByMod =
+      p.byModality && typeof p.byModality === "object" ? (p.byModality as Record<string, unknown>) : {};
+    for (const [k, v] of Object.entries(rawByMod)) {
+      if (isWorkspaceLayoutMode(v)) byModality[k] = v;
+    }
+    return { mode, byMode, byModality };
   } catch {
     return defaults;
   }
 }
 
-const STORAGE_PREFIX = "radiology_workspace_layout_v1";
+const STORAGE_PREFIX_V1 = "radiology_workspace_layout_v1";
+const STORAGE_PREFIX_V2 = "radiology_workspace_layout_v2";
 
-/** One storage slot per radiologist (falls back to a shared slot when no
- *  session user id is available yet, e.g. before login resolves). */
+/** V2 slot (includes byModality). */
 export function workspaceLayoutStorageKey(userKey: string | number | null | undefined): string {
-  return `${STORAGE_PREFIX}:${userKey ?? "anon"}`;
+  return `${STORAGE_PREFIX_V2}:${userKey ?? "anon"}`;
+}
+
+function workspaceLayoutStorageKeyV1(userKey: string | number | null | undefined): string {
+  return `${STORAGE_PREFIX_V1}:${userKey ?? "anon"}`;
 }
 
 export function loadWorkspaceLayoutPrefs(userKey: string | number | null | undefined): WorkspaceLayoutPrefs {
   try {
     if (typeof localStorage === "undefined") return defaultWorkspaceLayoutPrefs();
-    return parseWorkspaceLayoutPrefs(localStorage.getItem(workspaceLayoutStorageKey(userKey)));
+    const v2 = localStorage.getItem(workspaceLayoutStorageKey(userKey));
+    if (v2) return parseWorkspaceLayoutPrefs(v2);
+    // Migrate: read v1 once if v2 missing (upgrade happens on next save).
+    const v1 = localStorage.getItem(workspaceLayoutStorageKeyV1(userKey));
+    return parseWorkspaceLayoutPrefs(v1);
   } catch {
     return defaultWorkspaceLayoutPrefs();
   }
@@ -163,7 +230,11 @@ export function saveWorkspaceLayoutPrefs(
 ): void {
   try {
     if (typeof localStorage === "undefined") return;
-    localStorage.setItem(workspaceLayoutStorageKey(userKey), JSON.stringify(prefs));
+    const normalized: WorkspaceLayoutPrefs = {
+      ...prefs,
+      byModality: prefs.byModality ?? {},
+    };
+    localStorage.setItem(workspaceLayoutStorageKey(userKey), JSON.stringify(normalized));
   } catch {
     /* private mode / quota — layout just won't persist, non-fatal */
   }

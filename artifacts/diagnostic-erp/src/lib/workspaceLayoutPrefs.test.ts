@@ -7,16 +7,19 @@ import {
   DEFAULT_LAYOUT_MODE,
   fallbackModeWhenPopupBlocked,
   isWorkspaceLayoutMode,
+  layoutModalityBucket,
   LEFT_COLLAPSED_PCT,
   LEFT_MAX_PCT,
   LEFT_MIN_PCT,
   loadWorkspaceLayoutPrefs,
   parseWorkspaceLayoutPrefs,
+  resolveLayoutModeForModality,
   RIGHT_COLLAPSED_PCT,
   RIGHT_MAX_PCT,
   RIGHT_MIN_PCT,
   saveWorkspaceLayoutPrefs,
   shouldShowEmbeddedViewer,
+  withModalityLayoutMode,
   workspaceLayoutStorageKey,
 } from "./workspaceLayoutPrefs";
 
@@ -204,6 +207,62 @@ describe("workspaceLayoutStorageKey — per-radiologist isolation", () => {
 
   it("falls back to a shared anon slot when no user id is known yet", () => {
     expect(workspaceLayoutStorageKey(null)).toBe(workspaceLayoutStorageKey(undefined));
+  });
+});
+
+describe("layoutModalityBucket / resolveLayoutModeForModality / withModalityLayoutMode", () => {
+  it("buckets MR/CT/XR/US/MG correctly", () => {
+    expect(layoutModalityBucket("MR")).toBe("MR");
+    expect(layoutModalityBucket("MRI")).toBe("MR");
+    expect(layoutModalityBucket("CT")).toBe("CT");
+    expect(layoutModalityBucket("CTA")).toBe("CT");
+    expect(layoutModalityBucket("XR")).toBe("XR");
+    expect(layoutModalityBucket("CR")).toBe("XR");
+    expect(layoutModalityBucket("DX")).toBe("XR");
+    expect(layoutModalityBucket("USG")).toBe("US");
+    expect(layoutModalityBucket("US")).toBe("US");
+    expect(layoutModalityBucket("MG")).toBe("MG");
+    expect(layoutModalityBucket("OT")).toBe("OTHER");
+    expect(layoutModalityBucket("")).toBe("OTHER");
+  });
+
+  it("MR preference restores; XR preference does not affect MR", () => {
+    let prefs = defaultWorkspaceLayoutPrefs();
+    prefs = withModalityLayoutMode(prefs, "MR", "viewerFocus");
+    prefs = withModalityLayoutMode(prefs, "XR", "reportFocus");
+    expect(resolveLayoutModeForModality(prefs, "MRI")).toBe("viewerFocus");
+    expect(resolveLayoutModeForModality(prefs, "CR")).toBe("reportFocus");
+    expect(resolveLayoutModeForModality(prefs, "CT")).toBe(prefs.mode); // unknown bucket uses current mode after XR write
+  });
+
+  it("unknown modality uses default mode when no byModality entry", () => {
+    const prefs = defaultWorkspaceLayoutPrefs();
+    expect(resolveLayoutModeForModality(prefs, "NM")).toBe(DEFAULT_LAYOUT_MODE);
+  });
+
+  it("manual layout change updates saved preference for that modality", () => {
+    stubLocalStorage();
+    let prefs = defaultWorkspaceLayoutPrefs();
+    prefs = withModalityLayoutMode(prefs, "USG", "reportFocus");
+    saveWorkspaceLayoutPrefs(3, prefs);
+    const loaded = loadWorkspaceLayoutPrefs(3);
+    expect(resolveLayoutModeForModality(loaded, "US")).toBe("reportFocus");
+  });
+
+  it("missing/corrupt preference fails safely", () => {
+    expect(parseWorkspaceLayoutPrefs("{bad")).toEqual(defaultWorkspaceLayoutPrefs());
+    const partial = parseWorkspaceLayoutPrefs(JSON.stringify({ mode: "split", byMode: {}, byModality: { MR: "nope" } }));
+    expect(partial.byModality.MR).toBeUndefined();
+    expect(resolveLayoutModeForModality(partial, "MR")).toBe("split");
+  });
+
+  it("v1 blob without byModality still loads", () => {
+    stubLocalStorage({
+      "radiology_workspace_layout_v1:9": JSON.stringify({ mode: "viewerFocus", byMode: {} }),
+    });
+    const loaded = loadWorkspaceLayoutPrefs(9);
+    expect(loaded.mode).toBe("viewerFocus");
+    expect(loaded.byModality).toEqual({});
   });
 });
 
