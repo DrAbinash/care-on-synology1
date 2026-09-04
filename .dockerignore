@@ -1,3 +1,15 @@
+# =============================================================================
+# Docker build-context exclusions (Synology disk + transfer safety)
+#
+# Keep this list LIMITED to confirmed non-build inputs. The Dockerfile does
+# `COPY . .` then `pnpm install` / package builds / migrations — do NOT exclude
+# workspace packages, lockfiles, migrations/, lib/db/, scripts/, version.json,
+# docker/, tests, or other runtime/build assets.
+#
+# Note: bare globs like *.zip only match the context root in the classic
+# builder; use **/ for nested paths.
+# =============================================================================
+
 **/node_modules
 **/dist
 **/.cache
@@ -5,23 +17,50 @@
 **/.expo
 **/.expo-shared
 **/.replit-artifact
+
+# Git metadata (schema-verify bind-mounts .git at runtime — build context OK)
 .git
 .github
+
+# IDE / local agent noise
 .idea
 .vscode
 .local
 .cursor
 .cache
+
+# Secrets / local env (never bake into images)
 .env
 .env.*
-*.log
+
+# Logs and OS junk (anywhere in the tree)
+**/*.log
+**/desktop.ini
+**/Thumbs.db
+**/*.bak
+**/*~
+**/*.tmp
+**/*.temp
+**/*.swp
+**/*.swo
+
+# Owner-confirmed non-product MRI report archive (Windows PC only)
+mri-reports/
+
+# Release bundles / exported archives (not pnpm/Docker build inputs)
+releases/
 project.tar.gz
 project.zip
+**/*.tar.gz
+**/*.zip
+
+# Docs already excluded historically (not required for image build)
 attached_assets/screenshots
 README-WINDOWS.md
 DEPLOY.md
 replit.md
 .replit
+
 # Quarantined Super Admin folders to keep docker builds trace-free
 artifacts/super-admin-portal
 __super_admin_quarantine
