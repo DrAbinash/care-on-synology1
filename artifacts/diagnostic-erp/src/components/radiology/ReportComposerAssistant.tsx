@@ -6,6 +6,7 @@ import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, 
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
 import { AI_COMPOSE_STATUS_STYLE } from "@/lib/reportComposer/types";
+import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
 
 type Props = {
   job: ComposeJobView | null;
@@ -273,18 +274,47 @@ export function ReportComposerAssistant(props: Props) {
         )}
       </div>
 
-      <div className="flex gap-1.5 items-center">
-        <input
-          className="flex-1 h-8 rounded-md border bg-background px-2 text-xs"
-          placeholder="Ask AI to improve selected / current section…"
-          value={props.microInstruction}
-          onChange={(e) => props.onMicroInstructionChange(e.target.value)}
-          disabled={props.isFinalized}
-          data-testid="ai-micro-command"
-        />
-        <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={props.isFinalized || !props.microInstruction.trim()} onClick={props.onMicroSubmit}>
-          Run
-        </Button>
+      <div className="space-y-1" data-testid="ai-micro-command-wrap">
+        <label htmlFor="ai-micro-command" className="block text-[10px] font-medium text-muted-foreground">
+          Instructions to AI (optional)
+        </label>
+        <div className="flex gap-1.5 items-end">
+          <textarea
+            id="ai-micro-command"
+            className="flex-1 min-h-[4.5rem] max-h-[10.5rem] resize-none rounded-md border bg-background px-2 py-1.5 text-xs leading-5 overflow-y-auto"
+            rows={3}
+            placeholder="Tell AI what to improve, rephrase or emphasize…"
+            value={props.microInstruction}
+            onChange={(e) => {
+              props.onMicroInstructionChange(e.target.value);
+              const el = e.target;
+              el.style.height = "auto";
+              const maxPx = 10.5 * 16; // ~7 lines
+              el.style.height = `${Math.min(Math.max(el.scrollHeight, 4.5 * 16), maxPx)}px`;
+            }}
+            onKeyDown={(e) => {
+              if (shouldSubmitAiInstructionKey(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!props.isFinalized && props.microInstruction.trim()) props.onMicroSubmit();
+              }
+            }}
+            disabled={props.isFinalized}
+            data-testid="ai-micro-command"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs shrink-0"
+            disabled={props.isFinalized || !props.microInstruction.trim()}
+            onClick={props.onMicroSubmit}
+            data-testid="ai-micro-run"
+          >
+            Run
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground">Ctrl/⌘+Enter to run · Enter for a new line</p>
       </div>
 
       {props.job?.safeError && props.job.status === "FAILED" && (
