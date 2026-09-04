@@ -692,17 +692,46 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     }
     setSelectedChocolateFindings([]);
 
-    // If pre-existing draft, use it
-    if (study.aiDraftJson) {
+    // List rows no longer carry aiDraftJson — hydrate from per-study detail.
+    let cancelled = false;
+    void (async () => {
       try {
-        const draft = JSON.parse(study.aiDraftJson);
-        if (draft.clinical_history) setClinicalHistory(draft.clinical_history);
+        const draftRes = await api.get<{
+          draft?: {
+            findingsText?: string;
+            findings?: string;
+            impression?: string[] | string;
+            clinicalHistory?: string;
+            clinical_history?: string;
+            technique?: string;
+            recommendation?: string;
+          } | null;
+        }>(`/api/radiology/pacs-worklist/${study.id}/ai-draft`);
+        if (cancelled) return;
+        const draft = draftRes?.draft;
+        if (!draft) return;
+        const hist = draft.clinicalHistory ?? draft.clinical_history;
+        if (hist) setClinicalHistory(hist);
         if (draft.technique) setTechnique(draft.technique);
-        if (draft.findings) setRawFindings(draft.findings);
-        if (draft.impression) setImpression([draft.impression]);
+        const findings =
+          (typeof draft.findingsText === "string" && draft.findingsText.trim()
+            ? draft.findingsText
+            : typeof draft.findings === "string"
+              ? draft.findings
+              : "");
+        if (findings) setRawFindings(findings);
+        if (Array.isArray(draft.impression)) {
+          const lines = draft.impression.filter((s) => typeof s === "string" && s.trim());
+          if (lines.length) setImpression(lines);
+        } else if (typeof draft.impression === "string" && draft.impression.trim()) {
+          setImpression([draft.impression]);
+        }
         if (draft.recommendation) setRecommendation(draft.recommendation);
-      } catch { /* ignore */ }
-    }
+      } catch {
+        /* no draft / offline — leave builder defaults */
+      }
+    })();
+    return () => { cancelled = true; };
   }, [study]);
 
   // Apply selected template
@@ -932,7 +961,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     return queue.filter((item) => item.patientId === study.patientId && item.id !== study.id);
   }, [queue, study]);
 
-  const handleMergeStudy = (otherStudy: WorklistEntry) => {
+  const handleMergeStudy = async (otherStudy: WorklistEntry) => {
     const otherBuilder = detectBuilderType(otherStudy.modality, otherStudy.studyDescription);
     
     const nextBuilders = otherBuilder && !activeBuilderTypes.includes(otherBuilder)
@@ -942,16 +971,32 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
     const combinedTitle = generateCombinedTitle(nextBuilders);
     const combinedTechnique = generateCombinedTechnique(nextBuilders);
 
-    // Merge raw findings and impressions if the other study has existing draft text
+    // Merge raw findings and impressions if the other study has existing draft text.
+    // List rows no longer carry aiDraftJson — fetch the existing ai-draft detail endpoint.
     let additionalFindings = "";
     let additionalImpressions: string[] = [];
 
-    if (otherStudy.aiDraftJson) {
-      try {
-        const draft = JSON.parse(otherStudy.aiDraftJson);
-        if (draft.findings) additionalFindings = draft.findings;
-        if (draft.impression) additionalImpressions = [draft.impression];
-      } catch {}
+    try {
+      const draftRes = await api.get<{
+        draft?: {
+          findingsText?: string;
+          impression?: string[];
+          findings?: string;
+        } | null;
+      }>(`/api/radiology/pacs-worklist/${otherStudy.id}/ai-draft`);
+      const draft = draftRes?.draft ?? null;
+      if (draft) {
+        if (typeof draft.findingsText === "string" && draft.findingsText.trim()) {
+          additionalFindings = draft.findingsText;
+        } else if (typeof draft.findings === "string") {
+          additionalFindings = draft.findings;
+        }
+        if (Array.isArray(draft.impression)) {
+          additionalImpressions = draft.impression.filter((s) => typeof s === "string" && s.trim());
+        }
+      }
+    } catch {
+      /* detail miss — fall through to builder defaults */
     }
 
     // If no draft but we have default findings from builder, use it
@@ -2053,7 +2098,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => handleMergeStudy(other)}
+                                    onClick={() => { void handleMergeStudy(other); }}
                                     className="h-6 text-[9.5px] px-2 border-violet-800 text-violet-400 bg-violet-950/20 hover:bg-violet-950/40"
                                   >
                                     Merge Study
