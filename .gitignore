@@ -86,6 +86,9 @@ screenshots/
 exports/
 test-results/
 
+# MRI report archive — owner keeps copies on Windows PC; not used by CARE/Synology/Docker
+mri-reports/
+
 # Attached assets (uploaded text files, large)
 attached_assets/
 

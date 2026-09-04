@@ -41,6 +41,11 @@ services:
     image: postgres:16-alpine
     container_name: care-db
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     ports:
       # Bind the published Postgres port to LOOPBACK by default.
       #
@@ -220,6 +225,11 @@ services:
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: care-api
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     labels:
       com.caredeoghar.version: ${ERP_VERSION:-2.0.0}
       com.caredeoghar.build: ${BUILD_NUMBER:-0}
@@ -503,6 +513,11 @@ services:
       target: web
     container_name: care-web
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     # Build traceability for the static nginx image, matching the api
     # service's labels below — inspectable via `docker inspect care-web`.
     # The web container itself is static and has no runtime env, so this is
@@ -594,6 +609,11 @@ services:
     image: redis:7-alpine
     container_name: care-redis
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save "" --appendonly no
     # No port published — only accessible within the Docker network (care-api connects via redis:6379)
     # If you need external access for debugging, uncomment:
