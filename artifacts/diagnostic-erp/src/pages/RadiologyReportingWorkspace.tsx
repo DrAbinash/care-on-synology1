@@ -327,7 +327,12 @@ import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-p
 import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
-import { resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
+import { editorHasMeaningfulReportText, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
+import {
+  buildCareReportFormatIdentity,
+  extractCareReportFormatIdentity,
+  resolveNormalBootstrapFormat,
+} from "@/lib/zai-workspace/normalBootstrap";
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { MacroEditorDialog } from "@/components/radiology/zai-workspace/macro-editor-dialog";
 import { MacroPromptPopover } from "@/components/radiology/zai-workspace/macro-prompt-popover";
@@ -503,6 +508,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   } | null>(null);
   const [canUndoStartReport, setCanUndoStartReport] = useState(false);
   const pendingStructuredPopulateRef = useRef(false);
+  /** Normal auto-bootstrap decision marker — one decision per studyId, ever. */
+  const normalBootstrapDoneRef = useRef<number | null>(null);
   const [structuredValues, setStructuredValues] = useState<StructuredValues>({});
   const structuredTouchedRef = useRef(false);
   const structuredFormatDrivingRef = useRef(false);
@@ -1687,6 +1694,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const reportNeedsStart = useMemo(() => {
     const region = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0];
     if (!region) return false;
+    // A complete Full Report Format baseline is already present — the amber
+    // Start-Report banner must not nag over a ready-to-review normal report.
+    if (appliedFormatName && techniqueText.trim() && findingsText.trim()) return false;
     const findingsEmpty = useStructured
       ? Object.values(findingsMap).every((v) => !v.text.trim() || v.normal)
       : !findingsText.trim();
@@ -1697,7 +1707,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [
     studySetup.matchedStudyRegion, studySetup.studyRegions, useStructured, findingsMap,
     findingsText, techniqueText, impressionText, studySetup.templateMismatch,
-    studySetup.activeProtocol, studySetup.availableProtocols.length,
+    studySetup.activeProtocol, studySetup.availableProtocols.length, appliedFormatName,
   ]);
 
   const handleStartReport = useCallback(() => {
@@ -2074,6 +2084,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
       setSelectedQuickIds(new Set(ids));
+      // Restore the persisted baseline format identity (banner / canvas state).
+      // Content-level restore above is authoritative; this only recovers the
+      // "applied format" label so save → close → reopen keeps its baseline.
+      const formatIdentity = extractCareReportFormatIdentity(draft.structuredJson);
+      if (formatIdentity?.name) {
+        useWorkspace.setState({
+          appliedFormatName: formatIdentity.name,
+          appliedFormatReportTitle: formatIdentity.reportTitle ?? null,
+        });
+      } else if (useWorkspace.getState().appliedFormatName) {
+        useWorkspace.setState({ appliedFormatName: null, appliedFormatReportTitle: null });
+      }
       if (hydrated.warning) {
         toast({
           title: "Opened as narrative-only",
@@ -2130,15 +2152,78 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         if (!state.clinicalHistoryText.trim()) {
           state.setField("clinicalHistory", (row as any).clinicalHistory ?? "");
         }
-        // One-time toast so the radiologist knows AI was expected but failed
+        // One-time toast so the radiologist knows AI was expected but failed.
+        // Skip when the normal bootstrap already provided a complete report.
+        const hasBaseline = editorHasMeaningfulReportText({
+          technique: state.techniqueText,
+          findings: state.findingsText,
+          impression: state.impressionText,
+          recommendation: state.recommendationText,
+        });
         const shown = sessionStorage.getItem(`ai-draft-err-${studyId}`);
-        if (!shown) {
+        if (!shown && !hasBaseline) {
           toast({ title: "AI draft unavailable", description: "Report will start blank — use Start Report or type manually.", duration: 3000 });
           sessionStorage.setItem(`ai-draft-err-${studyId}`, "1");
         }
       });
     }
   }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow, toast]);
+
+  // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new+empty only) ──
+  //
+  // OPEN STUDY → appropriate COMPLETE NORMAL REPORT already present.
+  // Applies the single high-confidence complete-normal Full Report Format via
+  // the ordinary applyFormatById path — byte-identical to a radiologist
+  // clicking that format (same overwrite analysis, region bridge, autosave
+  // generation bump, usage counter). Never fires when a server draft exists,
+  // when any meaningful report content exists, when a local backup snapshot
+  // holds prior work, when the study is locked/finalized, or when identity is
+  // ambiguous — the manual Start Report / format picker path stays intact.
+  // Abnormal deviations afterwards flow through the canonical observation
+  // ledger exactly as with a manually applied format.
+  useEffect(() => {
+    if (!studyId) return;
+    if (draftHydratedStudyId !== studyId) return; // hydration settled for THIS study
+    if (existingDraft) return; // saved report — never re-bootstrap
+    if (contentLocked) return; // locked-by-other / finalized / signed
+    if (normalBootstrapDoneRef.current === studyId) return; // one decision per study
+    const state = useWorkspace.getState();
+    if (editorHasMeaningfulReportText({
+      technique: state.techniqueText,
+      findings: state.findingsText,
+      impression: state.impressionText,
+      recommendation: state.recommendationText,
+    })) return; // genuinely NEW EMPTY report only (clinicalHistory is not report body)
+    const backup = draftBackup.peek();
+    if (
+      backup
+      && (
+        String(backup.rawFindings ?? "").trim()
+        || String(backup.technique ?? "").trim()
+        || (Array.isArray(backup.impression) ? backup.impression.join("").trim() : "")
+      )
+    ) return; // prior local work for this study — offer the restore banner instead
+    const ctx = studySetup.studyContext;
+    const decision = resolveNormalBootstrapFormat({
+      ctx,
+      formats: state.reportFormats,
+    });
+    if (decision == null) return; // identity / library unresolved yet — may retry
+    normalBootstrapDoneRef.current = studyId; // decision made — never again this study
+    if (decision.status !== "apply") {
+      console.debug("[radiology-workspace] normal bootstrap skipped:", decision.reason);
+      return;
+    }
+    state.applyFormatById(decision.format.id);
+    // The complete normal report is the visible narrative baseline (the
+    // structured-template cards remain available via the template picker).
+    setUseStructured(false);
+    toast({
+      title: "Normal report ready",
+      description: `${decision.basis} — review images, record deviations, finalize.`,
+      duration: 4000,
+    });
+  }, [studyId, draftHydratedStudyId, existingDraft, contentLocked, draftBackup, studySetup.studyContext, toast, setUseStructured]);
 
   // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
   useEffect(() => {
@@ -2216,6 +2301,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             return { ...s, items: s.items.slice(-400) };
           })(),
           canalApProvenance: useWorkspace.getState().canalApProvenance,
+          // Baseline format identity — survives save → close → reopen so the
+          // applied-format banner stays and the bootstrap never re-fires.
+          reportFormatIdentity: (() => {
+            const ws = useWorkspace.getState();
+            return ws.appliedFormatName
+              ? buildCareReportFormatIdentity({
+                name: ws.appliedFormatName,
+                reportTitle: ws.appliedFormatReportTitle,
+              })
+              : undefined;
+          })(),
         } as any),
         { shouldRetry: isTransientError },
       );

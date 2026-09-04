@@ -10,6 +10,7 @@
 
 export const STRUCTURED_JSON_ENVELOPE_KIND = "care.structured_json_envelope";
 export const CARE_STRUCTURED_FORMAT_STATE_KIND = "care.structured_format_state";
+export const CARE_REPORT_FORMAT_IDENTITY_KIND = "care.report_format_identity.v1";
 
 /** Cap draft-scoped care.viewer_measurements.v1 items (matches ERP autosave bound). */
 export const MAX_CARE_VIEWER_MEASUREMENT_ITEMS = 400;
@@ -31,6 +32,8 @@ export type StructuredJsonEnvelope = {
   careViewerMeasurements?: unknown;
   /** Canal AP cell provenance map (manualOverride + DICOM UIDs). */
   careCanalApProvenance?: unknown;
+  /** Applied whole-report format identity (care.report_format_identity.v1). */
+  careReportFormatIdentity?: unknown;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -91,6 +94,27 @@ export function extractCareCanalApProvenance(column: unknown): unknown {
   return null;
 }
 
+export function isCareReportFormatIdentity(v: unknown): v is CareReportFormatIdentity {
+  return isRecord(v) && v.kind === CARE_REPORT_FORMAT_IDENTITY_KIND && typeof v.name === "string" && v.name.trim() !== "";
+}
+
+/** Applied whole-report format identity (baseline banner / re-bootstrap guard). */
+export type CareReportFormatIdentity = {
+  kind: typeof CARE_REPORT_FORMAT_IDENTITY_KIND;
+  name: string;
+  reportTitle?: string;
+  appliedAt: string;
+};
+
+export function extractCareReportFormatIdentity(column: unknown): CareReportFormatIdentity | null {
+  if (!isRecord(column)) return null;
+  if (isCareReportFormatIdentity(column)) return column;
+  if (isCareReportFormatIdentity(column.careReportFormatIdentity)) {
+    return column.careReportFormatIdentity as CareReportFormatIdentity;
+  }
+  return null;
+}
+
 /**
  * Compose the column value. `undefined` means "keep whatever was in existing".
  * When there is no format state, returns the legacy A4 shape (array | null)
@@ -103,6 +127,7 @@ export function composeStructuredJsonColumn(opts: {
   observationLedger?: unknown;
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
+  reportFormatIdentity?: unknown;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
@@ -115,7 +140,10 @@ export function composeStructuredJsonColumn(opts: {
   const canalProv = opts.canalApProvenance !== undefined
     ? opts.canalApProvenance
     : extractCareCanalApProvenance(opts.existing);
-  if (!format && !ledger && !viewerMs && !canalProv) return a4 ?? null;
+  const reportFormatIdentity = opts.reportFormatIdentity !== undefined
+    ? opts.reportFormatIdentity
+    : extractCareReportFormatIdentity(opts.existing);
+  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -124,5 +152,6 @@ export function composeStructuredJsonColumn(opts: {
   if (ledger) env.careObservationLedger = ledger;
   if (viewerMs) env.careViewerMeasurements = viewerMs;
   if (canalProv) env.careCanalApProvenance = canalProv;
+  if (reportFormatIdentity) env.careReportFormatIdentity = reportFormatIdentity;
   return env;
 }
