@@ -256,7 +256,13 @@ export default function VoiceDictation() {
                   <TableCell className="text-right">
                     <div className="flex gap-1 justify-end">
                       {item.status === "pending" && (
-                        <Button size="sm" variant="outline" onClick={() => transcribeMutation.mutate(item.id)} disabled={transcribeMutation.isPending}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled
+                          title="Voice transcription is not configured. No findings or impression were generated."
+                          data-testid="voice-transcribe-disabled"
+                        >
                           <Play className="w-4 h-4" />
                         </Button>
                       )}

@@ -196,7 +196,7 @@ router.post("/:studyId/create-report", async (req, res) => {
   res.status(201).json({ draft, studyId });
 });
 
-// ── POST /ai-extract/:studyId ── Generate mock AI extraction (deterministic)
+// ── POST /ai-extract/:studyId ── Disabled (fail closed); mock clinical extraction not configured
 const AI_TYPES = [
   "dicom_metadata", "key_images", "measurements_from_overlay",
   "report_template_suggestion", "findings_suggestion", "prior_comparison", "quality_check",
@@ -205,36 +205,17 @@ const AI_TYPES = [
 router.post("/ai-extract/:studyId", async (req, res) => {
   if (!requireRad(req)) { res.status(403).json({ error: "Radiologist access required" }); return; }
   const studyId = Number(req.params.studyId);
-  const parsed = z.object({ extractionType: z.enum(AI_TYPES) }).safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.issues }); return; }
-  const { extractionType } = parsed.data;
-
   const [study] = await db.select().from(dicomStudiesTable).where(eq(dicomStudiesTable.id, studyId)).limit(1);
   if (!study) { res.status(404).json({ error: "Study not found" }); return; }
 
-  // Deterministic mock output based on study metadata
-  const mockData: Record<string, unknown> = {
-    dicom_metadata: { modality: study.modality, bodyPart: study.bodyPartExamined, images: study.numberOfImages },
-    key_images: { representativeFrames: [1, 3, 5], qualityScore: 0.92 },
-    measurements_from_overlay: { extracted: [], confidence: 0.0 },
-    report_template_suggestion: { suggestedTemplate: "WHOLE_ABDOMEN", confidence: 0.85 },
-    findings_suggestion: { findings: [], impression: "No significant abnormality detected (AI suggestion).", confidence: 0.78 },
-    prior_comparison: { priorStudiesFound: 0, changes: "No prior studies available." },
-    quality_check: { passed: true, warnings: ["Verify patient demographics before finalizing."] },
-  };
-
-  const [row] = await db.insert(aiExtractionResultsTable).values({
-    studyId,
-    extractionType,
-    sourceData: JSON.stringify({ studyInstanceUID: study.studyInstanceUID, modality: study.modality }),
-    extractedData: JSON.stringify(mockData[extractionType] ?? {}),
-    confidence: String((mockData[extractionType] as Record<string, unknown> | undefined)?.confidence ?? 0.5),
-    isAiSuggested: true,
-  }).returning();
-
-  await audit(req, { studyId, action: "ai_suggestion_generated", details: { extractionType, extractionId: row.id } });
-  res.status(201).json(row);
+  // Mock clinical interpretation generator is intentionally disabled.
+  // Previously returned canned findings/impression (e.g. "No significant abnormality").
+  res.status(501).json({
+    error: "DICOM AI extraction is not configured. No clinical findings were generated.",
+    code: "dicom_ai_extraction_not_configured",
+  });
 });
+
 
 // ── GET /ocr-review/:studyId ── OCR extraction results for review
 router.get("/ocr-review/:studyId", async (req, res) => {

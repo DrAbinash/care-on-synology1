@@ -52,6 +52,9 @@ export type SelectedKeyImageRef = z.infer<typeof SelectedKeyImageRefSchema>;
 export const ComposerEvidenceProvenanceSchema = z.object({
   aiMode: ComposerAiModeSchema.optional(),
   model: z.string().optional(),
+  /** Provider that produced the draft: ollama | deepseek | openai | deterministic */
+  provider: z.string().optional(),
+  fallbackUsed: z.boolean().optional(),
   personaVersion: z.string().optional(),
   selectedKeyImageIds: z.array(z.number()).optional(),
   imagesLoaded: z.number().optional(),

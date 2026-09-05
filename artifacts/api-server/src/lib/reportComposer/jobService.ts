@@ -373,6 +373,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     // Do not retry endlessly on config / vision / image resolution errors
     if (
       run.safeError === "composer_model_not_configured" ||
+      run.safeError === "composer_provider_not_configured" ||
       run.safeError === "malformed_json" ||
       run.safeError === "vision_model_required" ||
       run.safeError === "vision_capability_unverified" ||

@@ -22,6 +22,11 @@ import {
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
 import type { KeyImageOwnershipContext } from "./keyImageOwnership";
+import {
+  resolveComposerProvider,
+  assertComposerProviderPolicy,
+  type ComposerProviderName,
+} from "./providers";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 
 export type ComposeRunResult = {
@@ -91,51 +96,6 @@ export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputS
   return prompt;
 }
 
-async function callOllama(opts: {
-  endpoint: string;
-  model: string;
-  system: string;
-  user: string;
-  numCtx: number;
-  temperature: number;
-  timeoutMs: number;
-  /** Raw base64 without data: prefix (Ollama chat message.images). */
-  images?: string[];
-}): Promise<{ ok: boolean; text?: string; safeError?: string }> {
-  try {
-    const userMessage: Record<string, unknown> = {
-      role: "user",
-      content: opts.user,
-    };
-    if (opts.images && opts.images.length > 0) {
-      userMessage.images = opts.images;
-    }
-    const res = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(opts.timeoutMs),
-      body: JSON.stringify({
-        model: opts.model,
-        stream: false,
-        format: "json",
-        think: false,
-        options: { temperature: opts.temperature, num_ctx: opts.numCtx },
-        messages: [{ role: "system", content: opts.system }, userMessage],
-      }),
-    });
-    if (!res.ok) {
-      return { ok: false, safeError: `ollama_http_${res.status}` };
-    }
-    const json = (await res.json()) as { message?: { content?: string }; response?: string };
-    const text = json.message?.content ?? json.response ?? "";
-    if (!text.trim()) return { ok: false, safeError: "empty_model_response" };
-    return { ok: true, text };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "ollama_error";
-    if (/abort|timeout/i.test(msg)) return { ok: false, safeError: "ollama_timeout" };
-    return { ok: false, safeError: "ollama_unreachable" };
-  }
-}
 
 export { deterministicComposeFromSnapshot } from "./deterministicCompose";
 
@@ -188,7 +148,7 @@ export async function runReportComposer(opts: {
         model: "deterministic",
         fallbackUsed: true,
         latencyMs: Date.now() - started,
-        provenance: baseProvenance,
+        provenance: { ...baseProvenance, provider: "deterministic", fallbackUsed: true },
       };
     }
     return {
@@ -199,18 +159,49 @@ export async function runReportComposer(opts: {
     };
   }
 
-  const guard = validateOllamaUrl(runtime.endpoint, runtime.localOnly);
-  if (!guard.ok) {
+  // Provider adapter (default Ollama). Cloud providers fail closed via policy + stubs.
+  const providerName: ComposerProviderName = "ollama";
+  const providerAdapter = resolveComposerProvider(providerName);
+  const policy = assertComposerProviderPolicy({
+    provider: providerName,
+    aiMode,
+    cloudVisionAllowed: false,
+    // Image bytes are resolved later; policy only needs the count/presence signal.
+    imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
+    images: undefined,
+  });
+  if (!policy.ok) {
     return {
       ok: false,
-      safeError: "composer_endpoint_blocked",
+      safeError: policy.safeError,
       latencyMs: Date.now() - started,
-      provenance: baseProvenance,
+      provenance: {
+        ...baseProvenance,
+        provider: providerName,
+        fallbackUsed: false,
+        degradedReason: policy.safeError,
+      },
     };
   }
 
-  let imagesBase64: string[] = [];
-  let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model };
+  if (providerName === "ollama") {
+    const guard = validateOllamaUrl(runtime.endpoint, runtime.localOnly);
+    if (!guard.ok) {
+      return {
+        ok: false,
+        safeError: "composer_endpoint_blocked",
+        latencyMs: Date.now() - started,
+        provenance: {
+          ...baseProvenance,
+          provider: providerName,
+          fallbackUsed: false,
+        },
+      };
+    }
+  }
+
+
+  let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false };
 
   if (aiMode === "SELECTED_IMAGES") {
     const ownership = opts.ownership ?? null;
@@ -291,10 +282,11 @@ export async function runReportComposer(opts: {
       };
     }
 
-    imagesBase64 = resolved.images.map((img) => img.base64);
     provenance = {
       ...baseProvenance,
       model: visionModel,
+      provider: providerName,
+      fallbackUsed: false,
       imagesLoaded: resolved.images.length,
       linkedObservationIds: resolved.linkedObservationIds,
       selectedKeyImageIds: resolved.selectedKeyImageIds,
@@ -302,15 +294,20 @@ export async function runReportComposer(opts: {
 
     const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
     const user = buildUserPrompt(opts.kind, opts.snapshot);
-    const primary = await callOllama({
-      endpoint: runtime.endpoint,
+    const primary = await providerAdapter.compose({
+      systemPrompt: system,
+      userPrompt: user,
       model: visionModel,
-      system,
-      user,
-      numCtx: runtime.numCtx,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
-      images: imagesBase64,
+      numCtx: runtime.numCtx,
+      endpoint: runtime.endpoint,
+      localOnly: runtime.localOnly,
+      // Preserve each resolved image's actual MIME (jpeg/png/webp) — do not coerce to JPEG.
+      images: resolved.images.map((img) => ({
+        mimeType: img.mimeType,
+        base64: img.base64,
+      })),
     });
 
     if (!primary.ok) {
@@ -352,28 +349,30 @@ export async function runReportComposer(opts: {
   // ── TEXT_ONLY path (existing behaviour) ──────────────────────────────
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
   const user = buildUserPrompt(opts.kind, opts.snapshot);
-  const primary = await callOllama({
-    endpoint: runtime.endpoint,
-    model: runtime.model,
-    system,
-    user,
-    numCtx: runtime.numCtx,
-    temperature: runtime.temperature,
-    timeoutMs: runtime.timeoutMs,
-  });
+  const primary = await providerAdapter.compose({
+      systemPrompt: system,
+      userPrompt: user,
+      model: runtime.model,
+      temperature: runtime.temperature,
+      timeoutMs: runtime.timeoutMs,
+      numCtx: runtime.numCtx,
+      endpoint: runtime.endpoint,
+      localOnly: runtime.localOnly,
+    });
 
-  let text = primary.text;
+  let text = primary.ok ? primary.text : undefined;
   let model = runtime.model;
   let fallbackUsed = false;
   if (!primary.ok && runtime.fallbackModel) {
-    const fb = await callOllama({
-      endpoint: runtime.endpoint,
+    const fb = await providerAdapter.compose({
+      systemPrompt: system,
+      userPrompt: user,
       model: runtime.fallbackModel,
-      system,
-      user,
-      numCtx: runtime.numCtx,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
+      numCtx: runtime.numCtx,
+      endpoint: runtime.endpoint,
+      localOnly: runtime.localOnly,
     });
     if (fb.ok) {
       text = fb.text;
@@ -386,7 +385,7 @@ export async function runReportComposer(opts: {
         latencyMs: Date.now() - started,
         model: runtime.model,
         fallbackUsed: true,
-        provenance: { ...baseProvenance, model: runtime.model },
+        provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
       };
     }
   } else if (!primary.ok) {
@@ -399,7 +398,7 @@ export async function runReportComposer(opts: {
         fallbackUsed: true,
         latencyMs: Date.now() - started,
         safeError: primary.safeError,
-        provenance: { ...baseProvenance, model: "deterministic" },
+        provenance: { ...baseProvenance, model: "deterministic", provider: "deterministic", fallbackUsed: true },
       };
     }
     return {
@@ -407,7 +406,8 @@ export async function runReportComposer(opts: {
       safeError: primary.safeError ?? "compose_failed",
       latencyMs: Date.now() - started,
       model: runtime.model,
-      provenance: { ...baseProvenance, model: runtime.model },
+      fallbackUsed: false,
+      provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false },
     };
   }
 
@@ -420,7 +420,7 @@ export async function runReportComposer(opts: {
       model,
       fallbackUsed,
       rawLength: text?.length ?? 0,
-      provenance: { ...baseProvenance, model },
+      provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
     };
   }
 
@@ -451,6 +451,6 @@ export async function runReportComposer(opts: {
     fallbackUsed,
     latencyMs: Date.now() - started,
     rawLength: text?.length ?? 0,
-    provenance: { ...baseProvenance, model },
+    provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
   };
 }
