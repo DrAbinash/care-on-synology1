@@ -564,6 +564,24 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
+          {viewMode === "OHIF" ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-amber-700/70 bg-amber-950 text-amber-100 text-[10px] font-medium hover:bg-amber-900 disabled:opacity-50"
+              title="Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot."
+              data-testid="ohif-capture-fallback-hint"
+              disabled={captureBusy || !onRequestOhifAnnotatedCapture}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRequestOhifAnnotatedCapture?.();
+              }}
+            >
+              <Camera className="h-3 w-3 shrink-0" />
+              <span data-testid="ohif-request-annotated-capture">
+                {captureBusy ? "Capturing…" : "Annotate"}
+              </span>
+            </button>
+          ) : null}
           <Button
             size="sm"
             variant={columnExpanded ? "secondary" : "ghost"}
@@ -599,29 +617,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
           </div>
         ) : embedPlan?.success && embedPlan.finalLaunchUrl ? (
           <div className="flex-1 min-h-0 flex flex-col bg-black">
-            <div
-              className="shrink-0 px-2 py-1 text-[10px] text-amber-100/90 bg-amber-950/80 border-b border-amber-800/50 flex items-center justify-between gap-2"
-              data-testid="ohif-capture-fallback-hint"
-            >
-              <span>
-                Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot.
-              </span>
-              {onRequestOhifAnnotatedCapture ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="h-6 shrink-0 text-[10px]"
-                  disabled={captureBusy}
-                  data-testid="ohif-request-annotated-capture"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRequestOhifAnnotatedCapture();
-                  }}
-                >
-                  Request annotated capture
-                </Button>
-              ) : null}
-            </div>
             <iframe
               ref={ohifIframeRef}
               title="OHIF viewer"
