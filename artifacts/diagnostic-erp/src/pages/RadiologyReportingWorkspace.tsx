@@ -57,6 +57,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 // ─── Existing Care hooks (the wiring contract) ────────────────────────────────
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
+import { readingQueueShouldSearchOrthanc } from "@/lib/pacsWorklistQuery";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
@@ -330,6 +331,7 @@ import {
 } from "@/lib/workspaceLayoutPrefs";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
+import { prefetchNextStudyReportShell } from "@/lib/nextStudyReportPrefetch";
 import { mriWarmTargetsFromRows } from "@/lib/mriWarmScope";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import type { ReportImageRef } from "@/lib/reportImageRefs";
@@ -668,6 +670,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // ─── Existing Care hooks (the wiring contract) ─────────────────────────────
   // 1. Workflow (queue, navigation, parked, history)
+  // Orthanc C-FIND on every 30s poll made the left Reading Queue feel stuck.
+  // Routine date presets browse Postgres only. Orthanc turns on only when the
+  // radiologist types a patient/accession jump search (archive lookup).
   const workflow = useReportingWorkflow(studyId, {
     myUserId,
     myName,
@@ -675,7 +680,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     dateFrom: queueDateRange.from,
     dateTo: queueDateRange.to,
     search: patientJumpFilter,
-    searchOrthanc: true,
+    searchOrthanc: readingQueueShouldSearchOrthanc({
+      datePreset,
+      search: patientJumpFilter,
+    }),
   });
 
   // Honour ?modality= deep links once: persist normalized choice + refresh queue.
@@ -2977,7 +2985,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         shiftKey: e.shiftKey,
         metaKey: e.metaKey,
         altKey: e.altKey,
-        target: e.target as { tagName?: string } | null,
+        target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
       });
       const resolved = resolveWorkspaceShortcut(shortcut);
       if (resolved?.kind === "layout") {
@@ -4023,6 +4031,34 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, [workflow.queue, studyId]);
 
+  // Prefetch next study report shell as soon as current study is open (not only at 80%).
+  useEffect(() => {
+    if (!studyId) return;
+    const next = workflow.peekNext();
+    if (!next || Number(next.id) === Number(studyId)) return;
+    useWorkspace.getState().setNextStudy(String(next.id));
+    void prefetchNextStudyReportShell({
+      id: next.id,
+      patientId: next.patientId,
+      studyInstanceUID: next.studyInstanceUID ?? null,
+      modality: next.modality,
+    }).then(() => {
+      useWorkspace.getState().markNextStudyPreloaded();
+    });
+  }, [studyId, workflow.queue, workflow.peekNext]);
+
+  // Report Focus / open study: Reading Queue collapsed by default — Q expands it.
+  useEffect(() => {
+    if (!studyId) return;
+    requestAnimationFrame(() => leftPanelRef.current?.collapse());
+  }, [studyId]);
+
+  useEffect(() => {
+    if (layoutMode !== "reportFocus") return;
+    requestAnimationFrame(() => leftPanelRef.current?.collapse());
+  }, [layoutMode]);
+
+
   // Dual Screen: open Legacy Open Study (popup viewer). Fall back to Split if blocked.
   useEffect(() => {
     if (layoutMode !== "dualScreen") return;
@@ -4286,7 +4322,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           size="sm"
           variant="ghost"
           className="h-7 w-7 p-0"
-          title={leftCollapsed ? "Expand worklist" : "Collapse worklist"}
+          title={leftCollapsed ? "Expand Reading Queue (Q)" : "Collapse Reading Queue (Q)"}
           data-testid="toggle-left-panel"
           onClick={() => (leftCollapsed ? leftPanelRef.current?.expand() : leftPanelRef.current?.collapse())}
         >
@@ -4569,7 +4605,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   type="button"
                   className="flex h-full w-full flex-col items-center gap-2 py-3 text-emerald-600 hover:bg-emerald-50 transition-colors"
                   onClick={() => leftPanelRef.current?.expand()}
-                  title="Expand worklist"
+                  title="Expand Reading Queue (Q)"
                   data-testid="left-panel-expand"
                 >
                   <PanelLeftOpen className="h-4 w-4" />

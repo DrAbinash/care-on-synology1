@@ -333,7 +333,7 @@ export function matchWorkspaceShortcut(e: {
   metaKey?: boolean;
   altKey?: boolean;
   shiftKey?: boolean;
-  target?: { tagName?: string } | null;
+  target?: { tagName?: string; isContentEditable?: boolean } | null;
 }): WorkspaceShortcut | null {
   const mod = Boolean(e.ctrlKey || e.metaKey);
   const shift = Boolean(e.shiftKey);
@@ -371,9 +371,18 @@ export function matchWorkspaceShortcut(e: {
   if (e.altKey && !mod && key === "]") return "toggle-right-panel";
   if (e.altKey && !mod && key === "\\") return "toggle-viewer";
   if (key === "escape") return "escape";
+  // Bare N/P/Q (and "/") only outside text entry — typing in findings must
+  // never navigate or toggle chrome. Ctrl+Shift+N/P remain as aliases above.
+  const tag = e.target?.tagName?.toUpperCase() ?? "";
+  const inText = tag === "INPUT" || tag === "TEXTAREA" || Boolean(e.target?.isContentEditable);
+  if (!mod && !e.altKey && !shift && !inText) {
+    if (key === "n") return "next-study";
+    if (key === "p") return "previous-study";
+    if (key === "q") return "toggle-left-panel";
+  }
   // "/" focuses quick-select search ONLY outside text inputs — typing a
   // slash into the findings editor must never steal focus.
-  const tag = e.target?.tagName?.toUpperCase() ?? "";
-  if (key === "/" && !mod && !e.altKey && tag !== "INPUT" && tag !== "TEXTAREA") return "quickselect";
+  if (key === "/" && !mod && !e.altKey && !inText) return "quickselect";
   return null;
 }
+

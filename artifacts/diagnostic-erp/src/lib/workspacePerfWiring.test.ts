@@ -73,7 +73,8 @@ describe("resolveWorkspaceShortcut — shortcut ID → command ID", () => {
   });
 
   it("does not treat ordinary typing as shortcuts", () => {
-    expect(matchWorkspaceShortcut({ key: "n" })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "n", target: { tagName: "TEXTAREA" } })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "n", target: { tagName: "DIV" } })).toBe("next-study");
     expect(matchWorkspaceShortcut({ key: "/", target: { tagName: "TEXTAREA" } })).toBeNull();
     expect(isWorkspaceTextEntryTarget({ tagName: "TEXTAREA" } as unknown as EventTarget)).toBe(true);
     expect(isWorkspaceTextEntryTarget({

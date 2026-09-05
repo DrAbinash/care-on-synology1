@@ -61,7 +61,10 @@ export interface ReportingWorkflowOptions {
   dateTo?: string;
   /** Server-side patient/accession search (not client-only). */
   search?: string;
-  /** When true + search/date set, merge Orthanc archive hits. */
+  /**
+   * When true, allow Orthanc archive merge (still gated by shouldIncludeOrthanc).
+   * Default false — Reading Queue Today/Yesterday must stay Postgres-fast.
+   */
   searchOrthanc?: boolean;
 }
 
@@ -94,7 +97,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     dateFrom = "",
     dateTo = "",
     search = "",
-    searchOrthanc = true,
+    searchOrthanc = false,
   } = options;
   const qc = useQueryClient();
 
@@ -103,34 +106,70 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     dateFrom: search.trim() ? "" : dateFrom,
     dateTo: search.trim() ? "" : dateTo,
     search,
-  }) || Boolean(search.trim());
+  });
 
-  const worklistQueryKey = [
+  const worklistFilterKey = {
+    modality: modalityFilter,
+    dateFrom: search.trim() ? "" : dateFrom,
+    dateTo: search.trim() ? "" : dateTo,
+    search: search.trim(),
+  } as const;
+
+  // Always paint Postgres first — Orthanc C-FIND must never block the Reading Queue.
+  const dbWorklistQueryKey = [
     "radiology-pacs-worklist",
-    {
-      modality: modalityFilter,
-      dateFrom: search.trim() ? "" : dateFrom,
-      dateTo: search.trim() ? "" : dateTo,
-      search: search.trim(),
-      orthanc: includeOrthanc,
-    },
+    { ...worklistFilterKey, orthanc: false },
   ] as const;
 
-  // Shared cache with PACS Worklist when filters match.
-  const { data: fullQueueRaw, isFetching: queueRefreshing, refetch: refetchQueue, dataUpdatedAt } = useQuery<QueueStudy[]>({
-    queryKey: worklistQueryKey,
+  const orthancWorklistQueryKey = [
+    "radiology-pacs-worklist",
+    { ...worklistFilterKey, orthanc: true },
+  ] as const;
+
+  const {
+    data: dbQueueRaw,
+    isFetching: dbRefreshing,
+    refetch: refetchDbQueue,
+    dataUpdatedAt: dbUpdatedAt,
+  } = useQuery<QueueStudy[]>({
+    queryKey: dbWorklistQueryKey,
     queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>(
       buildPacsWorklistUrl({
         modality: modalityFilter,
         dateFrom: search.trim() ? undefined : (dateFrom || undefined),
         dateTo: search.trim() ? undefined : (dateTo || undefined),
         search: search.trim() || undefined,
-        orthanc: includeOrthanc,
+        orthanc: false,
       }),
     )),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   });
+
+  // Deferred Orthanc archive merge — only when search needs it; no 30s poll.
+  const {
+    data: orthancQueueRaw,
+    isFetching: orthancRefreshing,
+    dataUpdatedAt: orthancUpdatedAt,
+  } = useQuery<QueueStudy[]>({
+    queryKey: orthancWorklistQueryKey,
+    queryFn: async () => sanitizeQueueStudies(await api.get<QueueStudy[]>(
+      buildPacsWorklistUrl({
+        modality: modalityFilter,
+        dateFrom: search.trim() ? undefined : (dateFrom || undefined),
+        dateTo: search.trim() ? undefined : (dateTo || undefined),
+        search: search.trim() || undefined,
+        orthanc: true,
+      }),
+    )),
+    enabled: includeOrthanc,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  });
+
+  const fullQueueRaw = includeOrthanc && orthancQueueRaw ? orthancQueueRaw : dbQueueRaw;
+  const queueRefreshing = dbRefreshing || (includeOrthanc && orthancRefreshing && !orthancQueueRaw);
+  const dataUpdatedAt = includeOrthanc && orthancQueueRaw ? orthancUpdatedAt : dbUpdatedAt;
 
   // The ACTIVE queue is the scoped one; parked pruning below deliberately
   // uses the FULL queue so switching scopes never discards parked markers
@@ -271,9 +310,10 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
   }, []);
 
   const refreshQueue = useCallback(() => {
-    void refetchQueue();
+    void refetchDbQueue();
+    void qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     void qc.invalidateQueries({ queryKey: ["study-queue-brief"] });
-  }, [refetchQueue, qc]);
+  }, [refetchDbQueue, qc]);
 
   return {
     queue,
