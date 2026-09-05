@@ -1,29 +1,39 @@
 /**
  * AI Draft Panel — Phase P3 / Gate G11.
  *
- * A feature-flagged, fixed-position assistant panel that surfaces the SHADOW AI
- * draft for the current study. It renders NOTHING unless AI is visible for this
- * radiologist (pilot/production) — so on a default deployment it is invisible.
- * It shows grounded findings only, evidence/confidence, provenance, and an
- * Accept / Edit / Ignore workflow. It NEVER signs or writes the report — actions
- * only record feedback and optionally hand text to the report editor via
- * `onInsertText`. The radiologist remains the only signer.
+ * Surfaces SHADOW / overnight AI drafts. Accept/Edit STAGE proposals for the
+ * Report Composer Apply culture — they do NOT write the report directly.
+ * Apply (Composer / staged Apply) materializes text. AI never signs.
  */
 import { useEffect, useState, useCallback } from "react";
 import { Bot, Check, Pencil, X, ChevronDown, ChevronUp, ShieldCheck, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { aiClient, type AiEnablement, type AiWorkspaceDraft } from "../../lib/aiClient";
-import { formatFindingForInsertion, shouldInsertOnAction, type DraftAction } from "../../lib/aiDraftBinding";
+import { formatFindingForInsertion, shouldStageOnAction, type DraftAction } from "../../lib/aiDraftBinding";
 
 interface Props {
   studyInstanceUid: string | null;
   modality: string | null;
-  /** Optional hook for voice/editor integration: insert accepted AI text into the report. */
+  /**
+   * Stage accepted/edited findings for Composer-style review + Apply.
+   * Must NOT silently write the report editor.
+   */
+  onStageProposal?: (proposal: { findingKey: string; text: string; draftId?: number | string | null }) => void;
+  /** @deprecated Prefer onStageProposal — kept for non-workspace callers. */
   onInsertText?: (text: string) => void;
   /** When true (e.g. worklist deep-link ?ai=1), keep the panel expanded. */
   preferOpen?: boolean;
+  /** When true (Reporting Workspace), Accept stages; never inserts. */
+  composerReviewOnly?: boolean;
 }
 
-export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferOpen = false }: Props) {
+export function AiDraftPanel({
+  studyInstanceUid,
+  modality,
+  onStageProposal,
+  onInsertText,
+  preferOpen = false,
+  composerReviewOnly = false,
+}: Props) {
   const [enablement, setEnablement] = useState<AiEnablement | null>(null);
   const [draft, setDraft] = useState<AiWorkspaceDraft | null>(null);
   // Always start minimized — expands only for ?ai=1 / preferOpen. The panel is
@@ -64,22 +74,33 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferO
   const act = async (finding: { key: string; text: string; laterality?: string }, action: DraftAction) => {
     if (!draft) return;
     setHandled((h) => ({ ...h, [finding.key]: action }));
-    // Accept/Edit insert into the EXISTING working draft (via onInsertText →
-    // the workspace findings editor → existing autosave). Ignore/Reject only
-    // record feedback and never touch the report.
     const insertText = formatFindingForInsertion(finding);
-    if (shouldInsertOnAction(action) && onInsertText) onInsertText(insertText);
+    if (shouldStageOnAction(action)) {
+      if (composerReviewOnly || onStageProposal) {
+        onStageProposal?.({
+          findingKey: finding.key,
+          text: insertText,
+          draftId: draft.draftId,
+        });
+      } else if (onInsertText) {
+        // Legacy non-workspace binding
+        onInsertText(insertText);
+      }
+    }
     try {
       await aiClient.feedback(draft.draftId, {
         studyInstanceUid: draft.studyInstanceUid, findingKey: finding.key, action,
-        editedText: shouldInsertOnAction(action) ? insertText : undefined,
+        editedText: shouldStageOnAction(action) ? insertText : undefined,
       });
     } catch { /* feedback is best-effort; never blocks the radiologist */ }
   };
 
   const acceptAll = async () => {
     if (!draft || draft.findings.length === 0) return;
-    if (!window.confirm(`Insert all ${draft.findings.length} grounded finding(s) into the report? You can still edit them.`)) return;
+    const verb = composerReviewOnly || onStageProposal
+      ? `Stage all ${draft.findings.length} grounded finding(s) for Composer review? Apply still required.`
+      : `Insert all ${draft.findings.length} grounded finding(s) into the report? You can still edit them.`;
+    if (!window.confirm(verb)) return;
     for (const f of draft.findings) if (!handled[f.key]) await act(f, "accept");
   };
 
@@ -109,7 +130,11 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferO
       {open && (
         <div className="max-h-[60vh] overflow-y-auto p-3 text-sm">
           <div className="mb-2 flex items-center justify-between text-xs text-neutral-500">
-            <span>Radiologist approves — AI never signs.</span>
+            <span>
+              {composerReviewOnly || onStageProposal
+                ? "Accept stages for Composer Apply — AI never writes the report alone."
+                : "Radiologist approves — AI never signs."}
+            </span>
             <button onClick={generate} disabled={busy} className="rounded bg-indigo-50 px-2 py-1 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:bg-indigo-950 dark:text-indigo-300">
               {busy ? "Queuing…" : "Generate"}
             </button>
@@ -131,7 +156,9 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferO
 
               {draft.findings.length > 0 && (
                 <div className="mb-2 flex justify-end">
-                  <button onClick={acceptAll} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">Accept all grounded</button>
+                  <button onClick={acceptAll} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">
+                    {composerReviewOnly || onStageProposal ? "Stage all for review" : "Accept all grounded"}
+                  </button>
                 </div>
               )}
 
@@ -158,11 +185,11 @@ export function AiDraftPanel({ studyInstanceUid, modality, onInsertText, preferO
                           </div>
                         </div>
                         {status
-                          ? <span className="text-[11px] uppercase text-neutral-400">{status}</span>
+                          ? <span className="text-[11px] uppercase text-neutral-400">{status === "accept" || status === "edit" ? "staged" : status}</span>
                           : (
                             <div className="flex shrink-0 gap-1">
-                              <button title="Accept (insert into report)" onClick={() => act(f, "accept")} className="rounded p-1 text-emerald-600 hover:bg-emerald-50"><Check size={14} /></button>
-                              <button title="Edit (insert, then edit in report)" onClick={() => act(f, "edit")} className="rounded p-1 text-amber-600 hover:bg-amber-50"><Pencil size={14} /></button>
+                              <button title="Accept for Composer review (Apply still required)" onClick={() => act(f, "accept")} className="rounded p-1 text-emerald-600 hover:bg-emerald-50"><Check size={14} /></button>
+                              <button title="Edit & stage for Composer review" onClick={() => act(f, "edit")} className="rounded p-1 text-amber-600 hover:bg-amber-50"><Pencil size={14} /></button>
                               <button title="Ignore / reject (no change to report)" onClick={() => act(f, "reject")} className="rounded p-1 text-red-600 hover:bg-red-50"><X size={14} /></button>
                             </div>
                           )}

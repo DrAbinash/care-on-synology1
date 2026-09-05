@@ -123,7 +123,14 @@ import {
   canVerifyReport, matchWorkspaceShortcut,
 } from "@/lib/workspaceReportState";
 import { createCommandDispatcher, type DispatchResult } from "@/lib/workspaceCommands";
-import { canLeaveStudy } from "@/lib/reportingWorkflow";
+import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
+import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
+import { deriveStudyReadyStatus } from "@/lib/studyReadyStatus";
+import {
+  stageShadowProposal,
+  materializeStagedProposals,
+  type StagedAiProposal,
+} from "@/lib/stagedAiProposals";
 import { resolveWorkspaceShortcut } from "@/lib/workspaceShortcutResolve";
 import {
   resolveReadingQueueModality,
@@ -470,9 +477,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
+  /** Study whose server draft was restored into the editor this open. */
+  const restoredDraftForStudyRef = useRef<number | null>(null);
   const saveGenerationRef = useRef(0);
   const studyIdRef = useRef<number | undefined>(undefined);
   const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
+  const [appliedNormalFormatName, setAppliedNormalFormatName] = useState<string | null>(null);
+  const [bootstrapAppliedThisOpen, setBootstrapAppliedThisOpen] = useState(false);
+  const [stagedAiProposals, setStagedAiProposals] = useState<StagedAiProposal[]>([]);
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const leaveResolverRef = useRef<((choice: LeaveChoice) => void) | null>(null);
+  const leavePromptReasonRef = useRef("This report has unsaved changes.");
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
@@ -567,6 +582,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const structuredFormatDrivingRef = useRef(false);
   const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
+  const draftIdRef = useRef<number | null>(null);
 
   const [queueModality, setQueueModality] = useState<ReadingQueueModality>(() => {
     const resolved = resolveReadingQueueModality({
@@ -692,6 +708,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
+  draftIdRef.current = draftId ?? null;
 
   // 4. Local draft backup (30-snapshot localStorage)
   const draftBackup = useLocalDraftBackup({
@@ -1197,6 +1214,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     startReportUndoRef.current = null;
     setCanUndoStartReport(false);
     setStructuredValues({});
+    restoredDraftForStudyRef.current = null;
+    setAppliedNormalFormatName(null);
+    setBootstrapAppliedThisOpen(false);
+    setStagedAiProposals([]);
     structuredTouchedRef.current = false;
     structuredFormatDrivingRef.current = false;
     lastStructuredFindingsLinesRef.current = {};
@@ -1890,8 +1911,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (snap.selectedTemplateId != null) studySetup.selectTemplateManual(snap.selectedTemplateId);
     startReportUndoRef.current = null;
     setCanUndoStartReport(false);
-    toast({ title: "Start report undone" });
-  }, [studySetup, toast]);
+    if (bootstrapAppliedThisOpen) {
+      setAppliedNormalFormatName(null);
+      setBootstrapAppliedThisOpen(false);
+      // Clear applied format banner when undoing auto-bootstrap only.
+      useWorkspace.setState({ appliedFormatName: null, appliedFormatReportTitle: null });
+    }
+    toast({ title: bootstrapAppliedThisOpen ? "Normal bootstrap undone" : "Start report undone" });
+  }, [studySetup, toast, bootstrapAppliedThisOpen]);
+
+  const studyReadyStatus = useMemo(() => {
+    if (!studyId || draftHydratedStudyId !== studyId) {
+      return { kind: "quiet" as const, label: "", canUndo: false };
+    }
+    return deriveStudyReadyStatus({
+      restoredDraft: restoredDraftForStudyRef.current === studyId,
+      appliedNormalFormat: bootstrapAppliedThisOpen && !!appliedNormalFormatName,
+      normalFormatName: appliedNormalFormatName,
+      protocolLoaded: !!studySetup.activeProtocol,
+      protocolName: studySetup.activeProtocol?.name ?? null,
+      emptyNeedsStart: reportNeedsStart && !bootstrapAppliedThisOpen,
+    });
+  }, [
+    studyId,
+    draftHydratedStudyId,
+    bootstrapAppliedThisOpen,
+    appliedNormalFormatName,
+    studySetup.activeProtocol,
+    reportNeedsStart,
+  ]);
 
   const handleGenerateLocalImpression = useCallback(() => {
     if (contentLocked) return;
@@ -1968,42 +2016,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setAllowEditSigned(false);
   }, [selectStudy, navigate]);
 
-  const goNextStudy = useCallback(() => {
-    const verdict = canLeaveStudy({
-      dirty: useWorkspace.getState().isDirty,
-      saving: autoSaveStatus === "saving",
-      finalizing: false,
-      viewerLaunching: false,
-      transitioning: workflow.transitioning,
-    });
-    if (verdict.kind === "blocked") {
-      toast({ title: verdict.reason });
-      return;
-    }
-    if (verdict.kind === "confirm" && !window.confirm(verdict.reason)) return;
-    const next = workflow.peekNext();
-    if (!next) { toast({ title: "End of queue" }); return; }
-    workflow.beginTransition(studyId, next);
-    openStudy(next.id);
-  }, [workflow, studyId, openStudy, toast, autoSaveStatus]);
-
-  const goPrevStudy = useCallback(() => {
-    const verdict = canLeaveStudy({
-      dirty: useWorkspace.getState().isDirty,
-      saving: autoSaveStatus === "saving",
-      finalizing: false,
-      viewerLaunching: false,
-      transitioning: workflow.transitioning,
-    });
-    if (verdict.kind === "blocked") {
-      toast({ title: verdict.reason });
-      return;
-    }
-    if (verdict.kind === "confirm" && !window.confirm(verdict.reason)) return;
-    const prevId = workflow.beginPreviousTransition(studyId);
-    if (prevId == null) { toast({ title: "No previous study in history" }); return; }
-    openStudy(prevId);
-  }, [workflow, studyId, openStudy, toast, autoSaveStatus]);
+  // goNextStudy / goPrevStudy / openStudyGuarded are defined after saveDraft
+  // (unified leave needs ensureDraftOnce + save). Placeholders assigned below.
+  const goNextStudyRef = useRef<() => void>(() => {});
+  const goPrevStudyRef = useRef<() => void>(() => {});
+  const openStudyGuardedRef = useRef<(id: string | number) => void>((id) => {
+    openStudy(id);
+  });
+  const goNextStudy = useCallback(() => { goNextStudyRef.current(); }, []);
+  const goPrevStudy = useCallback(() => { goPrevStudyRef.current(); }, []);
+  const openStudyGuarded = useCallback((id: string | number) => {
+    openStudyGuardedRef.current(id);
+  }, []);
 
   const persistQueueModality = useCallback((value: string) => {
     const next = isReadingQueueModality(value) ? value : "MR";
@@ -2222,6 +2246,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       }
       hydratedDraftForStudyRef.current = studyId;
       setDraftHydratedStudyId(studyId);
+      restoredDraftForStudyRef.current = studyId;
       const draft = existingDraft as RadiologyDraftRow & {
         findings?: string | null;
         technique?: string | null;
@@ -2332,16 +2357,31 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       console.debug("[radiology-workspace] normal bootstrap skipped:", decision.reason);
       return;
     }
+    // Capture undo snapshot BEFORE auto-mutation (same shape as Start Report).
+    const fields = studySetupSetters.readFields();
+    startReportUndoRef.current = {
+      ...fields,
+      findingsMap: { ...findingsMap },
+      useStructured,
+      selectedTemplateId: studySetup.selectedTemplateId,
+    };
     state.applyFormatById(decision.format.id);
     // The complete normal report is the visible narrative baseline (the
     // structured-template cards remain available via the template picker).
     setUseStructured(false);
+    setAppliedNormalFormatName(decision.format.name || "Normal format");
+    setBootstrapAppliedThisOpen(true);
+    setCanUndoStartReport(true);
     toast({
       title: "Normal report ready",
-      description: `${decision.basis} — review images, record deviations, finalize.`,
-      duration: 4000,
+      description: "Review images, record deviations, finalize.",
+      duration: 2500,
     });
-  }, [studyId, draftHydratedStudyId, existingDraft, contentLocked, draftBackup, studySetup.studyContext, toast, setUseStructured]);
+  }, [
+    studyId, draftHydratedStudyId, existingDraft, contentLocked, draftBackup,
+    studySetup.studyContext, studySetup.selectedTemplateId, studySetupSetters,
+    findingsMap, useStructured, toast, setUseStructured,
+  ]);
 
   // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
   useEffect(() => {
@@ -2442,7 +2482,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         return null;
       }
       const id = res?.draft?.id ?? res?.id ?? null;
-      if (id) captureSavedDraftId(id);
+      if (id) {
+        captureSavedDraftId(id);
+        useWorkspace.setState({ isDirty: false });
+      }
       setLastSavedAt(new Date());
       setAutoSaveStatus("saved");
       if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
@@ -2454,6 +2497,161 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
   saveDraftRef.current = saveDraft;
+
+  // First-save mutex — stable across re-renders; recreate when saveDraft identity changes.
+  const ensureDraftOnce = useMemo(
+    () =>
+      createEnsureDraftOnce({
+        getDraftId: () => draftIdRef.current,
+        createDraft: () => saveDraft({ silent: true }),
+      }),
+    [saveDraft],
+  );
+
+  const promptDirtyLeave = useCallback((_reason: string): Promise<LeaveChoice> => {
+    leavePromptReasonRef.current = _reason || "This report has unsaved changes.";
+    return new Promise((resolve) => {
+      leaveResolverRef.current = resolve;
+      setLeaveDialogOpen(true);
+    });
+  }, []);
+
+  const resolveLeaveChoice = useCallback((choice: LeaveChoice) => {
+    setLeaveDialogOpen(false);
+    const resolver = leaveResolverRef.current;
+    leaveResolverRef.current = null;
+    resolver?.(choice);
+  }, []);
+
+  const discardLocalEditor = useCallback(() => {
+    if (existingDraft) {
+      const draft = existingDraft as RadiologyDraftRow & {
+        findings?: string | null;
+        technique?: string | null;
+      };
+      const normStr = (v: unknown) =>
+        Array.isArray(v) ? v.join("\n") : typeof v === "string" ? v : "";
+      useWorkspace.getState().setEditorContent({
+        findings: normStr(draft.findings ?? draft.rawFindings),
+        impression: normalizeImpressionLines(draft.impression).join("\n"),
+        recommendation: normStr(draft.recommendation),
+        technique: normStr(draft.technique),
+        clinicalHistory:
+          normStr(draft.clinicalHistory) ||
+          (workflow.currentRow as { clinicalHistory?: string } | null)?.clinicalHistory ||
+          "",
+      });
+    } else {
+      useWorkspace.getState().setEditorContent({
+        findings: "",
+        impression: "",
+        recommendation: "",
+        technique: "",
+        clinicalHistory: "",
+      });
+    }
+    useWorkspace.setState({ isDirty: false });
+  }, [existingDraft, workflow.currentRow]);
+
+  const saveAndConfirmLeave = useCallback(async () => {
+    await ensureDraftOnce();
+    const id = await saveDraft({ silent: true });
+    if (id == null) {
+      toast({
+        title: "Save failed",
+        description: "Could not save before leaving. Stay on this study.",
+        variant: "destructive",
+      });
+      return false;
+    }
+    return true;
+  }, [ensureDraftOnce, saveDraft, toast]);
+
+  const requestLeaveThen = useCallback(
+    async (navigateFn: () => void) => {
+      const result = await leaveDirtyStudy({
+        guards: {
+          dirty: useWorkspace.getState().isDirty,
+          saving: autoSaveStatus === "saving",
+          finalizing: useWorkspace.getState().isFinalizing,
+          viewerLaunching: false,
+          transitioning: workflow.transitioning,
+        },
+        promptDirty: promptDirtyLeave,
+        saveAndConfirm: saveAndConfirmLeave,
+        discardLocal: discardLocalEditor,
+        onBlocked: (reason) => toast({ title: reason }),
+      });
+      if (result.action === "navigate") navigateFn();
+    },
+    [
+      autoSaveStatus,
+      workflow.transitioning,
+      promptDirtyLeave,
+      saveAndConfirmLeave,
+      discardLocalEditor,
+      toast,
+    ],
+  );
+
+  goNextStudyRef.current = () => {
+    void requestLeaveThen(() => {
+      const next = workflow.peekNext();
+      if (!next) {
+        toast({ title: "End of queue" });
+        return;
+      }
+      workflow.beginTransition(studyId, next);
+      openStudy(next.id);
+    });
+  };
+
+  goPrevStudyRef.current = () => {
+    void requestLeaveThen(() => {
+      const prevId = workflow.beginPreviousTransition(studyId);
+      if (prevId == null) {
+        toast({ title: "No previous study in history" });
+        return;
+      }
+      openStudy(prevId);
+    });
+  };
+
+  openStudyGuardedRef.current = (id: string | number) => {
+    if (String(id) === String(studyId ?? "")) {
+      openStudy(id);
+      return;
+    }
+    void requestLeaveThen(() => openStudy(id));
+  };
+
+  const stageAiProposal = useCallback(
+    (proposal: { findingKey: string; text: string; draftId?: number | string | null }) => {
+      setStagedAiProposals((prev) =>
+        stageShadowProposal(prev, {
+          findingKey: proposal.findingKey,
+          text: proposal.text,
+          draftId: proposal.draftId,
+          source: "shadow_ai",
+        }),
+      );
+    },
+    [],
+  );
+
+  const applyStagedAiProposals = useCallback(async () => {
+    const staged = stagedAiProposals;
+    if (staged.length === 0) return;
+    const state = useWorkspace.getState();
+    const nextFindings = materializeStagedProposals(state.findingsText, staged);
+    state.applyAiComposerAccepted({
+      findings: nextFindings,
+      impression: state.impressionText,
+      recommendation: state.recommendationText,
+    });
+    setStagedAiProposals([]);
+    await ensureDraftOnce();
+  }, [stagedAiProposals, ensureDraftOnce]);
 
   // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
   const finalizeReport = useCallback(async () => {
@@ -3160,7 +3358,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           return;
         }
         let id = draftId;
-        if (!id) id = await saveDraft({ silent: true });
+        if (!id) id = await ensureDraftOnce();
         if (!id) {
           toast({ title: "Could not save draft for capture", variant: "destructive" });
           return;
@@ -3208,7 +3406,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     imageRefs,
     qc,
     toast,
-    saveDraft,
+    ensureDraftOnce,
     isLocked,
     isFinalized,
   ]);
@@ -3556,7 +3754,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   const handlePrintLikeFinal = useCallback(async () => {
     let id = draftId;
-    if (!id) id = await saveDraft({ silent: true });
+    if (!id) id = await ensureDraftOnce();
     if (!id) {
       toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
       return;
@@ -3607,7 +3805,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       setPrintingLikeFinal(false);
     }
   }, [
-    draftId, reportLayout, saveDraft, toast, imageRefs, impressionStyle,
+    draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
     livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
   ]);
 
@@ -3949,7 +4147,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // ─── Debounced server auto-save (30 s after last keystroke) ─────────────────
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!isDirty || !isOnline || !draftId || isFinalized || isMobile) {
+    if (!isDirty || !isOnline || isFinalized || isMobile) {
+      if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
+      return;
+    }
+    const meaningful = isMeaningfulReportEdit({
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+      technique: techniqueText,
+    });
+    // First save: only create a server draft on meaningful report-body edits
+    // (not clinicalHistory-only, not open/look).
+    if (!draftId && !meaningful) {
       if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
       return;
     }
@@ -3957,7 +4167,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     autoSaveTimerRef.current = setTimeout(() => {
       const genAtSchedule = saveGenerationRef.current;
       setAutoSaveStatus("saving");
-      saveDraft({ silent: true }).then((id) => {
+      const run = async () => {
+        if (!draftIdRef.current) {
+          return ensureDraftOnce();
+        }
+        return saveDraft({ silent: true });
+      };
+      run().then((id) => {
         if (genAtSchedule !== saveGenerationRef.current) return;
         setAutoSaveStatus(id != null ? "saved" : "error");
       }).catch(() => {
@@ -3966,7 +4182,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       });
     }, 30_000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [isDirty, isOnline, draftId, isFinalized, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft]);
+  }, [isDirty, isOnline, draftId, isFinalized, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
 
   return (
     <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-50/40 via-background to-background overflow-hidden">
@@ -4035,7 +4251,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             aria-label="Select patient"
             onChange={(e) => {
               const id = e.target.value;
-              if (id) openStudy(id);
+              if (id) openStudyGuarded(id);
               setPatientJumpFilter("");
             }}
           >
@@ -4348,7 +4564,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 </button>
               ) : (
                 <WorklistStrip
-                  onSelectStudy={openStudy}
+                  onSelectStudy={openStudyGuarded}
                   onNextStudy={goNextStudy}
                   modalityFilter={queueModality}
                   onModalityFilterChange={persistQueueModality}
@@ -4435,7 +4651,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               setCaptureBusy(true);
                               try {
                                 let id = draftId;
-                                if (!id) id = await saveDraft({ silent: true });
+                                if (!id) id = await ensureDraftOnce();
                                 if (!id) {
                                   toast({ title: "Could not save draft", description: "Save a draft before capturing key images.", variant: "destructive" });
                                   return;
@@ -4501,7 +4717,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           ? undefined
                           : async (ref) => {
                               let id = draftId;
-                              if (!id) id = await saveDraft({ silent: true });
+                              if (!id) id = await ensureDraftOnce();
                               if (!id) {
                                 toast({ title: "Could not save draft", description: "Save a draft before adding key images.", variant: "destructive" });
                                 return;
@@ -4705,12 +4921,33 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       </div>
                     )}
 
-                    {canUndoStartReport && !isLocked && !isFinalized && (
+                    {canUndoStartReport && !bootstrapAppliedThisOpen && !isLocked && !isFinalized && (
                       <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-xs">
                         <span className="flex-1">Report bootstrapped — undo restores your previous text.</span>
                         <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={undoStartReport}>
                           Undo start
                         </Button>
+                      </div>
+                    )}
+
+                    {/* Single study-ready status strip (startup facts only) */}
+                    {studyReadyStatus.label && !isLocked && !isFinalized && (
+                      <div
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-emerald-200/70 bg-emerald-50/60 text-emerald-900 text-[11px]"
+                        data-testid="study-ready-status"
+                      >
+                        <span className="flex-1 min-w-0 truncate">{studyReadyStatus.label}</span>
+                        {studyReadyStatus.canUndo && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 text-[10px] shrink-0"
+                            onClick={undoStartReport}
+                            data-testid="study-ready-undo"
+                          >
+                            Undo
+                          </Button>
+                        )}
                       </div>
                     )}
 
@@ -6090,11 +6327,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
         }}
       />
-      {/* Overnight / shadow AI drafts — self-gates on pilot visibility */}
+      {/* Overnight / shadow AI drafts — Accept stages for Composer Apply */}
       <AiDraftPanel
         studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
         modality={workflow.currentRow?.modality ?? study?.modality ?? null}
-        onInsertText={appendFindings}
+        onStageProposal={stageAiProposal}
+        composerReviewOnly
         preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
       />
       {/* Background text Report Composer — assistant artifact until Apply */}
@@ -6105,6 +6343,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             : "w-[min(520px,calc(100vw-2rem))]"
         }`}
       >
+        {stagedAiProposals.length > 0 && (
+          <div
+            className="mb-2 flex items-center gap-2 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[11px] text-indigo-950"
+            data-testid="staged-ai-proposals-bar"
+          >
+            <span className="flex-1 min-w-0 truncate">
+              {stagedAiProposals.length} AI proposal{stagedAiProposals.length === 1 ? "" : "s"} staged
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              className="h-6 text-[10px]"
+              onClick={() => void applyStagedAiProposals()}
+              data-testid="staged-ai-apply"
+            >
+              Apply
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 text-[10px]"
+              onClick={() => setStagedAiProposals([])}
+              data-testid="staged-ai-discard"
+            >
+              Discard
+            </Button>
+          </div>
+        )}
         <ReportComposerAssistant
           job={reportComposer.job}
           busy={reportComposer.busy}
@@ -6308,6 +6575,46 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void confirmedVerifyReport()}>Verify</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ─── Unified leave: Save & leave / Discard / Stay ─── */}
+      <AlertDialog
+        open={leaveDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && leaveResolverRef.current) {
+            resolveLeaveChoice("stay");
+          } else {
+            setLeaveDialogOpen(open);
+          }
+        }}
+      >
+        <AlertDialogContent data-testid="leave-dirty-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsaved changes</AlertDialogTitle>
+            <AlertDialogDescription>
+              {leavePromptReasonRef.current}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel onClick={() => resolveLeaveChoice("stay")}>
+              Stay
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => resolveLeaveChoice("discard")}
+              data-testid="leave-discard"
+            >
+              Discard
+            </Button>
+            <AlertDialogAction
+              onClick={() => resolveLeaveChoice("save_and_leave")}
+              data-testid="leave-save"
+            >
+              Save & leave
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
