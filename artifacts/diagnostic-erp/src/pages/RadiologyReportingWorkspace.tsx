@@ -241,6 +241,7 @@ import {
   resolveCanalSegment,
 } from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
+import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
 import { useReportComposer } from "@/hooks/useReportComposer";
@@ -324,7 +325,8 @@ import type { Side } from "@/lib/sideSwap";
 import { applySide } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
-  shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked, type WorkspaceLayoutMode,
+  shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked,
+  resolveLayoutModeForModality, withModalityLayoutMode, type WorkspaceLayoutMode,
 } from "@/lib/workspaceLayoutPrefs";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
@@ -492,6 +494,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
   const pcpndtBlockedRef = useRef(false);
+  const [formFFinalizeOpen, setFormFFinalizeOpen] = useState(false);
+  const formFContinueFinalizeRef = useRef(false);
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
   const [legacyTab, setLegacyTab] = useState<LegacyBoxTab | null>(null);
@@ -1082,18 +1086,33 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // 9. Reading session (auto-advance toggle)
   const [readingSession, setReadingSession] = useState(() => loadReadingSession());
 
-  // 10. Layout prefs (Report / Split / Viewer) — ported from legacy
+  // 10. Layout prefs (Report / Split / Viewer) — per-modality memory (V1)
   const [layoutPrefs, setLayoutPrefs] = useState(() => loadWorkspaceLayoutPrefs(myUserId));
   const layoutMode = layoutPrefs.mode;
   const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
   const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
     setLayoutPrefs((prev) => {
-      const next = { ...prev, mode };
+      const modality = workflow.currentRow?.modality ?? null;
+      const next = withModalityLayoutMode(prev, modality, mode);
       saveWorkspaceLayoutPrefs(myUserId, next);
       return next;
     });
     if (mode === "reportFocus") setViewerColumnExpanded(false);
-  }, [myUserId]);
+  }, [myUserId, workflow.currentRow?.modality]);
+
+  // Apply saved layout for this study's modality after study identity settles.
+  // Does not fight an in-progress Dual Screen popup — only runs on studyId change.
+  useEffect(() => {
+    if (!studyId) return;
+    const modality = workflow.currentRow?.modality ?? null;
+    setLayoutPrefs((prev) => {
+      const preferred = resolveLayoutModeForModality(prev, modality);
+      if (preferred === prev.mode) return prev;
+      const next = { ...prev, mode: preferred };
+      // Do not rewrite byModality here — only apply what was already saved.
+      return next;
+    });
+  }, [studyId, workflow.currentRow?.modality]);
 
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
@@ -2692,16 +2711,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (savedId) effectiveDraftId = savedId;
     }
 
-    // 1b. PCPNDT Form F gate (obstetric USG) — same rule as legacy
-    if (pcpndtBlockedRef.current) {
-      toast({
-        title: "Finalize blocked — PCPNDT Form F required",
-        description:
-          "This is an obstetric/fetal ultrasound and the patient's PCPNDT Form F is missing or incomplete. Use Legacy Box → Measure → Review & Map to Form F, then finalize again.",
-        variant: "destructive",
-      });
+    // 1b. PCPNDT Form F gate (obstetric USG) — open in-flow Form F step when incomplete
+    if (pcpndtBlockedRef.current && !formFContinueFinalizeRef.current) {
+      setFormFFinalizeOpen(true);
       return;
     }
+    formFContinueFinalizeRef.current = false;
 
     // 2. Validate (local + server validate-draft when available)
     const validationIssues = validateReport({
@@ -4493,8 +4508,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           })()}
           {/* Finalize */}
           <Button size="sm" className="h-7 px-3 text-xs bg-emerald-600 hover:bg-emerald-700"
-            onClick={finalizeReport} disabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
-            title={pcpndtBlocked ? "Complete PCPNDT Form F before finalize" : undefined}>
+            onClick={finalizeReport} disabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
+            title={pcpndtBlocked ? "Form F required — finalize will open Form F step" : undefined}>
             <ShieldCheck className="h-3.5 w-3.5 mr-1" />
             {isFinalized ? "Signed" : "Finalize"}
             <kbd className="ml-1.5 rounded bg-white/20 px-1 py-0.5 text-[8px] font-mono">⌃↵</kbd>
@@ -4520,17 +4535,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       )}
       {/* PCPNDT gate warning */}
       {isObUsg && pcpndtCompliance && !pcpndtCompliance.compliant && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border-b border-rose-200 text-xs text-rose-800">
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-xs text-amber-950">
           <AlertTriangle className="h-3 w-3" />
-          PCPNDT Form F incomplete{pcpndtMissing.length ? `: ${pcpndtMissing.join(", ")}` : ""}. Finalize is blocked — use Legacy Box → Measure → Review & Map to Form F.
-          <Button size="sm" variant="outline" className="h-5 text-[10px] ml-auto" onClick={() => openLegacyTab("measurements")}>
-            Open Measure
+          Form F required{pcpndtMissing.length ? `: ${pcpndtMissing.join(", ")}` : ""}. Finalize opens Form F in-flow — Legacy Box remains a fallback.
+          <Button size="sm" variant="outline" className="h-5 text-[10px] ml-auto" onClick={() => setFormFFinalizeOpen(true)}>
+            Open Form F
           </Button>
         </div>
       )}
       {isObUsg && pcpndtCompliance?.compliant === true && (
         <div className="flex items-center gap-2 px-3 py-1 bg-gradient-to-r from-emerald-50 to-emerald-100/60 border-b border-emerald-200 text-[11px] text-emerald-800 font-medium">
-          <ShieldCheck className="h-3 w-3" /> PCPNDT Form F verified
+          <ShieldCheck className="h-3 w-3" /> Form F complete
         </div>
       )}
 
@@ -6053,7 +6068,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       onPrintLikeFinal={handlePrintLikeFinal}
                       onEditSection={focusReportField}
                       onFinalize={finalizeReport}
-                      finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
+                      finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
                       finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Finalize"}
                       exportingWord={exportingWord}
                       exportingPdf={exportingPdf}
@@ -6098,7 +6113,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     onSave={() => { void saveDraft(); }}
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}
-                    finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL")) || pcpndtBlocked}
+                    finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
                     finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Confirm & Sign"}
                     saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
                   />
@@ -6550,6 +6565,61 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           </div>
         </div>
       )}
+
+      {/* ─── PCPNDT Form F (in-flow finalize step) ─── */}
+      <AlertDialog open={formFFinalizeOpen} onOpenChange={(open) => {
+        setFormFFinalizeOpen(open);
+        if (!open) formFContinueFinalizeRef.current = false;
+      }}>
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>PCPNDT Form F</AlertDialogTitle>
+            <AlertDialogDescription>
+              Complete Form F for this obstetric ultrasound, then continue finalize. Cancel keeps your report work.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {workflow.currentRow?.patientId != null && (
+            <PcpndtFormFFinalizeStep
+              prefill={{
+                patientId: Number(workflow.currentRow.patientId),
+                patientName: workflow.currentRow.patientName ?? canonicalDemography?.patientName ?? "Patient",
+                age: canonicalDemography?.age != null ? String(canonicalDemography.age) : "",
+                address: (workflow.currentRow as { patientAddress?: string }).patientAddress ?? "",
+                husbandFatherName: "",
+                centreName: (clinicSettings as { name?: string } | undefined)?.name,
+                registrationNo: (clinicSettings as { pcpndtRegistrationNo?: string } | undefined)?.pcpndtRegistrationNo,
+                doctorName: sessionFresh?.user?.name ?? session?.user?.name ?? "",
+                procedure: workflow.currentRow.studyDescription ?? "Obstetric Ultrasound",
+                procedureDate: new Date().toISOString().slice(0, 10),
+                referredBy: canonicalDemography.referringDoctor || (workflow.currentRow as { referringDoctor?: string }).referringDoctor || "Self",
+                fetalUsgStudyId: Number(workflow.currentRow.id),
+              }}
+              missing={pcpndtMissing}
+              onCancel={() => {
+                formFContinueFinalizeRef.current = false;
+                setFormFFinalizeOpen(false);
+              }}
+              onSaved={async () => {
+                await qc.invalidateQueries({ queryKey: ["pcpndt-compliance", workflow.currentRow?.patientId] });
+                // Re-fetch to confirm compliant before continuing
+                try {
+                  const fresh = await api.get<{ compliant?: boolean }>(`/api/patient-reports/pcpndt-compliance/${workflow.currentRow!.patientId}`);
+                  if (fresh?.compliant !== true) {
+                    toast({ title: "Form F saved but still incomplete", description: "Review required fields, then try finalize again.", variant: "destructive" });
+                    return;
+                  }
+                } catch {
+                  toast({ title: "Could not verify Form F", description: "Finalize will not proceed until compliance is confirmed.", variant: "destructive" });
+                  return;
+                }
+                formFContinueFinalizeRef.current = true;
+                setFormFFinalizeOpen(false);
+                void finalizeReport();
+              }}
+            />
+          )}
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ─── Confirm: Replace Impression ─── */}
       <AlertDialog open={confirmImpressionReplace} onOpenChange={setConfirmImpressionReplace}>
