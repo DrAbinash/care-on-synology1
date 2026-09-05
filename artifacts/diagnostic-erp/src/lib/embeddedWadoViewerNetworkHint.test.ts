@@ -21,4 +21,18 @@ describe("EmbeddedWadoViewer LAN/Tailscale selector + mixed-content hint", () =>
     expect(src).toContain('chooseNetworkMode("TAILSCALE")');
     expect(src).toContain("Viewer Network Routes");
   });
+
+  it("keeps annotated capture as a compact toolbar tab (not a full-width ribbon)", () => {
+    expect(src).toContain('data-testid="ohif-capture-fallback-hint"');
+    expect(src).toContain('data-testid="ohif-request-annotated-capture"');
+    expect(src).toContain('"Annotate"');
+    // Must sit on the OHIF toolbar row before the column-expand size control.
+    const tabAt = src.indexOf('data-testid="ohif-capture-fallback-hint"');
+    const expandAt = src.indexOf('data-testid="viewer-column-expand"');
+    expect(tabAt).toBeGreaterThan(-1);
+    expect(expandAt).toBeGreaterThan(tabAt);
+    // No full-width amber strip above the iframe.
+    expect(src).not.toMatch(/ohif-capture-fallback-hint[\s\S]{0,200}ohif-embed/);
+    expect(src).not.toContain("Request annotated capture");
+  });
 });
