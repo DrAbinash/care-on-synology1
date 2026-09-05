@@ -57,6 +57,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 // ─── Existing Care hooks (the wiring contract) ────────────────────────────────
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
+import { readingQueueShouldSearchOrthanc } from "@/lib/pacsWorklistQuery";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
@@ -668,6 +669,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // ─── Existing Care hooks (the wiring contract) ─────────────────────────────
   // 1. Workflow (queue, navigation, parked, history)
+  // Orthanc C-FIND on every 30s poll made the left Reading Queue feel stuck.
+  // Routine date presets browse Postgres only. Orthanc turns on only when the
+  // radiologist types a patient/accession jump search (archive lookup).
   const workflow = useReportingWorkflow(studyId, {
     myUserId,
     myName,
@@ -675,7 +679,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     dateFrom: queueDateRange.from,
     dateTo: queueDateRange.to,
     search: patientJumpFilter,
-    searchOrthanc: true,
+    searchOrthanc: readingQueueShouldSearchOrthanc({
+      datePreset,
+      search: patientJumpFilter,
+    }),
   });
 
   // Honour ?modality= deep links once: persist normalized choice + refresh queue.

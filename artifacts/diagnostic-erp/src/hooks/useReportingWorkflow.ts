@@ -61,7 +61,10 @@ export interface ReportingWorkflowOptions {
   dateTo?: string;
   /** Server-side patient/accession search (not client-only). */
   search?: string;
-  /** When true + search/date set, merge Orthanc archive hits. */
+  /**
+   * When true, allow Orthanc archive merge (still gated by shouldIncludeOrthanc).
+   * Default false — Reading Queue Today/Yesterday must stay Postgres-fast.
+   */
   searchOrthanc?: boolean;
 }
 
@@ -94,7 +97,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     dateFrom = "",
     dateTo = "",
     search = "",
-    searchOrthanc = true,
+    searchOrthanc = false,
   } = options;
   const qc = useQueryClient();
 
@@ -103,7 +106,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     dateFrom: search.trim() ? "" : dateFrom,
     dateTo: search.trim() ? "" : dateTo,
     search,
-  }) || Boolean(search.trim());
+  });
 
   const worklistQueryKey = [
     "radiology-pacs-worklist",

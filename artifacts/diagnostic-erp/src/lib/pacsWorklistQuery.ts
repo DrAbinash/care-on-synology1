@@ -24,7 +24,11 @@ export function buildPacsWorklistUrl(opts: PacsWorklistQueryOpts = {}): string {
   return `/api/radiology/pacs-worklist${qs ? `?${qs}` : ""}`;
 }
 
-/** Orthanc archive search helps when filtering by back date or free-text search. */
+/**
+ * Orthanc archive merge is expensive. When the master toggle is on, only
+ * attach Orthanc for free-text search or an explicit date window (hub
+ * back-date browse). Unfiltered "toggle on" alone does not hit Orthanc.
+ */
 export function shouldIncludeOrthanc(opts: {
   enabled: boolean;
   dateFrom?: string;
@@ -35,4 +39,17 @@ export function shouldIncludeOrthanc(opts: {
   if (opts.search?.trim()) return true;
   if (opts.dateFrom || opts.dateTo) return true;
   return false;
+}
+
+/**
+ * Reading Queue policy: Orthanc only when the radiologist searches a
+ * patient/accession (archive lookup). Today / Yesterday / Today&Yesterday /
+ * All dates browse Postgres only — avoids C-FIND on every 30s poll.
+ */
+export function readingQueueShouldSearchOrthanc(opts: {
+  datePreset: "today" | "yesterday" | "today-yesterday" | "all";
+  search?: string;
+}): boolean {
+  void opts.datePreset;
+  return Boolean(opts.search?.trim());
 }
