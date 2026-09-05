@@ -2968,9 +2968,8 @@ router.post("/voice-transcriptions", async (req, res): Promise<void> => {
 
 /**
  * POST /api/ai-reporting/voice-transcriptions/:id/transcribe
- * Simulated transcription engine. In production this calls an external STT API
- * (e.g. Google Speech-to-Text, Azure Speech, Whisper). Here we return a
- * context-aware draft based on the modality/bodyPart.
+ * Voice transcription engine is not configured (fail closed).
+ * Returns 501 — does not invent findings/impression from modality.
  */
 router.post("/voice-transcriptions/:id/transcribe", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -2981,54 +2980,15 @@ router.post("/voice-transcriptions/:id/transcribe", async (req, res): Promise<vo
   const [row] = await db.select().from(aiVoiceTranscriptionsTable).where(eq(aiVoiceTranscriptionsTable.id, id)).limit(1);
   if (!row) { res.status(404).json({ error: "Transcription not found" }); return; }
 
-  // Simulated medical transcript based on modality
-  const modality = (row.modality ?? "").toUpperCase();
-  const bodyPart = (row.bodyPart ?? "").toLowerCase();
-  let draft = "[AI-generated draft from simulated voice transcription]\n\n";
-
-  if (modality.includes("MRI") && bodyPart.includes("brain")) {
-    draft += "FINDINGS: Brain parenchyma shows normal signal intensity on all sequences. No evidence of acute infarction, hemorrhage, or mass lesion. Ventricles are normal in size and configuration. No abnormal enhancement.\n\nIMPRESSION: Normal MRI brain.";
-  } else if (modality.includes("CT") && bodyPart.includes("chest")) {
-    draft += "FINDINGS: Lungs are clear bilaterally. No pleural effusion or pneumothorax. Cardiac silhouette is normal. No mediastinal lymphadenopathy.\n\nIMPRESSION: Normal CT chest.";
-  } else if (modality.includes("USG") || modality.includes("ULTRASOUND")) {
-    draft += "FINDINGS: Liver, gallbladder, kidneys, and spleen appear normal in size and echotexture. No free fluid.\n\nIMPRESSION: Normal abdominal ultrasound.";
-  } else if (modality.includes("X-RAY") || modality.includes("XR")) {
-    draft += "FINDINGS: Bones and soft tissues appear normal. No fractures or dislocations.\n\nIMPRESSION: Normal radiograph.";
-  } else {
-    draft += "FINDINGS: The study was performed as requested. No acute abnormalities identified.\n\nIMPRESSION: No acute findings. Clinical correlation recommended.";
-  }
-
-  const confidence = 85 + Math.floor(Math.random() * 10); // 85-94%
-
-  await db.update(aiVoiceTranscriptionsTable)
-    .set({
-      rawTranscript: draft,
-      correctedText: draft,
-      confidenceScore: confidence,
-      status: "transcribed",
-      updatedAt: new Date(),
-    })
-    .where(eq(aiVoiceTranscriptionsTable.id, id));
-
-  // Audit log (uses the existing aiReportingAuditLogsTable schema)
-  const auditSession = sReq.staffSession!;
-  await db.insert(aiReportingAuditLogsTable).values({
-    userId: auditSession.subjectId,
-    userName: auditSession.subjectName ?? null,
-    provider: "whisper-v3-medical",
-    model: "whisper-v3-medical",
-    success: true,
-    errorMessage: null,
+  // Simulated modality FINDINGS/IMPRESSION generator is intentionally disabled.
+  // This endpoint previously invented clinical text instead of transcribing audio.
+  res.status(501).json({
+    error: "Voice transcription is not configured. No findings or impression were generated.",
+    code: "voice_transcription_engine_not_configured",
   });
-
-  res.json({
-    id,
-    rawTranscript: draft,
-    confidenceScore: confidence,
-    aiSafetyLabel: "AI Draft – Requires Radiologist Review",
-    status: "transcribed",
-  });
+  return;
 });
+
 
 /**
  * PATCH /api/ai-reporting/voice-transcriptions/:id

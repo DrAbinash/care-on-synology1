@@ -201,7 +201,6 @@ export async function runReportComposer(opts: {
   }
 
 
-  let imagesBase64: string[] = [];
   let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false };
 
   if (aiMode === "SELECTED_IMAGES") {
@@ -283,7 +282,6 @@ export async function runReportComposer(opts: {
       };
     }
 
-    imagesBase64 = resolved.images.map((img) => img.base64);
     provenance = {
       ...baseProvenance,
       model: visionModel,
@@ -305,9 +303,10 @@ export async function runReportComposer(opts: {
       numCtx: runtime.numCtx,
       endpoint: runtime.endpoint,
       localOnly: runtime.localOnly,
-      images: (imagesBase64).map((b64) => ({
-        mimeType: "image/jpeg" as const,
-        base64: b64,
+      // Preserve each resolved image's actual MIME (jpeg/png/webp) — do not coerce to JPEG.
+      images: resolved.images.map((img) => ({
+        mimeType: img.mimeType,
+        base64: img.base64,
       })),
     });
 
@@ -407,7 +406,8 @@ export async function runReportComposer(opts: {
       safeError: primary.safeError ?? "compose_failed",
       latencyMs: Date.now() - started,
       model: runtime.model,
-      provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: true },
+      fallbackUsed: false,
+      provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false },
     };
   }
 

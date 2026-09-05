@@ -100,9 +100,16 @@ export default function AiExtractionReview() {
           </SelectContent>
         </Select>
         {studyId && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap" data-testid="dicom-ai-extract-disabled-group">
             {EXTRACTION_TYPES.map((t) => (
-              <Button key={t.key} size="sm" variant="outline" onClick={() => aiGenMut.mutate({ id: Number(studyId), t: t.key })} disabled={aiGenMut.isPending}>
+              <Button
+                key={t.key}
+                size="sm"
+                variant="outline"
+                disabled
+                title="DICOM AI extraction is not configured. No clinical findings were generated."
+                data-testid={`dicom-ai-extract-disabled-${t.key}`}
+              >
                 <FlaskConical className="h-3.5 w-3.5 mr-1" /> {t.label}
               </Button>
             ))}
@@ -119,7 +126,7 @@ export default function AiExtractionReview() {
           <div className="flex items-center gap-2 text-muted-foreground py-8"><Loader2 className="animate-spin h-5 w-5" /> Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
-            No extractions found for this study. Use the buttons above to run AI pipelines.
+            No extractions found for this study. DICOM AI extraction is not configured; existing OCR/review records remain available.
           </div>
         ) : (
           <div className="border rounded-lg overflow-hidden">
