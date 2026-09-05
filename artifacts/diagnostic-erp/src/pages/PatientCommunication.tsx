@@ -86,7 +86,14 @@ export default function PatientCommunicationPage() {
       toast({ title: "AI Draft generated" });
       qc.invalidateQueries({ queryKey: ["patientCommunications"] });
     },
-    onError: (e) => toast({ title: "Error", description: String(e), variant: "destructive" }),
+    onError: (e: any) => {
+      const msg =
+        e?.code === "patient_communication_ai_not_configured" ||
+        String(e?.message ?? e).includes("patient_communication_ai_not_configured")
+          ? "AI patient-friendly summaries are not enabled yet. The diagnostic report remains available unchanged."
+          : String(e?.message ?? e);
+      toast({ title: "AI draft unavailable", description: msg, variant: "destructive" });
+    },
   });
 
   const reviewMutation = useMutation({
@@ -116,7 +123,7 @@ export default function PatientCommunicationPage() {
     <div className="space-y-6">
       <PageHeader
         title="AI Patient Communication Assistant"
-        subtitle="Phase 25 — Draft patient-friendly summaries, follow-up instructions, and messages from radiology reports."
+        subtitle="Phase 25 — Patient communication records and review. AI patient-friendly summaries are not enabled yet."
       />
       <div className="flex gap-2 items-end">
         <div className="flex-1">
@@ -152,8 +159,14 @@ export default function PatientCommunicationPage() {
                   <TableCell>{item.sentAt ? new Date(item.sentAt).toLocaleDateString() : "—"}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex gap-1 justify-end">
-                      {item.status === "pending" && (
-                        <Button size="sm" variant="outline" onClick={() => draftMutation.mutate(item.id)} disabled={draftMutation.isPending}>
+                                            {item.status === "pending" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled
+                          title="Patient communication AI draft is not configured"
+                          data-testid="patient-comm-ai-draft-disabled"
+                        >
                           <Sparkles className="w-4 h-4" />
                         </Button>
                       )}

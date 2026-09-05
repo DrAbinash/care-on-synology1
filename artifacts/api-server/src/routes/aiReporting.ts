@@ -3155,8 +3155,8 @@ router.post("/patient-communications", async (req, res): Promise<void> => {
 
 /**
  * POST /api/ai-reporting/patient-communications/:id/draft
- * Generate AI draft in plain language from the original report text.
- * Simulated — in production this calls an LLM API with a medical-to-plain prompt.
+ * Patient-communication AI draft generation is disabled (fail closed).
+ * Returns 501 — does not invent clinical interpretation.
  */
 router.post("/patient-communications/:id/draft", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
@@ -3167,46 +3167,14 @@ router.post("/patient-communications/:id/draft", async (req, res): Promise<void>
   const [row] = await db.select().from(aiPatientCommunicationsTable).where(eq(aiPatientCommunicationsTable.id, id)).limit(1);
   if (!row) { res.status(404).json({ error: "Communication not found" }); return; }
 
-  const original = row.originalText ?? "";
-  const type = row.communicationType ?? "result_summary";
-  const lang = row.language ?? "en";
-
-  let draft = "";
-  if (type === "result_summary") {
-    draft = "[AI-generated plain-language summary of your imaging results]\n\n" +
-      "Your imaging study was reviewed by our radiologist. The overall findings are normal. " +
-      "No significant abnormalities were detected. You may continue with your regular care plan.\n\n" +
-      "If you have any questions, please contact your referring physician or our clinic.";
-  } else if (type === "followup_instructions") {
-    draft = "[AI-generated follow-up instructions]\n\n" +
-      "Based on your imaging results, the following follow-up is recommended:\n" +
-      "1. Schedule a follow-up appointment with your referring physician within 2 weeks.\n" +
-      "2. Bring a copy of this report to your appointment.\n" +
-      "3. If you experience any new symptoms, please seek medical attention immediately.\n\n" +
-      "Thank you for choosing our diagnostic center.";
-  } else {
-    draft = "[AI-generated patient communication draft]\n\n" +
-      "Dear Patient,\n\n" +
-      "We have completed your requested imaging study. The results are available in your patient portal.\n\n" +
-      "Please review the attached summary and contact us if you have any questions.\n\n" +
-      "Best regards,\n" +
-      "Care Diagnostics Team";
-  }
-
-  if (lang !== "en") {
-    draft += "\n\n[Translation note: AI draft would be translated to " + lang + " in production.]";
-  }
-
-  await db.update(aiPatientCommunicationsTable)
-    .set({ aiDraft: draft, status: "drafted", updatedAt: new Date() })
-    .where(eq(aiPatientCommunicationsTable.id, id));
-
-  res.json({
-    id,
-    aiDraft: draft,
-    aiSafetyLabel: "AI Draft – Requires Radiologist Review",
-    status: "drafted",
+  // AI patient-communication draft generation is intentionally disabled.
+  // The previous handler returned canned "normal findings" / "follow up in 2 weeks"
+  // text that ignored the report — unsafe for clinical use.
+  res.status(501).json({
+    error: "AI patient-friendly summaries are not enabled yet. The diagnostic report remains available unchanged.",
+    code: "patient_communication_ai_not_configured",
   });
+  return;
 });
 
 /**
