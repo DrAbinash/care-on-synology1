@@ -239,11 +239,20 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
     expect(matchWorkspaceShortcut({ key: "/", target: { tagName: "input" } })).toBeNull();
   });
 
-  it("plain typing never matches", () => {
+    it("plain typing never matches (except bare N/P/Q outside editors)", () => {
     expect(matchWorkspaceShortcut({ key: "s" })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "Enter" })).toBeNull();
     expect(matchWorkspaceShortcut({ key: "k", altKey: true })).toBeNull();
   });
+
+  it("bare N/P/Q navigate or toggle queue outside text fields", () => {
+    expect(matchWorkspaceShortcut({ key: "n", target: { tagName: "DIV" } })).toBe("next-study");
+    expect(matchWorkspaceShortcut({ key: "p", target: { tagName: "DIV" } })).toBe("previous-study");
+    expect(matchWorkspaceShortcut({ key: "q", target: { tagName: "DIV" } })).toBe("toggle-left-panel");
+    expect(matchWorkspaceShortcut({ key: "n", target: { tagName: "TEXTAREA" } })).toBeNull();
+    expect(matchWorkspaceShortcut({ key: "q", target: { tagName: "INPUT" } })).toBeNull();
+  });
+
 
   it("M1.5: Ctrl+Shift+N/P/K → next / previous / park", () => {
     expect(matchWorkspaceShortcut({ key: "N", ctrlKey: true, shiftKey: true })).toBe("next-study");

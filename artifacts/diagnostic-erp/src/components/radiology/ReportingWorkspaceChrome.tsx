@@ -277,12 +277,12 @@ function WorkflowNavButtons(props: ReportingWorkspaceChromeProps) {
     <div className="flex items-center gap-0.5">
       <Button size="sm" variant="outline" className="h-7 w-7 p-0"
         onClick={props.onPreviousStudy} disabled={props.workflow.historyDepth === 0 || props.workflow.transitioning}
-        title="Previous study (Ctrl+Shift+P)" data-testid="btn-previous-study">
+        title="Previous study (P or Ctrl+Shift+P)" data-testid="btn-previous-study">
         <ChevronLeft size={14} />
       </Button>
       <Button size="sm" variant="outline" className="h-7 w-7 p-0"
         onClick={props.onNextStudy} disabled={props.workflow.transitioning}
-        title="Next study (Ctrl+Shift+N)" data-testid="btn-next-study">
+        title="Next study (N or Ctrl+Shift+N)" data-testid="btn-next-study">
         <ChevronRight size={14} />
       </Button>
       <Button size="sm" variant="outline" className="h-7 text-[10px] gap-0.5 px-1.5"
