@@ -17,8 +17,8 @@ export type ComposerProviderImage = {
 };
 
 export type ComposerProviderRequest = {
-  system: string;
-  user: string;
+  systemPrompt: string;
+  userPrompt: string;
   images?: ComposerProviderImage[];
   model: string;
   temperature: number;

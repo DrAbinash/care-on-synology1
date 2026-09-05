@@ -166,7 +166,9 @@ export async function runReportComposer(opts: {
     provider: providerName,
     aiMode,
     cloudVisionAllowed: false,
+    // Image bytes are resolved later; policy only needs the count/presence signal.
     imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
+    images: undefined,
   });
   if (!policy.ok) {
     return {
@@ -295,8 +297,8 @@ export async function runReportComposer(opts: {
     const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
     const user = buildUserPrompt(opts.kind, opts.snapshot);
     const primary = await providerAdapter.compose({
-      system,
-      user,
+      systemPrompt: system,
+      userPrompt: user,
       model: visionModel,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
@@ -349,8 +351,8 @@ export async function runReportComposer(opts: {
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
   const user = buildUserPrompt(opts.kind, opts.snapshot);
   const primary = await providerAdapter.compose({
-      system,
-      user,
+      systemPrompt: system,
+      userPrompt: user,
       model: runtime.model,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
@@ -364,8 +366,8 @@ export async function runReportComposer(opts: {
   let fallbackUsed = false;
   if (!primary.ok && runtime.fallbackModel) {
     const fb = await providerAdapter.compose({
-      system,
-      user,
+      systemPrompt: system,
+      userPrompt: user,
       model: runtime.fallbackModel,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,

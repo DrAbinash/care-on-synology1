@@ -47,7 +47,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
     try {
       const userMessage: Record<string, unknown> = {
         role: "user",
-        content: request.user,
+        content: request.userPrompt,
       };
       if (request.images && request.images.length > 0) {
         userMessage.images = request.images.map((img) => img.base64);
@@ -66,7 +66,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
             temperature: request.temperature,
             num_ctx: request.numCtx ?? 4096,
           },
-          messages: [{ role: "system", content: request.system }, userMessage],
+          messages: [{ role: "system", content: request.systemPrompt }, userMessage],
         }),
       });
 

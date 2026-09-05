@@ -164,7 +164,7 @@ export default function PatientCommunicationPage() {
                           size="sm"
                           variant="outline"
                           disabled
-                          title="Patient communication AI draft is not configured"
+                          title="AI patient-friendly summaries are not enabled yet. The diagnostic report remains available unchanged."
                           data-testid="patient-comm-ai-draft-disabled"
                         >
                           <Sparkles className="w-4 h-4" />

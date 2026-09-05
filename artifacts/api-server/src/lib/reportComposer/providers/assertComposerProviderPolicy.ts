@@ -2,14 +2,17 @@
  * Pre-adapter policy gate for Report Composer providers.
  * Fail closed for cloud providers in this foundation PR.
  */
-import type { ComposerProviderName } from "./types";
+import type { ComposerProviderName, ComposerProviderImage } from "./types";
 
 export type ComposerProviderPolicyInput = {
   provider: ComposerProviderName;
   aiMode: "TEXT_ONLY" | "SELECTED_IMAGES";
   /** Future clinic setting — currently always treated as false. */
   cloudVisionAllowed?: boolean;
-  imageCount: number;
+  /** Selected images (if any). Preferred over imageCount when provided. */
+  images?: ComposerProviderImage[];
+  /** @deprecated Prefer images.length — kept for call-site clarity. */
+  imageCount?: number;
 };
 
 export type ComposerProviderPolicyResult =
@@ -20,13 +23,16 @@ export type ComposerProviderPolicyResult =
  * Current behaviour:
  * - Ollama text: allowed
  * - Ollama selected images: allowed (caller still runs ownership/vision/SSRF checks)
- * - DeepSeek/OpenAI: composer_provider_not_configured
+ * - DeepSeek/OpenAI text: composer_provider_not_configured
+ * - DeepSeek/OpenAI images: blocked; still composer_provider_not_configured in this PR
  */
 export function assertComposerProviderPolicy(
   input: ComposerProviderPolicyInput,
 ): ComposerProviderPolicyResult {
-  const { provider, aiMode, imageCount } = input;
+  const { provider, aiMode } = input;
   const cloudVisionAllowed = input.cloudVisionAllowed === true;
+  const imageCount =
+    input.images !== undefined ? input.images.length : Number(input.imageCount ?? 0);
 
   if (provider === "ollama") {
     if (aiMode === "SELECTED_IMAGES" && imageCount <= 0) {

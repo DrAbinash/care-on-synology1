@@ -70,8 +70,8 @@ describe("resolveComposerProvider", () => {
     expect(oa).toBeInstanceOf(OpenAiComposerAdapter);
 
     const dsResult = await ds.compose({
-      system: "s",
-      user: "u",
+      systemPrompt: "s",
+      userPrompt: "u",
       model: "deepseek-chat",
       temperature: 0.1,
       timeoutMs: 1000,
@@ -82,8 +82,8 @@ describe("resolveComposerProvider", () => {
     }
 
     const oaResult = await oa.compose({
-      system: "s",
-      user: "u",
+      systemPrompt: "s",
+      userPrompt: "u",
       model: "gpt-4o",
       temperature: 0.1,
       timeoutMs: 1000,
@@ -118,8 +118,8 @@ describe("OllamaComposerAdapter", () => {
 
     const adapter = new OllamaComposerAdapter();
     const result = await adapter.compose({
-      system: "system-prompt",
-      user: "user-prompt",
+      systemPrompt: "system-prompt",
+      userPrompt: "user-prompt",
       model: "llava:7b",
       temperature: 0.1,
       timeoutMs: 5000,
@@ -149,8 +149,8 @@ describe("OllamaComposerAdapter", () => {
   it("blocks SSRF endpoints via validateOllamaUrl", async () => {
     const adapter = new OllamaComposerAdapter();
     const result = await adapter.compose({
-      system: "s",
-      user: "u",
+      systemPrompt: "s",
+      userPrompt: "u",
       model: "llama3.1:8b",
       temperature: 0.1,
       timeoutMs: 1000,

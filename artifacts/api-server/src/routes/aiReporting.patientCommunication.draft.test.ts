@@ -18,6 +18,7 @@ describe("POST /patient-communications/:id/draft — disabled", () => {
     const handler = src.slice(start, end);
     expect(handler).toContain("patient_communication_ai_not_configured");
     expect(handler).toContain("501");
+    expect(handler).toContain("AI patient-friendly summaries are not enabled yet");
     expect(handler.toLowerCase()).not.toContain("overall findings are normal");
     expect(handler.toLowerCase()).not.toContain("no significant abnormalities");
     expect(handler).not.toContain("within 2 weeks");
