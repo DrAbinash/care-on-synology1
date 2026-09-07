@@ -150,6 +150,8 @@ export default function BillDetail({ id }: { id: number }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [reprintOpen, setReprintOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const [waiveOpen, setWaiveOpen] = useState(false);
+  const [waiveReason, setWaiveReason] = useState("");
   const [changeDoctorOpen, setChangeDoctorOpen] = useState(false);
   const [cdDoctorSearch, setCdDoctorSearch] = useState("");
   const [cdDoctorSearchOpen, setCdDoctorSearchOpen] = useState(false);
@@ -462,6 +464,22 @@ export default function BillDetail({ id }: { id: number }) {
     },
   });
 
+  const waiveDue = useMutation({
+    mutationFn: (body: { reason: string }) =>
+      api.post(`/api/bills/${id}/waive-due`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: getGetBillQueryKey(id) });
+      queryClient.invalidateQueries({ queryKey: getListBillsQueryKey() });
+      refetchAudits();
+      setWaiveOpen(false);
+      setWaiveReason("");
+      toast({
+        title: "Outstanding balance waived",
+        description: "The unpaid balance was converted to discount. No refund or cash-out entry was created.",
+      });
+    },
+  });
+
   const { register, handleSubmit, reset, setValue, watch } = useForm<PaymentForm>({ defaultValues: { method: "cash" } });
   const { register: regEdit, handleSubmit: handleEdit, reset: resetEdit } = useForm<EditForm>({
     defaultValues: { discount: 0, dueDate: "", editedBy: "", reason: "" },
@@ -740,6 +758,17 @@ export default function BillDetail({ id }: { id: number }) {
             {canEdit && (
               <Button size="sm" variant="outline" onClick={openEdit}>
                 <Pencil size={14} className="mr-1" /> Edit Bill
+              </Button>
+            )}
+            {bill.status !== "cancelled" && Number(bill.balanceAmount) > 0.01 && canEdit && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => { setWaiveReason(""); setWaiveOpen(true); }}
+                className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-700 dark:hover:bg-emerald-950"
+                title="Waive the unpaid balance as discount — no cash is returned"
+              >
+                <CheckSquare size={14} className="mr-1" /> Waive Due
               </Button>
             )}
             {bill.status !== "cancelled" && canRefund && (
@@ -1305,6 +1334,7 @@ export default function BillDetail({ id }: { id: number }) {
                       a.changeType === "reprint" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" :
                       a.changeType === "refund" ? "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400" :
                       a.changeType === "deleted" ? "bg-red-100 text-red-700" :
+                      a.changeType === "balance_waived" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
                       a.changeType === "discount" ? "bg-blue-100 text-blue-700" :
                       a.changeType === "subtotal" || a.changeType === "taxAmount" || a.changeType === "totalAmount" ? "bg-amber-100 text-amber-700" :
                       "bg-orange-100 text-orange-700"
@@ -1326,6 +1356,53 @@ export default function BillDetail({ id }: { id: number }) {
         </DialogContent>
       </Dialog>
 
+      {/* Waive Due Dialog — discount/waiver, never a cash refund */}
+      <Dialog open={waiveOpen} onOpenChange={setWaiveOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckSquare size={16} className="text-emerald-600" /> Waive Outstanding Balance
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 rounded-lg p-3 text-xs text-emerald-800 dark:text-emerald-300 space-y-1">
+              <p className="font-semibold">This is a discount / waiver — not a refund.</p>
+              <p>No money will be shown as returned to the patient and no negative cash payment will be created.</p>
+            </div>
+            <div className="bg-muted/50 rounded-lg p-3 text-sm space-y-1">
+              <div className="flex justify-between"><span className="text-muted-foreground">Current total</span><span>{formatCurrency(bill.totalAmount)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Paid</span><span>{formatCurrency(bill.paidAmount)}</span></div>
+              <div className="flex justify-between font-semibold"><span>Balance to waive</span><span className="text-emerald-700 dark:text-emerald-400">{formatCurrency(bill.balanceAmount)}</span></div>
+              <div className="flex justify-between border-t border-border pt-1 mt-1"><span className="text-muted-foreground">New net total</span><span className="font-bold">{formatCurrency(Math.max(0, Number(bill.totalAmount) - Number(bill.balanceAmount)))}</span></div>
+            </div>
+            <div>
+              <Label>Reason for waiver <span className="text-red-500">*</span></Label>
+              <textarea
+                rows={3}
+                value={waiveReason}
+                onChange={(e) => setWaiveReason(e.target.value)}
+                placeholder="e.g. LESS BY SIR / approved concession"
+                className="mt-1 w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+              />
+            </div>
+            {waiveDue.isError && (
+              <p className="text-xs text-red-600">{(waiveDue.error as Error)?.message ?? "Unable to waive due"}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setWaiveOpen(false)}>Cancel</Button>
+              <Button
+                type="button"
+                disabled={waiveDue.isPending || waiveReason.trim().length < 3}
+                onClick={() => waiveDue.mutate({ reason: waiveReason.trim() })}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                {waiveDue.isPending ? "Waiving…" : `Waive ${formatCurrency(bill.balanceAmount)}`}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Cancel / Refund Dialog with three tabs */}
       <Dialog open={refundOpen} onOpenChange={setRefundOpen}>
         <DialogContent className="max-w-md">
@@ -1334,6 +1411,12 @@ export default function BillDetail({ id }: { id: number }) {
               <Undo2 size={16} className="text-orange-600" /> Refund or Cancel Bill
             </DialogTitle>
           </DialogHeader>
+
+          {Number(bill.balanceAmount) > 0.01 && (
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-lg p-3 text-xs text-amber-800 dark:text-amber-300">
+              <strong>Refund means money is physically returned to the patient.</strong> If you only want to forgive the unpaid balance, close this dialog and use <strong>Waive Due</strong> instead.
+            </div>
+          )}
 
           {/* Tab switcher */}
           <div className="flex gap-1 p-1 bg-muted rounded-lg">

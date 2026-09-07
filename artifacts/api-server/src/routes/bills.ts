@@ -1883,6 +1883,109 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
 });
 
 // ── Refund a payment against a bill ───────────────────────────────────────────
+// Waive the CURRENT unpaid balance by converting it to additional discount.
+// This is deliberately NOT a refund: no negative payment row is created and
+// refundAmount / physical cash are untouched. The amount is server-derived
+// under FOR UPDATE so a concurrent payment cannot be accidentally waived.
+billsRouter.post("/:id/waive-due", requireStaffSubPermission("/billing", "edit"), async (req: StaffAuthRequest, res) => {
+  const paramsParsed = z.object({ id: z.coerce.number().int().positive() }).safeParse(req.params);
+  const bodyParsed = z.object({ reason: z.string().trim().min(3).max(500) }).safeParse(req.body);
+  if (!paramsParsed.success || !bodyParsed.success) {
+    res.status(400).json({ error: "Invalid request — a reason of at least 3 characters is required" });
+    return;
+  }
+
+  try {
+    const updated = await db.transaction(async (tx) => {
+      const [bill] = await tx
+        .select()
+        .from(billsTable)
+        .where(eq(billsTable.id, paramsParsed.data.id))
+        .for("update")
+        .limit(1);
+
+      if (!bill) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
+      if (bill.status === "cancelled") {
+        throw Object.assign(new Error("Bill is cancelled — due cannot be waived"), { httpStatus: 409 });
+      }
+
+      const subtotal = Number(bill.subtotal);
+      const taxAmount = Number(bill.taxAmount);
+      const paidAmount = Number(bill.paidAmount);
+      const refundAmount = Number(bill.refundAmount || 0);
+      const oldDiscount = Number(bill.discount);
+      const oldTotal = Number(bill.totalAmount);
+      const currentBalance = billBalanceFromParts(oldTotal, paidAmount, refundAmount);
+
+      if (refundAmount > 0.01) {
+        throw Object.assign(new Error("Due waiver is not allowed on a bill that already has refunds. Use an audited bill correction instead."), { httpStatus: 409 });
+      }
+      if (currentBalance <= 0.01) {
+        throw Object.assign(new Error("This bill has no outstanding balance to waive"), { httpStatus: 409 });
+      }
+
+      const newDiscount = moneyAdd(oldDiscount, currentBalance);
+      if (newDiscount > subtotal + 0.01) {
+        throw Object.assign(new Error("Outstanding amount cannot be represented as a discount on this bill"), { httpStatus: 409 });
+      }
+
+      const session = req.staffSession;
+      if (session && !FULL_ACCESS_ROLES.has(session.role) && newDiscount > 0) {
+        const maxPct = session.maxDiscount ?? 0;
+        const maxAllowed = Math.round((subtotal * maxPct / 100) * 100) / 100;
+        if (newDiscount > maxAllowed + 0.01) {
+          throw Object.assign(new Error(`Your maximum allowed discount is ${maxPct}% (₹${maxAllowed.toFixed(2)} on this bill). Please ask an admin to waive this due.`), { httpStatus: 403 });
+        }
+      }
+
+      const newTotal = billTotalFromParts(subtotal, newDiscount, taxAmount);
+      const discountGate = assertDiscountNotBelowCollected({
+        subtotal,
+        discount: newDiscount,
+        tax: taxAmount,
+        collectedNet: paidAmount,
+      });
+      if (discountGate) {
+        throw Object.assign(new Error(discountGate), { httpStatus: 400 });
+      }
+
+      const newBalance = billBalanceFromParts(newTotal, paidAmount, 0);
+      const newStatus = newBalance <= 0.01 ? "paid" : paidAmount > 0 ? "partial" : "pending";
+      const [saved] = await tx
+        .update(billsTable)
+        .set({
+          discount: newDiscount.toFixed(2),
+          totalAmount: newTotal.toFixed(2),
+          balanceAmount: newBalance.toFixed(2),
+          status: newStatus,
+        })
+        .where(eq(billsTable.id, bill.id))
+        .returning();
+
+      const actor = session?.subjectName?.trim() || (session ? `staff:${session.id}` : "system");
+      await tx.insert(billAuditsTable).values({
+        billId: bill.id,
+        editedBy: actor,
+        reason: bodyParsed.data.reason,
+        changeType: "balance_waived",
+        oldValue: `total=₹${oldTotal.toFixed(2)}, paid=₹${paidAmount.toFixed(2)}, balance=₹${currentBalance.toFixed(2)}, discount=₹${oldDiscount.toFixed(2)}`,
+        newValue: `waived=₹${currentBalance.toFixed(2)}, total=₹${newTotal.toFixed(2)}, paid=₹${paidAmount.toFixed(2)}, balance=₹${newBalance.toFixed(2)}, discount=₹${newDiscount.toFixed(2)}`,
+      });
+
+      return saved!;
+    });
+
+    res.json(await buildBill(updated));
+  } catch (err: unknown) {
+    const httpStatus = (err as { httpStatus?: number })?.httpStatus;
+    if (httpStatus) {
+      res.status(httpStatus).json({ error: err instanceof Error ? err.message : "Due waiver failed" });
+      return;
+    }
+    throw err;
+  }
+});
+
 // Records a refund of `amount`. Inserts a negative-amount payment row so the
 // payment history shows it, decrements paidAmount, increments refundAmount,
 // recomputes balanceAmount + status, audits, and emails.
