@@ -67,6 +67,7 @@ import { vouchersTable } from "@workspace/db/schema";
 import { sanitizePatient } from "./patients";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { FULL_ACCESS_ROLES, requireStaffSubPermission } from "../middleware/requireStaffAuth";
+import { planDueWaiver } from "../lib/dueWaiver";
 import { getWalkInLedgerId } from "./ledgers";
 import {
   billBalanceFromParts,
@@ -1882,7 +1883,78 @@ billsRouter.post("/:id/cancel", requireStaffSubPermission("/billing", "delete"),
   res.json({ ...(await buildBill(updated)), closedPeriodWarning });
 });
 
-// ── Refund a payment against a bill ───────────────────────────────────────────
+// ── Waive unpaid balance (discount) — NOT a cash refund ───────────────────────
+// Waive the CURRENT unpaid balance by converting it to additional discount.
+// This is deliberately NOT a refund: no negative payment row is created and
+// refundAmount / physical cash are untouched. The amount is server-derived
+// under FOR UPDATE so a concurrent payment cannot be accidentally waived.
+billsRouter.post("/:id/waive-due", requireStaffSubPermission("/billing", "edit"), async (req: StaffAuthRequest, res) => {
+  const paramsParsed = z.object({ id: z.coerce.number().int().positive() }).safeParse(req.params);
+  const bodyParsed = z.object({ reason: z.string().trim().min(3).max(500) }).safeParse(req.body);
+  if (!paramsParsed.success || !bodyParsed.success) {
+    res.status(400).json({ error: "Invalid request — a reason of at least 3 characters is required" });
+    return;
+  }
+
+  try {
+    const updated = await db.transaction(async (tx) => {
+      const [bill] = await tx
+        .select()
+        .from(billsTable)
+        .where(eq(billsTable.id, paramsParsed.data.id))
+        .for("update")
+        .limit(1);
+
+      if (!bill) throw Object.assign(new Error("Bill not found"), { httpStatus: 404 });
+
+      const session = req.staffSession;
+      const plan = planDueWaiver(bill, {
+        role: session?.role ?? null,
+        maxDiscountPct: session?.maxDiscount ?? 0,
+        fullAccessRoles: FULL_ACCESS_ROLES,
+      });
+      if (!plan.ok) {
+        throw Object.assign(new Error(plan.error), { httpStatus: plan.httpStatus });
+      }
+
+      const [saved] = await tx
+        .update(billsTable)
+        .set({
+          discount: plan.newDiscount.toFixed(2),
+          discountReason: bodyParsed.data.reason.slice(0, 200),
+          discountReasonNote: bodyParsed.data.reason,
+          totalAmount: plan.newTotal.toFixed(2),
+          balanceAmount: plan.newBalance.toFixed(2),
+          // paidAmount + refundAmount intentionally omitted — unchanged.
+          status: plan.newStatus,
+        })
+        .where(eq(billsTable.id, bill.id))
+        .returning();
+
+      const actor = session?.subjectName?.trim() || (session ? `staff:${session.id}` : "system");
+      await tx.insert(billAuditsTable).values({
+        billId: bill.id,
+        editedBy: actor,
+        reason: bodyParsed.data.reason,
+        changeType: "balance_waived",
+        oldValue: `total=₹${plan.oldTotal.toFixed(2)}, paid=₹${plan.paidAmount.toFixed(2)}, balance=₹${plan.oldBalance.toFixed(2)}, discount=₹${plan.oldDiscount.toFixed(2)}`,
+        newValue: `waived=₹${plan.waivedAmount.toFixed(2)}, total=₹${plan.newTotal.toFixed(2)}, paid=₹${plan.paidAmount.toFixed(2)}, balance=₹${plan.newBalance.toFixed(2)}, discount=₹${plan.newDiscount.toFixed(2)}`,
+      });
+
+      return saved!;
+    });
+
+    res.json(await buildBill(updated));
+  } catch (err: unknown) {
+    const httpStatus = (err as { httpStatus?: number })?.httpStatus;
+    if (httpStatus) {
+      res.status(httpStatus).json({ error: err instanceof Error ? err.message : "Due waiver failed" });
+      return;
+    }
+    throw err;
+  }
+});
+
 // Records a refund of `amount`. Inserts a negative-amount payment row so the
 // payment history shows it, decrements paidAmount, increments refundAmount,
 // recomputes balanceAmount + status, audits, and emails.
