@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const src = readFileSync(join(process.cwd(), "src/routes/bills.ts"), "utf8");
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const src = readFileSync(join(__dirname, "bills.ts"), "utf8");
 
 describe("due waiver accounting contract", () => {
   it("has a dedicated waive-due endpoint and never posts a payment/refund", () => {
