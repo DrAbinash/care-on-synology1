@@ -234,6 +234,7 @@ export default function MyDayClose() {
       qc.invalidateQueries({ queryKey: ["my-day-close-preview"] });
       qc.invalidateQueries({ queryKey: ["my-day-close-list"] });
       qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
+      qc.invalidateQueries({ queryKey: ["drawer-status"] });
       qc.invalidateQueries({ queryKey: ["my-drawer-status"] });
       if (clinicQ.data?.dayCloseAutoPrint !== false) {
         autoPrintStaffDayClose(

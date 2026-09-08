@@ -108,6 +108,8 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/radiology/smart/favorite-sets",              // per-radiologist smart-finding favorite sets
   "/api/teaching-cases/favorites",                   // per-staff favorited teaching cases
   "/api/day-close/my-",                              // per-cashier drawer/closure status — shared billing terminals
+  "/api/day-close/staff-drawer-status/",             // admin viewing another staff's drawer on My Daily Summary
+  "/api/day-close/staff-post-closure-activity/",     // admin viewing another staff's post-closure activity
   "/api/radiology/user-item-usage",                  // per-radiologist recent-item usage log
   "/api/dicom-workflow/radiologist-queue",           // conditionally personal (?filter=assigned_to_me
                                                       // scopes results by the caller's own radiologist id;
