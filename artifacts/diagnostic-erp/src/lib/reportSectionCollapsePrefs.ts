@@ -131,3 +131,44 @@ export function sectionsRequiringReveal(flags: {
   if (flags.techniqueEmptyBlocking) out.push("technique");
   return out;
 }
+
+/**
+ * True for Impression-level contradiction / mismatch warnings only.
+ * Deliberately excludes pathology vocabulary (stenosis, moderate, severe, …)
+ * so a duplicate-line warning that *quotes* findings text cannot lock the
+ * accordion into auto-reveal.
+ */
+export function isImpressionContradictionWarning(warning: string): boolean {
+  return /contradict|mismatch|laterality/i.test(warning);
+}
+
+/**
+ * Stable key for the current auto-reveal need set. Empty when nothing needs
+ * attention. Used to edge-trigger reveal (once per need set), not continuously.
+ */
+export function revealNeedKey(need: readonly ReportSectionId[]): string {
+  return need.length === 0 ? "" : [...need].sort().join(",");
+}
+
+/**
+ * Decide whether to forcibly open a section for a new validation blocker.
+ *
+ * Returns `null` when:
+ * - nothing needs reveal, or
+ * - this need set was already auto-revealed (user may navigate away / collapse), or
+ * - the user is already viewing one of the sections that need attention.
+ *
+ * Collapsed sections still surface blockers via `collapsedWarning` — auto-reveal
+ * must not fight progressive accordion clicks.
+ */
+export function nextAutoRevealSection(opts: {
+  need: readonly ReportSectionId[];
+  currentActive: ReportSectionId | null;
+  alreadyRevealedKey: string;
+}): ReportSectionId | null {
+  const key = revealNeedKey(opts.need);
+  if (!key) return null;
+  if (key === opts.alreadyRevealedKey) return null;
+  if (opts.currentActive && opts.need.includes(opts.currentActive)) return null;
+  return opts.need.includes("impression") ? "impression" : opts.need[0]!;
+}

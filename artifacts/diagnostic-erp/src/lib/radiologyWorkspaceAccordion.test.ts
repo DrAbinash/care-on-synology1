@@ -61,6 +61,12 @@ describe("main reporting pane — progressive accordion", () => {
     expect(workspace).toContain("nextActiveSection");
     expect(workspace).toContain("activeFindingsTool");
     expect(workspace).toContain("nextFindingsTool");
+    // Auto-reveal must be edge-triggered (nextAutoRevealSection) — never
+    // continuously re-bind activeReportSection on every accordion click.
+    expect(workspace).toContain("nextAutoRevealSection");
+    expect(workspace).not.toMatch(
+      /\[impressionNeedsRefresh,\s*impressionContradictionWarnings\.length,\s*isCritical,\s*activeReportSection\]/,
+    );
   });
 
   it("collapsing is visual only — children stay mounted so state survives", () => {

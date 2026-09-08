@@ -260,6 +260,9 @@ import {
   writeReportSectionCollapsePrefs,
   prefsAfterSectionActivate,
   sectionsRequiringReveal,
+  isImpressionContradictionWarning,
+  revealNeedKey,
+  nextAutoRevealSection,
   type ReportSectionCollapsePrefs,
 } from "@/lib/reportSectionCollapsePrefs";
 import {
@@ -4163,23 +4166,38 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
-    }).filter((w) => /contradict|mismatch|severity|stenosis|moderate|severe|laterality/i.test(w)),
+    }).filter(isImpressionContradictionWarning),
   ], [appliedPathologyPatches, impressionText, findingsText]);
 
-  // Auto-reveal sections that carry validation / stale warnings so collapse
-  // never hides a blocker.
+  // Auto-reveal sections that carry NEW validation / stale warnings so collapse
+  // never hides a blocker on first appearance. Edge-triggered: once a need set
+  // has been revealed, the radiologist may open any other section (or collapse
+  // everything) — collapsedWarning keeps the blocker discoverable without
+  // fighting progressive accordion clicks.
+  const autoRevealKeyRef = useRef("");
+  const activeReportSectionRef = useRef(activeReportSection);
+  activeReportSectionRef.current = activeReportSection;
   useEffect(() => {
     const need = sectionsRequiringReveal({
       impressionNeedsRefresh,
       impressionHasContradiction: impressionContradictionWarnings.length > 0,
       recommendationCritical: isCritical,
     });
-    if (need.length === 0) return;
-    if (activeReportSection && need.includes(activeReportSection)) return;
-    // Prefer impression when both impression + recommendation need attention.
-    const target = need.includes("impression") ? "impression" : need[0]!;
-    setActiveReportSection(target);
-  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, activeReportSection]);
+    const key = revealNeedKey(need);
+    if (!key) {
+      autoRevealKeyRef.current = "";
+      return;
+    }
+    const target = nextAutoRevealSection({
+      need,
+      currentActive: activeReportSectionRef.current,
+      alreadyRevealedKey: autoRevealKeyRef.current,
+    });
+    // Mark this need set as handled even when already viewing the section, so a
+    // later click away is not snapped back.
+    autoRevealKeyRef.current = key;
+    if (target) setActiveReportSection(target);
+  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical]);
 
   const undoLastAbnormalEnabled = canUndoLastAbnormal({
     lastPatchSnapshot,
