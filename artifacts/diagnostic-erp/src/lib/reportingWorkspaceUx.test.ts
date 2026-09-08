@@ -24,6 +24,9 @@ import {
   prefsAfterSectionActivate,
   readReportSectionCollapsePrefs,
   sectionsRequiringReveal,
+  isImpressionContradictionWarning,
+  revealNeedKey,
+  nextAutoRevealSection,
   writeReportSectionCollapsePrefs,
 } from "./reportSectionCollapsePrefs";
 import {
@@ -409,12 +412,83 @@ describe("Collapsed-section preferences", () => {
     );
     expect(page).toMatch(/impression-collapsed-warning/);
     expect(page).toMatch(/sectionsRequiringReveal/);
+    expect(page).toMatch(/nextAutoRevealSection/);
+    expect(page).toMatch(/isImpressionContradictionWarning/);
+    // Must NOT continuously re-force activeReportSection on every click.
+    expect(page).not.toMatch(
+      /\[impressionNeedsRefresh,\s*impressionContradictionWarnings\.length,\s*isCritical,\s*activeReportSection\]/,
+    );
     const accordion = readFileSync(
       join(__dirname, "../components/radiology/zai-workspace/report-section-accordion.tsx"),
       "utf8",
     );
     expect(accordion).toMatch(/collapsedWarning/);
     expect(accordion).toMatch(/report-section-collapsed-warning/);
+  });
+
+  it("auto-reveal is edge-triggered so accordion clicks are not fought", () => {
+    const need = sectionsRequiringReveal({ impressionHasContradiction: true });
+    expect(need).toEqual(["impression"]);
+    expect(revealNeedKey(need)).toBe("impression");
+
+    // First appearance → open Impression.
+    expect(nextAutoRevealSection({
+      need,
+      currentActive: "findings",
+      alreadyRevealedKey: "",
+    })).toBe("impression");
+
+    // Same need already revealed → leave user alone (Findings can open).
+    expect(nextAutoRevealSection({
+      need,
+      currentActive: "findings",
+      alreadyRevealedKey: "impression",
+    })).toBeNull();
+
+    // Collapsing Impression (null active) also stays put.
+    expect(nextAutoRevealSection({
+      need,
+      currentActive: null,
+      alreadyRevealedKey: "impression",
+    })).toBeNull();
+
+    // Already viewing Impression → mark revealed, no state thrash.
+    expect(nextAutoRevealSection({
+      need,
+      currentActive: "impression",
+      alreadyRevealedKey: "",
+    })).toBeNull();
+
+    // New need set (critical recommendation) after prior reveal → open it.
+    const both = sectionsRequiringReveal({
+      impressionHasContradiction: true,
+      recommendationCritical: true,
+    });
+    expect(revealNeedKey(both)).toBe("impression,recommendation");
+    expect(nextAutoRevealSection({
+      need: both,
+      currentActive: "findings",
+      alreadyRevealedKey: "impression",
+    })).toBe("impression");
+  });
+
+  it("impression contradiction filter ignores pathology vocabulary in quotes", () => {
+    expect(isImpressionContradictionWarning(
+      "Possible contradiction: Impression reads normal but Findings describe significant pathology.",
+    )).toBe(true);
+    expect(isImpressionContradictionWarning(
+      'Possible severity mismatch: Findings say "moderate" but Impression says "mild".',
+    )).toBe(true);
+    expect(isImpressionContradictionWarning(
+      'Laterality check: Findings say "left" but Impression says "right".',
+    )).toBe(true);
+    // Duplicate-line warnings that merely quote findings must NOT lock accordion.
+    expect(isImpressionContradictionWarning(
+      'Duplicate impression line: "Moderate canal stenosis at L4-L5"',
+    )).toBe(false);
+    expect(isImpressionContradictionWarning(
+      "Findings describe pathology but the Impression section is empty.",
+    )).toBe(false);
   });
 });
 
