@@ -19,6 +19,7 @@ import {
   paymentsTable,
   vouchersTable,
   testTokensTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { eq, like, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -317,5 +318,65 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
     }
 
     await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, created.body.booking.id)).catch(() => {});
+  });
+
+  test("PATCH pending booking can set referring doctor before share/confirm", async () => {
+    const editDate = "2099-07-03";
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, editDate));
+
+    const [doc] = await db
+      .insert(doctorsTable)
+      .values({
+        name: `Vitest Ref ${fx.marker}`,
+        specialization: "General",
+        defaultCommissionType: "percentage",
+        defaultCommission: "0",
+      })
+      .returning();
+
+    const created = await request(app)
+      .post("/api/online-bookings")
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        patientId: fx.patientId,
+        selectedDate: editDate,
+        timeSlot: slot,
+        testIds: [fx.testId],
+        packageIds: [],
+        source: "phone",
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.booking.referringDoctorId ?? null).toBeNull();
+
+    const patched = await request(app)
+      .patch(`/api/online-bookings/${created.body.booking.id}`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        referringDoctorId: doc.id,
+        referringDoctorName: doc.name,
+        notes: "added doctor before WhatsApp",
+      });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(patched.body.referringDoctorId).toBe(doc.id);
+    expect(patched.body.referringDoctorName).toBe(doc.name);
+    expect(patched.body.notes).toBe("added doctor before WhatsApp");
+
+    // Confirmed bookings must refuse PATCH (edit doctor on the bill instead).
+    const confirmed = await request(app)
+      .post(`/api/online-bookings/${created.body.booking.id}/confirm`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({});
+    expect(confirmed.status).toBe(200);
+
+    const refuse = await request(app)
+      .patch(`/api/online-bookings/${created.body.booking.id}`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({ referringDoctorId: null });
+    expect(refuse.status).toBe(409);
+    expect(String(refuse.body.error || "")).toMatch(/bill/i);
+
+    await db.delete(testTokensTable).where(eq(testTokensTable.billId, confirmed.body.billId)).catch(() => {});
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, created.body.booking.id)).catch(() => {});
+    await db.delete(doctorsTable).where(eq(doctorsTable.id, doc.id)).catch(() => {});
   });
 });

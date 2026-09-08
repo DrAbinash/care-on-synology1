@@ -18,6 +18,7 @@ import {
   packagesTable,
   clinicSettingsTable,
   paymentLogsTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { eq, desc, and, or, ilike, inArray } from "drizzle-orm";
 import { registerPatientSelfFlow } from "../services/self-registration";
@@ -229,6 +230,90 @@ onlineBookingsRouter.get("/:id", async (req, res): Promise<void> => {
   const [row] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, id)).limit(1);
   if (!row) { res.status(404).json({ error: "Booking not found" }); return; }
   res.json(row);
+});
+
+// PATCH /api/online-bookings/:id — edit before confirm (referring doctor, notes, contact).
+// Confirmed bookings already created a bill/order — change referring doctor on the bill instead.
+onlineBookingsRouter.patch("/:id", async (req: StaffAuthRequest, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid booking id" });
+    return;
+  }
+  const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, id)).limit(1);
+  if (!booking) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  if (!["pending_payment", "paid"].includes(booking.status)) {
+    res.status(409).json({
+      error:
+        booking.status === "confirmed" && booking.billId
+          ? "This booking is already confirmed — edit the referring doctor on the bill instead."
+          : `Cannot edit a booking with status '${booking.status}'`,
+    });
+    return;
+  }
+
+  const body = req.body ?? {};
+  const patch: Partial<typeof onlineBookingsTable.$inferInsert> = {};
+
+  if ("notes" in body) {
+    patch.notes = String(body.notes ?? "").slice(0, 2000);
+  }
+  if ("name" in body) {
+    const name = String(body.name || "").trim();
+    if (!name) {
+      res.status(400).json({ error: "Name cannot be empty" });
+      return;
+    }
+    patch.name = name.slice(0, 200);
+  }
+  if ("phone" in body) {
+    const phone = String(body.phone || "").replace(/\D/g, "");
+    if (phone.length < 10) {
+      res.status(400).json({ error: "Phone must have at least 10 digits" });
+      return;
+    }
+    patch.phone = phone.slice(0, 15);
+  }
+  if ("referringDoctorId" in body || "referringDoctorName" in body) {
+    const rawId = body.referringDoctorId;
+    if (rawId === null || rawId === 0 || rawId === "" || rawId === undefined) {
+      patch.referringDoctorId = null;
+      patch.referringDoctorName = "";
+    } else {
+      const doctorId = Number(rawId);
+      if (!Number.isInteger(doctorId) || doctorId <= 0) {
+        res.status(400).json({ error: "Invalid referring doctor" });
+        return;
+      }
+      const [doc] = await db
+        .select({ id: doctorsTable.id, name: doctorsTable.name })
+        .from(doctorsTable)
+        .where(eq(doctorsTable.id, doctorId))
+        .limit(1);
+      if (!doc) {
+        res.status(400).json({ error: "Referring doctor not found" });
+        return;
+      }
+      patch.referringDoctorId = doc.id;
+      patch.referringDoctorName =
+        String(body.referringDoctorName || "").trim() || doc.name;
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    res.status(400).json({ error: "No editable fields provided" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(onlineBookingsTable)
+    .set(patch)
+    .where(eq(onlineBookingsTable.id, id))
+    .returning();
+  res.json(updated);
 });
 
 // POST /api/online-bookings/:id/cancel

@@ -832,7 +832,7 @@ export default function BillDetail({ id }: { id: number }) {
                 <p className="text-sm font-medium">{bill.order?.doctor?.name ?? <span className="text-muted-foreground">—</span>}</p>
               </div>
               <Button size="sm" variant="ghost" className="text-xs h-7 px-2 text-teal-600 hover:text-teal-700 hover:bg-teal-50 dark:text-teal-400 dark:hover:bg-teal-950/30" onClick={() => { setCdDoctorSearch(""); setCdDoctorSearchOpen(false); setCdNote(""); setChangeDoctorOpen(true); }}>
-                <Stethoscope size={12} className="mr-1" /> Change
+                <Stethoscope size={12} className="mr-1" /> Edit Doctor
               </Button>
             </div>
           </div>

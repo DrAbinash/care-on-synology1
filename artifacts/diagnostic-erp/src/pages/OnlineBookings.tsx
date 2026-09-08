@@ -15,10 +15,12 @@ import {
 import {
   Search, RefreshCw, CheckCircle2, XCircle, Eye, Globe, Star,
   CreditCard, Phone, Calendar, FileText, User, Clock, Plus, Copy, MessageCircle,
+  Pencil, Stethoscope,
 } from "lucide-react";
 import { Link } from "wouter";
 import { NewOnlineBookingDialog } from "./NewOnlineBookingDialog";
 import { copyTextRobust } from "@/lib/copyTextRobust";
+import { Label } from "@/components/ui/label";
 
 function bookingWhatsAppPaymentUrl(phone: string, bookingRef: string, paymentUrl: string) {
   const digits = phone.replace(/\D/g, "");
@@ -52,7 +54,11 @@ type OnlineBooking = {
   confirmedAt: string | null;
   createdAt: string;
   source?: string;
+  referringDoctorId?: number | null;
+  referringDoctorName?: string | null;
 };
+
+type Doctor = { id: number; name: string; specialization?: string | null };
 
 const STATUS_COLORS: Record<string, string> = {
   pending_payment: "bg-yellow-100 text-yellow-800 border-yellow-300",
@@ -92,6 +98,13 @@ export default function OnlineBookingsPage() {
     phone: string;
     copied: boolean;
   } | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editDoctorId, setEditDoctorId] = useState<number | null>(null);
+  const [editDoctorSearch, setEditDoctorSearch] = useState("");
+  const [editDoctorSearchOpen, setEditDoctorSearchOpen] = useState(false);
 
   async function createAndShowPaymentShare(booking: {
     id: number;
@@ -129,7 +142,55 @@ export default function OnlineBookingsPage() {
     refetchInterval: 30_000,
   });
 
+  const { data: doctorsPayload } = useQuery<{ doctors: Doctor[] }>({
+    queryKey: ["doctors"],
+    queryFn: () => api.get("/api/doctors"),
+    staleTime: 60_000,
+  });
+  const doctors = doctorsPayload?.doctors ?? [];
+
   const bookings = data?.bookings ?? [];
+
+  function openEdit(b: OnlineBooking) {
+    setSelected(b);
+    setEditName(b.name);
+    setEditPhone(b.phone);
+    setEditNotes(b.notes || "");
+    setEditDoctorId(b.referringDoctorId ?? null);
+    setEditDoctorSearch(b.referringDoctorName || (b.referringDoctorId ? "" : "Walk-in / Self"));
+    setEditDoctorSearchOpen(false);
+    setEditOpen(true);
+  }
+
+  const editMutation = useMutation({
+    mutationFn: (payload: {
+      id: number;
+      name: string;
+      phone: string;
+      notes: string;
+      referringDoctorId: number | null;
+      referringDoctorName: string;
+    }) =>
+      api.patch<OnlineBooking>(`/api/online-bookings/${payload.id}`, {
+        name: payload.name,
+        phone: payload.phone,
+        notes: payload.notes,
+        referringDoctorId: payload.referringDoctorId,
+        referringDoctorName: payload.referringDoctorName,
+      }),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ["online-bookings"] });
+      setSelected(updated);
+      setEditOpen(false);
+      toast({
+        title: "Booking updated",
+        description: updated.referringDoctorName
+          ? `Referring doctor: ${updated.referringDoctorName}`
+          : "Referring doctor cleared (walk-in / self).",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Could not update", description: e.message, variant: "destructive" }),
+  });
 
   const confirmMutation = useMutation({
     mutationFn: (id: number) => api.post(`/api/online-bookings/${id}/confirm`, {}),
@@ -277,6 +338,27 @@ export default function OnlineBookingsPage() {
                         >
                           <Eye size={12} className="mr-1" /> View
                         </Button>
+                        {(b.status === "pending_payment" || b.status === "paid") && (
+                          <Button
+                            size="sm" variant="outline"
+                            className="h-7 px-2 text-xs"
+                            data-testid="booking-edit"
+                            onClick={() => openEdit(b)}
+                          >
+                            <Pencil size={12} className="mr-1" /> Edit
+                          </Button>
+                        )}
+                        {b.status === "confirmed" && b.billId && (
+                          <Link href={`/billing/${b.billId}`}>
+                            <Button
+                              size="sm" variant="outline"
+                              className="h-7 px-2 text-xs text-teal-700 border-teal-300"
+                              title="Open bill to edit referring doctor"
+                            >
+                              <Stethoscope size={12} className="mr-1" /> Doctor
+                            </Button>
+                          </Link>
+                        )}
                         {b.status === "paid" && (
                           <Button
                             size="sm" variant="default"
@@ -344,7 +426,7 @@ export default function OnlineBookingsPage() {
       )}
 
       {/* Detail drawer */}
-      {selected && !confirmOpen && !cancelOpen && (
+      {selected && !confirmOpen && !cancelOpen && !editOpen && (
         <Dialog open onOpenChange={() => setSelected(null)}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
@@ -358,6 +440,10 @@ export default function OnlineBookingsPage() {
                 <div><span className="text-muted-foreground">Date</span><p className="font-medium">{selected.selectedDate}</p>{selected.timeSlot && <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5"><Clock size={10} />{selected.timeSlot}</p>}</div>
                 <div><span className="text-muted-foreground">Amount</span><p className="font-semibold text-primary">₹{Number(selected.totalAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p></div>
                 <div><span className="text-muted-foreground">VIP</span><p>{selected.isVip ? <span className="text-amber-600 font-semibold flex items-center gap-1"><Star size={12} className="fill-amber-500" />Yes</span> : "No"}</p></div>
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Referring doctor</span>
+                  <p className="font-medium">{selected.referringDoctorName?.trim() || "Walk-in / Self"}</p>
+                </div>
               </div>
               {selected.notes && (
                 <div><span className="text-muted-foreground block mb-1">Notes</span><p className="bg-muted/40 rounded p-2 text-sm">{selected.notes}</p></div>
@@ -370,7 +456,7 @@ export default function OnlineBookingsPage() {
                 </div>
               </div>
               {selected.status === "confirmed" && (
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   {selected.patientId && (
                     <Link href={`/patients/${selected.patientId}`}>
                       <Button size="sm" variant="outline"><User size={12} className="mr-1" /> Patient</Button>
@@ -381,10 +467,22 @@ export default function OnlineBookingsPage() {
                       <Button size="sm" variant="outline"><FileText size={12} className="mr-1" /> View Bill</Button>
                     </Link>
                   )}
+                  {selected.billId && (
+                    <Link href={`/billing/${selected.billId}`}>
+                      <Button size="sm" variant="outline" className="text-teal-700 border-teal-300">
+                        <Stethoscope size={12} className="mr-1" /> Edit Doctor on Bill
+                      </Button>
+                    </Link>
+                  )}
                 </div>
               )}
             </div>
-            <DialogFooter>
+            <DialogFooter className="gap-2">
+              {(selected.status === "pending_payment" || selected.status === "paid") && (
+                <Button variant="outline" onClick={() => openEdit(selected)}>
+                  <Pencil size={14} className="mr-1.5" /> Edit
+                </Button>
+              )}
               {selected.status === "paid" && (
                 <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setConfirmOpen(true)}>
                   <CheckCircle2 size={14} className="mr-1.5" /> Confirm & Issue Tokens
@@ -457,6 +555,116 @@ export default function OnlineBookingsPage() {
                 {cancelMutation.isPending ? "Cancelling…" : "Yes, Cancel Booking"}
               </Button>
               <Button variant="outline" onClick={() => setCancelOpen(false)}>Keep Booking</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Edit booking — referring doctor / contact before WhatsApp share or confirm */}
+      {selected && editOpen && (
+        <Dialog open onOpenChange={(o) => { if (!o) setEditOpen(false); }}>
+          <DialogContent className="max-w-md" data-testid="booking-edit-dialog">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil size={16} /> Edit booking {selected.bookingRef}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div>
+                <Label>Patient name</Label>
+                <Input className="mt-1" value={editName} onChange={(e) => setEditName(e.target.value)} />
+              </div>
+              <div>
+                <Label>Phone</Label>
+                <Input className="mt-1" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
+              </div>
+              <div>
+                <Label className="flex items-center gap-1"><Stethoscope size={13} /> Referring doctor</Label>
+                <div className="relative mt-1">
+                  <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Search doctor…"
+                    value={editDoctorSearch}
+                    onChange={(e) => { setEditDoctorSearch(e.target.value); setEditDoctorSearchOpen(true); }}
+                    onFocus={() => setEditDoctorSearchOpen(true)}
+                    onBlur={() => setTimeout(() => setEditDoctorSearchOpen(false), 150)}
+                    className="pl-9"
+                  />
+                  {editDoctorSearchOpen && (
+                    <div className="mt-1 border border-card-border rounded-lg bg-popover shadow-lg max-h-56 overflow-y-auto absolute z-50 w-full">
+                      <button
+                        type="button"
+                        className="w-full text-left px-3 py-2.5 hover:bg-muted/50 italic border-b border-border"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setEditDoctorId(null);
+                          setEditDoctorSearch("Walk-in / Self");
+                          setEditDoctorSearchOpen(false);
+                        }}
+                      >
+                        Walk-in / Self (no referral)
+                      </button>
+                      {doctors
+                        .filter((d) => {
+                          const q = editDoctorSearch.trim().toLowerCase();
+                          if (!q || q === "walk-in / self") return true;
+                          return d.name.toLowerCase().includes(q) || (d.specialization || "").toLowerCase().includes(q);
+                        })
+                        .slice(0, 40)
+                        .map((d) => (
+                          <button
+                            key={d.id}
+                            type="button"
+                            className="w-full text-left px-3 py-2.5 hover:bg-muted/50"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setEditDoctorId(d.id);
+                              setEditDoctorSearch(d.name);
+                              setEditDoctorSearchOpen(false);
+                            }}
+                          >
+                            <div className="font-medium">Dr. {d.name}</div>
+                            {d.specialization && (
+                              <div className="text-xs text-muted-foreground">{d.specialization}</div>
+                            )}
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Add the doctor before Share Link / Confirm so commission tracks correctly.
+                </p>
+              </div>
+              <div>
+                <Label>Notes</Label>
+                <textarea
+                  rows={2}
+                  className="mt-1 w-full px-3 py-2 text-sm border border-input rounded-md bg-background"
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+              <Button
+                type="button"
+                disabled={editMutation.isPending || editName.trim().length < 1 || editPhone.replace(/\D/g, "").length < 10}
+                onClick={() => {
+                  const doc = editDoctorId != null ? doctors.find((d) => d.id === editDoctorId) : undefined;
+                  editMutation.mutate({
+                    id: selected.id,
+                    name: editName.trim(),
+                    phone: editPhone.trim(),
+                    notes: editNotes,
+                    referringDoctorId: editDoctorId,
+                    referringDoctorName: doc?.name || "",
+                  });
+                }}
+              >
+                {editMutation.isPending ? "Saving…" : "Save"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
