@@ -20,6 +20,7 @@ import {
 } from "../lib/dailySummaryCollectible";
 import { sendStaffDayCloseEmail, type StaffDayCloseEmailResult } from "../email";
 import { clinicSettingsTable } from "@workspace/db/schema";
+import { todayIST } from "../lib/istDate";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -1597,7 +1598,51 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
     };
   }));
 
-  res.json({ users, lastOverallClose: lastOverall });
+  // All staff drawer closes for IST calendar today (including closes that
+  // happened BEFORE the latest overall day-close). The status table above
+  // only shows the current open window — without this list, earlier same-day
+  // closes disappear after overall Close Day and staff look wrongly "Open".
+  const istToday = todayIST();
+  const todayCloseRows = await db
+    .select()
+    .from(userDayClosuresTable)
+    .where(eq(userDayClosuresTable.closureDate, istToday))
+    .orderBy(desc(userDayClosuresTable.closedAt));
+
+  const todayCloses = todayCloseRows.map((c) => ({
+    id: c.id,
+    userName: c.userName,
+    closureDate: String(c.closureDate),
+    closedAt: c.closedAt,
+    coveredFromTs: c.coveredFromTs,
+    coveredToTs: c.coveredToTs,
+    drawerStatus: c.drawerStatus ?? "closed",
+    expectedCash: n(c.expectedCash),
+    actualCash: n(c.actualCash),
+    expectedDigital: n(c.expectedUpi) + n(c.expectedCard) + n(c.expectedCheque) + n(c.expectedOther),
+    actualDigital: n(c.actualUpi) + n(c.actualCard) + n(c.actualCheque) + n(c.actualOther),
+    totalExpected: n(c.totalExpected),
+    totalActual: n(c.totalActual),
+    variance: n(c.variance),
+    // true when this close belongs to a prior overall window (before lastOverall)
+    beforeCurrentWindow: lastOverall != null && c.closedAt != null && new Date(c.closedAt) <= lastOverall,
+  }));
+
+  const todayCloseCountByUser = new Map<string, number>();
+  for (const c of todayCloses) {
+    todayCloseCountByUser.set(c.userName, (todayCloseCountByUser.get(c.userName) ?? 0) + 1);
+  }
+  const usersWithTodayCounts = users.map((u) => ({
+    ...u,
+    todayCloseCount: todayCloseCountByUser.get(u.userName) ?? 0,
+  }));
+
+  res.json({
+    users: usersWithTodayCounts,
+    lastOverallClose: lastOverall,
+    todayIst: istToday,
+    todayCloses,
+  });
 });
 
 // Get full detail for a single user closure (admin), including the bills the

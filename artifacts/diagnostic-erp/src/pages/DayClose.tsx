@@ -41,8 +41,34 @@ type StaffUserStatus = {
   approvedByName: string | null;
   approvedAt: string | null;
   handoverNote: string | null;
+  /** How many drawer closes this staff has on IST today (may include prior overall windows). */
+  todayCloseCount?: number;
 };
-type StaffStatusResult = { users: StaffUserStatus[]; lastOverallClose: string | null };
+
+type TodayStaffClose = {
+  id: number;
+  userName: string;
+  closureDate: string;
+  closedAt: string | null;
+  coveredFromTs: string | null;
+  coveredToTs: string | null;
+  drawerStatus: string;
+  expectedCash: number;
+  actualCash: number;
+  expectedDigital: number;
+  actualDigital: number;
+  totalExpected: number;
+  totalActual: number;
+  variance: number;
+  beforeCurrentWindow: boolean;
+};
+
+type StaffStatusResult = {
+  users: StaffUserStatus[];
+  lastOverallClose: string | null;
+  todayIst?: string;
+  todayCloses?: TodayStaffClose[];
+};
 
 type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
 
@@ -613,6 +639,14 @@ export default function DayClose() {
                 );
               })()}
             </CardTitle>
+            <p className="text-xs text-muted-foreground font-normal mt-1.5">
+              Status is for the <span className="font-medium text-foreground">current open window</span>
+              {staffStatusQ.data.lastOverallClose
+                ? <> since {new Date(staffStatusQ.data.lastOverallClose).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</>
+                : null}
+              . After overall Day Close, staff show Open again until they close this new window.
+              Same-day closes (including earlier ones) are listed below.
+            </p>
           </CardHeader>
           {staffTableExpanded && (
             <CardContent className="min-w-0">
@@ -654,6 +688,12 @@ export default function DayClose() {
                                   : <Clock size={12} className="text-amber-600 shrink-0" />}
                                 {u.userName}
                               </div>
+                              {(u.todayCloseCount ?? 0) > 0 && (
+                                <div className="text-[10px] text-muted-foreground mt-0.5">
+                                  Closed {u.todayCloseCount}× today
+                                  {!u.isClosed ? " · earlier window(s)" : (u.todayCloseCount ?? 0) > 1 ? " (incl. earlier)" : ""}
+                                </div>
+                              )}
                               {u.handoverNote && (
                                 <div className="text-[10px] text-muted-foreground italic mt-0.5 max-w-[120px] truncate">
                                   {u.handoverNote}
@@ -755,6 +795,82 @@ export default function DayClose() {
                   <AlertTriangle size={12} />
                   Some staff have not closed their day. You can still close the overall day — their window will reset.
                 </p>
+              )}
+
+              {(staffStatusQ.data.todayCloses?.length ?? 0) > 0 && (
+                <div className="mt-5 border-t pt-4">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h4 className="text-sm font-semibold flex items-center gap-1.5">
+                      <Clock size={14} />
+                      Today&apos;s staff closes
+                      <span className="text-xs font-normal text-muted-foreground">
+                        ({staffStatusQ.data.todayIst ?? "IST"}) — every close today, including before overall Day Close
+                      </span>
+                    </h4>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {staffStatusQ.data.todayCloses!.length} close{staffStatusQ.data.todayCloses!.length === 1 ? "" : "s"}
+                    </Badge>
+                  </div>
+                  <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
+                    <table className="w-full text-sm min-w-[40rem]">
+                      <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
+                        <tr>
+                          <th className="px-3 py-2">Staff</th>
+                          <th className="px-3 py-2">Closed At</th>
+                          <th className="px-3 py-2 text-right">Cash</th>
+                          <th className="px-3 py-2 text-right">Digital</th>
+                          <th className="px-3 py-2 text-right">Total</th>
+                          <th className="px-3 py-2">Status</th>
+                          <th className="px-3 py-2">Window</th>
+                          <th className="px-3 py-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffStatusQ.data.todayCloses!.map((c) => (
+                          <tr key={c.id} className="border-b last:border-b-0">
+                            <td className="px-3 py-2 font-medium">{c.userName}</td>
+                            <td className="px-3 py-2 text-xs whitespace-nowrap">
+                              {c.closedAt
+                                ? new Date(c.closedAt).toLocaleString("en-IN", {
+                                    timeZone: "Asia/Kolkata",
+                                    day: "2-digit",
+                                    month: "short",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">{inr(c.actualCash)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{inr(c.actualDigital)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-semibold">{inr(c.totalActual)}</td>
+                            <td className="px-3 py-2"><DrawerBadge status={c.drawerStatus} /></td>
+                            <td className="px-3 py-2">
+                              {c.beforeCurrentWindow ? (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                                  Before overall close
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                                  Current window
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setStaffDetailId(c.id)}
+                              >
+                                <Eye size={12} className="mr-1" /> View
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
             </CardContent>
           )}
