@@ -1876,7 +1876,7 @@ function TestsTable({
       });
     },
     onSuccess: () => {
-      toast({ title: "Test swapped", description: "The test has been replaced and totals recalculated." });
+      toast({ title: "Test replaced", description: "The test was changed and bill totals recalculated." });
       setSwapTestOpen(false);
       setSwapTestOrderTestId(null);
       setSwapTestId("");
@@ -1884,7 +1884,7 @@ function TestsTable({
       onUpdated();
     },
     onError: (e) => {
-      toast({ title: "Failed to swap test", description: e.message, variant: "destructive" });
+      toast({ title: "Failed to change test", description: e.message, variant: "destructive" });
     },
   });
 
@@ -1898,6 +1898,16 @@ function TestsTable({
           </div>
         )}
       </div>
+
+      {!isBillCancelled && activeTests.length === 1 && (
+        <div className="mb-3 flex gap-2 items-start rounded-md bg-teal-50 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800 px-3 py-2 text-xs text-teal-800 dark:text-teal-300">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>
+            Only one test on this bill — use <strong>Change test</strong> to replace it (e.g. USG → X-Ray).
+            You cannot cancel the last test; Cancel Bill voids the whole bill.
+          </span>
+        </div>
+      )}
 
       <div className="bg-card border border-card-border rounded-xl shadow-sm overflow-hidden">
         <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
@@ -1939,20 +1949,22 @@ function TestsTable({
                   )}
                   <td className="px-4 py-3 font-mono text-xs font-bold text-primary">{ot.test?.code}</td>
                   <td className="px-4 py-3 font-medium">
-                    <div className="flex items-center gap-1 group">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span>{ot.displayName ?? ot.test?.name ?? "—"}</span>
                       {!isBillCancelled && !isCancelled && (
                         <button
-                          title="Swap test"
+                          type="button"
+                          title="Change / replace this test"
                           onClick={() => {
                             setSwapTestOrderTestId(ot.id);
                             setSwapTestId("");
                             setSwapTestReason("");
                             setSwapTestOpen(true);
                           }}
-                          className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-muted"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold text-teal-700 bg-teal-50 border border-teal-200 hover:bg-teal-100 dark:text-teal-300 dark:bg-teal-950/40 dark:border-teal-800"
+                          data-testid="change-test"
                         >
-                          <Pencil size={12} />
+                          <Pencil size={11} /> Change test
                         </button>
                       )}
                     </div>
@@ -2113,7 +2125,10 @@ function TestsTable({
             {activeTests.length <= 1 && (
               <div className="flex gap-2 items-start rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <span>This is the last active test. Use "Cancel Bill" instead to void the entire bill.</span>
+                <span>
+                  This is the only active test — you cannot remove it. To change USG → X-ray (or any other test),
+                  close this dialog and use <strong>Change test</strong> next to the test name. Use Cancel Bill only to void the entire bill.
+                </span>
               </div>
             )}
             <div>
@@ -2144,15 +2159,16 @@ function TestsTable({
         </DialogContent>
       </Dialog>
 
-      {/* Swap Test dialog */}
+      {/* Change / replace test dialog (works on single-item bills too) */}
       <Dialog open={swapTestOpen} onOpenChange={(o) => { if (!o) setSwapTestOpen(false); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Swap Test</DialogTitle>
+            <DialogTitle>Change / Replace Test</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 pt-1">
             <p className="text-sm text-muted-foreground">
-              Replace the current test with a different one from the catalog. The bill total, commission, and balance will be recalculated automatically.
+              Replace this line with another catalog test (e.g. USG Abdomen → X-Ray). Works even when the bill has only one test.
+              Bill total and balance are recalculated. Cash refunds only if the patient already paid more than the new total.
             </p>
             <div>
               <Label>New Test <span className="text-red-500">*</span></Label>
@@ -2188,7 +2204,7 @@ function TestsTable({
                 disabled={!swapTestId || !swapTestReason.trim() || !swapTestBy.trim() || swapTest.isPending}
                 onClick={() => swapTest.mutate()}
               >
-                {swapTest.isPending ? "Swapping…" : "Swap Test"}
+                {swapTest.isPending ? "Saving…" : "Replace Test"}
               </Button>
             </div>
           </div>

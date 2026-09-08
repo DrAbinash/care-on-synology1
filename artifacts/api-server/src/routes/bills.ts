@@ -3007,21 +3007,6 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
     const newTotal = billTotalFromParts(newSubtotal, newDiscount, bill.taxAmount);
     const paidAmount = Number(bill.paidAmount);
     const refundAmount = Number(bill.refundAmount || 0);
-    const newBalance = billBalanceFromParts(newTotal, paidAmount, refundAmount);
-    const newStatus = rupeesToPaise(newBalance) <= 1 && rupeesToPaise(paidAmount) > 0
-      ? "paid"
-      : rupeesToPaise(paidAmount) > 0
-        ? "partial"
-        : "pending";
-
-    await tx.update(billsTable).set({
-      subtotal: newSubtotal.toFixed(2),
-      discount: newDiscount.toFixed(2),
-      totalAmount: newTotal.toFixed(2),
-      balanceAmount: newBalance.toFixed(2),
-      status: newStatus,
-      updatedAt: new Date(),
-    }).where(eq(billsTable.id, id));
 
     // 7) Audit the swap
     await tx.insert(billAuditsTable).values({
@@ -3033,46 +3018,18 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
       newValue: `${newTest.name} (testId=${newTestId}, price=${newPrice.toFixed(2)})`,
     });
 
-    // 8) If price increased, record a payment (auto-collect extra)
+    // 8/9) Settle cash ONLY from bill over/under-payment after the new total —
+    // never from raw line priceDiff. Unpaid USG₹1500 → X-ray₹1000 must NOT
+    // invent a ₹500 cash refund; paid bills only refund excess paid > newTotal.
+    // Price increases leave balance due (no auto cash collection).
     let extraPayment: { amount: number; method: string; paymentId: number } | null = null;
-    if (rupeesToPaise(priceDiff) > 1) {
-      const method = (req.body.extraPaymentMethod as string) || "cash";
-      const [extraPaymentRow] = await tx.insert(paymentsTable).values({
-        billId: id,
-        amount: priceDiff.toFixed(2),
-        method,
-        notes: `Extra charge for test swap: ${oldTestName} → ${newTest.name}`,
-        recordedByName: performedBy,
-      }).returning();
-      extraPayment = { amount: priceDiff, method, paymentId: extraPaymentRow.id };
-      const newPaid = moneyAdd(paidAmount, priceDiff);
-      const newBalAfterPay = billBalanceFromParts(newTotal, newPaid, refundAmount);
-      const newStatAfterPay = rupeesToPaise(newBalAfterPay) <= 1 && rupeesToPaise(newPaid) > 0
-        ? "paid"
-        : rupeesToPaise(newPaid) > 0
-          ? "partial"
-          : "pending";
-      await tx.update(billsTable).set({
-        paidAmount: newPaid.toFixed(2),
-        balanceAmount: newBalAfterPay.toFixed(2),
-        status: newStatAfterPay,
-        updatedAt: new Date(),
-      }).where(eq(billsTable.id, id));
-
-      await tx.insert(billAuditsTable).values({
-        billId: id,
-        editedBy: performedBy,
-        reason: reason.trim(),
-        changeType: "extra_payment",
-        oldValue: `paid=₹${paidAmount.toFixed(2)}`,
-        newValue: `paid=₹${newPaid.toFixed(2)} (+₹${priceDiff.toFixed(2)} ${method})`,
-      });
-    }
-
-    // 9) If price decreased, record a refund
     let refundInfo: { amount: number; method: string; paymentId: number } | null = null;
-    if (rupeesToPaise(priceDiff) < -1) {
-      const refundAmt = paiseToRupees(Math.abs(rupeesToPaise(priceDiff)));
+    let nextPaid = paidAmount;
+    let nextRefund = refundAmount;
+
+    const excessPaise = rupeesToPaise(paidAmount) - rupeesToPaise(newTotal);
+    if (excessPaise > 1) {
+      const refundAmt = paiseToRupees(excessPaise);
       const method = (req.body.refundMethod as string) || "cash";
       const [refundRow] = await tx.insert(paymentsTable).values({
         billId: id,
@@ -3082,22 +3039,8 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         recordedByName: performedBy,
       }).returning();
       refundInfo = { amount: refundAmt, method, paymentId: refundRow.id };
-      const currentRefund = Number(bill.refundAmount);
-      const newRefund = moneyAdd(currentRefund, refundAmt);
-      const newPaidAfterRefund = moneyMax0(moneySub(paidAmount, refundAmt));
-      const newBalAfterRefund = billBalanceFromParts(newTotal, newPaidAfterRefund, newRefund);
-      const newStatAfterRefund = rupeesToPaise(newBalAfterRefund) <= 1 && rupeesToPaise(newPaidAfterRefund) > 0
-        ? "paid"
-        : rupeesToPaise(newPaidAfterRefund) > 0
-          ? "partial"
-          : "pending";
-      await tx.update(billsTable).set({
-        paidAmount: newPaidAfterRefund.toFixed(2),
-        refundAmount: newRefund.toFixed(2),
-        balanceAmount: newBalAfterRefund.toFixed(2),
-        status: newStatAfterRefund,
-        updatedAt: new Date(),
-      }).where(eq(billsTable.id, id));
+      nextRefund = moneyAdd(refundAmount, refundAmt);
+      nextPaid = moneyMax0(moneySub(paidAmount, refundAmt));
 
       await tx.insert(billAuditsTable).values({
         billId: id,
@@ -3105,11 +3048,42 @@ billsRouter.post("/:id/swap-test", async (req: StaffAuthRequest, res) => {
         reason: reason.trim(),
         changeType: "refund_processed",
         oldValue: `paid=₹${paidAmount.toFixed(2)}`,
-        newValue: `refund=₹${refundAmt.toFixed(2)} via ${method} (test swap)`,
+        newValue: `refund=₹${refundAmt.toFixed(2)} via ${method} (test swap excess)`,
       });
     }
 
-    return { billId: id, oldTestName, oldPrice, newTestName: newTest.name, newPrice, priceDiff, extraPayment, refundInfo };
+    const newBalance = billBalanceFromParts(newTotal, nextPaid, nextRefund);
+    const newStatus = rupeesToPaise(newBalance) <= 1 && rupeesToPaise(nextPaid) > 0
+      ? "paid"
+      : rupeesToPaise(nextPaid) > 0
+        ? "partial"
+        : "pending";
+
+    await tx.update(billsTable).set({
+      subtotal: newSubtotal.toFixed(2),
+      discount: newDiscount.toFixed(2),
+      totalAmount: newTotal.toFixed(2),
+      paidAmount: nextPaid.toFixed(2),
+      refundAmount: nextRefund.toFixed(2),
+      balanceAmount: newBalance.toFixed(2),
+      status: newStatus,
+      updatedAt: new Date(),
+    }).where(eq(billsTable.id, id));
+
+    return {
+      billId: id,
+      oldTestName,
+      oldPrice,
+      newTestName: newTest.name,
+      newPrice,
+      priceDiff,
+      extraPayment,
+      refundInfo,
+      newTotal,
+      newBalance,
+      paidAmount: nextPaid,
+      refundAmount: nextRefund,
+    };
   }).catch((err: Error & { httpStatus?: number }) => {
     if (err.httpStatus) {
       res.status(err.httpStatus).json({ error: err.message });
