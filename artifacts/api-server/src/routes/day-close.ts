@@ -1121,16 +1121,10 @@ dayCloseRouter.get("/my-preview", async (req, res) => {
   });
 });
 
-// Drawer status for My Daily Summary card — returns latest close state.
-dayCloseRouter.get("/my-drawer-status", async (req, res) => {
-  const session  = (req as StaffAuthRequest).staffSession;
-  const userName = session?.subjectName?.trim() ?? "";
-  if (!userName) { res.status(401).json({ error: "Not authenticated" }); return; }
-
-  // Get the last overall close boundary.
+// Drawer status payload for My Daily Summary (self or admin-selected staff).
+async function buildDrawerStatusPayload(userName: string) {
   const lastOverall = await lastClosureBoundary();
 
-  // Get latest user close (if any, after the last overall close).
   const [latestUserClose] = await db
     .select()
     .from(userDayClosuresTable)
@@ -1143,13 +1137,12 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
     .limit(1);
 
   if (!latestUserClose) {
-    // No close for this window — compute expected from the open window.
     const from = lastOverall;
-    const to   = new Date();
-    const s    = await summarizeUserWindow(userName, from, to);
+    const to = new Date();
+    const s = await summarizeUserWindow(userName, from, to);
     const expectedDigital = s.totals.upi + s.totals.card + s.totals.cheque + s.totals.other;
-    res.json({
-      drawerStatus: "open",
+    return {
+      drawerStatus: "open" as const,
       userName,
       coveredFromTs: from,
       coveredToTs: to,
@@ -1167,23 +1160,18 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
       handoverNote: null,
       approvedByName: null,
       approvalNote: null,
-      // Suspense/exception bucket — unrecognized payment methods, already
-      // excluded from expectedCash/expectedDigital above. LOCKED RULE #6.
       suspenseTotal: s.suspenseTotal,
       suspenseCount: s.suspenseItems.length,
-    });
-    return;
+    };
   }
 
-  // Reopened drawer — show live accumulating totals since the close boundary
-  // so My Daily Summary reflects post-reopen billing, not the frozen close row.
   if (latestUserClose.drawerStatus === "reopened") {
     const from = await userWindowBoundary(userName);
     const to = new Date();
     const s = await summarizeUserWindow(userName, from, to);
     const expectedDigital = s.totals.upi + s.totals.card + s.totals.cheque + s.totals.other;
-    res.json({
-      drawerStatus: "reopened",
+    return {
+      drawerStatus: "reopened" as const,
       userName,
       coveredFromTs: from,
       coveredToTs: to,
@@ -1208,13 +1196,12 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
       closureId: latestUserClose.id,
       suspenseTotal: s.suspenseTotal,
       suspenseCount: s.suspenseItems.length,
-    });
-    return;
+    };
   }
 
-  const exp    = n(latestUserClose.totalExpected);
-  const act    = n(latestUserClose.totalActual);
-  const v      = n(latestUserClose.variance);
+  const exp = n(latestUserClose.totalExpected);
+  const act = n(latestUserClose.totalActual);
+  const v = n(latestUserClose.variance);
   const expCash = n(latestUserClose.expectedCash);
   const actCash = n(latestUserClose.actualCash);
   const expDigital = n(latestUserClose.expectedUpi) + n(latestUserClose.expectedCard)
@@ -1222,27 +1209,42 @@ dayCloseRouter.get("/my-drawer-status", async (req, res) => {
   const actDigital = n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
     + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther);
 
-  res.json({
-    drawerStatus:     latestUserClose.drawerStatus,
+  return {
+    drawerStatus: latestUserClose.drawerStatus,
     userName,
-    coveredFromTs:    latestUserClose.coveredFromTs,
-    coveredToTs:      latestUserClose.coveredToTs,
-    expectedCash:     expCash,
-    countedCash:      actCash,
-    cashVariance:     actCash - expCash,
-    expectedDigital:  expDigital,
-    countedDigital:   actDigital,
-    digitalVariance:  actDigital - expDigital,
-    expectedTotal:    exp,
-    actualTotal:      act,
-    totalVariance:    v,
-    closedAt:         latestUserClose.closedAt,
-    closedBy:         latestUserClose.userName,
-    handoverNote:     latestUserClose.notes || null,
-    approvedByName:   latestUserClose.approvedByName ?? null,
-    approvalNote:     latestUserClose.approvalNote ?? null,
-    closureId:        latestUserClose.id,
-  });
+    coveredFromTs: latestUserClose.coveredFromTs,
+    coveredToTs: latestUserClose.coveredToTs,
+    expectedCash: expCash,
+    countedCash: actCash,
+    cashVariance: actCash - expCash,
+    expectedDigital: expDigital,
+    countedDigital: actDigital,
+    digitalVariance: actDigital - expDigital,
+    expectedTotal: exp,
+    actualTotal: act,
+    totalVariance: v,
+    closedAt: latestUserClose.closedAt,
+    closedBy: latestUserClose.userName,
+    handoverNote: latestUserClose.notes || null,
+    approvedByName: latestUserClose.approvedByName ?? null,
+    approvalNote: latestUserClose.approvalNote ?? null,
+    closureId: latestUserClose.id,
+  };
+}
+
+// Drawer status for My Daily Summary card — returns latest close state.
+dayCloseRouter.get("/my-drawer-status", async (req, res) => {
+  const session = (req as StaffAuthRequest).staffSession;
+  const userName = session?.subjectName?.trim() ?? "";
+  if (!userName) { res.status(401).json({ error: "Not authenticated" }); return; }
+  res.json(await buildDrawerStatusPayload(userName));
+});
+
+// Admin: same drawer status shape for a selected staff member (My Daily Summary filter).
+dayCloseRouter.get("/staff-drawer-status/:userName", requireOwnerOrAdmin, async (req, res) => {
+  const userName = decodeURIComponent(String(req.params.userName || "")).trim();
+  if (!userName) { res.status(400).json({ error: "userName is required" }); return; }
+  res.json(await buildDrawerStatusPayload(userName));
 });
 
 // List: current user's past closures.

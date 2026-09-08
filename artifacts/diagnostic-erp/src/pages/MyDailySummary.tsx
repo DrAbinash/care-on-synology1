@@ -370,11 +370,20 @@ const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
 
 // ─── Drawer Status Card ───────────────────────────────────────────────────────
 
-function DrawerStatusCard({ status, isOwner }: { status: DrawerStatus; isOwner: boolean }) {
+function DrawerStatusCard({
+  status,
+  isOwner,
+  staffLabel,
+}: {
+  status: DrawerStatus;
+  isOwner: boolean;
+  staffLabel?: string | null;
+}) {
   const cfg = DRAWER_STATUS_CONFIG[status.drawerStatus] ?? DRAWER_STATUS_CONFIG.open;
   const StatusIcon = cfg.icon;
   const isClosed = status.drawerStatus !== "open" && status.drawerStatus !== "reopened";
   const hasMismatch = status.drawerStatus === "mismatch";
+  const whose = staffLabel?.trim() || status.userName || "My";
 
   function VarCell({ label, expected, counted, variance }: {
     label: string; expected: number; counted: number | null; variance: number | null;
@@ -417,8 +426,10 @@ function DrawerStatusCard({ status, isOwner }: { status: DrawerStatus; isOwner: 
         <div className="flex items-center gap-2">
           <StatusIcon size={16} className="text-white" />
           <div>
-            <h3 className="text-sm font-extrabold text-white">My Drawer Close Status</h3>
-            <p className="text-[11px] text-white/80">Shift reconciliation snapshot</p>
+            <h3 className="text-sm font-extrabold text-white">{whose} Drawer Close Status</h3>
+            <p className="text-[11px] text-white/80">
+              Shift window snapshot — not the calendar-day cash total above
+            </p>
           </div>
         </div>
         <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${cfg.badgeBg} ${cfg.badgeText}`}>
@@ -438,6 +449,12 @@ function DrawerStatusCard({ status, isOwner }: { status: DrawerStatus; isOwner: 
 
       {/* Body */}
       <div className="p-4 space-y-3">
+        <div className="text-[11px] text-muted-foreground bg-muted/30 rounded-md px-2.5 py-1.5 border border-border/60">
+          Covered: <span className="font-medium text-foreground">{fmtIst(status.coveredFromTs)}</span>
+          {" → "}
+          <span className="font-medium text-foreground">{fmtIst(status.coveredToTs)}</span>
+          {status.closedAt ? <> · Closed {fmtIst(status.closedAt)}</> : null}
+        </div>
         {/* Cash + Digital breakdown */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-gray-50 dark:bg-muted/20 rounded-lg border border-gray-100 dark:border-card-border">
           <VarCell
@@ -1484,7 +1501,7 @@ function UnifiedReconciliationPanel({
           <span className="text-[13px] font-bold text-gray-900 dark:text-foreground">
             Expected Physical Cash in Counter
             <span className="block text-[10px] font-normal text-gray-500 dark:text-gray-400 mt-0.5">
-              = Cash In − Cash Refunds − Cash Expenses
+              Calendar day (IST) · Cash In − Cash Refunds − Cash Expenses — not the shift drawer total below
             </span>
           </span>
           <div className="text-right shrink-0">
@@ -2081,10 +2098,19 @@ export default function MyDailySummary() {
     }
   }, [isSuperAdmin, staffFilter, data]);
 
-  // Drawer status — always fetches for the current logged-in user, not filtered staff.
+  // Drawer status — when a super-admin filters to a staff member, fetch THAT
+  // staff's drawer (same pattern as post-closure). Previously always hit
+  // /my-drawer-status for the logged-in admin, so Vijay's calendar-day KPIs
+  // sat above Abinash's frozen drawer snapshot and looked like a shortage.
+  const drawerStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : null;
   const drawerQ = useQuery<DrawerStatus>({
-    queryKey: ["my-drawer-status"],
-    queryFn: () => api.get<DrawerStatus>("/api/day-close/my-drawer-status"),
+    queryKey: ["drawer-status", drawerStaffName ?? "self"],
+    queryFn: () =>
+      drawerStaffName
+        ? api.get<DrawerStatus>(`/api/day-close/staff-drawer-status/${encodeURIComponent(drawerStaffName)}`)
+        : api.get<DrawerStatus>("/api/day-close/my-drawer-status"),
+    // Super-admin "All Staff" has no single drawer — skip the card there.
+    enabled: !isSuperAdmin || !!staffFilter.trim(),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2796,7 +2822,13 @@ export default function MyDailySummary() {
           />
 
           {/* ── Drawer Close Status Card ── */}
-          {drawerQ.data && <DrawerStatusCard status={drawerQ.data} isOwner={isOwner} />}
+          {drawerQ.data && (
+            <DrawerStatusCard
+              status={drawerQ.data}
+              isOwner={isOwner}
+              staffLabel={drawerStaffName}
+            />
+          )}
 
           {/* ── Post-Closure Activity Box ── */}
           {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}

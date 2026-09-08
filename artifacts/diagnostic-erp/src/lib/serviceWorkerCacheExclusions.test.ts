@@ -105,6 +105,8 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
       "/api/day-close/my-drawer-status",
       "/api/day-close/my-list",
       "/api/day-close/my-post-closure-activity",
+      "/api/day-close/staff-drawer-status/Vijay%20Yadav",
+      "/api/day-close/staff-post-closure-activity/Vijay%20Yadav",
       "/api/dashboard/my-daily-summary",
       "/api/radiology/user-item-usage",
       "/api/dicom-workflow/radiologist-queue",
