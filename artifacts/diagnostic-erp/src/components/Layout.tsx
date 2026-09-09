@@ -130,6 +130,11 @@ import {
   openSuperAdminPortal,
 } from "@/lib/usbKey";
 import { SIDEBAR_THEMES, DEFAULT_THEME, resolveTheme } from "@/lib/sidebarThemes";
+import {
+  capturePreFocusCollapsed,
+  isReportingWorkspaceLocation,
+  shouldRestoreSidebarAfterFocus,
+} from "@/lib/reportingWorkspaceSidebarFocus";
 
 type NavLeaf = { path: string; icon: typeof Zap; label: string; ownerOnly?: boolean; staffOnly?: boolean; featureFlag?: string };
 // A subgroup nests one level inside a top-level NavGroup (e.g. "USG Reporting ▼"
@@ -399,43 +404,65 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }, [isMobile, sidebarOpen]);
 
   // The Radiology Reporting Workspace requests this app sidebar be minimised
-  // while the radiologist is working inside the embedded DICOM viewer, so the
-  // images get maximum room. It emits `care:viewer-focus` (detail: boolean) —
-  // a decoupled event so the workspace never reaches into this component's
-  // state. We remember the sidebar state from BEFORE viewer-focus so exiting
-  // restores exactly what the user had (a manual collapse is preserved), and
-  // never leave it stuck collapsed once the workspace unmounts.
-  const preViewerFocusCollapsed = useRef<boolean | null>(null);
-  const preWorkspaceFocusCollapsed = useRef<boolean | null>(null);
+  // while the radiologist is working. It emits `care:viewer-focus` and
+  // `care:workspace-focus` (detail: boolean) — decoupled events so the
+  // workspace never reaches into this component's state.
+  //
+  // Both events often fire on entry (default split layout). Capture ONE
+  // pre-collapse snapshot for the whole focus session; a second capture would
+  // record "already collapsed" and restore that when leaving → sidebar stuck
+  // collapsed on Settings / other pages.
+  const preFocusCollapsed = useRef<boolean | null>(null);
+  const viewerFocusOn = useRef(false);
+  const workspaceFocusOn = useRef(false);
   // Reporting workspace emits care:workspace-focus — hide the empty desktop
   // top strip (Search / fullscreen / theme) so report writing gets that row back.
   const [workspaceFocusActive, setWorkspaceFocusActive] = useState(false);
   useEffect(() => {
+    const restoreIfIdle = () => {
+      if (
+        !shouldRestoreSidebarAfterFocus(
+          { viewer: viewerFocusOn.current, workspace: workspaceFocusOn.current },
+          preFocusCollapsed.current,
+        )
+      ) {
+        return;
+      }
+      const restore = preFocusCollapsed.current!;
+      preFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    };
     const onViewerFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
+      viewerFocusOn.current = on;
       if (on) {
         setSidebarCollapsed((cur) => {
-          if (preViewerFocusCollapsed.current === null) preViewerFocusCollapsed.current = cur;
+          preFocusCollapsed.current = capturePreFocusCollapsed(
+            preFocusCollapsed.current,
+            cur,
+            true,
+          );
           return true;
         });
-      } else if (preViewerFocusCollapsed.current !== null) {
-        const restore = preViewerFocusCollapsed.current;
-        preViewerFocusCollapsed.current = null;
-        setSidebarCollapsed(restore);
+      } else {
+        restoreIfIdle();
       }
     };
     const onWorkspaceFocus = (e: Event) => {
       const on = Boolean((e as CustomEvent).detail);
+      workspaceFocusOn.current = on;
       setWorkspaceFocusActive(on);
       if (on) {
         setSidebarCollapsed((cur) => {
-          if (preWorkspaceFocusCollapsed.current === null) preWorkspaceFocusCollapsed.current = cur;
+          preFocusCollapsed.current = capturePreFocusCollapsed(
+            preFocusCollapsed.current,
+            cur,
+            true,
+          );
           return true;
         });
-      } else if (preWorkspaceFocusCollapsed.current !== null) {
-        const restore = preWorkspaceFocusCollapsed.current;
-        preWorkspaceFocusCollapsed.current = null;
-        setSidebarCollapsed(restore);
+      } else {
+        restoreIfIdle();
       }
     };
     window.addEventListener("care:viewer-focus", onViewerFocus);
@@ -446,22 +473,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // When leaving Reporting Workspace, clear workspace/viewer focus collapse so
-  // the app sidebar does not stay stuck collapsed on the next page.
+  // When leaving Reporting Workspace, clear focus collapse so the app sidebar
+  // does not stay stuck collapsed on Settings / other pages. Match every route
+  // that mounts the reporting workspace (canonical /report/:id included).
   useEffect(() => {
-    const onReporting = /\/radiology\/reporting-workspace/.test(location);
-    if (onReporting) return;
-    if (preWorkspaceFocusCollapsed.current !== null) {
-      const restore = preWorkspaceFocusCollapsed.current;
-      preWorkspaceFocusCollapsed.current = null;
-      setSidebarCollapsed(restore);
-    }
-    if (preViewerFocusCollapsed.current !== null) {
-      const restore = preViewerFocusCollapsed.current;
-      preViewerFocusCollapsed.current = null;
-      setSidebarCollapsed(restore);
-    }
+    if (isReportingWorkspaceLocation(location)) return;
+    viewerFocusOn.current = false;
+    workspaceFocusOn.current = false;
     setWorkspaceFocusActive(false);
+    if (preFocusCollapsed.current !== null) {
+      const restore = preFocusCollapsed.current;
+      preFocusCollapsed.current = null;
+      setSidebarCollapsed(restore);
+    }
   }, [location]);
 
   // Pass the login-time DB value so the hook seeds localStorage on a fresh device.
