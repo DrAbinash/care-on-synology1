@@ -16,6 +16,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
+import {
+  filterSwapCatalogTests,
+  formatSwapCatalogLabel,
+  type SwapCatalogTest,
+} from "@/lib/swapTestCatalog";
 import { useForm } from "react-hook-form";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import { getStoredUsbKey, onUsbKeyChange } from "@/lib/usbKey";
@@ -1840,10 +1845,30 @@ function TestsTable({
   const [swapTestOpen, setSwapTestOpen] = useState(false);
   const [swapTestOrderTestId, setSwapTestOrderTestId] = useState<number | null>(null);
   const [swapTestId, setSwapTestId] = useState<string>("");
+  const [swapTestSearch, setSwapTestSearch] = useState("");
   const [swapTestReason, setSwapTestReason] = useState("");
   const [swapTestBy, setSwapTestBy] = useState<string>(() => readStaffSession()?.user.name || "");
 
-  const { data: testsData } = useListTests({});
+  // Full catalog (API returns every diagnostic_tests row; no hard-coded subset).
+  const { data: testsData, isLoading: testsLoading } = useListTests({});
+  const currentSwapCatalogTestId = useMemo(() => {
+    if (swapTestOrderTestId == null) return null;
+    return tests.find((ot) => ot.id === swapTestOrderTestId)?.testId ?? null;
+  }, [swapTestOrderTestId, tests]);
+  const swapCatalogOptions = useMemo(
+    () =>
+      filterSwapCatalogTests((testsData?.tests ?? []) as SwapCatalogTest[], {
+        search: swapTestSearch,
+        excludeTestId: currentSwapCatalogTestId,
+      }),
+    [testsData?.tests, swapTestSearch, currentSwapCatalogTestId],
+  );
+  const selectedSwapCatalogTest = useMemo(
+    () =>
+      ((testsData?.tests ?? []) as SwapCatalogTest[]).find((t) => String(t.id) === swapTestId) ??
+      null,
+    [testsData?.tests, swapTestId],
+  );
 
   const cancelSingle = useMutation<unknown, Error, void>({
     mutationFn: async () => {
@@ -1880,6 +1905,7 @@ function TestsTable({
       setSwapTestOpen(false);
       setSwapTestOrderTestId(null);
       setSwapTestId("");
+      setSwapTestSearch("");
       setSwapTestReason("");
       onUpdated();
     },
@@ -1958,6 +1984,7 @@ function TestsTable({
                           onClick={() => {
                             setSwapTestOrderTestId(ot.id);
                             setSwapTestId("");
+                            setSwapTestSearch("");
                             setSwapTestReason("");
                             setSwapTestOpen(true);
                           }}
@@ -2160,7 +2187,15 @@ function TestsTable({
       </Dialog>
 
       {/* Change / replace test dialog (works on single-item bills too) */}
-      <Dialog open={swapTestOpen} onOpenChange={(o) => { if (!o) setSwapTestOpen(false); }}>
+      <Dialog
+        open={swapTestOpen}
+        onOpenChange={(o) => {
+          if (!o) {
+            setSwapTestOpen(false);
+            setSwapTestSearch("");
+          }
+        }}
+      >
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Change / Replace Test</DialogTitle>
@@ -2172,18 +2207,86 @@ function TestsTable({
             </p>
             <div>
               <Label>New Test <span className="text-red-500">*</span></Label>
-              <Select value={swapTestId} onValueChange={setSwapTestId}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select a test from catalog" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(testsData?.tests ?? []).filter((t: { isActive?: boolean }) => t.isActive !== false).map((t: { id: number; name: string; code?: string | null; price?: number | string | null }) => (
-                    <SelectItem key={t.id} value={String(t.id)}>
-                      {t.name} {t.code ? `(${t.code})` : ""} — ₹{Number(t.price ?? 0).toFixed(2)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <p className="text-xs text-muted-foreground mt-0.5 mb-1.5">
+                Search the full active catalog by name or code — not a fixed short list.
+              </p>
+              {selectedSwapCatalogTest && (
+                <div
+                  className="mb-2 flex items-center justify-between gap-2 rounded-md border border-teal-200 bg-teal-50/80 px-2.5 py-1.5 text-xs dark:border-teal-800 dark:bg-teal-950/40"
+                  data-testid="swap-test-selected"
+                >
+                  <span className="font-medium text-teal-900 dark:text-teal-200 truncate">
+                    {formatSwapCatalogLabel(selectedSwapCatalogTest)}
+                  </span>
+                  <button
+                    type="button"
+                    className="shrink-0 text-teal-700 hover:text-teal-900 dark:text-teal-300"
+                    onClick={() => setSwapTestId("")}
+                    aria-label="Clear selected test"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+              <div className="relative">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                <Input
+                  className="pl-8"
+                  value={swapTestSearch}
+                  onChange={(e) => setSwapTestSearch(e.target.value)}
+                  placeholder="Search all tests by name or code…"
+                  data-testid="swap-test-search"
+                  autoFocus
+                />
+              </div>
+              <div
+                className="mt-1.5 max-h-56 overflow-y-auto border border-border rounded-lg divide-y divide-border/60"
+                data-testid="swap-test-catalog-list"
+              >
+                {testsLoading ? (
+                  <div className="px-3 py-4 text-sm text-muted-foreground animate-pulse">Loading catalog…</div>
+                ) : swapCatalogOptions.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-muted-foreground text-center">
+                    {swapTestSearch.trim()
+                      ? "No tests match that search"
+                      : "No active tests in catalog"}
+                  </div>
+                ) : (
+                  swapCatalogOptions.map((t) => {
+                    const selected = swapTestId === String(t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        data-testid="swap-test-option"
+                        data-test-id={t.id}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                          selected
+                            ? "bg-teal-50 text-teal-900 dark:bg-teal-950/50 dark:text-teal-200"
+                            : "hover:bg-muted/60"
+                        }`}
+                        onClick={() => {
+                          setSwapTestId(String(t.id));
+                          setSwapTestSearch("");
+                        }}
+                      >
+                        <div className="font-medium truncate">{t.name}</div>
+                        <div className="text-[11px] text-muted-foreground flex items-center justify-between gap-2">
+                          <span className="font-mono truncate">{t.code || "—"}{t.category ? ` · ${t.category}` : ""}</span>
+                          <span className="shrink-0 font-semibold tabular-nums">₹{Number(t.price ?? 0).toFixed(2)}</span>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              {!testsLoading && (
+                <p className="mt-1 text-[11px] text-muted-foreground" data-testid="swap-test-catalog-count">
+                  Showing {swapCatalogOptions.length} of{" "}
+                  {((testsData?.tests ?? []) as SwapCatalogTest[]).filter((t) => t.isActive !== false).length} active tests
+                  {swapTestSearch.trim() ? " (filtered)" : ""}
+                </p>
+              )}
             </div>
             <div>
               <Label>Reason <span className="text-red-500">*</span></Label>
@@ -2203,6 +2306,7 @@ function TestsTable({
               <Button
                 disabled={!swapTestId || !swapTestReason.trim() || !swapTestBy.trim() || swapTest.isPending}
                 onClick={() => swapTest.mutate()}
+                data-testid="swap-test-submit"
               >
                 {swapTest.isPending ? "Saving…" : "Replace Test"}
               </Button>
