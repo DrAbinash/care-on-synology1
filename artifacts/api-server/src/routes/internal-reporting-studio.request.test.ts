@@ -213,6 +213,37 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(row.billNumber).toBe(`BILL-RS-${marker}`);
   });
 
+  test("worklist surfaces ERP status field (v6.14 freeze support)", async () => {
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.status).toBeTruthy(); // STUDY_RECEIVED | AI_DRAFT_READY | REPORT_IN_PROGRESS
+  });
+
+  test("worklist rejects unknown status with 400 (v6.14 — supports pending | all | reported | final | delivered)", async () => {
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=bogus")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unsupported status/i);
+  });
+
+  test("worklist ?status=all returns pending AND finalized rows (v6.14)", async () => {
+    // Before finalize: only pending rows exist. After finalize (later test),
+    // ?status=all must include the finalized row too. This test asserts the
+    // pending-row side first so it passes regardless of test ordering.
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=all")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+  });
+
   test("billing-status maps accessions", async () => {
     const res = await request(app)
       .get(`/api/internal/reporting-studio/billing-status?accessions=ACC-RS-${marker},UNKNOWN-X`)

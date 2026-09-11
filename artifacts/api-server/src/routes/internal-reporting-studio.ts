@@ -166,12 +166,26 @@ router.get("/worklist", async (req, res) => {
     const sinceDate = sinceRaw ? new Date(sinceRaw) : null;
     const sinceValid = sinceDate && !Number.isNaN(sinceDate.getTime()) ? sinceDate : null;
 
-    if (statusFilter !== "pending") {
-      res.status(400).json({ error: "Only status=pending is supported" });
+    // v6.14: ?status=all returns the full day's record (pending + final)
+    // so the studio can do billing follow-up without flipping tabs.
+    // ?status=pending (default) keeps the legacy behaviour.
+    // ?status=reported/final/delivered filters to those specific statuses.
+    const SUPPORTED = new Set(["pending", "all", "reported", "final", "delivered"]);
+    if (!SUPPORTED.has(statusFilter)) {
+      res.status(400).json({ error: `Unsupported status '${statusFilter}'. Supported: pending | all | reported | final | delivered` });
       return;
     }
 
-    const conds = [inArray(radiologyWorklistTable.status, [...PENDING_STATUSES])];
+    // Map the filter to the worklist status enum values.
+    // PENDING_STATUSES covers the "waiting to be reported" bucket.
+    // FINAL_STATUSES covers "REPORT_FINAL" and "DELIVERED".
+    const statusValues: string[] =
+      statusFilter === "pending" ? [...PENDING_STATUSES]
+      : statusFilter === "reported" || statusFilter === "final" ? ["REPORT_FINAL"]
+      : statusFilter === "delivered" ? ["DELIVERED"]
+      : [...PENDING_STATUSES, "REPORT_FINAL", "DELIVERED"]; // all
+
+    const conds = [inArray(radiologyWorklistTable.status, statusValues)];
     if (sinceValid) {
       conds.push(gte(radiologyWorklistTable.updatedAt, sinceValid));
     }
@@ -196,6 +210,9 @@ router.get("/worklist", async (req, res) => {
         billId: radiologyStudiesTable.billId,
         billNumber: billsTable.billNumber,
         billedTestName: testsTable.name,
+        // v6.14: include worklist status so the studio can freeze REPORTED
+        // rows (don't overwrite finalized reports on re-sync).
+        status: radiologyWorklistTable.status,
       })
       .from(radiologyWorklistTable)
       .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
@@ -216,6 +233,10 @@ router.get("/worklist", async (req, res) => {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
         patientName: r.patientName,
+        // v6.14: surface the ERP worklist status so the studio can freeze
+        // REPORTED rows (don't overwrite a finalized report) and skip
+        // DELIVERED rows from billing follow-up.
+        status: r.status,
         // USG Studio v6 bridge extension — additive, optional for callers:
         // bill-desk demographics so Form F and the patient header never need
         // retyping. Studios built against PR #639 ignore unknown keys.
