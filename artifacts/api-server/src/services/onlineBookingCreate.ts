@@ -106,7 +106,7 @@ async function loadSettings() {
   return row ?? null;
 }
 
-async function modalitiesForSelection(testIds: number[], packageIds: number[]): Promise<Set<string>> {
+export async function modalitiesForSelection(testIds: number[], packageIds: number[]): Promise<Set<string>> {
   const resolved = [...testIds];
   if (packageIds.length > 0) {
     const pkgTests = await db
