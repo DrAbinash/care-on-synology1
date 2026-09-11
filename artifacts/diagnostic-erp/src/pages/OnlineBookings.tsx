@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -21,6 +21,20 @@ import { Link } from "wouter";
 import { NewOnlineBookingDialog } from "./NewOnlineBookingDialog";
 import { copyTextRobust } from "@/lib/copyTextRobust";
 import { Label } from "@/components/ui/label";
+
+type CatalogTest = { id: number; code: string; name: string; category: string; price: string };
+type CatalogPkg = { id: number; code: string; name: string; price: string };
+
+function parseBookingIdList(raw: string | null | undefined): number[] {
+  try {
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 function bookingWhatsAppPaymentUrl(phone: string, bookingRef: string, paymentUrl: string) {
   const digits = phone.replace(/\D/g, "");
@@ -105,6 +119,9 @@ export default function OnlineBookingsPage() {
   const [editDoctorId, setEditDoctorId] = useState<number | null>(null);
   const [editDoctorSearch, setEditDoctorSearch] = useState("");
   const [editDoctorSearchOpen, setEditDoctorSearchOpen] = useState(false);
+  const [editTestIds, setEditTestIds] = useState<Set<number>>(new Set());
+  const [editPkgIds, setEditPkgIds] = useState<Set<number>>(new Set());
+  const [editTestQuery, setEditTestQuery] = useState("");
 
   async function createAndShowPaymentShare(booking: {
     id: number;
@@ -149,6 +166,15 @@ export default function OnlineBookingsPage() {
   });
   const doctors = doctorsPayload?.doctors ?? [];
 
+  const { data: catalog } = useQuery<{ tests: CatalogTest[]; packages: CatalogPkg[] }>({
+    queryKey: ["online-bookings-catalog"],
+    queryFn: () => api.get("/api/online-bookings/catalog"),
+    enabled: editOpen || !!selected,
+    staleTime: 60_000,
+  });
+  const catalogTests = catalog?.tests ?? [];
+  const catalogPkgs = catalog?.packages ?? [];
+
   const bookings = data?.bookings ?? [];
 
   function openEdit(b: OnlineBooking) {
@@ -159,8 +185,46 @@ export default function OnlineBookingsPage() {
     setEditDoctorId(b.referringDoctorId ?? null);
     setEditDoctorSearch(b.referringDoctorName || (b.referringDoctorId ? "" : "Walk-in / Self"));
     setEditDoctorSearchOpen(false);
+    setEditTestIds(new Set(parseBookingIdList(b.testIds)));
+    setEditPkgIds(new Set(parseBookingIdList(b.packageIds)));
+    setEditTestQuery("");
     setEditOpen(true);
   }
+
+  const canEditTests = selected?.status === "pending_payment";
+
+  const editFilteredTests = useMemo(() => {
+    const q = editTestQuery.trim().toLowerCase();
+    if (!q) return catalogTests;
+    return catalogTests.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.code.toLowerCase().includes(q) ||
+        t.category.toLowerCase().includes(q),
+    );
+  }, [catalogTests, editTestQuery]);
+
+  const editTotal = useMemo(() => {
+    const t = catalogTests.filter((x) => editTestIds.has(x.id)).reduce((s, x) => s + Number(x.price), 0);
+    const p = catalogPkgs.filter((x) => editPkgIds.has(x.id)).reduce((s, x) => s + Number(x.price), 0);
+    return t + p;
+  }, [catalogTests, catalogPkgs, editTestIds, editPkgIds]);
+
+  const selectedInvestigations = useMemo(() => {
+    if (!selected) return [] as string[];
+    const testIds = parseBookingIdList(selected.testIds);
+    const pkgIds = parseBookingIdList(selected.packageIds);
+    const names: string[] = [];
+    for (const id of testIds) {
+      const t = catalogTests.find((x) => x.id === id);
+      names.push(t ? t.name : `Test #${id}`);
+    }
+    for (const id of pkgIds) {
+      const p = catalogPkgs.find((x) => x.id === id);
+      names.push(p ? `Package · ${p.name}` : `Package #${id}`);
+    }
+    return names;
+  }, [selected, catalogTests, catalogPkgs]);
 
   const editMutation = useMutation({
     mutationFn: (payload: {
@@ -170,23 +234,31 @@ export default function OnlineBookingsPage() {
       notes: string;
       referringDoctorId: number | null;
       referringDoctorName: string;
-    }) =>
-      api.patch<OnlineBooking>(`/api/online-bookings/${payload.id}`, {
+      testIds?: number[];
+      packageIds?: number[];
+    }) => {
+      const body: Record<string, unknown> = {
         name: payload.name,
         phone: payload.phone,
         notes: payload.notes,
         referringDoctorId: payload.referringDoctorId,
         referringDoctorName: payload.referringDoctorName,
-      }),
+      };
+      if (payload.testIds && payload.packageIds) {
+        body.testIds = payload.testIds;
+        body.packageIds = payload.packageIds;
+      }
+      return api.patch<OnlineBooking>(`/api/online-bookings/${payload.id}`, body);
+    },
     onSuccess: (updated) => {
       qc.invalidateQueries({ queryKey: ["online-bookings"] });
       setSelected(updated);
       setEditOpen(false);
       toast({
         title: "Booking updated",
-        description: updated.referringDoctorName
-          ? `Referring doctor: ${updated.referringDoctorName}`
-          : "Referring doctor cleared (walk-in / self).",
+        description: `₹${Number(updated.totalAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })} · ${
+          updated.referringDoctorName?.trim() || "Walk-in / Self"
+        }`,
       });
     },
     onError: (e: Error) => toast({ title: "Could not update", description: e.message, variant: "destructive" }),
@@ -444,6 +516,18 @@ export default function OnlineBookingsPage() {
                   <span className="text-muted-foreground">Referring doctor</span>
                   <p className="font-medium">{selected.referringDoctorName?.trim() || "Walk-in / Self"}</p>
                 </div>
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Investigations</span>
+                  {selectedInvestigations.length > 0 ? (
+                    <ul className="mt-1 space-y-0.5">
+                      {selectedInvestigations.map((name) => (
+                        <li key={name} className="font-medium">{name}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="font-medium text-muted-foreground">None listed</p>
+                  )}
+                </div>
               </div>
               {selected.notes && (
                 <div><span className="text-muted-foreground block mb-1">Notes</span><p className="bg-muted/40 rounded p-2 text-sm">{selected.notes}</p></div>
@@ -560,10 +644,10 @@ export default function OnlineBookingsPage() {
         </Dialog>
       )}
 
-      {/* Edit booking — referring doctor / contact before WhatsApp share or confirm */}
+      {/* Edit booking — contact, doctor, notes, and investigations (pending payment) */}
       {selected && editOpen && (
         <Dialog open onOpenChange={(o) => { if (!o) setEditOpen(false); }}>
-          <DialogContent className="max-w-md" data-testid="booking-edit-dialog">
+          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" data-testid="booking-edit-dialog">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Pencil size={16} /> Edit booking {selected.bookingRef}
@@ -637,6 +721,83 @@ export default function OnlineBookingsPage() {
                 </p>
               </div>
               <div>
+                <Label>Investigations</Label>
+                {canEditTests ? (
+                  <>
+                    <Input
+                      className="mt-1 mb-2"
+                      placeholder="Search tests…"
+                      value={editTestQuery}
+                      onChange={(e) => setEditTestQuery(e.target.value)}
+                      data-testid="booking-edit-test-search"
+                    />
+                    <div
+                      className="border rounded-lg max-h-44 overflow-y-auto divide-y"
+                      data-testid="booking-edit-investigations"
+                    >
+                      {editFilteredTests.map((t) => (
+                        <label key={t.id} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-muted/30">
+                          <input
+                            type="checkbox"
+                            checked={editTestIds.has(t.id)}
+                            onChange={() => {
+                              setEditTestIds((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(t.id)) n.delete(t.id);
+                                else n.add(t.id);
+                                return n;
+                              });
+                            }}
+                          />
+                          <span className="flex-1 truncate">{t.name}</span>
+                          <span className="text-xs text-muted-foreground">₹{Number(t.price).toLocaleString("en-IN")}</span>
+                        </label>
+                      ))}
+                      {catalogPkgs.map((p) => (
+                        <label key={`pkg-${p.id}`} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-muted/30">
+                          <input
+                            type="checkbox"
+                            checked={editPkgIds.has(p.id)}
+                            onChange={() => {
+                              setEditPkgIds((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(p.id)) n.delete(p.id);
+                                else n.add(p.id);
+                                return n;
+                              });
+                            }}
+                          />
+                          <span className="flex-1 truncate">Package · {p.name}</span>
+                          <span className="text-xs text-muted-foreground">₹{Number(p.price).toLocaleString("en-IN")}</span>
+                        </label>
+                      ))}
+                      {catalogTests.length === 0 && catalogPkgs.length === 0 && (
+                        <p className="px-3 py-2 text-muted-foreground">
+                          No online-booking catalogue configured. Add tests in Settings → Online Booking.
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1.5 flex justify-between">
+                      <span>{editTestIds.size + editPkgIds.size} selected</span>
+                      <span className="font-semibold text-foreground">
+                        Total ₹{editTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </span>
+                    </p>
+                  </>
+                ) : (
+                  <div className="mt-1 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    Payment already received — investigations are locked. Cancel and rebook to change tests, or adjust at Billing Desk after confirm.
+                    {selectedInvestigations.length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5 text-foreground font-medium">
+                        {selectedInvestigations.map((name) => (
+                          <li key={name}>{name}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div>
                 <Label>Notes</Label>
                 <textarea
                   rows={2}
@@ -650,7 +811,12 @@ export default function OnlineBookingsPage() {
               <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
               <Button
                 type="button"
-                disabled={editMutation.isPending || editName.trim().length < 1 || editPhone.replace(/\D/g, "").length < 10}
+                disabled={
+                  editMutation.isPending ||
+                  editName.trim().length < 1 ||
+                  editPhone.replace(/\D/g, "").length < 10 ||
+                  (canEditTests && editTestIds.size + editPkgIds.size === 0)
+                }
                 onClick={() => {
                   const doc = editDoctorId != null ? doctors.find((d) => d.id === editDoctorId) : undefined;
                   editMutation.mutate({
@@ -660,6 +826,9 @@ export default function OnlineBookingsPage() {
                     notes: editNotes,
                     referringDoctorId: editDoctorId,
                     referringDoctorName: doc?.name || "",
+                    ...(canEditTests
+                      ? { testIds: [...editTestIds], packageIds: [...editPkgIds] }
+                      : {}),
                   });
                 }}
               >

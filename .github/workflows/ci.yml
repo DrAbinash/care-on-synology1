@@ -37,6 +37,9 @@ jobs:
       - name: Architecture grounding (docs match code)
         run: node scripts/grounding-check.cjs
       - name: Workspace typecheck
+        # api-server tsc occasionally OOMs on the default ~2GB heap on ubuntu-latest.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck
 
   # ── Full test suite + clean-boot proof against a real Postgres ──────────────

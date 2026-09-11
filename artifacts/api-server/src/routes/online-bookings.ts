@@ -26,11 +26,20 @@ import {
   computeCatalogAmount,
   createPendingOnlineBooking,
   getSlotAvailability,
+  modalitiesForSelection,
   OnlineBookingError,
   parseIdList,
 } from "../services/onlineBookingCreate";
-import { BOOKING_SOURCES, parseBookingTimeSlots } from "../services/onlineBookingSlots";
+import { BOOKING_SOURCES, findSlotConfig, parseBookingTimeSlots } from "../services/onlineBookingSlots";
 import { canConfirmOnlineBooking, rupeesToPaise } from "../lib/financialIntegrity";
+
+function normalizeInvestigationIdArray(raw: unknown): number[] | null {
+  if (!Array.isArray(raw)) return null;
+  const ids = raw
+    .map((v) => Number(v))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return [...new Set(ids)];
+}
 
 export const onlineBookingsRouter = Router();
 
@@ -232,8 +241,9 @@ onlineBookingsRouter.get("/:id", async (req, res): Promise<void> => {
   res.json(row);
 });
 
-// PATCH /api/online-bookings/:id — edit before confirm (referring doctor, notes, contact).
+// PATCH /api/online-bookings/:id — edit before confirm (contact, doctor, notes, tests).
 // Confirmed bookings already created a bill/order — change referring doctor on the bill instead.
+// Tests/packages (and recomputed amount) only while payment is still pending.
 onlineBookingsRouter.patch("/:id", async (req: StaffAuthRequest, res): Promise<void> => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
@@ -301,6 +311,83 @@ onlineBookingsRouter.patch("/:id", async (req: StaffAuthRequest, res): Promise<v
       patch.referringDoctorName =
         String(body.referringDoctorName || "").trim() || doc.name;
     }
+  }
+
+  if ("testIds" in body || "packageIds" in body) {
+    if (booking.status !== "pending_payment") {
+      res.status(409).json({
+        error: "Tests can only be changed while payment is still pending. Cancel and rebook, or collect the difference at Billing Desk after confirm.",
+      });
+      return;
+    }
+
+    const testIds =
+      "testIds" in body
+        ? normalizeInvestigationIdArray(body.testIds)
+        : parseIdList(booking.testIds);
+    const packageIds =
+      "packageIds" in body
+        ? normalizeInvestigationIdArray(body.packageIds)
+        : parseIdList(booking.packageIds);
+
+    if (testIds === null || packageIds === null) {
+      res.status(400).json({ error: "testIds and packageIds must be arrays of positive integers" });
+      return;
+    }
+    if (testIds.length + packageIds.length === 0) {
+      res.status(400).json({ error: "Please select at least one test or package." });
+      return;
+    }
+
+    if (testIds.length > 0) {
+      const found = await db
+        .select({ id: testsTable.id })
+        .from(testsTable)
+        .where(and(eq(testsTable.isActive, true), inArray(testsTable.id, testIds)));
+      if (found.length !== testIds.length) {
+        res.status(400).json({ error: "One or more selected tests are invalid or inactive." });
+        return;
+      }
+    }
+    if (packageIds.length > 0) {
+      const found = await db
+        .select({ id: packagesTable.id })
+        .from(packagesTable)
+        .where(and(eq(packagesTable.isActive, true), inArray(packagesTable.id, packageIds)));
+      if (found.length !== packageIds.length) {
+        res.status(400).json({ error: "One or more selected packages are invalid or inactive." });
+        return;
+      }
+    }
+
+    if (booking.timeSlot) {
+      const [settings] = await db.select().from(clinicSettingsTable).limit(1);
+      const slots = parseBookingTimeSlots(settings?.bookingTimeSlots);
+      const cfg = findSlotConfig(slots, booking.timeSlot, booking.slotModality || "");
+      if (cfg?.modality) {
+        const selectedModalities = await modalitiesForSelection(testIds, packageIds);
+        if (selectedModalities.size > 0 && !selectedModalities.has(cfg.modality)) {
+          res.status(400).json({
+            error: `The "${cfg.label}" slot is for ${cfg.modality.toUpperCase()}. Choose matching investigations, or cancel and rebook a different slot.`,
+          });
+          return;
+        }
+      }
+    }
+
+    const amount = await computeCatalogAmount({
+      testIds,
+      packageIds,
+      isVip: Boolean(booking.isVip),
+    });
+    if (!Number.isFinite(amount) || amount <= 0) {
+      res.status(400).json({ error: "Invalid total amount for the selected investigations." });
+      return;
+    }
+
+    patch.testIds = JSON.stringify(testIds);
+    patch.packageIds = JSON.stringify(packageIds);
+    patch.totalAmount = String(amount);
   }
 
   if (Object.keys(patch).length === 0) {

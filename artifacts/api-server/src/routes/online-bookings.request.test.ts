@@ -20,6 +20,7 @@ import {
   vouchersTable,
   testTokensTable,
   doctorsTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { eq, like, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -378,5 +379,76 @@ describe.skipIf(!dbAvailable)("Online booking reception + slot capacity — requ
     await db.delete(testTokensTable).where(eq(testTokensTable.billId, confirmed.body.billId)).catch(() => {});
     await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, created.body.booking.id)).catch(() => {});
     await db.delete(doctorsTable).where(eq(doctorsTable.id, doc.id)).catch(() => {});
+  });
+
+  test("PATCH pending booking can change tests and recomputes totalAmount", async () => {
+    const editDate = "2099-07-04";
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.selectedDate, editDate));
+
+    const [otherTest] = await db
+      .insert(testsTable)
+      .values({
+        name: `Vitest Alt Test ${fx.marker}`,
+        code: `VA${fx.marker.slice(-6).toUpperCase()}`,
+        price: "750",
+        category: "Pathology",
+        duration: "1 day",
+        isActive: true,
+      })
+      .returning();
+
+    if (settingsRowId != null) {
+      await db
+        .update(clinicSettingsTable)
+        .set({ onlineBookingAllowedTestIds: JSON.stringify([fx.testId, otherTest.id]) })
+        .where(eq(clinicSettingsTable.id, settingsRowId));
+    }
+
+    const created = await request(app)
+      .post("/api/online-bookings")
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        patientId: fx.patientId,
+        selectedDate: editDate,
+        timeSlot: slot,
+        testIds: [fx.testId],
+        packageIds: [],
+        source: "phone",
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(Number(created.body.booking.totalAmount)).toBe(400);
+
+    const patched = await request(app)
+      .patch(`/api/online-bookings/${created.body.booking.id}`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({
+        testIds: [otherTest.id],
+        packageIds: [],
+      });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(JSON.parse(patched.body.testIds)).toEqual([otherTest.id]);
+    expect(JSON.parse(patched.body.packageIds)).toEqual([]);
+    expect(Number(patched.body.totalAmount)).toBe(750);
+
+    const empty = await request(app)
+      .patch(`/api/online-bookings/${created.body.booking.id}`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({ testIds: [], packageIds: [] });
+    expect(empty.status).toBe(400);
+
+    // Mark paid and refuse further test edits (amount already settled).
+    await db
+      .update(onlineBookingsTable)
+      .set({ status: "paid" })
+      .where(eq(onlineBookingsTable.id, created.body.booking.id));
+    const refusePaid = await request(app)
+      .patch(`/api/online-bookings/${created.body.booking.id}`)
+      .set("Authorization", `Bearer ${fx.token}`)
+      .send({ testIds: [fx.testId], packageIds: [] });
+    expect(refusePaid.status).toBe(409);
+    expect(String(refusePaid.body.error || "")).toMatch(/pending/i);
+
+    await db.delete(onlineBookingsTable).where(eq(onlineBookingsTable.id, created.body.booking.id)).catch(() => {});
+    await db.delete(testsTable).where(eq(testsTable.id, otherTest.id)).catch(() => {});
   });
 });
