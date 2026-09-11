@@ -519,3 +519,80 @@ describe("launchRadiologyStudy", () => {
     expect(r.finalLaunchUrl).not.toMatch(/\/\/[^/]*:[^/]*@/);
   });
 });
+
+
+// ─── LAN HTTPS ohif.caredeoghar.com ──────────────────────────────────────────
+// Production LAN OHIF is https://ohif.caredeoghar.com (Synology RP + Pi-hole
+// split DNS). HTTPS ERP must embed it without mixed content; Forced LAN must
+// stay Forced LAN; AUTO must prefer LAN when its probe succeeds.
+
+describe("LAN HTTPS ohif.caredeoghar.com", () => {
+  const LAN_HTTPS = "https://ohif.caredeoghar.com";
+  const httpsLanSettings: Record<string, string> = {
+    ...SETTINGS,
+    ohif_base_url: LAN_HTTPS,
+  };
+
+  it("Forced LAN builds an OHIF study URL on https://ohif.caredeoghar.com", async () => {
+    const plan = await planStudyLaunch(
+      { studyInstanceUID: UID, accessionNumber: ACC, viewer: "OHIF", requestedMode: "LAN" },
+      httpsLanSettings,
+      { probe: probeFor({ "ohif.caredeoghar.com": true }), pageIsHttps: true },
+    );
+    expect(plan.success).toBe(true);
+    expect(plan.selectedNetworkMode).toBe("LAN");
+    expect(plan.finalLaunchUrl).toContain("https://ohif.caredeoghar.com/");
+    expect(plan.finalLaunchUrl).toContain(UID);
+    expect(plan.finalLaunchUrl).not.toMatch(/^http:\/\/172\.16\.1\.139/);
+    expect(plan.finalLaunchUrl).not.toMatch(/^http:\/\/192\.168\.1\.137/);
+  });
+
+  it("HTTPS ERP does not treat LAN as mixed content when ohif_base_url is https", async () => {
+    const c = parseViewerNetworkConfig(httpsLanSettings);
+    const s = await selectViewerNetwork(c, {
+      requestedMode: "LAN",
+      probe: probeFor({ "ohif.caredeoghar.com": true }),
+      pageIsHttps: true,
+    });
+    expect(s.selectedMode).toBe("LAN");
+    expect(s.reachabilityResults.find((r) => r.mode === "LAN")!.error).not.toBe("mixed_content_blocked");
+    expect(s.reachabilityResults.find((r) => r.mode === "LAN")!.reachable).toBe(true);
+  });
+
+  it("AUTO prefers LAN when the https://ohif.caredeoghar.com probe succeeds", async () => {
+    const c = parseViewerNetworkConfig(httpsLanSettings);
+    const s = await selectViewerNetwork(c, {
+      requestedMode: "AUTO",
+      probe: probeFor({
+        "ohif.caredeoghar.com": true,
+        "100.64.0.5": true,
+        "ohif.tunnel.example.com": true,
+      }),
+      pageIsHttps: true,
+    });
+    expect(s.selectedMode).toBe("LAN");
+    expect(s.selectedBaseUrl).toBe(LAN_HTTPS);
+  });
+
+  it("AUTO falls back to Tailscale when the LAN HTTPS probe fails", async () => {
+    const c = parseViewerNetworkConfig(httpsLanSettings);
+    const s = await selectViewerNetwork(c, {
+      requestedMode: "AUTO",
+      probe: probeFor({ "100.64.0.5": true, "ohif.tunnel.example.com": true }),
+      pageIsHttps: false, // allow http Tailscale probe in this unit test
+    });
+    expect(s.selectedMode).toBe("TAILSCALE");
+    expect(s.reachabilityResults.map((r) => r.mode)).toEqual(["LAN", "TAILSCALE"]);
+  });
+
+  it("Forced LAN stays Forced LAN when LAN is down (no silent fallback)", async () => {
+    const c = parseViewerNetworkConfig(httpsLanSettings);
+    const s = await selectViewerNetwork(c, {
+      requestedMode: "LAN",
+      probe: probeFor({ "100.64.0.5": true }),
+      pageIsHttps: true,
+    });
+    expect(s.selectedMode).toBeNull();
+    expect(s.reason.toLowerCase()).not.toContain("tailscale");
+  });
+});
