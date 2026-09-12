@@ -316,50 +316,283 @@ export async function autoVoucherForExpense(opts: {
   category: string;
   description: string;
   performedBy?: string | null;
-}): Promise<void> {
+  paidFromAccountId?: number | null;
+  expensePaymentId?: number | null;
+  /** When true, returns the inserted voucher id (or existing id if idempotent). */
+  returnId?: boolean;
+}): Promise<number | null | void> {
   try {
-    const { expenseId, amount, paymentMode, category, description, performedBy } = opts;
-    if (!Number.isFinite(amount) || amount <= 0) return;
+    const {
+      expenseId,
+      amount,
+      paymentMode,
+      category,
+      description,
+      performedBy,
+      paidFromAccountId,
+      expensePaymentId,
+      returnId,
+    } = opts;
+    if (!Number.isFinite(amount) || amount <= 0) return returnId ? null : undefined;
 
-    // Debit: expense category account (e.g. "Expenses — Salary", "Expenses — Office")
+    if (expensePaymentId != null) {
+      const [existing] = await db
+        .select({ id: vouchersTable.id })
+        .from(vouchersTable)
+        .where(eq(vouchersTable.expensePaymentId, expensePaymentId))
+        .limit(1);
+      if (existing) return returnId ? existing.id : undefined;
+    }
+
     const expAccName = `Expenses — ${category.trim() || "General"}`;
     const expAccId = await ensureAccount(expAccName, "expense", "Indirect Expenses");
 
-    // Credit: the payment-mode account (cash or bank)
-    // expenses.payment_mode is NOT NULL DEFAULT 'cash' in the schema (unlike
-    // payments.method, which has no such default) — a missing/blank value
-    // here means cash, not "unclassified". See day-close.ts's
-    // splitCashExpenses() for the same distinction applied to reconciliation
-    // math; this keeps voucher posting consistent with it.
-    const modeAccDef = (paymentMode ?? "").trim() ? resolveMethodAccount(paymentMode) : METHOD_ACCOUNTS.cash;
-    const modeAccId = await ensureAccount(modeAccDef.name, modeAccDef.type, modeAccDef.tallyGroup);
+    let modeAccId: string;
+    if (paidFromAccountId != null) {
+      modeAccId = String(paidFromAccountId);
+    } else {
+      const modeAccDef = (paymentMode ?? "").trim() ? resolveMethodAccount(paymentMode) : METHOD_ACCOUNTS.cash;
+      modeAccId = await ensureAccount(modeAccDef.name, modeAccDef.type, modeAccDef.tallyGroup);
+    }
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 5; attempt++) {
       const voucherNumber = await nextVoucherNumber("payment", attempt);
       try {
-        await db.insert(vouchersTable).values({
-          voucherNumber,
-          type: "payment",
-          date: istDateStr(),
-          debitAccountId: expAccId,
-          creditAccountId: modeAccId,
-          amount: amount.toFixed(2),
-          particular: `${category} | ${description}`,
-          billId: null,
-          performedBy: performedBy ?? null,
-          narration: `Auto-generated from expense ${expenseId}`,
-          reference: expenseId,
-        });
-        return;
+        const [inserted] = await db
+          .insert(vouchersTable)
+          .values({
+            voucherNumber,
+            type: "payment",
+            date: istDateStr(),
+            debitAccountId: expAccId,
+            creditAccountId: modeAccId,
+            amount: amount.toFixed(2),
+            particular: `${category} | ${description}`,
+            billId: null,
+            performedBy: performedBy ?? null,
+            narration: `Auto-generated from expense ${expenseId}`,
+            reference: expenseId,
+            expensePaymentId: expensePaymentId ?? null,
+          })
+          .returning({ id: vouchersTable.id });
+        return returnId ? (inserted?.id ?? null) : undefined;
       } catch (err: unknown) {
-        if (isPgUniqueViolation(err)) { lastErr = err; continue; }
+        if (isPgUniqueViolation(err)) {
+          lastErr = err;
+          continue;
+        }
         throw err;
       }
     }
     throw lastErr;
   } catch (err) {
     logger.warn({ err }, "[auto-voucher] Failed to generate expense voucher (non-fatal)");
+    return opts.returnId ? null : undefined;
+  }
+}
+
+const PAYABLE_ACCOUNT = {
+  name: "Accounts Payable",
+  type: "liability",
+  tallyGroup: "Sundry Creditors",
+};
+
+/**
+ * Accrual journal for an expense bill (Dr Expense / Cr Accounts Payable).
+ * Never throws — returns voucher id or null.
+ */
+export async function autoVoucherForExpenseAccrual(opts: {
+  expenseId: string;
+  amount: number;
+  category: string;
+  description: string;
+  vendorName: string;
+  performedBy?: string | null;
+}): Promise<number | null> {
+  try {
+    const { expenseId, amount, category, description, vendorName, performedBy } = opts;
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+
+    const expAccName = `Expenses — ${category.trim() || "General"}`;
+    const [expAccId, payableAccId] = await Promise.all([
+      ensureAccount(expAccName, "expense", "Indirect Expenses"),
+      ensureAccount(PAYABLE_ACCOUNT.name, PAYABLE_ACCOUNT.type, PAYABLE_ACCOUNT.tallyGroup),
+    ]);
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const voucherNumber = await nextVoucherNumber("journal", attempt);
+      try {
+        const [inserted] = await db
+          .insert(vouchersTable)
+          .values({
+            voucherNumber,
+            type: "journal",
+            date: istDateStr(),
+            debitAccountId: expAccId,
+            creditAccountId: payableAccId,
+            amount: amount.toFixed(2),
+            particular: `${category} | ${description}`,
+            billId: null,
+            performedBy: performedBy ?? null,
+            narration: `Accrual for expense ${expenseId} — ${vendorName}`,
+            reference: expenseId,
+          })
+          .returning({ id: vouchersTable.id });
+        return inserted?.id ?? null;
+      } catch (err: unknown) {
+        if (isPgUniqueViolation(err)) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    logger.warn({ err }, "[auto-voucher] Failed to generate expense accrual voucher (non-fatal)");
+    return null;
+  }
+}
+
+/**
+ * Payment voucher for settling an expense payable (Dr Payable / Cr Cash or Bank).
+ * Idempotent when expensePaymentId is already linked to a voucher.
+ */
+export async function autoVoucherForExpensePayment(opts: {
+  expenseId: string;
+  paymentPublicId: string;
+  amount: number;
+  paymentMode: string;
+  vendorName: string;
+  description: string;
+  performedBy?: string | null;
+  paidFromAccountId?: number | null;
+  expensePaymentId: number;
+}): Promise<number | null> {
+  try {
+    const {
+      expenseId,
+      paymentPublicId,
+      amount,
+      paymentMode,
+      vendorName,
+      description,
+      performedBy,
+      paidFromAccountId,
+      expensePaymentId,
+    } = opts;
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+
+    const [existing] = await db
+      .select({ id: vouchersTable.id })
+      .from(vouchersTable)
+      .where(eq(vouchersTable.expensePaymentId, expensePaymentId))
+      .limit(1);
+    if (existing) return existing.id;
+
+    const payableAccId = await ensureAccount(
+      PAYABLE_ACCOUNT.name,
+      PAYABLE_ACCOUNT.type,
+      PAYABLE_ACCOUNT.tallyGroup,
+    );
+
+    let modeAccId: string;
+    if (paidFromAccountId != null) {
+      modeAccId = String(paidFromAccountId);
+    } else {
+      const modeAccDef = (paymentMode ?? "").trim() ? resolveMethodAccount(paymentMode) : METHOD_ACCOUNTS.cash;
+      modeAccId = await ensureAccount(modeAccDef.name, modeAccDef.type, modeAccDef.tallyGroup);
+    }
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const voucherNumber = await nextVoucherNumber("payment", attempt);
+      try {
+        const [inserted] = await db
+          .insert(vouchersTable)
+          .values({
+            voucherNumber,
+            type: "payment",
+            date: istDateStr(),
+            debitAccountId: payableAccId,
+            creditAccountId: modeAccId,
+            amount: amount.toFixed(2),
+            particular: `Pay ${vendorName} | ${description}`,
+            billId: null,
+            performedBy: performedBy ?? null,
+            narration: `Payment for expense ${expenseId}`,
+            reference: paymentPublicId,
+            expensePaymentId,
+          })
+          .returning({ id: vouchersTable.id });
+        return inserted?.id ?? null;
+      } catch (err: unknown) {
+        if (isPgUniqueViolation(err)) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    logger.warn({ err }, "[auto-voucher] Failed to generate expense payment voucher (non-fatal)");
+    return null;
+  }
+}
+
+/** Reverse a voucher by posting a new row with Dr/Cr swapped. */
+export async function reverseVoucherById(opts: {
+  voucherId: number;
+  reference: string;
+  performedBy?: string | null;
+  reason: string;
+}): Promise<number | null> {
+  try {
+    const [v] = await db
+      .select()
+      .from(vouchersTable)
+      .where(eq(vouchersTable.id, opts.voucherId))
+      .limit(1);
+    if (!v) return null;
+
+    const vType = v.type === "journal" ? "journal" : "payment";
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const voucherNumber = await nextVoucherNumber(vType, attempt);
+      try {
+        const [inserted] = await db
+          .insert(vouchersTable)
+          .values({
+            voucherNumber,
+            type: vType,
+            date: istDateStr(),
+            debitAccountId: v.creditAccountId,
+            creditAccountId: v.debitAccountId,
+            amount: v.amount,
+            particular: `Reversal | ${v.particular ?? opts.reference}`,
+            billId: v.billId,
+            performedBy: opts.performedBy ?? null,
+            narration: opts.reason,
+            reference: opts.reference,
+            expensePaymentId: v.expensePaymentId,
+          })
+          .returning({ id: vouchersTable.id });
+        return inserted?.id ?? null;
+      } catch (err: unknown) {
+        if (isPgUniqueViolation(err)) {
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    logger.warn({ err }, "[auto-voucher] Failed to reverse voucher (non-fatal)");
+    return null;
   }
 }
 
