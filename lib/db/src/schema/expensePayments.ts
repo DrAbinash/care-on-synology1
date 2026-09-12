@@ -7,8 +7,9 @@ import { z } from "zod/v4";
  * An expense bill (expenses row) can have zero or more payments.
  * Unpaid / due bill ⇒ zero active rows. Each later settlement ⇒ a new row.
  *
- * Cash / day-close MUST use these rows (payment_date + payment_mode),
- * never expenses.bill_amount / expenses.amount.
+ * Cash / day-close MUST use these rows (payment_mode + created_at posting clock),
+ * never expenses.bill_amount / expenses.amount. payment_date is the business /
+ * reference date only — reconciliation windows by created_at (same as the rest of CARE).
  */
 export const expensePaymentsTable = pgTable(
   "expense_payments",

@@ -414,6 +414,14 @@ export async function autoVoucherForExpenseAccrual(opts: {
     const { expenseId, amount, category, description, vendorName, performedBy } = opts;
     if (!Number.isFinite(amount) || amount <= 0) return null;
 
+    // Idempotent: reuse existing non-reversal journal referenced by this expenseId.
+    const priorAccruals = await db
+      .select({ id: vouchersTable.id, particular: vouchersTable.particular })
+      .from(vouchersTable)
+      .where(and(eq(vouchersTable.reference, expenseId), eq(vouchersTable.type, "journal")));
+    const existingAccrual = priorAccruals.find((v) => !/^reversal/i.test(v.particular ?? ""));
+    if (existingAccrual) return existingAccrual.id;
+
     const expAccName = `Expenses — ${category.trim() || "General"}`;
     const [expAccId, payableAccId] = await Promise.all([
       ensureAccount(expAccName, "expense", "Indirect Expenses"),
@@ -557,6 +565,23 @@ export async function reverseVoucherById(opts: {
       .where(eq(vouchersTable.id, opts.voucherId))
       .limit(1);
     if (!v) return null;
+
+    // Idempotent: if a reversal for this voucher already exists, return it.
+    // Match on swapped accounts + same amount + reference + "Reversal" particular.
+    const priorReversals = await db
+      .select({ id: vouchersTable.id })
+      .from(vouchersTable)
+      .where(
+        and(
+          eq(vouchersTable.debitAccountId, v.creditAccountId),
+          eq(vouchersTable.creditAccountId, v.debitAccountId),
+          eq(vouchersTable.amount, v.amount),
+          eq(vouchersTable.reference, opts.reference),
+          sql`${vouchersTable.particular} ILIKE 'Reversal |%'`,
+        ),
+      )
+      .limit(1);
+    if (priorReversals[0]) return priorReversals[0].id;
 
     const vType = v.type === "journal" ? "journal" : "payment";
     let lastErr: unknown;

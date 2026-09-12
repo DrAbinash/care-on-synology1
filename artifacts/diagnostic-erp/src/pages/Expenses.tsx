@@ -280,7 +280,18 @@ export default function Expenses() {
   const departments = departmentsResult?.rows ?? [];
   const departmentsHidden = departmentsResult?.forbidden ?? false;
 
-  const { data: payables = [], isLoading: payablesLoading, refetch: refetchPayables } = useQuery<ExpenseV2[]>({
+  type PayablesResponse = {
+    items: ExpenseV2[];
+    summary: {
+      bills: number;
+      booked: number;
+      paid: number;
+      outstanding: number;
+      cashPaid: number;
+      digitalPaid: number;
+    };
+  };
+  const { data: payablesResp, isLoading: payablesLoading, refetch: refetchPayables } = useQuery<PayablesResponse>({
     queryKey: ["expense-payables", from, to],
     queryFn: () => {
       const q = new URLSearchParams();
@@ -291,6 +302,7 @@ export default function Expenses() {
     },
     enabled: activeTab === "payables",
   });
+  const payables = payablesResp?.items ?? [];
 
   const topCategories = useMemo(() => {
     const tops = categoryRows.filter((c) => !c.parentId);
@@ -451,20 +463,22 @@ export default function Expenses() {
   const totalDue = expenses.reduce((s, e) => s + dueOf(e), 0);
   const grandTotal = summary.reduce((s: number, r: ExpenseSummaryRow) => s + r.total, 0);
 
+  // Cash/digital cards must come from expense_payments aggregation (backend),
+  // not header paymentMode × totalPaid (wrong for mixed cash+UPI bills).
   const payablesStats = useMemo(() => {
-    const bills = payables.length;
-    const paid = payables.reduce((s, e) => s + paidOf(e), 0);
-    const outstanding = payables.reduce((s, e) => s + dueOf(e), 0);
-    const booked = payables.reduce((s, e) => s + billOf(e), 0);
-    let cashExpenses = 0;
-    let digitalExpenses = 0;
-    for (const e of payables) {
-      const paidAmt = paidOf(e);
-      if (isCashMode(e.paymentMode)) cashExpenses += paidAmt;
-      else digitalExpenses += paidAmt;
+    const s = payablesResp?.summary;
+    if (s) {
+      return {
+        bills: s.bills,
+        paid: s.paid,
+        outstanding: s.outstanding,
+        booked: s.booked,
+        cashExpenses: s.cashPaid,
+        digitalExpenses: s.digitalPaid,
+      };
     }
-    return { bills, paid, outstanding, booked, cashExpenses, digitalExpenses };
-  }, [payables]);
+    return { bills: 0, paid: 0, outstanding: 0, booked: 0, cashExpenses: 0, digitalExpenses: 0 };
+  }, [payablesResp]);
 
   const hasFilters =
     categoryFilter !== "all" ||

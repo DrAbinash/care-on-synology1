@@ -12,12 +12,14 @@ import {
   expensePaymentsTable,
   expensesTable,
   vendorsTable,
+  vouchersTable,
 } from "@workspace/db/schema";
 import {
   assertPaymentAllowed,
   derivePaymentStatus,
   roundMoney,
   summarizeExpenseMoney,
+  isCashPaymentMode,
 } from "./expensePayables";
 import {
   autoVoucherForExpense,
@@ -264,60 +266,68 @@ export async function createExpenseV2(input: CreateExpenseV2Input) {
   const vendor = await resolveVendor(input.vendorId, input.vendorNameSnapshot, input.paidTo);
   const receiptImageHash = hashReceiptImage(input.receiptImageUrl);
   const expenseId = await nextExpenseId();
+  const paymentPublicId = initialPayment > 0 ? await nextPaymentPublicId() : null;
 
-  const [expense] = await db
-    .insert(expensesTable)
-    .values({
-      expenseId,
-      category: input.category,
-      description: input.description,
-      amount: String(billAmount),
-      billAmount: String(billAmount),
-      taxAmount: input.taxAmount != null ? String(roundMoney(input.taxAmount)) : null,
-      expenseDate: input.expenseDate,
-      paymentMode,
-      paidTo: input.paidTo ?? vendor.vendorNameSnapshot,
-      approvedBy: input.approvedBy ?? null,
-      createdBy: input.createdBy ?? null,
-      notes: input.notes ?? null,
-      receiptImageUrl: input.receiptImageUrl ?? null,
-      receiptImageHash,
-      paymentStatus,
-      vendorId: vendor.vendorId,
-      vendorNameSnapshot: vendor.vendorNameSnapshot,
-      invoiceNumber: input.invoiceNumber?.trim() || null,
-      invoiceDate: input.invoiceDate || null,
-      departmentId: input.departmentId ?? null,
-      categoryId: input.categoryId ?? null,
-      subcategoryId: input.subcategoryId ?? null,
-      accountingStatus: "PENDING",
-      ocrMetaJson: input.ocrMetaJson ?? null,
-    })
-    .returning();
-
-  let paymentRow: typeof expensePaymentsTable.$inferSelect | null = null;
-  if (initialPayment > 0) {
-    const paymentPublicId = await nextPaymentPublicId();
-    const [pay] = await db
-      .insert(expensePaymentsTable)
+  // Atomic bill header + initial payment — accounting may stay PENDING and retry later.
+  const { expense, paymentRow } = await db.transaction(async (tx) => {
+    const [expense] = await tx
+      .insert(expensesTable)
       .values({
-        expenseId: expense.id,
-        paymentPublicId,
-        paymentDate: input.paymentDate || input.expenseDate,
-        amount: String(initialPayment),
+        expenseId,
+        category: input.category,
+        description: input.description,
+        amount: String(billAmount),
+        billAmount: String(billAmount),
+        taxAmount: input.taxAmount != null ? String(roundMoney(input.taxAmount)) : null,
+        expenseDate: input.expenseDate,
         paymentMode,
-        paidFromAccountId: input.paidFromAccountId ?? null,
-        referenceNumber: input.referenceNumber ?? null,
+        paidTo: input.paidTo ?? vendor.vendorNameSnapshot,
+        approvedBy: input.approvedBy ?? null,
         createdBy: input.createdBy ?? null,
+        notes: input.notes ?? null,
+        receiptImageUrl: input.receiptImageUrl ?? null,
+        receiptImageHash,
+        paymentStatus,
+        vendorId: vendor.vendorId,
+        vendorNameSnapshot: vendor.vendorNameSnapshot,
+        invoiceNumber: input.invoiceNumber?.trim() || null,
+        invoiceDate: input.invoiceDate || null,
+        departmentId: input.departmentId ?? null,
+        categoryId: input.categoryId ?? null,
+        subcategoryId: input.subcategoryId ?? null,
         accountingStatus: "PENDING",
-        isLegacyBackfill: "false",
+        ocrMetaJson: input.ocrMetaJson ?? null,
       })
       .returning();
-    paymentRow = pay;
-  }
+
+    let paymentRow: typeof expensePaymentsTable.$inferSelect | null = null;
+    if (initialPayment > 0 && paymentPublicId) {
+      const [pay] = await tx
+        .insert(expensePaymentsTable)
+        .values({
+          expenseId: expense.id,
+          paymentPublicId,
+          paymentDate: input.paymentDate || input.expenseDate,
+          amount: String(initialPayment),
+          paymentMode,
+          paidFromAccountId: input.paidFromAccountId ?? null,
+          referenceNumber: input.referenceNumber ?? null,
+          createdBy: input.createdBy ?? null,
+          accountingStatus: "PENDING",
+          isLegacyBackfill: "false",
+        })
+        .returning();
+      paymentRow = pay;
+    }
+    return { expense, paymentRow };
+  });
 
   try {
-    await postAccounting({ expense, payment: paymentRow, performedBy: input.approvedBy ?? input.createdBy ?? null });
+    await postAccounting({
+      expense,
+      payment: paymentRow,
+      performedBy: input.approvedBy ?? input.createdBy ?? null,
+    });
   } catch (err) {
     await db
       .update(expensesTable)
@@ -327,7 +337,10 @@ export async function createExpenseV2(input: CreateExpenseV2Input) {
 
   const [fresh] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
   const totalPaid = await sumActivePayments(expense.id);
-  return { expense: fresh!, payment: paymentRow, money: moneyFieldsForExpense(fresh!, totalPaid) };
+  const [freshPay] = paymentRow
+    ? await db.select().from(expensePaymentsTable).where(eq(expensePaymentsTable.id, paymentRow.id))
+    : [null];
+  return { expense: fresh!, payment: freshPay ?? paymentRow, money: moneyFieldsForExpense(fresh!, totalPaid) };
 }
 
 async function postAccounting(opts: {
@@ -335,11 +348,15 @@ async function postAccounting(opts: {
   payment: typeof expensePaymentsTable.$inferSelect | null;
   performedBy?: string | null;
 }) {
-  const { expense, payment, performedBy } = opts;
+  const { payment, performedBy } = opts;
+  // Always re-read expense so concurrent callers see linked accrual/voucher ids.
+  const [expense] = await db.select().from(expensesTable).where(eq(expensesTable.id, opts.expense.id));
+  if (!expense) return;
   const billAmount = roundMoney(Number(expense.billAmount ?? expense.amount));
   const paid = payment ? roundMoney(Number(payment.amount)) : 0;
 
   if (paid > 0 && Math.abs(paid - billAmount) < 0.001) {
+    // Fully paid single-shot: one PV (Expense Dr / Cash Cr). Idempotent via expensePaymentId.
     const voucherId = await autoVoucherForExpense({
       expenseId: expense.expenseId,
       amount: paid,
@@ -355,9 +372,9 @@ async function postAccounting(opts: {
       await db
         .update(expensePaymentsTable)
         .set({
-          voucherId: voucherId ?? null,
-          accountingStatus: voucherId ? "POSTED" : "FAILED",
-          accountingError: voucherId ? null : "Payment voucher was not created",
+          voucherId: voucherId ?? payment.voucherId ?? null,
+          accountingStatus: voucherId || payment.voucherId ? "POSTED" : "FAILED",
+          accountingError: voucherId || payment.voucherId ? null : "Payment voucher was not created",
         })
         .where(eq(expensePaymentsTable.id, payment.id));
     }
@@ -365,24 +382,34 @@ async function postAccounting(opts: {
       .update(expensesTable)
       .set({
         voucherId: voucherId ?? expense.voucherId,
-        accountingStatus: voucherId ? "POSTED" : "FAILED",
-        accountingError: voucherId ? null : "Payment voucher was not created",
+        accountingStatus: voucherId || expense.voucherId ? "POSTED" : "FAILED",
+        accountingError: voucherId || expense.voucherId ? null : "Payment voucher was not created",
       })
       .where(eq(expensesTable.id, expense.id));
     return;
   }
 
-  const accrualId = await autoVoucherForExpenseAccrual({
-    expenseId: expense.expenseId,
-    amount: billAmount,
-    category: expense.category,
-    description: expense.description,
-    vendorName: expense.vendorNameSnapshot || expense.paidTo || "Supplier",
-    performedBy: performedBy ?? null,
-  });
+  // Accrual JV — idempotent by reference=expenseId inside autoVoucherForExpenseAccrual.
+  let accrualId = expense.accrualVoucherId;
+  if (!accrualId) {
+    accrualId = await autoVoucherForExpenseAccrual({
+      expenseId: expense.expenseId,
+      amount: billAmount,
+      category: expense.category,
+      description: expense.description,
+      vendorName: expense.vendorNameSnapshot || expense.paidTo || "Supplier",
+      performedBy: performedBy ?? null,
+    });
+    if (accrualId) {
+      await db
+        .update(expensesTable)
+        .set({ accrualVoucherId: accrualId })
+        .where(eq(expensesTable.id, expense.id));
+    }
+  }
 
-  let paymentVoucherId: number | null = null;
-  if (payment && paid > 0) {
+  let paymentVoucherId: number | null = payment?.voucherId ?? null;
+  if (payment && paid > 0 && !paymentVoucherId) {
     paymentVoucherId = await autoVoucherForExpensePayment({
       expenseId: expense.expenseId,
       paymentPublicId: payment.paymentPublicId,
@@ -404,11 +431,11 @@ async function postAccounting(opts: {
       .where(eq(expensePaymentsTable.id, payment.id));
   }
 
-  const ok = Boolean(accrualId) && (paid <= 0 || Boolean(paymentVoucherId));
+  const ok = Boolean(accrualId) && (paid <= 0 || Boolean(paymentVoucherId) || Boolean(payment?.voucherId));
   await db
     .update(expensesTable)
     .set({
-      accrualVoucherId: accrualId,
+      accrualVoucherId: accrualId ?? expense.accrualVoucherId,
       accountingStatus: ok ? "POSTED" : "FAILED",
       accountingError: ok ? null : "Accrual and/or payment voucher posting failed",
     })
@@ -430,19 +457,31 @@ export async function recordExpensePayment(opts: {
   if (expense.paymentStatus === "VOID") throw httpError(400, "Cannot record payment on a voided expense");
 
   const billAmount = roundMoney(Number(expense.billAmount ?? expense.amount));
+  const paymentPublicId = await nextPaymentPublicId();
+  const paymentMode = (opts.paymentMode || expense.paymentMode || "cash").trim() || "cash";
 
-  return db.transaction(async (tx) => {
+  // Option B: commit payment row as PENDING inside the lock, then post accounting
+  // after commit (idempotent via expensePaymentId / accrual reference).
+  const { pay, nextPaid, nextStatus } = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM expenses WHERE id = ${expense.id} FOR UPDATE`);
+
+    // Re-read under lock — do not trust pre-lock accrualVoucherId / paymentStatus.
+    const [locked] = await tx.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+    if (!locked) throw httpError(404, "Expense not found");
+    if (locked.paymentStatus === "VOID") throw httpError(400, "Cannot record payment on a voided expense");
+
     const [sumRow] = await tx
       .select({ total: sql<string>`COALESCE(SUM(${expensePaymentsTable.amount}), 0)` })
       .from(expensePaymentsTable)
       .where(and(eq(expensePaymentsTable.expenseId, expense.id), isNull(expensePaymentsTable.reversedAt)));
     const alreadyPaid = roundMoney(Number(sumRow?.total ?? 0));
-    const check = assertPaymentAllowed({ billAmount, alreadyPaid, newPayment: opts.amount });
+    const check = assertPaymentAllowed({
+      billAmount: roundMoney(Number(locked.billAmount ?? locked.amount)),
+      alreadyPaid,
+      newPayment: opts.amount,
+    });
     if (!check.ok) throw httpError(400, check.error);
 
-    const paymentPublicId = await nextPaymentPublicId();
-    const paymentMode = (opts.paymentMode || expense.paymentMode || "cash").trim() || "cash";
     const [pay] = await tx
       .insert(expensePaymentsTable)
       .values({
@@ -462,59 +501,27 @@ export async function recordExpensePayment(opts: {
 
     await tx
       .update(expensesTable)
-      .set({ paymentStatus: check.nextStatus, paymentMode })
+      .set({ paymentStatus: check.nextStatus, paymentMode, accountingStatus: "PENDING" })
       .where(eq(expensesTable.id, expense.id));
 
-    let voucherId: number | null = null;
-    try {
-      if (!expense.accrualVoucherId) {
-        const accrualId = await autoVoucherForExpenseAccrual({
-          expenseId: expense.expenseId,
-          amount: billAmount,
-          category: expense.category,
-          description: expense.description,
-          vendorName: expense.vendorNameSnapshot || expense.paidTo || "Supplier",
-          performedBy: opts.createdBy ?? null,
-        });
-        if (accrualId) {
-          await tx
-            .update(expensesTable)
-            .set({ accrualVoucherId: accrualId })
-            .where(eq(expensesTable.id, expense.id));
-        }
-      }
-      voucherId = await autoVoucherForExpensePayment({
-        expenseId: expense.expenseId,
-        paymentPublicId: pay.paymentPublicId,
-        amount: roundMoney(opts.amount),
-        paymentMode,
-        vendorName: expense.vendorNameSnapshot || expense.paidTo || "Supplier",
-        description: expense.description,
-        performedBy: opts.createdBy ?? null,
-        paidFromAccountId: opts.paidFromAccountId ?? null,
-        expensePaymentId: pay.id,
-      });
-    } catch {
-      voucherId = null;
-    }
-
-    await tx
-      .update(expensePaymentsTable)
-      .set({
-        voucherId,
-        accountingStatus: voucherId ? "POSTED" : "FAILED",
-        accountingError: voucherId ? null : "Payment voucher was not created",
-      })
-      .where(eq(expensePaymentsTable.id, pay.id));
-    await tx
-      .update(expensesTable)
-      .set({ accountingStatus: voucherId ? "POSTED" : "PARTIAL" })
-      .where(eq(expensesTable.id, expense.id));
-
-    const [fresh] = await tx.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
-    const [freshPay] = await tx.select().from(expensePaymentsTable).where(eq(expensePaymentsTable.id, pay.id));
-    return { expense: fresh!, payment: freshPay!, money: moneyFieldsForExpense(fresh!, check.nextPaid) };
+    return { pay, nextPaid: check.nextPaid, nextStatus: check.nextStatus };
   });
+
+  // Post accounting AFTER the payment transaction commits (idempotent retries).
+  const [freshExpense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+  try {
+    await postAccounting({
+      expense: freshExpense!,
+      payment: pay,
+      performedBy: opts.createdBy ?? null,
+    });
+  } catch {
+    /* postAccounting records FAILED */
+  }
+
+  const [fresh] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+  const [freshPay] = await db.select().from(expensePaymentsTable).where(eq(expensePaymentsTable.id, pay.id));
+  return { expense: fresh!, payment: freshPay!, money: moneyFieldsForExpense(fresh!, nextPaid) };
 }
 
 export async function voidExpense(opts: { expensePk: number; reason: string; voidedBy: string }) {
@@ -525,15 +532,26 @@ export async function voidExpense(opts: { expensePk: number; reason: string; voi
   if (expense.paymentStatus === "VOID") throw httpError(400, "Expense is already voided");
 
   const payments = await listPaymentsForExpense(expense.id);
+
+  // Deduplicate voucher IDs — fully-paid bills store the same PV on both
+  // expense.voucherId and expense_payments.voucherId. Reverse each original AT MOST ONCE.
+  const voucherIdsToReverse = new Set<number>();
   for (const p of payments.filter((x) => !x.reversedAt)) {
-    if (p.voucherId) {
-      await reverseVoucherById({
-        voucherId: p.voucherId,
-        reference: `${expense.expenseId}:${p.paymentPublicId}`,
-        performedBy: opts.voidedBy,
-        reason: `Void expense ${expense.expenseId}: ${reason}`,
-      });
-    }
+    if (p.voucherId != null) voucherIdsToReverse.add(p.voucherId);
+  }
+  if (expense.accrualVoucherId != null) voucherIdsToReverse.add(expense.accrualVoucherId);
+  if (expense.voucherId != null) voucherIdsToReverse.add(expense.voucherId);
+
+  for (const voucherId of voucherIdsToReverse) {
+    await reverseVoucherById({
+      voucherId,
+      reference: expense.expenseId,
+      performedBy: opts.voidedBy,
+      reason: `Void expense ${expense.expenseId}: ${reason}`,
+    });
+  }
+
+  for (const p of payments.filter((x) => !x.reversedAt)) {
     await db
       .update(expensePaymentsTable)
       .set({
@@ -543,22 +561,6 @@ export async function voidExpense(opts: { expensePk: number; reason: string; voi
         accountingStatus: "REVERSED",
       })
       .where(eq(expensePaymentsTable.id, p.id));
-  }
-
-  if (expense.accrualVoucherId) {
-    await reverseVoucherById({
-      voucherId: expense.accrualVoucherId,
-      reference: expense.expenseId,
-      performedBy: opts.voidedBy,
-      reason: `Void expense accrual ${expense.expenseId}: ${reason}`,
-    });
-  } else if (expense.voucherId) {
-    await reverseVoucherById({
-      voucherId: expense.voucherId,
-      reference: expense.expenseId,
-      performedBy: opts.voidedBy,
-      reason: `Void expense ${expense.expenseId}: ${reason}`,
-    });
   }
 
   const [fresh] = await db
@@ -628,20 +630,56 @@ export async function listPayables(opts: { from?: string; to?: string } = {}) {
     .from(expensesTable)
     .where(and(...(conditions as Parameters<typeof and>)))
     .orderBy(expensesTable.expenseDate, expensesTable.id);
-  return enrichExpenseList(rows as Array<Record<string, unknown> & { id: number }>);
+  const enriched = await enrichExpenseList(rows as Array<Record<string, unknown> & { id: number }>);
+
+  const ids = enriched.map((r) => r.id as number).filter((n) => n > 0);
+  let cashPaid = 0;
+  let digitalPaid = 0;
+  if (ids.length) {
+    const payRows = await db
+      .select({
+        paymentMode: expensePaymentsTable.paymentMode,
+        amount: expensePaymentsTable.amount,
+      })
+      .from(expensePaymentsTable)
+      .where(and(inArray(expensePaymentsTable.expenseId, ids), isNull(expensePaymentsTable.reversedAt)));
+    for (const p of payRows) {
+      const amt = roundMoney(Number(p.amount));
+      if (isCashPaymentMode(p.paymentMode)) cashPaid = roundMoney(cashPaid + amt);
+      else digitalPaid = roundMoney(digitalPaid + amt);
+    }
+  }
+
+  return {
+    items: enriched,
+    summary: {
+      bills: enriched.length,
+      booked: roundMoney(enriched.reduce((s, r) => s + Number(r.billAmount ?? 0), 0)),
+      paid: roundMoney(enriched.reduce((s, r) => s + Number(r.totalPaid ?? 0), 0)),
+      outstanding: roundMoney(enriched.reduce((s, r) => s + Number(r.balanceDue ?? 0), 0)),
+      cashPaid,
+      digitalPaid,
+    },
+  };
 }
 
 /**
  * Idempotent accounting retry for FAILED / PENDING expenses.
- * Reuses existing vouchers when expensePaymentId / accrual already linked.
+ * Reconciles historical vouchers (reference = expenseId) before creating anything new.
  */
 export async function retryExpenseAccounting(opts: {
   expensePk: number;
   performedBy?: string | null;
 }) {
+  const [expense0] = await db.select().from(expensesTable).where(eq(expensesTable.id, opts.expensePk));
+  if (!expense0) throw httpError(404, "Expense not found");
+  if (expense0.paymentStatus === "VOID") throw httpError(400, "Cannot retry accounting on a voided expense");
+
+  // Historical reconciliation: link existing vouchers by reference before posting.
+  await reconcileHistoricalVouchers(expense0.id);
+
   const [expense] = await db.select().from(expensesTable).where(eq(expensesTable.id, opts.expensePk));
   if (!expense) throw httpError(404, "Expense not found");
-  if (expense.paymentStatus === "VOID") throw httpError(400, "Cannot retry accounting on a voided expense");
 
   const payments = await listPaymentsForExpense(expense.id);
   const active = payments.filter((p) => !p.reversedAt);
@@ -649,13 +687,13 @@ export async function retryExpenseAccounting(opts: {
     expense.accountingStatus === "FAILED" ||
     expense.accountingStatus === "PENDING" ||
     expense.accountingStatus === "PARTIAL" ||
-    active.some((p) => p.accountingStatus === "FAILED" || p.accountingStatus === "PENDING");
+    active.some((p) => p.accountingStatus === "FAILED" || p.accountingStatus === "PENDING" || !p.voucherId);
   if (!needsWork && expense.accountingStatus === "POSTED") {
     return { expense, payments: active, skipped: true as const };
   }
 
-  // Ensure accrual exists for unpaid / part-paid bills.
-  if (!expense.accrualVoucherId && (active.length === 0 || active.some((p) => Number(p.amount) < Number(expense.billAmount ?? expense.amount)))) {
+  // Ensure accrual exists for unpaid / part-paid bills (idempotent).
+  if (!expense.accrualVoucherId) {
     const billAmount = roundMoney(Number(expense.billAmount ?? expense.amount));
     const fullyPaidSingle =
       active.length === 1 && Math.abs(Number(active[0]!.amount) - billAmount) < 0.001;
@@ -670,6 +708,18 @@ export async function retryExpenseAccounting(opts: {
 
   const [freshExpense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
   for (const pay of active.filter((p) => !p.voucherId || p.accountingStatus === "FAILED" || p.accountingStatus === "PENDING")) {
+    // Skip creating a new PV if a historical voucher already covers this fully-paid legacy bill.
+    if (!pay.voucherId && freshExpense?.voucherId && active.length === 1) {
+      await db
+        .update(expensePaymentsTable)
+        .set({
+          voucherId: freshExpense.voucherId,
+          accountingStatus: "POSTED",
+          accountingError: null,
+        })
+        .where(eq(expensePaymentsTable.id, pay.id));
+      continue;
+    }
     try {
       await postAccounting({
         expense: freshExpense!,
@@ -683,5 +733,75 @@ export async function retryExpenseAccounting(opts: {
 
   const [finalExpense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
   const finalPayments = await listPaymentsForExpense(expense.id);
-  return { expense: finalExpense!, payments: finalPayments.filter((p) => !p.reversedAt), skipped: false as const };
+  const allPosted =
+    finalExpense &&
+    (finalExpense.accountingStatus === "POSTED" || finalExpense.accountingStatus === "REVERSED") &&
+    finalPayments.filter((p) => !p.reversedAt).every((p) => p.voucherId && p.accountingStatus === "POSTED");
+  if (finalExpense && allPosted && finalExpense.accountingStatus !== "POSTED") {
+    await db
+      .update(expensesTable)
+      .set({ accountingStatus: "POSTED", accountingError: null })
+      .where(eq(expensesTable.id, expense.id));
+  }
+  const [done] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+  return { expense: done!, payments: finalPayments.filter((p) => !p.reversedAt), skipped: false as const };
 }
+
+/** Link legacy vouchers (reference = expenseId) onto expense / payment rows without creating duplicates. */
+async function reconcileHistoricalVouchers(expensePk: number): Promise<void> {
+  const [expense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expensePk));
+  if (!expense) return;
+
+  const historical = await db
+    .select()
+    .from(vouchersTable)
+    .where(eq(vouchersTable.reference, expense.expenseId));
+
+  const journals = historical.filter((v) => v.type === "journal");
+  const payments = historical.filter((v) => v.type === "payment");
+
+  if (!expense.accrualVoucherId && journals.length > 0) {
+    // Prefer the earliest non-reversal accrual (particular not starting with Reversal).
+    const accrual = journals.find((v) => !/^reversal/i.test(v.particular ?? "")) ?? journals[0]!;
+    await db
+      .update(expensesTable)
+      .set({ accrualVoucherId: accrual.id })
+      .where(eq(expensesTable.id, expense.id));
+  }
+
+  if (!expense.voucherId && payments.length > 0) {
+    const pv = payments.find((v) => !/^reversal/i.test(v.particular ?? "")) ?? payments[0]!;
+    await db
+      .update(expensesTable)
+      .set({
+        voucherId: pv.id,
+        accountingStatus: expense.accountingStatus === "PENDING" || expense.accountingStatus === "FAILED"
+          ? "POSTED"
+          : expense.accountingStatus,
+        accountingError: null,
+      })
+      .where(eq(expensesTable.id, expense.id));
+
+    // Attach to the sole active legacy payment row when present and unlinked.
+    const pays = await listPaymentsForExpense(expense.id);
+    const active = pays.filter((p) => !p.reversedAt && !p.voucherId);
+    if (active.length === 1) {
+      await db
+        .update(expensePaymentsTable)
+        .set({
+          voucherId: pv.id,
+          accountingStatus: "POSTED",
+          accountingError: null,
+        })
+        .where(eq(expensePaymentsTable.id, active[0]!.id));
+      // Also stamp expensePaymentId on the historical voucher when missing.
+      if (pv.expensePaymentId == null) {
+        await db
+          .update(vouchersTable)
+          .set({ expensePaymentId: active[0]!.id })
+          .where(eq(vouchersTable.id, pv.id));
+      }
+    }
+  }
+}
+

@@ -20,8 +20,22 @@
 - `accounting_status`: `POSTED | PENDING | FAILED | REVERSED | PARTIAL`.
 - Retry: `POST /api/expenses/:id/accounting/retry` (idempotent).
 
-## Day-close / cash
-Only **cash** rows in `expense_payments` reduce physical cash. Windowed by payment **`created_at`** (posting clock, same as rest of CARE day-close). UPI/bank = digital (no drawer impact). Unpaid bill = ₹0 cash impact.
+## Day-close / cash (IMPORTANT — posting clock)
+
+Only **cash** rows in `expense_payments` reduce physical cash. UPI/bank = digital (no drawer impact). Unpaid bill = ₹0 cash impact.
+
+**Reconciliation date = `expense_payments.created_at` (posting clock), NOT `payment_date`.**
+
+CARE day-close / daily-summary / my-daily-summary already window every other cash movement
+(bills, receipts, refunds) by `created_at`. Expense payments follow the same contract so a
+staff drawer closed "today" matches cash that actually left the drawer today.
+
+- `payment_date` = **business / reference date** on the supplier bill or remittance advice
+  (may be back-dated). It is shown in the UI and stored for reporting.
+- `created_at` = **when CARE recorded the outflow** — this is what hits today's drawer.
+
+A cash payment entered today with `payment_date = 2026-01-01` therefore reduces **today's**
+cash drawer, not January's. Do not mix the two clocks.
 
 ## Legacy backfill
 Historical expenses treated as fully paid: `bill_amount = amount`, one synthetic payment with original `created_at`, **no new vouchers**.

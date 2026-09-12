@@ -152,8 +152,9 @@ router.get("/categories", async (_req, res) => {
 // Open payables — register BEFORE /:id
 router.get("/payables", async (req, res) => {
   const { from, to } = req.query as Record<string, string>;
-  const rows = await listPayables({ from, to });
-  return res.json(rows);
+  const result = await listPayables({ from, to });
+  // { items, summary } — cash/digital totals come from expense_payments rows.
+  return res.json(result);
 });
 
 // POST /api/expenses/scan-bill — Ollama vision (Gemini is not used).
@@ -338,9 +339,9 @@ router.post("/", async (req, res) => {
       category,
       description,
       amount,
-      billAmount,
+      billAmount: billAmount ?? undefined,
       taxAmount: taxAmount ?? null,
-      initialPaymentAmount,
+      initialPaymentAmount: initialPaymentAmount ?? undefined,
       expenseDate,
       paymentMode: paymentMode || "cash",
       paidTo: paidTo ?? null,
@@ -395,13 +396,17 @@ router.patch("/:id", async (req, res) => {
   const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
   if (!before) return res.status(404).json({ error: "Expense not found" });
 
-  if (
-    (bodyParsed.data.amount !== undefined || bodyParsed.data.paymentMode !== undefined || bodyParsed.data.category !== undefined) &&
-    (before.paymentStatus === "DUE" || before.paymentStatus === "PART_PAID" || before.paymentStatus === "VOID")
-  ) {
+  // V2: expense_payments is canonical. Never let header financial fields diverge —
+  // require Void + re-enter for amount / paymentMode / category on any bill that
+  // has a billAmount, payments, or non-null accounting status other than blank legacy.
+  const touchingFinancial =
+    bodyParsed.data.amount !== undefined ||
+    bodyParsed.data.paymentMode !== undefined ||
+    bodyParsed.data.category !== undefined;
+  if (touchingFinancial) {
     return res.status(400).json({
       error:
-        "Cannot edit amount / payment mode / category on a payable or voided bill. Use Record Payment, or void and re-enter.",
+        "Cannot edit amount / payment mode / category on a posted expense. Void and re-enter the bill (metadata-only fields remain editable).",
     });
   }
 
