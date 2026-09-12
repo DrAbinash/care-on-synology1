@@ -6,7 +6,11 @@
 - `expenses` is the **bill header** (`bill_amount`, `payment_status`, vendor/invoice/department, `accounting_status`, void fields).
 - `expense_payments` is the **canonical money movement** table (zero rows = unpaid).
 - `expense_categories` configurable master (legacy string `category` retained).
-- `vouchers.expense_payment_id` durable payment↔voucher link.
+- `vouchers.expense_payment_id` durable payment↔**original** voucher link.
+  Partial UNIQUE index `vouchers_expense_payment_id_uq` enforces one original
+  PV per `expense_payments` row. Reversal vouchers keep audit/trace via
+  `reference` + `Reversal | …` particular + swapped Dr/Cr and do **not**
+  stamp `expense_payment_id`.
 
 ## Status derivation
 - `totalPaid = 0` → `DUE`

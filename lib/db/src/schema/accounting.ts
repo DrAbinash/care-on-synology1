@@ -1,4 +1,5 @@
-import { pgTable, text, serial, timestamp, numeric, boolean, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, numeric, boolean, integer, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -69,10 +70,18 @@ export const vouchersTable = pgTable("vouchers", {
   // key between real-time auto-vouchers and the sync-billing backfill — a
   // payment is "already vouchered" iff a voucher row has payment_id = its id.
   paymentId: integer("payment_id"),
-  /** Optional link to an expense_payments row (Expense Entry V2). */
+  /**
+   * Optional link to an expense_payments row (Expense Entry V2).
+   * Original payment PVs only — reversals leave this NULL so the partial
+   * unique index can enforce one original voucher per expense payment.
+   */
   expensePaymentId: integer("expense_payment_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => ({
+  expensePaymentIdUq: uniqueIndex("vouchers_expense_payment_id_uq")
+    .on(t.expensePaymentId)
+    .where(sql`${t.expensePaymentId} IS NOT NULL`),
+}));
 
 // Audit trail for voucher edits
 export const voucherAuditsTable = pgTable("voucher_audits", {

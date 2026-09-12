@@ -17,6 +17,16 @@ function isPgUniqueViolation(err: unknown): boolean {
   return false;
 }
 
+/** Original PV for an expense_payment, if any (reversals leave expense_payment_id NULL). */
+async function findVoucherIdByExpensePaymentId(expensePaymentId: number): Promise<number | null> {
+  const [existing] = await db
+    .select({ id: vouchersTable.id })
+    .from(vouchersTable)
+    .where(eq(vouchersTable.expensePaymentId, expensePaymentId))
+    .limit(1);
+  return existing?.id ?? null;
+}
+
 // Default accounts created automatically by payment method.
 // Exact-match keyed, preserving each method's own historical ledger
 // account — unchanged from before this fix, so existing Tally books keep
@@ -379,6 +389,11 @@ export async function autoVoucherForExpense(opts: {
         return returnId ? (inserted?.id ?? null) : undefined;
       } catch (err: unknown) {
         if (isPgUniqueViolation(err)) {
+          // Race on expense_payment_id unique index: reuse the winner's voucher.
+          if (expensePaymentId != null) {
+            const existingId = await findVoucherIdByExpensePaymentId(expensePaymentId);
+            if (existingId != null) return returnId ? existingId : undefined;
+          }
           lastErr = err;
           continue;
         }
@@ -538,6 +553,9 @@ export async function autoVoucherForExpensePayment(opts: {
         return inserted?.id ?? null;
       } catch (err: unknown) {
         if (isPgUniqueViolation(err)) {
+          // Race on expense_payment_id unique index: reuse the winner's voucher.
+          const existingId = await findVoucherIdByExpensePaymentId(expensePaymentId);
+          if (existingId != null) return existingId;
           lastErr = err;
           continue;
         }
@@ -602,7 +620,9 @@ export async function reverseVoucherById(opts: {
             performedBy: opts.performedBy ?? null,
             narration: opts.reason,
             reference: opts.reference,
-            expensePaymentId: v.expensePaymentId,
+            // Reversals must not compete for the expense_payment_id unique key.
+            // Traceability remains via reference + "Reversal | …" particular + swapped Dr/Cr.
+            expensePaymentId: null,
           })
           .returning({ id: vouchersTable.id });
         return inserted?.id ?? null;

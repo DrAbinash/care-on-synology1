@@ -110,6 +110,9 @@ describe.skipIf(!hasDb)("expense V2 review fixes", () => {
     expect(Number(reversal.amount)).toBe(Number(original.amount));
     expect(reversal.debitAccountId).toBe(original.creditAccountId);
     expect(reversal.creditAccountId).toBe(original.debitAccountId);
+    // Reversal must not stamp expense_payment_id (partial UNIQUE on originals only).
+    expect(original.expensePaymentId).toBe(payment!.id);
+    expect(reversal.expensePaymentId).toBeNull();
   });
 
   it("historical retry links existing voucher and does not create a duplicate PV", async () => {
