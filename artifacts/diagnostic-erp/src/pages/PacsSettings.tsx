@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, ohifLanProxyBaseUrl, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -880,7 +880,9 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
               {isAdmin && (
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => {
                   saveViewerKey("ohif_base_url", ohifBaseForProfile("LAN"));
-                  saveViewerKey("dicom_web_base_url", `${ohifBaseForProfile("LAN")}/dicom-web`);
+                  // DICOMweb stays on the LAN OHIF nginx proxy (:3010/dicom-web),
+                  // not https://ohif.caredeoghar.com/dicom-web (not confirmed on RP).
+                  saveViewerKey("dicom_web_base_url", `${ohifLanProxyBaseUrl()}/dicom-web`);
                   saveViewerKey("ohif_study_url_template", "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}");
                 }}>Load Defaults</Button>
               )}
@@ -901,9 +903,9 @@ export default function PacsSettings({ embedded = false }: { embedded?: boolean 
               <ViewerField label="OHIF Base URL" description={`e.g. ${ohifBaseForProfile("LAN")}`} type="text"
                 value={viewerMap["ohif_base_url"] ?? ""} onSave={(v) => saveViewerKey("ohif_base_url", v)}
                 placeholder={ohifBaseForProfile("LAN")} disabled={!isAdmin} />
-              <ViewerField label="DICOMweb Base URL" description={`e.g. ${ohifBaseForProfile("LAN")}/dicom-web`} type="text"
+              <ViewerField label="DICOMweb Base URL" description={`e.g. ${ohifLanProxyBaseUrl()}/dicom-web`} type="text"
                 value={viewerMap["dicom_web_base_url"] ?? ""} onSave={(v) => saveViewerKey("dicom_web_base_url", v)}
-                placeholder={`${ohifBaseForProfile("LAN")}/dicom-web`} disabled={!isAdmin} />
+                placeholder={`${ohifLanProxyBaseUrl()}/dicom-web`} disabled={!isAdmin} />
             </div>
             <ViewerTemplateField
               label="OHIF Study URL Template"

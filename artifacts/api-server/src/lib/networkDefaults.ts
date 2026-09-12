@@ -47,7 +47,58 @@ export const CONQUEST_DICOM_PORT = intFromEnv("CONQUEST_DICOM_PORT", 5678);
 
 /** Convenience builders (LAN defaults, matching previous hardcoded strings). */
 export const DEFAULT_ORTHANC_BASE_URL = `http://${NETWORK_LAN_HOST}:${ORTHANC_HTTP_PORT}`;
+/**
+ * Legacy LAN HTTP OHIF origin (`http://<NAS>:3010`).
+ * Still used for same-origin OHIF-nginx `/dicom-web` proxy defaults and any
+ * non-browser tooling that talks to the container port directly.
+ * Do NOT use this as the browser-facing OHIF viewer base — HTTPS ERP pages
+ * cannot embed plain HTTP, and "Load Clinic Viewer Defaults" must not revert
+ * production to an IP:port URL.
+ */
 export const DEFAULT_OHIF_BASE_URL = `http://${NETWORK_LAN_HOST}:${OHIF_HTTP_PORT}`;
+
+function resolveOhifBrowserBaseUrl(): string {
+  const dedicated =
+    process.env.OHIF_PUBLIC_BASE_URL?.trim() ||
+    process.env.OHIF_BROWSER_BASE_URL?.trim();
+  if (dedicated) return dedicated.replace(/\/+$/, "");
+  // OHIF_URL is historically the browser-facing viewer URL, but clinic
+  // deployments often still set it to http://<LAN>:3010. Only reuse it when
+  // it is already HTTPS so load-defaults cannot reintroduce mixed content.
+  const ohifUrl = process.env.OHIF_URL?.trim();
+  if (ohifUrl && /^https:\/\//i.test(ohifUrl)) return ohifUrl.replace(/\/+$/, "");
+  return "https://ohif.caredeoghar.com";
+}
+
+/**
+ * Browser-facing OHIF base (Synology HTTPS reverse proxy + Pi-hole split DNS).
+ * Override with OHIF_PUBLIC_BASE_URL or OHIF_BROWSER_BASE_URL. HTTPS OHIF_URL
+ * is accepted; plain-HTTP OHIF_URL is ignored for this default.
+ */
+export const DEFAULT_OHIF_BROWSER_BASE_URL = resolveOhifBrowserBaseUrl();
 export const DEFAULT_ERP_BASE_URL = `http://${NETWORK_LAN_HOST}:${ERP_HTTP_PORT}`;
 export const DEFAULT_WADO_URL = `${DEFAULT_ORTHANC_BASE_URL}/wado`;
 export const DEFAULT_DICOMWEB_URL = `${DEFAULT_ORTHANC_BASE_URL}/dicom-web`;
+
+/**
+ * Values written by POST /api/radiology/pacs-settings/load-defaults.
+ * `ohif_base_url` is the HTTPS clinic hostname; `dicom_web_base_url` stays on
+ * the LAN OHIF nginx proxy (`:3010/dicom-web` → Orthanc). Do not point
+ * DICOMweb at `https://ohif.caredeoghar.com/dicom-web` unless that path is
+ * confirmed on the Synology RP (Cloudflare currently 404s it).
+ */
+export const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
+  ohif_base_url: DEFAULT_OHIF_BROWSER_BASE_URL,
+  dicom_web_base_url: `${DEFAULT_OHIF_BASE_URL}/dicom-web`,
+  ohif_study_url_template:
+    "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
+  wado_uri_base_url: DEFAULT_WADO_URL,
+  weasis_manifest_url_template: `weasis://$dicom:get -w "${DEFAULT_WADO_URL}?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`,
+  pacs_ip: NETWORK_LAN_HOST,
+  pacs_port: "4242",
+  pacs_ae_title: "ORTHANC2",
+  viewer_mode: "BOTH",
+  default_viewer: "WEASIS",
+  ohif_enabled: "true",
+  weasis_enabled: "true",
+};

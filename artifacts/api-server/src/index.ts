@@ -24,7 +24,7 @@ initializePluginLoader(app);
 
 import { logger } from "./lib/logger";
 import { reportWeakGuardedSecrets } from "./lib/secretStrength";
-import { NETWORK_LAN_HOST } from "./lib/networkDefaults";
+import { NETWORK_LAN_HOST, DEFAULT_OHIF_BROWSER_BASE_URL } from "./lib/networkDefaults";
 import { startAiReportComposeJobConsumer, startCronScheduler, startRadiologyJobConsumer } from "./cron";
 import { startIntegrationScheduler } from "./services/integration/scheduler";
 import { ensureDefaultLedger } from "./routes/ledgers";
@@ -2957,7 +2957,7 @@ const server = app.listen({ port, exclusive: true }, () => {
       const erpBase = process.env["PUBLIC_BASE_URL"] || `http://${defaultHost}:8888`;
 
       const pairs: Array<{ key: string; value: string | undefined; category: string }> = [
-        { key: "ohif_base_url",      value: process.env["OHIF_URL"] || `http://${defaultHost}:3010`,       category: "viewer" },
+        { key: "ohif_base_url",      value: DEFAULT_OHIF_BROWSER_BASE_URL,       category: "viewer" },
         { key: "wado_uri_base_url",  value: process.env["WADO_URL"] || `http://${defaultHost}:8042/wado`,  category: "viewer" },
         { key: "dicom_web_base_url",  value: `${process.env["ORTHANC_URL"] || `http://${defaultHost}:8042`}/dicom-web`, category: "viewer" },
         { key: "pacs_ip",            value: defaultHost,                                                   category: "viewer" },

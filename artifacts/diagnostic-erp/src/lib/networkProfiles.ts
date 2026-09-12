@@ -136,9 +136,31 @@ export function orthancBaseForHost(host: string): string {
   return `http://${host}:${state.orthancHttpPort}`;
 }
 
-/** OHIF base for a profile, e.g. "http://<lan-host>:3010". */
+/**
+ * Browser-facing OHIF base for CARE LAN.
+ * Synology RP + Pi-hole serve https://ohif.caredeoghar.com — never raw :3010.
+ */
+export function ohifBrowserBaseUrl(): string {
+  const fromEnv =
+    (env.VITE_OHIF_PUBLIC_BASE_URL as string | undefined)?.trim() ||
+    (env.VITE_OHIF_BROWSER_BASE_URL as string | undefined)?.trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  return "https://ohif.caredeoghar.com";
+}
+
+/**
+ * OHIF base for a network profile.
+ * LAN → HTTPS clinic hostname (embeddable from HTTPS ERP).
+ * Tailscale/Public → host:port (or https public) as before.
+ */
 export function ohifBaseForProfile(profile: NetworkProfile): string {
+  if (profile === "LAN") return ohifBrowserBaseUrl();
   return `http://${state.hosts[profile]}:${state.ohifPort}`;
+}
+
+/** LAN OHIF nginx origin that proxies `/dicom-web` → Orthanc (HTTP :3010). */
+export function ohifLanProxyBaseUrl(): string {
+  return `http://${state.hosts.LAN}:${state.ohifPort}`;
 }
 
 /** Public site base, e.g. "https://<public-domain>". */

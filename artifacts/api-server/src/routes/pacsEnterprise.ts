@@ -17,7 +17,11 @@ import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnab
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
-import { NETWORK_LAN_HOST, DEFAULT_OHIF_BASE_URL, DEFAULT_WADO_URL, OHIF_HTTP_PORT } from "../lib/networkDefaults";
+import {
+  NETWORK_LAN_HOST,
+  DEFAULT_VIEWER_SETTINGS,
+  OHIF_HTTP_PORT,
+} from "../lib/networkDefaults";
 import { fetchPrintImageBytes, PRINT_MAX_IMAGE_BYTES } from "../lib/reportImages";
 import { buildPrintClinic } from "../lib/buildPrintClinic";
 import {
@@ -282,22 +286,8 @@ router.post("/test-modality", async (req, res) => {
 
 // ─── ROUTING RULES ────────────────────────────────────────────────────────────
 
-const DEFAULT_VIEWER_SETTINGS: Record<string, string> = {
-  // OHIF viewer — same-origin nginx proxy (port 3010 proxies /dicom-web → care-orthanc:8042)
-  ohif_base_url: DEFAULT_OHIF_BASE_URL,
-  dicom_web_base_url: `${DEFAULT_OHIF_BASE_URL}/dicom-web`,
-  ohif_study_url_template: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}",
-  // Weasis — uses Orthanc's own WADO-URI endpoint directly (not via OHIF proxy)
-  wado_uri_base_url: DEFAULT_WADO_URL,
-  weasis_manifest_url_template: `weasis://$dicom:get -w "${DEFAULT_WADO_URL}?requestType=WADO&studyUID={studyInstanceUID}&contentType=application/dicom"`,
-  pacs_ip: NETWORK_LAN_HOST,
-  pacs_port: "4242",
-  pacs_ae_title: "ORTHANC2",
-  viewer_mode: "BOTH",
-  default_viewer: "WEASIS",
-  ohif_enabled: "true",
-  weasis_enabled: "true",
-};
+// DEFAULT_VIEWER_SETTINGS lives in networkDefaults.ts so load-defaults and
+// unit tests share one definition (HTTPS browser OHIF, LAN OHIF proxy DICOMweb).
 
 router.post("/pacs-settings/load-defaults", async (_req, res) => {
   const results: { key: string; action: "inserted" | "updated" }[] = [];

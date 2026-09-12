@@ -7,7 +7,7 @@ import ReportLayoutQuickSelect, {
 } from "@/components/radiology/ReportLayoutQuickSelect";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, publicBaseUrl } from "@/lib/networkProfiles";
+import { hostForProfile, orthancBaseForProfile, ohifBaseForProfile, ohifBrowserBaseUrl, ohifPort, publicBaseUrl } from "@/lib/networkProfiles";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -942,8 +942,8 @@ export default function RadiologySettingsCenter() {
                       toast({ title: "That looks like a Docker bridge IP", description: "Use your real clinic LAN IP instead — browsers and Weasis cannot reach Docker-internal addresses.", variant: "destructive" });
                       return;
                     }
-                    upsertSetting.mutate({ key: "ohif_base_url",               value: `http://${lanIp}:3010`,                                  category: "viewer" });
-                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `http://${lanIp}:3010/dicom-web`,                         category: "viewer" });
+                    upsertSetting.mutate({ key: "ohif_base_url",               value: ohifBrowserBaseUrl(),                     category: "viewer" });
+                    upsertSetting.mutate({ key: "dicom_web_base_url",           value: `http://${lanIp}:${ohifPort()}/dicom-web`, category: "viewer" });
                     upsertSetting.mutate({ key: "ohif_study_url_template",      value: "{OHIF_BASE_URL}/viewer?StudyInstanceUIDs={studyInstanceUID}", category: "viewer" });
                     upsertSetting.mutate({ key: "wado_uri_base_url",            value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
                     upsertSetting.mutate({ key: "weasis_wado_url",              value: `http://${lanIp}:8042/wado`,                             category: "viewer" });
