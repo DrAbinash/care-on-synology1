@@ -15,6 +15,8 @@ export * from "./discounts";
 export * from "./appointments";
 export * from "./packages";
 export * from "./expenses";
+export * from "./expensePayments";
+export * from "./expenseCategories";
 export * from "./discountReasons";
 export * from "./reprintReasons";
 export * from "./clinicSettings";

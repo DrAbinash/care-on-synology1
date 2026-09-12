@@ -6,16 +6,51 @@ import { generateAiForTask } from "@workspace/ai-providers";
 import { geminiOcrBill, geminiOcrInvoice, geminiParseBankStatement } from "@workspace/integrations-gemini-ai";
 import { getGeminiOcrApiKey, resolveOllamaVisionForOcr } from "./ocrProviderResolver";
 
+/** Per-field OCR provenance for Expense Entry V2 review UI. */
+export type OcrFieldSource = "ocr" | "ai_suggested" | "missing" | "user";
+
+export interface BillOcrFieldMeta {
+  value: string | number | null;
+  confidencePercent: number;
+  source: OcrFieldSource;
+}
+
 export interface BillOcrResult {
   vendor: string;
   date: string;
   amount: number;
   gstAmount: number;
+  /** Optional GST breakdown when visible on the bill. */
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+  taxableAmount?: number;
+  invoiceNumber?: string;
+  gstin?: string;
   category: string;
   description: string;
   paymentMode: string;
   confidence: "high" | "medium" | "low";
   confidencePercent: number;
+  /** Field-level confidence for review UX (never invent missing values). */
+  fields?: Partial<
+    Record<
+      | "vendor"
+      | "date"
+      | "amount"
+      | "gstAmount"
+      | "cgstAmount"
+      | "sgstAmount"
+      | "igstAmount"
+      | "taxableAmount"
+      | "invoiceNumber"
+      | "gstin"
+      | "category"
+      | "description"
+      | "paymentMode",
+      BillOcrFieldMeta
+    >
+  >;
   ocrProvider: "ollama" | "gemini" | "none";
   tesseractFallbackSuggested: boolean;
   geminiFallbackAvailable?: boolean;
@@ -67,18 +102,42 @@ function clampPct(v: unknown, fallback: number): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : fallback;
 }
 
-const BILL_PROMPT = `You are an accounting assistant reading a bill / invoice / receipt. Extract fields and return ONLY valid JSON.
+const BILL_PROMPT = `You are an accounting assistant reading a bill / invoice / receipt.
+Extract fields and return ONLY valid JSON. NEVER invent values that are not visible.
+If a field is not printed on the document, return empty string / 0 and confidence 0 for that field.
+paymentMode: only fill when the bill explicitly shows Cash/UPI/Card/Cheque — otherwise "".
 
 {
-  "vendor": "shop / supplier name",
+  "vendor": "shop / supplier name or empty",
+  "invoiceNumber": "invoice/bill no or empty",
   "date": "YYYY-MM-DD or empty",
   "amount": number,
+  "taxableAmount": number,
   "gstAmount": number,
-  "category": "one of: Salaries, Rent, Utilities, Office Supplies, Medical Supplies, Lab Reagents, Equipment, Maintenance, Travel, Food, Marketing, Professional Fees, Taxes, Insurance, Miscellaneous",
-  "description": "brief 1-line description",
-  "paymentMode": "cash | card | upi | cheque | other",
+  "cgstAmount": number,
+  "sgstAmount": number,
+  "igstAmount": number,
+  "gstin": "15-char GSTIN or empty",
+  "category": "best match from: Salaries, Rent, Utilities, Office Supplies, Medical Supplies, Lab Reagents, Equipment, Maintenance, Travel, Food, Marketing, Professional Fees, Taxes, Insurance, Miscellaneous",
+  "description": "brief 1-line summary of items or empty",
+  "paymentMode": "cash | card | upi | cheque | other | empty",
   "confidence": "high | medium | low",
-  "confidencePercent": number
+  "confidencePercent": number,
+  "fieldConfidence": {
+    "vendor": 0-100,
+    "invoiceNumber": 0-100,
+    "date": 0-100,
+    "amount": 0-100,
+    "taxableAmount": 0-100,
+    "gstAmount": 0-100,
+    "cgstAmount": 0-100,
+    "sgstAmount": 0-100,
+    "igstAmount": 0-100,
+    "gstin": 0-100,
+    "category": 0-100,
+    "description": 0-100,
+    "paymentMode": 0-100
+  }
 }`;
 
 const BANK_PROMPT = `You are a bank statement parser. Extract every transaction row and return ONLY a JSON array.
@@ -194,30 +253,102 @@ async function ollamaVisionJson(task: string, prompt: string, imageBase64: strin
   return result.text;
 }
 
+/** Exported for unit tests — builds per-field OCR provenance. */
+export function buildBillFieldMeta(
+  parsed: Record<string, unknown>,
+  overallFallback: number,
+): NonNullable<BillOcrResult["fields"]> {
+  const fc = (parsed.fieldConfidence && typeof parsed.fieldConfidence === "object"
+    ? (parsed.fieldConfidence as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+
+  const meta = (
+    key: string,
+    value: string | number | null,
+    opts?: { suggested?: boolean },
+  ): BillOcrFieldMeta => {
+    // Money fields may legitimately be 0; only null/blank count as missing.
+    const isMissing =
+      value === null ||
+      value === "" ||
+      (key === "paymentMode" && !String(value).trim());
+    const pct = clampPct(fc[key], isMissing ? 0 : overallFallback);
+    let source: OcrFieldSource = "ocr";
+    if (isMissing || pct <= 0) source = "missing";
+    else if (opts?.suggested || key === "category") source = "ai_suggested";
+    return { value: isMissing ? null : value, confidencePercent: pct, source };
+  };
+
+  const amount = Number(parsed.amount ?? 0) || 0;
+  const gstAmount = Number(parsed.gstAmount ?? 0) || 0;
+  const cgstAmount = Number(parsed.cgstAmount ?? 0) || 0;
+  const sgstAmount = Number(parsed.sgstAmount ?? 0) || 0;
+  const igstAmount = Number(parsed.igstAmount ?? 0) || 0;
+  const taxableAmount = Number(parsed.taxableAmount ?? 0) || 0;
+  const paymentMode = String(parsed.paymentMode ?? "").trim();
+
+  return {
+    vendor: meta("vendor", String(parsed.vendor ?? "").trim() || null),
+    invoiceNumber: meta("invoiceNumber", String(parsed.invoiceNumber ?? "").trim() || null),
+    date: meta("date", String(parsed.date ?? "").trim() || null),
+    amount: meta("amount", amount > 0 ? amount : null),
+    taxableAmount: meta("taxableAmount", taxableAmount > 0 ? taxableAmount : null),
+    gstAmount: meta("gstAmount", gstAmount > 0 ? gstAmount : null),
+    cgstAmount: meta("cgstAmount", cgstAmount > 0 ? cgstAmount : null),
+    sgstAmount: meta("sgstAmount", sgstAmount > 0 ? sgstAmount : null),
+    igstAmount: meta("igstAmount", igstAmount > 0 ? igstAmount : null),
+    gstin: meta("gstin", String(parsed.gstin ?? "").trim() || null),
+    category: meta("category", String(parsed.category ?? "").trim() || null, { suggested: true }),
+    description: meta("description", String(parsed.description ?? "").trim() || null),
+    paymentMode: meta("paymentMode", paymentMode || null),
+  };
+}
+
 export async function ollamaOcrBill(imageBase64: string): Promise<BillOcrResult> {
   try {
     const raw = await ollamaVisionJson("bill_ocr", BILL_PROMPT, imageBase64, 1024);
-    const parsed = parseJsonBlob(raw) as Partial<BillOcrResult>;
-    const band = parsed.confidence === "high" || parsed.confidence === "medium" ? parsed.confidence : "low";
+    const parsed = parseJsonBlob(raw) as Record<string, unknown>;
+    const band =
+      parsed.confidence === "high" || parsed.confidence === "medium" || parsed.confidence === "low"
+        ? (parsed.confidence as "high" | "medium" | "low")
+        : "low";
     const fallback = { high: 97, medium: 87, low: 55 }[band];
+    const fields = buildBillFieldMeta(parsed, fallback);
+    const paymentMode = String(fields.paymentMode?.value ?? "").trim();
     return {
-      vendor: String(parsed.vendor ?? ""),
-      date: String(parsed.date ?? ""),
-      amount: Number(parsed.amount ?? 0) || 0,
-      gstAmount: Number(parsed.gstAmount ?? 0) || 0,
-      category: String(parsed.category ?? "Miscellaneous"),
-      description: String(parsed.description ?? ""),
-      paymentMode: String(parsed.paymentMode ?? "cash"),
+      vendor: String(fields.vendor?.value ?? ""),
+      invoiceNumber: String(fields.invoiceNumber?.value ?? ""),
+      date: String(fields.date?.value ?? ""),
+      amount: Number(fields.amount?.value ?? 0) || 0,
+      taxableAmount: Number(fields.taxableAmount?.value ?? 0) || 0,
+      gstAmount: Number(fields.gstAmount?.value ?? 0) || 0,
+      cgstAmount: Number(fields.cgstAmount?.value ?? 0) || 0,
+      sgstAmount: Number(fields.sgstAmount?.value ?? 0) || 0,
+      igstAmount: Number(fields.igstAmount?.value ?? 0) || 0,
+      gstin: String(fields.gstin?.value ?? ""),
+      category: String(fields.category?.value ?? "Miscellaneous") || "Miscellaneous",
+      description: String(fields.description?.value ?? ""),
+      // Do not invent payment mode — blank means "not on bill"
+      paymentMode: paymentMode || "",
       confidence: band,
       confidencePercent: clampPct(parsed.confidencePercent, fallback),
+      fields,
       ocrProvider: "ollama",
       tesseractFallbackSuggested: false,
     };
   } catch {
     return {
-      vendor: "", date: "", amount: 0, gstAmount: 0, category: "Miscellaneous",
-      description: "", paymentMode: "cash", confidence: "low", confidencePercent: 0,
-      ocrProvider: "none", tesseractFallbackSuggested: true,
+      vendor: "",
+      date: "",
+      amount: 0,
+      gstAmount: 0,
+      category: "Miscellaneous",
+      description: "",
+      paymentMode: "",
+      confidence: "low",
+      confidencePercent: 0,
+      ocrProvider: "none",
+      tesseractFallbackSuggested: true,
     };
   }
 }

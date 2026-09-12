@@ -1,22 +1,44 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { expensesTable, expenseCounterTable, clinicSettingsTable } from "@workspace/db/schema";
+import { expensesTable, clinicSettingsTable } from "@workspace/db/schema";
 import { eq, desc, and, gte, lte, ilike, sql } from "drizzle-orm";
 import {
   CreateExpenseBody,
   UpdateExpenseBody,
   UpdateExpenseParams,
 } from "@workspace/api-zod";
-import { autoVoucherForExpense, correctExpenseVoucher } from "../lib/auto-voucher";
+import { correctExpenseVoucher } from "../lib/auto-voucher";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
 import { ocrBill } from "../lib/ocr/localDocumentOcr";
 import { auditFromRequest } from "../lib/audit";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
+import {
+  createExpenseV2,
+  enrichExpenseList,
+  findDuplicateExpenses,
+  hashReceiptImage,
+  listExpenseCategories,
+  listPayables,
+  listPaymentsForExpense,
+  recordExpensePayment,
+  retryExpenseAccounting,
+  voidExpense,
+} from "../lib/expenseV2Service";
 
 const router = Router();
 
 function toNum(row: Record<string, unknown>) {
   return { ...row, amount: Number(row.amount ?? 0) };
+}
+
+function httpStatus(err: unknown): number {
+  return typeof err === "object" && err !== null && "status" in err && typeof (err as { status: unknown }).status === "number"
+    ? (err as { status: number }).status
+    : 500;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // Admin-configurable separation-of-duties switch (Settings). Defaults to
@@ -38,36 +60,26 @@ function sameActor(a: string | null | undefined, b: string | null | undefined): 
   return an.length > 0 && an === bn;
 }
 
-async function generateExpenseId(): Promise<string> {
-  const [counter] = await db.select().from(expenseCounterTable).limit(1);
-  let seq = 1;
-  if (counter) {
-    seq = counter.counter + 1;
-    await db.update(expenseCounterTable).set({ counter: seq }).where(eq(expenseCounterTable.id, counter.id));
-  } else {
-    await db.insert(expenseCounterTable).values({ counter: 1 });
-  }
-  const now = new Date();
-  const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  return `EXP-${yymm}-${String(seq).padStart(4, "0")}`;
+function parseOptionalNumber(v: unknown): number | null | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 // List expenses
 router.get("/", async (req, res) => {
-  const { category, from, to, paymentMode, search } = req.query as Record<string, string>;
+  const { category, from, to, paymentMode, search, paymentStatus } = req.query as Record<string, string>;
 
   const conditions = [
     category ? eq(expensesTable.category, category) : undefined,
     from ? gte(expensesTable.expenseDate, from) : undefined,
     to ? lte(expensesTable.expenseDate, to) : undefined,
     paymentMode ? eq(expensesTable.paymentMode, paymentMode) : undefined,
+    paymentStatus ? eq(expensesTable.paymentStatus, paymentStatus) : undefined,
     search ? ilike(expensesTable.description, `%${search}%`) : undefined,
+    sql`${expensesTable.paymentStatus} <> 'VOID'`,
   ].filter(Boolean);
 
-  // Explicit column list that EXCLUDES receipt_image_url — the scanned image can
-  // be large, and selecting it for every row would bloat this list response.
-  // A lightweight `hasReceipt` flag lets the UI show an indicator; the image
-  // itself is fetched only via GET /expenses/:id when a receipt is opened.
   const rows = await db
     .select({
       id: expensesTable.id,
@@ -75,10 +87,22 @@ router.get("/", async (req, res) => {
       category: expensesTable.category,
       description: expensesTable.description,
       amount: expensesTable.amount,
+      billAmount: expensesTable.billAmount,
+      taxAmount: expensesTable.taxAmount,
       expenseDate: expensesTable.expenseDate,
       paymentMode: expensesTable.paymentMode,
+      paymentStatus: expensesTable.paymentStatus,
+      accountingStatus: expensesTable.accountingStatus,
       paidTo: expensesTable.paidTo,
+      vendorId: expensesTable.vendorId,
+      vendorNameSnapshot: expensesTable.vendorNameSnapshot,
+      invoiceNumber: expensesTable.invoiceNumber,
+      invoiceDate: expensesTable.invoiceDate,
+      departmentId: expensesTable.departmentId,
+      categoryId: expensesTable.categoryId,
+      subcategoryId: expensesTable.subcategoryId,
       voucherId: expensesTable.voucherId,
+      accrualVoucherId: expensesTable.accrualVoucherId,
       approvedBy: expensesTable.approvedBy,
       notes: expensesTable.notes,
       hasReceipt: sql<boolean>`(${expensesTable.receiptImageUrl} is not null)`,
@@ -89,7 +113,8 @@ router.get("/", async (req, res) => {
     .where(conditions.length ? and(...(conditions as Parameters<typeof and>)) : undefined)
     .orderBy(desc(expensesTable.expenseDate), desc(expensesTable.createdAt));
 
-  return res.json(rows.map((r) => toNum(r as unknown as Record<string, unknown>)));
+  const enriched = await enrichExpenseList(rows as Array<Record<string, unknown> & { id: number }>);
+  return res.json(enriched);
 });
 
 // Summary by category
@@ -99,22 +124,66 @@ router.get("/summary", async (req, res) => {
   const conditions = [
     from ? gte(expensesTable.expenseDate, from) : undefined,
     to ? lte(expensesTable.expenseDate, to) : undefined,
+    sql`${expensesTable.paymentStatus} <> 'VOID'`,
   ].filter(Boolean);
 
   const rows = await db
     .select({
       category: expensesTable.category,
-      total: sql<string>`sum(${expensesTable.amount})`,
+      total: sql<string>`sum(COALESCE(${expensesTable.billAmount}, ${expensesTable.amount}))`,
       count: sql<number>`count(*)`,
     })
     .from(expensesTable)
     .where(conditions.length ? and(...(conditions as Parameters<typeof and>)) : undefined)
     .groupBy(expensesTable.category)
-    .orderBy(sql`sum(${expensesTable.amount}) desc`);
+    .orderBy(sql`sum(COALESCE(${expensesTable.billAmount}, ${expensesTable.amount})) desc`);
 
   return res.json(
-    rows.map((r) => ({ category: r.category, total: Number(r.total ?? 0), count: Number(r.count) }))
+    rows.map((r) => ({ category: r.category, total: Number(r.total ?? 0), count: Number(r.count) })),
   );
+});
+
+// V2 category master — register BEFORE /:id
+router.get("/categories", async (_req, res) => {
+  const rows = await listExpenseCategories();
+  return res.json(rows);
+});
+
+// Open payables — register BEFORE /:id
+router.get("/payables", async (req, res) => {
+  const { from, to } = req.query as Record<string, string>;
+  const result = await listPayables({ from, to });
+  // { items, summary } — cash/digital totals come from expense_payments rows.
+  return res.json(result);
+});
+
+// POST /api/expenses/scan-bill — Ollama vision (Gemini is not used).
+router.post("/scan-bill", async (req, res) => {
+  const { imageBase64, mimeType, useGeminiFallback } = req.body as {
+    imageBase64?: string;
+    mimeType?: string;
+    useGeminiFallback?: boolean;
+  };
+  if (!imageBase64 || !mimeType) {
+    return res.status(400).json({ error: "imageBase64 and mimeType are required" });
+  }
+  const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
+  if (!allowedTypes.includes(mimeType)) {
+    return res.status(400).json({ error: "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF." });
+  }
+  if (imageBase64.length > 11_000_000) {
+    return res.status(400).json({ error: "File too large. Maximum 8 MB." });
+  }
+  try {
+    const pre = await preprocessScanImage(imageBase64, mimeType);
+    const result = await ocrBill(pre.buffer.toString("base64"), pre.mimeType, {
+      useGeminiFallback: Boolean(useGeminiFallback),
+    });
+    return res.json({ ...result, blurScore: pre.blurScore, isBlurred: pre.isBlurred });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(502).json({ error: "AI extraction failed: " + msg });
+  }
 });
 
 // Get single expense
@@ -123,10 +192,103 @@ router.get("/:id", async (req, res) => {
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
   const [row] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
   if (!row) return res.status(404).json({ error: "Expense not found" });
-  return res.json(toNum(row as unknown as Record<string, unknown>));
+  const [enriched] = await enrichExpenseList([row as unknown as Record<string, unknown> & { id: number }]);
+  return res.json(enriched);
 });
 
-// Create expense
+router.get("/:id/payments", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+  const [expense] = await db.select({ id: expensesTable.id }).from(expensesTable).where(eq(expensesTable.id, id));
+  if (!expense) return res.status(404).json({ error: "Expense not found" });
+  const payments = await listPaymentsForExpense(id);
+  return res.json(
+    payments.map((p) => ({
+      ...p,
+      amount: Number(p.amount),
+    })),
+  );
+});
+
+router.post("/:id/payments", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+
+  const body = req.body as Record<string, unknown>;
+  const amount = Number(body.amount);
+  const paymentDate = typeof body.paymentDate === "string" ? body.paymentDate.trim() : "";
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: "Payment amount must be greater than zero" });
+  }
+  if (!paymentDate) {
+    return res.status(400).json({ error: "paymentDate is required" });
+  }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const createdBy = session?.subjectName?.trim() || null;
+
+  try {
+    const result = await recordExpensePayment({
+      expensePk: id,
+      amount,
+      paymentDate,
+      paymentMode: typeof body.paymentMode === "string" ? body.paymentMode : undefined,
+      paidFromAccountId: parseOptionalNumber(body.paidFromAccountId) ?? null,
+      referenceNumber: typeof body.referenceNumber === "string" ? body.referenceNumber : null,
+      notes: typeof body.notes === "string" ? body.notes : null,
+      createdBy,
+    });
+    return res.status(201).json({
+      expense: toNum(result.expense as unknown as Record<string, unknown>),
+      payment: { ...result.payment, amount: Number(result.payment.amount) },
+      money: result.money,
+    });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+router.post("/:id/void", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (reason.length < 3) {
+    return res.status(400).json({ error: "Void reason is required (min 3 characters)" });
+  }
+
+  const session = (req as StaffAuthRequest).staffSession;
+  const voidedBy = session?.subjectName?.trim() || "staff";
+
+  try {
+    const expense = await voidExpense({ expensePk: id, reason, voidedBy });
+    return res.json(toNum(expense as unknown as Record<string, unknown>));
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+/** Admin-oriented idempotent accounting retry for FAILED/PENDING bills. */
+router.post("/:id/accounting/retry", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+  const session = (req as StaffAuthRequest).staffSession;
+  try {
+    const result = await retryExpenseAccounting({
+      expensePk: id,
+      performedBy: session?.subjectName?.trim() || null,
+    });
+    return res.json({
+      skipped: result.skipped,
+      expense: toNum(result.expense as unknown as Record<string, unknown>),
+      payments: result.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+// Create expense (legacy + V2)
 router.post("/", async (req, res) => {
   const parsed = CreateExpenseBody.safeParse(req.body);
   if (!parsed.success) {
@@ -134,9 +296,6 @@ router.post("/", async (req, res) => {
   }
   const { category, description, amount, expenseDate, paymentMode, paidTo, approvedBy, notes } = parsed.data;
 
-  // Session-derived, never client-editable — same convention as the audit
-  // actors in bills.ts. This is what the approval-separation check below
-  // compares approvedBy against.
   const createdBy = (req as StaffAuthRequest).staffSession?.subjectName?.trim() || null;
   const approvedByInput = typeof approvedBy === "string" ? approvedBy.trim() || null : null;
   const allowSelf = await isSelfApprovalAllowed();
@@ -147,28 +306,42 @@ router.post("/", async (req, res) => {
     });
   }
 
-  // Default drawer owner = session creator when Approved By was left blank
-  // (and self-approval is allowed). Read paths also COALESCE to created_by.
   const resolvedApprovedBy = approvedByInput ?? (allowSelf && createdBy ? createdBy : null);
 
-  // Optional scanned receipt image (data URL). Read directly from the body —
-  // it's not part of the generated CreateExpenseBody schema (which strips it),
-  // so no generated code needs changing. Bounded to ~6MB of base64 to reject
-  // absurd payloads while comfortably fitting an enhanced JPEG.
-  const rawReceipt = (req.body as Record<string, unknown>)?.receiptImageUrl;
+  const raw = req.body as Record<string, unknown>;
+  const rawReceipt = raw.receiptImageUrl;
   const receiptImageUrl =
     typeof rawReceipt === "string" && rawReceipt.length > 0 && rawReceipt.length <= 6_000_000
       ? rawReceipt
       : null;
 
-  const expId = await generateExpenseId();
-  const [expense] = await db
-    .insert(expensesTable)
-    .values({
-      expenseId: expId,
+  const billAmount = parseOptionalNumber(raw.billAmount);
+  const initialPaymentAmount = parseOptionalNumber(raw.initialPaymentAmount);
+  const taxAmount = parseOptionalNumber(raw.taxAmount);
+  const vendorId = parseOptionalNumber(raw.vendorId);
+  const departmentId = parseOptionalNumber(raw.departmentId);
+  const categoryId = parseOptionalNumber(raw.categoryId);
+  const subcategoryId = parseOptionalNumber(raw.subcategoryId);
+  const paidFromAccountId = parseOptionalNumber(raw.paidFromAccountId);
+
+  const receiptHash = hashReceiptImage(receiptImageUrl);
+  const dupes = await findDuplicateExpenses({
+    vendorId: vendorId ?? null,
+    vendorName: typeof raw.vendorNameSnapshot === "string" ? raw.vendorNameSnapshot : paidTo,
+    invoiceNumber: typeof raw.invoiceNumber === "string" ? raw.invoiceNumber : null,
+    billAmount: billAmount ?? amount,
+    expenseDate,
+    receiptImageHash: receiptHash,
+  });
+
+  try {
+    const result = await createExpenseV2({
       category,
       description,
-      amount: String(amount),
+      amount,
+      billAmount: billAmount ?? undefined,
+      taxAmount: taxAmount ?? null,
+      initialPaymentAmount: initialPaymentAmount ?? undefined,
       expenseDate,
       paymentMode: paymentMode || "cash",
       paidTo: paidTo ?? null,
@@ -176,20 +349,30 @@ router.post("/", async (req, res) => {
       createdBy,
       notes: notes ?? null,
       receiptImageUrl,
-    })
-    .returning();
+      vendorId: vendorId ?? null,
+      vendorNameSnapshot: typeof raw.vendorNameSnapshot === "string" ? raw.vendorNameSnapshot : null,
+      invoiceNumber: typeof raw.invoiceNumber === "string" ? raw.invoiceNumber : null,
+      invoiceDate: typeof raw.invoiceDate === "string" ? raw.invoiceDate : null,
+      departmentId: departmentId ?? null,
+      categoryId: categoryId ?? null,
+      subcategoryId: subcategoryId ?? null,
+      paidFromAccountId: paidFromAccountId ?? null,
+      referenceNumber: typeof raw.referenceNumber === "string" ? raw.referenceNumber : null,
+      paymentDate: typeof raw.paymentDate === "string" ? raw.paymentDate : null,
+      ocrMetaJson: typeof raw.ocrMetaJson === "string" ? raw.ocrMetaJson : null,
+    });
 
-  // Auto-generate Payment Voucher for the expense (fire-and-forget, non-blocking)
-  autoVoucherForExpense({
-    expenseId: expId,
-    amount,
-    paymentMode: paymentMode || "cash",
-    category,
-    description,
-    performedBy: resolvedApprovedBy ?? createdBy ?? null,
-  }).catch(() => {/* already logged inside */});
-
-  return res.status(201).json(toNum(expense as unknown as Record<string, unknown>));
+    return res.status(201).json({
+      ...toNum(result.expense as unknown as Record<string, unknown>),
+      billAmount: result.money.billAmount,
+      totalPaid: result.money.totalPaid,
+      balanceDue: result.money.balanceDue,
+      paymentStatus: result.money.paymentStatus,
+      duplicateWarnings: dupes.strong.length || dupes.soft.length ? dupes : undefined,
+    });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
 });
 
 // Update expense
@@ -210,9 +393,22 @@ router.patch("/:id", async (req, res) => {
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: "No valid fields to update" });
   }
-  // Snapshot the pre-edit row so the audit trail records what actually changed.
   const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
   if (!before) return res.status(404).json({ error: "Expense not found" });
+
+  // V2: expense_payments is canonical. Never let header financial fields diverge —
+  // require Void + re-enter for amount / paymentMode / category on any bill that
+  // has a billAmount, payments, or non-null accounting status other than blank legacy.
+  const touchingFinancial =
+    bodyParsed.data.amount !== undefined ||
+    bodyParsed.data.paymentMode !== undefined ||
+    bodyParsed.data.category !== undefined;
+  if (touchingFinancial) {
+    return res.status(400).json({
+      error:
+        "Cannot edit amount / payment mode / category on a posted expense. Void and re-enter the bill (metadata-only fields remain editable).",
+    });
+  }
 
   if (
     typeof updates.approvedBy === "string" &&
@@ -232,11 +428,9 @@ router.patch("/:id", async (req, res) => {
     .returning();
   if (!expense) return res.status(404).json({ error: "Expense not found" });
 
-  // Amount / payment-mode edits: reverse the original PV and post the corrected
-  // amount so the ledger matches the expense row (no silent double-count).
   const session = (req as StaffAuthRequest).staffSession;
   const amountChanged = bodyParsed.data.amount !== undefined && Number(bodyParsed.data.amount) !== Number(before.amount);
-  const modeChanged   = bodyParsed.data.paymentMode !== undefined && bodyParsed.data.paymentMode !== before.paymentMode;
+  const modeChanged = bodyParsed.data.paymentMode !== undefined && bodyParsed.data.paymentMode !== before.paymentMode;
   const categoryChanged = bodyParsed.data.category !== undefined && bodyParsed.data.category !== before.category;
   if (amountChanged || modeChanged || categoryChanged) {
     await auditFromRequest(req, {
@@ -249,8 +443,9 @@ router.patch("/:id", async (req, res) => {
       entityId: before.expenseId,
       oldValue: JSON.stringify({ amount: before.amount, paymentMode: before.paymentMode, category: before.category }),
       newValue: JSON.stringify({ amount: expense.amount, paymentMode: expense.paymentMode, category: expense.category }),
-      reason: (typeof req.body?.reason === "string" && req.body.reason.trim())
-        || "expense edited — ledger voucher reversed and reposted",
+      reason:
+        (typeof req.body?.reason === "string" && req.body.reason.trim()) ||
+        "expense edited — ledger voucher reversed and reposted",
     });
     correctExpenseVoucher({
       expenseId: expense.expenseId,
@@ -259,70 +454,54 @@ router.patch("/:id", async (req, res) => {
       category: expense.category,
       description: expense.description,
       performedBy: session?.subjectName ?? expense.approvedBy ?? null,
-    }).catch(() => {/* already logged inside */});
+    }).catch(() => {
+      /* already logged inside */
+    });
   }
 
   return res.json(toNum(expense as unknown as Record<string, unknown>));
 });
 
-// POST /api/expenses/scan-bill — Ollama vision (Gemini is not used).
-router.post("/scan-bill", async (req, res) => {
-  const { imageBase64, mimeType, useGeminiFallback } = req.body as {
-    imageBase64?: string; mimeType?: string; useGeminiFallback?: boolean;
-  };
-  if (!imageBase64 || !mimeType) {
-    return res.status(400).json({ error: "imageBase64 and mimeType are required" });
-  }
-  const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"];
-  if (!allowedTypes.includes(mimeType)) {
-    return res.status(400).json({ error: "Unsupported file type. Use JPEG, PNG, WebP, HEIC, or PDF." });
-  }
-  if (imageBase64.length > 11_000_000) {
-    return res.status(400).json({ error: "File too large. Maximum 8 MB." });
-  }
-  try {
-    const pre = await preprocessScanImage(imageBase64, mimeType);
-    const result = await ocrBill(pre.buffer.toString("base64"), pre.mimeType, { useGeminiFallback: Boolean(useGeminiFallback) });
-    return res.json({ ...result, blurScore: pre.blurScore, isBlurred: pre.isBlurred });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return res.status(502).json({ error: "AI extraction failed: " + msg });
-  }
-});
-
-// Delete expense
+// Delete expense → void (requires reason)
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
-  const [expense] = await db.delete(expensesTable).where(eq(expensesTable.id, id)).returning();
+
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (reason.length < 3) {
+    return res.status(400).json({ error: "Void reason is required (min 3 characters)" });
+  }
+
+  const [expense] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
   if (!expense) return res.status(404).json({ error: "Expense not found" });
 
-  // Deleting an expense previously left no trace and orphaned its payment
-  // voucher in the ledger. Record who deleted what — including the still-posted
-  // voucherId — in the tamper-evident audit trail so the deletion is
-  // attributable and the orphaned PV is traceable for reversal. (Auto-posting
-  // the reversing voucher needs the locked-vouchers reversal path and is a
-  // separate change.)
   const session = (req as StaffAuthRequest).staffSession;
-  await auditFromRequest(req, {
-    userId: session?.subjectId ?? null,
-    userName: session?.subjectName ?? "staff",
-    role: session?.role ?? "staff",
-    action: "delete",
-    module: "accounting",
-    entityType: "expense",
-    entityId: expense.expenseId,
-    oldValue: JSON.stringify({
-      amount: expense.amount,
-      paymentMode: expense.paymentMode,
-      category: expense.category,
-      voucherId: expense.voucherId ?? null,
-    }),
-    reason: (typeof req.body?.reason === "string" && req.body.reason.trim())
-      || "expense deleted (ledger voucher reversal pending)",
-  });
+  const voidedBy = session?.subjectName?.trim() || "staff";
 
-  return res.json({ success: true });
+  try {
+    const voided = await voidExpense({ expensePk: id, reason, voidedBy });
+
+    await auditFromRequest(req, {
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "staff",
+      role: session?.role ?? "staff",
+      action: "delete",
+      module: "accounting",
+      entityType: "expense",
+      entityId: expense.expenseId,
+      oldValue: JSON.stringify({
+        amount: expense.amount,
+        paymentMode: expense.paymentMode,
+        category: expense.category,
+        voucherId: expense.voucherId ?? null,
+      }),
+      reason: reason || "expense voided",
+    });
+
+    return res.json({ success: true, expense: toNum(voided as unknown as Record<string, unknown>) });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
 });
 
 export { router as expensesRouter };
