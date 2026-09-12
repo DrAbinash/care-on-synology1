@@ -72,8 +72,17 @@ export function mapExpenseCategory(raw: string | null | undefined): (typeof LEDG
 
 export function mapExpensePaymentMode(raw: string | null | undefined): (typeof LEDGER_PAYMENT_MODES)[number] {
   const key = norm(raw);
+  if (!key) return "cash";
   if ((LEDGER_PAYMENT_MODES as readonly string[]).includes(key)) {
     return key as (typeof LEDGER_PAYMENT_MODES)[number];
   }
   return PAYMENT_MAP[key] ?? "cash";
+}
+
+/** Like mapExpensePaymentMode, but blank OCR input stays blank (do not invent Cash). */
+export function mapExpensePaymentModeOptional(
+  raw: string | null | undefined,
+): (typeof LEDGER_PAYMENT_MODES)[number] | "" {
+  if (!(raw ?? "").trim()) return "";
+  return mapExpensePaymentMode(raw);
 }

@@ -12,16 +12,25 @@ import {
   LEDGER_EXPENSE_CATEGORIES,
   LEDGER_PAYMENT_MODES,
   mapExpenseCategory,
-  mapExpensePaymentMode,
+  mapExpensePaymentModeOptional,
 } from "@/lib/expenseScanMapping";
 import { recognizeDocumentText } from "@/lib/tesseractDocumentOcr";
 import { parseExpenseBillText } from "@/lib/expenseBillTextParser";
 
+type BillOcrFieldMeta = {
+  value: string | number | null;
+  confidencePercent: number;
+  source: "ocr" | "ai_suggested" | "missing" | "user";
+};
+
 type BillOcrResult = {
   vendor: string; date: string; amount: number; gstAmount: number;
+  invoiceNumber?: string; gstin?: string;
+  cgstAmount?: number; sgstAmount?: number; igstAmount?: number; taxableAmount?: number;
   category: string; description: string; paymentMode: string;
   confidence: "high" | "medium" | "low";
   confidencePercent?: number;
+  fields?: Partial<Record<string, BillOcrFieldMeta>>;
   // Computed server-side (preprocessScanImage, shared with Form F's ID-card
   // OCR) but previously never read here — the backend already flagged a
   // blurry capture, the UI just silently dropped the signal instead of
@@ -49,8 +58,32 @@ function applyOcrToDraft(data: BillOcrResult): BillOcrResult {
   return {
     ...data,
     category: mapExpenseCategory(data.category),
-    paymentMode: mapExpensePaymentMode(data.paymentMode),
+    // Blank OCR payment mode stays blank — do not invent Cash.
+    paymentMode: mapExpensePaymentModeOptional(data.paymentMode),
   };
+}
+
+function FieldBadge({ meta }: { meta?: BillOcrFieldMeta }) {
+  if (!meta) return null;
+  const label =
+    meta.source === "missing"
+      ? "not detected"
+      : meta.source === "ai_suggested"
+        ? `AI suggested · ${meta.confidencePercent}%`
+        : `OCR · ${meta.confidencePercent}%`;
+  const cls =
+    meta.source === "missing"
+      ? "text-amber-700 bg-amber-50 border-amber-200"
+      : meta.source === "ai_suggested"
+        ? "text-blue-700 bg-blue-50 border-blue-200"
+        : meta.confidencePercent >= 90
+          ? "text-green-700 bg-green-50 border-green-200"
+          : "text-slate-600 bg-slate-50 border-slate-200";
+  return (
+    <span className={`ml-2 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+      {label}
+    </span>
+  );
 }
 
 // Shared Bill / Receipt Scanner panel — used by both the Accounting
@@ -168,7 +201,7 @@ export default function BillReceiptScannerPanel() {
         description: draft.description || draft.vendor || "Scanned bill",
         amount: draft.amount,
         expenseDate: draft.date || new Date().toISOString().slice(0, 10),
-        paymentMode: mapExpensePaymentMode(draft.paymentMode),
+        paymentMode: mapExpensePaymentModeOptional(draft.paymentMode) || "cash",
         paidTo: draft.vendor || undefined,
         notes: draft.gstAmount > 0 ? `GST: ₹${draft.gstAmount}` : undefined,
         receiptImageUrl: preview || undefined,
@@ -218,33 +251,33 @@ export default function BillReceiptScannerPanel() {
 
       <div className="grid gap-3">
         <div>
-          <Label className="text-xs">Vendor / Supplier</Label>
+          <Label className="text-xs">Vendor / Supplier<FieldBadge meta={draft.fields?.vendor} /></Label>
           <Input className="mt-1 h-8 text-sm" value={draft.vendor} onChange={e => setDraft({ ...draft, vendor: e.target.value })} />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <div>
-            <Label className="text-xs">Date</Label>
+            <Label className="text-xs">Date<FieldBadge meta={draft.fields?.date} /></Label>
             <Input className="mt-1 h-8 text-sm" type="date" value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} />
           </div>
           <div>
-            <Label className="text-xs">Total Amount (₹)</Label>
+            <Label className="text-xs">Total Amount (₹)<FieldBadge meta={draft.fields?.amount} /></Label>
             <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.amount} onChange={e => setDraft({ ...draft, amount: Number(e.target.value) })} />
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <div>
-            <Label className="text-xs">GST Amount (₹)</Label>
+            <Label className="text-xs">GST Amount (₹)<FieldBadge meta={draft.fields?.gstAmount} /></Label>
             <Input className="mt-1 h-8 text-sm" type="number" step="0.01" value={draft.gstAmount} onChange={e => setDraft({ ...draft, gstAmount: Number(e.target.value) })} />
           </div>
           <div>
-            <Label className="text-xs">Payment Mode</Label>
-            <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.paymentMode} onChange={e => setDraft({ ...draft, paymentMode: e.target.value })}>
-              {LEDGER_PAYMENT_MODES.map(m => <option key={m} value={m}>{m.replace("-", " ")}</option>)}
+            <Label className="text-xs">Payment Mode<FieldBadge meta={draft.fields?.paymentMode} /></Label>
+            <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.paymentMode || ""} onChange={e => setDraft({ ...draft, paymentMode: e.target.value })}>
+              {[{ value: "", label: "not on bill" }, ...LEDGER_PAYMENT_MODES.map(m => ({ value: m, label: m.replace("-", " ") }))].map(m => <option key={m.value || "blank"} value={m.value}>{m.label}</option>)}
             </select>
           </div>
         </div>
         <div>
-          <Label className="text-xs">Category</Label>
+          <Label className="text-xs">Category<FieldBadge meta={draft.fields?.category} /></Label>
           <select className="mt-1 h-8 text-sm w-full border border-input rounded-md px-2 bg-background" value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })}>
             {LEDGER_EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
