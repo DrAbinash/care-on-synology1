@@ -69,6 +69,8 @@ export const vouchersTable = pgTable("vouchers", {
   // key between real-time auto-vouchers and the sync-billing backfill — a
   // payment is "already vouchered" iff a voucher row has payment_id = its id.
   paymentId: integer("payment_id"),
+  /** Optional link to an expense_payments row (Expense Entry V2). */
+  expensePaymentId: integer("expense_payment_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
