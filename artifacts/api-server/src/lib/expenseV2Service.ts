@@ -61,14 +61,22 @@ function httpError(status: number, message: string): Error {
 }
 
 async function nextExpenseId(): Promise<string> {
-  // Lock counter and advance past any existing EXP-*-NNNN ids (avoids collisions
-  // when the counter drifts after manual inserts / partial migrations).
+  // Lock counter and advance past any existing EXP-<digits>-<digits> ids (avoids
+  // collisions when the counter drifts after manual inserts / partial migrations).
+  // Noncanonical historical ids (e.g. EXP-LEGACY-1) must NOT participate in the
+  // numeric MAX — casting them to int crashes PostgreSQL.
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM expense_counter FOR UPDATE`);
     const [counter] = await tx.select().from(expenseCounterTable).limit(1);
     const maxExisting = await tx
       .select({
-        max: sql<string>`COALESCE(MAX(NULLIF(regexp_replace(${expensesTable.expenseId}, '^EXP-[0-9]+-', ''), '')::int), 0)`,
+        max: sql<string>`COALESCE(MAX(
+          CASE
+            WHEN ${expensesTable.expenseId} ~ '^EXP-[0-9]+-[0-9]+$'
+            THEN (regexp_replace(${expensesTable.expenseId}, '^EXP-[0-9]+-', ''))::int
+            ELSE NULL
+          END
+        ), 0)`,
       })
       .from(expensesTable);
     const floor = Number(maxExisting[0]?.max ?? 0);
@@ -85,12 +93,21 @@ async function nextExpenseId(): Promise<string> {
 }
 
 async function nextPaymentPublicId(): Promise<string> {
+  // Only canonical EXPAY-<digits>-<digits> rows set the sequence floor.
+  // Production backfill rows like EXPAY-LEGACY-1 must be ignored — a bare
+  // regexp_replace + ::int casts the unmatched text and raises HTTP 500.
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT id FROM expense_payment_counter FOR UPDATE`);
     const [counter] = await tx.select().from(expensePaymentCounterTable).limit(1);
     const maxExisting = await tx
       .select({
-        max: sql<string>`COALESCE(MAX(NULLIF(regexp_replace(${expensePaymentsTable.paymentPublicId}, '^EXPAY-[0-9]+-', ''), '')::int), 0)`,
+        max: sql<string>`COALESCE(MAX(
+          CASE
+            WHEN ${expensePaymentsTable.paymentPublicId} ~ '^EXPAY-[0-9]+-[0-9]+$'
+            THEN (regexp_replace(${expensePaymentsTable.paymentPublicId}, '^EXPAY-[0-9]+-', ''))::int
+            ELSE NULL
+          END
+        ), 0)`,
       })
       .from(expensePaymentsTable);
     const floor = Number(maxExisting[0]?.max ?? 0);
