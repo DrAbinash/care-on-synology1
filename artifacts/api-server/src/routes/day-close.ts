@@ -1,7 +1,15 @@
 import { Router } from "express";
 import { db, paymentsTable, dayClosuresTable, userDayClosuresTable, billsTable, usersTable, expensesTable, orderTestsTable, testsTable } from "@workspace/db";
-import { drawerAuditLogTable, patientsTable, doctorsTable, ordersTable, billAuditsTable, voucherAuditsTable } from "@workspace/db/schema";
-import { eq, and, gt, lte, desc, sql, inArray, notInArray } from "drizzle-orm";
+import {
+  drawerAuditLogTable,
+  patientsTable,
+  doctorsTable,
+  ordersTable,
+  billAuditsTable,
+  voucherAuditsTable,
+  expensePaymentsTable,
+} from "@workspace/db/schema";
+import { eq, and, gt, lte, desc, sql, inArray, notInArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Response, NextFunction } from "express";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -224,9 +232,13 @@ async function summarizeWindow(from: Date | null, to: Date) {
     ? and(gt(billsTable.createdAt, from), lte(billsTable.createdAt, to))
     : lte(billsTable.createdAt, to);
 
-  const expenseWhere = from
-    ? and(gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
-    : lte(expensesTable.createdAt, to);
+  const expensePaymentWhere = from
+    ? and(
+        gt(expensePaymentsTable.createdAt, from),
+        lte(expensePaymentsTable.createdAt, to),
+        isNull(expensePaymentsTable.reversedAt),
+      )
+    : and(lte(expensePaymentsTable.createdAt, to), isNull(expensePaymentsTable.reversedAt));
 
   // Payments
   const payRows = await db
@@ -261,20 +273,23 @@ async function summarizeWindow(from: Date | null, to: Date) {
     .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
     .where(billWhere);
 
-  // Expenses
+  // Expense money-out rows (V2): cash/day-close uses expense_payments, not bill headers.
   const expRows = await db
     .select({
-      id: expensesTable.id,
-      amount: expensesTable.amount,
+      id: expensePaymentsTable.id,
+      amount: expensePaymentsTable.amount,
       category: expensesTable.category,
       description: expensesTable.description,
-      createdAt: expensesTable.createdAt,
-      paymentMode: expensesTable.paymentMode,
+      createdAt: expensePaymentsTable.createdAt,
+      paymentMode: expensePaymentsTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
       createdBy: expensesTable.createdBy,
     })
-    .from(expensesTable)
-    .where(expenseWhere);
+    .from(expensePaymentsTable)
+    .innerJoin(expensesTable, eq(expensePaymentsTable.expenseId, expensesTable.id))
+    .where(
+      and(expensePaymentWhere, sql`${expensesTable.paymentStatus} <> 'VOID'`),
+    );
 
   // Aggregate payments — exclude non-collectible settlement statuses, then
   // delegate to the pure, unit-tested classifier above.
@@ -807,20 +822,26 @@ async function summarizeUserWindow(
   // created_by when Approved By was left blank). Posting clock = created_at.
   const ownerMatch = sql`COALESCE(NULLIF(TRIM(${expensesTable.approvedBy}), ''), NULLIF(TRIM(${expensesTable.createdBy}), '')) = ${userName}`;
   const expWhere = from
-    ? and(ownerMatch, gt(expensesTable.createdAt, from), lte(expensesTable.createdAt, to))
-    : and(ownerMatch, lte(expensesTable.createdAt, to));
+    ? and(
+        ownerMatch,
+        gt(expensePaymentsTable.createdAt, from),
+        lte(expensePaymentsTable.createdAt, to),
+        isNull(expensePaymentsTable.reversedAt),
+      )
+    : and(ownerMatch, lte(expensePaymentsTable.createdAt, to), isNull(expensePaymentsTable.reversedAt));
   const expRows = await db
     .select({
-      id: expensesTable.id,
-      amount: expensesTable.amount,
+      id: expensePaymentsTable.id,
+      amount: expensePaymentsTable.amount,
       category: expensesTable.category,
       description: expensesTable.description,
-      paymentMode: expensesTable.paymentMode,
+      paymentMode: expensePaymentsTable.paymentMode,
       approvedBy: expensesTable.approvedBy,
       createdBy: expensesTable.createdBy,
     })
-    .from(expensesTable)
-    .where(expWhere);
+    .from(expensePaymentsTable)
+    .innerJoin(expensesTable, eq(expensePaymentsTable.expenseId, expensesTable.id))
+    .where(and(expWhere, sql`${expensesTable.paymentStatus} <> 'VOID'`));
   // Reduce this cashier's expected physical cash by the cash expenses they
   // approved — exactly once — by delegating to the same tested pure helper the
   // overall path uses (applyCashExpenses). `totals` is `classified.overall`,

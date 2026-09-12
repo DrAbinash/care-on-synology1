@@ -115,10 +115,13 @@ dailySummaryRouter.get("/", async (req, res) => {
   // entry cannot retroactively change an already-closed day's totals.
   // This matches day-close.ts, which already windows expenses this way.
   const expenseRows = await db.execute<{ payment_mode: string; total: string }>(
-    sql`SELECT payment_mode, COALESCE(SUM(amount::numeric), 0)::text AS total
-        FROM expenses
-        WHERE created_at >= ${dayStart.toISOString()} AND created_at < ${dayEnd.toISOString()}
-        GROUP BY payment_mode`
+    sql`SELECT ep.payment_mode, COALESCE(SUM(ep.amount::numeric), 0)::text AS total
+        FROM expense_payments ep
+        INNER JOIN expenses e ON e.id = ep.expense_id
+        WHERE ep.reversed_at IS NULL
+          AND COALESCE(e.payment_status, 'PAID') <> 'VOID'
+          AND ep.created_at >= ${dayStart.toISOString()} AND ep.created_at < ${dayEnd.toISOString()}
+        GROUP BY ep.payment_mode`
   );
 
   const allDuesResult = await db.execute<{ total: string }>(

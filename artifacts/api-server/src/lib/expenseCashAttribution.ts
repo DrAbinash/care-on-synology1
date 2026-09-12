@@ -35,6 +35,9 @@ export function expenseDrawerOwnerSql(): SQL {
 }
 
 /** SQL AND-fragment: restrict to one staff's drawer (exact name match). */
-export function expenseDrawerOwnerEquals(staffName: string): SQL {
-  return sql`AND ${expenseDrawerOwnerSql()} = ${staffName}`;
+export function expenseDrawerOwnerEquals(staffName: string, tableAlias?: string): SQL {
+  if (!tableAlias) {
+    return sql`AND ${expenseDrawerOwnerSql()} = ${staffName}`;
+  }
+  return sql`AND COALESCE(NULLIF(TRIM(${sql.raw(`${tableAlias}.approved_by`)}), ''), NULLIF(TRIM(${sql.raw(`${tableAlias}.created_by`)}), '')) = ${staffName}`;
 }

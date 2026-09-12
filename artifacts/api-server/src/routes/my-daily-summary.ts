@@ -356,11 +356,14 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     digital_expenses: string;
   }>(sql`
     SELECT
-      COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,
-      COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
-    FROM expenses
-    WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-    ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
+      COALESCE(SUM(ep.amount::numeric) FILTER (WHERE LOWER(TRIM(COALESCE(ep.payment_mode, ''))) = 'cash' OR TRIM(COALESCE(ep.payment_mode, '')) = ''), 0)::text AS cash_expenses,
+      COALESCE(SUM(ep.amount::numeric) FILTER (WHERE TRIM(COALESCE(ep.payment_mode, '')) <> '' AND LOWER(TRIM(ep.payment_mode)) <> 'cash'), 0)::text AS digital_expenses
+    FROM expense_payments ep
+    INNER JOIN expenses e ON e.id = ep.expense_id
+    WHERE ep.reversed_at IS NULL
+      AND COALESCE(e.payment_status, 'PAID') <> 'VOID'
+      AND ep.created_at >= ${start.toISOString()} AND ep.created_at < ${end.toISOString()}
+      ${staffName !== null ? expenseDrawerOwnerEquals(staffName, "e") : sql``}
   `);
 
   // Line items for Cash Expenses expand (same window / approved_by filter as cash_expenses).
@@ -375,13 +378,16 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     created_by: string | null;
     created_at: string;
   }>(sql`
-    SELECT expense_id, category, description, amount::text AS amount, payment_mode, paid_to,
-           approved_by, created_by, created_at::text AS created_at
-    FROM expenses
-    WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
-      AND LOWER(payment_mode) = 'cash'
-      ${staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``}
-    ORDER BY created_at DESC
+    SELECT e.expense_id, e.category, e.description, ep.amount::text AS amount, ep.payment_mode, e.paid_to,
+           e.approved_by, e.created_by, ep.created_at::text AS created_at
+    FROM expense_payments ep
+    INNER JOIN expenses e ON e.id = ep.expense_id
+    WHERE ep.reversed_at IS NULL
+      AND COALESCE(e.payment_status, 'PAID') <> 'VOID'
+      AND ep.created_at >= ${start.toISOString()} AND ep.created_at < ${end.toISOString()}
+      AND (LOWER(TRIM(COALESCE(ep.payment_mode, ''))) = 'cash' OR TRIM(COALESCE(ep.payment_mode, '')) = '')
+      ${staffName !== null ? expenseDrawerOwnerEquals(staffName, "e") : sql``}
+    ORDER BY ep.created_at DESC
     LIMIT 200
   `);
 
@@ -1174,13 +1180,16 @@ myDailySummaryRouter.get("/drilldown", async (req: StaffAuthRequest, res) => {
         .reduce((s, p) => s + Number(p.amount), 0);
       const digitalRefunded = cashPayments.filter((p) => Number(p.amount) < 0 && classifyPaymentMethod(p.method).isKnown && isDigitalSettlement(p.method))
         .reduce((s, p) => s + Math.abs(Number(p.amount)), 0);
-      const expFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName) : sql``;
+      const expFilter = staffName !== null ? expenseDrawerOwnerEquals(staffName, "e") : sql``;
       const expRows = await db.execute<{ cash_expenses: string; digital_expenses: string }>(sql`
         SELECT
-          COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) = 'cash'), 0)::text AS cash_expenses,
-          COALESCE(SUM(amount::numeric) FILTER (WHERE LOWER(payment_mode) <> 'cash'), 0)::text AS digital_expenses
-        FROM expenses
-        WHERE created_at >= ${start.toISOString()} AND created_at < ${end.toISOString()}
+          COALESCE(SUM(ep.amount::numeric) FILTER (WHERE LOWER(TRIM(COALESCE(ep.payment_mode, ''))) = 'cash' OR TRIM(COALESCE(ep.payment_mode, '')) = ''), 0)::text AS cash_expenses,
+          COALESCE(SUM(ep.amount::numeric) FILTER (WHERE TRIM(COALESCE(ep.payment_mode, '')) <> '' AND LOWER(TRIM(ep.payment_mode)) <> 'cash'), 0)::text AS digital_expenses
+        FROM expense_payments ep
+        INNER JOIN expenses e ON e.id = ep.expense_id
+        WHERE ep.reversed_at IS NULL
+          AND COALESCE(e.payment_status, 'PAID') <> 'VOID'
+          AND ep.created_at >= ${start.toISOString()} AND ep.created_at < ${end.toISOString()}
         ${expFilter}
       `);
       const cashExpenses = Number(expRows.rows[0]?.cash_expenses ?? 0);
