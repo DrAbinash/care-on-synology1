@@ -21,6 +21,7 @@ import {
   listPayables,
   listPaymentsForExpense,
   recordExpensePayment,
+  retryExpenseAccounting,
   voidExpense,
 } from "../lib/expenseV2Service";
 
@@ -266,6 +267,26 @@ router.post("/:id/void", async (req, res) => {
   }
 });
 
+/** Admin-oriented idempotent accounting retry for FAILED/PENDING bills. */
+router.post("/:id/accounting/retry", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+  const session = (req as StaffAuthRequest).staffSession;
+  try {
+    const result = await retryExpenseAccounting({
+      expensePk: id,
+      performedBy: session?.subjectName?.trim() || null,
+    });
+    return res.json({
+      skipped: result.skipped,
+      expense: toNum(result.expense as unknown as Record<string, unknown>),
+      payments: result.payments.map((p) => ({ ...p, amount: Number(p.amount) })),
+    });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
 // Create expense (legacy + V2)
 router.post("/", async (req, res) => {
   const parsed = CreateExpenseBody.safeParse(req.body);
@@ -373,6 +394,16 @@ router.patch("/:id", async (req, res) => {
   }
   const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
   if (!before) return res.status(404).json({ error: "Expense not found" });
+
+  if (
+    (bodyParsed.data.amount !== undefined || bodyParsed.data.paymentMode !== undefined || bodyParsed.data.category !== undefined) &&
+    (before.paymentStatus === "DUE" || before.paymentStatus === "PART_PAID" || before.paymentStatus === "VOID")
+  ) {
+    return res.status(400).json({
+      error:
+        "Cannot edit amount / payment mode / category on a payable or voided bill. Use Record Payment, or void and re-enter.",
+    });
+  }
 
   if (
     typeof updates.approvedBy === "string" &&

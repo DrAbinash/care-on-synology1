@@ -59,34 +59,52 @@ function httpError(status: number, message: string): Error {
 }
 
 async function nextExpenseId(): Promise<string> {
-  const [counter] = await db.select().from(expenseCounterTable).limit(1);
-  let seq = 1;
-  if (counter) {
-    seq = counter.counter + 1;
-    await db.update(expenseCounterTable).set({ counter: seq }).where(eq(expenseCounterTable.id, counter.id));
-  } else {
-    await db.insert(expenseCounterTable).values({ counter: 1 });
-  }
-  const now = new Date();
-  const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  return `EXP-${yymm}-${String(seq).padStart(4, "0")}`;
+  // Lock counter and advance past any existing EXP-*-NNNN ids (avoids collisions
+  // when the counter drifts after manual inserts / partial migrations).
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM expense_counter FOR UPDATE`);
+    const [counter] = await tx.select().from(expenseCounterTable).limit(1);
+    const maxExisting = await tx
+      .select({
+        max: sql<string>`COALESCE(MAX(NULLIF(regexp_replace(${expensesTable.expenseId}, '^EXP-[0-9]+-', ''), '')::int), 0)`,
+      })
+      .from(expensesTable);
+    const floor = Number(maxExisting[0]?.max ?? 0);
+    const seq = Math.max((counter?.counter ?? 0) + 1, floor + 1);
+    if (counter) {
+      await tx.update(expenseCounterTable).set({ counter: seq }).where(eq(expenseCounterTable.id, counter.id));
+    } else {
+      await tx.insert(expenseCounterTable).values({ counter: seq });
+    }
+    const now = new Date();
+    const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return `EXP-${yymm}-${String(seq).padStart(4, "0")}`;
+  });
 }
 
 async function nextPaymentPublicId(): Promise<string> {
-  const [counter] = await db.select().from(expensePaymentCounterTable).limit(1);
-  let seq = 1;
-  if (counter) {
-    seq = counter.counter + 1;
-    await db
-      .update(expensePaymentCounterTable)
-      .set({ counter: seq })
-      .where(eq(expensePaymentCounterTable.id, counter.id));
-  } else {
-    await db.insert(expensePaymentCounterTable).values({ counter: 1 });
-  }
-  const now = new Date();
-  const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  return `EXPAY-${yymm}-${String(seq).padStart(4, "0")}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM expense_payment_counter FOR UPDATE`);
+    const [counter] = await tx.select().from(expensePaymentCounterTable).limit(1);
+    const maxExisting = await tx
+      .select({
+        max: sql<string>`COALESCE(MAX(NULLIF(regexp_replace(${expensePaymentsTable.paymentPublicId}, '^EXPAY-[0-9]+-', ''), '')::int), 0)`,
+      })
+      .from(expensePaymentsTable);
+    const floor = Number(maxExisting[0]?.max ?? 0);
+    const seq = Math.max((counter?.counter ?? 0) + 1, floor + 1);
+    if (counter) {
+      await tx
+        .update(expensePaymentCounterTable)
+        .set({ counter: seq })
+        .where(eq(expensePaymentCounterTable.id, counter.id));
+    } else {
+      await tx.insert(expensePaymentCounterTable).values({ counter: seq });
+    }
+    const now = new Date();
+    const yymm = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return `EXPAY-${yymm}-${String(seq).padStart(4, "0")}`;
+  });
 }
 
 export function hashReceiptImage(dataUrl: string | null | undefined): string | null {
@@ -611,4 +629,59 @@ export async function listPayables(opts: { from?: string; to?: string } = {}) {
     .where(and(...(conditions as Parameters<typeof and>)))
     .orderBy(expensesTable.expenseDate, expensesTable.id);
   return enrichExpenseList(rows as Array<Record<string, unknown> & { id: number }>);
+}
+
+/**
+ * Idempotent accounting retry for FAILED / PENDING expenses.
+ * Reuses existing vouchers when expensePaymentId / accrual already linked.
+ */
+export async function retryExpenseAccounting(opts: {
+  expensePk: number;
+  performedBy?: string | null;
+}) {
+  const [expense] = await db.select().from(expensesTable).where(eq(expensesTable.id, opts.expensePk));
+  if (!expense) throw httpError(404, "Expense not found");
+  if (expense.paymentStatus === "VOID") throw httpError(400, "Cannot retry accounting on a voided expense");
+
+  const payments = await listPaymentsForExpense(expense.id);
+  const active = payments.filter((p) => !p.reversedAt);
+  const needsWork =
+    expense.accountingStatus === "FAILED" ||
+    expense.accountingStatus === "PENDING" ||
+    expense.accountingStatus === "PARTIAL" ||
+    active.some((p) => p.accountingStatus === "FAILED" || p.accountingStatus === "PENDING");
+  if (!needsWork && expense.accountingStatus === "POSTED") {
+    return { expense, payments: active, skipped: true as const };
+  }
+
+  // Ensure accrual exists for unpaid / part-paid bills.
+  if (!expense.accrualVoucherId && (active.length === 0 || active.some((p) => Number(p.amount) < Number(expense.billAmount ?? expense.amount)))) {
+    const billAmount = roundMoney(Number(expense.billAmount ?? expense.amount));
+    const fullyPaidSingle =
+      active.length === 1 && Math.abs(Number(active[0]!.amount) - billAmount) < 0.001;
+    if (!fullyPaidSingle) {
+      try {
+        await postAccounting({ expense, payment: null, performedBy: opts.performedBy ?? null });
+      } catch {
+        /* postAccounting sets FAILED */
+      }
+    }
+  }
+
+  const [freshExpense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+  for (const pay of active.filter((p) => !p.voucherId || p.accountingStatus === "FAILED" || p.accountingStatus === "PENDING")) {
+    try {
+      await postAccounting({
+        expense: freshExpense!,
+        payment: pay,
+        performedBy: opts.performedBy ?? null,
+      });
+    } catch {
+      /* status updated inside postAccounting */
+    }
+  }
+
+  const [finalExpense] = await db.select().from(expensesTable).where(eq(expensesTable.id, expense.id));
+  const finalPayments = await listPaymentsForExpense(expense.id);
+  return { expense: finalExpense!, payments: finalPayments.filter((p) => !p.reversedAt), skipped: false as const };
 }
