@@ -18,6 +18,8 @@ export type WholeReportFormatControlProps = {
   bodyPartFallback?: string | null;
   studyDescription?: string | null;
   disabled?: boolean;
+  /** When true (or a format is already applied), render a compact bar instead of the large starter card. */
+  hasReportContent?: boolean;
 };
 
 export function WholeReportFormatControl({
@@ -26,6 +28,7 @@ export function WholeReportFormatControl({
   bodyPartFallback,
   studyDescription,
   disabled,
+  hasReportContent = false,
 }: WholeReportFormatControlProps) {
   const reportFormats = useWorkspaceSelector((s) => s.reportFormats);
   const appliedFormatName = useWorkspaceSelector((s) => s.appliedFormatName);
@@ -75,34 +78,92 @@ export function WholeReportFormatControl({
   const locked = Boolean(disabled || isFinalized);
   const appliedLabel = appliedFormatName || appliedFormatReportTitle;
 
-  return (
-    <div
-      className="space-y-1.5 rounded-md border border-emerald-300/70 bg-gradient-to-r from-emerald-50/70 via-card to-emerald-50/30 px-3 py-2.5 shadow-sm"
-      data-testid="whole-report-format-control"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <FileText className="h-3.5 w-3.5 text-emerald-700" />
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800">
-            Report Format
-          </span>
-          <SectionSettingsLink
-            {...REPORT_FORMAT_SETTINGS}
-            testId="report-format-settings-link"
-          />
-        </div>
+  const compact = Boolean(appliedLabel || hasReportContent);
+
+  if (compact) {
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-card px-2.5 py-1.5"
+        data-testid="whole-report-format-control"
+        data-compact="true"
+      >
+        <FileText className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+        <span className="shrink-0 text-[11px] font-semibold text-foreground/90">Report Format</span>
         {appliedLabel ? (
           <span
-            className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-800"
+            className="min-w-0 flex-1 truncate rounded border border-emerald-200/80 bg-emerald-50/80 px-1.5 py-0.5 text-[10px] text-emerald-900"
             data-testid="r2-applied-format"
             title="Last applied whole-report format"
           >
             <span className="font-semibold">Applied:</span> {appliedLabel}
           </span>
-        ) : null}
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+            Change format anytime — patient / DICOM identity stay the same
+          </span>
+        )}
+        <select
+          className="h-8 min-w-[11rem] max-w-[18rem] flex-1 rounded-md border border-border bg-background px-2 text-[11px] font-medium"
+          value=""
+          disabled={locked || formats.length === 0}
+          onChange={(e) => {
+            const id = e.target.value;
+            if (id) applyFormatById(id);
+            e.currentTarget.value = "";
+          }}
+          data-testid="whole-report-format-select"
+          aria-label="Whole report format"
+          title="One click applies reporting region (when unambiguous), title, technique, findings, impression, and recommendation"
+        >
+          <option value="">
+            {formats.length === 0
+              ? "No formats for this modality"
+              : appliedLabel
+                ? "Replace format…"
+                : "Select format…"}
+          </option>
+          {formats.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name}
+              {f.bodyPart ? ` · ${f.bodyPart}` : ""}
+              {f.reportTitle ? ` · ${f.reportTitle}` : ""}
+            </option>
+          ))}
+        </select>
+        <SectionSettingsLink
+          {...REPORT_FORMAT_SETTINGS}
+          testId="report-format-settings-link"
+          iconOnly
+        />
+      </div>
+    );
+  }
+
+  // Empty-study starter: keep it discoverable but visually quieter than
+  // Findings / Impression — radiologists were reading the green hero card as
+  // the main work surface even mid-report.
+  return (
+    <div
+      className="space-y-1 rounded-md border border-border/70 bg-card px-2.5 py-2"
+      data-testid="whole-report-format-control"
+      data-compact="false"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-[11px] font-semibold tracking-tight text-foreground/85">
+            Report Format
+          </span>
+          <span className="text-[10px] text-muted-foreground">optional seed</span>
+          <SectionSettingsLink
+            {...REPORT_FORMAT_SETTINGS}
+            testId="report-format-settings-link"
+            iconOnly
+          />
+        </div>
       </div>
       <select
-        className="h-9 w-full min-w-[14rem] rounded-md border border-emerald-200 bg-background px-2 text-[12px] font-medium shadow-sm"
+        className="h-8 w-full min-w-[14rem] rounded-md border border-border bg-background px-2 text-[12px] font-medium"
         value=""
         disabled={locked || formats.length === 0}
         onChange={(e) => {
@@ -116,8 +177,8 @@ export function WholeReportFormatControl({
       >
         <option value="">
           {formats.length === 0
-            ? "No whole-report formats for this modality yet"
-            : "Select a report format to start…"}
+            ? "No formats for this modality yet"
+            : "Optional — seed Technique / Findings / Impression…"}
         </option>
         {formats.map((f) => (
           <option key={f.id} value={f.id}>
@@ -127,10 +188,6 @@ export function WholeReportFormatControl({
           </option>
         ))}
       </select>
-      <p className="text-[10px] leading-snug text-muted-foreground">
-        One click sets the starting report — region, title, and clinical sections — when the format maps cleanly.
-        Does not change patient or DICOM identity.
-      </p>
     </div>
   );
 }

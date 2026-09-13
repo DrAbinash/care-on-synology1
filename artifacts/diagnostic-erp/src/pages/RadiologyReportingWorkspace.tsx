@@ -4909,7 +4909,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       R2 lumbar canvas / ledger live inside Findings; sections still
                       auto-collapse when another header is activated. */}
                   <div
-                    className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3"
+                    className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3"
                     data-testid="reporting-canvas-r2"
                     data-report-accordion="progressive"
                     onMouseDown={enterReportingFocusMode}
@@ -4937,6 +4937,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         modality={workflow.currentRow?.modality ?? null}
                         bodyPartFallback={studySetup.matchedStudyRegion}
                         studyDescription={workflow.currentRow?.studyDescription ?? null}
+                        hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
                         disabled={isLocked || isFinalized}
                       />
                     </div>
@@ -5124,6 +5125,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                          and exactly ONE assistance drawer open at a time below. */}
                     <ReportAccordionSection
                       {...accordionProps("findings")}
+                      emphasis="primary"
                       headerExtra={
                         <div className="flex shrink-0 items-center gap-2">
                           <label className="flex cursor-pointer items-center gap-1 text-[10px] text-muted-foreground">
@@ -5882,6 +5884,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
                     <ReportAccordionSection
+                      emphasis="primary"
                       {...accordionProps("impression", {
                         collapsedWarning: (impressionNeedsRefresh || impressionContradictionWarnings.length > 0) ? (
                           <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[9px] text-amber-950" data-testid="impression-collapsed-warning">
