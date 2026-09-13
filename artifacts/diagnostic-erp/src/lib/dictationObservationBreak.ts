@@ -71,12 +71,12 @@ export type BreakObservationsResult = {
  */
 export function breakObservationsAtSentenceEnds(
   text: string,
-  caret?: number,
-): string;
-export function breakObservationsAtSentenceEnds(
-  text: string,
   caret: number,
 ): BreakObservationsResult;
+export function breakObservationsAtSentenceEnds(
+  text: string,
+  caret?: number,
+): string;
 export function breakObservationsAtSentenceEnds(
   text: string,
   caret?: number,
