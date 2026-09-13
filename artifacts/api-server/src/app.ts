@@ -271,11 +271,11 @@ app.use("/api/dicom-uploads", dicomUploadLimiter, dicomUploadsRouter);
 // raw bytes left to verify against).
 app.use("/api/whatsapp/webhook", whatsappWebhookRouter);
 
-// Standard JSON body parser — 5 MB for all API routes except uploads.
+// Standard JSON body parser — 20 MB (expense bill attachments + OCR) for all API routes except uploads.
 // The uploads route (/api/uploads) handles JSON base64 up to 25 MB
 // via a separate router-level limit check.
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 // ── Diagnostics: lightweight request-timing capture ────────────────────────
 // Records method, path, status code, duration (ms), and caller role for

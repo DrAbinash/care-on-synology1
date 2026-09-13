@@ -362,6 +362,28 @@ router.post("/", async (req, res) => {
       ocrMetaJson: typeof raw.ocrMetaJson === "string" ? raw.ocrMetaJson : null,
     });
 
+    // If the create carried an AI-scan / form receipt data-URL, also persist it
+    // as a filesystem attachment so the same document appears under Attachments
+    // without requiring a second upload. Does not change money/accounting.
+    let attachments: unknown[] = [];
+    if (receiptImageUrl) {
+      try {
+        const { attachFromReceiptDataUrl, toAttachmentDto } = await import("../lib/expenseAttachments");
+        const staff = (req as StaffAuthRequest).staffSession;
+        const linked = await attachFromReceiptDataUrl({
+          expensePk: result.expense.id,
+          receiptImageUrl,
+          uploadedBy: createdBy,
+          uploadedById: staff?.subjectId ?? null,
+          attachAnyway: true,
+        });
+        attachments = [toAttachmentDto(linked.attachment)];
+      } catch (attachErr) {
+        // Non-fatal: expense is already created; attachment can be added later.
+        console.warn("[expenses] failed to persist AI-scan receipt as attachment", attachErr);
+      }
+    }
+
     return res.status(201).json({
       ...toNum(result.expense as unknown as Record<string, unknown>),
       billAmount: result.money.billAmount,
@@ -369,6 +391,8 @@ router.post("/", async (req, res) => {
       balanceDue: result.money.balanceDue,
       paymentStatus: result.money.paymentStatus,
       duplicateWarnings: dupes.strong.length || dupes.soft.length ? dupes : undefined,
+      attachments,
+      attachmentCount: attachments.length,
     });
   } catch (err) {
     return res.status(httpStatus(err)).json({ error: errMessage(err) });
@@ -503,5 +527,154 @@ router.delete("/:id", async (req, res) => {
     return res.status(httpStatus(err)).json({ error: errMessage(err) });
   }
 });
+
+
+// ── Attachments (documentary only — no accounting side effects) ─────────────
+
+router.get("/:id/attachments", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: "Invalid id" });
+  try {
+    const { listExpenseAttachments, toAttachmentDto } = await import("../lib/expenseAttachments");
+    const rows = await listExpenseAttachments(id);
+    return res.json(rows.map(toAttachmentDto));
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+router.post("/:id/attachments", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: "Invalid id" });
+
+  const body = req.body as Record<string, unknown>;
+  const fileName = typeof body.fileName === "string" ? body.fileName : "";
+  const mimeType = typeof body.mimeType === "string" ? body.mimeType : "";
+  const base64Data = typeof body.base64Data === "string" ? body.base64Data : "";
+  const sourceRaw = typeof body.source === "string" ? body.source : "MANUAL_UPLOAD";
+  const documentType =
+    typeof body.documentType === "string" ? body.documentType : "supporting_document";
+  const attachAnyway = body.attachAnyway === true || body.attachAnyway === "true";
+  const notes = typeof body.notes === "string" ? body.notes : null;
+
+  if (!fileName || !mimeType || !base64Data) {
+    return res.status(400).json({ error: "fileName, mimeType, and base64Data are required" });
+  }
+
+  const source =
+    sourceRaw === "CAMERA" || sourceRaw === "AI_SCAN" || sourceRaw === "MANUAL_UPLOAD"
+      ? sourceRaw
+      : "MANUAL_UPLOAD";
+
+  try {
+    const {
+      createExpenseAttachment,
+      decodeDataUrlOrBase64,
+      toAttachmentDto,
+      findDuplicateExpenseAttachments,
+      hashFileBuffer,
+      findLegacyReceiptHashDuplicates,
+      legacyReceiptHashFromDataUrl,
+    } = await import("../lib/expenseAttachments");
+
+    const { buffer } = decodeDataUrlOrBase64(
+      base64Data.startsWith("data:") ? base64Data : `data:${mimeType};base64,${base64Data}`,
+    );
+
+    if (!attachAnyway) {
+      const contentHash = hashFileBuffer(buffer);
+      const dups = await findDuplicateExpenseAttachments(contentHash);
+      const legacyHash = legacyReceiptHashFromDataUrl(
+        base64Data.startsWith("data:") ? base64Data : `data:${mimeType};base64,${base64Data}`,
+      );
+      const legacyDups = legacyHash ? await findLegacyReceiptHashDuplicates(legacyHash) : [];
+      const all = [...dups, ...legacyDups];
+      if (all.length) {
+        return res.status(409).json({
+          error: "Duplicate document detected",
+          duplicates: all,
+        });
+      }
+    }
+
+    const staff = (req as StaffAuthRequest).staffSession;
+    const result = await createExpenseAttachment({
+      expensePk: id,
+      buffer,
+      mimeType,
+      originalFilename: fileName,
+      source,
+      documentType: documentType as
+        | "bill"
+        | "invoice"
+        | "receipt"
+        | "cash_memo"
+        | "supporting_document",
+      uploadedBy: staff?.subjectName ?? null,
+      uploadedById: staff?.subjectId ?? null,
+      notes,
+      attachAnyway,
+    });
+
+    return res.status(201).json({
+      attachment: toAttachmentDto(result.attachment),
+      duplicates: result.duplicates.length ? result.duplicates : undefined,
+    });
+  } catch (err) {
+    const status = httpStatus(err);
+    const duplicates =
+      typeof err === "object" && err !== null && "duplicates" in err
+        ? (err as { duplicates: unknown }).duplicates
+        : undefined;
+    return res.status(status).json({ error: errMessage(err), duplicates });
+  }
+});
+
+router.get("/:id/attachments/:attachmentId/file", async (req, res) => {
+  const id = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(attachmentId) || attachmentId <= 0) {
+    return res.status(400).json({ error: "Invalid id" });
+  }
+  try {
+    const { getExpenseAttachment, readAttachmentFile } = await import("../lib/expenseAttachments");
+    const row = await getExpenseAttachment(id, attachmentId);
+    if (!row) return res.status(404).json({ error: "Attachment not found" });
+    const buf = readAttachmentFile(row.storagePath);
+    const asDownload = req.query.download === "1" || req.query.download === "true";
+    res.setHeader("Content-Type", row.mimeType);
+    res.setHeader("Content-Length", String(buf.byteLength));
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader(
+      "Content-Disposition",
+      `${asDownload ? "attachment" : "inline"}; filename="${row.originalFilename.replace(/"/g, "")}"`,
+    );
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    return res.send(buf);
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+router.delete("/:id/attachments/:attachmentId", async (req, res) => {
+  const id = Number(req.params.id);
+  const attachmentId = Number(req.params.attachmentId);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(attachmentId) || attachmentId <= 0) {
+    return res.status(400).json({ error: "Invalid id" });
+  }
+  try {
+    const { softDeleteExpenseAttachment, toAttachmentDto } = await import("../lib/expenseAttachments");
+    const staff = (req as StaffAuthRequest).staffSession;
+    const updated = await softDeleteExpenseAttachment({
+      expensePk: id,
+      attachmentId,
+      deletedBy: staff?.subjectName ?? null,
+    });
+    return res.json({ success: true, attachment: toAttachmentDto(updated) });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
 
 export { router as expensesRouter };

@@ -607,6 +607,10 @@ export async function enrichExpenseList(rows: Array<Record<string, unknown> & { 
     .groupBy(expensePaymentsTable.expenseId);
   const paidMap = new Map(payRows.map((p) => [p.expenseId, roundMoney(Number(p.total))]));
 
+  // Attachment counts (documentary) — soft-deleted rows excluded.
+  const { countActiveAttachments } = await import("./expenseAttachments");
+  const attachmentCounts = await countActiveAttachments(ids);
+
   return rows.map((r) => {
     const money = moneyFieldsForExpense(
       {
@@ -616,6 +620,8 @@ export async function enrichExpenseList(rows: Array<Record<string, unknown> & { 
       },
       paidMap.get(r.id) ?? 0,
     );
+    const attachmentCount = attachmentCounts.get(r.id) ?? 0;
+    const hasReceiptFlag = Boolean(r.hasReceipt) || attachmentCount > 0;
     return {
       ...r,
       amount: Number(r.amount ?? 0),
@@ -624,6 +630,9 @@ export async function enrichExpenseList(rows: Array<Record<string, unknown> & { 
       balanceDue: money.balanceDue,
       paymentStatus: (r.paymentStatus as string) || money.paymentStatus,
       receiptImageUrl: undefined,
+      attachmentCount,
+      hasReceipt: hasReceiptFlag,
+      hasAttachments: attachmentCount > 0,
     };
   });
 }
