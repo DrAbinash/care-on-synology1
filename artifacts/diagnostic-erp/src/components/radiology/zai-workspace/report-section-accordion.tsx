@@ -65,8 +65,9 @@ interface SectionProps {
    */
   collapsedWarning?: ReactNode;
   /**
-   * When true, every section body stays visible (no collapse). Unused by the
-   * live workspace — progressive accordion is the default.
+   * When true, this section body stays visible (no collapse). The live
+   * workspace uses this for Findings / Impression so both clinical surfaces
+   * remain on-screen together in the mouse-first cockpit.
    */
   continuous?: boolean;
   /**
@@ -74,6 +75,8 @@ interface SectionProps {
    * setup rows (Demography, Region, Technique).
    */
   emphasis?: "default" | "primary";
+  /** Focus the editor when the radiologist clicks anywhere in the card body. */
+  onBodyActivate?: () => void;
   children: ReactNode;
 }
 
@@ -90,10 +93,14 @@ export function ReportAccordionSection({
   collapsedWarning,
   continuous = false,
   emphasis = "default",
+  onBodyActivate,
   children,
 }: SectionProps) {
   const showBody = continuous || active;
   const isPrimary = emphasis === "primary";
+  // Continuous primary (Findings / Impression) share remaining height so both
+  // stay visible without accordion collapse.
+  const continuousPrimary = continuous && isPrimary;
   return (
     <section
       data-testid={`report-section-${id}`}
@@ -103,13 +110,15 @@ export function ReportAccordionSection({
       className={cn(
         // Solid backgrounds + overflow clip prevent stacked-row ghosting.
         "flex flex-col overflow-hidden rounded-lg border bg-card transition-colors isolate",
-        continuous
-          ? "shrink-0 border-border/50"
-          : active
-            ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
-            : isPrimary
-              ? "shrink-0 border-emerald-200/80 hover:border-emerald-300"
-              : "shrink-0 border-border/70 hover:border-emerald-200",
+        continuousPrimary
+          ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
+          : continuous
+            ? "shrink-0 border-border/50"
+            : active
+              ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
+              : isPrimary
+                ? "shrink-0 border-emerald-200/80 hover:border-emerald-300"
+                : "shrink-0 border-border/70 hover:border-emerald-200",
       )}
     >
       <div
@@ -204,10 +213,19 @@ export function ReportAccordionSection({
         id={`report-section-body-${id}`}
         data-testid={`report-section-body-${id}`}
         aria-hidden={!showBody}
+        onMouseDown={(e) => {
+          if (!onBodyActivate || !showBody) return;
+          // Don't steal clicks from buttons, links, or nested controls.
+          const t = e.target as HTMLElement | null;
+          if (t?.closest("button, a, input, textarea, select, [role='tab'], [role='checkbox']")) return;
+          onBodyActivate();
+        }}
         className={cn(
-          continuous
-            ? (showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden")
-            : (active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
+          continuousPrimary
+            ? (showBody ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden")
+            : continuous
+              ? (showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden")
+              : (active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
         )}
       >
         {children}

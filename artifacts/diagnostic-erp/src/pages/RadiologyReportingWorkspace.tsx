@@ -347,6 +347,12 @@ import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/type
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
+import { PersonalTemplateRail } from "@/components/radiology/zai-workspace/personal-template-rail";
+import {
+  readPersonalReportTemplates,
+  type PersonalReportTemplate,
+  type PersonalTemplateTarget,
+} from "@/lib/personalReportTemplates";
 import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
 import {
   FindingsToolDrawer,
@@ -483,6 +489,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const embeddedViewerRef = useRef<EmbeddedViewerHandle>(null);
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
+  const templatePanelRef = useRef<ImperativePanelHandle>(null);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
   /** Study whose server draft was restored into the editor this open. */
   const restoredDraftForStudyRef = useRef<number | null>(null);
@@ -549,6 +556,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>(
     () => sectionCollapsePrefs.preferredActive || "findings",
   );
+
+  // Mouse-first personal macro templates (local workstation library).
+  const [personalTemplates, setPersonalTemplates] = useState<PersonalReportTemplate[]>(() =>
+    readPersonalReportTemplates(typeof window !== "undefined" ? window.localStorage : null),
+  );
+  const [templateRailCollapsed, setTemplateRailCollapsed] = useState(false);
+  const [lastClinicalTarget, setLastClinicalTarget] = useState<PersonalTemplateTarget>("findings");
+  const focusClinicalEditor = useCallback((field: PersonalTemplateTarget) => {
+    setLastClinicalTarget(field);
+    setActiveReportSection(field);
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLTextAreaElement>(`[data-testid="canonical-${field}-editor"]`);
+      el?.focus();
+    });
+  }, []);
+
   const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
   /** Shared anatomy chip selection — filters clinic tiles + Quick Select wall. */
   const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
@@ -4870,7 +4893,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           <ResizablePanel defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? 38 : 46) : 82} minSize={36}>
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}
-              <ResizablePanel defaultSize={58} minSize={42}>
+              <ResizablePanel defaultSize={48} minSize={36}>
                 <div className="h-full flex bg-gradient-to-b from-card to-emerald-50/10 min-h-0">
                 <div className="flex flex-1 min-w-0 flex-col min-h-0">
                   {/* Viewer chrome — never hidden behind an accordion header */}
@@ -4911,7 +4934,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                   <div
                     className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3"
                     data-testid="reporting-canvas-r2"
-                    data-report-accordion="progressive"
+                    data-report-accordion="cockpit"
                     onMouseDown={enterReportingFocusMode}
                   >
                     <AnchorRail anchor={activeAnchor} />
@@ -5125,7 +5148,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                          and exactly ONE assistance drawer open at a time below. */}
                     <ReportAccordionSection
                       {...accordionProps("findings")}
+                      continuous
                       emphasis="primary"
+                      onActivate={() => focusClinicalEditor("findings")}
+                      onBodyActivate={() => focusClinicalEditor("findings")}
                       headerExtra={
                         <div className="flex shrink-0 items-center gap-2">
                           <label className="flex cursor-pointer items-center gap-1 text-[10px] text-muted-foreground">
@@ -5637,6 +5663,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             ? { needle: abnormalHighlight.needle, token: abnormalHighlight.token }
                             : null
                         }
+                        enableDictationBreaks
+                        onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
                     )}
                     {ledgerHydrationWarning && (
@@ -5884,7 +5912,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
                     <ReportAccordionSection
-                      emphasis="primary"
                       {...accordionProps("impression", {
                         collapsedWarning: (impressionNeedsRefresh || impressionContradictionWarnings.length > 0) ? (
                           <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[9px] text-amber-950" data-testid="impression-collapsed-warning">
@@ -5894,6 +5921,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                         ) : null,
                       })}
+                      continuous
+                      emphasis="primary"
+                      onActivate={() => focusClinicalEditor("impression")}
+                      onBodyActivate={() => focusClinicalEditor("impression")}
                     >
                       <ImpressionStaleBanner
                         needsRefresh={impressionNeedsRefresh}
@@ -5953,7 +5984,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost />
+                        <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost
+                        enableDictationBreaks
+                        onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
+                      />
                       </div>
                       {!isLocked && !isFinalized && (
                         <FieldCareMic voice={voiceSession} target="impression" />
@@ -6191,10 +6225,42 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 </div>
               </ResizablePanel>
               <ResizableHandle />
+              {/* Personal template macros — mouse-first insert rail */}
+              <ResizablePanel
+                defaultSize={20}
+                minSize={15}
+                collapsible
+                collapsedSize={3}
+                ref={templatePanelRef}
+                onCollapse={() => setTemplateRailCollapsed(true)}
+                onExpand={() => setTemplateRailCollapsed(false)}
+              >
+                <PersonalTemplateRail
+                  collapsed={templateRailCollapsed}
+                  onToggleCollapsed={() => {
+                    if (templateRailCollapsed) templatePanelRef.current?.expand();
+                    else templatePanelRef.current?.collapse();
+                  }}
+                  templates={personalTemplates}
+                  onTemplatesChange={setPersonalTemplates}
+                  activeTarget={lastClinicalTarget}
+                  getFieldText={(target) =>
+                    target === "findings"
+                      ? useWorkspace.getState().findingsText
+                      : useWorkspace.getState().impressionText
+                  }
+                  setFieldText={(target, text) => {
+                    useWorkspace.getState().setField(target, text);
+                    focusClinicalEditor(target);
+                  }}
+                  disabled={isLocked || isFinalized}
+                />
+              </ResizablePanel>
+              <ResizableHandle />
               {/* Copilot rail with ComparisonPanel + FollowUpPanel */}
               <ResizablePanel
-                defaultSize={42}
-                minSize={18}
+                defaultSize={32}
+                minSize={16}
                 collapsible
                 collapsedSize={3}
                 ref={rightPanelRef}
