@@ -31,6 +31,8 @@ export type ExpenseV2 = {
   categoryId?: number | null;
   subcategoryId?: number | null;
   hasReceipt?: boolean;
+  attachmentCount?: number;
+  hasAttachments?: boolean;
   receiptImageUrl?: string | null;
   voucherId?: number | null;
   accrualVoucherId?: number | null;

@@ -20,6 +20,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { FileImage, IndianRupee, Loader2, Ban, Wallet } from "lucide-react";
 import { AccountingStatusBadge, PaymentStatusBadge } from "./ExpenseStatusBadges";
+import ExpenseAttachmentsPanel from "./ExpenseAttachmentsPanel";
 import {
   billOf,
   dueOf,
@@ -267,6 +268,8 @@ export default function ExpenseDetailDrawer({
                 <div className="pt-1 text-xs text-muted-foreground">{exp.notes}</div>
               ) : null}
             </div>
+
+                        <ExpenseAttachmentsPanel expenseId={(detail ?? expense)?.id} onChanged={onChanged} />
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">

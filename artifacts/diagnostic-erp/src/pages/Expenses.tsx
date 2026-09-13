@@ -12,6 +12,7 @@ import PageHeader from "@/components/PageHeader";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
 import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
 import ExpenseDetailDrawer from "@/components/expenses/ExpenseDetailDrawer";
+import ExpenseAttachmentsPanel, { type PendingExpenseAttachment } from "@/components/expenses/ExpenseAttachmentsPanel";
 import { AccountingStatusBadge, OcrFieldBadge, PaymentStatusBadge } from "@/components/expenses/ExpenseStatusBadges";
 import {
   billOf,
@@ -64,6 +65,7 @@ import {
   Ban,
   ClipboardList,
   AlertTriangle,
+  Paperclip,
 } from "lucide-react";
 import { api } from "@/lib/fetchApi";
 import { mapExpenseCategory, mapExpensePaymentModeOptional } from "@/lib/expenseScanMapping";
@@ -193,6 +195,7 @@ export default function Expenses() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(() => emptyExpenseForm());
   const [receiptImage, setReceiptImage] = useState("");
+  const [pendingAttachment, setPendingAttachment] = useState<PendingExpenseAttachment | null>(null);
   const [ocrMeta, setOcrMeta] = useState<{
     confidence?: string;
     confidencePercent?: number;
@@ -433,6 +436,7 @@ export default function Expenses() {
       setShowForm(false);
       setForm(emptyExpenseForm());
       setReceiptImage("");
+      setPendingAttachment(null);
       setOcrMeta(null);
       setOcrConfirmed(false);
       setFieldMeta({});
@@ -538,6 +542,7 @@ export default function Expenses() {
               setShowForm(true);
               setForm(emptyExpenseForm());
               setReceiptImage("");
+      setPendingAttachment(null);
               setOcrMeta(null);
               setOcrConfirmed(false);
               setFieldMeta({});
@@ -761,12 +766,12 @@ export default function Expenses() {
                             </td>
                             <td className="px-3 py-3">
                               <div className="flex items-center gap-0.5 justify-end">
-                                {exp.hasReceipt && (
+                                {((exp.attachmentCount ?? 0) > 0 || exp.hasAttachments || exp.hasReceipt) && (
                                   <Button
                                     variant="ghost"
                                     size="icon"
                                     className="h-7 w-7 text-indigo-600"
-                                    title="View receipt"
+                                    title={exp.attachmentCount ? `${exp.attachmentCount} attachment${exp.attachmentCount === 1 ? "" : "s"}` : "View receipt"}
                                     onClick={() => openReceipt(exp)}
                                   >
                                     <FileImage size={12} />
@@ -1060,15 +1065,18 @@ export default function Expenses() {
                   </label>
                 </div>
               )}
-              {receiptImage && (
-                <div className="flex items-center gap-3 rounded-lg border border-card-border p-2">
-                  <img src={receiptImage} alt="Receipt" className="h-14 w-14 object-cover rounded border" />
-                  <div className="text-xs text-muted-foreground flex-1">Receipt attached for audit.</div>
-                  <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setReceiptImage("")}>
-                    Remove
-                  </Button>
-                </div>
-              )}
+              <ExpenseAttachmentsPanel
+                pending={pendingAttachment}
+                showAiHint
+                onPendingChange={(pending) => {
+                  setPendingAttachment(pending);
+                  if (pending) {
+                    setReceiptImage(`data:${pending.mimeType};base64,${pending.base64Data}`);
+                  } else if (!ocrMeta) {
+                    setReceiptImage("");
+                  }
+                }}
+              />
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
