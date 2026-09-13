@@ -79,6 +79,28 @@ function toIsoStudyDate(raw: string | null | undefined): string {
   return raw;
 }
 
+/** Bill-desk age fallback when PACS mirror columns are blank. */
+function ageFor(r: {
+  age: string | null;
+  patientDob: string | null;
+  patientAgeValue: number | null;
+  patientAgeUnit: string | null;
+}): string {
+  if (r.age && r.age.trim()) return r.age.trim();
+  if (r.patientAgeValue != null && Number.isFinite(r.patientAgeValue)) {
+    const unit = (r.patientAgeUnit ?? "").toLowerCase();
+    if (unit.startsWith("month")) return `${r.patientAgeValue}M`;
+    if (unit.startsWith("day")) return `${r.patientAgeValue}D`;
+    return String(r.patientAgeValue);
+  }
+  const dob = (r.patientDob ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(dob)) {
+    const years = Math.floor((Date.now() - new Date(dob).getTime()) / 31_557_600_000);
+    if (years > 0 && years < 130) return String(years);
+  }
+  return "";
+}
+
 function mergePdfUrlIntoMetadata(
   existing: string | null | undefined,
   pdfUrl: string,
@@ -198,9 +220,14 @@ router.get("/worklist", async (req, res) => {
         patientName: radiologyWorklistTable.patientName,
         patientPhone: patientsTable.phone,
         patientAddress: patientsTable.address,
+        patientDob: patientsTable.dateOfBirth,
+        patientAgeValue: patientsTable.ageValue,
+        patientAgeUnit: patientsTable.ageUnit,
+        patientGender: patientsTable.gender,
         age: radiologyWorklistTable.age,
         sex: radiologyWorklistTable.sex,
         referringDoctor: radiologyWorklistTable.referringDoctor,
+        studyReferringDoctor: radiologyStudiesTable.referringDoctor,
         studyDescription: radiologyWorklistTable.studyDescription,
         modality: radiologyWorklistTable.modality,
         studyDate: radiologyWorklistTable.studyDate,
@@ -244,9 +271,9 @@ router.get("/worklist", async (req, res) => {
         patientPhone: r.patientPhone ?? "",
         patientAddress: r.patientAddress ?? "",
         billNumber: r.billNumber ?? "",
-        patientAge: r.age ?? "",
-        patientGender: r.sex ?? "",
-        referringDoctor: r.referringDoctor ?? "",
+        patientAge: ageFor(r),
+        patientGender: (r.sex ?? "") || (r.patientGender ?? ""),
+        referringDoctor: (r.referringDoctor ?? "") || (r.studyReferringDoctor ?? ""),
         testName: r.testName ?? r.studyDescription ?? "",
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
