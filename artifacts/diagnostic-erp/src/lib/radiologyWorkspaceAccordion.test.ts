@@ -19,7 +19,7 @@ function at(marker: string): number {
   return i;
 }
 
-describe("main reporting pane — progressive accordion", () => {
+describe("main reporting pane — mouse-first clinical cockpit", () => {
   it("renders all nine major sections through the shared header helper", () => {
     for (const id of [
       "demography",
@@ -34,10 +34,12 @@ describe("main reporting pane — progressive accordion", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}"`);
     }
-    // Progressive accordion remains the live pane (R2 pieces sit inside Findings).
+    // Findings + Impression stay continuously visible; other rows remain progressive.
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain('data-report-accordion="progressive"');
-    expect(workspace).not.toContain("continuous: true");
+    expect(workspace).toContain('data-report-accordion="cockpit"');
+    expect(workspace).toContain("continuous");
+    expect(workspace).toContain('focusClinicalEditor("findings")');
+    expect(workspace).toContain('focusClinicalEditor("impression")');
   });
 
   it("keeps the clinical top-to-bottom order", () => {
@@ -111,6 +113,9 @@ describe("clicking the workspace collapses chrome, keeps OHIF", () => {
     expect(workspace).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
     expect(workspace).toContain("collapsible");
     expect(workspace).toContain('data-testid="right-panel-expand"');
+    expect(workspace).toContain("PersonalTemplateRail");
+    expect(workspace).toContain("templatePanelRef");
+    expect(workspace).toContain("defaultSize={20}");
   });
 });
 

@@ -12,6 +12,12 @@ import {
 } from "@/lib/reportFieldMerge";
 import { formatProvenanceSummary, provenanceCounts } from "@/lib/reportSectionAccordion";
 import { QuickSelectStrip } from "./quick-select-strip";
+import { ClinicalTextTools } from "./clinical-text-tools";
+import {
+  breakObservationsAtSentenceEnds,
+  interceptDictationRunOnsWithCaret,
+  toClinicalTitleCase,
+} from "@/lib/dictationObservationBreak";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -34,6 +40,13 @@ interface Props {
    * Finding Composer. Never written into clinical text / PDF.
    */
   transientHighlight?: { needle: string; token: number } | null;
+  /** Fired when the radiologist focuses this editor (mouse-first cockpit). */
+  onClinicalFocus?: (field: Props["field"]) => void;
+  /**
+   * Auto-break dictation run-ons (". " → newline) and show cleanup tools.
+   * Enabled for Findings / Impression in the live reporting cockpit.
+   */
+  enableDictationBreaks?: boolean;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -81,6 +94,8 @@ export function FindingsEditor({
   hideQuickSelect = false,
   onQuickSelectPick,
   transientHighlight = null,
+  onClinicalFocus,
+  enableDictationBreaks = false,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -176,6 +191,14 @@ export function FindingsEditor({
 
   return (
     <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
+      {enableDictationBreaks && (
+        <ClinicalTextTools
+          className="mb-1.5"
+          onBreakLines={() => setField(field, breakObservationsAtSentenceEnds(typeof value === "string" ? value : ""))}
+          onTitleCase={() => setField(field, toClinicalTitleCase(typeof value === "string" ? value : ""))}
+          onClear={() => setField(field, "")}
+        />
+      )}
       {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
@@ -276,12 +299,33 @@ export function FindingsEditor({
           <textarea
             ref={ref}
             value={value}
-            onChange={e => setField(field, e.target.value)}
+            onChange={e => {
+              const el = e.target;
+              const raw = el.value;
+              if (!enableDictationBreaks) {
+                setField(field, raw);
+                return;
+              }
+              const caret = el.selectionStart ?? raw.length;
+              const { text, caret: nextCaret } = interceptDictationRunOnsWithCaret(raw, caret);
+              setField(field, text);
+              // Restore caret after React re-render so live ". " → newline
+              // does not jump the cursor (abbreviation guards are length-safe).
+              if (text !== raw || nextCaret !== caret) {
+                requestAnimationFrame(() => {
+                  if (ref.current) ref.current.setSelectionRange(nextCaret, nextCaret);
+                });
+              }
+            }}
+            onFocus={() => onClinicalFocus?.(field)}
             onKeyDown={hk}
             placeholder={placeholder ?? "Begin typing..."}
             spellCheck={false}
             aria-label={label}
-            className="relative z-[2] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50"
+            className={cn(
+              "relative z-[2] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50",
+              enableDictationBreaks && "whitespace-pre-wrap",
+            )}
             style={{ minHeight }}
             data-testid={`canonical-${field}-editor`}
           />
