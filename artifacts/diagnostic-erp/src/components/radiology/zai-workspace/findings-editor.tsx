@@ -15,7 +15,7 @@ import { QuickSelectStrip } from "./quick-select-strip";
 import { ClinicalTextTools } from "./clinical-text-tools";
 import {
   breakObservationsAtSentenceEnds,
-  interceptDictationRunOns,
+  interceptDictationRunOnsWithCaret,
   toClinicalTitleCase,
 } from "@/lib/dictationObservationBreak";
 import { cn } from "@/lib/utils";
@@ -300,8 +300,22 @@ export function FindingsEditor({
             ref={ref}
             value={value}
             onChange={e => {
-              const raw = e.target.value;
-              setField(field, enableDictationBreaks ? interceptDictationRunOns(raw) : raw);
+              const el = e.target;
+              const raw = el.value;
+              if (!enableDictationBreaks) {
+                setField(field, raw);
+                return;
+              }
+              const caret = el.selectionStart ?? raw.length;
+              const { text, caret: nextCaret } = interceptDictationRunOnsWithCaret(raw, caret);
+              setField(field, text);
+              // Restore caret after React re-render so live ". " → newline
+              // does not jump the cursor (abbreviation guards are length-safe).
+              if (text !== raw || nextCaret !== caret) {
+                requestAnimationFrame(() => {
+                  if (ref.current) ref.current.setSelectionRange(nextCaret, nextCaret);
+                });
+              }
             }}
             onFocus={() => onClinicalFocus?.(field)}
             onKeyDown={hk}
