@@ -6253,6 +6253,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     useWorkspace.getState().setField(target, text);
                     focusClinicalEditor(target);
                   }}
+                  studyContext={studySetup.studyContext}
                   disabled={isLocked || isFinalized}
                 />
               </ResizablePanel>

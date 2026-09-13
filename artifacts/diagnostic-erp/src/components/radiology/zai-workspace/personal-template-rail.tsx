@@ -15,12 +15,16 @@ import { cn } from "@/lib/utils";
 import {
   appendPersonalTemplate,
   createPersonalTemplate,
+  filterPersonalTemplatesForStudy,
   insertTemplateText,
+  isGlobalPersonalTemplate,
+  personalTemplateScopeLabel,
   removePersonalTemplate,
   type PersonalReportTemplate,
   type PersonalTemplateTarget,
   writePersonalReportTemplates,
 } from "@/lib/personalReportTemplates";
+import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 
 interface Props {
   collapsed: boolean;
@@ -31,12 +35,16 @@ interface Props {
   activeTarget: PersonalTemplateTarget;
   getFieldText: (target: PersonalTemplateTarget) => string;
   setFieldText: (target: PersonalTemplateTarget, text: string) => void;
+  /** Current study identity — drives modality / region filtering. */
+  studyContext?: ReportingStudyContext | null;
   disabled?: boolean;
 }
 
 /**
  * Sticky personal-template rail beside the report editor.
  * Mouse-first: click a pill to insert; save active text via a naming dialog.
+ * Templates tagged with modality/region are filtered to the open study
+ * (untagged macros always remain available).
  */
 export function PersonalTemplateRail({
   collapsed,
@@ -46,21 +54,39 @@ export function PersonalTemplateRail({
   activeTarget,
   getFieldText,
   setFieldText,
+  studyContext = null,
   disabled = false,
 }: Props) {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
+  const [saveForAllStudies, setSaveForAllStudies] = useState(false);
   const activeText = getFieldText(activeTarget);
   const canSave = !disabled && activeText.trim().length > 0;
 
+  const visible = useMemo(
+    () => filterPersonalTemplatesForStudy(templates, studyContext),
+    [templates, studyContext],
+  );
+
   const sorted = useMemo(
     () =>
-      [...templates].sort((a, b) => {
-        // Keep seed items after physician-saved ones when timestamps differ.
+      [...visible].sort((a, b) => {
+        // Prefer study-scoped macros above globals, then newest first.
+        const aGlobal = isGlobalPersonalTemplate(a) ? 1 : 0;
+        const bGlobal = isGlobalPersonalTemplate(b) ? 1 : 0;
+        if (aGlobal !== bGlobal) return aGlobal - bGlobal;
         return b.createdAt.localeCompare(a.createdAt);
       }),
-    [templates],
+    [visible],
   );
+
+  const scopeHint = useMemo(() => {
+    if (!studyContext?.modality && !studyContext?.region) return null;
+    const parts: string[] = [];
+    if (studyContext.modality) parts.push(studyContext.modality.toUpperCase());
+    if (studyContext.region) parts.push(studyContext.region);
+    return parts.join(" · ");
+  }, [studyContext]);
 
   const persist = (next: PersonalReportTemplate[]) => {
     onTemplatesChange(next);
@@ -72,9 +98,8 @@ export function PersonalTemplateRail({
 
   const handleInsert = (tpl: PersonalReportTemplate) => {
     if (disabled) return;
-    const target = activeTarget;
-    const next = insertTemplateText(getFieldText(target), tpl.text);
-    setFieldText(target, next);
+    const next = insertTemplateText(getFieldText(activeTarget), tpl.text);
+    setFieldText(activeTarget, next);
   };
 
   const handleSave = () => {
@@ -83,9 +108,12 @@ export function PersonalTemplateRail({
       name: saveName,
       text: activeText,
       target: activeTarget,
+      modality: saveForAllStudies ? null : (studyContext?.modality ?? null),
+      region: saveForAllStudies ? null : (studyContext?.region ?? null),
     });
     persist(appendPersonalTemplate(templates, created));
     setSaveName("");
+    setSaveForAllStudies(false);
     setSaveOpen(false);
   };
 
@@ -93,14 +121,14 @@ export function PersonalTemplateRail({
     return (
       <button
         type="button"
-        className="flex h-full w-full flex-col items-center gap-2 border-l border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/20 py-3 text-emerald-700 hover:bg-emerald-50 transition-colors"
+        className="flex h-full w-full flex-col items-center gap-2 border-l border-emerald-200/50 bg-gradient-to-b from-card to-emerald-50/20 py-3 text-emerald-700 transition-colors hover:bg-emerald-50"
         onClick={onToggleCollapsed}
         title="Expand templates"
         data-testid="personal-template-rail-expand"
       >
         <ChevronLeft className="h-4 w-4" />
         <span
-          className="text-[9px] font-semibold tracking-wider uppercase text-emerald-800"
+          className="text-[9px] font-semibold uppercase tracking-wider text-emerald-800"
           style={{ writingMode: "vertical-rl" }}
         >
           Templates
@@ -136,6 +164,22 @@ export function PersonalTemplateRail({
         </button>
       </div>
 
+      {scopeHint ? (
+        <div
+          className="shrink-0 border-b border-border/40 bg-emerald-50/40 px-2 py-1 text-[9px] font-medium text-emerald-900"
+          data-testid="personal-template-study-scope"
+          title="Showing macros for this study plus untagged globals"
+        >
+          Filtered for {scopeHint}
+          {visible.length !== templates.length ? (
+            <span className="text-muted-foreground">
+              {" "}
+              · {visible.length}/{templates.length}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
         {sorted.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border/70 bg-muted/20 px-2 py-3 text-center text-[11px] text-muted-foreground">
@@ -149,13 +193,16 @@ export function PersonalTemplateRail({
                 disabled={disabled}
                 onClick={() => handleInsert(tpl)}
                 className={cn(
-                  "min-w-0 flex-1 rounded-full border border-emerald-200/80 bg-white px-3 py-1.5 text-left text-[11px] font-medium text-emerald-950 shadow-sm",
+                  "min-w-0 flex-1 rounded-lg border border-emerald-200/80 bg-white px-3 py-1.5 text-left text-[11px] font-medium text-emerald-950 shadow-sm",
                   "hover:border-emerald-400 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50",
                 )}
                 title={`Insert into ${activeTarget}`}
                 data-testid={`personal-template-pill-${tpl.id}`}
               >
                 <span className="block truncate">{tpl.name}</span>
+                <span className="mt-0.5 block truncate text-[9px] font-normal text-muted-foreground">
+                  {personalTemplateScopeLabel(tpl)}
+                </span>
               </button>
               {!tpl.id.startsWith("seed-") && (
                 <button
@@ -182,6 +229,7 @@ export function PersonalTemplateRail({
           disabled={!canSave}
           onClick={() => {
             setSaveName("");
+            setSaveForAllStudies(false);
             setSaveOpen(true);
           }}
           data-testid="personal-template-save-open"
@@ -218,6 +266,23 @@ export function PersonalTemplateRail({
                 }
               }}
             />
+            <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] text-foreground/80">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={saveForAllStudies}
+                onChange={(e) => setSaveForAllStudies(e.target.checked)}
+                data-testid="personal-template-save-all-studies"
+              />
+              <span>
+                Available on all studies
+                {!saveForAllStudies && scopeHint ? (
+                  <span className="block text-[10px] text-muted-foreground">
+                    Otherwise tagged for {scopeHint}
+                  </span>
+                ) : null}
+              </span>
+            </label>
             <p className="line-clamp-3 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap">
               {activeText.trim() || "(empty)"}
             </p>
