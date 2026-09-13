@@ -25,7 +25,16 @@ import { SectionSettingsLink } from "./section-settings-link";
  *
  * Optional `continuous` keeps every body visible (legacy R2 experiment). The
  * live workspace uses progressive accordion (`continuous` unset/false).
+
+ * Header UX (Demography → Impression readability):
+ *  - Opaque card backgrounds so collapsed rows never bleed into each other
+ *    (fixes REF DOCTOR text ghosting through REGION / STUDY).
+ *  - Two-line collapsed headers: title + status on row 1, summary on row 2.
+ *  - Title Case labels (not ALL CAPS), icon-only settings, Alt hint on hover.
+ *  - `emphasis="primary"` for Findings / Impression — the radiologist's work.
  */
+
+
 
 const ACCENT_BAR: Record<ReportSectionAccent, string> = {
   slate: "bg-slate-400",
@@ -60,6 +69,11 @@ interface SectionProps {
    * live workspace — progressive accordion is the default.
    */
   continuous?: boolean;
+  /**
+   * Findings / Impression use `primary` so clinical work reads louder than
+   * setup rows (Demography, Region, Technique).
+   */
+  emphasis?: "default" | "primary";
   children: ReactNode;
 }
 
@@ -75,67 +89,108 @@ export function ReportAccordionSection({
   headerExtra,
   collapsedWarning,
   continuous = false,
+  emphasis = "default",
   children,
 }: SectionProps) {
   const showBody = continuous || active;
+  const isPrimary = emphasis === "primary";
   return (
     <section
       data-testid={`report-section-${id}`}
       data-active={showBody ? "true" : "false"}
       data-continuous={continuous ? "true" : "false"}
+      data-emphasis={emphasis}
       className={cn(
-        "flex flex-col rounded-lg border bg-card/60 transition-colors",
+        // Solid backgrounds + overflow clip prevent stacked-row ghosting.
+        "flex flex-col overflow-hidden rounded-lg border bg-card transition-colors isolate",
         continuous
-          ? "shrink-0 border-border/50 bg-card/80"
+          ? "shrink-0 border-border/50"
           : active
             ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
-            : "shrink-0 border-border/60 hover:border-emerald-200",
+            : isPrimary
+              ? "shrink-0 border-emerald-200/80 hover:border-emerald-300"
+              : "shrink-0 border-border/70 hover:border-emerald-200",
       )}
     >
-      <div className="flex shrink-0 items-center gap-1.5 pr-2">
+      <div
+        className={cn(
+          "flex shrink-0 items-start gap-1 border-b border-transparent pr-1.5",
+          showBody && "border-border/40 bg-muted/20",
+          !showBody && isPrimary && "bg-emerald-50/40",
+        )}
+      >
         <button
           type="button"
           onClick={() => onActivate(id)}
           aria-expanded={showBody}
           aria-controls={`report-section-body-${id}`}
           data-testid={`report-section-header-${id}`}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-emerald-50/60"
+          className={cn(
+            "group flex min-w-0 flex-1 items-start gap-2 rounded-lg px-2.5 py-2 text-left",
+            "hover:bg-emerald-50/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/60",
+          )}
           title={continuous ? label : active ? `Collapse ${label} (Alt+${index})` : `Open ${label} (Alt+${index})`}
         >
-          <span className={cn("h-3.5 w-1 shrink-0 rounded-full", ACCENT_BAR[accent])} aria-hidden />
-          {!continuous && (active ? (
-            <ChevronDown size={12} className="shrink-0 text-emerald-600" />
-          ) : (
-            <ChevronRight size={12} className="shrink-0 text-muted-foreground" />
-          ))}
           <span
             className={cn(
-              "shrink-0 text-[10px] font-bold uppercase tracking-wide",
-              showBody ? "text-emerald-900" : "text-muted-foreground",
+              "mt-0.5 w-1 shrink-0 rounded-full",
+              isPrimary ? "h-8" : "h-7",
+              ACCENT_BAR[accent],
             )}
-          >
-            {label}
-          </span>
-          {!showBody && (
-            <span
-              className="min-w-0 flex-1 truncate text-[11px] text-foreground/70"
-              data-testid={`report-section-summary-${id}`}
-            >
-              {summary}
-            </span>
-          )}
-          {status === "attention" || collapsedWarning ? (
-            <AlertTriangle size={11} className="shrink-0 text-amber-500" aria-label="Needs attention" />
-          ) : status === "done" ? (
-            <Check size={11} className="shrink-0 text-emerald-600" aria-label="Complete" />
-          ) : null}
-          <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">⌥{index}</span>
+            aria-hidden
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              {!continuous && (active ? (
+                <ChevronDown size={14} className="shrink-0 text-emerald-600" />
+              ) : (
+                <ChevronRight size={14} className="shrink-0 text-muted-foreground" />
+              ))}
+              <span
+                className={cn(
+                  "shrink-0 font-semibold tracking-tight",
+                  isPrimary ? "text-[13px]" : "text-[12px]",
+                  showBody ? "text-emerald-950" : "text-foreground/85",
+                )}
+              >
+                {label}
+              </span>
+              {status === "attention" || collapsedWarning ? (
+                <AlertTriangle size={12} className="shrink-0 text-amber-500" aria-label="Needs attention" />
+              ) : status === "done" ? (
+                <Check size={12} className="shrink-0 text-emerald-600" aria-label="Complete" />
+              ) : (
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/35"
+                  aria-hidden
+                  title="Not filled yet"
+                />
+              )}
+              <span className="ml-auto shrink-0 font-mono text-[9px] text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/55 group-focus-visible:text-muted-foreground/55">
+                ⌥{index}
+              </span>
+            </div>
+            {!showBody && (
+              <p
+                className={cn(
+                  "mt-0.5 truncate pl-5 text-left leading-snug text-foreground/75",
+                  isPrimary ? "text-[12px]" : "text-[11px]",
+                )}
+                data-testid={`report-section-summary-${id}`}
+              >
+                {summary}
+              </p>
+            )}
+          </div>
         </button>
-        <SectionSettingsLink
-          {...REPORT_SECTION_SETTINGS[id]}
-          testId={`report-section-settings-${id}`}
-        />
-        {showBody && headerExtra}
+        <div className="flex shrink-0 items-center gap-0.5 pt-1.5">
+          <SectionSettingsLink
+            {...REPORT_SECTION_SETTINGS[id]}
+            testId={`report-section-settings-${id}`}
+            iconOnly
+          />
+          {showBody && headerExtra}
+        </div>
       </div>
       {!showBody && collapsedWarning ? (
         <div
@@ -221,10 +276,10 @@ export function FindingsToolTabs({ active, onSelect, badges, unavailable }: Tool
         );
       })}
       {qsSettings ? (
-        <SectionSettingsLink {...qsSettings} testId="findings-tool-settings-quickSelect" />
+        <SectionSettingsLink {...qsSettings} testId="findings-tool-settings-quickSelect" iconOnly />
       ) : null}
       {structuredSettings ? (
-        <SectionSettingsLink {...structuredSettings} testId="findings-tool-settings-structured" />
+        <SectionSettingsLink {...structuredSettings} testId="findings-tool-settings-structured" iconOnly />
       ) : null}
       {active && (
         <button
