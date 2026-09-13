@@ -213,6 +213,27 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(row.billNumber).toBe(`BILL-RS-${marker}`);
   });
 
+  test("worklist falls back to bill-desk age/sex/referrer when PACS mirror is blank", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({ age: "", sex: "", referringDoctor: "" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await db
+      .update(patientsTable)
+      .set({ ageValue: 42, ageUnit: "years", gender: "female" })
+      .where(eq(patientsTable.id, patientId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.patientAge).toBe("42");
+    expect(row.patientGender).toBe("female");
+    expect(row.referringDoctor).toBe("Dr. Referrer");
+  });
+
   test("worklist surfaces ERP status field (v6.14 freeze support)", async () => {
     const res = await request(app)
       .get("/api/internal/reporting-studio/worklist?status=pending")

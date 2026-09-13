@@ -5912,6 +5912,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                     {/* 7. IMPRESSION — Quick Select + editor + Generate + dictation */}
                     <ReportAccordionSection
+                      emphasis="primary"
                       {...accordionProps("impression", {
                         collapsedWarning: (impressionNeedsRefresh || impressionContradictionWarnings.length > 0) ? (
                           <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[9px] text-amber-950" data-testid="impression-collapsed-warning">
