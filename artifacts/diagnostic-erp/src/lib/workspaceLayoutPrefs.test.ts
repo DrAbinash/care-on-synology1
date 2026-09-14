@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   clampLeftPct,
   clampRightPct,
+  clampViewerPct,
+  clampReportPct,
   defaultModeState,
   defaultWorkspaceLayoutPrefs,
   DEFAULT_LAYOUT_MODE,
@@ -14,6 +16,7 @@ import {
   loadWorkspaceLayoutPrefs,
   parseWorkspaceLayoutPrefs,
   resolveLayoutModeForModality,
+  resolveViewerReportPcts,
   RIGHT_COLLAPSED_PCT,
   RIGHT_MAX_PCT,
   RIGHT_MIN_PCT,
@@ -78,7 +81,7 @@ describe("clampLeftPct / clampRightPct — the report editor never gets crushed"
   });
 
   it("passes through in-range values unchanged", () => {
-    expect(clampLeftPct(30)).toBe(30);
+    expect(clampLeftPct(18)).toBe(18);
     expect(clampRightPct(25)).toBe(25);
   });
 
@@ -111,28 +114,33 @@ describe("defaultWorkspaceLayoutPrefs", () => {
   });
 });
 
-describe("defaultModeState — Phase 3 target proportions", () => {
-  it("Report Focus's compact width matches the 18-22% target and both panels start collapsed", () => {
-    expect(LEFT_COLLAPSED_PCT).toBeGreaterThanOrEqual(18);
-    expect(LEFT_COLLAPSED_PCT).toBeLessThanOrEqual(22);
+describe("defaultModeState — live Queue | Viewer | Report targets", () => {
+  it("Report Focus starts with queue collapsed and report-dominant width", () => {
+    expect(LEFT_COLLAPSED_PCT).toBeLessThan(LEFT_MIN_PCT);
     const s = defaultModeState("reportFocus");
     expect(s.leftCollapsed).toBe(true);
     expect(s.rightCollapsed).toBe(true);
+    expect(s.reportPct).toBeGreaterThanOrEqual(70);
   });
 
-  it("Dual Screen also starts with both panels collapsed (viewer lives in the second window)", () => {
+  it("Dual Screen also starts with queue collapsed (viewer lives in the second window)", () => {
     const s = defaultModeState("dualScreen");
     expect(s.leftCollapsed).toBe(true);
     expect(s.rightCollapsed).toBe(true);
   });
 
-  it("Split View starts with the left (viewer) panel expanded", () => {
+  it("Split defaults are reporting-biased (~1/3 viewer, ~2/3 report) with queue collapsed", () => {
     const s = defaultModeState("split");
-    expect(s.leftCollapsed).toBe(false);
+    expect(s.leftCollapsed).toBe(true);
+    expect(s.viewerPct).toBeGreaterThanOrEqual(30);
+    expect(s.viewerPct).toBeLessThanOrEqual(36);
+    expect(s.reportPct).toBeGreaterThanOrEqual(60);
   });
 
-  it("Viewer Focus gives the left/viewer column more width than Split View", () => {
-    expect(defaultModeState("viewerFocus").left).toBeGreaterThan(defaultModeState("split").left);
+  it("Viewer Focus gives the OHIF column more width than Split", () => {
+    expect(defaultModeState("viewerFocus").viewerPct!).toBeGreaterThan(
+      defaultModeState("split").viewerPct!,
+    );
   });
 
   it("every mode's stored expanded widths already fall inside the clamped range", () => {
@@ -181,12 +189,39 @@ describe("parseWorkspaceLayoutPrefs — corrupt/missing input never breaks the w
   it("a valid mode + partial byMode round-trips the known fields and fills in the rest", () => {
     const parsed = parseWorkspaceLayoutPrefs(JSON.stringify({
       mode: "viewerFocus",
-      byMode: { viewerFocus: { left: 50, right: 30, leftCollapsed: false, rightCollapsed: false } },
+      byMode: { viewerFocus: { left: 22, right: 30, leftCollapsed: false, rightCollapsed: false } },
     }));
     expect(parsed.mode).toBe("viewerFocus");
-    expect(parsed.byMode.viewerFocus).toEqual({ left: 50, right: 30, leftCollapsed: false, rightCollapsed: false });
-    // reportFocus wasn't in the blob — must still be present and sane, not undefined.
+    expect(parsed.byMode.viewerFocus.left).toBe(22);
+    expect(parsed.byMode.viewerFocus.right).toBe(30);
+    expect(parsed.byMode.viewerFocus.leftCollapsed).toBe(false);
+    // Older blobs without viewerPct/reportPct pick up mode defaults.
+    expect(parsed.byMode.viewerFocus.viewerPct).toBe(defaultModeState("viewerFocus").viewerPct);
+    expect(parsed.byMode.viewerFocus.reportPct).toBe(defaultModeState("viewerFocus").reportPct);
     expect(parsed.byMode.reportFocus).toEqual(defaultModeState("reportFocus"));
+  });
+
+  it("persists and restores viewerPct/reportPct for focus memory", () => {
+    const parsed = parseWorkspaceLayoutPrefs(JSON.stringify({
+      mode: "split",
+      byMode: {
+        split: {
+          left: 18,
+          right: 20,
+          leftCollapsed: true,
+          rightCollapsed: true,
+          viewerPct: 34,
+          reportPct: 63,
+        },
+      },
+    }));
+    expect(parsed.byMode.split.viewerPct).toBe(34);
+    expect(parsed.byMode.split.reportPct).toBe(63);
+    const resolved = resolveViewerReportPcts("split", parsed.byMode.split);
+    expect(resolved.viewerPct).toBe(34);
+    expect(resolved.reportPct).toBe(63);
+    expect(clampViewerPct(10)).toBeGreaterThanOrEqual(22);
+    expect(clampReportPct(99)).toBeLessThanOrEqual(82);
   });
 
   it("out-of-range stored widths are clamped back into the usable range", () => {
