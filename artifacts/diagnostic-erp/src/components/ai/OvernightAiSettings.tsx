@@ -474,7 +474,7 @@ function OvernightVisionOpsPanel() {
   const [imageCap, setImageCap] = useState("auto");
   const [visionCtx, setVisionCtx] = useState("current");
   const [safeMode, setSafeMode] = useState(false);
-  const [nightVisionProvider, setNightVisionProvider] = useState<"local" | "deepseek" | "ab">("local");
+  const [nightVisionProvider, setNightVisionProvider] = useState<"local" | "deepseek" | "qwen" | "openai" | "ab">("local");
   const [deepseekCloudVisionAllowed, setDeepseekCloudVisionAllowed] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState("");
 
@@ -485,7 +485,9 @@ function OvernightVisionOpsPanel() {
     setVisionCtx(String(ops.visionCtx ?? "current"));
     setSafeMode(Boolean(ops.safeMode));
     const nvp = String((ops as { nightVisionProvider?: string }).nightVisionProvider ?? "local");
-    setNightVisionProvider(nvp === "deepseek" || nvp === "ab" ? nvp : "local");
+    setNightVisionProvider(
+      nvp === "deepseek" || nvp === "qwen" || nvp === "openai" || nvp === "ab" ? nvp : "local",
+    );
     setDeepseekCloudVisionAllowed(Boolean((ops as { deepseekCloudVisionAllowed?: boolean }).deepseekCloudVisionAllowed));
   }, [data, ops.paused, ops.imageCap, ops.visionCtx, ops.safeMode]);
 
@@ -591,11 +593,13 @@ function OvernightVisionOpsPanel() {
         <select
           className="h-8 w-full rounded-md border bg-background px-2 text-xs"
           value={nightVisionProvider}
-          onChange={(e) => setNightVisionProvider(e.target.value as "local" | "deepseek" | "ab")}
+          onChange={(e) => setNightVisionProvider(e.target.value as "local" | "deepseek" | "qwen" | "openai" | "ab")}
         >
           <option value="local">LOCAL ONLY (default)</option>
           <option value="deepseek">DEEPSEEK TRIAL</option>
-          <option value="ab">A/B LOCAL + DEEPSEEK</option>
+          <option value="qwen">QWEN TRIAL</option>
+          <option value="openai">OPENAI TRIAL</option>
+          <option value="ab">A/B LOCAL + CLOUD TELEMETRY</option>
         </select>
         <label className="flex items-center gap-2">
           <input

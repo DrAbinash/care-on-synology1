@@ -2,20 +2,17 @@
  * Gateway inference provider — Phase P2 / Gate G7 + overnight MRI hardening.
  *
  * Implements the P1 shadow-inference seam by calling the AI Gateway
- * (@workspace/ai-providers requestStructuredReport). Injects the canonical
- * overnight vision options (model / num_ctx / think / endpoint) from
- * resolveLocalAiRuntime() + overnight ops so Test Connection / overnight /
- * Production Auto Policy share one resolution.
+ * (@workspace/ai-providers requestStructuredReport + generateAiResponse).
  *
- * Resource failures (GPU OOM / context budget) are surfaced on provenance —
- * they must NOT become EMPTY/READY via degraded empty drafts.
+ * Cloud overnight (Qwen/DeepSeek/OpenAI) is EXPERIMENTAL and opt-in only.
+ * DEFAULT remains local Ollama / qwen3-vl:8b. No DeepSeek side-door imports.
  */
-import { requestStructuredReport, type GatewayDeps } from "@workspace/ai-providers";
+import { requestStructuredReport, defaultModelForProvider } from "@workspace/ai-providers";
 import type { ShadowInferenceProvider, ShadowInferenceInput, ShadowInferenceOutput } from "./shadowInference";
 import { getOvernightVisionInferenceOptions } from "./overnightVisionConfig";
 import { classifyOvernightProviderFailure } from "./productionVisionPolicy";
 
-const RADIOLOGY_TASK_KEY = "radiology_draft";
+const RADIOLOGY_TASK_KEY = "overnight_vision";
 const P2_PROMPT_VERSION = "radiology-draft-mri-grounded-v2";
 
 /** Exported for unit tests — overnight MRI grounding rules. */
@@ -57,30 +54,12 @@ export function buildRadiologyDraftPrompt(input: ShadowInferenceInput & { safeMo
   ].filter(Boolean).join("\n");
 }
 
-function makeOvernightCall(vision: Awaited<ReturnType<typeof getOvernightVisionInferenceOptions>>): GatewayDeps["call"] {
-  return async ({ provider, model, prompt, images }) => {
-    const { generateAiResponse } = await import("@workspace/ai-providers");
-    const resolvedModel =
-      provider === "ollama"
-        ? vision.model
-        : (model || vision.model);
-    const r = await generateAiResponse(provider, prompt, images, {
-      model: resolvedModel,
-      numCtx: vision.numCtx,
-      think: vision.think,
-      temperature: vision.temperature,
-      maxTokens: vision.policy.maxTokens,
-      endpointUrl: provider === "ollama" ? vision.endpointUrl : undefined,
-      timeoutMs: vision.policy.timeoutMs,
-    });
-    return {
-      success: r.success,
-      text: r.text,
-      error: r.error,
-      // Extra fields ignored by GatewayDeps typing but useful if call is customized.
-      diagnostics: r.diagnostics,
-    } as { success: boolean; text: string; error?: string };
-  };
+type NightMode = "local" | "deepseek" | "qwen" | "openai" | "ab";
+
+function resolveNightCloudProvider(mode: NightMode): "deepseek" | "qwen" | "openai" | null {
+  if (mode === "deepseek" || mode === "qwen" || mode === "openai") return mode;
+  if (mode === "ab") return "deepseek"; // A/B telemetry arm defaults to DeepSeek when opted in
+  return null;
 }
 
 export const gatewayInferenceProvider: ShadowInferenceProvider = {
@@ -96,23 +75,25 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       responseLength?: number | null;
     } | null = null;
 
-    // Direct call so we can classify GPU/context failures before gateway degrades to empty.
-    // Night vision provider: LOCAL ONLY (default) | DEEPSEEK TRIAL | A/B (local authoritative).
     const { generateAiResponse } = await import("@workspace/ai-providers");
     const prompt = buildRadiologyDraftPrompt({ ...input, safeMode: vision.policy.safeMode });
 
-    let nightVisionProvider: "local" | "deepseek" | "ab" = "local";
-    let deepseekCloudVisionAllowed = false;
+    let nightVisionProvider: NightMode = "local";
+    let cloudVisionAllowed = false;
     try {
       const { getOvernightOpsControls } = await import("./clinicalConfigService");
       const ops = await getOvernightOpsControls();
-      nightVisionProvider = ops.nightVisionProvider ?? "local";
-      deepseekCloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
+      nightVisionProvider = (ops.nightVisionProvider ?? "local") as NightMode;
+      cloudVisionAllowed =
+        ops.deepseekCloudVisionAllowed === true ||
+        (ops as { cloudVisionAllowed?: boolean }).cloudVisionAllowed === true;
     } catch {
       nightVisionProvider = "local";
     }
 
-    let authoritativeProvider: "ollama" | "deepseek" = "ollama";
+    // ALWAYS run local first — overnight default path unchanged.
+    let authoritativeProvider = "ollama";
+    let authoritativeModel = vision.model;
     let direct = await generateAiResponse("ollama", prompt, images, {
       model: vision.model,
       numCtx: vision.numCtx,
@@ -123,41 +104,39 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       timeoutMs: vision.policy.timeoutMs,
     });
 
-    const mayCallDeepseek =
-      deepseekCloudVisionAllowed &&
+    const cloudProvider = resolveNightCloudProvider(nightVisionProvider);
+    const mayCallCloud =
+      cloudVisionAllowed &&
       images.length > 0 &&
-      (nightVisionProvider === "deepseek" || nightVisionProvider === "ab");
+      cloudProvider != null &&
+      (nightVisionProvider === "ab" ||
+        nightVisionProvider === "deepseek" ||
+        nightVisionProvider === "qwen" ||
+        nightVisionProvider === "openai");
 
-    if (mayCallDeepseek) {
-      try {
-        const { DeepSeekComposerAdapter } = await import("../reportComposer/providers/deepseekComposerAdapter");
-        const { DEEPSEEK_VISION_MODEL } = await import("../reportComposer/providers/deepseekConfig");
-        const adapter = new DeepSeekComposerAdapter();
-        const ds = await adapter.compose({
-          systemPrompt: "Return provisional radiology JSON only. Never invent demographics.",
-          userPrompt: prompt,
-          model: DEEPSEEK_VISION_MODEL,
-          temperature: vision.temperature,
-          timeoutMs: vision.policy.timeoutMs,
-          images: images.slice(0, 6).map((b64) => ({ mimeType: "image/jpeg" as const, base64: b64 })),
-        });
-        if (nightVisionProvider === "deepseek" && ds.ok) {
-          // Explicit DeepSeek trial mode — use cloud result as overnight draft source.
-          direct = { success: true, text: ds.text };
-          authoritativeProvider = "deepseek";
-        } else if (nightVisionProvider === "deepseek" && !ds.ok && !direct.success) {
-          direct = { success: false, text: "", error: ds.safeError };
-        }
-        // ab mode: DeepSeek is telemetry-only; local `direct` stays authoritative.
-      } catch {
-        if (nightVisionProvider === "deepseek" && !direct.success) {
-          direct = { success: false, text: "", error: "deepseek_trial_failed" };
-        }
+    if (mayCallCloud && cloudProvider) {
+      const cloudModel =
+        defaultModelForProvider(cloudProvider, true) ||
+        (cloudProvider === "deepseek" ? "deepseek-v4-flash-vision-exp" : "qwen3.7-plus");
+      const cloud = await generateAiResponse(cloudProvider, prompt, images, {
+        model: cloudModel,
+        temperature: vision.temperature,
+        maxTokens: vision.policy.maxTokens,
+        timeoutMs: vision.policy.timeoutMs,
+        cloudVisionAllowed: true,
+      });
+      // ab = telemetry only; local stays authoritative.
+      if (nightVisionProvider !== "ab" && cloud.success) {
+        direct = cloud;
+        authoritativeProvider = cloudProvider;
+        authoritativeModel = cloudModel;
+      } else if (nightVisionProvider !== "ab" && !cloud.success && !direct.success) {
+        direct = cloud;
+        authoritativeProvider = cloudProvider;
+        authoritativeModel = cloudModel;
       }
     }
 
-    // If mode is deepseek-only but cloud not allowed, keep local result (never break CARE).
-    void nightVisionProvider;
     lastError = direct.error;
     lastDiag = direct.diagnostics
       ? {
@@ -176,7 +155,6 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         errorMessage: lastError,
         responseLength: lastDiag?.responseLength,
       });
-      // Do not re-POST identical failing payloads through the gateway retry loop.
       return {
         draft: {
           studyContext: {
@@ -189,7 +167,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           impression: [],
         },
         provenance: {
-          modelVersion: vision.model,
+          modelVersion: authoritativeModel,
           modelDigest: null,
           provider: authoritativeProvider,
           degraded: true,
@@ -212,7 +190,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       };
     }
 
-    // Successful provider text → validate via gateway contract (no second Ollama hit).
+    // Successful provider text → validate via gateway contract (no second inference).
+    // Provenance uses the ACTUAL authoritative provider — never force "ollama".
     const result = await requestStructuredReport(
       {
         taskKey: RADIOLOGY_TASK_KEY,
@@ -229,11 +208,11 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         call: async () => ({ success: true, text: direct.text }),
         selectChain: async () => [
           {
-            provider: "ollama",
-            model: vision.model,
+            provider: authoritativeProvider,
+            model: authoritativeModel,
             modelDigest: null,
-            isLocal: true,
-            phiEligible: true,
+            isLocal: authoritativeProvider === "ollama",
+            phiEligible: authoritativeProvider === "ollama",
           },
         ],
       },
@@ -253,9 +232,9 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         impression: result.report.impression,
       },
       provenance: {
-        modelVersion: result.model ? `${result.model}` : vision.model,
+        modelVersion: result.model ? `${result.model}` : authoritativeModel,
         modelDigest: result.modelDigest,
-        provider: result.provider,
+        provider: result.provider || authoritativeProvider,
         degraded: result.degraded,
         detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}`,
         resourceFailureCode: null,

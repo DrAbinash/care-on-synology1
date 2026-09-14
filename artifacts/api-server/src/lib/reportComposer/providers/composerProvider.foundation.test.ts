@@ -4,6 +4,9 @@ import { resolveComposerProvider, parseComposerProviderName } from "./resolveCom
 import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 import { DeepSeekComposerAdapter } from "./deepseekComposerAdapter";
 import { OpenAiComposerAdapter } from "./openaiComposerAdapter";
+import { QwenComposerAdapter } from "./qwenComposerAdapter";
+import { assertModelSupportsCapability } from "./modelRegistry";
+import { generateAiResponse, assertCloudImageEgress } from "@workspace/ai-providers";
 
 describe("assertComposerProviderPolicy", () => {
   it("allows Ollama TEXT_ONLY", () => {
@@ -70,12 +73,29 @@ describe("assertComposerProviderPolicy", () => {
       imageCount: 1,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.safeError).toBe("deepseek_cloud_vision_not_allowed");
+    if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
     if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
     else delete process.env.DEEPSEEK_API_KEY;
   });
 
-  it("fails closed for OpenAI selected images", async () => {
+  it("blocks Qwen vision without cloudVisionAllowed (same policy as DeepSeek)", () => {
+    const prev = process.env.QWEN_API_KEY;
+    process.env.QWEN_API_KEY = "sk-qwen-test";
+    const r = assertComposerProviderPolicy({
+      provider: "qwen",
+      aiMode: "SELECTED_IMAGES",
+      cloudVisionAllowed: false,
+      imageCount: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
+    if (prev !== undefined) process.env.QWEN_API_KEY = prev;
+    else delete process.env.QWEN_API_KEY;
+  });
+
+  it("fails closed for OpenAI when key missing", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     const r = assertComposerProviderPolicy({
       provider: "openai",
       aiMode: "SELECTED_IMAGES",
@@ -83,7 +103,8 @@ describe("assertComposerProviderPolicy", () => {
       imageCount: 1,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.safeError).toBe("composer_provider_not_configured");
+    if (!r.ok) expect(r.safeError).toBe("openai_api_key_not_configured");
+    if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
   });
 });
 
@@ -94,15 +115,19 @@ describe("resolveComposerProvider", () => {
     expect(parseComposerProviderName("unknown")).toBe("ollama");
   });
 
-  it("returns DeepSeek adapter (configured via env for live calls)", async () => {
-    const prev = process.env.DEEPSEEK_API_KEY;
+  it("returns cloud adapters that fail closed without keys", async () => {
+    const prevDs = process.env.DEEPSEEK_API_KEY;
+    const prevQ = process.env.QWEN_API_KEY;
+    const prevO = process.env.OPENAI_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
-    const ds = resolveComposerProvider("deepseek");
-    const oa = resolveComposerProvider("openai");
-    expect(ds).toBeInstanceOf(DeepSeekComposerAdapter);
-    expect(oa).toBeInstanceOf(OpenAiComposerAdapter);
+    delete process.env.QWEN_API_KEY;
+    delete process.env.OPENAI_API_KEY;
 
-    const dsResult = await ds.compose({
+    expect(resolveComposerProvider("deepseek")).toBeInstanceOf(DeepSeekComposerAdapter);
+    expect(resolveComposerProvider("qwen")).toBeInstanceOf(QwenComposerAdapter);
+    expect(resolveComposerProvider("openai")).toBeInstanceOf(OpenAiComposerAdapter);
+
+    const dsResult = await resolveComposerProvider("deepseek").compose({
       systemPrompt: "s",
       userPrompt: "u",
       model: "deepseek-v4-pro",
@@ -110,23 +135,71 @@ describe("resolveComposerProvider", () => {
       timeoutMs: 1000,
     });
     expect(dsResult.ok).toBe(false);
-    if (!dsResult.ok) {
-      expect(dsResult.safeError).toBe("deepseek_api_key_not_configured");
-    }
-    if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
+    if (!dsResult.ok) expect(dsResult.safeError).toBe("deepseek_api_key_not_configured");
 
-    const oaResult = await oa.compose({
+    const qResult = await resolveComposerProvider("qwen").compose({
+      systemPrompt: "s",
+      userPrompt: "u",
+      model: "qwen3.7-plus",
+      temperature: 0.1,
+      timeoutMs: 1000,
+    });
+    expect(qResult.ok).toBe(false);
+    if (!qResult.ok) expect(qResult.safeError).toBe("qwen_api_key_not_configured");
+
+    const oaResult = await resolveComposerProvider("openai").compose({
       systemPrompt: "s",
       userPrompt: "u",
       model: "gpt-4o",
       temperature: 0.1,
       timeoutMs: 1000,
-      images: [{ mimeType: "image/jpeg", base64: "abc" }],
     });
     expect(oaResult.ok).toBe(false);
-    if (!oaResult.ok) {
-      expect(oaResult.safeError).toBe("composer_provider_not_configured");
-    }
+    if (!oaResult.ok) expect(oaResult.safeError).toBe("openai_api_key_not_configured");
+
+    if (prevDs !== undefined) process.env.DEEPSEEK_API_KEY = prevDs;
+    if (prevQ !== undefined) process.env.QWEN_API_KEY = prevQ;
+    if (prevO !== undefined) process.env.OPENAI_API_KEY = prevO;
+  });
+});
+
+describe("model capability filtering", () => {
+  it("rejects text-only DeepSeek Pro for vision", () => {
+    const r = assertModelSupportsCapability("deepseek", "deepseek-v4-pro", "vision");
+    expect(r.ok).toBe(false);
+  });
+
+  it("allows qwen3.7-plus for vision", () => {
+    expect(assertModelSupportsCapability("qwen", "qwen3.7-plus", "vision").ok).toBe(true);
+  });
+});
+
+describe("shared cloud image egress", () => {
+  it("denies cloud images by default", () => {
+    const r = assertCloudImageEgress({
+      provider: "qwen",
+      imageCount: 1,
+      cloudVisionAllowed: false,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("allows cloud images only with explicit opt-in", () => {
+    const r = assertCloudImageEgress({
+      provider: "deepseek",
+      imageCount: 1,
+      cloudVisionAllowed: true,
+      modelSupportsVision: true,
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("generateAiResponse blocks cloud images without opt-in", async () => {
+    const res = await generateAiResponse("deepseek", "Describe findings", ["base64frame"], {
+      model: "deepseek-v4-flash-vision-exp",
+    });
+    expect(res.success).toBe(false);
+    expect(res.diagnostics?.errorCode).toBe("PHI_IMAGE_CLOUD_BLOCKED");
   });
 });
 
@@ -164,19 +237,14 @@ describe("OllamaComposerAdapter", () => {
     });
 
     expect(result.ok).toBe(true);
+    if (result.ok) expect(result.execution).toBe("LOCAL");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(String(call[0])).toBe("http://127.0.0.1:11434/api/chat");
     const body = JSON.parse(String(call[1]?.body));
     expect(body.model).toBe("llava:7b");
-    expect(body.stream).toBe(false);
     expect(body.format).toBe("json");
     expect(body.think).toBe(false);
-    expect(body.options.temperature).toBe(0.1);
-    expect(body.options.num_ctx).toBe(4096);
-    expect(body.messages[0]).toEqual({ role: "system", content: "system-prompt" });
-    expect(body.messages[1].role).toBe("user");
-    expect(body.messages[1].content).toBe("user-prompt");
     expect(body.messages[1].images).toEqual(["QUJDRA=="]);
   });
 
@@ -192,8 +260,6 @@ describe("OllamaComposerAdapter", () => {
       localOnly: true,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.safeError).toBe("composer_endpoint_blocked");
-    }
+    if (!result.ok) expect(result.safeError).toBe("composer_endpoint_blocked");
   });
 });

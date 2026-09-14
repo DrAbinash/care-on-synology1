@@ -141,8 +141,14 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
     expect(res.body.composer?.transport).toBe("ollama");
     expect(res.body.composer?.defaultProvider).toBe("ollama");
     expect(typeof res.body.composer?.deepSeekConfigured).toBe("boolean");
+    expect(typeof res.body.composer?.qwenConfigured).toBe("boolean");
+    expect(typeof res.body.composer?.openaiConfigured).toBe("boolean");
     expect(String(res.body.composer?.deepSeekNote ?? "")).toMatch(/DeepSeek|Ollama|DEEPSEEK_API_KEY/i);
     expect(res.body.composer?.deepSeekTextModel).toBeTruthy();
+    expect(Array.isArray(res.body.aiProviders)).toBe(true);
+    expect(Array.isArray(res.body.models)).toBe(true);
+    // Secrets must never appear
+    expect(JSON.stringify(res.body)).not.toMatch(/sk-[a-zA-Z0-9]{8,}/);
   });
 
   it("process-now completes without mutating patient reports", async () => {

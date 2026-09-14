@@ -32,8 +32,8 @@ describe("composeDisplay", () => {
       resolveComposeDisplayStatus({
         ok: true,
         fallbackUsed: false,
-        model: "deepseek-v4-pro",
-        provider: "deepseek",
+        model: "qwen3.7-plus",
+        provider: "qwen",
       }),
     ).toBe("CLOUD_AI_SUCCESS");
   });

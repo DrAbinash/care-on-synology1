@@ -242,6 +242,11 @@ export interface AiQueryDiagnostics {
   ollamaAvailableContext?: number | null;
   /** From Ollama exceed_context_size_error / n_prompt_tokens when present. */
   ollamaRequestTokens?: number | null;
+  /** OpenAI-compatible usage (when provider returns it). */
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  /** Display-only estimate from pricing.ts — never used for routing. */
+  approximateCostUsd?: number | null;
 }
 
 export interface AiQueryResult {
@@ -300,6 +305,24 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     defaultModels: [CANONICAL_LOCAL_CHAT_VISION_MODEL, "gemma3:4b", "gemma3:12b", "qwen3:14b", "gpt-oss:20b"],
     placeholder: CANONICAL_OLLAMA_ENDPOINT,
   },
+  /** Alibaba Cloud Model Studio — international OpenAI-compatible API. */
+  qwen: {
+    name: "qwen",
+    label: "Qwen (Model Studio)",
+    needsApiKey: true,
+    needsEndpointUrl: true,
+    defaultModels: ["qwen3.7-plus"],
+    placeholder: "sk-...",
+  },
+  /** DeepSeek official OpenAI-compatible API (not Ollama Cloud). */
+  deepseek: {
+    name: "deepseek",
+    label: "DeepSeek Official",
+    needsApiKey: true,
+    needsEndpointUrl: true,
+    defaultModels: ["deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
+    placeholder: "sk-...",
+  },
 };
 
 export const BUILTIN_PROVIDER_NAMES = Object.keys(BUILTIN_PROVIDER_CONFIGS);
@@ -314,6 +337,8 @@ const MODEL_FAMILY_PATTERNS: Record<string, RegExp> = {
   gemini: /^gemini[-.]/i,
   openai: /^(gpt[-.]|o1|o3|o4|chatgpt|text-)/i,
   anthropic: /^claude[-.]/i,
+  deepseek: /^deepseek[-.]/i,
+  qwen: /^(qwen|qwq)/i,
 };
 
 export interface ModelValidation { ok: boolean; message?: string }
@@ -798,10 +823,31 @@ export async function createAiProvider(
   const config = BUILTIN_PROVIDER_CONFIGS[name];
   if (!config) return null;
 
-  if (name === "openai" && apiKey) return new OpenAIProvider(apiKey);
+  if (name === "openai" && apiKey) {
+    // Prefer shared OpenAI-compatible transport so composer/overnight share one path.
+    // Falls back to baseURL override when OPENAI_BASE_URL / endpointUrl set.
+    const { OpenAiCompatibleProvider } = await import("./openAiCompatibleProvider");
+    const { readEnvBaseUrl } = await import("./openAiCompatible");
+    const base = (endpointUrl?.trim() || readEnvBaseUrl("openai") || "https://api.openai.com/v1").replace(
+      /\/$/,
+      "",
+    );
+    return new OpenAiCompatibleProvider("openai", apiKey, base, config);
+  }
   if (name === "gemini" && apiKey) return new GeminiProvider(apiKey);
   if (name === "anthropic" && apiKey) return new AnthropicProvider(apiKey);
   if (name === "ollama" && endpointUrl) return new OllamaProvider(endpointUrl);
+  if ((name === "deepseek" || name === "qwen") && apiKey) {
+    const { OpenAiCompatibleProvider } = await import("./openAiCompatibleProvider");
+    const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("./openAiCompatible");
+    const base =
+      (endpointUrl?.trim() ||
+        readEnvBaseUrl(name) ||
+        COMPATIBLE_PROVIDER_DEFAULTS[name]?.baseURL ||
+        "").replace(/\/$/, "");
+    if (!base) return null;
+    return new OpenAiCompatibleProvider(name, apiKey, base, config);
+  }
 
   return null;
 }
@@ -902,27 +948,40 @@ export async function getProviderEndpointUrl(provider: string): Promise<string |
 
 /**
  * Create a provider instance from the database credentials.
+ * Trial cloud providers (deepseek/qwen/openai) also accept env API keys when
+ * ai_provider_settings has no encrypted key yet — documented for clinic ops.
  */
 export async function createAiProviderFromDb(name: string): Promise<AiProvider | null> {
-  const config = await loadProviderConfig(name);
-  if (!config) return null;
   const meta = BUILTIN_PROVIDER_CONFIGS[name];
+  if (!meta) return null;
+  const config = await loadProviderConfig(name);
 
   let apiKey: string | undefined;
   let endpointUrl: string | undefined;
 
-  if (meta?.needsApiKey) {
-    const key = await getProviderApiKey(name);
-    if (!key) return null;
-    apiKey = key;
+  if (meta.needsApiKey) {
+    const dbKey = config ? await getProviderApiKey(name) : null;
+    if (dbKey) {
+      apiKey = dbKey;
+    } else {
+      const { readEnvApiKey } = await import("./openAiCompatible");
+      apiKey = readEnvApiKey(name) ?? undefined;
+    }
+    if (!apiKey) return null;
   }
 
-  if (meta?.needsEndpointUrl) {
-    const url = await getProviderEndpointUrl(name);
-    // Ollama: DB row is a mirror of Local AI settings; env/canonical fills gaps
-    // so overnight/OCR never hard-fail when clinic_settings was set via env only.
+  if (meta.needsEndpointUrl) {
+    const url = config ? await getProviderEndpointUrl(name) : null;
     if (name === "ollama") {
       endpointUrl = (url?.trim().replace(/\/$/, "") || envOllamaEndpoint());
+    } else if (name === "deepseek" || name === "qwen" || name === "openai") {
+      const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("./openAiCompatible");
+      endpointUrl =
+        url?.trim().replace(/\/$/, "") ||
+        readEnvBaseUrl(name) ||
+        COMPATIBLE_PROVIDER_DEFAULTS[name]?.baseURL ||
+        undefined;
+      if (!endpointUrl) return null;
     } else if (!url) {
       return null;
     } else {
@@ -989,39 +1048,53 @@ export async function generateAiResponse(
     endpointUrl?: string;
     /** Optional provider HTTP AbortSignal timeout (ms). */
     timeoutMs?: number;
+    /**
+     * Explicit clinic/trial opt-in for cloud image egress.
+     * DEFAULT deny for all non-ollama providers (Qwen/DeepSeek/OpenAI identical).
+     */
+    cloudVisionAllowed?: boolean;
   },
 ): Promise<AiQueryResult> {
   const imgs = images ?? [];
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
 
-  // Fail closed: clinical / PHI-bearing images must not leave the clinic.
-  // Local providers (ollama) are allowed; cloud providers are blocked regardless
-  // of env keys. Text-only prompts are unchanged.
+  // Central cloud image egress — DEFAULT DENY. Identical for Qwen/DeepSeek/OpenAI.
   if (imgs.length > 0 && providerName !== "ollama") {
-    return {
-      text: "",
-      success: false,
-      error: "Clinical images cannot be sent to cloud AI providers. Use local Ollama vision or a text-only request.",
-      diagnostics: {
-        provider: providerName,
-        resolvedEndpoint: null,
-        model: options?.model ?? null,
-        numberOfImages: imgs.length,
-        totalImageBytes,
-        promptLength: (prompt ?? "").length,
-        startedAt,
-        elapsedMs: 0,
-        httpStatus: null,
-        responseLength: 0,
-        finishReason: null,
-        errorClass: "PhiImageCloudBlocked",
-        errorCode: "PHI_IMAGE_CLOUD_BLOCKED",
-        errorMessage: "Clinical images cannot be sent to cloud AI providers.",
-        timeoutStage: null,
-        timeoutMsConfigured: options?.timeoutMs ?? null,
-      },
-    };
+    const { assertCloudImageEgress } = await import("./cloudImagePolicy");
+    const { modelSupportsVision } = await import("./builtinModelCapabilities");
+    const model = options?.model ?? "";
+    const egress = assertCloudImageEgress({
+      provider: providerName,
+      imageCount: imgs.length,
+      cloudVisionAllowed: options?.cloudVisionAllowed === true,
+      modelSupportsVision: model ? modelSupportsVision(providerName, model) : true,
+    });
+    if (!egress.ok) {
+      return {
+        text: "",
+        success: false,
+        error: egress.error,
+        diagnostics: {
+          provider: providerName,
+          resolvedEndpoint: null,
+          model: options?.model ?? null,
+          numberOfImages: imgs.length,
+          totalImageBytes,
+          promptLength: (prompt ?? "").length,
+          startedAt,
+          elapsedMs: 0,
+          httpStatus: null,
+          responseLength: 0,
+          finishReason: null,
+          errorClass: "PhiImageCloudBlocked",
+          errorCode: egress.errorCode,
+          errorMessage: egress.error,
+          timeoutStage: null,
+          timeoutMsConfigured: options?.timeoutMs ?? null,
+        },
+      };
+    }
   }
 
   let provider: AiProvider | null = null;
@@ -1152,6 +1225,12 @@ export interface AiTaskDef {
  */
 export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "radiology_draft", label: "Radiology AI Draft", description: "AI-assisted radiology report drafting from study context/images.", vision: true },
+  /** Report Composer text path — CARE persona + observations (default local Ollama). */
+  { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama.", vision: false },
+  /** Selected-image vision drafts in Report Composer. */
+  { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama qwen3-vl.", vision: true },
+  /** Overnight shadow pipeline vision. Default MUST remain local Ollama. */
+  { key: "overnight_vision", label: "Overnight Vision", description: "Overnight provisional AI draft from representative images. Default: local Ollama only.", vision: true },
   { key: "report_enhancement", label: "Report Enhancement", description: "Auto-generate findings, impression and measurements for a report.", vision: false },
   { key: "clinical_notes", label: "Clinical Notes", description: "Generate clinical notes from patient demographics and history.", vision: false },
   { key: "billing_insights", label: "Billing Insights", description: "Summarize billing/revenue patterns for a patient or period.", vision: false },
@@ -1382,3 +1461,8 @@ export * from "./circuitBreaker";
 export * from "./capabilityRegistry";
 export * from "./gateway";
 export * from "./evaluation";
+export * from "./openAiCompatible";
+export * from "./pricing";
+export * from "./builtinModelCapabilities";
+export * from "./cloudImagePolicy";
+export { OpenAiCompatibleProvider } from "./openAiCompatibleProvider";
