@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   materializeAcceptedText,
   AI_COMPOSE_STATUS_STYLE,
+  composeStatusDisplay,
+  isDeterministicComposeFallback,
+  DETERMINISTIC_FALLBACK_WARNING,
   computeSnapshotHashes,
   COMPOSER_MAX_SELECTED_KEY_IMAGES,
   type TrackedChange,
@@ -37,6 +40,23 @@ describe("client reportComposer materialize", () => {
   it("has distinct compose status labels from overnight vision", () => {
     expect(AI_COMPOSE_STATUS_STYLE.READY.label).toBe("AI READY");
     expect(AI_COMPOSE_STATUS_STYLE.STALE_READY.label).toBe("AI STALE");
+  });
+
+  it("shows FALLBACK DRAFT instead of AI READY when deterministic fallback was used", () => {
+    const ready = composeStatusDisplay("READY", { fallbackUsed: true, model: "deterministic" });
+    expect(ready.label).toBe("FALLBACK DRAFT");
+    expect(ready.isFallbackDraft).toBe(true);
+
+    const aiReady = composeStatusDisplay("READY", { fallbackUsed: false, model: "qwen3:14b" });
+    expect(aiReady.label).toBe("AI READY");
+    expect(aiReady.isFallbackDraft).toBe(false);
+
+    expect(isDeterministicComposeFallback({
+      fallbackUsed: true,
+      model: "deterministic",
+      validation: { warnings: ["deterministic_fallback"] },
+    })).toBe(true);
+    expect(DETERMINISTIC_FALLBACK_WARNING).toMatch(/Local AI was not used/);
   });
 });
 

@@ -1296,7 +1296,8 @@ export function AiReportingPanel() {
                 {composerTestStatus === "fail" && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle size={12} /> {composerTestMsg}</span>}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Text-only report composition for Draft from Observations / voice. Does not use vision model.
+                Text-only report composition for <strong>Draft from Observations</strong> and voice. Does not use vision model.
+                Composer num_ctx does not change global OLLAMA_NUM_CTX.
                 Example clinic text models: <code className="bg-muted px-1 rounded">gemma3:12b</code>,{" "}
                 <code className="bg-muted px-1 rounded">qwen3:14b</code> (select — not hard-coded).
               </p>
