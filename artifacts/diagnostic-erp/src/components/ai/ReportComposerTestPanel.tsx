@@ -305,9 +305,12 @@ export function ReportComposerTestPanel({
         <p><span className="text-muted-foreground">Endpoint:</span> {diagnostics?.endpoint ?? "—"}</p>
         <p><span className="text-muted-foreground">Primary model:</span> {diagnostics?.model || "(not configured)"}</p>
         <p><span className="text-muted-foreground">Fallback:</span> {diagnostics?.fallbackModel || "(none)"}</p>
-        <p><span className="text-muted-foreground">Healthy:</span> {diagnostics?.healthy ? "YES" : "NO"}</p>
+        <p><span className="text-muted-foreground">Healthy:</span> {diagnostics?.healthy ? "YES" : "NO"}
+          {diagnostics?.statusMessage ? ` — ${diagnostics.statusMessage}` : ""}
+        </p>
         <p><span className="text-muted-foreground">DeepSeek API configured:</span> {diagnostics?.deepSeekConfigured ? "YES" : "NO"}</p>
         <p><span className="text-muted-foreground">Night vision provider:</span> {diagnostics?.nightVisionProvider ?? "local"}</p>
+        <p><span className="text-muted-foreground">Source:</span> {diagnostics?.endpointSource ?? "—"} · transport {diagnostics?.transport ?? "ollama"}</p>
       </div>
 
       {diagnostics?.deepSeekNote && (
@@ -339,7 +342,12 @@ export function ReportComposerTestPanel({
 
       <div className="space-y-1.5">
         <label className="text-xs font-semibold text-muted-foreground">Study type / region</label>
-        <input className="w-full h-9 px-3 text-xs rounded-lg border bg-background" value={region} onChange={(e) => setRegion(e.target.value)} />
+        <input
+          className="w-full h-9 px-3 text-xs rounded-lg border bg-background"
+          value={region}
+          onChange={(e) => setRegion(e.target.value)}
+          data-testid="composer-test-region"
+        />
       </div>
       <div className="space-y-1.5">
         <label className="text-xs font-semibold text-muted-foreground">Observations</label>
@@ -347,6 +355,7 @@ export function ReportComposerTestPanel({
           className="w-full min-h-[9rem] px-3 py-2 text-xs rounded-lg border bg-background font-mono leading-5"
           value={observations}
           onChange={(e) => setObservations(e.target.value)}
+          data-testid="composer-test-observations"
         />
       </div>
 
