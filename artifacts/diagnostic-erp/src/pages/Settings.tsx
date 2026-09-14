@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { buildBillPrintHtml, type PrintBillData, type PrintClinic } from "@/lib/printBill";
 import { resolveBillPrintPageOpts, parseGlobalBillPrintSettings, billPrintCopiesForCopyType, applyCursorBillPrintLayout, BILL_FORMATS, normalizeBillFormat, paperSizeForBillFormat } from "@/lib/billPrintSettings";
 import { api, fetchApi, getStaffToken } from "@/lib/fetchApi";
+import { buildsMismatch, getFrontendBuildCommit, normalizeBuildCommit } from "@/lib/buildIdentity";
 import { useSuperAdmin, getSuperAdminToken } from "@/hooks/useSuperAdmin";
 import PageHeader from "@/components/PageHeader";
 import { MobileTableScroll } from "@/components/MobileTableScroll";
@@ -8941,14 +8942,33 @@ function ScannerSettingsTab() {
 
 function AboutTab() {
   const [info, setInfo] = React.useState<any>(null);
+  const [apiBuildCommit, setApiBuildCommit] = React.useState<string>("unknown");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const frontendBuild = getFrontendBuildCommit();
 
   React.useEffect(() => {
-    fetch("/api/system/version")
-      .then((r) => r.json())
-      .then((d) => { setInfo(d); setLoading(false); })
-      .catch((e) => { setError(e.message); setLoading(false); });
+    let cancelled = false;
+    Promise.all([
+      fetch("/api/system/version").then((r) => r.json()),
+      fetch("/api/health")
+        .then((r) => r.json())
+        .catch(() => null),
+    ])
+      .then(([version, health]) => {
+        if (cancelled) return;
+        setInfo(version);
+        const fromHealth = health?.build?.commit;
+        const fromVersion = version?.gitCommit;
+        setApiBuildCommit(normalizeBuildCommit(fromHealth || fromVersion));
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.message);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   if (loading) return (
@@ -8972,6 +8992,8 @@ function AboutTab() {
     <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-6 mb-2 first:mt-0">{title}</h3>
   );
 
+  const showMismatch = buildsMismatch(frontendBuild, apiBuildCommit);
+
   return (
     <div className="max-w-2xl space-y-4">
       {/* Version banner */}
@@ -8985,6 +9007,9 @@ function AboutTab() {
             {info?.releaseName && (
               <p className="text-xs text-muted-foreground italic">{info.releaseName}</p>
             )}
+            <p className="text-[11px] text-muted-foreground font-mono mt-0.5">
+              CARE Frontend · Build: {frontendBuild}
+            </p>
           </div>
           <div className="ml-auto text-right">
             <div className="text-2xl font-extrabold text-primary tabular-nums">v{info?.version}</div>
@@ -9005,6 +9030,11 @@ function AboutTab() {
            info?.schemaVerifyStatus === "failed" || info?.schemaVerifyStatus === "full_fail" ? "✗ Schema Mismatch" :
            "⚠ Schema Unknown"}
         </div>
+        {showMismatch && (
+          <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-400" role="status">
+            Frontend/API build mismatch
+          </p>
+        )}
       </div>
 
       {/* Detail rows */}
@@ -9017,6 +9047,8 @@ function AboutTab() {
         <Row label="Deployed At"   value={info?.deployedAt} />
 
         <Section title="Git Provenance" />
+        <Row label="Frontend build" value={frontendBuild} />
+        <Row label="API build"      value={apiBuildCommit} />
         <Row label="Git Commit"   value={info?.gitCommit} />
         <Row label="Git Branch"   value={info?.gitBranch} />
         <Row label="Git Tag"      value={info?.gitTag} />

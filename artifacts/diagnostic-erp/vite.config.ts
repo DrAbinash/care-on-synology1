@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { execSync } from "node:child_process";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 // Defaults below allow this app to run outside Replit (e.g. on Windows)
@@ -17,8 +18,41 @@ if (Number.isNaN(port) || port <= 0) {
 
 const basePath = process.env.BASE_PATH ?? "/";
 
+/**
+ * Bake a short Git SHA into the SPA. Prefer stamped env (Docker/compose
+ * GIT_COMMIT / CARE_GIT_SHA / VITE_GIT_COMMIT); fall back to local git;
+ * never fail the production build when .git is unavailable.
+ */
+function resolveViteGitCommit(): string {
+  const fromEnv = (
+    process.env.GIT_COMMIT ||
+    process.env.CARE_GIT_SHA ||
+    process.env.VITE_GIT_COMMIT ||
+    ""
+  )
+    .trim()
+    .replace(/^["']|["']$/g, "");
+  if (fromEnv && fromEnv.toLowerCase() !== "unknown") {
+    return fromEnv.split(/\s+/)[0]!.slice(0, 12);
+  }
+  try {
+    return execSync("git rev-parse --short=12 HEAD", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+const viteGitCommit = resolveViteGitCommit();
+
 export default defineConfig({
   base: basePath,
+  define: {
+    // Ensures import.meta.env.VITE_GIT_COMMIT is always a string literal in the bundle.
+    "import.meta.env.VITE_GIT_COMMIT": JSON.stringify(viteGitCommit),
+  },
   plugins: [
     react(),
     tailwindcss(),

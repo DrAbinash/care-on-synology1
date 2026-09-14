@@ -1,9 +1,17 @@
 import { createRoot } from "react-dom/client";
 import { setAuthTokenGetter } from "@workspace/api-client-react";
 import App from "./App";
+import { getFrontendBuildCommit } from "./lib/buildIdentity";
 import { ERP_SESSION_KEY, type StaffSession } from "./lib/staffSession";
 import { runErpConnectivityBootstrap, runErpConnectivitySyncInit } from "./lib/erpConnectivity";
 import "./index.css";
+
+// Discreet release-identity banner — Settings → About shows the same stamp.
+try {
+  console.info(`[CARE Frontend] Build: ${getFrontendBuildCommit()}`);
+} catch {
+  /* ignore */
+}
 
 // Apply the persisted color scheme synchronously, before the first paint —
 // ColorSchemeProvider (src/lib/colorScheme.ts) re-derives and owns this

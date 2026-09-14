@@ -165,6 +165,13 @@ CMD ["./docker/api-entrypoint.sh"]
 # -----------------------------------------------------------------------------
 FROM base AS web-build
 
+# Same GIT_COMMIT stamp as the api stage — baked into the SPA via Vite
+# (import.meta.env.VITE_GIT_COMMIT). Defaults to unknown when unset.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+ENV VITE_GIT_COMMIT=${GIT_COMMIT}
+ENV CARE_GIT_SHA=${GIT_COMMIT}
+
 # [CRITICAL OOM FIX FOR SYNOLOGY NAS]
 # Forces Docker to wait for the API build to finish before starting Web
 COPY --from=api-build /repo/package.json /tmp/wait-for-api.json

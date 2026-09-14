@@ -517,6 +517,11 @@ services:
       context: .
       dockerfile: Dockerfile
       target: web
+      args:
+        # Stamp the diagnostic-erp SPA with the same commit as care-api.
+        # Canonical env: GIT_COMMIT (set by deploy-synology.sh). The Vite
+        # resolver also accepts CARE_GIT_SHA / VITE_GIT_COMMIT as aliases.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: care-web
     restart: unless-stopped
     logging:
@@ -525,10 +530,8 @@ services:
         max-size: "10m"
         max-file: "5"
     # Build traceability for the static nginx image, matching the api
-    # service's labels below — inspectable via `docker inspect care-web`.
-    # The web container itself is static and has no runtime env, so this is
-    # the only place its build identity is recorded (the SPA already gets
-    # accurate version/commit data at runtime from /api/system/version).
+    # service's labels. The SPA also bakes VITE_GIT_COMMIT at build time;
+    # Settings → About compares that to GET /api/health build.commit.
     labels:
       com.caredeoghar.version: ${ERP_VERSION:-2.0.0}
       com.caredeoghar.build: ${BUILD_NUMBER:-0}
