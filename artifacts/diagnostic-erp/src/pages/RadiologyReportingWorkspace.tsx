@@ -70,7 +70,6 @@ import { useRadiologyDraftId, type RadiologyDraftRow } from "@/hooks/useRadiolog
 import { useRadiologyPalettePrefs } from "@/hooks/useRadiologyPalettePrefs";
 import { useFindingsMacroRecents } from "@/hooks/useFindingsMacroRecents";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 // ─── Existing Care lib/services ────────────────────────────────────────────────
 import { api } from "@/lib/fetchApi";
@@ -287,7 +286,7 @@ import MriReadinessStrip from "@/components/radiology/MriReadinessStrip";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import ReportingShortcutHelp from "@/components/radiology/ReportingShortcutHelp";
 import StructuredFindingDialog from "@/components/radiology/StructuredFindingDialog";
-import { FindingsHighlightEditor } from "@/components/FindingsHighlightEditor";
+import { ConnectedFindingsHighlightEditor } from "@/components/radiology/zai-workspace/ConnectedFindingsHighlightEditor";
 import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
@@ -359,6 +358,10 @@ import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import {
+  readWorkspaceClinicalTexts,
+  useDebouncedWorkspaceClinicalTexts,
+} from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { WorklistStrip, type ReadingQueueDatePreset, type ReadingQueueSort } from "@/components/radiology/zai-workspace/worklist-strip";
@@ -699,8 +702,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const activeStudyId = useWorkspace((s: WorkspaceStore) => s.activeStudyId);
   const selectStudy = useWorkspace((s: WorkspaceStore) => s.selectStudy);
   const setStudies = useWorkspace((s: WorkspaceStore) => s.setStudies);
-  const findingsText = useWorkspace((s: WorkspaceStore) => s.findingsText);
-  const impressionText = useWorkspace((s: WorkspaceStore) => s.impressionText);
+  // Clinical body texts: FindingsEditor / ConnectedFindingsHighlightEditor
+  // subscribe locally. The shell uses a debounced mirror so typing does not
+  // re-render worklist + viewer + copilot on every keystroke. Persistence
+  // paths must call readWorkspaceClinicalTexts() — never this mirror alone.
+  const {
+    findingsText,
+    impressionText,
+    recommendationText,
+    techniqueText,
+    clinicalHistoryText,
+    findingsProvenance,
+    impressionProvenance,
+    techniqueProvenance,
+  } = useDebouncedWorkspaceClinicalTexts(300);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
@@ -710,21 +725,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const selectedObservationId = useWorkspace((s: WorkspaceStore) => s.selectedObservationId);
   const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
   const workspaceMeasurements = useWorkspace((s: WorkspaceStore) => s.measurements);
-  const recommendationText = useWorkspace((s: WorkspaceStore) => s.recommendationText);
-  const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
-  const clinicalHistoryText = useWorkspace((s: WorkspaceStore) => s.clinicalHistoryText);
   const appliedFormatReportTitle = useWorkspace((s: WorkspaceStore) => s.appliedFormatReportTitle);
   const appliedFormatName = useWorkspace((s: WorkspaceStore) => s.appliedFormatName);
-  // Read-only: drives the collapsed Findings summary's "N assisted" count.
-  const findingsProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.findings);
-  const impressionProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.impression);
-  const techniqueProvenance = useWorkspace((s: WorkspaceStore) => s.fieldProvenance.technique ?? EMPTY_FIELD_PROVENANCE);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const isDirty = useWorkspace((s: WorkspaceStore) => s.isDirty);
   const preloadTriggered = useWorkspace((s: WorkspaceStore) => s.preloadTriggered);
   const criticalSlaStartedAt = useWorkspace((s: WorkspaceStore) => s.criticalSlaStartedAt);
   const completedCount = useWorkspace((s: WorkspaceStore) => s.completedStudyIds.size);
   const sessionStartedAt = useWorkspace((s: WorkspaceStore) => s.sessionStartedAt);
+  const fatigueCardDismissed = useWorkspace((s: WorkspaceStore) => s.fatigueCardDismissed);
 
   // ─── Existing Care hooks (the wiring contract) ─────────────────────────────
   // 1. Workflow (queue, navigation, parked, history)
@@ -2208,20 +2217,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       return;
     }
     const lines = generateLocalImpression(
-      findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
+      store.findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
       useStructured ? findingsMap : undefined,
     );
     if (lines.length === 0) {
       toast({ title: "No findings to summarize", description: "Add findings first.", variant: "destructive" });
       return;
     }
-    if (impressionText.trim()) {
+    if (store.impressionText.trim()) {
       setConfirmImpressionReplace(true);
       return;
     }
-    useWorkspace.getState().setField("impression", lines.join("\n"));
+    store.setField("impression", lines.join("\n"));
     toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
-  }, [contentLocked, useStructured, findingsMap, findingsText, impressionText, toast]);
+  }, [contentLocked, useStructured, findingsMap, toast]);
 
   const handleRefreshImpressionFromFindings = useCallback(() => {
     if (contentLocked) return;
@@ -2237,13 +2246,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Confirmed: replace impression
   const confirmedReplaceImpression = useCallback(() => {
     setConfirmImpressionReplace(false);
+    const store = useWorkspace.getState();
     const lines = generateLocalImpression(
-      findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
+      store.findingsText || (useStructured ? findingsMapToText(findingsMap) : ""),
       useStructured ? findingsMap : undefined,
     );
-    useWorkspace.getState().setField("impression", lines.join("\n"));
+    store.setField("impression", lines.join("\n"));
     toast({ title: "Impression generated", description: `${lines.length} point${lines.length > 1 ? "s" : ""} from findings` });
-  }, [useStructured, findingsMap, findingsText, toast]);
+  }, [useStructured, findingsMap, toast]);
 
   // After Load-correct-template, populate Normal/Abnormal cards from the new template
   useEffect(() => {
@@ -2644,18 +2654,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
   useEffect(() => {
     registerDraftRescueSaver(() => {
+      const live = readWorkspaceClinicalTexts();
       writeRescueDraft({
         at: Date.now(),
         studyId: studyId ?? null,
-        clinicalHistory: clinicalHistoryText,
-        technique: techniqueText,
-        rawFindings: findingsText,
-        impression: [impressionText],
-        recommendation: recommendationText,
+        clinicalHistory: live.clinicalHistoryText,
+        technique: live.techniqueText,
+        rawFindings: live.findingsText,
+        impression: [live.impressionText],
+        recommendation: live.recommendationText,
       } as any);
     });
     return () => deregisterDraftRescueSaver();
-  }, [studyId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText]);
+  }, [studyId]);
 
   // ─── Preload next study at 80% findings completion ──────────────────────────
   useEffect(() => {
@@ -2695,17 +2706,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     setAutoSaveStatus("saving");
     try {
+      // Always persist the live store — never the debounced shell mirror.
+      const live = readWorkspaceClinicalTexts();
       const res = await retryWithBackoff(
         () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
           id: draftId ?? undefined,
           studyId: capturedStudyId,
           worklistId: capturedStudyId,
           patientId: capturedPatientId,
-          clinicalHistory: clinicalHistoryText,
-          technique: techniqueText,
-          rawFindings: findingsText,
-          impression: [impressionText],
-          recommendation: recommendationText,
+          clinicalHistory: live.clinicalHistoryText,
+          technique: live.techniqueText,
+          rawFindings: live.findingsText,
+          impression: [live.impressionText],
+          recommendation: live.recommendationText,
           findingsSections: useStructured ? findingsMap : undefined,
           structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
             ? toDraftFormatState({
@@ -2753,7 +2766,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
       return null;
     }
-  }, [studyId, draftId, clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
+  }, [studyId, draftId, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
   saveDraftRef.current = saveDraft;
 
   // First-save mutex — stable across re-renders; recreate when saveDraft identity changes.
@@ -2957,11 +2970,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     formFContinueFinalizeRef.current = false;
 
-    // 2. Validate (local + server validate-draft when available)
+    // 2. Validate (local + server validate-draft when available) — live store
+    const live = readWorkspaceClinicalTexts();
     const validationIssues = validateReport({
-      findings: findingsText,
-      impression: [impressionText],
-      technique: techniqueText,
+      findings: live.findingsText,
+      impression: [live.impressionText],
+      technique: live.techniqueText,
     } as any);
     if (effectiveDraftId) {
       try {
@@ -2984,11 +2998,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         draftId: effectiveDraftId,
         modality: workflow.currentRow.modality,
         studyDescription: workflow.currentRow.studyDescription,
-        clinicalHistory: clinicalHistoryText,
-        technique: techniqueText,
-        findings: findingsText,
-        impression: impressionText,
-        recommendation: recommendationText,
+        clinicalHistory: live.clinicalHistoryText,
+        technique: live.techniqueText,
+        findings: live.findingsText,
+        impression: live.impressionText,
+        recommendation: live.recommendationText,
         checklistPercent: studySetup.checklistPercent,
       });
     } catch (err) {
@@ -3001,7 +3015,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
 
     // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
-    const criticalHits = detectCriticalFindings(findingsText, [impressionText]);
+    const criticalHits = detectCriticalFindings(live.findingsText, [live.impressionText]);
     const criticalMarked = isCritical || criticalHits.length > 0;
     const criticalCommunicated = checklistComm.phoned;
     const safetyIssues = computeFinalizeSafety({
@@ -3160,7 +3174,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     } catch (err) {
       toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     }
-  }, [studyId, workflow, isOnline, findingsText, impressionText, recommendationText, techniqueText, clinicalHistoryText, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy]);
+  }, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -3868,10 +3882,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
           const serverHtml = await api.get<string>(url);
           if (typeof serverHtml === "string" && serverHtml.trim()) {
+            const live = readWorkspaceClinicalTexts();
             html = await finalizePrintPreviewHtml(serverHtml, {
               livePrintBodyHtml,
-              findingsText,
-              impressionText,
+              findingsText: live.findingsText,
+              impressionText: live.impressionText,
               dicomWebBase: BROWSER_DICOMWEB_BASE,
               imageRefs,
               includeProvenanceChrome: false,
@@ -4070,17 +4085,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const handleSaveTeachingCase = useCallback(async () => {
     if (!studyId) return;
     try {
+      const live = readWorkspaceClinicalTexts();
       await api.post("/api/teaching-cases/generate-from-report", {
         studyId,
-        findings: findingsText,
-        impression: impressionText,
+        findings: live.findingsText,
+        impression: live.impressionText,
         modality: workflow.currentRow?.modality,
         studyDescription: workflow.currentRow?.studyDescription,
         patientName: workflow.currentRow?.patientName,
       });
       toast({ title: "Saved as teaching case" });
     } catch (err) { toast({ title: "Teaching case save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" }); }
-  }, [studyId, findingsText, impressionText, toast, workflow.currentRow]);
+  }, [studyId, toast, workflow.currentRow]);
 
   // ─── Verify / countersign (legacy D9) — additive; does not replace Finalize ─
   const linkedReportId = useMemo(() => {
@@ -4302,7 +4318,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // ─── Compute derived state ──────────────────────────────────────────────────
   const study = studies.find((s: Study) => s.id === activeStudyId);
   const sessionMin = Math.floor((Date.now() - sessionStartedAt) / 60000);
-  const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !useWorkspace.getState().fatigueCardDismissed;
+  const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !fatigueCardDismissed;
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;
 
   // ─── Collapsed-section summaries (orientation, not another card) ────────────
@@ -4319,10 +4335,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       ),
     [findingsText, findingsProvenance],
   );
-  const findingsTextDebounced = useDebouncedValue(findingsText, 200);
   const findingsLintCount = useMemo(
-    () => (findingsTextDebounced ? runLintRules(findingsTextDebounced, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
-    [findingsTextDebounced, study?.modality, study?.patient?.sex],
+    () => (findingsText ? runLintRules(findingsText, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
+    [findingsText, study?.modality, study?.patient?.sex],
   );
   const reportLayoutLabel = REPORT_LAYOUT_OPTIONS.find((o) => o.key === reportLayout)?.label ?? "Classic";
   const sectionSummaries: Record<ReportSectionId, string> = {
@@ -4455,11 +4470,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
       return;
     }
+    const live = readWorkspaceClinicalTexts();
     const meaningful = isMeaningfulReportEdit({
-      findings: findingsText,
-      impression: impressionText,
-      recommendation: recommendationText,
-      technique: techniqueText,
+      findings: live.findingsText,
+      impression: live.impressionText,
+      recommendation: live.recommendationText,
+      technique: live.techniqueText,
     });
     // First save: only create a server draft on meaningful report-body edits
     // (not clinicalHistory-only, not open/look).
@@ -5880,9 +5896,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         )}
                       </div>
                     ) : studySetup.highlightFindings ? (
-                      <FindingsHighlightEditor
-                        value={findingsText}
-                        onChange={(v) => useWorkspace.getState().setField("findings", v)}
+                      <ConnectedFindingsHighlightEditor
                         placeholder="Type findings. Abnormal lines tint amber."
                         className="min-h-[220px]"
                         disabled={isLocked || isFinalized}
@@ -6779,7 +6793,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             const sel = typeof window !== "undefined" ? (window.getSelection()?.toString() ?? "") : "";
             void reportComposer.microEdit(
               /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
-              sel || findingsText.slice(0, 800),
+              sel || useWorkspace.getState().findingsText.slice(0, 800),
               "FINDINGS",
               instr,
             );

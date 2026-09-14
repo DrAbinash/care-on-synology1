@@ -124,8 +124,9 @@ describe("Save/finalize payloads — provenance never persisted", () => {
     const saveIdx = workspace.indexOf("() => saveRadiologyDraft<{");
     expect(saveIdx).toBeGreaterThan(-1);
     const slice = workspace.slice(saveIdx, saveIdx + 500);
-    expect(slice).toContain("rawFindings: findingsText");
-    expect(slice).toContain("technique: techniqueText");
+    // Live store snapshot (editor-isolation) — plain strings, never provenance maps.
+    expect(slice).toContain("rawFindings: live.findingsText");
+    expect(slice).toContain("technique: live.techniqueText");
     expect(slice).not.toContain("fieldProvenance");
   });
 
@@ -133,7 +134,7 @@ describe("Save/finalize payloads — provenance never persisted", () => {
     const valIdx = workspace.indexOf("const validationIssues = validateReport({");
     expect(valIdx).toBeGreaterThan(-1);
     const slice = workspace.slice(valIdx, valIdx + 200);
-    expect(slice).toContain("findings: findingsText");
+    expect(slice).toContain("findings: live.findingsText");
     expect(slice).not.toContain("fieldProvenance");
   });
 });

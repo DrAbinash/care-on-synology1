@@ -284,7 +284,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Anatomy-grouped findings", "<FindingsAnatomyStrip"],
     ["Sticky anatomy chips", "<FindingsAnatomyChips"],
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
-    ["Highlight editor", "<FindingsHighlightEditor"],
+    ["Highlight editor", "<ConnectedFindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
     ["Findings Quick Select", /<QuickSelectStrip[\s\S]*?field="findings"/],
     ["Quick Add / Clinic Quick Select", "<QuickFindingsPanel"],
