@@ -121,6 +121,8 @@ app.use(
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Health endpoints (no auth, no rate-limit — used by Docker + monitoring) ─
 // /health          → liveness probe (is the process alive?)
+// /api/health      → release identity (build.commit) + process liveness
+// /api/healthz     → readiness (DB reachable; see routes/health.ts)
 // /api/health/schema → full schema readiness probe
 //   Gates 1-4:
 //   1. db_patch_ok=true (db-patch-v2 completed)

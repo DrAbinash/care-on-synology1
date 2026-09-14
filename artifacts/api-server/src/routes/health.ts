@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { buildIdentityPayload } from "../lib/buildIdentity";
 import { getStartupState } from "../lib/startupState";
 
 const router: IRouter = Router();
@@ -10,6 +11,18 @@ const router: IRouter = Router();
 // Every deployment restarts the process, so the token changes and connected
 // clients can detect that a new version is available.
 const SERVER_STARTED_AT = Date.now();
+
+/**
+ * Lightweight release-identity + process liveness under /api/health.
+ * Does not replace /api/healthz (DB readiness) or /api/health/schema.
+ * Commit comes from build-time GIT_COMMIT (never shells out to git).
+ */
+router.get("/health", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    build: buildIdentityPayload(),
+  });
+});
 
 router.get("/healthz", async (_req, res) => {
   // BEND-1 — STARTING is distinguished from HEALTHY: the socket binds before
