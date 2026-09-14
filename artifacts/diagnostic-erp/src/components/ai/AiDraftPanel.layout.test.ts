@@ -22,7 +22,7 @@ describe("AI Draft placement in reporting workspace", () => {
     expect(src).toContain('from "@/components/ai/AiDraftPanel"');
     expect(src).toContain('variant="rail"');
     expect(src).toContain("onStageAiProposal");
-    expect(src).toContain("<SectionTitle>AI Draft</SectionTitle>");
+    expect(src).toMatch(/stage === "orient" && <>[\s\S]*?<AiDraftPanel variant="rail"/);
   });
 
   it("ReportingWorkspace wires AI Draft into Orient and does not float it bottom-right", () => {
