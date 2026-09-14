@@ -613,8 +613,8 @@ export default function LegacyBox(props: LegacyBoxProps) {
               <div className="space-y-2 text-[11px] text-muted-foreground">
                 <p className="font-semibold text-foreground">Overnight / shadow AI drafts</p>
                 <p>
-                  When AI is enabled for your account, the floating <strong>AI Draft</strong> panel
-                  (bottom-right) shows overnight Ollama drafts for this study. Accept findings into
+                  When AI is enabled for your account, the <strong>AI Draft</strong> panel in the
+                  right Orient rail shows overnight Ollama drafts for this study. Accept findings into
                   the report, edit, then finalize as usual — print and PACS use the signed report.
                 </p>
                 <p>
