@@ -36,6 +36,18 @@ import {
   resolveComposeDisplayStatus,
 } from "../lib/reportComposer/composeDisplay";
 import { CARE_PERSONA_VERSION } from "../lib/reportComposer/persona";
+import {
+  DEEPSEEK_TEXT_MODEL,
+  deepseekConfiguredPublicStatus,
+} from "../lib/reportComposer/providers/deepseekConfig";
+import {
+  approximateDeepSeekCostUsd,
+  getRecentDeepSeekTelemetry,
+} from "../lib/reportComposer/providers/deepseekComposerAdapter";
+import { runDeepSeekVisionAbTrial } from "../lib/reportComposer/providers/deepseekVisionTrial";
+import type { ComposerProviderName } from "../lib/reportComposer/providers";
+import { getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
+
 
 export const reportComposerRouter = Router();
 
@@ -291,6 +303,16 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
     diag.lastFailure && typeof diag.lastFailure === "object" && "safeError" in diag.lastFailure
       ? (diag.lastFailure as { safeError?: string | null }).safeError ?? null
       : null;
+  const ds = deepseekConfiguredPublicStatus();
+  let nightVisionProvider: string = "local";
+  let deepseekCloudVisionAllowed = false;
+  try {
+    const ops = await getOvernightOpsControls();
+    nightVisionProvider = ops.nightVisionProvider;
+    deepseekCloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
+  } catch {
+    /* soft */
+  }
   res.json({
     ok: true,
     composer: {
@@ -306,30 +328,47 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       numCtx: runtime.numCtx,
       localOnly: runtime.localOnly,
       transport: "ollama",
-      deepSeekConfigured: false,
-      deepSeekNote:
-        "DeepSeek adapter is a fail-closed stub; Report Composer hard-wires provider=ollama. Manual/cloud tags may be typed in composer model fields but are sent to the configured Ollama endpoint only.",
+      defaultProvider: "ollama",
+      deepSeekConfigured: ds.configured,
+      deepSeekBaseUrl: ds.baseUrl,
+      deepSeekTextModel: DEEPSEEK_TEXT_MODEL,
+      deepSeekVisionModel: "deepseek-v4-flash-vision-exp",
+      nightVisionProvider,
+      deepseekCloudVisionAllowed,
+      deepSeekNote: ds.configured
+        ? "DeepSeek official API key is configured server-side. Local Ollama remains default. Cloud vision requires explicit trial confirmation."
+        : "DeepSeek API key not configured (set DEEPSEEK_API_KEY). Local Ollama remains default.",
     },
     queue: diag,
   });
 });
 
-/** Synthetic non-PHI self-test — exercises real runReportComposer (no patient write). */
-reportComposerRouter.post("/test", async (req, res): Promise<void> => {
-  if (!canUse(req as StaffAuthRequest)) {
-    res.status(403).json({ ok: false, error: "forbidden" });
-    return;
-  }
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const snapshot = buildComposerTestSnapshot(body);
+function parseProviderOverride(raw: unknown): ComposerProviderName {
+  const p = String(raw ?? "ollama").trim().toLowerCase();
+  if (p === "deepseek") return "deepseek";
+  return "ollama";
+}
+
+async function runComposerTestOnce(opts: {
+  body: Record<string, unknown>;
+  provider: ComposerProviderName;
+}) {
+  const snapshot = buildComposerTestSnapshot(opts.body);
   const hashes = computeSnapshotHashes(snapshot);
   const runtimeBefore = await resolveComposerRuntime(true);
-  const run = await runReportComposer({ kind: "FULL_REPORT", snapshot, allowDeterministicFallback: true });
+  const modelOverride =
+    opts.provider === "deepseek" ? DEEPSEEK_TEXT_MODEL : null;
+  const run = await runReportComposer({
+    kind: "FULL_REPORT",
+    snapshot,
+    allowDeterministicFallback: opts.provider === "ollama",
+    providerOverride: opts.provider,
+    modelOverride,
+    cloudVisionAllowed: false,
+  });
   const validation = run.draft
     ? validateComposerOutput(snapshot, run.draft)
     : { ok: false, errors: ["no_draft"], warnings: [] as string[], unsupportedMentions: [] };
-  // Display status reflects whether Local AI (Ollama) composed — not validator PASS/FAIL.
-  // Validation is reported separately so measurement warnings do not mislabel a real compose.
   const displayStatus = resolveComposeDisplayStatus({
     ok: run.ok,
     fallbackUsed: run.fallbackUsed,
@@ -337,26 +376,35 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
     provider: run.provenance?.provider,
     warnings: [...(run.draft?.warnings ?? []), ...validation.warnings],
   });
+  const provider = (run.provenance?.provider ?? opts.provider) as string;
   const ollamaCalled =
     run.ok === true &&
     run.fallbackUsed !== true &&
     (run.model ?? "").toLowerCase() !== "deterministic" &&
-    (run.provenance?.provider ?? "") === "ollama";
-  const personaLoaded = Boolean(ollamaCalled && run.provenance?.personaVersion);
-  res.json({
+    provider === "ollama";
+  const deepseekCalled =
+    run.ok === true &&
+    run.fallbackUsed !== true &&
+    provider === "deepseek";
+  const personaLoaded = Boolean(
+    (ollamaCalled || deepseekCalled) && run.provenance?.personaVersion,
+  );
+  const lastTel = provider === "deepseek" ? getRecentDeepSeekTelemetry(1)[0] : null;
+  return {
     ok: run.ok,
     validationOk: validation.ok,
-    writesClinicalReport: false,
+    writesClinicalReport: false as const,
+    execution: provider === "deepseek" ? ("CLOUD" as const) : ("LOCAL" as const),
     runtime: {
       enabled: runtimeBefore.enabled,
       model: runtimeBefore.model,
       fallbackModel: runtimeBefore.fallbackModel,
-      endpoint: runtimeBefore.endpoint,
-      endpointSource: runtimeBefore.endpointSource,
+      endpoint: provider === "deepseek" ? deepseekConfiguredPublicStatus().baseUrl : runtimeBefore.endpoint,
+      endpointSource: provider === "deepseek" ? "deepseek_official_api" : runtimeBefore.endpointSource,
       hasFallback: !!runtimeBefore.fallbackModel,
       statusMessage: composerRuntimeStatusMessage(runtimeBefore),
       localOnly: runtimeBefore.localOnly,
-      transport: "ollama",
+      transport: provider === "deepseek" ? "deepseek_official" : "ollama",
     },
     hashes,
     compose: {
@@ -367,11 +415,15 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
       safeError: run.safeError,
       displayStatus,
       ollamaCalled,
+      deepseekCalled,
       personaLoaded,
       personaVersion: run.provenance?.personaVersion ?? null,
       expectedPersonaVersion: CARE_PERSONA_VERSION,
-      provider: run.provenance?.provider ?? null,
-      httpStatus: ollamaCalled ? 200 : run.safeError?.startsWith("ollama_http_") ? Number(run.safeError.replace("ollama_http_", "")) || null : null,
+      provider,
+      httpStatus: ollamaCalled || deepseekCalled ? 200 : null,
+      promptTokens: lastTel?.promptTokens ?? null,
+      completionTokens: lastTel?.completionTokens ?? null,
+      approximateCostUsd: lastTel ? approximateDeepSeekCostUsd(lastTel) : null,
       draft: run.draft
         ? {
             findings: run.draft.findings,
@@ -392,11 +444,92 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
           ? DETERMINISTIC_FALLBACK_USER_MESSAGE
           : displayStatus === "LOCAL_AI_SUCCESS"
             ? "LOCAL AI SUCCESS"
-            : null,
+            : displayStatus === "CLOUD_AI_SUCCESS"
+              ? "DEEPSEEK CLOUD SUCCESS"
+              : null,
     },
     validation,
-    deterministicSample: deterministicComposeFromSnapshot(snapshot, "FULL_REPORT"),
+  };
+}
+
+/** Synthetic non-PHI self-test — exercises real runReportComposer (no patient write). */
+reportComposerRouter.post("/test", async (req, res): Promise<void> => {
+  if (!canUse(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "forbidden" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const provider = parseProviderOverride(body.provider);
+  const result = await runComposerTestOnce({ body, provider });
+  res.json({ ...result, deterministicSample: deterministicComposeFromSnapshot(buildComposerTestSnapshot(body), "FULL_REPORT") });
+});
+
+/** Compare LOCAL Ollama vs DeepSeek V4 Pro on the same frozen observations. */
+reportComposerRouter.post("/test/compare", async (req, res): Promise<void> => {
+  if (!canUse(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "forbidden" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const local = await runComposerTestOnce({ body, provider: "ollama" });
+  const deepseek = await runComposerTestOnce({ body, provider: "deepseek" });
+  res.json({
+    ok: true,
+    writesClinicalReport: false,
+    deepSeekConfigured: deepseekConfiguredPublicStatus().configured,
+    local,
+    deepseek,
   });
+});
+
+/**
+ * Experimental Cloud Vision Trial A/B — explicit confirm required.
+ * Never writes clinical reports. Derived JPEG/PNG only (no DICOM).
+ */
+reportComposerRouter.post("/vision-trial", async (req, res): Promise<void> => {
+  if (!canUse(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "forbidden" });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const confirmCloudVisionTrial = body.confirmCloudVisionTrial === true;
+  let cloudVisionAllowed = false;
+  try {
+    const ops = await getOvernightOpsControls();
+    cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
+  } catch {
+    cloudVisionAllowed = body.cloudVisionAllowed === true;
+  }
+  // Explicit body flag may also enable for controlled UI trial (still requires confirm).
+  if (body.cloudVisionAllowed === true) cloudVisionAllowed = true;
+
+  const imagesRaw = Array.isArray(body.images) ? body.images : [];
+  const images = imagesRaw
+    .map((raw) => {
+      const r = raw as Record<string, unknown>;
+      const mime = String(r.mimeType ?? "image/jpeg");
+      if (mime !== "image/jpeg" && mime !== "image/png" && mime !== "image/webp") return null;
+      const base64 = String(r.base64 ?? "").trim();
+      if (!base64 || base64.length > 3_500_000) return null;
+      return {
+        mimeType: mime as "image/jpeg" | "image/png" | "image/webp",
+        base64,
+        label: typeof r.label === "string" ? r.label.slice(0, 80) : undefined,
+        filename: typeof r.filename === "string" ? r.filename.slice(0, 120) : undefined,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x != null)
+    .slice(0, 6);
+
+  const result = await runDeepSeekVisionAbTrial({
+    images,
+    clinicalPrompt: typeof body.clinicalPrompt === "string" ? body.clinicalPrompt : undefined,
+    confirmCloudVisionTrial,
+    cloudVisionAllowed,
+    runLocal: body.runLocal !== false,
+    runDeepSeek: body.runDeepSeek !== false,
+  });
+  res.json(result);
 });
 
 /** Admin/dev: force-process one job (also drained by radiology other-job consumer). */

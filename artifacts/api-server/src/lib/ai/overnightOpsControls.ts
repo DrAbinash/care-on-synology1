@@ -14,6 +14,8 @@
  */
 export type OvernightImageCap = "auto" | "1" | "2" | "3" | "4" | "6";
 export type OvernightVisionCtx = "current" | "4096" | "8192" | "16384";
+/** Night vision cloud trial — LOCAL ONLY remains default. */
+export type NightVisionProviderMode = "local" | "deepseek" | "ab";
 
 export interface OvernightOpsControls {
   /** When true, overnight drain + night-batch enqueue are paused. */
@@ -25,6 +27,13 @@ export interface OvernightOpsControls {
   visionCtx: OvernightVisionCtx;
   /** Conservative overnight: 1 image, concurrency 1, no multi-image escalation. */
   safeMode: boolean;
+  /**
+   * Experimental night vision provider.
+   * local (default) | deepseek (trial) | ab (local authoritative + DeepSeek trial telemetry).
+   */
+  nightVisionProvider: NightVisionProviderMode;
+  /** Explicit opt-in before any overnight/trial image may leave the LAN. */
+  deepseekCloudVisionAllowed: boolean;
   /** Consecutive NEW overnight jobs that failed with the same resource code. */
   resourceFailStreak: number;
   lastResourceFailCode: string | null;
@@ -54,6 +63,8 @@ export const DEFAULT_OVERNIGHT_OPS: OvernightOpsControls = {
   imageCap: "auto",
   visionCtx: "current",
   safeMode: false,
+  nightVisionProvider: "local",
+  deepseekCloudVisionAllowed: false,
   resourceFailStreak: 0,
   lastResourceFailCode: null,
   legacyBacklogHold: false,
@@ -128,12 +139,17 @@ export function parseOvernightOpsJson(raw: unknown): OvernightOpsControls {
     legacyHoldBefore,
     legacyHoldExplicitlyReleased: obj.legacyHoldExplicitlyReleased === true,
   });
+  const nightRaw = String(obj.nightVisionProvider ?? "local").toLowerCase();
+  const nightVisionProvider: NightVisionProviderMode =
+    nightRaw === "deepseek" || nightRaw === "ab" ? nightRaw : "local";
   return {
     paused: obj.paused === true,
     pauseReason: typeof obj.pauseReason === "string" ? obj.pauseReason.slice(0, 300) : null,
     imageCap: (IMAGE_CAPS.has(imageCap) ? imageCap : "auto") as OvernightImageCap,
     visionCtx: (VISION_CTX.has(visionCtx) ? visionCtx : "current") as OvernightVisionCtx,
     safeMode: obj.safeMode === true,
+    nightVisionProvider,
+    deepseekCloudVisionAllowed: obj.deepseekCloudVisionAllowed === true,
     resourceFailStreak: Math.max(0, Math.floor(Number(obj.resourceFailStreak) || 0)),
     lastResourceFailCode:
       typeof obj.lastResourceFailCode === "string" ? obj.lastResourceFailCode.slice(0, 80) : null,

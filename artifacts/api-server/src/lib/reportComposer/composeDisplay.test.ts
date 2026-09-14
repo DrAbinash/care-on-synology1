@@ -28,6 +28,14 @@ describe("composeDisplay", () => {
         provider: "ollama",
       }),
     ).toBe("LOCAL_AI_SUCCESS");
+    expect(
+      resolveComposeDisplayStatus({
+        ok: true,
+        fallbackUsed: false,
+        model: "deepseek-v4-pro",
+        provider: "deepseek",
+      }),
+    ).toBe("CLOUD_AI_SUCCESS");
   });
 
   it("resolves FALLBACK_DRAFT vs AI_READY (job review path)", () => {

@@ -114,6 +114,12 @@ export async function runReportComposer(opts: {
   allowDeterministicFallback?: boolean;
   /** Authoritative ownership context for SELECTED_IMAGES (resolved server-side). */
   ownership?: KeyImageOwnershipContext | null;
+  /** Optional provider override (test / trial). Default remains ollama. */
+  providerOverride?: ComposerProviderName | null;
+  /** Explicit opt-in to send images to cloud DeepSeek vision. */
+  cloudVisionAllowed?: boolean;
+  /** Optional model override (e.g. DeepSeek text/vision trial models). */
+  modelOverride?: string | null;
 }): Promise<ComposeRunResult> {
   const started = Date.now();
   const aiMode = effectiveAiMode(opts.kind, opts.snapshot);
@@ -164,13 +170,17 @@ export async function runReportComposer(opts: {
     };
   }
 
-  // Provider adapter (default Ollama). Cloud providers fail closed via policy + stubs.
-  const providerName: ComposerProviderName = "ollama";
+  // Provider adapter — default Ollama. DeepSeek only when explicitly overridden/configured.
+  const providerName: ComposerProviderName =
+    opts.providerOverride === "deepseek" || opts.providerOverride === "openai" || opts.providerOverride === "ollama"
+      ? opts.providerOverride
+      : "ollama";
   const providerAdapter = resolveComposerProvider(providerName);
+  const cloudVisionAllowed = opts.cloudVisionAllowed === true && providerName === "deepseek";
   const policy = assertComposerProviderPolicy({
     provider: providerName,
     aiMode,
-    cloudVisionAllowed: false,
+    cloudVisionAllowed,
     // Image bytes are resolved later; policy only needs the count/presence signal.
     imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
     images: undefined,
@@ -205,8 +215,16 @@ export async function runReportComposer(opts: {
     }
   }
 
+  const textModel =
+    (opts.modelOverride ?? "").trim() ||
+    (providerName === "deepseek" ? "deepseek-v4-pro" : runtime.model);
 
-  let provenance: ComposerEvidenceProvenance = { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false };
+  let provenance: ComposerEvidenceProvenance = {
+    ...baseProvenance,
+    model: textModel,
+    provider: providerName,
+    fallbackUsed: false,
+  };
 
   if (aiMode === "SELECTED_IMAGES") {
     const ownership = opts.ownership ?? null;
@@ -241,31 +259,50 @@ export async function runReportComposer(opts: {
     }
 
     // Prefer configured vision model; only use composer model if positively vision-capable.
-    const preferredVision = (runtime.visionModel || "").trim() || runtime.model;
-    let visionModel = preferredVision;
-    let visionOk = await assertVisionCapableModel({
-      endpoint: runtime.endpoint,
-      model: visionModel,
-    });
-    if (!visionOk.ok && preferredVision !== runtime.model && runtime.model) {
-      const alt = await assertVisionCapableModel({
+    // DeepSeek trial uses the official vision-exp model only (never Ollama /api/show).
+    let visionModel =
+      providerName === "deepseek"
+        ? ((opts.modelOverride ?? "").trim() || "deepseek-v4-flash-vision-exp")
+        : (runtime.visionModel || "").trim() || runtime.model;
+
+    if (providerName === "ollama") {
+      let visionOk = await assertVisionCapableModel({
         endpoint: runtime.endpoint,
-        model: runtime.model,
+        model: visionModel,
       });
-      if (alt.ok) {
-        visionModel = runtime.model;
-        visionOk = alt;
+      if (!visionOk.ok && visionModel !== runtime.model && runtime.model) {
+        const alt = await assertVisionCapableModel({
+          endpoint: runtime.endpoint,
+          model: runtime.model,
+        });
+        if (alt.ok) {
+          visionModel = runtime.model;
+          visionOk = alt;
+        }
       }
-    }
-    if (!visionOk.ok) {
+      if (!visionOk.ok) {
+        return {
+          ok: false,
+          safeError: visionOk.safeError,
+          latencyMs: Date.now() - started,
+          provenance: {
+            ...baseProvenance,
+            model: visionModel,
+            provider: providerName,
+            degradedReason: visionOk.detail,
+          },
+        };
+      }
+    } else if (providerName === "deepseek" && visionModel !== "deepseek-v4-flash-vision-exp") {
       return {
         ok: false,
-        safeError: visionOk.safeError,
+        safeError: "deepseek_vision_model_required",
         latencyMs: Date.now() - started,
         provenance: {
           ...baseProvenance,
-          model: preferredVision,
-          degradedReason: visionOk.detail,
+          model: visionModel,
+          provider: providerName,
+          degradedReason: "Cloud vision trial must use deepseek-v4-flash-vision-exp",
         },
       };
     }
@@ -274,7 +311,7 @@ export async function runReportComposer(opts: {
     // If the configured context window is below the clinic minimum for vision
     // drafts, fail with an actionable error instead of mutating admin settings.
     const MIN_VISION_NUM_CTX = 2048;
-    if (runtime.numCtx < MIN_VISION_NUM_CTX) {
+    if (providerName === "ollama" && runtime.numCtx < MIN_VISION_NUM_CTX) {
       return {
         ok: false,
         safeError: "composer_num_ctx_insufficient",
@@ -282,6 +319,7 @@ export async function runReportComposer(opts: {
         provenance: {
           ...baseProvenance,
           model: visionModel,
+          provider: providerName,
           degradedReason: `Composer num_ctx (${runtime.numCtx}) is below the minimum required for selected-image drafting (${MIN_VISION_NUM_CTX}). Increase ollama_composer_num_ctx in clinic settings.`,
         },
       };
@@ -357,7 +395,7 @@ export async function runReportComposer(opts: {
   const primary = await providerAdapter.compose({
       systemPrompt: system,
       userPrompt: user,
-      model: runtime.model,
+      model: textModel,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
       numCtx: runtime.numCtx,
@@ -366,7 +404,7 @@ export async function runReportComposer(opts: {
     });
 
   let text = primary.ok ? primary.text : undefined;
-  let model = runtime.model;
+  let model = textModel;
   let fallbackUsed = false;
   if (!primary.ok && runtime.fallbackModel) {
     const fb = await providerAdapter.compose({

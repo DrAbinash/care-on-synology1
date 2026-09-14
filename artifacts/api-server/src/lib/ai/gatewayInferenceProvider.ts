@@ -97,9 +97,23 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
     } | null = null;
 
     // Direct call so we can classify GPU/context failures before gateway degrades to empty.
+    // Night vision provider: LOCAL ONLY (default) | DEEPSEEK TRIAL | A/B (local authoritative).
     const { generateAiResponse } = await import("@workspace/ai-providers");
     const prompt = buildRadiologyDraftPrompt({ ...input, safeMode: vision.policy.safeMode });
-    const direct = await generateAiResponse("ollama", prompt, images, {
+
+    let nightVisionProvider: "local" | "deepseek" | "ab" = "local";
+    let deepseekCloudVisionAllowed = false;
+    try {
+      const { getOvernightOpsControls } = await import("./clinicalConfigService");
+      const ops = await getOvernightOpsControls();
+      nightVisionProvider = ops.nightVisionProvider ?? "local";
+      deepseekCloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
+    } catch {
+      nightVisionProvider = "local";
+    }
+
+    let authoritativeProvider: "ollama" | "deepseek" = "ollama";
+    let direct = await generateAiResponse("ollama", prompt, images, {
       model: vision.model,
       numCtx: vision.numCtx,
       think: vision.think,
@@ -108,6 +122,42 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       endpointUrl: vision.endpointUrl,
       timeoutMs: vision.policy.timeoutMs,
     });
+
+    const mayCallDeepseek =
+      deepseekCloudVisionAllowed &&
+      images.length > 0 &&
+      (nightVisionProvider === "deepseek" || nightVisionProvider === "ab");
+
+    if (mayCallDeepseek) {
+      try {
+        const { DeepSeekComposerAdapter } = await import("../reportComposer/providers/deepseekComposerAdapter");
+        const { DEEPSEEK_VISION_MODEL } = await import("../reportComposer/providers/deepseekConfig");
+        const adapter = new DeepSeekComposerAdapter();
+        const ds = await adapter.compose({
+          systemPrompt: "Return provisional radiology JSON only. Never invent demographics.",
+          userPrompt: prompt,
+          model: DEEPSEEK_VISION_MODEL,
+          temperature: vision.temperature,
+          timeoutMs: vision.policy.timeoutMs,
+          images: images.slice(0, 6).map((b64) => ({ mimeType: "image/jpeg" as const, base64: b64 })),
+        });
+        if (nightVisionProvider === "deepseek" && ds.ok) {
+          // Explicit DeepSeek trial mode — use cloud result as overnight draft source.
+          direct = { success: true, text: ds.text };
+          authoritativeProvider = "deepseek";
+        } else if (nightVisionProvider === "deepseek" && !ds.ok && !direct.success) {
+          direct = { success: false, text: "", error: ds.safeError };
+        }
+        // ab mode: DeepSeek is telemetry-only; local `direct` stays authoritative.
+      } catch {
+        if (nightVisionProvider === "deepseek" && !direct.success) {
+          direct = { success: false, text: "", error: "deepseek_trial_failed" };
+        }
+      }
+    }
+
+    // If mode is deepseek-only but cloud not allowed, keep local result (never break CARE).
+    void nightVisionProvider;
     lastError = direct.error;
     lastDiag = direct.diagnostics
       ? {
@@ -141,7 +191,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         provenance: {
           modelVersion: vision.model,
           modelDigest: null,
-          provider: "ollama",
+          provider: authoritativeProvider,
           degraded: true,
           detail: fail.detail,
           resourceFailureCode:
@@ -207,7 +257,7 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         modelDigest: result.modelDigest,
         provider: result.provider,
         degraded: result.degraded,
-        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}`,
+        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}`,
         resourceFailureCode: null,
         httpStatus: lastDiag?.httpStatus ?? (direct.success ? 200 : null),
         elapsedMs: lastDiag?.elapsedMs ?? null,

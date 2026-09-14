@@ -26,12 +26,14 @@ export function isDeterministicComposeFallback(opts: {
 
 /**
  * - LOCAL_AI_SUCCESS: real Ollama compose (Report Composer Test path, ok=true)
+ * - CLOUD_AI_SUCCESS: real DeepSeek/OpenAI-compatible compose (never labeled LOCAL)
  * - AI_READY: job/review path when status is READY and not fallback (#707)
  * - FALLBACK_DRAFT: deterministic offline draft
  * - FAILED: explicit compose failure (ok=false)
  */
 export type ComposeDisplayStatus =
   | "LOCAL_AI_SUCCESS"
+  | "CLOUD_AI_SUCCESS"
   | "AI_READY"
   | "FALLBACK_DRAFT"
   | "FAILED"
@@ -50,9 +52,11 @@ export function resolveComposeDisplayStatus(opts: {
 
   const model = (opts.model ?? "").trim();
   const nonDeterministicModel = !!model && model.toLowerCase() !== "deterministic";
+  const provider = (opts.provider ?? "").trim().toLowerCase();
 
-  // Test / live compose path (explicit ok)
+  // Test / live compose path (explicit ok) — never label cloud as LOCAL AI SUCCESS
   if (opts.ok === true && nonDeterministicModel) {
+    if (provider === "deepseek" || provider === "openai") return "CLOUD_AI_SUCCESS";
     return "LOCAL_AI_SUCCESS";
   }
 

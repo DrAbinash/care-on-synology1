@@ -112,7 +112,7 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
       expect([200, 403, 500]).toContain(res.status);
       if (res.status !== 200) return;
       expect(res.body.writesClinicalReport).toBe(false);
-      expect(["LOCAL_AI_SUCCESS", "FALLBACK_DRAFT", "FAILED", "OTHER"]).toContain(
+      expect(["LOCAL_AI_SUCCESS", "CLOUD_AI_SUCCESS", "FALLBACK_DRAFT", "FAILED", "OTHER"]).toContain(
         res.body.compose?.displayStatus,
       );
       if (res.body.compose?.displayStatus === "FALLBACK_DRAFT") {
@@ -132,15 +132,17 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
     60_000,
   );
 
-  it("GET /diagnostics exposes DeepSeek stub note and transport=ollama", async () => {
+  it("GET /diagnostics exposes DeepSeek official-API status and defaultProvider=ollama", async () => {
     const res = await request(app)
       .get("/api/radiology/report-composer/diagnostics")
       .set("Authorization", `Bearer ${token}`);
     expect([200, 403, 500]).toContain(res.status);
     if (res.status !== 200) return;
     expect(res.body.composer?.transport).toBe("ollama");
-    expect(res.body.composer?.deepSeekConfigured).toBe(false);
-    expect(String(res.body.composer?.deepSeekNote ?? "")).toMatch(/stub|hard-wire|ollama/i);
+    expect(res.body.composer?.defaultProvider).toBe("ollama");
+    expect(typeof res.body.composer?.deepSeekConfigured).toBe("boolean");
+    expect(String(res.body.composer?.deepSeekNote ?? "")).toMatch(/DeepSeek|Ollama|DEEPSEEK_API_KEY/i);
+    expect(res.body.composer?.deepSeekTextModel).toBeTruthy();
   });
 
   it("process-now completes without mutating patient reports", async () => {

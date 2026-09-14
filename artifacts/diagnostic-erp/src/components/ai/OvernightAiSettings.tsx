@@ -474,6 +474,8 @@ function OvernightVisionOpsPanel() {
   const [imageCap, setImageCap] = useState("auto");
   const [visionCtx, setVisionCtx] = useState("current");
   const [safeMode, setSafeMode] = useState(false);
+  const [nightVisionProvider, setNightVisionProvider] = useState<"local" | "deepseek" | "ab">("local");
+  const [deepseekCloudVisionAllowed, setDeepseekCloudVisionAllowed] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState("");
 
   useEffect(() => {
@@ -482,6 +484,9 @@ function OvernightVisionOpsPanel() {
     setImageCap(String(ops.imageCap ?? "auto"));
     setVisionCtx(String(ops.visionCtx ?? "current"));
     setSafeMode(Boolean(ops.safeMode));
+    const nvp = String((ops as { nightVisionProvider?: string }).nightVisionProvider ?? "local");
+    setNightVisionProvider(nvp === "deepseek" || nvp === "ab" ? nvp : "local");
+    setDeepseekCloudVisionAllowed(Boolean((ops as { deepseekCloudVisionAllowed?: boolean }).deepseekCloudVisionAllowed));
   }, [data, ops.paused, ops.imageCap, ops.visionCtx, ops.safeMode]);
 
   const parseJobIds = (): number[] =>
@@ -497,6 +502,8 @@ function OvernightVisionOpsPanel() {
         imageCap: imageCap as "auto" | "1" | "2" | "3" | "4" | "6",
         visionCtx: visionCtx as "current" | "4096" | "8192" | "16384",
         safeMode,
+        nightVisionProvider,
+        deepseekCloudVisionAllowed,
         clearResourceStreak: !paused,
       }),
     onSuccess: () => {
@@ -574,6 +581,30 @@ function OvernightVisionOpsPanel() {
             <option value="16384">16384</option>
           </select>
         </div>
+      </div>
+      <div className="rounded-md border border-violet-200 bg-violet-50/50 p-3 space-y-2 text-[11px]" data-testid="night-vision-provider">
+        <p className="font-semibold">Night Vision Provider (experimental)</p>
+        <p className="text-[10px] text-muted-foreground">
+          Default remains LOCAL ONLY. DeepSeek uses official API only when cloud vision is explicitly allowed.
+          A/B keeps local authoritative and records DeepSeek as trial telemetry.
+        </p>
+        <select
+          className="h-8 w-full rounded-md border bg-background px-2 text-xs"
+          value={nightVisionProvider}
+          onChange={(e) => setNightVisionProvider(e.target.value as "local" | "deepseek" | "ab")}
+        >
+          <option value="local">LOCAL ONLY (default)</option>
+          <option value="deepseek">DEEPSEEK TRIAL</option>
+          <option value="ab">A/B LOCAL + DEEPSEEK</option>
+        </select>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={deepseekCloudVisionAllowed}
+            onChange={(e) => setDeepseekCloudVisionAllowed(e.target.checked)}
+          />
+          <span>Allow DeepSeek cloud vision (explicit opt-in)</span>
+        </label>
       </div>
       {safeMode ? (
         <p className="text-[10px] text-amber-900">
