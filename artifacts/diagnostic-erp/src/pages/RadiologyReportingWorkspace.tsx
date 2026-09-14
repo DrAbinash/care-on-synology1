@@ -243,7 +243,6 @@ import {
 } from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
-import { AiDraftPanel } from "@/components/ai/AiDraftPanel";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
 import { useReportComposer } from "@/hooks/useReportComposer";
 import {
