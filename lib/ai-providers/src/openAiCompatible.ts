@@ -129,7 +129,7 @@ export async function openAiCompatibleChat(
     };
 
     const resp = await client.chat.completions.create(
-      body as Parameters<typeof client.chat.completions.create>[0],
+      body as unknown as Parameters<typeof client.chat.completions.create>[0],
     );
 
     const text =
