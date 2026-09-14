@@ -473,14 +473,40 @@ router.post("/test-provider", async (req, res): Promise<void> => {
   if (config.needsEndpointUrl) {
     if (!url) {
       const stored = await getProviderEndpointUrl(provider);
-      if (!stored) { res.status(400).json({ error: `No endpoint URL configured for ${config.label}.` }); return; }
-      url = stored;
+      if (stored) {
+        url = stored;
+      } else if (provider === "deepseek" || provider === "qwen" || provider === "openai") {
+        // Same resolver as createAiProvider / Report Composer: env override, then official default.
+        // Without this, Model Studio "Test Connection" fails with "No endpoint URL configured"
+        // even when QWEN_BASE_URL (or vendor default) is available server-side.
+        const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("@workspace/ai-providers");
+        url = (readEnvBaseUrl(provider) || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.baseURL || "").trim();
+      }
+      if (!url) {
+        res.status(400).json({ error: `No endpoint URL configured for ${config.label}.` });
+        return;
+      }
     }
   } else {
     if (!key) {
       const stored = await getProviderApiKey(provider);
       if (!stored) { res.status(400).json({ error: "No API key configured for this provider." }); return; }
       key = stored;
+    }
+  }
+
+  // Cloud OpenAI-compatible providers also accept env API keys when the form/DB key is empty.
+  if ((provider === "deepseek" || provider === "qwen" || provider === "openai") && !key) {
+    const stored = await getProviderApiKey(provider);
+    if (stored) {
+      key = stored;
+    } else {
+      const { readEnvApiKey } = await import("@workspace/ai-providers");
+      key = readEnvApiKey(provider) ?? "";
+    }
+    if (!key) {
+      res.status(400).json({ error: "No API key configured for this provider." });
+      return;
     }
   }
 

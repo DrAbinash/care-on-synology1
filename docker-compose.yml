@@ -375,6 +375,12 @@ services:
       AI_MODEL_VISION: ${AI_MODEL_VISION:-qwen3-vl:8b}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
       OLLAMA_THINK: ${OLLAMA_THINK:-0}
+      # Qwen Model Studio (Alibaba DashScope OpenAI-compatible). Compose does NOT
+      # auto-inject .env — list these or care-api never sees QWEN_* even when the
+      # host .env is correct. QWEN_BASE_URL may be the intl default or a workspace
+      # Singapore MaaS URL ending in /compatible-mode/v1 (code does not re-append).
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-}
       AI_TIMEOUT_FAST_SECONDS: ${AI_TIMEOUT_FAST_SECONDS:-120}
       AI_TIMEOUT_LARGE_SECONDS: ${AI_TIMEOUT_LARGE_SECONDS:-300}
       AI_CONCURRENCY: ${AI_CONCURRENCY:-1}
