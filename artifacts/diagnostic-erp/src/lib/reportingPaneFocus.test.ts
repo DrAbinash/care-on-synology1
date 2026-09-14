@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   compactAccordionSummary,
   CONSTRAINED_REPORTING_VIEWPORT_MAX_PX,
+  autoFocusPersistsByModeSizes,
+  clearPaneManualOverride,
   isConstrainedReportingViewport,
   layoutModeForPaneBias,
+  markPaneManualOverride,
   outerPanelPercents,
   REPORTING_FOCUS_VIEWER_SHARE,
+  shouldApplyAutomaticPaneFocus,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseExclusiveReportSections,
@@ -89,5 +93,61 @@ describe("compactAccordionSummary", () => {
 describe("shouldIgnorePaneFocusTarget", () => {
   it("is a no-op without DOM Element", () => {
     expect(shouldIgnorePaneFocusTarget(null)).toBe(false);
+  });
+});
+
+describe("transient auto-focus vs manual byMode memory", () => {
+  it("automatic focus must not persist byMode viewer/report sizes", () => {
+    expect(autoFocusPersistsByModeSizes()).toBe(false);
+  });
+
+  it("manual drag sets a session override that survives far beyond 2.5s", () => {
+    let override = markPaneManualOverride({}, "split");
+    expect(
+      shouldApplyAutomaticPaneFocus({
+        constrained: true,
+        mode: "split",
+        manualOverride: override,
+      }),
+    ).toBe(false);
+    // Still blocked after a long pause — not a 2500ms timer.
+    override = markPaneManualOverride(override, "split");
+    expect(
+      shouldApplyAutomaticPaneFocus({
+        constrained: true,
+        mode: "split",
+        manualOverride: override,
+      }),
+    ).toBe(false);
+  });
+
+  it("explicit mode reset/change re-enables automatic focus for that mode", () => {
+    let override = markPaneManualOverride({}, "split");
+    override = markPaneManualOverride(override, "viewerFocus");
+    override = clearPaneManualOverride(override, "split");
+    expect(
+      shouldApplyAutomaticPaneFocus({
+        constrained: true,
+        mode: "split",
+        manualOverride: override,
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyAutomaticPaneFocus({
+        constrained: true,
+        mode: "viewerFocus",
+        manualOverride: override,
+      }),
+    ).toBe(false);
+  });
+
+  it("wide desktop never auto-snaps even without override", () => {
+    expect(
+      shouldApplyAutomaticPaneFocus({
+        constrained: false,
+        mode: "split",
+        manualOverride: {},
+      }),
+    ).toBe(false);
   });
 });
