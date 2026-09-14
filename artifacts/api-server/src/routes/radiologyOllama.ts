@@ -465,6 +465,58 @@ radiologyOllamaRouter.post("/test", async (req, res): Promise<void> => {
   }
 });
 
+/**
+ * POST /list-models — tags-only discovery (no chat completion).
+ * Used by Local AI settings auto-refresh so a wrong vision chat model
+ * does not block listing installed Ollama models.
+ */
+radiologyOllamaRouter.post("/list-models", async (req, res): Promise<void> => {
+  if (!canUseAi(req as StaffAuthRequest)) {
+    res.status(403).json({ ok: false, error: "AI reporting permission required" });
+    return;
+  }
+  const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
+  const { probeOllamaReachable } = await import("@workspace/ai-providers");
+  const runtime = await resolveLocalAiRuntime(true);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const rawUrl = b.baseUrl ? String(b.baseUrl).trim() : runtime.ollamaBaseUrl;
+  const [settingsRow] = await db
+    .select({ localOnly: clinicSettingsTable.ollamaLocalOnly })
+    .from(clinicSettingsTable)
+    .orderBy(desc(clinicSettingsTable.id))
+    .limit(1);
+  const allowLocal = settingsRow?.localOnly ?? false;
+  if (!rawUrl) {
+    res.status(400).json({ ok: false, error: "baseUrl required" });
+    return;
+  }
+  const guard = validateOllamaUrl(rawUrl, allowLocal);
+  if (!guard.ok) {
+    res.status(400).json({ ok: false, error: guard.reason });
+    return;
+  }
+  const baseUrl = guard.url.origin;
+  const t0 = Date.now();
+  const result = await probeOllamaReachable(baseUrl, 8000);
+  if (!result.reachable) {
+    res.status(502).json({
+      ok: false,
+      error: result.error ?? "Ollama unreachable",
+      endpointUsed: baseUrl,
+      latencyMs: Date.now() - t0,
+      models: [],
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    models: result.models ?? [],
+    endpointUsed: baseUrl,
+    latencyMs: Date.now() - t0,
+    source: "ollama_tags",
+  });
+});
+
 // ── POST /probe — probe resolved Local AI endpoints only ─────────────────────
 radiologyOllamaRouter.post("/probe", async (_req, res): Promise<void> => {
   const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");

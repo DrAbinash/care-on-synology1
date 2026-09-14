@@ -55,7 +55,7 @@ export const ComposerEvidenceProvenanceSchema = z.object({
   /** Provider that produced the draft: ollama | deepseek | openai | deterministic */
   provider: z.string().optional(),
   fallbackUsed: z.boolean().optional(),
-  personaVersion: z.string().optional(),
+  personaVersion: z.string().nullish(),
   selectedKeyImageIds: z.array(z.number()).optional(),
   imagesLoaded: z.number().optional(),
   linkedObservationIds: z.array(z.string()).optional(),
