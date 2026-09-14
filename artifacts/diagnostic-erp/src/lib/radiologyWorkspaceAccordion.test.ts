@@ -34,9 +34,10 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}"`);
     }
-    // Findings + Impression stay continuously visible; other rows remain progressive.
+    // Findings + Impression stay continuously visible on wide desktops;
+    // constrained / exclusive mode uses data-report-accordion="exclusive".
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain('data-report-accordion="cockpit"');
+    expect(workspace).toMatch(/data-report-accordion=\{exclusiveReportSections \? "exclusive" : "cockpit"\}/);
     expect(workspace).toContain("continuous");
     expect(workspace).toContain('focusClinicalEditor("findings")');
     expect(workspace).toContain('focusClinicalEditor("impression")');
@@ -102,7 +103,9 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
 
 describe("clicking the workspace collapses chrome, keeps OHIF", () => {
   it("enters reporting focus from the accordion and from the viewer column", () => {
-    expect(workspace).toContain("onMouseDown={enterReportingFocusMode}");
+    expect(workspace).toContain("onPointerDownCapture");
+    expect(workspace).toContain("enterReportingFocusMode()");
+    expect(workspace).toContain("enterViewerPaneFocus");
     expect(workspace).toContain('data-testid="embedded-viewer-column"');
   });
 
@@ -275,7 +278,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Anatomy-grouped findings", "<FindingsAnatomyStrip"],
     ["Sticky anatomy chips", "<FindingsAnatomyChips"],
     ["Structured findings cards", 'data-testid="structured-findings-cards"'],
-    ["Highlight editor", "<FindingsHighlightEditor"],
+    ["Highlight editor", "<ConnectedFindingsHighlightEditor"],
     ["Findings editor", 'field="findings"'],
     ["Findings Quick Select", /<QuickSelectStrip[\s\S]*?field="findings"/],
     ["Quick Add / Clinic Quick Select", "<QuickFindingsPanel"],
