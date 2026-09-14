@@ -66,6 +66,7 @@ type TestResponse = {
       warnings?: string[];
     } | null;
   };
+  validationOk?: boolean;
   validation?: {
     ok?: boolean;
     warnings?: string[];
@@ -268,8 +269,8 @@ export function ReportComposerTestPanel({
             <p>HTTP: {result.compose?.httpStatus ?? (result.compose?.ollamaCalled ? 200 : "n/a")}</p>
             <p>
               Validation:{" "}
-              {result.validation?.ok
-                ? `PASS${(result.validation.warnings?.length ?? 0) > 0 ? ` · warnings: ${result.validation.warnings!.join(", ")}` : ""}`
+              {(result.validationOk ?? result.validation?.ok)
+                ? `PASS${(result.validation?.warnings?.length ?? 0) > 0 ? ` · warnings: ${result.validation!.warnings!.join(", ")}` : ""}`
                 : `FAIL · ${(result.validation?.errors ?? []).join(", ") || "errors"}`}
             </p>
             <p>Writes clinical report: {result.writesClinicalReport ? "YES" : "NO"}</p>

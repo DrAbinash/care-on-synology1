@@ -328,12 +328,14 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
   const validation = run.draft
     ? validateComposerOutput(snapshot, run.draft)
     : { ok: false, errors: ["no_draft"], warnings: [] as string[], unsupportedMentions: [] };
+  // Display status reflects whether Local AI (Ollama) composed — not validator PASS/FAIL.
+  // Validation is reported separately so measurement warnings do not mislabel a real compose.
   const displayStatus = resolveComposeDisplayStatus({
-    ok: run.ok && validation.ok,
+    ok: run.ok,
     fallbackUsed: run.fallbackUsed,
     model: run.model,
     provider: run.provenance?.provider,
-    warnings: validation.warnings,
+    warnings: [...(run.draft?.warnings ?? []), ...validation.warnings],
   });
   const ollamaCalled =
     run.ok === true &&
@@ -342,7 +344,8 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
     (run.provenance?.provider ?? "") === "ollama";
   const personaLoaded = Boolean(ollamaCalled && run.provenance?.personaVersion);
   res.json({
-    ok: run.ok && validation.ok,
+    ok: run.ok,
+    validationOk: validation.ok,
     writesClinicalReport: false,
     runtime: {
       enabled: runtimeBefore.enabled,
