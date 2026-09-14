@@ -124,6 +124,8 @@ export const aiClient = {
     safeMode?: boolean;
     clearResourceStreak?: boolean;
     legacyBacklogHold?: true;
+    nightVisionProvider?: "local" | "deepseek" | "ab";
+    deepseekCloudVisionAllowed?: boolean;
   }) => api.put<{ ok: boolean; ops: Record<string, unknown> }>(`/api/ai/overnight-ops`, body),
   legacyBacklogAction: (body:
     | { action: "retry_selected"; jobIds: number[] }

@@ -112,9 +112,9 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
       expect([200, 403, 500]).toContain(res.status);
       if (res.status !== 200) return;
       expect(res.body.writesClinicalReport).toBe(false);
-      expect(["LOCAL_AI_SUCCESS", "FALLBACK_DRAFT", "FAILED", "OTHER"]).toContain(
-        res.body.compose?.displayStatus,
-      );
+    expect(["LOCAL_AI_SUCCESS", "CLOUD_AI_SUCCESS", "FALLBACK_DRAFT", "FAILED", "OTHER"]).toContain(
+      res.body.compose?.displayStatus,
+    );
       if (res.body.compose?.displayStatus === "FALLBACK_DRAFT") {
         expect(res.body.compose.fallbackUsed === true || res.body.compose.model === "deterministic").toBe(
           true,

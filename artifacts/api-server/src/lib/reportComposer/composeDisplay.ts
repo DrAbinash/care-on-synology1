@@ -32,6 +32,7 @@ export function isDeterministicComposeFallback(opts: {
  */
 export type ComposeDisplayStatus =
   | "LOCAL_AI_SUCCESS"
+  | "CLOUD_AI_SUCCESS"
   | "AI_READY"
   | "FALLBACK_DRAFT"
   | "FAILED"
@@ -50,9 +51,11 @@ export function resolveComposeDisplayStatus(opts: {
 
   const model = (opts.model ?? "").trim();
   const nonDeterministicModel = !!model && model.toLowerCase() !== "deterministic";
+  const provider = (opts.provider ?? "").trim().toLowerCase();
 
-  // Test / live compose path (explicit ok)
+  // Test / live compose path (explicit ok) — never label cloud as LOCAL AI SUCCESS
   if (opts.ok === true && nonDeterministicModel) {
+    if (provider === "deepseek" || provider === "openai") return "CLOUD_AI_SUCCESS";
     return "LOCAL_AI_SUCCESS";
   }
 

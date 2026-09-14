@@ -34,17 +34,48 @@ describe("assertComposerProviderPolicy", () => {
     if (!r.ok) expect(r.safeError).toBe("selected_images_empty");
   });
 
-  it("fails closed for DeepSeek text", () => {
+  it("fails closed for DeepSeek text when API key missing", () => {
+    const prev = process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
     const r = assertComposerProviderPolicy({
       provider: "deepseek",
       aiMode: "TEXT_ONLY",
       imageCount: 0,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.safeError).toBe("composer_provider_not_configured");
+    if (!r.ok) expect(r.safeError).toBe("deepseek_api_key_not_configured");
+    if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
   });
 
-  it("fails closed for OpenAI selected images", () => {
+  it("allows DeepSeek text when API key configured", () => {
+    const prev = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "sk-test-not-real";
+    const r = assertComposerProviderPolicy({
+      provider: "deepseek",
+      aiMode: "TEXT_ONLY",
+      imageCount: 0,
+    });
+    expect(r).toEqual({ ok: true });
+    if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
+    else delete process.env.DEEPSEEK_API_KEY;
+  });
+
+  it("blocks DeepSeek vision without explicit cloudVisionAllowed", () => {
+    const prev = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = "sk-test-not-real";
+    const r = assertComposerProviderPolicy({
+      provider: "deepseek",
+      aiMode: "SELECTED_IMAGES",
+      cloudVisionAllowed: false,
+      imageCount: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.safeError).toBe("deepseek_cloud_vision_not_allowed");
+    if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
+    else delete process.env.DEEPSEEK_API_KEY;
+  });
+
+  it("fails closed for OpenAI selected images", async () => {
     const r = assertComposerProviderPolicy({
       provider: "openai",
       aiMode: "SELECTED_IMAGES",
@@ -63,7 +94,9 @@ describe("resolveComposerProvider", () => {
     expect(parseComposerProviderName("unknown")).toBe("ollama");
   });
 
-  it("returns fail-closed stubs for cloud providers", async () => {
+  it("returns DeepSeek adapter (configured via env for live calls)", async () => {
+    const prev = process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
     const ds = resolveComposerProvider("deepseek");
     const oa = resolveComposerProvider("openai");
     expect(ds).toBeInstanceOf(DeepSeekComposerAdapter);
@@ -72,14 +105,15 @@ describe("resolveComposerProvider", () => {
     const dsResult = await ds.compose({
       systemPrompt: "s",
       userPrompt: "u",
-      model: "deepseek-chat",
+      model: "deepseek-v4-pro",
       temperature: 0.1,
       timeoutMs: 1000,
     });
     expect(dsResult.ok).toBe(false);
     if (!dsResult.ok) {
-      expect(dsResult.safeError).toBe("composer_provider_not_configured");
+      expect(dsResult.safeError).toBe("deepseek_api_key_not_configured");
     }
+    if (prev !== undefined) process.env.DEEPSEEK_API_KEY = prev;
 
     const oaResult = await oa.compose({
       systemPrompt: "s",
