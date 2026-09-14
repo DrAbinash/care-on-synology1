@@ -40,14 +40,21 @@ import {
   DEEPSEEK_TEXT_MODEL,
   deepseekConfiguredPublicStatus,
 } from "../lib/reportComposer/providers/deepseekConfig";
+import { qwenConfiguredPublicStatus, QWEN_DEFAULT_MODEL } from "../lib/reportComposer/providers/qwenConfig";
+import { openaiConfiguredPublicStatus } from "../lib/reportComposer/providers/openaiConfig";
 import {
-  approximateDeepSeekCostUsd,
-  getRecentDeepSeekTelemetry,
-} from "../lib/reportComposer/providers/deepseekComposerAdapter";
+  defaultModelFor,
+  parseComposerProviderName,
+  type ComposerProviderName,
+} from "../lib/reportComposer/providers";
 import { runDeepSeekVisionAbTrial } from "../lib/reportComposer/providers/deepseekVisionTrial";
-import type { ComposerProviderName } from "../lib/reportComposer/providers";
 import { getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
-
+import {
+  BUILTIN_PROVIDER_CONFIGS,
+  listBuiltinModels,
+  listModelPricing,
+  isCompatibleProviderConfigured,
+} from "@workspace/ai-providers";
 
 export const reportComposerRouter = Router();
 
@@ -304,6 +311,8 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       ? (diag.lastFailure as { safeError?: string | null }).safeError ?? null
       : null;
   const ds = deepseekConfiguredPublicStatus();
+  const qw = qwenConfiguredPublicStatus();
+  const oa = openaiConfiguredPublicStatus();
   let nightVisionProvider: string = "local";
   let deepseekCloudVisionAllowed = false;
   try {
@@ -333,31 +342,69 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       deepSeekBaseUrl: ds.baseUrl,
       deepSeekTextModel: DEEPSEEK_TEXT_MODEL,
       deepSeekVisionModel: "deepseek-v4-flash-vision-exp",
+      qwenConfigured: qw.configured,
+      qwenBaseUrl: qw.baseUrl,
+      qwenDefaultModel: QWEN_DEFAULT_MODEL,
+      openaiConfigured: oa.configured,
+      openaiBaseUrl: oa.baseUrl,
       nightVisionProvider,
       deepseekCloudVisionAllowed,
+      cloudVisionAllowed: deepseekCloudVisionAllowed,
       deepSeekNote: ds.configured
         ? "DeepSeek official API key is configured server-side. Local Ollama remains default. Cloud vision requires explicit trial confirmation."
         : "DeepSeek API key not configured (set DEEPSEEK_API_KEY). Local Ollama remains default.",
+      qwenNote: qw.configured
+        ? "Qwen Model Studio key configured. Local Ollama remains default overnight."
+        : "Qwen API key not configured (set QWEN_API_KEY). Local Ollama remains default.",
+      openaiNote: oa.configured
+        ? "OpenAI key configured. Enable via provider/model selection — not used by default."
+        : "OpenAI API key not configured (set OPENAI_API_KEY).",
     },
+    aiProviders: Object.keys(BUILTIN_PROVIDER_CONFIGS).map((id) => ({
+      id,
+      label: BUILTIN_PROVIDER_CONFIGS[id]?.label ?? id,
+      execution: id === "ollama" ? "LOCAL" : "CLOUD",
+      configured:
+        id === "ollama"
+          ? null
+          : id === "deepseek" || id === "qwen" || id === "openai"
+            ? isCompatibleProviderConfigured(id)
+            : undefined,
+    })),
+    models: listBuiltinModels().map((m) => ({
+      provider: m.provider,
+      modelId: m.model,
+      displayName: m.displayName,
+      text: true,
+      vision: m.supportsVision,
+      local: m.isLocal,
+      experimental: m.experimental === true,
+    })),
+    pricing: listModelPricing().map((p) => ({
+      ...p,
+      estimateOnly: true as const,
+    })),
     queue: diag,
   });
 });
 
 function parseProviderOverride(raw: unknown): ComposerProviderName {
-  const p = String(raw ?? "ollama").trim().toLowerCase();
-  if (p === "deepseek") return "deepseek";
-  return "ollama";
+  return parseComposerProviderName(String(raw ?? "ollama"));
 }
 
 async function runComposerTestOnce(opts: {
   body: Record<string, unknown>;
   provider: ComposerProviderName;
+  modelOverride?: string | null;
 }) {
   const snapshot = buildComposerTestSnapshot(opts.body);
   const hashes = computeSnapshotHashes(snapshot);
   const runtimeBefore = await resolveComposerRuntime(true);
   const modelOverride =
-    opts.provider === "deepseek" ? DEEPSEEK_TEXT_MODEL : null;
+    (opts.modelOverride ?? "").trim() ||
+    (opts.provider === "ollama"
+      ? null
+      : defaultModelFor(opts.provider, "text"));
   const run = await runReportComposer({
     kind: "FULL_REPORT",
     snapshot,
@@ -377,34 +424,46 @@ async function runComposerTestOnce(opts: {
     warnings: [...(run.draft?.warnings ?? []), ...validation.warnings],
   });
   const provider = (run.provenance?.provider ?? opts.provider) as string;
+  const isCloud = provider === "deepseek" || provider === "qwen" || provider === "openai";
+  const cloudCalled =
+    run.ok === true && run.fallbackUsed !== true && isCloud;
   const ollamaCalled =
     run.ok === true &&
     run.fallbackUsed !== true &&
     (run.model ?? "").toLowerCase() !== "deterministic" &&
     provider === "ollama";
-  const deepseekCalled =
-    run.ok === true &&
-    run.fallbackUsed !== true &&
-    provider === "deepseek";
   const personaLoaded = Boolean(
-    (ollamaCalled || deepseekCalled) && run.provenance?.personaVersion,
+    (ollamaCalled || cloudCalled) && run.provenance?.personaVersion,
   );
-  const lastTel = provider === "deepseek" ? getRecentDeepSeekTelemetry(1)[0] : null;
+  const requestedProvider = opts.provider;
+  const requestedModel = modelOverride || runtimeBefore.model;
+  const provenanceIntact = provider === requestedProvider;
   return {
     ok: run.ok,
     validationOk: validation.ok,
     writesClinicalReport: false as const,
-    execution: provider === "deepseek" ? ("CLOUD" as const) : ("LOCAL" as const),
+    execution: isCloud ? ("CLOUD" as const) : ("LOCAL" as const),
+    requestedProvider,
+    requestedModel,
+    actualProvider: provider,
+    actualModel: run.model ?? null,
+    provenanceIntact,
     runtime: {
       enabled: runtimeBefore.enabled,
       model: runtimeBefore.model,
       fallbackModel: runtimeBefore.fallbackModel,
-      endpoint: provider === "deepseek" ? deepseekConfiguredPublicStatus().baseUrl : runtimeBefore.endpoint,
-      endpointSource: provider === "deepseek" ? "deepseek_official_api" : runtimeBefore.endpointSource,
+      endpoint: isCloud
+        ? provider === "qwen"
+          ? qwenConfiguredPublicStatus().baseUrl
+          : provider === "openai"
+            ? openaiConfiguredPublicStatus().baseUrl
+            : deepseekConfiguredPublicStatus().baseUrl
+        : runtimeBefore.endpoint,
+      endpointSource: isCloud ? `${provider}_official_api` : runtimeBefore.endpointSource,
       hasFallback: !!runtimeBefore.fallbackModel,
       statusMessage: composerRuntimeStatusMessage(runtimeBefore),
       localOnly: runtimeBefore.localOnly,
-      transport: provider === "deepseek" ? "deepseek_official" : "ollama",
+      transport: isCloud ? `${provider}_official` : "ollama",
     },
     hashes,
     compose: {
@@ -415,15 +474,17 @@ async function runComposerTestOnce(opts: {
       safeError: run.safeError,
       displayStatus,
       ollamaCalled,
-      deepseekCalled,
+      deepseekCalled: provider === "deepseek" && cloudCalled,
+      qwenCalled: provider === "qwen" && cloudCalled,
+      openaiCalled: provider === "openai" && cloudCalled,
       personaLoaded,
       personaVersion: run.provenance?.personaVersion ?? null,
       expectedPersonaVersion: CARE_PERSONA_VERSION,
       provider,
-      httpStatus: ollamaCalled || deepseekCalled ? 200 : null,
-      promptTokens: lastTel?.promptTokens ?? null,
-      completionTokens: lastTel?.completionTokens ?? null,
-      approximateCostUsd: lastTel ? approximateDeepSeekCostUsd(lastTel) : null,
+      httpStatus: ollamaCalled || cloudCalled ? 200 : null,
+      promptTokens: null,
+      completionTokens: null,
+      approximateCostUsd: null,
       draft: run.draft
         ? {
             findings: run.draft.findings,
@@ -445,7 +506,7 @@ async function runComposerTestOnce(opts: {
           : displayStatus === "LOCAL_AI_SUCCESS"
             ? "LOCAL AI SUCCESS"
             : displayStatus === "CLOUD_AI_SUCCESS"
-              ? "DEEPSEEK CLOUD SUCCESS"
+              ? `${String(provider).toUpperCase()} CLOUD SUCCESS`
               : null,
     },
     validation,
@@ -460,25 +521,68 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const provider = parseProviderOverride(body.provider);
-  const result = await runComposerTestOnce({ body, provider });
-  res.json({ ...result, deterministicSample: deterministicComposeFromSnapshot(buildComposerTestSnapshot(body), "FULL_REPORT") });
+  const modelOverride = typeof body.model === "string" ? body.model : null;
+  const result = await runComposerTestOnce({ body, provider, modelOverride });
+  res.json({
+    ...result,
+    deterministicSample: deterministicComposeFromSnapshot(
+      buildComposerTestSnapshot(body),
+      "FULL_REPORT",
+    ),
+  });
 });
 
-/** Compare LOCAL Ollama vs DeepSeek V4 Pro on the same frozen observations. */
+/**
+ * Compare SAME frozen observations across 2–4 provider/model arms.
+ * One arm's output never becomes another arm's input.
+ */
 reportComposerRouter.post("/test/compare", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
     res.status(403).json({ ok: false, error: "forbidden" });
     return;
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const local = await runComposerTestOnce({ body, provider: "ollama" });
-  const deepseek = await runComposerTestOnce({ body, provider: "deepseek" });
+  const armsRaw = Array.isArray(body.arms) ? body.arms : null;
+  const arms: Array<{ provider: ComposerProviderName; model?: string | null }> = armsRaw
+    ? armsRaw
+        .slice(0, 4)
+        .map((a) => {
+          const row = a as Record<string, unknown>;
+          return {
+            provider: parseProviderOverride(row.provider),
+            model: typeof row.model === "string" ? row.model : null,
+          };
+        })
+    : [
+        { provider: "ollama" as const, model: null },
+        { provider: "qwen" as const, model: QWEN_DEFAULT_MODEL },
+        { provider: "deepseek" as const, model: DEEPSEEK_TEXT_MODEL },
+      ];
+
+  const results = [];
+  for (const arm of arms) {
+    results.push(
+      await runComposerTestOnce({
+        body,
+        provider: arm.provider,
+        modelOverride: arm.model,
+      }),
+    );
+  }
+
   res.json({
     ok: true,
     writesClinicalReport: false,
+    frozenInput: true,
+    armCount: results.length,
     deepSeekConfigured: deepseekConfiguredPublicStatus().configured,
-    local,
-    deepseek,
+    qwenConfigured: qwenConfiguredPublicStatus().configured,
+    openaiConfigured: openaiConfiguredPublicStatus().configured,
+    results,
+    // Back-compat for #709 UI
+    local: results.find((r) => r.actualProvider === "ollama") ?? results[0] ?? null,
+    deepseek: results.find((r) => r.actualProvider === "deepseek") ?? null,
+    qwen: results.find((r) => r.actualProvider === "qwen") ?? null,
   });
 });
 

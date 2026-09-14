@@ -15,7 +15,7 @@
 export type OvernightImageCap = "auto" | "1" | "2" | "3" | "4" | "6";
 export type OvernightVisionCtx = "current" | "4096" | "8192" | "16384";
 /** Night vision cloud trial — LOCAL ONLY remains default. */
-export type NightVisionProviderMode = "local" | "deepseek" | "ab";
+export type NightVisionProviderMode = "local" | "deepseek" | "qwen" | "openai" | "ab";
 
 export interface OvernightOpsControls {
   /** When true, overnight drain + night-batch enqueue are paused. */
@@ -29,10 +29,10 @@ export interface OvernightOpsControls {
   safeMode: boolean;
   /**
    * Experimental night vision provider.
-   * local (default) | deepseek (trial) | ab (local authoritative + DeepSeek trial telemetry).
+   * local (default) | deepseek/qwen/openai (trial) | ab (local authoritative + cloud telemetry).
    */
   nightVisionProvider: NightVisionProviderMode;
-  /** Explicit opt-in before any overnight/trial image may leave the LAN. */
+  /** Explicit opt-in before any overnight/trial image may leave the LAN (all cloud vendors). */
   deepseekCloudVisionAllowed: boolean;
   /** Consecutive NEW overnight jobs that failed with the same resource code. */
   resourceFailStreak: number;
@@ -141,7 +141,12 @@ export function parseOvernightOpsJson(raw: unknown): OvernightOpsControls {
   });
   const nightRaw = String(obj.nightVisionProvider ?? "local").toLowerCase();
   const nightVisionProvider: NightVisionProviderMode =
-    nightRaw === "deepseek" || nightRaw === "ab" ? nightRaw : "local";
+    nightRaw === "deepseek" ||
+    nightRaw === "qwen" ||
+    nightRaw === "openai" ||
+    nightRaw === "ab"
+      ? (nightRaw as NightVisionProviderMode)
+      : "local";
   return {
     paused: obj.paused === true,
     pauseReason: typeof obj.pauseReason === "string" ? obj.pauseReason.slice(0, 300) : null,

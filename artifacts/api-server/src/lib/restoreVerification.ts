@@ -275,6 +275,12 @@ export async function runRestoreVerification(
       host: parts.host, port: Number(parts.port), user: parts.user,
       password: parts.password, database: throwawayDb, max: 2,
     });
+    // DROP DATABASE … WITH (FORCE) terminates backends; idle clients then emit
+    // unhandled 'error' (57P01) which fails Vitest even when checks passed.
+    restoredPool.on("error", (err: Error & { code?: string }) => {
+      if (err.code === "57P01") return;
+      console.warn("[restoreVerification] throwaway pool error:", err.message);
+    });
 
     const present: string[] = [];
     for (const table of RESTORE_CORE_TABLES) {
@@ -337,7 +343,12 @@ export async function runRestoreVerification(
   }
 
   async function finish(ok: boolean): Promise<RestoreVerificationResult> {
-    if (restoredPool) await restoredPool.end().catch(() => undefined);
+    if (restoredPool) {
+      const pool = restoredPool;
+      restoredPool = null;
+      // End before FORCE-drop so we do not race admin terminate vs open clients.
+      await pool.end().catch(() => undefined);
+    }
     if (throwawayCreated) {
       await db.execute(sql.raw(`DROP DATABASE IF EXISTS ${throwawayDb} WITH (FORCE)`)).then(
         () => steps.push({ name: "throwaway_dropped", ok: true, detail: throwawayDb }),

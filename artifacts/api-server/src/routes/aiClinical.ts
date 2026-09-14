@@ -193,7 +193,7 @@ aiClinicalRouter.put("/overnight-ops", async (req, res) => {
     imageCap: z.enum(["auto", "1", "2", "3", "4", "6"]).optional(),
     visionCtx: z.enum(["current", "4096", "8192", "16384"]).optional(),
     safeMode: z.boolean().optional(),
-    nightVisionProvider: z.enum(["local", "deepseek", "ab"]).optional(),
+    nightVisionProvider: z.enum(["local", "deepseek", "qwen", "openai", "ab"]).optional(),
     deepseekCloudVisionAllowed: z.boolean().optional(),
     /** Clear resource-fail streak when resuming. */
     clearResourceStreak: z.boolean().optional(),

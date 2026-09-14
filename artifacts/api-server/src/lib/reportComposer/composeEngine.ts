@@ -25,6 +25,8 @@ import type { KeyImageOwnershipContext } from "./keyImageOwnership";
 import {
   resolveComposerProvider,
   assertComposerProviderPolicy,
+  defaultModelFor,
+  assertModelSupportsCapability,
   type ComposerProviderName,
 } from "./providers";
 import type { AiComposeJobKind } from "@workspace/db/schema";
@@ -170,13 +172,18 @@ export async function runReportComposer(opts: {
     };
   }
 
-  // Provider adapter — default Ollama. DeepSeek only when explicitly overridden/configured.
+  // Provider adapter — default Ollama. Cloud only when explicitly overridden.
   const providerName: ComposerProviderName =
-    opts.providerOverride === "deepseek" || opts.providerOverride === "openai" || opts.providerOverride === "ollama"
+    opts.providerOverride === "deepseek" ||
+    opts.providerOverride === "openai" ||
+    opts.providerOverride === "ollama" ||
+    opts.providerOverride === "qwen"
       ? opts.providerOverride
       : "ollama";
   const providerAdapter = resolveComposerProvider(providerName);
-  const cloudVisionAllowed = opts.cloudVisionAllowed === true && providerName === "deepseek";
+  const isCloud =
+    providerName === "deepseek" || providerName === "qwen" || providerName === "openai";
+  const cloudVisionAllowed = opts.cloudVisionAllowed === true && isCloud;
   const policy = assertComposerProviderPolicy({
     provider: providerName,
     aiMode,
@@ -217,7 +224,7 @@ export async function runReportComposer(opts: {
 
   const textModel =
     (opts.modelOverride ?? "").trim() ||
-    (providerName === "deepseek" ? "deepseek-v4-pro" : runtime.model);
+    (isCloud ? defaultModelFor(providerName, "text") || runtime.model : runtime.model);
 
   let provenance: ComposerEvidenceProvenance = {
     ...baseProvenance,
@@ -258,11 +265,10 @@ export async function runReportComposer(opts: {
       };
     }
 
-    // Prefer configured vision model; only use composer model if positively vision-capable.
-    // DeepSeek trial uses the official vision-exp model only (never Ollama /api/show).
+    // Prefer configured vision model; cloud uses registry capability (no Ollama /api/show).
     let visionModel =
-      providerName === "deepseek"
-        ? ((opts.modelOverride ?? "").trim() || "deepseek-v4-flash-vision-exp")
+      isCloud
+        ? ((opts.modelOverride ?? "").trim() || defaultModelFor(providerName, "vision") || textModel)
         : (runtime.visionModel || "").trim() || runtime.model;
 
     if (providerName === "ollama") {
@@ -293,18 +299,21 @@ export async function runReportComposer(opts: {
           },
         };
       }
-    } else if (providerName === "deepseek" && visionModel !== "deepseek-v4-flash-vision-exp") {
-      return {
-        ok: false,
-        safeError: "deepseek_vision_model_required",
-        latencyMs: Date.now() - started,
-        provenance: {
-          ...baseProvenance,
-          model: visionModel,
-          provider: providerName,
-          degradedReason: "Cloud vision trial must use deepseek-v4-flash-vision-exp",
-        },
-      };
+    } else {
+      const visCap = assertModelSupportsCapability(providerName, visionModel, "vision");
+      if (!visCap.ok) {
+        return {
+          ok: false,
+          safeError: visCap.safeError,
+          latencyMs: Date.now() - started,
+          provenance: {
+            ...baseProvenance,
+            model: visionModel,
+            provider: providerName,
+            degradedReason: "Cloud vision requires a vision-capable registered model",
+          },
+        };
+      }
     }
 
     // Respect canonical runtime settings — never silently inflate numCtx/timeout.

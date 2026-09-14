@@ -1,5 +1,5 @@
 /**
- * Local AI → Report Composer Test card (+ DeepSeek official API trial).
+ * AI Model Test Lab — provider-neutral Report Composer / vision trial surface.
  * Exercises real runReportComposer. Never writes clinical report data.
  */
 import { useState } from "react";
@@ -34,6 +34,11 @@ export type ComposerRuntimeDiag = {
   deepSeekNote?: string | null;
   deepSeekTextModel?: string | null;
   deepSeekVisionModel?: string | null;
+  qwenConfigured?: boolean;
+  qwenNote?: string | null;
+  qwenDefaultModel?: string | null;
+  openaiConfigured?: boolean;
+  openaiNote?: string | null;
   nightVisionProvider?: string | null;
   deepseekCloudVisionAllowed?: boolean;
 };
@@ -201,7 +206,7 @@ export function ReportComposerTestPanel({
 }: Props) {
   const [region, setRegion] = useState("MRI LS Spine");
   const [observations, setObservations] = useState(DEFAULT_OBSERVATIONS);
-  const [provider, setProvider] = useState<"ollama" | "deepseek">("ollama");
+  const [provider, setProvider] = useState<"ollama" | "qwen" | "deepseek" | "openai">("ollama");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<TestResponse | null>(null);
   const [compare, setCompare] = useState<CompareResponse | null>(null);
@@ -209,7 +214,7 @@ export function ReportComposerTestPanel({
   const [confirmCloudVision, setConfirmCloudVision] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function runTest(selected: "ollama" | "deepseek" = provider) {
+  async function runTest(selected: "ollama" | "qwen" | "deepseek" | "openai" = provider) {
     if (hasUnsavedComposerChanges) {
       setError("Save Local AI Settings before testing — UI selection is not active runtime yet.");
       return;
@@ -250,6 +255,11 @@ export function ReportComposerTestPanel({
         region: "LS_SPINE",
         modality: "MR",
         observationsText: observations,
+        arms: [
+          { provider: "ollama" },
+          { provider: "qwen", model: diagnostics?.qwenDefaultModel ?? "qwen3.7-plus" },
+          { provider: "deepseek", model: diagnostics?.deepSeekTextModel ?? "deepseek-v4-pro" },
+        ],
       });
       setCompare(r);
       onRefreshDiagnostics();
@@ -288,10 +298,10 @@ export function ReportComposerTestPanel({
       <div className="flex items-start justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold flex items-center gap-2">
-            <Bot size={14} className="text-sky-700" /> Report Composer Test
+            <Bot size={14} className="text-sky-700" /> AI Model Test Lab
           </h3>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            Real <code className="bg-muted px-1 rounded">runReportComposer</code> path.
+            Provider-neutral text / vision / compare trials via the CARE AI provider layer.
             Synthetic non-PHI only — never writes a clinical report.
           </p>
         </div>
@@ -309,6 +319,8 @@ export function ReportComposerTestPanel({
           {diagnostics?.statusMessage ? ` — ${diagnostics.statusMessage}` : ""}
         </p>
         <p><span className="text-muted-foreground">DeepSeek API configured:</span> {diagnostics?.deepSeekConfigured ? "YES" : "NO"}</p>
+        <p><span className="text-muted-foreground">Qwen API configured:</span> {diagnostics?.qwenConfigured ? "YES" : "NO"}</p>
+        <p><span className="text-muted-foreground">OpenAI API configured:</span> {diagnostics?.openaiConfigured ? "YES" : "NO"}</p>
         <p><span className="text-muted-foreground">Night vision provider:</span> {diagnostics?.nightVisionProvider ?? "local"}</p>
         <p><span className="text-muted-foreground">Source:</span> {diagnostics?.endpointSource ?? "—"} · transport {diagnostics?.transport ?? "ollama"}</p>
       </div>
@@ -328,14 +340,16 @@ export function ReportComposerTestPanel({
         <select
           className="w-full h-9 px-3 text-xs rounded-lg border bg-background"
           value={provider}
-          onChange={(e) => setProvider(e.target.value as "ollama" | "deepseek")}
+          onChange={(e) => setProvider(e.target.value as "ollama" | "qwen" | "deepseek" | "openai")}
           data-testid="composer-test-provider"
         >
           <optgroup label="LOCAL OLLAMA">
             <option value="ollama">Local Ollama (clinic composer model)</option>
           </optgroup>
-          <optgroup label="DEEPSEEK CLOUD">
+          <optgroup label="CLOUD">
+            <option value="qwen">Qwen3.7-Plus ({diagnostics?.qwenDefaultModel ?? "qwen3.7-plus"})</option>
             <option value="deepseek">DeepSeek V4 Pro ({diagnostics?.deepSeekTextModel ?? "deepseek-v4-pro"})</option>
+            <option value="openai">OpenAI ({diagnostics?.openaiConfigured ? "configured" : "key required"})</option>
           </optgroup>
         </select>
       </div>
@@ -365,7 +379,7 @@ export function ReportComposerTestPanel({
           TEST REPORT COMPOSER
         </Button>
         <Button className="flex-1 h-9 text-xs gap-1.5" variant="outline" disabled={disabled || busy || hasUnsavedComposerChanges} onClick={() => void runCompare()} data-testid="composer-test-compare">
-          COMPARE LOCAL vs DEEPSEEK
+          COMPARE LOCAL / QWEN / DEEPSEEK
         </Button>
       </div>
 

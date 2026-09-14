@@ -1,5 +1,6 @@
 /**
  * Ollama Report Composer adapter — preserves native /api/chat + images[] shape.
+ * Local domain facade; network stays Ollama-native (not OpenAI-compatible).
  */
 import { validateOllamaUrl } from "../../ssrf/ollamaUrlGuard";
 import type {
@@ -8,20 +9,19 @@ import type {
   ComposerProviderRequest,
   ComposerProviderResult,
 } from "./types";
+import { modelCapabilities } from "./modelRegistry";
 
 export class OllamaComposerAdapter implements ComposerProviderAdapter {
   readonly name = "ollama" as const;
 
   async getCapabilities(model: string): Promise<ComposerProviderCapabilities> {
-    const m = (model || "").toLowerCase();
-    // Advisory only — SELECTED_IMAGES still requires assertVisionCapableModel.
-    const visionHint = /llava|vision|bakllava|moondream|minicpm-v|qwen2\.5-vl|qwen2-vl|gemma3/.test(m);
-    return { text: true, vision: visionHint, local: true };
+    return modelCapabilities("ollama", model);
   }
 
   async compose(request: ComposerProviderRequest): Promise<ComposerProviderResult> {
     const started = Date.now();
     const model = (request.model || "").trim();
+    const execution = "LOCAL" as const;
     if (!model) {
       return {
         ok: false,
@@ -29,6 +29,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         model,
         safeError: "composer_model_not_configured",
         latencyMs: Date.now() - started,
+        execution,
       };
     }
 
@@ -41,6 +42,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         model,
         safeError: "composer_endpoint_blocked",
         latencyMs: Date.now() - started,
+        execution,
       };
     }
 
@@ -77,6 +79,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
           model,
           safeError: `ollama_http_${res.status}`,
           latencyMs: Date.now() - started,
+          execution,
         };
       }
 
@@ -92,6 +95,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
           model,
           safeError: "empty_model_response",
           latencyMs: Date.now() - started,
+          execution,
         };
       }
       return {
@@ -100,6 +104,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         provider: "ollama",
         model,
         latencyMs: Date.now() - started,
+        execution,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "ollama_error";
@@ -110,6 +115,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         model,
         safeError,
         latencyMs: Date.now() - started,
+        execution,
       };
     }
   }
