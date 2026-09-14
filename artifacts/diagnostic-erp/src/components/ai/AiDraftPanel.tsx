@@ -24,6 +24,11 @@ interface Props {
   preferOpen?: boolean;
   /** When true (Reporting Workspace), Accept stages; never inserts. */
   composerReviewOnly?: boolean;
+  /**
+   * `floating` — fixed bottom-right overlay (legacy workspace).
+   * `rail` — in-flow card for Orient / right Copilot rail (default reporting workspace).
+   */
+  variant?: "floating" | "rail";
 }
 
 export function AiDraftPanel({
@@ -33,18 +38,20 @@ export function AiDraftPanel({
   onInsertText,
   preferOpen = false,
   composerReviewOnly = false,
+  variant = "floating",
 }: Props) {
   const [enablement, setEnablement] = useState<AiEnablement | null>(null);
   const [draft, setDraft] = useState<AiWorkspaceDraft | null>(null);
-  // Always start minimized — expands only for ?ai=1 / preferOpen. The panel is
-  // SHADOW/pilot feedback; it must not compete with the report editor by default.
-  const [open, setOpen] = useState(false);
+  // Floating overlay starts minimized so it does not cover the report editor.
+  // Orient-rail embedding starts open so the draft is reachable without an extra click.
+  const [open, setOpen] = useState(() => variant === "rail" || preferOpen === true);
   const [busy, setBusy] = useState(false);
   const [handled, setHandled] = useState<Record<string, DraftAction>>({});
 
   useEffect(() => {
-    setOpen(preferOpen === true);
-  }, [preferOpen, studyInstanceUid]);
+    if (preferOpen === true || variant === "rail") setOpen(true);
+    else if (variant === "floating") setOpen(false);
+  }, [preferOpen, studyInstanceUid, variant]);
 
   // Resolve enablement (gates the whole panel).
   useEffect(() => {
@@ -113,8 +120,18 @@ export function AiDraftPanel({
   // Hard gate: invisible unless AI is enabled AND visible for this radiologist.
   if (!enablement?.visibleToRadiologist || !studyInstanceUid) return null;
 
+  const shellClass =
+    variant === "rail"
+      ? "w-full rounded-lg border border-indigo-300 bg-white shadow-sm dark:bg-neutral-900 dark:border-indigo-700"
+      : "fixed bottom-4 right-4 z-50 w-96 max-w-[95vw] rounded-lg border border-indigo-300 bg-white shadow-xl dark:bg-neutral-900 dark:border-indigo-700";
+  const bodyMaxClass = variant === "rail" ? "max-h-[min(40vh,28rem)]" : "max-h-[60vh]";
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-96 max-w-[95vw] rounded-lg border border-indigo-300 bg-white shadow-xl dark:bg-neutral-900 dark:border-indigo-700">
+    <div
+      className={shellClass}
+      data-testid="ai-draft-panel"
+      data-variant={variant}
+    >
       <div className="flex items-center justify-between rounded-t-lg bg-indigo-600 px-3 py-2 text-white">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Bot size={16} /> AI Draft
@@ -128,7 +145,7 @@ export function AiDraftPanel({
       </div>
 
       {open && (
-        <div className="max-h-[60vh] overflow-y-auto p-3 text-sm">
+        <div className={`${bodyMaxClass} overflow-y-auto p-3 text-sm`}>
           <div className="mb-2 flex items-center justify-between text-xs text-neutral-500">
             <span>
               {composerReviewOnly || onStageProposal

@@ -6295,6 +6295,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       workflow.currentRow?.studyDescription,
                     ].filter(Boolean).join(" ") || null}
                     measureDisabled={isLocked || isFinalized}
+                    aiDraftStudyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
+                    aiDraftModality={workflow.currentRow?.modality ?? study?.modality ?? null}
+                    onStageAiProposal={stageAiProposal}
+                    aiDraftPreferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
                     onJumpToCanalProvenance={(prov) => {
                       const ok = embeddedViewerRef.current?.goToAnchor({
                         studyInstanceUID: prov.studyInstanceUID,
@@ -6466,14 +6470,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
         }}
       />
-      {/* Overnight / shadow AI drafts — Accept stages for Composer Apply */}
-      <AiDraftPanel
-        studyInstanceUid={workflow.currentRow?.studyInstanceUID ?? study?.studyInstanceUID ?? null}
-        modality={workflow.currentRow?.modality ?? study?.modality ?? null}
-        onStageProposal={stageAiProposal}
-        composerReviewOnly
-        preferOpen={typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "1"}
-      />
+      {/* AI Draft lives in Orient (CopilotRail) — not a floating overlay */}
       {/* Background text Report Composer — assistant artifact until Apply */}
       <div
         className={`fixed bottom-4 left-4 z-40 shadow-lg pointer-events-auto ${
