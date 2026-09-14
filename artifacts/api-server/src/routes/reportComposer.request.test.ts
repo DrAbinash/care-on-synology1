@@ -79,17 +79,68 @@ describe.skipIf(!hasDatabaseUrl())("report composer routes", () => {
     }
   });
 
-  it("POST /test is PHI-safe synthetic", async () => {
+  it(
+    "POST /test is PHI-safe synthetic",
+    async () => {
+      const res = await request(app)
+        .post("/api/radiology/report-composer/test")
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
+      expect([200, 403, 500]).toContain(res.status);
+      if (res.status === 200) {
+        const body = JSON.stringify(res.body);
+        expect(body).not.toMatch(/patientName|Abinash|phone/i);
+        expect(res.body.compose).toBeTruthy();
+        expect(res.body.writesClinicalReport).toBe(false);
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "POST /test returns displayStatus and never writes clinical report",
+    async () => {
+      const res = await request(app)
+        .post("/api/radiology/report-composer/test")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          studyType: "MRI LS Spine",
+          region: "LS_SPINE",
+          modality: "MR",
+          observationsText: "Loss of lumbar lordosis.\nDisc desiccation at L4-5.",
+        });
+      expect([200, 403, 500]).toContain(res.status);
+      if (res.status !== 200) return;
+      expect(res.body.writesClinicalReport).toBe(false);
+      expect(["LOCAL_AI_SUCCESS", "FALLBACK_DRAFT", "FAILED", "OTHER"]).toContain(
+        res.body.compose?.displayStatus,
+      );
+      if (res.body.compose?.displayStatus === "FALLBACK_DRAFT") {
+        expect(res.body.compose.fallbackUsed === true || res.body.compose.model === "deterministic").toBe(
+          true,
+        );
+        expect(res.body.compose.userMessage).toMatch(/Local AI was not used/i);
+        expect(res.body.compose.personaLoaded).toBe(false);
+      }
+      if (res.body.compose?.displayStatus === "LOCAL_AI_SUCCESS") {
+        expect(res.body.compose.fallbackUsed).toBe(false);
+        expect(res.body.compose.model).not.toBe("deterministic");
+        expect(res.body.compose.ollamaCalled).toBe(true);
+        expect(res.body.compose.personaLoaded).toBe(true);
+      }
+    },
+    60_000,
+  );
+
+  it("GET /diagnostics exposes DeepSeek stub note and transport=ollama", async () => {
     const res = await request(app)
-      .post("/api/radiology/report-composer/test")
-      .set("Authorization", `Bearer ${token}`)
-      .send({});
+      .get("/api/radiology/report-composer/diagnostics")
+      .set("Authorization", `Bearer ${token}`);
     expect([200, 403, 500]).toContain(res.status);
-    if (res.status === 200) {
-      const body = JSON.stringify(res.body);
-      expect(body).not.toMatch(/patientName|Abinash|phone/i);
-      expect(res.body.compose).toBeTruthy();
-    }
+    if (res.status !== 200) return;
+    expect(res.body.composer?.transport).toBe("ollama");
+    expect(res.body.composer?.deepSeekConfigured).toBe(false);
+    expect(String(res.body.composer?.deepSeekNote ?? "")).toMatch(/stub|hard-wire|ollama/i);
   });
 
   it("process-now completes without mutating patient reports", async () => {

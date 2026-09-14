@@ -12,7 +12,25 @@ describe("composeDisplay", () => {
     expect(isDeterministicComposeFallback({ model: "qwen3:14b", fallbackUsed: false })).toBe(false);
   });
 
-  it("resolves FALLBACK_DRAFT vs AI_READY display status", () => {
+  it("resolves FALLBACK_DRAFT vs LOCAL_AI_SUCCESS (test path)", () => {
+    expect(
+      resolveComposeDisplayStatus({
+        ok: true,
+        fallbackUsed: true,
+        model: "deterministic",
+      }),
+    ).toBe("FALLBACK_DRAFT");
+    expect(
+      resolveComposeDisplayStatus({
+        ok: true,
+        fallbackUsed: false,
+        model: "qwen3:14b",
+        provider: "ollama",
+      }),
+    ).toBe("LOCAL_AI_SUCCESS");
+  });
+
+  it("resolves FALLBACK_DRAFT vs AI_READY (job review path)", () => {
     expect(
       resolveComposeDisplayStatus({
         status: "READY",

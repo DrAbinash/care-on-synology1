@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
@@ -12,6 +12,14 @@ import {
 import OvernightAiSettings from "@/components/ai/OvernightAiSettings";
 import { OllamaAiDraftVerifyPanel } from "@/components/radiology/OllamaAiDraftVerifyPanel";
 import { AiPipelineSelfTestPanel } from "@/components/radiology/AiPipelineSelfTestPanel";
+import { ReportComposerTestPanel, type ComposerRuntimeDiag } from "@/components/ai/ReportComposerTestPanel";
+import {
+  cacheAgeLabel,
+  isKnownModelsCacheFresh,
+  mergeDiscoveredModels,
+  readKnownModelsCache,
+  writeKnownModelsCache,
+} from "@/lib/localAi/knownModelsCache";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface GlobalSettings {
@@ -360,6 +368,156 @@ export function AiReportingPanel() {
   const [localAiProbing, setLocalAiProbing] = useState(false);
   const [localAiProbeResult, setLocalAiProbeResult] = useState<{ url: string; reachable: boolean }[]>([]);
   const [localAiSaving, setLocalAiSaving] = useState(false);
+  /** Persisted clinic_settings values — used to detect unsaved composer edits. */
+  const [persistedComposer, setPersistedComposer] = useState({ model: "", fallback: "" });
+  const [modelsCacheMeta, setModelsCacheMeta] = useState<{
+    status: "idle" | "fresh" | "stale" | "refreshing" | "error";
+    fetchedAt: number | null;
+    message: string;
+  }>({ status: "idle", fetchedAt: null, message: "" });
+  const [composerRuntimeDiag, setComposerRuntimeDiag] = useState<ComposerRuntimeDiag | null>(null);
+  const [composerRuntimeLoading, setComposerRuntimeLoading] = useState(false);
+  const autoDiscoverOnceRef = useRef(false);
+  const lastAutoEndpointRef = useRef<string>("");
+
+  const refreshComposerDiagnostics = useCallback(async () => {
+    setComposerRuntimeLoading(true);
+    try {
+      const r = await api.get<{ ok?: boolean; composer?: ComposerRuntimeDiag }>(
+        "/api/radiology/report-composer/diagnostics",
+      );
+      setComposerRuntimeDiag(r.composer ?? null);
+    } catch {
+      /* soft */
+    } finally {
+      setComposerRuntimeLoading(false);
+    }
+  }, []);
+
+  /**
+   * Discover installed Ollama models via tags-only endpoint.
+   * Never wipes previous knownModels on failure; always preserves selected tags.
+   */
+  const discoverInstalledModels = useCallback(
+    async (opts: { force?: boolean; baseUrl?: string; silent?: boolean } = {}) => {
+      const endpoint = (opts.baseUrl ?? localAi.primaryUrl).trim();
+      if (!endpoint) return;
+      const cached = readKnownModelsCache(endpoint);
+      if (!opts.force && isKnownModelsCacheFresh(cached)) {
+        setLocalAi((s) => ({
+          ...s,
+          knownModels: mergeDiscoveredModels(cached!.models, [
+            s.model,
+            s.composerModel,
+            s.composerFallbackModel,
+            ...(cached!.preserved ?? []),
+          ]),
+        }));
+        setModelsCacheMeta({
+          status: "fresh",
+          fetchedAt: cached!.fetchedAt,
+          message: `Cached models (${cacheAgeLabel(cached!.fetchedAt)})`,
+        });
+        return;
+      }
+
+      setModelsCacheMeta((m) => ({
+        ...m,
+        status: "refreshing",
+        message: "Refreshing installed models from Ollama…",
+      }));
+      try {
+        const r = await api.post<{
+          ok: boolean;
+          error?: string;
+          models?: string[];
+          endpointUsed?: string;
+        }>("/api/radiology-ollama/list-models", {
+          baseUrl: endpoint,
+        });
+        if (r.ok && Array.isArray(r.models)) {
+          setLocalAi((s) => {
+            const merged = mergeDiscoveredModels(r.models ?? [], [
+              s.model,
+              s.composerModel,
+              s.composerFallbackModel,
+              ...(cached?.models ?? []),
+            ]);
+            const preserved = mergeDiscoveredModels([], [
+              s.model,
+              s.composerModel,
+              s.composerFallbackModel,
+            ]).filter((m) => !(r.models ?? []).includes(m));
+            writeKnownModelsCache({
+              endpoint: r.endpointUsed ?? endpoint,
+              models: r.models ?? [],
+              fetchedAt: Date.now(),
+              preserved,
+            });
+            return { ...s, knownModels: merged };
+          });
+          setModelsCacheMeta({
+            status: "fresh",
+            fetchedAt: Date.now(),
+            message: `${r.models.length} model(s) from Ollama`,
+          });
+          if (!opts.silent) {
+            toast({ title: `${r.models.length} model(s) from Ollama`, description: r.endpointUsed ?? endpoint });
+          }
+        } else {
+          // Preserve existing / cached list — never wipe on failure
+          if (cached?.models?.length) {
+            setLocalAi((s) => ({
+              ...s,
+              knownModels: mergeDiscoveredModels(cached.models, [
+                s.model,
+                s.composerModel,
+                s.composerFallbackModel,
+                ...(cached.preserved ?? []),
+              ]),
+            }));
+          }
+          setModelsCacheMeta({
+            status: cached ? "stale" : "error",
+            fetchedAt: cached?.fetchedAt ?? null,
+            message: r.error ?? "Could not list models — keeping previous cache",
+          });
+          if (!opts.silent) {
+            toast({
+              title: "Could not list models",
+              description: r.error ?? "Keeping previously cached models",
+              variant: "destructive",
+            });
+          }
+        }
+      } catch (e: unknown) {
+        if (cached?.models?.length) {
+          setLocalAi((s) => ({
+            ...s,
+            knownModels: mergeDiscoveredModels(cached.models, [
+              s.model,
+              s.composerModel,
+              s.composerFallbackModel,
+              ...(cached.preserved ?? []),
+            ]),
+          }));
+        }
+        setModelsCacheMeta({
+          status: cached ? "stale" : "error",
+          fetchedAt: cached?.fetchedAt ?? null,
+          message: e instanceof Error ? e.message : "Discovery failed — keeping previous cache",
+        });
+        if (!opts.silent) {
+          toast({
+            title: "Could not list models",
+            description: e instanceof Error ? e.message : "Failed",
+            variant: "destructive",
+          });
+        }
+      }
+    },
+    [localAi.primaryUrl, toast],
+  );
 
   async function handleLocalAiProbe() {
     setLocalAiProbing(true);
@@ -369,8 +527,12 @@ export function AiReportingPanel() {
       );
       setLocalAiProbeResult(r.results);
       if (r.recommendedUrl) {
+        const prev = localAi.primaryUrl;
         setLocalAi((s) => ({ ...s, primaryUrl: r.recommendedUrl! }));
         toast({ title: `Auto-detected: ${r.recommendedUrl}` });
+        if (r.recommendedUrl !== prev) {
+          await discoverInstalledModels({ force: true, baseUrl: r.recommendedUrl, silent: true });
+        }
       } else {
         toast({ title: "No Ollama endpoint reachable", description: "Ensure Ollama is running on the Windows PC.", variant: "destructive" });
       }
@@ -398,7 +560,29 @@ export function AiReportingPanel() {
           `Connected to ${r.endpointUsed ?? localAi.primaryUrl} · model ${r.model ?? localAi.model} · ${r.models?.length ?? 0} models available.`,
         );
         if (r.models?.length) {
-          setLocalAi((s) => ({ ...s, knownModels: r.models! }));
+          setLocalAi((s) => ({
+            ...s,
+            knownModels: mergeDiscoveredModels(r.models!, [
+              s.model,
+              s.composerModel,
+              s.composerFallbackModel,
+            ]),
+          }));
+          writeKnownModelsCache({
+            endpoint: r.endpointUsed ?? localAi.primaryUrl,
+            models: r.models,
+            fetchedAt: Date.now(),
+            preserved: mergeDiscoveredModels([], [
+              localAi.model,
+              localAi.composerModel,
+              localAi.composerFallbackModel,
+            ]).filter((m) => !r.models!.includes(m)),
+          });
+          setModelsCacheMeta({
+            status: "fresh",
+            fetchedAt: Date.now(),
+            message: `${r.models.length} model(s) from Test Primary`,
+          });
         }
       } else {
         setLocalAiTestStatus("fail"); setLocalAiTestMsg(r.error ?? r.message ?? "Failed");
@@ -408,39 +592,11 @@ export function AiReportingPanel() {
     }
   }
 
-  /** Fill the Composer / Vision dropdowns from Ollama /api/tags without requiring a chat probe. */
+  /** Fill the Composer / Vision dropdowns from Ollama /api/tags (tags-only). */
   async function handleRefreshInstalledModels() {
     setLocalAiProbing(true);
     try {
-      const r = await api.post<{
-        ok: boolean;
-        error?: string;
-        models?: string[];
-        endpointUsed?: string;
-        message?: string;
-      }>(
-        "/api/radiology-ollama/test",
-        { baseUrl: localAi.primaryUrl, model: localAi.model || undefined, allowLocal: localAi.localOnly },
-      );
-      if (r.ok && r.models?.length) {
-        setLocalAi((s) => ({ ...s, knownModels: r.models! }));
-        toast({
-          title: `${r.models.length} model(s) from Ollama`,
-          description: r.endpointUsed ?? localAi.primaryUrl,
-        });
-      } else {
-        toast({
-          title: "Could not list models",
-          description: r.error ?? r.message ?? "Run Test Connection first, or check Ollama is reachable.",
-          variant: "destructive",
-        });
-      }
-    } catch (e: unknown) {
-      toast({
-        title: "Could not list models",
-        description: e instanceof Error ? e.message : "Failed",
-        variant: "destructive",
-      });
+      await discoverInstalledModels({ force: true, silent: false });
     } finally {
       setLocalAiProbing(false);
     }
@@ -449,24 +605,37 @@ export function AiReportingPanel() {
   async function handleComposerTest() {
     setComposerTestStatus("testing");
     setComposerTestMsg("");
+    const unsaved =
+      (localAi.composerModel || "") !== (persistedComposer.model || "") ||
+      (localAi.composerFallbackModel || "") !== (persistedComposer.fallback || "");
+    if (unsaved) {
+      setComposerTestStatus("fail");
+      setComposerTestMsg("Unsaved changes — Save Local AI Settings before testing.");
+      return;
+    }
     try {
       const r = await api.post<{
         ok: boolean;
         error?: string;
-        model?: string;
-        schemaValid?: boolean;
-        latencyMs?: number;
-        changePlan?: unknown;
-      }>("/api/radiology/voice-report-composer/test", {
-        model: localAi.composerModel || undefined,
+        compose?: { model?: string; latencyMs?: number; displayStatus?: string; fallbackUsed?: boolean };
+        runtime?: { model?: string; statusMessage?: string | null };
+      }>("/api/radiology/report-composer/test", {
+        studyType: "MRI LS Spine",
+        region: "LS_SPINE",
+        modality: "MR",
       });
       if (r.ok) {
         setComposerTestStatus("ok");
-        setComposerTestMsg(`Schema valid · ${r.latencyMs ?? 0}ms · model ${r.model ?? localAi.composerModel}`);
+        setComposerTestMsg(
+          `${r.compose?.displayStatus ?? "ok"} · ${r.compose?.latencyMs ?? 0}ms · model ${r.compose?.model ?? r.runtime?.model ?? "(none)"}`,
+        );
       } else {
         setComposerTestStatus("fail");
-        setComposerTestMsg(r.error ?? "Test failed");
+        setComposerTestMsg(
+          r.error ?? r.runtime?.statusMessage ?? r.compose?.displayStatus ?? "Test failed",
+        );
       }
+      void refreshComposerDiagnostics();
     } catch (e: unknown) {
       setComposerTestStatus("fail");
       setComposerTestMsg(e instanceof Error ? e.message : "Test failed");
@@ -495,8 +664,13 @@ export function AiReportingPanel() {
         reportComposerConcurrency: localAi.concurrency,
         ollamaKnownModels: JSON.stringify(localAi.knownModels ?? []),
       });
+      setPersistedComposer({
+        model: localAi.composerModel || "",
+        fallback: localAi.composerFallbackModel || "",
+      });
       void queryClient.invalidateQueries({ queryKey: ["clinic-settings"] });
       void queryClient.invalidateQueries({ queryKey: ["voice-composer-config"] });
+      await refreshComposerDiagnostics();
       toast({ title: "Local AI settings saved" });
     } catch (e: unknown) {
       toast({ title: "Save failed", description: e instanceof Error ? e.message : "Error", variant: "destructive" });
@@ -584,8 +758,8 @@ export function AiReportingPanel() {
       primaryUrl: cs.ollamaBaseUrl ?? s.primaryUrl,
       fallbackUrl: cs.ollamaFallbackUrl ?? s.fallbackUrl,
       model,
-      composerModel: cs.ollamaComposerModel ?? s.composerModel,
-      composerFallbackModel: cs.ollamaComposerFallbackModel ?? s.composerFallbackModel,
+      composerModel: cs.ollamaComposerModel ?? "",
+      composerFallbackModel: cs.ollamaComposerFallbackModel ?? "",
       composerNumCtx: cs.ollamaComposerNumCtx ?? s.composerNumCtx,
       composerTemperature: Number(cs.ollamaComposerTemperature ?? s.composerTemperature),
       composerTimeoutSeconds: cs.ollamaComposerTimeoutSeconds ?? s.composerTimeoutSeconds,
@@ -606,6 +780,10 @@ export function AiReportingPanel() {
       timeoutSeconds: cs.ollamaTimeoutSeconds ?? s.timeoutSeconds,
       auditEnabled: cs.ollamaAuditEnabled ?? s.auditEnabled,
     }));
+    setPersistedComposer({
+      model: cs.ollamaComposerModel ?? "",
+      fallback: cs.ollamaComposerFallbackModel ?? "",
+    });
   }
 
   const saveMutation = useMutation({
@@ -619,6 +797,42 @@ export function AiReportingPanel() {
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
+
+  // Auto-discover installed models when Local AI tab is open (respect 4h cache).
+  useEffect(() => {
+    if (activeSection !== "local-ai") return;
+    if (!localAiHydrated) return;
+    const endpoint = localAi.primaryUrl.trim();
+    if (!endpoint) return;
+    void refreshComposerDiagnostics();
+    if (lastAutoEndpointRef.current && lastAutoEndpointRef.current !== endpoint) {
+      // Endpoint changed since last auto-run — force refresh.
+      lastAutoEndpointRef.current = endpoint;
+      void discoverInstalledModels({ force: true, silent: true });
+      return;
+    }
+    if (autoDiscoverOnceRef.current && lastAutoEndpointRef.current === endpoint) return;
+    autoDiscoverOnceRef.current = true;
+    lastAutoEndpointRef.current = endpoint;
+    void discoverInstalledModels({ force: false, silent: true });
+  }, [
+    activeSection,
+    localAiHydrated,
+    localAi.primaryUrl,
+    discoverInstalledModels,
+    refreshComposerDiagnostics,
+  ]);
+
+  const hasUnsavedComposerChanges =
+    (localAi.composerModel || "") !== (persistedComposer.model || "") ||
+    (localAi.composerFallbackModel || "") !== (persistedComposer.fallback || "");
+
+  // Tags typed manually / cloud that are not in the last successful Ollama /api/tags list
+  const lastDiscoveredTags = readKnownModelsCache(localAi.primaryUrl)?.models ?? [];
+  const configuredExtraTags = mergeDiscoveredModels([], [
+    localAi.composerModel,
+    localAi.composerFallbackModel,
+  ]).filter((m) => !lastDiscoveredTags.includes(m));
 
   function handleSave() {
     const providers: Record<string, Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage">> = {};
@@ -880,6 +1094,24 @@ export function AiReportingPanel() {
               {localAiTestStatus === "ok" && <span className="flex items-center gap-1 text-xs text-green-600"><CheckCircle2 size={12} /> {localAiTestMsg}</span>}
               {localAiTestStatus === "fail" && <span className="flex items-center gap-1 text-xs text-red-600"><XCircle size={12} /> {localAiTestMsg}</span>}
             </div>
+            {modelsCacheMeta.message && (
+              <p
+                className={`text-[10px] ${
+                  modelsCacheMeta.status === "error"
+                    ? "text-red-600"
+                    : modelsCacheMeta.status === "stale"
+                      ? "text-amber-700"
+                      : "text-muted-foreground"
+                }`}
+                data-testid="models-cache-status"
+              >
+                Models cache: {modelsCacheMeta.message}
+                {modelsCacheMeta.status === "stale" ? " (showing previous list)" : ""}
+                {modelsCacheMeta.status === "fresh" && modelsCacheMeta.fetchedAt
+                  ? ` · ${cacheAgeLabel(modelsCacheMeta.fetchedAt)}`
+                  : ""}
+              </p>
+            )}
             {localAi.knownModels.length > 0 && (
               <p className="text-[10px] text-muted-foreground">
                 {localAi.knownModels.length} installed model(s) loaded for the dropdowns below (from Ollama, not hard-coded).
@@ -931,8 +1163,30 @@ export function AiReportingPanel() {
               </p>
             </div>
 
-            <div className="space-y-1.5 border-t pt-4">
-              <label className="text-xs font-semibold text-muted-foreground">Report Composer model (Draft from Observations / voice)</label>
+            <div className="space-y-1.5 border-t pt-4" data-testid="report-composer-model-section">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-semibold text-muted-foreground">
+                  Report Composer model (text report generation)
+                </label>
+                {hasUnsavedComposerChanges && (
+                  <span
+                    className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950"
+                    data-testid="composer-unsaved-badge"
+                  >
+                    Unsaved changes
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground -mt-0.5">
+                Used by <strong>Draft from Observations</strong> and voice-assisted report composition.
+                Separate from image/vision model. Persists to <code className="bg-muted px-1 rounded">ollama_composer_model</code>.
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                Saved runtime: <code className="bg-muted px-1 rounded">{persistedComposer.model || "(not configured)"}</code>
+                {persistedComposer.fallback ? (
+                  <> · fallback <code className="bg-muted px-1 rounded">{persistedComposer.fallback}</code></>
+                ) : null}
+              </p>
               <select
                 value={localAi.composerModel}
                 onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
@@ -940,21 +1194,42 @@ export function AiReportingPanel() {
                 data-testid="composer-model-select"
               >
                 <option value="">— Select installed model —</option>
-                {Array.from(new Set([
-                  ...localAi.knownModels,
-                  ...(localAi.composerModel ? [localAi.composerModel] : []),
-                ])).sort().map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
+                <optgroup label="LOCAL OLLAMA">
+                  {Array.from(new Set([
+                    ...localAi.knownModels,
+                    ...(localAi.composerModel ? [localAi.composerModel] : []),
+                  ])).sort().map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </optgroup>
               </select>
               <input
                 type="text"
                 value={localAi.composerModel}
                 onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
-                placeholder="Type any installed Ollama text model"
+                placeholder="Type any Ollama text model or cloud tag (preserved on refresh)"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
                 data-testid="composer-model-input"
               />
+              <div className="rounded-md border border-dashed bg-muted/20 p-2 space-y-1" data-testid="composer-cloud-tags">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  OLLAMA CLOUD / configured tags
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  DeepSeek V4.1 is <strong>not</strong> wired into Report Composer (adapter stub only; provider hard-wires Ollama).
+                  Manual / cloud tags typed here are preserved when refreshing local <code className="bg-muted px-1 rounded">/api/tags</code>
+                  and are sent to the configured Ollama endpoint if that instance serves them.
+                </p>
+                {configuredExtraTags.length > 0 ? (
+                  <ul className="text-[10px] font-mono list-disc pl-4">
+                    {configuredExtraTags.map((t) => (
+                      <li key={t}>{t}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">No extra manual tags beyond the local list.</p>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] text-muted-foreground">Fallback model</label>
@@ -964,6 +1239,7 @@ export function AiReportingPanel() {
                     onChange={(e) => setLocalAi((s) => ({ ...s, composerFallbackModel: e.target.value }))}
                     placeholder="(none)"
                     className="w-full h-8 px-2 text-xs rounded border bg-background font-mono"
+                    data-testid="composer-fallback-input"
                   />
                 </div>
                 <div>
@@ -1006,16 +1282,24 @@ export function AiReportingPanel() {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => void handleComposerTest()}>
-                  <TestTube2 size={12} /> Test Composer
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  disabled={hasUnsavedComposerChanges}
+                  onClick={() => void handleComposerTest()}
+                  title={hasUnsavedComposerChanges ? "Save Local AI Settings first" : undefined}
+                >
+                  <TestTube2 size={12} /> Quick Composer Test
                 </Button>
                 {composerTestStatus === "ok" && <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> {composerTestMsg}</span>}
                 {composerTestStatus === "fail" && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle size={12} /> {composerTestMsg}</span>}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Text-only report composition for <strong>Draft from Observations</strong> and voice dictation.
-                Separate from vision / overnight model above. Composer num_ctx does not change global OLLAMA_NUM_CTX.
-                Intended clinic model example: <code className="bg-muted px-1 rounded">qwen3:14b</code> (select from installed models — not hard-coded).
+                Text-only report composition for <strong>Draft from Observations</strong> and voice. Does not use vision model.
+                Composer num_ctx does not change global OLLAMA_NUM_CTX.
+                Example clinic text models: <code className="bg-muted px-1 rounded">gemma3:12b</code>,{" "}
+                <code className="bg-muted px-1 rounded">qwen3:14b</code> (select — not hard-coded).
               </p>
             </div>
 
@@ -1136,6 +1420,14 @@ export function AiReportingPanel() {
               </label>
             </div>
           </div>
+
+          <ReportComposerTestPanel
+            diagnostics={composerRuntimeDiag}
+            diagnosticsLoading={composerRuntimeLoading}
+            onRefreshDiagnostics={() => void refreshComposerDiagnostics()}
+            hasUnsavedComposerChanges={hasUnsavedComposerChanges}
+            disabled={localAiSaving}
+          />
 
           <Button onClick={handleLocalAiSave} disabled={localAiSaving} className="gap-2 w-full">
             {localAiSaving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}

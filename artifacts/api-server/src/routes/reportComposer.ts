@@ -32,10 +32,53 @@ import { hashText } from "../lib/reportComposer/snapshot";
 import { deterministicComposeFromSnapshot } from "../lib/reportComposer/deterministicCompose";
 import {
   composerRuntimeStatusMessage,
+  DETERMINISTIC_FALLBACK_USER_MESSAGE,
   resolveComposeDisplayStatus,
 } from "../lib/reportComposer/composeDisplay";
+import { CARE_PERSONA_VERSION } from "../lib/reportComposer/persona";
 
 export const reportComposerRouter = Router();
+
+const DEFAULT_COMPOSER_TEST_OBSERVATIONS = [
+  "Loss of lumbar lordosis.",
+  "Disc desiccation at L3-4, L4-5 and L5-S1.",
+  "Diffuse disc bulge at L4-5 causing anterior thecal sac compression with mild bilateral nerve-root impingement.",
+  "AP spinal canal diameters:",
+  "L1-2 12.3 mm,",
+  "L2-3 11.8 mm,",
+  "L3-4 10.6 mm,",
+  "L4-5 9.4 mm,",
+  "L5-S1 12.1 mm.",
+].join("\n");
+
+function buildComposerTestSnapshot(body: Record<string, unknown>) {
+  const region = String(body.region ?? "LS_SPINE").trim() || "LS_SPINE";
+  const studyType = String(body.studyType ?? "MRI LS Spine").trim() || "MRI LS Spine";
+  const observationsText = String(body.observationsText ?? DEFAULT_COMPOSER_TEST_OBSERVATIONS).trim();
+  const lines = observationsText
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ComposerInputSnapshotSchema.parse({
+    worklistId: null,
+    studyId: null,
+    modality: String(body.modality ?? "MR"),
+    region,
+    studyType,
+    clinicalHistory: String(body.clinicalHistory ?? "Low back pain"),
+    technique: String(body.technique ?? "Multiplanar MRI lumbar spine"),
+    findings: observationsText,
+    impression: "",
+    recommendation: "",
+    observations: lines.slice(0, 24).map((findingsText, i) => ({
+      concept: `obs_${i + 1}`,
+      source: "manual" as const,
+      findingsText,
+    })),
+    jobKindHint: "FULL_REPORT",
+    aiMode: "TEXT_ONLY",
+  });
+}
 
 function canUse(req: StaffAuthRequest): boolean {
   const s = req.staffSession;
@@ -261,72 +304,59 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
       lastError: statusMessage ?? lastFailureError,
       timeoutMs: runtime.timeoutMs,
       numCtx: runtime.numCtx,
+      localOnly: runtime.localOnly,
+      transport: "ollama",
+      deepSeekConfigured: false,
+      deepSeekNote:
+        "DeepSeek adapter is a fail-closed stub; Report Composer hard-wires provider=ollama. Manual/cloud tags may be typed in composer model fields but are sent to the configured Ollama endpoint only.",
     },
     queue: diag,
   });
 });
 
-/** Synthetic non-PHI self-test — no patient data. */
+/** Synthetic non-PHI self-test — exercises real runReportComposer (no patient write). */
 reportComposerRouter.post("/test", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
     res.status(403).json({ ok: false, error: "forbidden" });
     return;
   }
-  const snapshot = ComposerInputSnapshotSchema.parse({
-    worklistId: null,
-    studyId: null,
-    modality: "MR",
-    region: "LS_SPINE",
-    studyType: "MRI LS Spine",
-    clinicalHistory: "Low back pain",
-    technique: "Multiplanar MRI lumbar spine",
-    findings: "No significant disc bulge.",
-    impression: "",
-    recommendation: "",
-    observations: [
-      {
-        concept: "disc_bulge",
-        source: "quick-select",
-        level: "L4-L5",
-        findingsText: "L4-5 diffuse disc bulge with bilateral lateral recess narrowing.",
-        conflictGroup: "disc_L4_L5",
-        baselineReplaces: "No significant disc bulge.",
-      },
-      {
-        concept: "desiccation",
-        source: "quick-select",
-        level: "L5-S1",
-        findingsText: "L5-S1 disc desiccation.",
-      },
-    ],
-  });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const snapshot = buildComposerTestSnapshot(body);
   const hashes = computeSnapshotHashes(snapshot);
   const runtimeBefore = await resolveComposerRuntime(true);
   const run = await runReportComposer({ kind: "FULL_REPORT", snapshot, allowDeterministicFallback: true });
   const validation = run.draft
     ? validateComposerOutput(snapshot, run.draft)
     : { ok: false, errors: ["no_draft"], warnings: [] as string[], unsupportedMentions: [] };
+  // Display status reflects whether Local AI (Ollama) composed — not validator PASS/FAIL.
+  // Validation is reported separately so measurement warnings do not mislabel a real compose.
   const displayStatus = resolveComposeDisplayStatus({
-    status: run.ok ? "READY" : "FAILED",
+    ok: run.ok,
     fallbackUsed: run.fallbackUsed,
     model: run.model,
     provider: run.provenance?.provider,
-    warnings: validation.warnings,
+    warnings: [...(run.draft?.warnings ?? []), ...validation.warnings],
   });
   const ollamaCalled =
     run.ok === true &&
     run.fallbackUsed !== true &&
     (run.model ?? "").toLowerCase() !== "deterministic" &&
-    (run.provenance?.provider ?? "ollama") === "ollama";
+    (run.provenance?.provider ?? "") === "ollama";
+  const personaLoaded = Boolean(ollamaCalled && run.provenance?.personaVersion);
   res.json({
-    ok: run.ok && validation.ok,
+    ok: run.ok,
+    validationOk: validation.ok,
+    writesClinicalReport: false,
     runtime: {
       enabled: runtimeBefore.enabled,
       model: runtimeBefore.model,
+      fallbackModel: runtimeBefore.fallbackModel,
       endpoint: runtimeBefore.endpoint,
       endpointSource: runtimeBefore.endpointSource,
       hasFallback: !!runtimeBefore.fallbackModel,
       statusMessage: composerRuntimeStatusMessage(runtimeBefore),
+      localOnly: runtimeBefore.localOnly,
+      transport: "ollama",
     },
     hashes,
     compose: {
@@ -337,8 +367,19 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
       safeError: run.safeError,
       displayStatus,
       ollamaCalled,
+      personaLoaded,
       personaVersion: run.provenance?.personaVersion ?? null,
+      expectedPersonaVersion: CARE_PERSONA_VERSION,
       provider: run.provenance?.provider ?? null,
+      httpStatus: ollamaCalled ? 200 : run.safeError?.startsWith("ollama_http_") ? Number(run.safeError.replace("ollama_http_", "")) || null : null,
+      draft: run.draft
+        ? {
+            findings: run.draft.findings,
+            impression: run.draft.impression,
+            recommendation: run.draft.recommendation,
+            warnings: run.draft.warnings ?? [],
+          }
+        : null,
       draftLengths: run.draft
         ? {
             findings: run.draft.findings.length,
@@ -346,6 +387,12 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
             recommendation: run.draft.recommendation.length,
           }
         : null,
+      userMessage:
+        displayStatus === "FALLBACK_DRAFT"
+          ? DETERMINISTIC_FALLBACK_USER_MESSAGE
+          : displayStatus === "LOCAL_AI_SUCCESS"
+            ? "LOCAL AI SUCCESS"
+            : null,
     },
     validation,
     deterministicSample: deterministicComposeFromSnapshot(snapshot, "FULL_REPORT"),

@@ -148,7 +148,12 @@ export async function runReportComposer(opts: {
         model: "deterministic",
         fallbackUsed: true,
         latencyMs: Date.now() - started,
-        provenance: { ...baseProvenance, provider: "deterministic", fallbackUsed: true },
+        provenance: {
+          ...baseProvenance,
+          personaVersion: null,
+          provider: "deterministic",
+          fallbackUsed: true,
+        },
       };
     }
     return {
@@ -398,7 +403,13 @@ export async function runReportComposer(opts: {
         fallbackUsed: true,
         latencyMs: Date.now() - started,
         safeError: primary.safeError,
-        provenance: { ...baseProvenance, model: "deterministic", provider: "deterministic", fallbackUsed: true },
+        provenance: {
+          ...baseProvenance,
+          model: "deterministic",
+          provider: "deterministic",
+          fallbackUsed: true,
+          personaVersion: null,
+        },
       };
     }
     return {
