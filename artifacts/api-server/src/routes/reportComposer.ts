@@ -30,6 +30,10 @@ import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { resolveComposerRuntime } from "../lib/voiceReportComposer/runtimeConfig";
 import { hashText } from "../lib/reportComposer/snapshot";
 import { deterministicComposeFromSnapshot } from "../lib/reportComposer/deterministicCompose";
+import {
+  composerRuntimeStatusMessage,
+  resolveComposeDisplayStatus,
+} from "../lib/reportComposer/composeDisplay";
 
 export const reportComposerRouter = Router();
 
@@ -239,13 +243,24 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
   }
   const runtime = await resolveComposerRuntime(true);
   const diag = await composeDiagnostics();
+  const statusMessage = composerRuntimeStatusMessage(runtime);
+  const lastFailureError =
+    diag.lastFailure && typeof diag.lastFailure === "object" && "safeError" in diag.lastFailure
+      ? (diag.lastFailure as { safeError?: string | null }).safeError ?? null
+      : null;
   res.json({
     ok: true,
     composer: {
-      healthy: runtime.enabled && !!runtime.model,
+      enabled: runtime.enabled,
+      endpoint: runtime.endpoint,
+      endpointSource: runtime.endpointSource,
       model: runtime.model || null,
       fallbackModel: runtime.fallbackModel,
-      endpointSource: runtime.endpointSource,
+      healthy: runtime.enabled && !!runtime.model,
+      statusMessage,
+      lastError: statusMessage ?? lastFailureError,
+      timeoutMs: runtime.timeoutMs,
+      numCtx: runtime.numCtx,
     },
     queue: diag,
   });
@@ -286,15 +301,33 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
     ],
   });
   const hashes = computeSnapshotHashes(snapshot);
+  const runtimeBefore = await resolveComposerRuntime(true);
   const run = await runReportComposer({ kind: "FULL_REPORT", snapshot, allowDeterministicFallback: true });
-  const validation = run.draft ? validateComposerOutput(snapshot, run.draft) : { ok: false, errors: ["no_draft"], warnings: [], unsupportedMentions: [] };
+  const validation = run.draft
+    ? validateComposerOutput(snapshot, run.draft)
+    : { ok: false, errors: ["no_draft"], warnings: [] as string[], unsupportedMentions: [] };
+  const displayStatus = resolveComposeDisplayStatus({
+    status: run.ok ? "READY" : "FAILED",
+    fallbackUsed: run.fallbackUsed,
+    model: run.model,
+    provider: run.provenance?.provider,
+    warnings: validation.warnings,
+  });
+  const ollamaCalled =
+    run.ok === true &&
+    run.fallbackUsed !== true &&
+    (run.model ?? "").toLowerCase() !== "deterministic" &&
+    (run.provenance?.provider ?? "ollama") === "ollama";
   res.json({
     ok: run.ok && validation.ok,
-    runtime: await resolveComposerRuntime(true).then((r) => ({
-      enabled: r.enabled,
-      model: r.model,
-      hasFallback: !!r.fallbackModel,
-    })),
+    runtime: {
+      enabled: runtimeBefore.enabled,
+      model: runtimeBefore.model,
+      endpoint: runtimeBefore.endpoint,
+      endpointSource: runtimeBefore.endpointSource,
+      hasFallback: !!runtimeBefore.fallbackModel,
+      statusMessage: composerRuntimeStatusMessage(runtimeBefore),
+    },
     hashes,
     compose: {
       ok: run.ok,
@@ -302,6 +335,10 @@ reportComposerRouter.post("/test", async (req, res): Promise<void> => {
       fallbackUsed: run.fallbackUsed,
       latencyMs: run.latencyMs,
       safeError: run.safeError,
+      displayStatus,
+      ollamaCalled,
+      personaVersion: run.provenance?.personaVersion ?? null,
+      provider: run.provenance?.provider ?? null,
       draftLengths: run.draft
         ? {
             findings: run.draft.findings.length,

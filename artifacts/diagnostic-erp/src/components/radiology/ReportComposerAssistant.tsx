@@ -5,7 +5,12 @@
 import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
-import { AI_COMPOSE_STATUS_STYLE } from "@/lib/reportComposer/types";
+import {
+  AI_COMPOSE_STATUS_STYLE,
+  composeStatusDisplay,
+  DETERMINISTIC_FALLBACK_WARNING,
+  isDeterministicComposeFallback,
+} from "@/lib/reportComposer/types";
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
 
 type Props = {
@@ -37,10 +42,21 @@ type Props = {
   onMicroSubmit: () => void;
 };
 
-function statusBadge(status: string) {
-  const cfg = AI_COMPOSE_STATUS_STYLE[status] ?? AI_COMPOSE_STATUS_STYLE.NONE;
+function statusBadge(job: ComposeJobView | null, statusOverride?: string) {
+  const status = statusOverride ?? job?.status ?? "NONE";
+  const cfg = job
+    ? composeStatusDisplay(status, {
+        fallbackUsed: job.fallbackUsed,
+        model: job.model,
+        validation: job.validation,
+      })
+    : AI_COMPOSE_STATUS_STYLE[status] ?? AI_COMPOSE_STATUS_STYLE.NONE;
   return (
-    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold ${cfg.color}`}>
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold ${cfg.color}`}
+      data-testid="ai-compose-status-badge"
+      data-fallback-draft={"isFallbackDraft" in cfg ? String(cfg.isFallbackDraft) : "false"}
+    >
       {cfg.label}
     </span>
   );
@@ -150,6 +166,7 @@ export function ReportComposerAssistant(props: Props) {
 
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
+  const isFallbackDraft = isDeterministicComposeFallback(props.job);
 
   if (props.minimized) {
     return (
@@ -162,7 +179,7 @@ export function ReportComposerAssistant(props: Props) {
       >
         <Bot className="h-3.5 w-3.5" />
         AI Assistant
-        {props.job ? statusBadge(props.job.status) : null}
+        {props.job ? statusBadge(props.job) : statusBadge(null, "NONE")}
         <Maximize2 className="h-3 w-3 opacity-70" />
       </button>
     );
@@ -184,7 +201,7 @@ export function ReportComposerAssistant(props: Props) {
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {props.job ? statusBadge(props.job.status) : statusBadge("NONE")}
+          {props.job ? statusBadge(props.job) : statusBadge(null, "NONE")}
           <Button
             type="button"
             size="sm"
@@ -330,6 +347,19 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
+      {isFallbackDraft && ["READY", "STALE_READY"].includes(props.job?.status ?? "") && (
+        <div
+          className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px]"
+          data-testid="ai-fallback-draft-warning"
+        >
+          <p className="font-semibold">FALLBACK DRAFT</p>
+          <p>{DETERMINISTIC_FALLBACK_WARNING}</p>
+          <p className="text-[10px] text-amber-800/90 mt-0.5">
+            Configure Local AI → Report Composer model (e.g. qwen3:14b) to use Ollama. Review/apply still available.
+          </p>
+        </div>
+      )}
+
       {(provenance.warnings?.length ?? 0) > 0 && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-950 p-2 text-[11px] space-y-0.5" data-testid="ai-validation-warnings">
           <p className="font-semibold">Validation warnings</p>
@@ -346,11 +376,13 @@ export function ReportComposerAssistant(props: Props) {
           <div className="text-[10px] text-muted-foreground space-y-0.5" data-testid="ai-compose-provenance">
             <p>
               Provenance: {provenance.aiMode === "SELECTED_IMAGES" ? "Selected images" : "Observations only"}
-              {provenance.model ? ` · model ${provenance.model}` : ""}
+              {provenance.model ? ` · model ${provenance.model}` : props.job.model ? ` · model ${props.job.model}` : ""}
               {provenance.personaVersion ? ` · ${provenance.personaVersion}` : ""}
               {typeof provenance.imagesLoaded === "number" ? ` · images loaded ${provenance.imagesLoaded}` : ""}
             </p>
-            <p className="font-medium text-foreground">AI Draft — Requires Radiologist Review</p>
+            <p className="font-medium text-foreground">
+              {isFallbackDraft ? "Fallback Draft — Requires Radiologist Review" : "AI Draft — Requires Radiologist Review"}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <Button

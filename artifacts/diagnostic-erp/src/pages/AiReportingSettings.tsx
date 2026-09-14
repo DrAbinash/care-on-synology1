@@ -932,7 +932,7 @@ export function AiReportingPanel() {
             </div>
 
             <div className="space-y-1.5 border-t pt-4">
-              <label className="text-xs font-semibold text-muted-foreground">Report Composer model (voice dictation)</label>
+              <label className="text-xs font-semibold text-muted-foreground">Report Composer model (Draft from Observations / voice)</label>
               <select
                 value={localAi.composerModel}
                 onChange={(e) => setLocalAi((s) => ({ ...s, composerModel: e.target.value }))}
@@ -1013,7 +1013,9 @@ export function AiReportingPanel() {
                 {composerTestStatus === "fail" && <span className="text-xs text-red-600 flex items-center gap-1"><XCircle size={12} /> {composerTestMsg}</span>}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Text-only report composition for voice dictation. Separate from vision model. Composer num_ctx does not change global OLLAMA_NUM_CTX.
+                Text-only report composition for <strong>Draft from Observations</strong> and voice dictation.
+                Separate from vision / overnight model above. Composer num_ctx does not change global OLLAMA_NUM_CTX.
+                Intended clinic model example: <code className="bg-muted px-1 rounded">qwen3:14b</code> (select from installed models — not hard-coded).
               </p>
             </div>
 

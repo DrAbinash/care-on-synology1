@@ -257,4 +257,53 @@ describe("runReportComposer fallbackUsed provenance", () => {
     expect(result.provenance?.model).toBe("deterministic");
     expect(result.provenance?.fallbackUsed).toBe(true);
   });
+
+  it("TEXT_ONLY with qwen3:14b calls Ollama and does not emit deterministic_fallback", async () => {
+    resolveComposerRuntime.mockResolvedValue(
+      baseRuntime({ model: "qwen3:14b", fallbackModel: null }),
+    );
+    composeMock.mockResolvedValue({
+      ok: true,
+      provider: "ollama",
+      model: "qwen3:14b",
+      text: JSON.stringify({
+        findings: "L4-5 diffuse disc bulge with bilateral lateral recess narrowing.\nL5-S1 disc desiccation.",
+        impression: "Lumbar disc disease at L4-5 and L5-S1.",
+        recommendation: "",
+        unresolvedQuestions: [],
+        warnings: [],
+      }),
+      latencyMs: 42,
+    });
+
+    const result = await runReportComposer({
+      kind: "FULL_REPORT",
+      snapshot: snapshot({
+        aiMode: "TEXT_ONLY",
+        modality: "MR",
+        region: "LS_SPINE",
+        findings: "No significant disc bulge.",
+        observations: [
+          {
+            concept: "disc_bulge",
+            source: "quick-select",
+            level: "L4-L5",
+            findingsText: "L4-5 diffuse disc bulge with bilateral lateral recess narrowing.",
+          },
+        ],
+      }),
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("qwen3:14b");
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.draft?.warnings ?? []).not.toContain("deterministic_fallback");
+    expect(result.provenance?.provider).toBe("ollama");
+    expect(result.provenance?.personaVersion).toBeTruthy();
+    expect(composeMock).toHaveBeenCalledTimes(1);
+    const call = composeMock.mock.calls[0]![0] as { model: string; systemPrompt: string };
+    expect(call.model).toBe("qwen3:14b");
+    expect(call.systemPrompt.length).toBeGreaterThan(40);
+  });
 });
