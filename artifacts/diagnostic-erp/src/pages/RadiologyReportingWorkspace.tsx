@@ -22,7 +22,8 @@
  *   • draftRescue → pre-redirect save on 401
  *   • workspaceCommands → command dispatcher (single choke point)
  *   • copilotOrchestrator + 19 plug-in modules → advisory copilot
- *   • workspaceLayoutPrefs → per-radiologist panel sizes
+ *   • workspaceLayoutPrefs → per-radiologist layout mode + Queue/Viewer/Report
+ *     sizes (byMode.viewerPct/reportPct), restored via ImperativePanelHandle.resize
  *   • readingSession → auto-advance toggle
  *   • PCPNDT gate → OB USG Form F compliance
  *   • MRI warm cache → prefetch
@@ -329,8 +330,21 @@ import { applySide } from "@/lib/sideSwap";
 import {
   loadWorkspaceLayoutPrefs, saveWorkspaceLayoutPrefs,
   shouldShowEmbeddedViewer, fallbackModeWhenPopupBlocked,
-  resolveLayoutModeForModality, withModalityLayoutMode, type WorkspaceLayoutMode,
+  resolveLayoutModeForModality, withModalityLayoutMode,
+  resolveViewerReportPcts, clampLeftPct, clampReportPct, clampViewerPct,
+  LEFT_COLLAPSED_PCT,
+  type WorkspaceLayoutMode,
 } from "@/lib/workspaceLayoutPrefs";
+import {
+  isNarrowReportingViewport,
+  layoutModeForPaneBias,
+  outerPanelPercents,
+  shouldIgnorePaneFocusTarget,
+  shouldUseCompactAccordion,
+  shouldUseExclusiveReportSections,
+  type ReportingPaneBias,
+} from "@/lib/reportingPaneFocus";
+import { useConstrainedReportingViewport } from "@/hooks/useConstrainedReportingViewport";
 import { isUltrasoundModality, isObstetricUsgStudy } from "@/lib/usgModality";
 import { prefetchMriStudies, prefetchNextMriStudy } from "@/lib/mriStudyPrefetch";
 import { prefetchNextStudyReportShell } from "@/lib/nextStudyReportPrefetch";
@@ -481,6 +495,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const { widthPx: viewportWidthPx } = useConstrainedReportingViewport();
   const isOnline = useOnlineStatus();
   const qc = useQueryClient();
 
@@ -489,6 +504,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const templatePanelRef = useRef<ImperativePanelHandle>(null);
+  const viewerPanelRef = useRef<ImperativePanelHandle>(null);
+  const reportPanelRef = useRef<ImperativePanelHandle>(null);
+  /** Suppress focus-mode resize briefly after an explicit user drag. */
+  const paneManualOverrideUntilRef = useRef(0);
+  const paneFocusApplyingRef = useRef(false);
+  /** Skip one layoutMode→resize apply after interaction-driven focus already resized. */
+  const suppressNextModeSizeApplyRef = useRef(false);
   const hydratedDraftForStudyRef = useRef<number | null>(null);
   /** Study whose server draft was restored into the editor this open. */
   const restoredDraftForStudyRef = useRef<number | null>(null);
@@ -562,9 +584,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   );
   const [templateRailCollapsed, setTemplateRailCollapsed] = useState(false);
   const [lastClinicalTarget, setLastClinicalTarget] = useState<PersonalTemplateTarget>("findings");
+  /** Late-bound: reporting focus chrome + optional 2/3 split (set after layout hooks). */
+  const enterReportingFocusModeRef = useRef<() => void>(() => {});
+  const exclusiveReportSectionsRef = useRef(false);
   const focusClinicalEditor = useCallback((field: PersonalTemplateTarget) => {
     setLastClinicalTarget(field);
     setActiveReportSection(field);
+    // Layout-only: never mutates clinical text / observations / study.
+    if (exclusiveReportSectionsRef.current) {
+      enterReportingFocusModeRef.current();
+    }
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLTextAreaElement>(`[data-testid="canonical-${field}-editor"]`);
       el?.focus();
@@ -1123,6 +1152,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [layoutPrefs, setLayoutPrefs] = useState(() => loadWorkspaceLayoutPrefs(myUserId));
   const layoutMode = layoutPrefs.mode;
   const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
+  const exclusiveReportSections = shouldUseExclusiveReportSections({
+    viewportWidthPx,
+    layoutMode,
+  });
+  const compactAccordion = shouldUseCompactAccordion({
+    viewportWidthPx,
+    layoutMode,
+  });
   const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
     setLayoutPrefs((prev) => {
       const modality = workflow.currentRow?.modality ?? null;
@@ -1192,14 +1229,174 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, []);
 
+  const applyPaneFocusSplit = useCallback((bias: ReportingPaneBias) => {
+    if (!showEmbeddedViewer) return;
+    if (paneFocusApplyingRef.current) return;
+    const mode = layoutModeForPaneBias(bias);
+    const pct = outerPanelPercents({
+      bias,
+      queueCollapsed: true,
+      narrow: isNarrowReportingViewport(viewportWidthPx),
+    });
+    paneFocusApplyingRef.current = true;
+    leftPanelRef.current?.collapse();
+    rightPanelRef.current?.collapse();
+    templatePanelRef.current?.collapse();
+    // Persist into existing byMode for this mode (no new storage key).
+    setLayoutPrefs((prev) => {
+      const cur = prev.byMode[mode];
+      const nextState = {
+        ...cur,
+        leftCollapsed: true,
+        rightCollapsed: true,
+        viewerPct: pct.viewer,
+        reportPct: pct.report,
+      };
+      const next = { ...prev, byMode: { ...prev.byMode, [mode]: nextState } };
+      saveWorkspaceLayoutPrefs(myUserId, next);
+      return next;
+    });
+    // Mode-change effect should not immediately overwrite these targets.
+    suppressNextModeSizeApplyRef.current = true;
+    requestAnimationFrame(() => {
+      try {
+        viewerPanelRef.current?.resize(pct.viewer);
+        reportPanelRef.current?.resize(pct.report);
+      } finally {
+        paneFocusApplyingRef.current = false;
+      }
+    });
+  }, [showEmbeddedViewer, viewportWidthPx, myUserId]);
+
+  /** Restore persisted byMode sizes via resize() — never rely on defaultSize alone. */
+  const applySavedModePanelSizes = useCallback((mode: WorkspaceLayoutMode) => {
+    if (paneFocusApplyingRef.current) return;
+    const state = layoutPrefs.byMode[mode] ?? layoutPrefs.byMode.split;
+    paneFocusApplyingRef.current = true;
+    if (state.leftCollapsed) leftPanelRef.current?.collapse();
+    else {
+      leftPanelRef.current?.expand();
+      leftPanelRef.current?.resize(clampLeftPct(state.left));
+    }
+    if (state.rightCollapsed) rightPanelRef.current?.collapse();
+    else {
+      rightPanelRef.current?.expand();
+      rightPanelRef.current?.resize(state.right);
+    }
+    requestAnimationFrame(() => {
+      try {
+        if (!shouldShowEmbeddedViewer(mode)) {
+          reportPanelRef.current?.resize(resolveViewerReportPcts(mode, state).reportPct);
+          return;
+        }
+        const { viewerPct, reportPct } = resolveViewerReportPcts(mode, state);
+        viewerPanelRef.current?.resize(viewerPct);
+        reportPanelRef.current?.resize(reportPct);
+      } finally {
+        paneFocusApplyingRef.current = false;
+      }
+    });
+  }, [layoutPrefs.byMode]);
+
   const enterReportingFocusMode = useCallback(() => {
     leftPanelRef.current?.collapse();
     rightPanelRef.current?.collapse();
+    templatePanelRef.current?.collapse();
     setViewerFocus(true);
     if (!shouldShowEmbeddedViewer(layoutMode)) setLayoutMode("split");
+    else if (layoutMode === "viewerFocus") setLayoutMode("split");
+    // Laptop/constrained only: snap to reporting-biased ~2/3. Wide desktop
+    // keeps last manual / stored split sizes (no jumpy 65/35).
+    if (
+      showEmbeddedViewer &&
+      exclusiveReportSections &&
+      Date.now() >= paneManualOverrideUntilRef.current
+    ) {
+      applyPaneFocusSplit("reporting");
+    }
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-  }, [layoutMode, setLayoutMode, setViewerFocus]);
+  }, [
+    layoutMode,
+    setLayoutMode,
+    setViewerFocus,
+    showEmbeddedViewer,
+    exclusiveReportSections,
+    applyPaneFocusSplit,
+  ]);
+  enterReportingFocusModeRef.current = enterReportingFocusMode;
+  exclusiveReportSectionsRef.current = exclusiveReportSections;
 
+  const enterViewerPaneFocus = useCallback(() => {
+    if (!showEmbeddedViewer) return;
+    if (layoutMode !== "viewerFocus") setLayoutMode("viewerFocus");
+    setViewerFocus(true);
+    leftPanelRef.current?.collapse();
+    if (Date.now() < paneManualOverrideUntilRef.current) return;
+    if (exclusiveReportSections) {
+      applyPaneFocusSplit("viewer");
+    } else {
+      applySavedModePanelSizes("viewerFocus");
+    }
+    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
+  }, [
+    showEmbeddedViewer,
+    layoutMode,
+    setLayoutMode,
+    setViewerFocus,
+    exclusiveReportSections,
+    applyPaneFocusSplit,
+    applySavedModePanelSizes,
+  ]);
+
+  // Mode toolbar / modality restore → apply persisted sizes (ImperativePanelHandle).
+  useEffect(() => {
+    if (Date.now() < paneManualOverrideUntilRef.current) return;
+    if (suppressNextModeSizeApplyRef.current) {
+      suppressNextModeSizeApplyRef.current = false;
+      return;
+    }
+    if (paneFocusApplyingRef.current) return;
+    applySavedModePanelSizes(layoutMode);
+  }, [layoutMode, applySavedModePanelSizes]);
+  const handleOuterPanelLayout = useCallback((sizes: number[]) => {
+    if (paneFocusApplyingRef.current) return;
+    paneManualOverrideUntilRef.current = Date.now() + 2500;
+    setLayoutPrefs((prev) => {
+      const mode = prev.mode;
+      const cur = prev.byMode[mode];
+      const nextState = { ...cur };
+      if (shouldShowEmbeddedViewer(mode) && sizes.length >= 3) {
+        const [queueSize, viewerSize, reportSize] = sizes;
+        if (typeof queueSize === "number") {
+          nextState.leftCollapsed = queueSize <= LEFT_COLLAPSED_PCT + 1;
+          if (!nextState.leftCollapsed) nextState.left = clampLeftPct(queueSize);
+        }
+        if (typeof viewerSize === "number") nextState.viewerPct = clampViewerPct(viewerSize);
+        if (typeof reportSize === "number") nextState.reportPct = clampReportPct(reportSize);
+      } else if (sizes.length >= 2) {
+        const [queueSize, reportSize] = sizes;
+        if (typeof queueSize === "number") {
+          nextState.leftCollapsed = queueSize <= LEFT_COLLAPSED_PCT + 1;
+          if (!nextState.leftCollapsed) nextState.left = clampLeftPct(queueSize);
+        }
+        if (typeof reportSize === "number") nextState.reportPct = clampReportPct(reportSize);
+        nextState.viewerPct = 0;
+      } else {
+        return prev;
+      }
+      if (
+        nextState.left === cur.left &&
+        nextState.leftCollapsed === cur.leftCollapsed &&
+        nextState.viewerPct === cur.viewerPct &&
+        nextState.reportPct === cur.reportPct
+      ) {
+        return prev;
+      }
+      const next = { ...prev, byMode: { ...prev.byMode, [mode]: nextState } };
+      saveWorkspaceLayoutPrefs(myUserId, next);
+      return next;
+    });
+  }, [myUserId]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("focus") !== "1") return;
@@ -1214,20 +1411,19 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [studyId, enterReportingFocusMode]);
 
   // Clicking inside the OHIF iframe does not bubble to React. Window blur +
-  // activeElement === the embed is the same "I am looking at images" signal
-  // as clicking the viewer chrome.
+  // activeElement === the embed is the same "I am looking at images" signal.
   useEffect(() => {
     const onBlur = () => {
       requestAnimationFrame(() => {
         const ae = document.activeElement;
         if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
-          enterReportingFocusMode();
+          enterViewerPaneFocus();
         }
       });
     };
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
-  }, [enterReportingFocusMode]);
+  }, [enterViewerPaneFocus]);
 
   useEffect(() => {
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
@@ -3090,7 +3286,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         const target = sectionForAltDigit(e.key);
         if (target) {
           e.preventDefault();
-          setActiveReportSection(target);
+          activateReportSection(target);
+          if (exclusiveReportSectionsRef.current) {
+            enterReportingFocusModeRef.current();
+          }
         }
       }
     };
@@ -3107,7 +3306,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     };
   }, [
     commandDispatcher, leftCollapsed, rightCollapsed, showEmbeddedViewer, setLayoutMode,
-    voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal,
+    voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal, activateReportSection,
   ]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
@@ -4177,8 +4376,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       summary: sectionSummaries[id],
       status: sectionStatus[id],
       active: activeReportSection === id,
-      onActivate: activateReportSection,
+      onActivate: (sectionId: ReportSectionId) => {
+        activateReportSection(sectionId);
+        if (exclusiveReportSections) enterReportingFocusMode();
+      },
       collapsedWarning: extra?.collapsedWarning,
+      density: (compactAccordion ? "compact" : "comfortable") as "compact" | "comfortable",
     };
   };
 
@@ -4627,9 +4830,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
       {/* ─── Three-column resizable layout ─── */}
       <div className="flex-1 min-h-0">
-        <ResizablePanelGroup direction="horizontal">
+        <ResizablePanelGroup
+          direction="horizontal"
+          onLayout={handleOuterPanelLayout}
+        >
           {/* Left: Worklist — collapsible like the legacy workspace */}
           <ResizablePanel
+            id="workspace-queue"
+            order={1}
             defaultSize={18}
             minSize={12}
             maxSize={26}
@@ -4676,14 +4884,23 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           {showEmbeddedViewer && (
             <>
               <ResizablePanel
-                defaultSize={layoutMode === "viewerFocus" ? 48 : 36}
-                minSize={28}
-                maxSize={58}
+                ref={viewerPanelRef}
+                id="workspace-viewer"
+                order={2}
+                defaultSize={layoutMode === "viewerFocus" ? 65 : 32}
+                minSize={22}
+                maxSize={72}
               >
                 <div
                   className="flex h-full flex-col"
                   data-testid="embedded-viewer-column"
-                  onMouseDown={enterReportingFocusMode}
+                  data-pane-focus="viewer"
+                  onPointerDownCapture={(e) => {
+                    if (shouldIgnorePaneFocusTarget(e.target)) return;
+                    if (exclusiveReportSections || compactAccordion) {
+                      enterViewerPaneFocus();
+                    }
+                  }}
                 >
                   <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
@@ -4889,7 +5106,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           )}
 
           {/* Right: Editor + Copilot Rail */}
-          <ResizablePanel defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? 38 : 46) : 82} minSize={36}>
+          <ResizablePanel
+            ref={reportPanelRef}
+            id="workspace-report"
+            order={3}
+            defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? 32 : 65) : 82}
+            minSize={28}
+          >
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}
               <ResizablePanel defaultSize={48} minSize={36}>
@@ -4927,14 +5150,22 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     )}
                   </div>
 
-                  {/* Reporting pane — progressive accordion (one active section).
-                      R2 lumbar canvas / ledger live inside Findings; sections still
-                      auto-collapse when another header is activated. */}
+                  {/* Reporting pane — exclusive one-active on laptop; continuous
+                      Findings+Impression only on wide desktop. Layout focus never
+                      mutates clinical report state. */}
                   <div
-                    className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3"
+                    className={
+                      exclusiveReportSections
+                        ? "flex min-h-0 flex-1 flex-col gap-1 overflow-hidden p-2"
+                        : "flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3"
+                    }
                     data-testid="reporting-canvas-r2"
-                    data-report-accordion="cockpit"
-                    onMouseDown={enterReportingFocusMode}
+                    data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}
+                    data-pane-focus="reporting"
+                    onPointerDownCapture={(e) => {
+                      if (shouldIgnorePaneFocusTarget(e.target)) return;
+                      enterReportingFocusMode();
+                    }}
                   >
                     <AnchorRail anchor={activeAnchor} />
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
@@ -5147,7 +5378,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                          and exactly ONE assistance drawer open at a time below. */}
                     <ReportAccordionSection
                       {...accordionProps("findings")}
-                      continuous
+                      {...(!exclusiveReportSections ? { continuous: true as const } : {})}
                       emphasis="primary"
                       onActivate={() => focusClinicalEditor("findings")}
                       onBodyActivate={() => focusClinicalEditor("findings")}
@@ -5920,7 +6151,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                         ) : null,
                       })}
-                      continuous
+                      {...(!exclusiveReportSections ? { continuous: true as const } : {})}
                       emphasis="primary"
                       onActivate={() => focusClinicalEditor("impression")}
                       onBodyActivate={() => focusClinicalEditor("impression")}

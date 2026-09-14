@@ -1,12 +1,17 @@
 /**
  * workspaceLayoutPrefs — layout-mode + column-size persistence for the
- * Radiology Reporting Workspace's 3-column body (patient panel / report
- * editor / contextual tool drawer).
+ * Radiology Reporting Workspace.
+ *
+ * Live page (Queue | OHIF | Report stack):
+ *   - `left` / `leftCollapsed` → Reading Queue panel
+ *   - `viewerPct` / `reportPct` → OHIF vs report stack (when viewer shown)
+ *   - `right` / `rightCollapsed` → nested Orient/Copilot rail (secondary)
+ *
+ * Legacy 3-column body used left/right as patient | tools; v2 storage is
+ * shared. Missing viewerPct/reportPct fall back to mode defaults.
  *
  * Pure calculation + localStorage persistence only — no React, no report
- * content, no draft/finalize state. Mirrors the existing per-radiologist
- * localStorage prefs pattern already used by useCopilotPrefs and
- * CollapsibleSection (JSON blob under one key, best-effort read/write).
+ * content, no draft/finalize state.
  */
 
 export type WorkspaceLayoutMode = "reportFocus" | "split" | "viewerFocus" | "dualScreen";
@@ -21,30 +26,33 @@ export const WORKSPACE_LAYOUT_MODES: readonly WorkspaceLayoutMode[] = [
 /** First visit defaults to Split so the embedded OHIF / WADO viewer is visible. */
 export const DEFAULT_LAYOUT_MODE: WorkspaceLayoutMode = "split";
 
-// ── Column-width constraints (percentage of the 3-column body) ─────────────
-// Kept wide enough to be useful, tight enough that no column can crush
-// another to uselessness. The report editor additionally gets an absolute
-// pixel floor (CENTER_MIN_PX) so it never becomes "clinically unusable"
-// regardless of percentages, per the layout spec.
-// NOTE: each *_COLLAPSED_PCT is deliberately smaller than its *_MIN_PCT —
-// "collapsed" (compact patient summary / icon ribbon) is a distinct, narrower
-// snap state below the normal expanded floor. If they were equal, collapsing
-// a panel wouldn't free any width.
-export const LEFT_MIN_PCT = 26;
-export const LEFT_MAX_PCT = 55;
-export const LEFT_COLLAPSED_PCT = 20;
-export const RIGHT_MIN_PCT = 18;
-export const RIGHT_MAX_PCT = 46;
-export const RIGHT_COLLAPSED_PCT = 6;
+// ── Column-width constraints (percentage of the outer panel group) ─────────
+export const LEFT_MIN_PCT = 12;
+export const LEFT_MAX_PCT = 26;
+export const LEFT_COLLAPSED_PCT = 3;
+export const RIGHT_MIN_PCT = 16;
+export const RIGHT_MAX_PCT = 40;
+export const RIGHT_COLLAPSED_PCT = 3;
+export const VIEWER_MIN_PCT = 22;
+export const VIEWER_MAX_PCT = 72;
+export const REPORT_MIN_PCT = 28;
+export const REPORT_MAX_PCT = 82;
 export const CENTER_MIN_PX = 480;
 
 export interface ModeLayoutState {
-  /** Expanded width of the left patient/study panel, in % of the 3-column body. */
+  /** Expanded width of the Reading Queue (left) panel, in % of the outer group. */
   left: number;
-  /** Expanded width of the right contextual tool drawer, in % of the 3-column body. */
+  /** Expanded width of the nested Orient/Copilot rail (secondary), in %. */
   right: number;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
+  /**
+   * OHIF/viewer column % of the outer Queue|Viewer|Report group.
+   * Omitted in older prefs → mode default applied at restore time.
+   */
+  viewerPct?: number;
+  /** Report stack % of the outer group when the embedded viewer is shown. */
+  reportPct?: number;
 }
 
 export interface WorkspaceLayoutPrefs {
@@ -58,19 +66,43 @@ export interface WorkspaceLayoutPrefs {
 }
 
 const DEFAULT_MODE_STATE: Record<WorkspaceLayoutMode, ModeLayoutState> = {
-  // Report Focus: viewer hidden, editor dominant (Phase 3 target: left
-  // 18-22%, editor 58-68%, right collapsed or 18-22% when opened). Both
-  // panels default to their compact/collapsed (LEFT_COLLAPSED_PCT / icon
-  // ribbon) state; `left`/`right` below are just the fallback width if the
-  // radiologist manually expands one while staying in this mode.
-  reportFocus: { left: 30, right: 20, leftCollapsed: true, rightCollapsed: true },
-  // Split View: viewer + editor share the screen — the workspace's default.
-  split: { left: 32, right: 26, leftCollapsed: false, rightCollapsed: true },
-  // Viewer Focus: viewer gets the lion's share; editor stays usable.
-  viewerFocus: { left: 52, right: 22, leftCollapsed: false, rightCollapsed: true },
-  // Dual Screen: embedded viewer hidden (it lives in the second window/
-  // monitor instead), so the primary screen behaves like Report Focus.
-  dualScreen: { left: 30, right: 20, leftCollapsed: true, rightCollapsed: true },
+  // Report Focus: viewer hidden; report stack owns remaining width.
+  reportFocus: {
+    left: 18,
+    right: 20,
+    leftCollapsed: true,
+    rightCollapsed: true,
+    viewerPct: 0,
+    reportPct: 82,
+  },
+  // Split / reporting-biased defaults (laptop auto-focus uses these targets;
+  // wide desktop keeps last manual drag when persisted).
+  split: {
+    left: 18,
+    right: 26,
+    leftCollapsed: true,
+    rightCollapsed: true,
+    viewerPct: 33,
+    reportPct: 64,
+  },
+  // Viewer Focus: OHIF ~2/3, report ~1/3.
+  viewerFocus: {
+    left: 18,
+    right: 22,
+    leftCollapsed: true,
+    rightCollapsed: true,
+    viewerPct: 65,
+    reportPct: 32,
+  },
+  // Dual Screen: embedded viewer hidden (lives on second monitor).
+  dualScreen: {
+    left: 18,
+    right: 20,
+    leftCollapsed: true,
+    rightCollapsed: true,
+    viewerPct: 0,
+    reportPct: 82,
+  },
 };
 
 export function defaultModeState(mode: WorkspaceLayoutMode): ModeLayoutState {
@@ -92,6 +124,33 @@ export function clampLeftPct(value: number): number {
 
 export function clampRightPct(value: number): number {
   return clampPct(value, RIGHT_MIN_PCT, RIGHT_MAX_PCT);
+}
+
+export function clampViewerPct(value: number): number {
+  return clampPct(value, VIEWER_MIN_PCT, VIEWER_MAX_PCT);
+}
+
+export function clampReportPct(value: number): number {
+  return clampPct(value, REPORT_MIN_PCT, REPORT_MAX_PCT);
+}
+
+/** Resolve viewer/report pair for a mode, filling defaults when prefs omit them. */
+export function resolveViewerReportPcts(
+  mode: WorkspaceLayoutMode,
+  state: ModeLayoutState,
+): { viewerPct: number; reportPct: number } {
+  const fallback = defaultModeState(mode);
+  const viewerPct =
+    typeof state.viewerPct === "number" && Number.isFinite(state.viewerPct)
+      ? mode === "reportFocus" || mode === "dualScreen"
+        ? Math.max(0, state.viewerPct)
+        : clampViewerPct(state.viewerPct)
+      : (fallback.viewerPct ?? 33);
+  const reportPct =
+    typeof state.reportPct === "number" && Number.isFinite(state.reportPct)
+      ? clampReportPct(state.reportPct)
+      : (fallback.reportPct ?? 64);
+  return { viewerPct, reportPct };
 }
 
 /** The embedded DICOM viewer only ever renders in these two modes — Report
@@ -165,11 +224,21 @@ function sanitizeModeState(raw: unknown, mode: WorkspaceLayoutMode): ModeLayoutS
   const fallback = defaultModeState(mode);
   if (!raw || typeof raw !== "object") return fallback;
   const r = raw as Record<string, unknown>;
+  const viewerPct =
+    typeof r.viewerPct === "number" && Number.isFinite(r.viewerPct)
+      ? r.viewerPct
+      : fallback.viewerPct;
+  const reportPct =
+    typeof r.reportPct === "number" && Number.isFinite(r.reportPct)
+      ? clampReportPct(r.reportPct)
+      : fallback.reportPct;
   return {
     left: typeof r.left === "number" && Number.isFinite(r.left) ? clampLeftPct(r.left) : fallback.left,
     right: typeof r.right === "number" && Number.isFinite(r.right) ? clampRightPct(r.right) : fallback.right,
     leftCollapsed: typeof r.leftCollapsed === "boolean" ? r.leftCollapsed : fallback.leftCollapsed,
     rightCollapsed: typeof r.rightCollapsed === "boolean" ? r.rightCollapsed : fallback.rightCollapsed,
+    viewerPct,
+    reportPct,
   };
 }
 
