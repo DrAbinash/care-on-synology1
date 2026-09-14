@@ -132,10 +132,16 @@ export function useReportComposer(opts: {
             if (again.ok) setJob(again.job);
           }
           toast({
-            title: fr.stale ? "AI report STALE" : "AI report ready",
+            title: fr.stale
+              ? (res.job.fallbackUsed || res.job.model === "deterministic" ? "Fallback draft STALE" : "AI report STALE")
+              : (res.job.fallbackUsed || res.job.model === "deterministic"
+                ? "Fallback draft ready"
+                : "AI report ready"),
             description: fr.stale
               ? "Report changed since compose was requested — review carefully."
-              : `${opts.modality ?? "Study"} composition finished.`,
+              : res.job.fallbackUsed || res.job.model === "deterministic"
+                ? "Local AI was not used — deterministic fallback. Review before apply."
+                : `${opts.modality ?? "Study"} composition finished.`,
           });
           setReviewOpen(true);
         }
