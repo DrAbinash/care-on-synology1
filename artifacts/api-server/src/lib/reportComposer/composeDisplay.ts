@@ -56,8 +56,8 @@ export function resolveComposeDisplayStatus(opts: {
     return "LOCAL_AI_SUCCESS";
   }
 
-  // Background job review path (#707)
-  if (opts.status === "READY" || (nonDeterministicModel && opts.ok !== false && opts.status !== "FAILED")) {
+  // Background job review path (#707). opts.ok===false already returned above.
+  if (opts.status === "READY" || (nonDeterministicModel && opts.status !== "FAILED")) {
     return "AI_READY";
   }
 
