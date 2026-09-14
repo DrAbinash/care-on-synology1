@@ -14,7 +14,13 @@ import {
   markEmergencyNasReconciled,
   publicNasConfig,
   pushMasterToEmergencyNas,
+  voidEmergencyBillOnNas,
+  endEmergencySessionOnNas,
 } from "../lib/emergencyNasClient";
+import {
+  normalizeEmergencyActorName,
+  normalizeEmergencyVoidReason,
+} from "../lib/emergencyAdminOps";
 import { buildEmergencyMasterSnapshot } from "../lib/emergencyMasterSnapshot";
 import { buildUsbSeedZip, usbSeedZipFilename } from "../lib/emergencyUsbSeed";
 
@@ -386,4 +392,73 @@ emergencyBillingRouter.get("/search", async (req, res) => {
     .orderBy(desc(emergencyImportedTransactionsTable.importedAt))
     .limit(25);
   res.json(rows);
+});
+
+/**
+ * Admin recovery: void a PENDING emergency bill on DS225+ (keeps history as VOID).
+ * Use for junk/test bills that should not be imported into CARE.
+ * Does not hard-delete — clears the Daily Summary "unreconciled emergency bill" alert.
+ */
+emergencyBillingRouter.post("/void-pending", async (req: StaffAuthRequest, res) => {
+  const who = actor(req);
+  const uuid = String(req.body?.emergencyTransactionUuid || req.body?.uuid || "").trim();
+  const reason = normalizeEmergencyVoidReason(req.body?.reason);
+  if (!uuid) {
+    res.status(400).json({ error: "emergencyTransactionUuid is required" });
+    return;
+  }
+  if (!reason) {
+    res.status(400).json({ error: "reason is required (min 3 characters)" });
+    return;
+  }
+  const voidedBy = normalizeEmergencyActorName(req.body?.voidedBy || who.name);
+  const result = await voidEmergencyBillOnNas({
+    emergencyTransactionUuid: uuid,
+    reason,
+    voidedBy,
+  });
+  if (!result.ok) {
+    res.status(result.status >= 400 && result.status < 600 ? result.status : 502).json({ error: result.error });
+    return;
+  }
+  await auditFromRequest(req, {
+    userId: who.userId,
+    userName: who.name,
+    role: req.staffSession?.role ?? "admin",
+    action: "emergency_void_pending",
+    module: "emergency_billing",
+    entityType: "emergency_transaction",
+    entityId: uuid,
+    newValue: JSON.stringify({ reason, voidedBy, alreadyVoid: result.alreadyVoid }),
+  });
+  res.json({ ok: true, alreadyVoid: result.alreadyVoid, emergencyTransactionUuid: uuid });
+});
+
+/**
+ * Admin recovery: close an open emergency session on DS225+.
+ * Clears the Daily Summary "Emergency session left open" alert.
+ */
+emergencyBillingRouter.post("/close-session", async (req: StaffAuthRequest, res) => {
+  const who = actor(req);
+  const endedBy = normalizeEmergencyActorName(req.body?.endedBy || who.name);
+  const reason =
+    typeof req.body?.reason === "string" && req.body.reason.trim()
+      ? req.body.reason.trim()
+      : "Closed remotely from CARE admin";
+  const result = await endEmergencySessionOnNas({ endedBy, reason });
+  if (!result.ok) {
+    res.status(result.status >= 400 && result.status < 600 ? result.status : 502).json({ error: result.error });
+    return;
+  }
+  await auditFromRequest(req, {
+    userId: who.userId,
+    userName: who.name,
+    role: req.staffSession?.role ?? "admin",
+    action: "emergency_close_session",
+    module: "emergency_billing",
+    entityType: "emergency_session",
+    entityId: result.sessionUuid || null,
+    newValue: JSON.stringify({ endedBy, reason }),
+  });
+  res.json({ ok: true, sessionUuid: result.sessionUuid });
 });

@@ -14,6 +14,7 @@ import {
   fetchEmergencyCapability,
   fetchEmergencyOpsStatus,
   fetchPendingHttp,
+  nasHeaders,
   probeEmergencyNas,
   runEmergencyMasterPush,
   type MasterPushLogRow,
@@ -269,4 +270,77 @@ export async function markEmergencyNasReconciled(opts: {
     body: JSON.stringify({ items: opts.uuids }),
     signal: AbortSignal.timeout(30_000),
   }).catch((err) => console.warn("[emergency-billing] mark-reconciled on NAS failed", err));
+}
+
+async function nasJsonPost<T>(
+  path: string,
+  body: unknown,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; error: string }> {
+  const cfg = await getEmergencyNasConfig();
+  const { baseUrl, token } = resolveNasTarget(cfg);
+  if (!baseUrl || !token) {
+    return { ok: false, status: 503, error: "Emergency NAS URL / fetch token is not configured" };
+  }
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        ...nasHeaders(token),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await res.text().catch(() => "");
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      const err =
+        data && typeof data === "object" && data !== null && "error" in data
+          ? String((data as { error: unknown }).error)
+          : text.slice(0, 300) || `Emergency NAS HTTP ${res.status}`;
+      return { ok: false, status: res.status, error: err };
+    }
+    return { ok: true, data: data as T };
+  } catch (err) {
+    return { ok: false, status: 502, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Void a PENDING emergency bill on DS225+ (history kept as VOID — never deleted). */
+export async function voidEmergencyBillOnNas(opts: {
+  emergencyTransactionUuid: string;
+  reason: string;
+  voidedBy: string;
+}): Promise<{ ok: true; alreadyVoid: boolean } | { ok: false; status: number; error: string }> {
+  const result = await nasJsonPost<{ ok?: boolean; alreadyVoid?: boolean }>(
+    "/api/internal/void-bill",
+    {
+      emergencyTransactionUuid: opts.emergencyTransactionUuid,
+      reason: opts.reason,
+      voidedBy: opts.voidedBy,
+    },
+  );
+  if (!result.ok) return result;
+  return { ok: true, alreadyVoid: !!result.data?.alreadyVoid };
+}
+
+/** Close the open emergency session on DS225+ (clears Daily Summary open-session alert). */
+export async function endEmergencySessionOnNas(opts: {
+  endedBy: string;
+  reason?: string;
+}): Promise<{ ok: true; sessionUuid: string } | { ok: false; status: number; error: string }> {
+  const result = await nasJsonPost<{ ok?: boolean; sessionUuid?: string }>(
+    "/api/internal/end-session",
+    {
+      endedBy: opts.endedBy,
+      reason: opts.reason,
+    },
+  );
+  if (!result.ok) return result;
+  return { ok: true, sessionUuid: String(result.data?.sessionUuid || "") };
 }

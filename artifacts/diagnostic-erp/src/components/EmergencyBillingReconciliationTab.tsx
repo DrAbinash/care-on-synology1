@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { previewRowCanResolve, resolvedCaption } from "./emergencyPreviewResolve";
-import { AlertTriangle, Download, RefreshCcw } from "lucide-react";
+import { AlertTriangle, Download, RefreshCcw, ShieldAlert } from "lucide-react";
 import { readStaffSession, normalizeRole } from "@/lib/staffSession";
 
 type NasStatus = {
@@ -244,6 +244,9 @@ export function EmergencyBillingReconciliationTab() {
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [historyId, setHistoryId] = useState<number | null>(null);
   const [resolveRow, setResolveRow] = useState<PreviewRow | null>(null);
+  const [voidRow, setVoidRow] = useState<PreviewRow | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [closeSessionReason, setCloseSessionReason] = useState("Closed from CARE admin — session left open");
 
   const { data: config, isLoading } = useQuery<NasConfig>({
     queryKey: ["emergency-nas-config"],
@@ -373,6 +376,55 @@ export function EmergencyBillingReconciliationTab() {
     onError: (e: Error) => toast({ title: "Resolve failed", description: e.message, variant: "destructive" }),
   });
 
+  const closeOpenSession = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; sessionUuid: string }>("/api/emergency-billing/close-session", {
+        reason: closeSessionReason.trim() || "Closed from CARE admin — session left open",
+      }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["emergency-nas-status"] });
+      toast({
+        title: "Emergency session closed",
+        description: r.sessionUuid
+          ? `Session ${r.sessionUuid.slice(0, 8)}… closed on DS225+. Daily Summary open-session alert should clear.`
+          : "Open session closed on DS225+.",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Could not close session", description: e.message, variant: "destructive" }),
+  });
+
+  const voidPendingBill = useMutation({
+    mutationFn: () => {
+      if (!voidRow) throw new Error("No bill selected");
+      return api.post<{ ok: boolean; alreadyVoid: boolean }>("/api/emergency-billing/void-pending", {
+        emergencyTransactionUuid: voidRow.emergencyTransactionUuid,
+        reason: voidReason.trim(),
+      });
+    },
+    onSuccess: (r) => {
+      const uuid = voidRow?.emergencyTransactionUuid;
+      setPreview((prev) => {
+        if (!prev || !uuid) return prev;
+        return {
+          ...prev,
+          rows: prev.rows.filter((row) => row.emergencyTransactionUuid !== uuid),
+          summary: {
+            ...prev.summary,
+            bills: Math.max(0, (prev.summary.bills ?? 1) - 1),
+          },
+        };
+      });
+      setVoidRow(null);
+      setVoidReason("");
+      qc.invalidateQueries({ queryKey: ["emergency-nas-status"] });
+      toast({
+        title: r.alreadyVoid ? "Already void on DS225+" : "Emergency bill voided",
+        description: "Bill kept in emergency history as VOID (not deleted). Pending alert count will drop after status refresh.",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Void failed", description: e.message, variant: "destructive" }),
+  });
+
   function onFile(kind: "csv" | "json", file: File | null) {
     if (!file) return;
     const reader = new FileReader();
@@ -495,6 +547,52 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
         )}
       </div>
 
+      <div className="bg-card border border-amber-300 dark:border-amber-800 rounded-xl p-5 space-y-3" data-testid="emergency-admin-recovery">
+        <div className="flex items-start gap-2">
+          <ShieldAlert size={18} className="mt-0.5 text-amber-700 dark:text-amber-300 shrink-0" />
+          <div>
+            <h2 className="font-bold text-lg">Admin recovery</h2>
+            <p className="text-sm text-muted-foreground">
+              Clear Daily Summary alerts without logging into DS225+. Void keeps the emergency bill in history
+              (status VOID — never hard-deleted). Prefer <strong>Fetch → Resolve → Import</strong> for real patient bills.
+            </p>
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3 text-sm">
+          <div className="rounded-lg border bg-muted/40 p-3">
+            <div className="text-muted-foreground text-xs uppercase tracking-wide">Pending EMG bills</div>
+            <div className="text-2xl font-bold tabular-nums" data-testid="emergency-pending-count">
+              {status?.pendingEmergencyBills ?? "—"}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">Fetch below, then Void junk/test rows or Import real ones.</p>
+          </div>
+          <div className="rounded-lg border bg-muted/40 p-3 space-y-2">
+            <div className="text-muted-foreground text-xs uppercase tracking-wide">Open EMG sessions</div>
+            <div className="text-2xl font-bold tabular-nums" data-testid="emergency-open-session-count">
+              {status?.openEmergencySessions ?? "—"}
+            </div>
+            <Label className="text-xs">Close reason</Label>
+            <Input
+              value={closeSessionReason}
+              onChange={(e) => setCloseSessionReason(e.target.value)}
+              placeholder="Why close this session?"
+            />
+            <Button
+              variant="destructive"
+              size="sm"
+              data-testid="emergency-close-session"
+              disabled={closeOpenSession.isPending || !status?.openEmergencySessions}
+              onClick={() => {
+                if (!window.confirm("Close the open emergency session on DS225+? Staff on that PC will need to start a new session to bill.")) return;
+                closeOpenSession.mutate();
+              }}
+            >
+              {closeOpenSession.isPending ? "Closing…" : "Close open session"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-card border border-card-border rounded-xl p-5 space-y-3">
         <h2 className="font-bold text-lg">Emergency NAS connection</h2>
         {isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : (
@@ -614,11 +712,24 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
                     <td className="p-2 text-right">{inr(r.transaction.amountReceived)}</td>
                     <td className="p-2 text-right">{inr(r.transaction.dueAmount)}</td>
                     <td className="p-2">
-                      {previewRowCanResolve(r) ? (
-                        <Button size="sm" variant="outline" onClick={() => setResolveRow(r)}>Resolve</Button>
-                      ) : r.alreadyImported ? (
-                        <span className="text-muted-foreground">Read-only</span>
-                      ) : null}
+                      <div className="flex flex-wrap gap-1">
+                        {previewRowCanResolve(r) ? (
+                          <Button size="sm" variant="outline" onClick={() => setResolveRow(r)}>Resolve</Button>
+                        ) : r.alreadyImported ? (
+                          <span className="text-muted-foreground">Read-only</span>
+                        ) : null}
+                        {!r.alreadyImported && !r.blocked && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            data-testid="emergency-void-row"
+                            onClick={() => { setVoidRow(r); setVoidReason(""); }}
+                          >
+                            Void
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -784,6 +895,42 @@ Staff: ${fmtCount(status.counts.staffCount)}`}</pre>
               onClick={() => resolveRow && resolvePatient.mutate({ transaction: resolveRow.transaction, action: "create_new" })}
             >
               Create as new patient
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!voidRow} onOpenChange={(open) => { if (!open) { setVoidRow(null); setVoidReason(""); } }}>
+        <DialogContent data-testid="emergency-void-dialog">
+          <DialogHeader>
+            <DialogTitle>Void emergency bill {voidRow?.emergencyBillNumber}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Marks this PENDING bill as VOID on DS225+ so it no longer counts as unreconciled.
+              History is kept — this is not a hard delete. Use only for junk/test/wrong captures that should not become CARE bills.
+            </p>
+            <div>
+              <Label>Reason <span className="text-destructive">*</span></Label>
+              <Textarea
+                className="mt-1"
+                rows={3}
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="e.g. Test bill / wrong patient / duplicate emergency capture"
+                data-testid="emergency-void-reason"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setVoidRow(null); setVoidReason(""); }}>Cancel</Button>
+            <Button
+              variant="destructive"
+              data-testid="emergency-void-confirm"
+              disabled={voidReason.trim().length < 3 || voidPendingBill.isPending}
+              onClick={() => voidPendingBill.mutate()}
+            >
+              {voidPendingBill.isPending ? "Voiding…" : "Void on DS225+"}
             </Button>
           </DialogFooter>
         </DialogContent>

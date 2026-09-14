@@ -821,6 +821,69 @@ export async function createApp() {
     res.json({ ok: true, updated: n });
   });
 
+  // CARE admin remote ops (fetch-token). Lets ERP admins void junk/test PENDING
+  // bills and close a forgotten open session without logging into 225app.
+  // History is kept (VOID) — never hard-deleted.
+  app.post("/api/internal/void-bill", requireFetchToken, async (req, res) => {
+    const uuid = String(req.body?.emergencyTransactionUuid || req.body?.uuid || "").trim();
+    const reason = String(req.body?.reason || "").trim();
+    const voidedBy = String(req.body?.voidedBy || "CARE admin").trim() || "CARE admin";
+    if (!uuid) {
+      res.status(400).json({ error: "emergencyTransactionUuid is required" });
+      return;
+    }
+    if (reason.length < 3) {
+      res.status(400).json({ error: "Void reason is required (min 3 characters)" });
+      return;
+    }
+    const { rows } = await pool.query(`SELECT * FROM emergency_transactions WHERE uuid=$1`, [uuid]);
+    const row = rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    if (row.status === "VOID") {
+      res.json({ ok: true, alreadyVoid: true, bill: rowToTxn(row) });
+      return;
+    }
+    if (row.status === "RECONCILED") {
+      res.status(409).json({ error: "Already reconciled into CARE — void on CARE instead" });
+      return;
+    }
+    const payload = {
+      ...row.payload_json,
+      status: "VOID",
+      voidedAt: new Date().toISOString(),
+      voidedByStaffName: voidedBy,
+      voidReason: reason,
+      voidedRemotelyFromCare: true,
+    };
+    await pool.query(
+      `UPDATE emergency_transactions
+       SET status='VOID', voided_at=now(), voided_by_staff_name=$1, void_reason=$2, payload_json=$3::jsonb
+       WHERE uuid=$4`,
+      [voidedBy, reason, JSON.stringify(payload), uuid],
+    );
+    await audit(null, "void_remote", uuid, `${voidedBy}: ${reason}`);
+    res.json({ ok: true, alreadyVoid: false, bill: payload });
+  });
+
+  app.post("/api/internal/end-session", requireFetchToken, async (req, res) => {
+    const endedBy = String(req.body?.endedBy || "CARE admin").trim() || "CARE admin";
+    const reason = String(req.body?.reason || "Closed remotely from CARE admin").trim();
+    const current = await activeSession();
+    if (!current) {
+      res.status(409).json({ ok: false, error: "No active emergency session" });
+      return;
+    }
+    await pool.query(
+      `UPDATE emergency_sessions SET ended_at=now(), ended_by_staff_id=$1, ended_by_staff_name=$2 WHERE uuid=$3`,
+      [null, endedBy, current.emergencySessionUuid],
+    );
+    await audit(null, "session_end_remote", current.emergencySessionUuid, `${endedBy}: ${reason}`);
+    res.json({ ok: true, sessionUuid: current.emergencySessionUuid, endedBy, reason });
+  });
+
   // ── Main CARE reachability + Windows Emergency ops ─────────────────────────
   async function probeMainCare(): Promise<CareReachability> {
     careReach.lastCheckedAt = new Date().toISOString();
