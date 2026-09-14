@@ -857,6 +857,11 @@ export function AiReportingPanel() {
         payload.endpointUrl = providerDrafts[name].endpointUrl || undefined;
       } else {
         payload.apiKey = providerDrafts[name].apiKey || undefined;
+        // Qwen / DeepSeek / OpenAI need the OpenAI-compatible base URL; send draft
+        // endpoint when present so Test Connection matches Save + env fallbacks.
+        if (providerDrafts[name].endpointUrl?.trim()) {
+          payload.endpointUrl = providerDrafts[name].endpointUrl.trim();
+        }
       }
       const res = await api.post<{ success: boolean; response?: string; error?: string; availableModels?: string[] }>(
         "/api/ai-reporting/test-provider",

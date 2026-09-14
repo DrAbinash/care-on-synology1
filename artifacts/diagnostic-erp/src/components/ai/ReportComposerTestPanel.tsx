@@ -91,7 +91,9 @@ type CompareResponse = {
   ok?: boolean;
   writesClinicalReport?: boolean;
   deepSeekConfigured?: boolean;
+  qwenConfigured?: boolean;
   local?: TestResponse;
+  qwen?: TestResponse;
   deepseek?: TestResponse;
 };
 
@@ -131,6 +133,16 @@ type Props = {
   disabled?: boolean;
 };
 
+function formatCompareFailure(safeError: string | null | undefined, fallback?: string | null): string {
+  const err = (safeError ?? fallback ?? "").trim();
+  if (!err) return "FAILED — compose failed";
+  if (/api_key_not_configured/i.test(err)) return "NOT CONFIGURED — API key missing";
+  if (/base_url_missing|endpoint_not_configured|endpoint_missing/i.test(err)) {
+    return "ENDPOINT MISSING — set QWEN_BASE_URL / provider endpoint";
+  }
+  return `FAILED — ${err}`;
+}
+
 function ResultCard({
   title,
   result,
@@ -138,12 +150,16 @@ function ResultCard({
   title: string;
   result: TestResponse | null;
 }) {
-  if (!result) return null;
-  const display = result.compose?.displayStatus;
-  const draft = result.compose?.draft;
+  const display = result?.compose?.displayStatus;
+  const draft = result?.compose?.draft;
   return (
     <div className="space-y-2 border rounded-md p-2.5 bg-white/80 dark:bg-background/40" data-testid="composer-test-result">
       <p className="text-[11px] font-semibold">{title}</p>
+      {!result ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-semibold text-amber-950">
+          NOT CONFIGURED — no result returned for this provider
+        </div>
+      ) : (
       <div
         className={`rounded-md border px-2.5 py-2 text-[11px] font-semibold ${
           display === "LOCAL_AI_SUCCESS"
@@ -159,34 +175,37 @@ function ResultCard({
           <span className="inline-flex items-center gap-1"><CheckCircle2 size={12} /> LOCAL AI SUCCESS</span>
         )}
         {display === "CLOUD_AI_SUCCESS" && (
-          <span className="inline-flex items-center gap-1"><Cloud size={12} /> DEEPSEEK CLOUD SUCCESS</span>
+          <span className="inline-flex items-center gap-1"><Cloud size={12} /> CLOUD AI SUCCESS</span>
         )}
         {display === "FALLBACK_DRAFT" && (
           <span className="inline-flex items-center gap-1"><AlertTriangle size={12} /> FALLBACK DRAFT — Local AI was not used.</span>
         )}
         {display !== "LOCAL_AI_SUCCESS" && display !== "CLOUD_AI_SUCCESS" && display !== "FALLBACK_DRAFT" && (
-          <span>FAILED — {result.compose?.safeError ?? result.error ?? "compose failed"}</span>
+          <span>{formatCompareFailure(result.compose?.safeError, result.error)}</span>
         )}
       </div>
+      )}
       <div className="text-[11px] space-y-0.5 font-mono">
-        <p>Execution: {result.execution ?? "—"}</p>
-        <p>Provider: {result.compose?.provider ?? result.runtime?.transport ?? "—"}</p>
-        <p>Resolved endpoint: {result.runtime?.endpoint ?? "—"}</p>
-        <p>Resolved model: {result.compose?.model ?? "—"}</p>
-        <p>Fallback used: {result.compose?.fallbackUsed ? "YES" : "NO"}</p>
-        <p>Persona loaded: {result.compose?.personaLoaded ? "YES" : "NO"}
-          {result.compose?.personaVersion ? ` (${result.compose.personaVersion})` : ""}
+        <p>Execution: {result?.execution ?? "—"}</p>
+        <p>Provider: {result?.compose?.provider ?? result?.runtime?.transport ?? "—"}</p>
+        <p>Resolved endpoint: {result?.runtime?.endpoint ?? "—"}</p>
+        <p>Resolved model: {result?.compose?.model ?? "—"}</p>
+        <p>Fallback used: {result?.compose?.fallbackUsed ? "YES" : "NO"}</p>
+        <p>Persona loaded: {result?.compose?.personaLoaded ? "YES" : "NO"}
+          {result?.compose?.personaVersion ? ` (${result.compose.personaVersion})` : ""}
         </p>
-        <p>Latency: {result.compose?.latencyMs ?? "—"} ms</p>
-        <p>Tokens: in={result.compose?.promptTokens ?? "—"} out={result.compose?.completionTokens ?? "—"}</p>
-        <p>Approx cost: {result.compose?.approximateCostUsd != null ? `$${result.compose.approximateCostUsd.toFixed(6)}` : "—"}</p>
+        <p>Latency: {result?.compose?.latencyMs ?? "—"} ms</p>
+        <p>Tokens: in={result?.compose?.promptTokens ?? "—"} out={result?.compose?.completionTokens ?? "—"}</p>
+        <p>Approx cost: {result?.compose?.approximateCostUsd != null ? `$${result.compose.approximateCostUsd.toFixed(6)}` : "—"}</p>
         <p>
           Validation:{" "}
-          {(result.validationOk ?? result.validation?.ok)
-            ? `PASS${(result.validation?.warnings?.length ?? 0) > 0 ? ` · warnings` : ""}`
-            : `FAIL · ${(result.validation?.errors ?? []).join(", ") || "errors"}`}
+          {result
+            ? (result.validationOk ?? result.validation?.ok)
+              ? `PASS${(result.validation?.warnings?.length ?? 0) > 0 ? ` · warnings` : ""}`
+              : `FAIL · ${(result.validation?.errors ?? []).join(", ") || "errors"}`
+            : "—"}
         </p>
-        <p>Writes clinical report: {result.writesClinicalReport ? "YES" : "NO"}</p>
+        <p>Writes clinical report: {result?.writesClinicalReport ? "YES" : "NO"}</p>
       </div>
       {draft && (
         <pre className="max-h-48 overflow-auto rounded border bg-muted/30 p-2 text-[11px] whitespace-pre-wrap font-mono">
@@ -391,8 +410,9 @@ export function ReportComposerTestPanel({
 
       {result && <ResultCard title="Single run" result={result} />}
       {compare && (
-        <div className="grid md:grid-cols-2 gap-2" data-testid="composer-compare-results">
+        <div className="grid md:grid-cols-3 gap-2" data-testid="composer-compare-results">
           <ResultCard title="LOCAL OLLAMA" result={compare.local ?? null} />
+          <ResultCard title="QWEN 3.7 PLUS" result={compare.qwen ?? null} />
           <ResultCard title="DEEPSEEK V4 PRO" result={compare.deepseek ?? null} />
         </div>
       )}

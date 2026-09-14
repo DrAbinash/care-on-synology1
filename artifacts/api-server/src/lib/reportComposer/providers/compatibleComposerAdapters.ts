@@ -47,12 +47,22 @@ async function composeViaSharedTransport(
 
   const apiKey = readEnvApiKey(provider);
   const baseURL = readEnvBaseUrl(provider) || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.baseURL;
-  if (!apiKey || !baseURL) {
+  if (!apiKey) {
     return {
       ok: false,
       provider,
       model,
       safeError: `${provider}_api_key_not_configured`,
+      latencyMs: 0,
+      execution,
+    };
+  }
+  if (!baseURL) {
+    return {
+      ok: false,
+      provider,
+      model,
+      safeError: `${provider}_endpoint_not_configured`,
       latencyMs: 0,
       execution,
     };
