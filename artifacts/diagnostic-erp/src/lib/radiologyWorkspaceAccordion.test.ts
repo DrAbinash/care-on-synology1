@@ -35,8 +35,11 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
       expect(workspace).toContain(`accordionProps("${id}"`);
     }
     // Findings + Impression stay continuously visible; other rows remain progressive.
+    // Laptop/exclusive layout flips the accordion mode attribute to "exclusive".
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain('data-report-accordion="cockpit"');
+    expect(workspace).toContain(
+      'data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}',
+    );
     expect(workspace).toContain("continuous");
     expect(workspace).toContain('focusClinicalEditor("findings")');
     expect(workspace).toContain('focusClinicalEditor("impression")');
@@ -102,7 +105,11 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
 
 describe("clicking the workspace collapses chrome, keeps OHIF", () => {
   it("enters reporting focus from the accordion and from the viewer column", () => {
-    expect(workspace).toContain("onMouseDown={enterReportingFocusMode}");
+    // Pointer-down capture (not mousedown) so touch/pen/laptop trackpads
+    // all enter focus mode; ignore interactive chrome via shouldIgnorePaneFocusTarget.
+    expect(workspace).toContain("onPointerDownCapture");
+    expect(workspace).toContain("shouldIgnorePaneFocusTarget");
+    expect(workspace).toContain("enterReportingFocusMode()");
     expect(workspace).toContain('data-testid="embedded-viewer-column"');
   });
 
