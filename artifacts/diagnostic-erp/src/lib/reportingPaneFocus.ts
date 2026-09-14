@@ -134,3 +134,61 @@ export function shouldIgnorePaneFocusTarget(target: EventTarget | null): boolean
     ].join(","),
   );
 }
+
+/** Modes that participate in Reporting ↔ Viewer auto-focus. */
+export type PaneFocusLayoutMode = "split" | "viewerFocus";
+
+/**
+ * Session-only flags: after a manual splitter drag, automatic 33/67 focus must
+ * not fight the radiologist until they explicitly change/reset that mode.
+ * Not persisted to localStorage — byMode remains manual/intentional memory only.
+ */
+export type PaneManualOverrideState = Partial<Record<PaneFocusLayoutMode, boolean>>;
+
+export function isPaneFocusLayoutMode(mode: string): mode is PaneFocusLayoutMode {
+  return mode === "split" || mode === "viewerFocus";
+}
+
+export function markPaneManualOverride(
+  state: PaneManualOverrideState,
+  mode: string,
+): PaneManualOverrideState {
+  if (!isPaneFocusLayoutMode(mode)) return state;
+  if (state[mode]) return state;
+  return { ...state, [mode]: true };
+}
+
+/** Clear one mode (toolbar mode pick) or all (full reset). */
+export function clearPaneManualOverride(
+  state: PaneManualOverrideState,
+  mode?: string | null,
+): PaneManualOverrideState {
+  if (mode == null) return {};
+  if (!isPaneFocusLayoutMode(mode)) return state;
+  if (!state[mode]) return state;
+  const next = { ...state };
+  delete next[mode];
+  return next;
+}
+
+/**
+ * Automatic laptop focus may resize panels, but only when the viewport is
+ * constrained and the user has not manually overridden that mode this session.
+ */
+export function shouldApplyAutomaticPaneFocus(opts: {
+  constrained: boolean;
+  mode: string;
+  manualOverride: PaneManualOverrideState;
+}): boolean {
+  if (!opts.constrained) return false;
+  if (!isPaneFocusLayoutMode(opts.mode)) return false;
+  return !opts.manualOverride[opts.mode];
+}
+
+/**
+ * Auto focus is transient: it must never produce a byMode viewer/report patch.
+ * Manual drag / explicit save paths are the only writers of remembered sizes.
+ */
+export function autoFocusPersistsByModeSizes(): false {
+  return false;
+}
