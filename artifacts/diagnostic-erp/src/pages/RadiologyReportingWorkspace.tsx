@@ -22,8 +22,9 @@
  *   • draftRescue → pre-redirect save on 401
  *   • workspaceCommands → command dispatcher (single choke point)
  *   • copilotOrchestrator + 19 plug-in modules → advisory copilot
- *   • workspaceLayoutPrefs → per-radiologist layout mode + Queue/Viewer/Report
- *     sizes (byMode.viewerPct/reportPct), restored via ImperativePanelHandle.resize
+ *   • workspaceLayoutPrefs → per-radiologist layout mode + intentional
+ *     Queue/Viewer/Report sizes (byMode); auto laptop focus resizes via
+ *     ImperativePanelHandle only and does not overwrite byMode
  *   • readingSession → auto-advance toggle
  *   • PCPNDT gate → OB USG Form F compliance
  *   • MRI warm cache → prefetch
@@ -336,11 +337,14 @@ import {
 } from "@/lib/workspaceLayoutPrefs";
 import {
   isNarrowReportingViewport,
-  layoutModeForPaneBias,
   outerPanelPercents,
+  shouldApplyAutomaticPaneFocus,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseExclusiveReportSections,
+  markPaneManualOverride,
+  clearPaneManualOverride,
+  type PaneManualOverrideState,
   type ReportingPaneBias,
 } from "@/lib/reportingPaneFocus";
 import { useConstrainedReportingViewport } from "@/hooks/useConstrainedReportingViewport";
@@ -509,8 +513,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const templatePanelRef = useRef<ImperativePanelHandle>(null);
   const viewerPanelRef = useRef<ImperativePanelHandle>(null);
   const reportPanelRef = useRef<ImperativePanelHandle>(null);
-  /** Suppress focus-mode resize briefly after an explicit user drag. */
-  const paneManualOverrideUntilRef = useRef(0);
+  /** Session-only: manual splitter drag wins over auto 33/67 until mode reset. */
+  const paneManualOverrideRef = useRef<PaneManualOverrideState>({});
   const paneFocusApplyingRef = useRef(false);
   /** Skip one layoutMode→resize apply after interaction-driven focus already resized. */
   const suppressNextModeSizeApplyRef = useRef(false);
@@ -1169,7 +1173,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     viewportWidthPx,
     layoutMode,
   });
-  const setLayoutMode = useCallback((mode: WorkspaceLayoutMode) => {
+  const setLayoutMode = useCallback((
+    mode: WorkspaceLayoutMode,
+    opts?: { reenableAutoFocus?: boolean },
+  ) => {
+    if (opts?.reenableAutoFocus) {
+      paneManualOverrideRef.current = clearPaneManualOverride(
+        paneManualOverrideRef.current,
+        mode,
+      );
+    }
     setLayoutPrefs((prev) => {
       const modality = workflow.currentRow?.modality ?? null;
       const next = withModalityLayoutMode(prev, modality, mode);
@@ -1241,31 +1254,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const applyPaneFocusSplit = useCallback((bias: ReportingPaneBias) => {
     if (!showEmbeddedViewer) return;
     if (paneFocusApplyingRef.current) return;
-    const mode = layoutModeForPaneBias(bias);
     const pct = outerPanelPercents({
       bias,
       queueCollapsed: true,
       narrow: isNarrowReportingViewport(viewportWidthPx),
     });
+    // Transient only — never write viewerPct/reportPct into byMode.
+    // Remembered layout comes from manual drag / mode defaults only.
     paneFocusApplyingRef.current = true;
     leftPanelRef.current?.collapse();
     rightPanelRef.current?.collapse();
     templatePanelRef.current?.collapse();
-    // Persist into existing byMode for this mode (no new storage key).
-    setLayoutPrefs((prev) => {
-      const cur = prev.byMode[mode];
-      const nextState = {
-        ...cur,
-        leftCollapsed: true,
-        rightCollapsed: true,
-        viewerPct: pct.viewer,
-        reportPct: pct.report,
-      };
-      const next = { ...prev, byMode: { ...prev.byMode, [mode]: nextState } };
-      saveWorkspaceLayoutPrefs(myUserId, next);
-      return next;
-    });
-    // Mode-change effect should not immediately overwrite these targets.
     suppressNextModeSizeApplyRef.current = true;
     requestAnimationFrame(() => {
       try {
@@ -1275,7 +1274,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         paneFocusApplyingRef.current = false;
       }
     });
-  }, [showEmbeddedViewer, viewportWidthPx, myUserId]);
+  }, [showEmbeddedViewer, viewportWidthPx]);
 
   /** Restore persisted byMode sizes via resize() — never rely on defaultSize alone. */
   const applySavedModePanelSizes = useCallback((mode: WorkspaceLayoutMode) => {
@@ -1314,12 +1313,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setViewerFocus(true);
     if (!shouldShowEmbeddedViewer(layoutMode)) setLayoutMode("split");
     else if (layoutMode === "viewerFocus") setLayoutMode("split");
-    // Laptop/constrained only: snap to reporting-biased ~2/3. Wide desktop
-    // keeps last manual / stored split sizes (no jumpy 65/35).
+    // Laptop only: transient ~2/3 report — skipped when user manually sized this mode.
     if (
       showEmbeddedViewer &&
-      exclusiveReportSections &&
-      Date.now() >= paneManualOverrideUntilRef.current
+      shouldApplyAutomaticPaneFocus({
+        constrained: exclusiveReportSections,
+        mode: "split",
+        manualOverride: paneManualOverrideRef.current,
+      })
     ) {
       applyPaneFocusSplit("reporting");
     }
@@ -1340,10 +1341,16 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (layoutMode !== "viewerFocus") setLayoutMode("viewerFocus");
     setViewerFocus(true);
     leftPanelRef.current?.collapse();
-    if (Date.now() < paneManualOverrideUntilRef.current) return;
-    if (exclusiveReportSections) {
+    if (
+      shouldApplyAutomaticPaneFocus({
+        constrained: exclusiveReportSections,
+        mode: "viewerFocus",
+        manualOverride: paneManualOverrideRef.current,
+      })
+    ) {
       applyPaneFocusSplit("viewer");
     } else {
+      // Wide desktop, or constrained with session manual override — remembered sizes only.
       applySavedModePanelSizes("viewerFocus");
     }
     try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
@@ -1359,7 +1366,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // Mode toolbar / modality restore → apply persisted sizes (ImperativePanelHandle).
   useEffect(() => {
-    if (Date.now() < paneManualOverrideUntilRef.current) return;
     if (suppressNextModeSizeApplyRef.current) {
       suppressNextModeSizeApplyRef.current = false;
       return;
@@ -1367,9 +1373,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (paneFocusApplyingRef.current) return;
     applySavedModePanelSizes(layoutMode);
   }, [layoutMode, applySavedModePanelSizes]);
+
   const handleOuterPanelLayout = useCallback((sizes: number[]) => {
     if (paneFocusApplyingRef.current) return;
-    paneManualOverrideUntilRef.current = Date.now() + 2500;
+    // Manual drag: remember sizes in byMode AND arm session override (no 2.5s expiry).
+    paneManualOverrideRef.current = markPaneManualOverride(
+      paneManualOverrideRef.current,
+      layoutMode,
+    );
     setLayoutPrefs((prev) => {
       const mode = prev.mode;
       const cur = prev.byMode[mode];
@@ -1405,8 +1416,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       saveWorkspaceLayoutPrefs(myUserId, next);
       return next;
     });
-  }, [myUserId]);
-  useEffect(() => {
+  }, [myUserId, layoutMode]);  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("focus") !== "1") return;
     enterReportingFocusMode();
@@ -3235,7 +3245,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             rightPanelRef.current?.collapse();
           }
         } else if (resolved.action === "toggle-viewer") {
-          setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split");
+          setLayoutMode(showEmbeddedViewer ? "reportFocus" : "split", { reenableAutoFocus: true });
         } else if (resolved.action === "escape") {
           rightPanelRef.current?.collapse();
         }
@@ -4520,7 +4530,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               key={m.mode}
               type="button"
               title={m.title}
-              onClick={() => setLayoutMode(m.mode)}
+              onClick={() => setLayoutMode(m.mode, { reenableAutoFocus: true })}
               className={`inline-flex items-center gap-1 px-2 py-1.5 border-r last:border-r-0 border-emerald-200/60 transition-colors ${layoutMode === m.mode ? "bg-gradient-to-b from-emerald-500 to-emerald-600 text-white shadow-sm" : "hover:bg-emerald-50 text-foreground"}`}
               aria-pressed={layoutMode === m.mode}
             >
@@ -5140,7 +5150,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <button
                         type="button"
                         data-testid="open-ohif-viewer"
-                        onClick={() => setLayoutMode("split")}
+                        onClick={() => setLayoutMode("split", { reenableAutoFocus: true })}
                         className="w-full rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-left text-xs text-sky-900 hover:bg-sky-100"
                       >
                         <span className="font-semibold">OHIF / WADO images are hidden.</span>

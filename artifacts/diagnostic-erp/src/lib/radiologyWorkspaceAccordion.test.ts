@@ -34,11 +34,12 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}"`);
     }
-    // Findings + Impression stay continuously visible on wide desktops;
-    // constrained / exclusive mode uses data-report-accordion="exclusive".
+    // Findings + Impression stay continuously visible on wide desktop; laptop
+    // uses exclusive one-active (`data-report-accordion` switches at runtime).
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toMatch(/data-report-accordion=\{exclusiveReportSections \? "exclusive" : "cockpit"\}/);
-    expect(workspace).toContain("continuous");
+    expect(workspace).toContain('data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}');
+    expect(workspace).toContain("exclusiveReportSections");
+    expect(workspace).toContain('{...(!exclusiveReportSections ? { continuous: true as const } : {})}');
     expect(workspace).toContain('focusClinicalEditor("findings")');
     expect(workspace).toContain('focusClinicalEditor("impression")');
   });
@@ -102,10 +103,15 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
 });
 
 describe("clicking the workspace collapses chrome, keeps OHIF", () => {
-  it("enters reporting focus from the accordion and from the viewer column", () => {
-    expect(workspace).toContain("onPointerDownCapture");
+  it("enters reporting vs viewer focus from the matching pane (pointer capture)", () => {
+    // Reporting canvas → reporting focus; OHIF column → viewer focus.
+    // onPointerDownCapture + shouldIgnorePaneFocusTarget avoid menu/dropdown thrash.
+    expect(workspace).toContain('data-pane-focus="reporting"');
+    expect(workspace).toContain('data-pane-focus="viewer"');
+    expect(workspace).toContain("onPointerDownCapture=");
     expect(workspace).toContain("enterReportingFocusMode()");
-    expect(workspace).toContain("enterViewerPaneFocus");
+    expect(workspace).toContain("enterViewerPaneFocus()");
+    expect(workspace).toContain("shouldIgnorePaneFocusTarget");
     expect(workspace).toContain('data-testid="embedded-viewer-column"');
   });
 
