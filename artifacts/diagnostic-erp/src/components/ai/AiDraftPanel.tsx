@@ -62,7 +62,10 @@ export function AiDraftPanel({
 
   const loadDraft = useCallback(() => {
     if (!studyInstanceUid) return;
-    aiClient.getDraft(studyInstanceUid, modality).then(setDraft).catch(() => setDraft(null));
+    aiClient
+      .getDraft(studyInstanceUid, modality)
+      .then((d) => setDraft(d))
+      .catch(() => setDraft(null));
   }, [studyInstanceUid, modality]);
 
   useEffect(() => {
@@ -103,12 +106,13 @@ export function AiDraftPanel({
   };
 
   const acceptAll = async () => {
-    if (!draft || draft.findings.length === 0) return;
+    const findings = draft?.findings ?? [];
+    if (!draft || findings.length === 0) return;
     const verb = composerReviewOnly || onStageProposal
-      ? `Stage all ${draft.findings.length} grounded finding(s) for Composer review? Apply still required.`
-      : `Insert all ${draft.findings.length} grounded finding(s) into the report? You can still edit them.`;
+      ? `Stage all ${findings.length} grounded finding(s) for Composer review? Apply still required.`
+      : `Insert all ${findings.length} grounded finding(s) into the report? You can still edit them.`;
     if (!window.confirm(verb)) return;
-    for (const f of draft.findings) if (!handled[f.key]) await act(f, "accept");
+    for (const f of findings) if (!handled[f.key]) await act(f, "accept");
   };
 
   const generate = async () => {
@@ -159,19 +163,29 @@ export function AiDraftPanel({
 
           {!draft && <div className="py-6 text-center text-neutral-400">No AI draft yet for this study.</div>}
 
-          {draft && (
+          {draft && (() => {
+            const findings = draft.findings ?? [];
+            const impression = draft.impression ?? [];
+            const provenance = draft.provenance ?? {
+              modelVersion: "unknown",
+              promptVersion: "unknown",
+              rulesVersion: "unknown",
+              degraded: false,
+              createdAt: "",
+            };
+            return (
             <>
               <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
                 {draft.degraded
                   ? <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-amber-800"><AlertTriangle size={11} /> degraded (deterministic-only)</span>
                   : <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-800"><ShieldCheck size={11} /> grounded</span>}
                 {draft.qualityScore != null && <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-neutral-600 dark:bg-neutral-800">quality {draft.qualityScore}</span>}
-                {draft.quarantinedCount > 0 && <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700">{draft.quarantinedCount} quarantined</span>}
+                {(draft.quarantinedCount ?? 0) > 0 && <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700">{draft.quarantinedCount} quarantined</span>}
               </div>
 
-              {draft.findings.length === 0 && <div className="py-3 text-center text-neutral-400">No grounded findings.</div>}
+              {findings.length === 0 && <div className="py-3 text-center text-neutral-400">No grounded findings.</div>}
 
-              {draft.findings.length > 0 && (
+              {findings.length > 0 && (
                 <div className="mb-2 flex justify-end">
                   <button onClick={acceptAll} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">
                     {composerReviewOnly || onStageProposal ? "Stage all for review" : "Accept all grounded"}
@@ -180,9 +194,10 @@ export function AiDraftPanel({
               )}
 
               <ul className="space-y-2">
-                {draft.findings.map((f) => {
+                {findings.map((f) => {
                   const status = handled[f.key];
-                  const conf = f.evidence.find((e) => e.confidence != null)?.confidence ?? null;
+                  const evidence = f.evidence ?? [];
+                  const conf = evidence.find((e) => e.confidence != null)?.confidence ?? null;
                   return (
                     <li key={f.key} className={`rounded border p-2 ${status ? "opacity-60" : ""} border-neutral-200 dark:border-neutral-700`}>
                       <div className="flex items-start justify-between gap-2">
@@ -191,12 +206,12 @@ export function AiDraftPanel({
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
                             {f.laterality && f.laterality !== "none" && <span className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{f.laterality}</span>}
                             {conf != null && <span className="rounded bg-indigo-50 px-1 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">conf {conf}</span>}
-                            {f.evidence.filter((e) => e.sopInstanceUid).map((e, i) => (
+                            {evidence.filter((e) => e.sopInstanceUid).map((e, i) => (
                               <span key={i} className="inline-flex items-center gap-0.5" title={`${e.seriesInstanceUid}/${e.sopInstanceUid} f${e.frameNumber ?? 1}`}>
                                 <ImageIcon size={11} /> img
                               </span>
                             ))}
-                            {f.evidence.filter((e) => e.measurementRef).map((e, i) => (
+                            {evidence.filter((e) => e.measurementRef).map((e, i) => (
                               <span key={`m${i}`} className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{e.measurementRef}</span>
                             ))}
                           </div>
@@ -216,20 +231,21 @@ export function AiDraftPanel({
                 })}
               </ul>
 
-              {draft.impression.length > 0 && (
+              {impression.length > 0 && (
                 <div className="mt-3">
                   <div className="mb-1 text-[11px] font-semibold uppercase text-neutral-400">Impression</div>
                   <ul className="list-disc pl-4 text-neutral-700 dark:text-neutral-200">
-                    {draft.impression.map((imp, i) => <li key={i}>{imp}</li>)}
+                    {impression.map((imp, i) => <li key={i}>{imp}</li>)}
                   </ul>
                 </div>
               )}
 
               <div className="mt-3 border-t pt-2 text-[10px] text-neutral-400">
-                model {draft.provenance.modelVersion} · prompt {draft.provenance.promptVersion} · rules {draft.provenance.rulesVersion}
+                model {provenance.modelVersion} · prompt {provenance.promptVersion} · rules {provenance.rulesVersion}
               </div>
             </>
-          )}
+            );
+          })()}
         </div>
       )}
     </div>

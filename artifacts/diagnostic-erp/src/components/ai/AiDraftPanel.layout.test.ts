@@ -32,4 +32,9 @@ describe("AI Draft placement in reporting workspace", () => {
     expect(src).not.toMatch(/<AiDraftPanel[\s\S]*?composerReviewOnly/);
     expect(src).not.toContain('fixed bottom-4 right-4');
   });
+
+  it("Reporting Tools AI pane is isolated so a draft crash cannot blank the workspace", () => {
+    const src = read("pages/RadiologyReportingWorkspace.tsx");
+    expect(src).toMatch(/ai:\s*\(\s*<ModuleErrorBoundary[\s\S]*?<CopilotRail/);
+  });
 });
