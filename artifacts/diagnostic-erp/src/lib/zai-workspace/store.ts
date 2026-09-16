@@ -123,6 +123,30 @@ import {
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline } from "./fullReportBaseline";
 
+// #region agent log
+function agentDebugLog(
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  try {
+    const proc = (globalThis as {
+      process?: { getBuiltinModule?: (id: string) => unknown };
+    }).process;
+    const fs = proc?.getBuiltinModule?.("fs") as
+      | { appendFileSync: (path: string, data: string) => void }
+      | undefined;
+    fs?.appendFileSync(
+      "/opt/cursor/logs/debug.log",
+      `${JSON.stringify({ hypothesisId, location, message, data, timestamp: Date.now() })}\n`,
+    );
+  } catch {
+    // Debug evidence must never affect reporting behavior.
+  }
+}
+// #endregion
+
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
 }
@@ -1066,6 +1090,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     const templates = opts.templates ?? opts.incoming;
     const draftId = opts.id ?? `patch_${Date.now().toString(36)}`;
+    // #region agent log
+    agentDebugLog("A,B,C", "store.ts:applyPathologyOverlay:entry", "overlay entry", {
+      id: draftId,
+      concept: opts.concept ?? opts.ownership.concept ?? null,
+      level: opts.level ?? opts.ownership.level ?? null,
+      patches: get().appliedPathologyPatches.map((p) => ({
+        id: p.id,
+        concept: p.observation?.concept,
+        level: p.observation?.level,
+        role: p.observation?.role,
+        stale: Boolean(p.stale),
+        hasFindings: Boolean(p.lastRendered.findings?.trim()),
+      })),
+    });
+    // #endregion
     let observation = observationFromPending(
       { ...opts, id: draftId },
       get().reportingContext.region,
@@ -1107,6 +1146,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // than inventing a generic replacement. Protected/manual text never
         // yields and therefore never enters the suspended state.
         if (yieldResult.outcome === "removed") {
+          // #region agent log
+          agentDebugLog("D,E", "store.ts:applyPathologyOverlay:yield", "system normal yielded", {
+            outcome: yieldResult.outcome,
+            templateLength: systemNormal.templates.impression?.length ?? 0,
+            lastRenderedLength: systemNormal.lastRendered.impression?.length ?? 0,
+            nextImpressionLength: yieldResult.narrative.impression.length,
+          });
+          // #endregion
           set({
             impressionText: yieldResult.narrative.impression,
             findingsText: yieldResult.narrative.findings,
@@ -1144,6 +1191,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       contributionIsManual,
       force: opts.force,
     });
+
+    // #region agent log
+    agentDebugLog("A,B", "store.ts:applyPathologyOverlay:plan", "same-slot plan", {
+      id: draftId,
+      slotKey: observation.slotKey,
+      action: plan.action,
+      siblings: slotSiblings.map((s) => ({
+        id: s.id,
+        slotKey: s.observation.slotKey,
+        role: s.observation.role,
+        stale: get().appliedPathologyPatches.find((p) => p.id === s.id)?.stale ?? false,
+      })),
+    });
+    // #endregion
 
     if (plan.action === "noop") {
       // Exact re-click: focus existing observation, no duplicate row.
@@ -1253,6 +1314,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       source: opts.source,
       force: opts.force || (plan.action === "update" && !needsSlotConfirm),
     });
+    // #region agent log
+    agentDebugLog("A,C", "store.ts:applyPathologyOverlay:overlay", "overlay replacement result", {
+      id: draftId,
+      concept: observation.concept,
+      level: observation.level,
+      baselineReplacesLength: observation.baselineReplaces.length,
+      replacedCount: result.replacedSentences.length,
+      replacedOwners: result.replacedSentences.map((sentence) =>
+        get().appliedPathologyPatches
+          .filter((p) => contributionPresent(sentence, p.lastRendered.findings))
+          .map((p) => ({
+            id: p.id,
+            concept: p.observation?.concept,
+            level: p.observation?.level,
+            role: p.observation?.role,
+          }))),
+    });
+    // #endregion
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
@@ -1335,6 +1414,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         result.provenance.impression,
       ),
     });
+    // #region agent log
+    agentDebugLog("A,B,C", "store.ts:applyPathologyOverlay:exit", "overlay applied", {
+      id: stableId,
+      replacedFindingsCount: replaced.findings.length,
+      patchPresence: nextPatches
+        .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
+        .map((p) => ({
+          id: p.id,
+          concept: p.observation?.concept,
+          level: p.observation?.level,
+          present: contributionPresent(result.narrative.findings, p.lastRendered.findings),
+        })),
+    });
+    // #endregion
     return "applied";
   },
   applyMacroBundle: (opts) => {
@@ -1513,6 +1606,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   seedSystemNormalImpression: () => {
+    // #region agent log
+    agentDebugLog("D,E", "store.ts:seedSystemNormalImpression:entry", "normal seed evaluated", {
+      abnormal: hasImpressionworthyAbnormal(get().appliedPathologyPatches),
+      manual: impressionHasManualContribution(get().fieldProvenance.impression),
+      finalized: get().isFinalized,
+      existing: (() => {
+        const patch = findSystemNormalPatch(get().appliedPathologyPatches);
+        return patch
+          ? {
+              templateLength: patch.templates.impression?.length ?? 0,
+              lastRenderedLength: patch.lastRendered.impression?.length ?? 0,
+            }
+          : null;
+      })(),
+    });
+    // #endregion
     // Safety: never seed when impression-worthy abnormal observations exist.
     if (hasImpressionworthyAbnormal(get().appliedPathologyPatches)) return;
     // Safety: never seed when the radiologist has manually owned impression.
@@ -1923,6 +2032,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           && candidate.observation?.role === "baseline"
           && observationsMutuallyExclusive(candidate.observation, patch.observation!))
       : undefined;
+    // #region agent log
+    agentDebugLog("C,D,E", "store.ts:removeObservation:result", "observation removal evaluated", {
+      id,
+      concept: patch.observation?.concept,
+      outcome: result.outcome,
+      suspendedBaselineId: suspendedBaseline?.id ?? null,
+      suspendedTemplateFindingsLength: suspendedBaseline?.templates.findings?.length ?? 0,
+      resultImpressionLength: result.narrative.impression.length,
+      remaining: nextPatches.map((p) => ({
+        id: p.id,
+        concept: p.observation?.concept,
+        role: p.observation?.role,
+        stale: Boolean(p.stale),
+      })),
+    });
+    // #endregion
     if (suspendedBaseline && result.outcome === "removed") {
       nextPatches = nextPatches.map((candidate) =>
         candidate.id === suspendedBaseline.id
@@ -1987,7 +2112,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       && !get().isFinalized
     ) {
       const remainingPatches = get().appliedPathologyPatches;
-      if (!hasImpressionworthyAbnormal(remainingPatches)) {
+      const remainingAbnormal = hasImpressionworthyAbnormal(remainingPatches);
+      // #region agent log
+      agentDebugLog("D,E", "store.ts:removeObservation:auto-return", "normal auto-return decision", {
+        id,
+        remainingAbnormal,
+        candidates: remainingPatches
+          .filter((p) => isImpressionworthyAbnormal(p.observation?.concept ?? null))
+          .map((p) => ({
+            id: p.id,
+            concept: p.observation?.concept,
+            role: p.observation?.role,
+            stale: Boolean(p.stale),
+          })),
+      });
+      // #endregion
+      if (!remainingAbnormal) {
         get().seedSystemNormalImpression();
       }
     }
