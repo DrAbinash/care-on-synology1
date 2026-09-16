@@ -83,6 +83,13 @@ import {
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
 import {
+  CLINICAL_UNDO_DEPTH,
+  pushClinicalUndoSnapshot,
+  popClinicalUndoSnapshot,
+  topClinicalUndoSnapshot,
+} from "./clinicalUndo";
+import type { StartingCanvasBaseline } from "./startingCanvasHighlight";
+import {
   defaultImpressionFromFindings,
   observationSlotKey,
 } from "@/lib/findingComposerModel";
@@ -121,7 +128,7 @@ import {
   COVERAGE_ENVELOPE_KEY,
 } from "@/lib/coverageMarks";
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
-import { materializeFormatBaseline } from "./fullReportBaseline";
+import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -185,6 +192,9 @@ export type PendingPathologyPatch = {
    * or cancel can remap evidence (measurements / key images) onto the survivor.
    */
   vacatedObservationId?: string;
+  force?: boolean;
+  /** When true, do not push a clinical Undo frame (used by bundle wrappers). */
+  skipUndoSnapshot?: boolean;
 };
 
 type PatchSnapshot = {
@@ -199,7 +209,36 @@ type PatchSnapshot = {
   voiceComposerTranscriptHistory: string[];
   appliedFormatName?: string | null;
   appliedFormatReportTitle?: string | null;
+  startingCanvasBaseline?: StartingCanvasBaseline | null;
 };
+
+const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
+
+function captureClinicalSnapshot(s: S): PatchSnapshot {
+  return {
+    clinicalHistoryText: s.clinicalHistoryText,
+    techniqueText: s.techniqueText,
+    findingsText: s.findingsText,
+    impressionText: s.impressionText,
+    recommendationText: s.recommendationText,
+    fieldProvenance: { ...s.fieldProvenance },
+    appliedPathologyPatches: s.appliedPathologyPatches.map((p) => ({ ...p })),
+    voiceComposerObservations: [...s.voiceComposerObservations],
+    voiceComposerTranscriptHistory: [...s.voiceComposerTranscriptHistory],
+    appliedFormatName: s.appliedFormatName,
+    appliedFormatReportTitle: s.appliedFormatReportTitle,
+    startingCanvasBaseline: s.startingCanvasBaseline ?? null,
+  };
+}
+
+function withPushedClinicalUndo(s: S, snap: PatchSnapshot): Pick<S, "patchUndoStack" | "lastPatchSnapshot"> {
+  const patchUndoStack = pushClinicalUndoSnapshot(s.patchUndoStack, snap, CLINICAL_UNDO_MAX);
+  return {
+    patchUndoStack,
+    lastPatchSnapshot: topClinicalUndoSnapshot(patchUndoStack),
+  };
+}
+
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
   return {
@@ -339,6 +378,10 @@ interface S {
   pendingFormatRegion: string | null;
   pendingPathologyPatch: PendingPathologyPatch | null;
   lastPatchSnapshot: PatchSnapshot | null;
+  /** Bounded clinical Undo stack (~5 radiologist actions). */
+  patchUndoStack: PatchSnapshot[];
+  /** Starting Canvas reference for workspace-only change highlighting. */
+  startingCanvasBaseline: StartingCanvasBaseline | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
   impressionNeedsRefresh: boolean;
   /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
@@ -547,7 +590,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
-  pendingPathologyPatch: null, lastPatchSnapshot: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
@@ -586,7 +629,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, lastPatchSnapshot: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, opts) => {
     const key = fieldTextKey(f);
@@ -927,19 +970,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (fs.length === 1) {
       const f = fs[0]!;
       const clinical = clinicalFieldsFromFormat(f);
-      const formatSnapshot: PatchSnapshot = {
-        clinicalHistoryText: get().clinicalHistoryText,
-        techniqueText: get().techniqueText,
-        findingsText: get().findingsText,
-        impressionText: get().impressionText,
-        recommendationText: get().recommendationText,
-        fieldProvenance: { ...get().fieldProvenance },
-        appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-        voiceComposerObservations: [...get().voiceComposerObservations],
-        voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-        appliedFormatName: get().appliedFormatName,
-        appliedFormatReportTitle: get().appliedFormatReportTitle,
-      };
+      const formatSnapshot = captureClinicalSnapshot(get());
       // Content first, then region — format technique wins over region protocol sync.
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
       get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
@@ -985,9 +1016,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatRegion: null,
         reportFormatPickerOpen: false,
         appliedPathologyPatches: [...stalePatches, ...baselinePatches],
-        lastPatchSnapshot: formatSnapshot,
+        ...withPushedClinicalUndo(get(), formatSnapshot),
         appliedFormatReportTitle: clinical.reportTitle || null,
         appliedFormatName: f.name || null,
+        startingCanvasBaseline: {
+          formatName: f.name || "",
+          formatRevision: f.baselineManifest?.revision ?? reportFormatRevision(f),
+          findings: clinical.findings,
+          impression: clinical.impression,
+          appliedAt: new Date().toISOString(),
+        },
       });
       // Reporting context only — never mutate DICOM / ERP identity fields.
       if (pendingRegion) {
@@ -1180,17 +1218,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     const ownership = ownershipFromObservation(observation);
 
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
 
     const dropIds = new Set<string>([stableId]);
     if (plan.action === "update") {
@@ -1290,7 +1318,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         recommendationText: result.narrative.recommendation,
         fieldProvenance: result.provenance,
         isDirty: true,
-        lastPatchSnapshot: snap,
+        ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack } : withPushedClinicalUndo(get(), snap)),
         appliedPathologyPatches: nextPatches,
         structuredViewerMeasurements: nextMeasurements,
         ownershipReviewWarnings,
@@ -1324,7 +1352,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: result.narrative.recommendation,
       fieldProvenance: result.provenance,
       isDirty: true,
-      lastPatchSnapshot: snap,
+      ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack } : withPushedClinicalUndo(get(), snap)),
       appliedPathologyPatches: nextPatches,
       structuredViewerMeasurements: nextMeasurements,
       ownershipReviewWarnings,
@@ -1340,17 +1368,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   applyMacroBundle: (opts) => {
     const bundleId = opts.bundleId || `bundle_${Date.now().toString(36)}`;
     let status: "applied" | "pending" = "applied";
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     for (const obs of opts.observations) {
       // Severity/level-block updates should reuse an existing same-slot id so QS
       // selection and linked measurements stay on the original observation.
@@ -1365,10 +1383,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         probe,
       );
       const id = siblings[0]?.id ?? fallbackId;
-      const r = get().applyPathologyOverlay({ ...obs, bundleId, id });
+      const r = get().applyPathologyOverlay({ ...obs, bundleId, id, skipUndoSnapshot: true });
       if (r === "pending") status = "pending";
     }
-    set({ lastPatchSnapshot: snap });
+    set({ ...withPushedClinicalUndo(get(), snap) });
     return status;
   },
   /**
@@ -1395,17 +1413,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   applyMultiLevelSpine: (opts) => {
     const bundleId = opts.bundleId || `spine-bundle_${Date.now().toString(36)}`;
     let status: "applied" | "pending" = "applied";
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     for (const entry of opts.levels) {
       if (!entry.level || !entry.concept || !entry.findingsText.trim()) continue;
       const id = `${bundleId}-${entry.concept}-${entry.level}`;
@@ -1435,10 +1443,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         bundleId,
         supportsLaterality: Boolean(entry.laterality),
         properties: entry.laterality ? "side" : undefined,
+        skipUndoSnapshot: true,
       });
       if (r === "pending") status = "pending";
     }
-    set({ lastPatchSnapshot: snap });
+    set({ ...withPushedClinicalUndo(get(), snap) });
     return status;
   },
   /**
@@ -1455,17 +1464,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const bundle = all.filter((p) => (p.observation?.bundleId ?? "") === id);
     if (bundle.length === 0) return "missing";
     const others = all.filter((p) => (p.observation?.bundleId ?? "") !== id);
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: all.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     let anyRemoved = false;
     let anyPreserved = false;
     for (const patch of bundle) {
@@ -1483,7 +1482,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       if (outcome === "preserved-manual") anyPreserved = true;
       if (outcome === "removed") anyRemoved = true;
     }
-    set({ lastPatchSnapshot: snap, isDirty: true });
+    set({ ...withPushedClinicalUndo(get(), snap), isDirty: true });
     if (anyPreserved && !anyRemoved) return "preserved-manual";
     if (anyRemoved) return "removed";
     return "no-op-unproven";
@@ -1825,17 +1824,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
 
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
 
     const currentImp = (patch.lastRendered.impression ?? patch.templates.impression ?? "").trim();
     let nextTemplates = { ...patch.templates };
@@ -1884,7 +1873,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     );
 
     set({
-      lastPatchSnapshot: snap,
+      ...withPushedClinicalUndo(get(), snap),
       appliedPathologyPatches: nextPatches,
       impressionText: nextImpressionText,
       fieldProvenance: nextProv,
@@ -1900,17 +1889,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
     const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
     let nextMs = get().structuredViewerMeasurements;
     if (remapTo) {
@@ -1962,7 +1941,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         ? (remapTo || null)
         : get().selectedObservationId,
       structuredViewerMeasurements: nextMs,
-      lastPatchSnapshot: snap,
+      ...withPushedClinicalUndo(get(), snap),
       isDirty: true,
     });
     if (typeof window !== "undefined") {
@@ -1997,8 +1976,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return result.outcome;
   },
   undoLastPatch: () => {
-    const snap = get().lastPatchSnapshot;
-    if (!snap) return false;
+    const popped = popClinicalUndoSnapshot(get().patchUndoStack);
+    if (!popped) return false;
+    const { snapshot: snap, remaining } = popped;
     set({
       clinicalHistoryText: snap.clinicalHistoryText,
       techniqueText: snap.techniqueText,
@@ -2015,23 +1995,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...(snap.appliedFormatReportTitle !== undefined
         ? { appliedFormatReportTitle: snap.appliedFormatReportTitle }
         : {}),
-      lastPatchSnapshot: null,
+      ...(snap.startingCanvasBaseline !== undefined
+        ? { startingCanvasBaseline: snap.startingCanvasBaseline ?? null }
+        : {}),
+      patchUndoStack: remaining,
+      lastPatchSnapshot: topClinicalUndoSnapshot(remaining),
       isDirty: true,
     });
     return true;
   },
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     const result = applyChangePlan({
       narrative: narrativeFromState(get()),
       provenance: get().fieldProvenance,
@@ -2102,7 +2076,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }),
       appliedPathologyPatches: kept,
       isDirty: true,
-      lastPatchSnapshot: snap,
+      ...withPushedClinicalUndo(get(), snap),
       voiceComposerObservations: result.activeObservations ?? [],
       voiceComposerTranscriptHistory: transcript
         ? [...get().voiceComposerTranscriptHistory, transcript]
@@ -2134,11 +2108,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         findingsText: obs.findingsText,
         id: voiceId,
         force: opts?.force,
+        skipUndoSnapshot: true,
       });
     }
     // Restore the voice plan's pre-apply snapshot so undo restores the
     // state BEFORE the voice plan was applied.
-    set({ lastPatchSnapshot: snap });
+    set({ ...withPushedClinicalUndo(get(), snap) });
     return "applied";
   },
   applyAiComposerAccepted: (opts) => {
@@ -2169,17 +2144,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     //
     // This is the SAFEST non-destructive strategy: clinical truth is preserved,
     // AI wording is applied as presentation, and the radiologist has the final say.
-    const snap: PatchSnapshot = {
-      clinicalHistoryText: get().clinicalHistoryText,
-      techniqueText: get().techniqueText,
-      findingsText: get().findingsText,
-      impressionText: get().impressionText,
-      recommendationText: get().recommendationText,
-      fieldProvenance: { ...get().fieldProvenance },
-      appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
-      voiceComposerObservations: [...get().voiceComposerObservations],
-      voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
-    };
+    const snap = captureClinicalSnapshot(get());
     const markField = (field: "findings" | "impression" | "recommendation", text: string): FieldProvenanceMap => {
       const map: FieldProvenanceMap = { ...(get().fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE) };
       for (const sent of text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)) {
@@ -2201,7 +2166,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         recommendation: markField("recommendation", opts.recommendation),
       },
       isDirty: true,
-      lastPatchSnapshot: snap,
+      ...withPushedClinicalUndo(get(), snap),
     });
     return "applied";
   },
@@ -2286,6 +2251,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       reportFormatPickerOpen: false,
       appliedPathologyPatches: [],
       lastPatchSnapshot: null,
+      patchUndoStack: [],
       impressionNeedsRefresh: false,
       appliedFormatReportTitle:
         r.combinedReportTitle

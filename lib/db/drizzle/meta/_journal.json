@@ -99,6 +99,13 @@
       "when": 1782705414052,
       "tag": "0013_ohif_lan_https_hostname",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1782705414053,
+      "tag": "0014_baseline_manifest",
+      "breakpoints": true
     }
   ]
 }

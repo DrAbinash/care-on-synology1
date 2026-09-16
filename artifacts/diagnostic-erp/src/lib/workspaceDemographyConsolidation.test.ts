@@ -99,6 +99,9 @@ describe("Provenance visualization — editor + screen-only preview", () => {
     expect(previewHtml).toContain("preview-provenance-legend");
     expect(previewHtml).toContain("@media print");
     expect(previewHtml).toContain("preview only — not printed");
+    expect(previewHtml).toMatch(
+      /@media print[\s\S]*\.preview-provenance-legend[\s\S]*display:\s*none\s*!important/,
+    );
   });
 });
 

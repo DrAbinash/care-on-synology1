@@ -514,9 +514,11 @@ describe("Abnormal selection highlight (display-only)", () => {
       join(__dirname, "../components/radiology/zai-workspace/findings-editor.tsx"),
       "utf8",
     );
-    expect(src).toMatch(/abnormal-highlight-overlay/);
-    expect(src).toMatch(/data-editor-only="abnormal-highlight"/);
+    expect(src).toMatch(/abnormal-highlight-overlay|canvas-change-overlay/);
+    expect(src).toMatch(/data-editor-only=\{[^}]*"abnormal-highlight"|data-editor-only=\{[^}]*"canvas-change"/);
+    expect(src).toMatch(/FindingsHighlightEditor technique|col-start-1 row-start-1/);
     expect(src).toMatch(/transientHighlight/);
+    expect(src).toMatch(/data-editor-only/);
   });
 });
 

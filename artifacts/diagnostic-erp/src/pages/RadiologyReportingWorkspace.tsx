@@ -417,6 +417,7 @@ import {
   resolveNormalBootstrapFormat,
 } from "@/lib/zai-workspace/normalBootstrap";
 import { reportFormatRevision } from "@/lib/zai-workspace/fullReportBaseline";
+import { reconstructStartingCanvasBaseline } from "@/lib/zai-workspace/startingCanvasHighlight";
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { MacroEditorDialog } from "@/components/radiology/zai-workspace/macro-editor-dialog";
 import { MacroPromptPopover } from "@/components/radiology/zai-workspace/macro-prompt-popover";
@@ -2598,12 +2599,26 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       // "applied format" label so save → close → reopen keeps its baseline.
       const formatIdentity = extractCareReportFormatIdentity(draft.structuredJson);
       if (formatIdentity?.name) {
+        const format = useWorkspace.getState().reportFormats.find((f) => f.name === formatIdentity.name);
+        const canvas = reconstructStartingCanvasBaseline({
+          formatName: formatIdentity.name,
+          formatRevision: formatIdentity.formatRevision,
+          baselineManifestRevision: formatIdentity.baselineManifestRevision,
+          appliedAt: formatIdentity.appliedAt,
+          format,
+          reportFormatRevision,
+        });
         useWorkspace.setState({
           appliedFormatName: formatIdentity.name,
           appliedFormatReportTitle: formatIdentity.reportTitle ?? null,
+          startingCanvasBaseline: canvas,
         });
       } else if (useWorkspace.getState().appliedFormatName) {
-        useWorkspace.setState({ appliedFormatName: null, appliedFormatReportTitle: null });
+        useWorkspace.setState({
+          appliedFormatName: null,
+          appliedFormatReportTitle: null,
+          startingCanvasBaseline: null,
+        });
       }
       if (hydrated.warning) {
         toast({
@@ -2793,9 +2808,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
               name: ws.appliedFormatName,
               reportTitle: ws.appliedFormatReportTitle,
               formatId: format?.id,
-              formatRevision: format ? reportFormatRevision(format) : undefined,
+              formatRevision:
+                ws.startingCanvasBaseline?.formatRevision
+                ?? (format ? reportFormatRevision(format) : undefined),
               baselineManifestVersion: format?.baselineManifest?.version,
-              baselineManifestRevision: format?.baselineManifest?.revision,
+              baselineManifestRevision:
+                format?.baselineManifest?.revision
+                ?? ws.startingCanvasBaseline?.formatRevision
+                ?? undefined,
             });
           })(),
         } as any),

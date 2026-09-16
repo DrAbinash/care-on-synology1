@@ -69,6 +69,9 @@ export const radiologySnippetsTable = pgTable(
     expansionText: text("expansion_text"),
     // full expansion text for macro type
 
+    // ── Report-format owned baseline contract (JSON text; null = legacy) ──
+    baselineManifest: text("baseline_manifest"),
+
     // ── Ownership & lifecycle ──
     isActive: boolean("is_active").notNull().default(true),
     isDefault: boolean("is_default").notNull().default(false),

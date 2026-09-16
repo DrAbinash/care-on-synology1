@@ -12,10 +12,31 @@ import { radiologySnippetsTable } from "@workspace/db/schema";
 import { eq, and, or, desc, asc, sql, ilike } from "drizzle-orm";
 import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { z } from "zod";
+import { validateBaselineManifestForPersistence } from "../lib/baselineManifestValidation";
 
 export const radiologyReportFormatsRouter: IRouter = Router();
 
 const REPORT_FORMAT_TYPE = "report_format";
+
+const baselineManifestObservationSchema = z.object({
+  id: z.string().min(1).max(120),
+  field: z.enum(["findings", "impression"]),
+  concept: z.string().min(1).max(120),
+  conflictGroup: z.string().min(1).max(120),
+  anatomicalSection: z.string().max(200),
+  level: z.string().max(80).optional(),
+  laterality: z.string().max(40).optional(),
+  /** Optional anatomical region override (Whole Spine regional ownership). */
+  region: z.string().max(100).optional(),
+  renderedText: z.string().min(1).max(4000),
+});
+
+const baselineManifestSchema = z.object({
+  kind: z.string().min(1).max(120),
+  version: z.union([z.number(), z.string()]),
+  revision: z.string().min(1).max(200),
+  observations: z.array(baselineManifestObservationSchema).max(500),
+});
 
 const formatBodySchema = z.object({
   name: z.string().min(1).max(200),
@@ -32,7 +53,32 @@ const formatBodySchema = z.object({
   isCommon: z.boolean().optional().default(false),
   isActive: z.boolean().optional().default(true),
   isGlobal: z.boolean().optional().default(false),
+  /** Optional owned normal contract — absent remains valid for legacy formats. */
+  baselineManifest: baselineManifestSchema.nullish(),
 });
+
+function assertBaselineManifestOrReject(
+  res: { status: (code: number) => { json: (body: unknown) => void } },
+  d: {
+    findings?: string;
+    impression?: string;
+    bodyPart?: string;
+    baselineManifest?: unknown;
+  },
+): boolean {
+  const validation = validateBaselineManifestForPersistence({
+    findings: d.findings,
+    impression: d.impression,
+    defaultRegion: d.bodyPart,
+    baselineManifest: (d.baselineManifest ?? null) as never,
+  });
+  if (validation.ok) return true;
+  res.status(validation.status).json({
+    error: validation.reason,
+    details: validation.details,
+  });
+  return false;
+}
 
 const migrateSchema = z.object({
   formats: z.array(formatBodySchema).max(200),
@@ -47,6 +93,16 @@ function staffIdentity(req: unknown): { id: number | null; name: string } {
 }
 
 function rowToFormat(row: typeof radiologySnippetsTable.$inferSelect) {
+  let baselineManifest: unknown = undefined;
+  const rawManifest = row.baselineManifest || row.expansionText;
+  if (rawManifest) {
+    try {
+      const parsed = JSON.parse(rawManifest);
+      if (parsed && typeof parsed === "object" && parsed.kind) baselineManifest = parsed;
+    } catch {
+      /* expansionText may hold unrelated macro data historically — ignore */
+    }
+  }
   return {
     id: String(row.id),
     name: row.label,
@@ -69,6 +125,7 @@ function rowToFormat(row: typeof radiologySnippetsTable.$inferSelect) {
     createdByName: row.createdByName,
     createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
     updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
+    ...(baselineManifest ? { baselineManifest } : {}),
   };
 }
 
@@ -137,6 +194,7 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
     return;
   }
   const d = parsed.data;
+  if (!assertBaselineManifestOrReject(res, d)) return;
   const [row] = await db
     .insert(radiologySnippetsTable)
     .values({
@@ -156,6 +214,8 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
       isActive: d.isActive,
       isGlobal: d.isGlobal,
       isPartialSection: false,
+      // Owned baseline contract → radiology_snippets.baseline_manifest (migration 0014).
+      baselineManifest: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null,
       createdById: staff.id,
       createdByName: staff.name,
     })
@@ -200,6 +260,7 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
   const created: ReturnType<typeof rowToFormat>[] = [];
 
   for (const f of parsed.data.formats) {
+    if (!assertBaselineManifestOrReject(res, f)) return;
     const key = formatDedupeKey(f.name, f.modality, f.bodyPart);
     if (seen.has(key)) {
       skipped += 1;
@@ -224,6 +285,7 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
         isActive: true,
         isGlobal: false,
         isPartialSection: false,
+        baselineManifest: f.baselineManifest ? JSON.stringify(f.baselineManifest) : null,
         createdById: staff.id,
         createdByName: staff.name,
       })
@@ -283,6 +345,18 @@ radiologyReportFormatsRouter.put("/:id", async (req, res) => {
     return;
   }
   const d = parsed.data;
+  const findingsForValidation = d.findings ?? existing.findingsText ?? "";
+  const impressionForValidation = d.impression ?? existing.impressionText ?? "";
+  if (
+    d.baselineManifest !== undefined
+    && !assertBaselineManifestOrReject(res, {
+      findings: findingsForValidation,
+      impression: impressionForValidation,
+      baselineManifest: d.baselineManifest,
+    })
+  ) {
+    return;
+  }
   const [row] = await db
     .update(radiologySnippetsTable)
     .set({
@@ -300,6 +374,9 @@ radiologyReportFormatsRouter.put("/:id", async (req, res) => {
       ...(d.isCommon !== undefined ? { isDefault: d.isCommon } : {}),
       ...(d.isActive !== undefined ? { isActive: d.isActive } : {}),
       ...(d.isGlobal !== undefined ? { isGlobal: d.isGlobal } : {}),
+      ...(d.baselineManifest !== undefined
+        ? { baselineManifest: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null }
+        : {}),
       updatedAt: new Date(),
     })
     .where(eq(radiologySnippetsTable.id, id))

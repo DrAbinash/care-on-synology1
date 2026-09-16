@@ -86,5 +86,8 @@ describe("radiologyReportPrintLiveMerge", () => {
     expect(out).toContain("Format A");
     expect(out).toContain("prov-template-a");
     expect(out).toContain("@media print");
+    expect(out).toMatch(
+      /@media print[\s\S]*\.preview-provenance-legend[\s\S]*display:\s*none\s*!important/,
+    );
   });
 });

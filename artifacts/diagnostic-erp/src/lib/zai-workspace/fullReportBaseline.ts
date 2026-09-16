@@ -4,13 +4,60 @@ import {
   SYSTEM_NORMAL_CONCEPT,
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
+import {
+  validateBaselineManifestStructure,
+} from "@workspace/baseline-manifest";
 import type {
   BaselineManifest,
   BaselineManifestObservation,
   ReportFormat,
 } from "./types";
+import {
+  ownedBaselineCatalog,
+  SCREENING_LIMITATION_CONCEPT,
+} from "./baselines";
 
-export const FULL_REPORT_BASELINE_KIND = "care.full_report_baseline.v1" as const;
+export { FULL_REPORT_BASELINE_KIND } from "./baselineKind";
+import { FULL_REPORT_BASELINE_KIND } from "./baselineKind";
+
+export {
+  ownedBaselineCatalog,
+  SCREENING_LIMITATION_CONCEPT,
+  SCREENING_LIMITATION_TEXT,
+  MRI_BRAIN_STANDARD_NORMAL_NAME,
+  MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
+  MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
+  MRI_BRAIN_STANDARD_NORMAL_MANIFEST,
+  MRI_BRAIN_SCREENING_NORMAL_NAME,
+  MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
+  MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
+  MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
+  MRI_CERVICAL_STANDARD_NORMAL_NAME,
+  MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
+  MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  MRI_CERVICAL_SCREENING_NORMAL_NAME,
+  MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
+  MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
+  MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
+  MRI_KNEE_STANDARD_NORMAL_NAME,
+  MRI_KNEE_STANDARD_NORMAL_FINDINGS,
+  MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
+  MRI_KNEE_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSAL_SCREENING_NORMAL_NAME,
+  MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
+  MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
+  MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
+  MRI_LS_SCREENING_NORMAL_NAME,
+  MRI_LS_SCREENING_NORMAL_FINDINGS,
+  MRI_LS_SCREENING_NORMAL_IMPRESSION,
+  MRI_LS_SCREENING_NORMAL_MANIFEST,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
+} from "./baselines";
+
 export const MRI_LS_SPINE_STANDARD_NORMAL_NAME = "MRI LS Spine — Standard Normal";
 
 const LS_LEVELS = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"] as const;
@@ -218,22 +265,61 @@ export type BaselineManifestValidation = {
   duplicateSlots: string[];
 };
 
-/** Fail closed: ownership is materialized only when every exact contribution exists. */
+/**
+ * Domain materialize gate for owned baselines.
+ *
+ * Shared structural + ownership-slot invariants come from
+ * `@workspace/baseline-manifest` (same as API persistence). This function then
+ * runs concept-canon-aware `buildCanonicalObservation` slotKeys so materialize
+ * fails closed if aliases collapse onto one runtime slot.
+ */
 export function validateBaselineManifest(
-  format: Pick<ReportFormat, "findings" | "impression" | "baselineManifest">,
+  format: Pick<ReportFormat, "findings" | "impression" | "baselineManifest"> &
+    Partial<Pick<ReportFormat, "bodyPart">>,
+  region?: string,
 ): BaselineManifestValidation {
   const manifest = format.baselineManifest;
-  if (!manifest || manifest.kind !== FULL_REPORT_BASELINE_KIND || manifest.version !== 1) {
+  if (!manifest) {
     return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
   }
-  const missing: string[] = [];
+
+  const effectiveRegion = region ?? format.bodyPart ?? "LS Spine";
+  const structural = validateBaselineManifestStructure({
+    findings: format.findings,
+    impression: format.impression,
+    defaultRegion: effectiveRegion,
+    baselineManifest: manifest,
+  });
+
+  if (!structural.ok) {
+    if (structural.unsupported || /kind|version|revision|observations must/i.test(structural.reason)) {
+      return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
+    }
+    const missing: string[] = [];
+    const duplicateSlots: string[] = [];
+    for (const detail of structural.details) {
+      const m = detail.match(/^observations\[(\d+)\]/);
+      const idx = m ? Number(m[1]) : -1;
+      const id =
+        idx >= 0 && Array.isArray(manifest.observations)
+          ? String(manifest.observations[idx]?.id ?? `index:${idx}`)
+          : detail;
+      if (/duplicate ownership slot/i.test(detail)) duplicateSlots.push(id);
+      else if (/renderedText missing/i.test(detail)) missing.push(id);
+      else missing.push(id);
+    }
+    if (!missing.length && !duplicateSlots.length) {
+      return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
+    }
+    return { ok: false, missing, duplicateSlots };
+  }
+
+  // Canon-aware materialize: catch alias collapse the structural raw-concept key misses.
   const slots = new Set<string>();
   const duplicateSlots: string[] = [];
   for (const entry of manifest.observations) {
-    const fieldText = entry.field === "findings" ? format.findings : format.impression;
-    if (!fieldText.includes(entry.renderedText)) missing.push(entry.id);
     const observation = buildCanonicalObservation({
-      region: "LS Spine",
+      region: entry.region?.trim() || effectiveRegion,
       concept: entry.concept,
       conflictGroup: entry.conflictGroup,
       anatomicalSection: entry.anatomicalSection,
@@ -241,12 +327,19 @@ export function validateBaselineManifest(
       level: entry.level,
       laterality: entry.laterality,
     });
-    // The one report-normal impression is intentionally a separate global slot.
     if (slots.has(observation.slotKey)) duplicateSlots.push(entry.id);
     slots.add(observation.slotKey);
   }
-  return { ok: missing.length === 0 && duplicateSlots.length === 0, missing, duplicateSlots };
+  return { ok: duplicateSlots.length === 0, missing: [], duplicateSlots };
 }
+
+const BUILTIN_OWNED_BY_NAME = new Map<string, { bodyPart: string; manifest: BaselineManifest }>([
+  [MRI_LS_SPINE_STANDARD_NORMAL_NAME, { bodyPart: "LS Spine", manifest: MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST }],
+  ...ownedBaselineCatalog().map((entry) => [
+    entry.name,
+    { bodyPart: entry.bodyPart, manifest: entry.manifest },
+  ] as const),
+]);
 
 /** Attach the curated built-in manifest to its server-hydrated copy. */
 export function baselineManifestForFormat(
@@ -254,28 +347,29 @@ export function baselineManifestForFormat(
     Partial<Pick<ReportFormat, "baselineManifest">>,
 ): BaselineManifest | undefined {
   if (format.baselineManifest) return format.baselineManifest;
+  const builtin = BUILTIN_OWNED_BY_NAME.get(format.name);
   if (
-    format.name === MRI_LS_SPINE_STANDARD_NORMAL_NAME &&
+    builtin &&
     String(format.modality).toUpperCase() === "MR" &&
-    format.bodyPart === "LS Spine"
+    format.bodyPart === builtin.bodyPart
   ) {
-    const candidate = { ...format, baselineManifest: MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST };
-    return validateBaselineManifest(candidate).ok
-      ? MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST
-      : undefined;
+    const candidate = { ...format, baselineManifest: builtin.manifest };
+    return validateBaselineManifest(candidate, format.bodyPart).ok ? builtin.manifest : undefined;
   }
   return undefined;
 }
 
 export function materializeFormatBaseline(
-  format: Pick<ReportFormat, "findings" | "impression" | "baselineManifest">,
+  format: Pick<ReportFormat, "findings" | "impression" | "baselineManifest"> &
+    Partial<Pick<ReportFormat, "bodyPart">>,
   region: string,
 ): LedgerPatch[] {
-  const validation = validateBaselineManifest(format);
+  const validation = validateBaselineManifest(format, region);
   if (!validation.ok || !format.baselineManifest) return [];
   const now = new Date().toISOString();
   return format.baselineManifest.observations.map((entry) => {
     const systemNormal = entry.field === "impression" && entry.concept === SYSTEM_NORMAL_CONCEPT;
+    const screeningLimitation = entry.concept === SCREENING_LIMITATION_CONCEPT;
     const id = systemNormal
       ? SYSTEM_NORMAL_PATCH_ID
       : `baseline:${format.baselineManifest!.revision}:${entry.id}`;
@@ -284,9 +378,14 @@ export function materializeFormatBaseline(
       entry.field === "findings"
         ? { findings: entry.renderedText }
         : { impression: entry.renderedText };
+    const role = screeningLimitation
+      ? ("screening" as const)
+      : entry.field === "findings"
+        ? ("baseline" as const)
+        : ("impression" as const);
     const observation = buildCanonicalObservation({
       id,
-      region,
+      region: entry.region?.trim() || region,
       concept: entry.concept,
       conflictGroup: entry.conflictGroup,
       anatomicalSection: entry.anatomicalSection,
@@ -294,7 +393,7 @@ export function materializeFormatBaseline(
       level: entry.level,
       laterality: entry.laterality,
       source,
-      role: entry.field === "findings" ? "baseline" : "impression",
+      role,
       specificity: entry.level ? "study" : "region",
       sectionsOwned: [entry.field],
       findingsText: entry.field === "findings" ? entry.renderedText : undefined,
@@ -309,7 +408,7 @@ export function materializeFormatBaseline(
       lastRendered: contribution,
       replacedBaseline: { findings: [], impression: [] },
       source,
-      protected: false,
+      protected: screeningLimitation,
     };
   });
 }

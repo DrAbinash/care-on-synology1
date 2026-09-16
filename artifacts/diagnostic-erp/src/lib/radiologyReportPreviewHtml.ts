@@ -19,7 +19,11 @@ import {
   type ProvenanceVisualKind,
 } from "./reportFieldMerge";
 
-/** Screen-only provenance colours (stripped at print via @media print). */
+/**
+ * Screen-only Preview provenance decoration.
+ * Patient-facing print/PDF must not show legend, tint, or ownership chrome —
+ * significant abnormal findings remain bold-only in clinical output.
+ */
 export const PROVENANCE_PREVIEW_CSS = `
 @media screen {
   .preview-provenance-legend {
@@ -37,7 +41,16 @@ export const PROVENANCE_PREVIEW_CSS = `
   .prov-other { color: #475569 !important; }
 }
 @media print {
-  .preview-provenance-legend, .preview-prov { color: inherit !important; font-weight: inherit !important; font-style: inherit !important; }
+  .preview-provenance-legend,
+  .no-print {
+    display: none !important;
+  }
+  .preview-prov {
+    color: inherit !important;
+    font-weight: inherit !important;
+    font-style: inherit !important;
+    background: transparent !important;
+  }
 }
 `.trim();
 

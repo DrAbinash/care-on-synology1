@@ -32,6 +32,9 @@
     },
     {
       "path": "./lib/emergency-billing"
+    },
+    {
+      "path": "./lib/baseline-manifest"
     }
   ]
 }

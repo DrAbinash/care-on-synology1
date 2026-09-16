@@ -9,7 +9,64 @@ import {
   MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION,
   MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST,
   MRI_LS_SPINE_STANDARD_NORMAL_NAME,
+  MRI_BRAIN_STANDARD_NORMAL_NAME,
+  MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
+  MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
+  MRI_BRAIN_STANDARD_NORMAL_MANIFEST,
+  MRI_BRAIN_SCREENING_NORMAL_NAME,
+  MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
+  MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
+  MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
+  MRI_CERVICAL_STANDARD_NORMAL_NAME,
+  MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
+  MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  MRI_CERVICAL_SCREENING_NORMAL_NAME,
+  MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
+  MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
+  MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
+  MRI_KNEE_STANDARD_NORMAL_NAME,
+  MRI_KNEE_STANDARD_NORMAL_FINDINGS,
+  MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
+  MRI_KNEE_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSAL_SCREENING_NORMAL_NAME,
+  MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
+  MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
+  MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
+  MRI_LS_SCREENING_NORMAL_NAME,
+  MRI_LS_SCREENING_NORMAL_FINDINGS,
+  MRI_LS_SCREENING_NORMAL_IMPRESSION,
+  MRI_LS_SCREENING_NORMAL_MANIFEST,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
 } from "./fullReportBaseline";
+import {
+  MRI_BRAIN_STANDARD_NORMAL_META,
+} from "./baselines/mriBrainStandardNormal";
+import {
+  MRI_BRAIN_SCREENING_NORMAL_META,
+} from "./baselines/mriBrainScreeningNormal";
+import {
+  MRI_CERVICAL_STANDARD_NORMAL_META,
+} from "./baselines/mriCervicalStandardNormal";
+import {
+  MRI_CERVICAL_SCREENING_NORMAL_META,
+} from "./baselines/mriCervicalScreeningNormal";
+import {
+  MRI_KNEE_STANDARD_NORMAL_META,
+} from "./baselines/mriKneeStandardNormal";
+import {
+  MRI_DORSAL_SCREENING_NORMAL_META,
+} from "./baselines/mriDorsalScreeningNormal";
+import {
+  MRI_LS_SCREENING_NORMAL_META,
+} from "./baselines/mriLsScreeningNormal";
+import {
+  MRI_WHOLE_SPINE_SCREENING_NORMAL_META,
+} from "./baselines/mriWholeSpineScreeningNormal";
+import { screeningLimitationTechniqueFragment } from "./baselines/screeningLimitation";
 
 const now = () => new Date().toISOString();
 const uid = () => `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -97,6 +154,104 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     reportTitle: "MRI LUMBOSACRAL SPINE",
     techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.", dedupeKey: "ls-standard-owned", preserve: true }],
     baselineManifest: MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  // ── Phase 2 owned baselines (Standard Normal + Screening Normal) ─────
+  fmt(MRI_BRAIN_STANDARD_NORMAL_NAME, "MR", "Brain", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_BRAIN_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_BRAIN_STANDARD_NORMAL_META.technique,
+    findings: MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_BRAIN_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_BRAIN_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_BRAIN_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_CERVICAL_STANDARD_NORMAL_NAME, "MR", "Cervical Spine", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_CERVICAL_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_CERVICAL_STANDARD_NORMAL_META.technique,
+    findings: MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_CERVICAL_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_CERVICAL_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_KNEE_STANDARD_NORMAL_NAME, "MR", "Knee", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_KNEE_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_KNEE_STANDARD_NORMAL_META.technique,
+    findings: MRI_KNEE_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_KNEE_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_KNEE_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_KNEE_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_BRAIN_SCREENING_NORMAL_NAME, "MR", "Brain", ["screening", "normal", "owned baseline"], {
+    clinicalHistory: MRI_BRAIN_SCREENING_NORMAL_META.clinicalHistory,
+    technique: MRI_BRAIN_SCREENING_NORMAL_META.technique,
+    findings: MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
+    impression: MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
+    recommendation: MRI_BRAIN_SCREENING_NORMAL_META.recommendation,
+    reportTitle: MRI_BRAIN_SCREENING_NORMAL_META.reportTitle,
+    protocolScope: "Screening",
+    techniqueFragments: [
+      { text: MRI_BRAIN_SCREENING_NORMAL_META.technique, dedupeKey: "brain-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
+    baselineManifest: MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_CERVICAL_SCREENING_NORMAL_NAME, "MR", "Cervical Spine", ["screening", "normal", "owned baseline"], {
+    clinicalHistory: MRI_CERVICAL_SCREENING_NORMAL_META.clinicalHistory,
+    technique: MRI_CERVICAL_SCREENING_NORMAL_META.technique,
+    findings: MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
+    impression: MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
+    recommendation: MRI_CERVICAL_SCREENING_NORMAL_META.recommendation,
+    reportTitle: MRI_CERVICAL_SCREENING_NORMAL_META.reportTitle,
+    protocolScope: "Screening",
+    techniqueFragments: [
+      { text: MRI_CERVICAL_SCREENING_NORMAL_META.technique, dedupeKey: "cervical-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
+    baselineManifest: MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_DORSAL_SCREENING_NORMAL_NAME, "MR", "Dorsal Spine", ["screening", "normal", "owned baseline"], {
+    clinicalHistory: MRI_DORSAL_SCREENING_NORMAL_META.clinicalHistory,
+    technique: MRI_DORSAL_SCREENING_NORMAL_META.technique,
+    findings: MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
+    impression: MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
+    recommendation: MRI_DORSAL_SCREENING_NORMAL_META.recommendation,
+    reportTitle: MRI_DORSAL_SCREENING_NORMAL_META.reportTitle,
+    protocolScope: "Screening",
+    techniqueFragments: [
+      { text: MRI_DORSAL_SCREENING_NORMAL_META.technique, dedupeKey: "dorsal-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
+    baselineManifest: MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_LS_SCREENING_NORMAL_NAME, "MR", "LS Spine", ["screening", "normal", "owned baseline"], {
+    clinicalHistory: MRI_LS_SCREENING_NORMAL_META.clinicalHistory,
+    technique: MRI_LS_SCREENING_NORMAL_META.technique,
+    findings: MRI_LS_SCREENING_NORMAL_FINDINGS,
+    impression: MRI_LS_SCREENING_NORMAL_IMPRESSION,
+    recommendation: MRI_LS_SCREENING_NORMAL_META.recommendation,
+    reportTitle: MRI_LS_SCREENING_NORMAL_META.reportTitle,
+    protocolScope: "Screening",
+    techniqueFragments: [
+      { text: MRI_LS_SCREENING_NORMAL_META.technique, dedupeKey: "ls-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
+    baselineManifest: MRI_LS_SCREENING_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME, "MR", "Whole Spine", ["screening", "whole spine", "normal", "owned baseline"], {
+    clinicalHistory: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.clinicalHistory,
+    technique: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.technique,
+    findings: MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
+    impression: MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
+    recommendation: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.recommendation,
+    reportTitle: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.reportTitle,
+    protocolScope: "Screening",
+    techniqueFragments: [
+      { text: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.technique, dedupeKey: "whole-spine-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
+    baselineManifest: MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt("MRI LS Spine — Normal", "MR", "LS Spine", ["normal", "legacy"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Normal MRI lumbo-sacral spine. No acute bony or disc abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI LUMBOSACRAL SPINE", techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", dedupeKey: "ls-detailed", preserve: true }] }, true),
   fmt("MRI LS Spine — Disc herniation L4-L5", "MR", "LS Spine", ["disc", "herniation"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Broad-based disc bulge at L4-L5 with posterocentral-right paracentral protrusion causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis. Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. L4-L5 disc shows mild desiccation with reduced T2 signal. Other disc spaces are maintained. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Disc herniation at L4-L5 causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis.", recommendation: "Conservative management with NSAIDs and physiotherapy. MRI if radicular symptoms persist. Surgical referral if neurological deficits develop.", reportTitle: "MRI LUMBOSACRAL SPINE" }, true),
@@ -303,6 +458,7 @@ export function payloadForApi(f: Omit<ReportFormat, "id" | "createdAt" | "update
     reportTitle: f.reportTitle ?? "",
     protocolScope: f.protocolScope ?? "",
     isCommon: f.isCommon ?? false,
+    ...(f.baselineManifest ? { baselineManifest: f.baselineManifest } : {}),
   };
 }
 

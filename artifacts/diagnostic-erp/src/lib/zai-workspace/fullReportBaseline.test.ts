@@ -37,6 +37,8 @@ function reset() {
     confirmOverwriteOpen: false,
     pendingPathologyPatch: null,
     lastPatchSnapshot: null,
+    patchUndoStack: [],
+    startingCanvasBaseline: null,
     isFinalized: false,
     impressionNeedsRefresh: false,
   });
