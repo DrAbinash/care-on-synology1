@@ -1634,6 +1634,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // exist. Restore its exact owned contribution after the last one is
     // removed; do not degrade it to the generic "Normal study." string.
     if (existing?.templates.impression?.trim()) {
+      // #region agent log
+      agentDebugLog("F,G,H", "store.ts:seedSystemNormalImpression:restore-before", "exact template restore input", {
+        currentLength: get().impressionText.length,
+        currentTrimLength: get().impressionText.trim().length,
+        templateLength: existing.templates.impression.length,
+        templateNewlines: (existing.templates.impression.match(/\n/g) ?? []).length,
+        provenanceKeys: Object.keys(get().fieldProvenance.impression ?? {}).length,
+      });
+      // #endregion
       const restored = mergeReportFieldContentWithProvenance({
         field: "impression",
         existing: get().impressionText,
@@ -1641,6 +1650,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         source: "system",
         existingProvenance: get().fieldProvenance.impression ?? {},
       });
+      // #region agent log
+      agentDebugLog("F,G,H", "store.ts:seedSystemNormalImpression:restore-merge", "exact template restore merged", {
+        exact: restored.text === existing.templates.impression,
+        restoredLength: restored.text.length,
+        restoredNewlines: (restored.text.match(/\n/g) ?? []).length,
+        provenanceKeys: Object.keys(restored.provenance).length,
+      });
+      // #endregion
       set({
         impressionText: restored.text,
         fieldProvenance: { ...get().fieldProvenance, impression: restored.provenance },
@@ -1651,6 +1668,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         ),
         isDirty: true,
       });
+      // #region agent log
+      agentDebugLog("F,J", "store.ts:seedSystemNormalImpression:restore-exit", "exact template restore committed", {
+        exact: get().impressionText === existing.templates.impression,
+        committedLength: get().impressionText.length,
+        committedNewlines: (get().impressionText.match(/\n/g) ?? []).length,
+      });
+      // #endregion
       return;
     }
     const region = get().reportingContext.region ?? "*";
