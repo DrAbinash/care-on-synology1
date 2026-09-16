@@ -94,6 +94,25 @@ export interface CriticalFinding { id: string; studyId: string; phrase: string; 
 
 export type QuickSelectField = "clinicalHistory" | "technique" | "findings" | "impression" | "recommendation";
 export interface QuickSelectTile { id: string; field: QuickSelectField; scopeModality?: Modality; scopeBodyPart?: string; label: string; mnemonic?: string; category: "normal" | "abnormal" | "variant" | "critical"; sentence: string; impressionSentence?: string; favorite?: boolean; custom?: boolean; usageCount?: number; createdAt: string; updatedAt: string; /** Explicit canonical concept (preferred). See conceptCanon/contentPacks.ts. */ concept?: string; anatomicalSection?: string; conflictGroup?: string; baselineReplaces?: string; properties?: string; }
+export type BaselineManifestObservation = {
+  /** Stable within this manifest revision. */
+  id: string;
+  field: "findings" | "impression";
+  concept: string;
+  conflictGroup: string;
+  anatomicalSection: string;
+  level?: string;
+  laterality?: string;
+  /** Exact atomic sentence materialized into the canonical report. */
+  renderedText: string;
+};
+export type BaselineManifest = {
+  kind: "care.full_report_baseline.v1";
+  version: 1;
+  /** Curated clinical ownership revision, independent of DB row id. */
+  revision: string;
+  observations: BaselineManifestObservation[];
+};
 export interface ReportFormat {
   id: string;
   name: string;
@@ -115,6 +134,8 @@ export interface ReportFormat {
    * flagged fragments always survive.
    */
   techniqueFragments?: Array<{ text: string; dedupeKey: string; preserve?: boolean }>;
+  /** Optional explicit normal-concept ownership. Legacy prose formats omit this. */
+  baselineManifest?: BaselineManifest;
   isCommon: boolean;
   custom?: boolean;
   favorite?: boolean;

@@ -104,6 +104,10 @@ export type CareReportFormatIdentity = {
   name: string;
   reportTitle?: string;
   appliedAt: string;
+  formatId?: string;
+  formatRevision?: string;
+  baselineManifestVersion?: number;
+  baselineManifestRevision?: string;
 };
 
 export function extractCareReportFormatIdentity(column: unknown): CareReportFormatIdentity | null {

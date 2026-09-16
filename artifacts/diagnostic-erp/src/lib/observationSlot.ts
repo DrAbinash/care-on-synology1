@@ -397,6 +397,10 @@ export function sentenceOwnedBySlot(
     if (mentioned && mentioned !== "bilateral" && mentioned !== obsLat) return false;
   }
   if (sentenceMatchesConcept(sentence, obs.concept)) return true;
+  // An explicit baseline contract is the ownership boundary. Anatomy/level
+  // identifies where that concept lives, but must not absorb other concepts
+  // at the same site. Legacy overlays without a contract retain section scope.
+  if (obs.concept && baseline) return false;
   const section = (obs.anatomicalSection ?? "").trim();
   if (section && !isBroadAnatomy(section) && sentence.toLowerCase().includes(section.toLowerCase())) {
     return true;

@@ -156,7 +156,10 @@ describe("System normal auto-yield — Canvas-compatible concepts", () => {
     });
 
     expect(useWorkspace.getState().impressionText).not.toContain(SYSTEM_NORMAL_IMPRESSION_TEXT);
-    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.id === SYSTEM_NORMAL_PATCH_ID)).toBe(false);
+    expect(
+      useWorkspace.getState().appliedPathologyPatches
+        .find((p) => p.id === SYSTEM_NORMAL_PATCH_ID)?.lastRendered.impression,
+    ).toBe("");
   });
 
   it("epidural_collection observation auto-yields system normal", () => {
@@ -321,7 +324,10 @@ describe("Auto-return — system normal returns after removing last Canvas abnor
       source: "structured-template", region: "Cervical Spine", concept: "cord_compression",
       level: "C5-C6", findingsText: "Cord compression at C5-C6.", id: "qs-cord-comp-2",
     });
-    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.id === SYSTEM_NORMAL_PATCH_ID)).toBe(false);
+    expect(
+      useWorkspace.getState().appliedPathologyPatches
+        .find((p) => p.id === SYSTEM_NORMAL_PATCH_ID)?.lastRendered.impression,
+    ).toBe("");
 
     // Remove the cord_compression observation
     useWorkspace.getState().removeObservation("qs-cord-comp-2");

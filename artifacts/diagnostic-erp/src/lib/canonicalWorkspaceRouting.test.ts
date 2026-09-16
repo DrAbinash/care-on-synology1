@@ -83,10 +83,14 @@ describe("M1.1 — deprecated surfaces stay marked", () => {
 });
 
 describe("M1.1 — no duplicate state/service copies reactivate", () => {
-  it("exactly one reporting page consumes the structured QuickFindingsPanel (legacy until Z.ai port)", () => {
-    // The new modular workspace uses QuickSelectEditor instead; the legacy
-    // monolith is the sole QuickFindingsPanel mount until that port lands.
+  it("canonical Quick Add reuses QuickFindingsPanel inside the one Reporting Tools surface", () => {
+    // Quick Insert unifies the surface only: canonical and legacy may both
+    // reuse the component while their routes coexist, but neither duplicates
+    // its data/merge implementation.
     expect(legacy).toContain('from "@/components/radiology/QuickFindingsPanel"');
+    expect(workspace).toContain('from "@/components/radiology/QuickFindingsPanel"');
+    expect(workspace).toContain("<ReportingToolsPanel");
+    expect(workspace).toContain('data-testid="quick-insert"');
     expect(workspace).toContain("QuickSelectEditor");
     for (const rel of [
       "pages/RadiologyCommandCenter.tsx",
@@ -178,8 +182,9 @@ describe("M1.4 — canonical reporting workflow integration", () => {
     }
   });
 
-  it("the ONE QuickFindingsPanel restores persisted selections via onFindingsLoaded (legacy)", () => {
+  it("QuickFindingsPanel keeps its existing onFindingsLoaded plumbing in both surfaces", () => {
     expect(legacy).toContain("onFindingsLoaded={handleFindingsLoaded}");
+    expect(workspace).toContain("onFindingsLoaded=");
     const panel = read("components/radiology/QuickFindingsPanel.tsx");
     expect(panel).toContain("onFindingsLoaded");
     expect(panel).toContain("data-qs-search"); // Ctrl+K / "/" focus target

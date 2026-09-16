@@ -138,16 +138,15 @@ describe("clicking the workspace collapses chrome, keeps OHIF", () => {
     expect(workspace).toContain('data-testid="embedded-viewer-column"');
   });
 
-  it("collapses the reading queue, Orient rail, and app sidebar without hiding OHIF", () => {
+  it("collapses queue/tools chrome and app sidebar without hiding OHIF", () => {
     expect(workspace).toContain("leftPanelRef.current?.collapse()");
     expect(workspace).toContain("rightPanelRef.current?.collapse()");
     expect(workspace).toContain("setViewerFocus(true)");
     expect(workspace).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
     expect(workspace).toContain("collapsible");
     expect(workspace).toContain('data-testid="right-panel-expand"');
-    expect(workspace).toContain("PersonalTemplateRail");
-    expect(workspace).toContain("templatePanelRef");
-    expect(workspace).toContain("defaultSize={20}");
+    expect(workspace).toContain("ReportingToolsPanel");
+    expect(workspace).toContain("defaultSize={3}");
   });
 });
 
@@ -190,10 +189,12 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
     expect(accordion).toMatch(/active \? "max-h-\[38vh\] overflow-y-auto" : "hidden"/);
   });
 
-  it("mounts Quick Add and Structured exactly once (moved, not duplicated)", () => {
-    expect(workspace.match(/<QuickFindingsPanel/g) ?? []).toHaveLength(1);
-    expect(workspace.match(/<StructuredFormatPanel/g) ?? []).toHaveLength(1);
-    expect(workspace.match(/data-testid="clinic-quick-select"/g) ?? []).toHaveLength(1);
+  it("routes Quick Add and Structured through Reporting Tools", () => {
+    expect(workspace).toContain("<ReportingToolsPanel");
+    expect(workspace).toContain('quickInsertSource === "quick-add"');
+    expect(workspace).toContain('structured: (');
+    expect(workspace).toContain("<QuickFindingsPanel");
+    expect(workspace).toContain("<StructuredFormatPanel");
   });
 
   it("routes suggestion engines into the Suggestions drawer", () => {
@@ -208,10 +209,10 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
     }
   });
 
-  it("keeps Structured/Highlight toggles and the findings mic reachable", () => {
-    expect(workspace).toContain("Highlight scan");
+  it("keeps Structured/Canvas in tools and the findings mic reachable", () => {
+    expect(workspace).toContain('openReportingTools("structured")');
     expect(workspace).toContain('target="findings"');
-    expect(workspace).toContain("setUseStructured(on)");
+    expect(workspace).toContain("<StructuredFormatPanel");
   });
 });
 
@@ -322,7 +323,7 @@ describe("no reporting feature was deleted by the re-layout", () => {
     ["Recommendation editor", 'field="recommendation"'],
     ["Critical finding", 'data-testid="critical-finding-panel"'],
     ["Report layout & export", "<ReportExportPanel"],
-    ["Report images rail", 'data-testid="selected-images-rail"'],
+    ["Report images management", "<ReportImagePanel"],
     ["Dictation mics", "<FieldCareMic"],
     ["Structured finding dialog", "<StructuredFindingDialog"],
   ];

@@ -10,7 +10,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { radiologySnippetsTable } from "@workspace/db/schema";
 import { eq, and, or, desc, asc, sql, ilike } from "drizzle-orm";
-import { requireStaffAuth } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { z } from "zod";
 
 export const radiologyReportFormatsRouter: IRouter = Router();
@@ -38,9 +38,12 @@ const migrateSchema = z.object({
   formats: z.array(formatBodySchema).max(200),
 });
 
-function staffEmail(req: unknown): string {
-  const user = (req as { staffUser?: { email?: string; username?: string } }).staffUser;
-  return user?.email ?? user?.username ?? "";
+function staffIdentity(req: unknown): { id: number | null; name: string } {
+  const session = (req as StaffAuthRequest).staffSession;
+  return {
+    id: session?.subjectId ?? null,
+    name: session?.subjectName?.trim() ?? "",
+  };
 }
 
 function rowToFormat(row: typeof radiologySnippetsTable.$inferSelect) {
@@ -77,8 +80,8 @@ radiologyReportFormatsRouter.use(requireStaffAuth);
 
 /** GET /api/radiology/report-formats */
 radiologyReportFormatsRouter.get("/", async (req, res) => {
-  const email = staffEmail(req);
-  if (!email) {
+  const staff = staffIdentity(req);
+  if (!staff.id || !staff.name) {
     res.status(401).json({ error: "User not authenticated" });
     return;
   }
@@ -90,7 +93,8 @@ radiologyReportFormatsRouter.get("/", async (req, res) => {
     eq(radiologySnippetsTable.type, REPORT_FORMAT_TYPE),
     or(
       eq(radiologySnippetsTable.isGlobal, true),
-      eq(radiologySnippetsTable.createdByName, email),
+      eq(radiologySnippetsTable.createdById, staff.id),
+      eq(radiologySnippetsTable.createdByName, staff.name),
     )!,
   ];
   if (activeOnly) conds.push(eq(radiologySnippetsTable.isActive, true));
@@ -122,8 +126,8 @@ radiologyReportFormatsRouter.get("/", async (req, res) => {
 
 /** POST /api/radiology/report-formats */
 radiologyReportFormatsRouter.post("/", async (req, res) => {
-  const email = staffEmail(req);
-  if (!email) {
+  const staff = staffIdentity(req);
+  if (!staff.id || !staff.name) {
     res.status(401).json({ error: "User not authenticated" });
     return;
   }
@@ -152,7 +156,8 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
       isActive: d.isActive,
       isGlobal: d.isGlobal,
       isPartialSection: false,
-      createdByName: email,
+      createdById: staff.id,
+      createdByName: staff.name,
     })
     .returning();
   res.status(201).json(rowToFormat(row));
@@ -164,8 +169,8 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
  * Does not delete browser data — client keeps cache until confirmed.
  */
 radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
-  const email = staffEmail(req);
-  if (!email) {
+  const staff = staffIdentity(req);
+  if (!staff.id || !staff.name) {
     res.status(401).json({ error: "User not authenticated" });
     return;
   }
@@ -183,7 +188,8 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
         eq(radiologySnippetsTable.type, REPORT_FORMAT_TYPE),
         or(
           eq(radiologySnippetsTable.isGlobal, true),
-          eq(radiologySnippetsTable.createdByName, email),
+          eq(radiologySnippetsTable.createdById, staff.id),
+          eq(radiologySnippetsTable.createdByName, staff.name),
         )!,
       ),
     );
@@ -218,7 +224,8 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
         isActive: true,
         isGlobal: false,
         isPartialSection: false,
-        createdByName: email,
+        createdById: staff.id,
+        createdByName: staff.name,
       })
       .returning();
     seen.add(key);
@@ -235,7 +242,8 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
         eq(radiologySnippetsTable.isActive, true),
         or(
           eq(radiologySnippetsTable.isGlobal, true),
-          eq(radiologySnippetsTable.createdByName, email),
+          eq(radiologySnippetsTable.createdById, staff.id),
+          eq(radiologySnippetsTable.createdByName, staff.name),
         )!,
       ),
     );
@@ -251,7 +259,7 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
 
 /** PUT /api/radiology/report-formats/:id */
 radiologyReportFormatsRouter.put("/:id", async (req, res) => {
-  const email = staffEmail(req);
+  const staff = staffIdentity(req);
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) {
     res.status(400).json({ error: "Invalid id" });
@@ -270,7 +278,7 @@ radiologyReportFormatsRouter.put("/:id", async (req, res) => {
     res.status(404).json({ error: "Format not found" });
     return;
   }
-  if (!(existing.isGlobal || existing.createdByName === email)) {
+  if (!(existing.isGlobal || existing.createdById === staff.id || existing.createdByName === staff.name)) {
     res.status(403).json({ error: "Not authorized" });
     return;
   }
@@ -301,7 +309,7 @@ radiologyReportFormatsRouter.put("/:id", async (req, res) => {
 
 /** DELETE /api/radiology/report-formats/:id — soft deactivate */
 radiologyReportFormatsRouter.delete("/:id", async (req, res) => {
-  const email = staffEmail(req);
+  const staff = staffIdentity(req);
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) {
     res.status(400).json({ error: "Invalid id" });
@@ -315,7 +323,7 @@ radiologyReportFormatsRouter.delete("/:id", async (req, res) => {
     res.status(404).json({ error: "Format not found" });
     return;
   }
-  if (!(existing.isGlobal || existing.createdByName === email)) {
+  if (!(existing.isGlobal || existing.createdById === staff.id || existing.createdByName === staff.name)) {
     res.status(403).json({ error: "Not authorized" });
     return;
   }

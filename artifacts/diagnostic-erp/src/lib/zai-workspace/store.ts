@@ -121,6 +121,7 @@ import {
   COVERAGE_ENVELOPE_KEY,
 } from "@/lib/coverageMarks";
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
+import { materializeFormatBaseline } from "./fullReportBaseline";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -196,6 +197,8 @@ type PatchSnapshot = {
   appliedPathologyPatches: AppliedPathologyPatch[];
   voiceComposerObservations: VoiceObservation[];
   voiceComposerTranscriptHistory: string[];
+  appliedFormatName?: string | null;
+  appliedFormatReportTitle?: string | null;
 };
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
@@ -924,6 +927,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (fs.length === 1) {
       const f = fs[0]!;
       const clinical = clinicalFieldsFromFormat(f);
+      const formatSnapshot: PatchSnapshot = {
+        clinicalHistoryText: get().clinicalHistoryText,
+        techniqueText: get().techniqueText,
+        findingsText: get().findingsText,
+        impressionText: get().impressionText,
+        recommendationText: get().recommendationText,
+        fieldProvenance: { ...get().fieldProvenance },
+        appliedPathologyPatches: get().appliedPathologyPatches.map((p) => ({ ...p })),
+        voiceComposerObservations: [...get().voiceComposerObservations],
+        voiceComposerTranscriptHistory: [...get().voiceComposerTranscriptHistory],
+        appliedFormatName: get().appliedFormatName,
+        appliedFormatReportTitle: get().appliedFormatReportTitle,
+      };
       // Content first, then region — format technique wins over region protocol sync.
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
       get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
@@ -944,8 +960,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
       const nf = get().reportFormats.map((x: ReportFormat) => x.id === f.id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
       saveFormats(nf);
-      // Mark prior ledger contributions stale — do not silently delete rows.
-      const stalePatches = get().appliedPathologyPatches.map((p) => ({ ...p, stale: true as const }));
+      // A full report establishes a new baseline. Keep prior non-baseline
+      // observations as stale audit context, then materialize only explicitly
+      // curated baseline slots. Legacy prose formats safely produce no patches.
+      const stalePatches = get().appliedPathologyPatches
+        .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
+        .map((p) => ({ ...p, stale: true as const }));
+      const baselineRegion = pendingRegion || get().reportingContext.region || f.bodyPart;
+      const baselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
+        id: p.id,
+        ownership: ownershipFromObservation(p.observation),
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        source: p.source,
+        observation: p.observation,
+        replacedBaseline: p.replacedBaseline,
+        protected: p.protected,
+      }));
       set({
         reportFormats: nf,
         confirmOverwriteOpen: false,
@@ -953,8 +984,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatOverwrite: null,
         pendingFormatRegion: null,
         reportFormatPickerOpen: false,
-        appliedPathologyPatches: stalePatches,
-        lastPatchSnapshot: null,
+        appliedPathologyPatches: [...stalePatches, ...baselinePatches],
+        lastPatchSnapshot: formatSnapshot,
         appliedFormatReportTitle: clinical.reportTitle || null,
         appliedFormatName: f.name || null,
       });
@@ -965,7 +996,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       getFormatApplyBridge()?.invalidatePendingAutosave?.();
       get().pushNotification({
         kind: "ledger",
-        text: "Full report applied. Prior structured contributions marked stale for review.",
+        text: baselinePatches.length > 0
+          ? `Full normal report applied with ${baselinePatches.length} owned baseline concepts.`
+          : "Full report applied as legacy narrative. Prior structured contributions marked stale for review.",
       });
       void bumpReportFormatUsage(f.id);
       return;
@@ -1069,24 +1102,32 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           get().fieldProvenance,
           toLedgerPatch(systemNormal),
         );
-        set({
-          impressionText: yieldResult.narrative.impression,
-          findingsText: yieldResult.narrative.findings,
-          recommendationText: yieldResult.narrative.recommendation,
-          techniqueText: yieldResult.narrative.technique,
-          clinicalHistoryText: yieldResult.narrative.clinicalHistory,
-          fieldProvenance: yieldResult.provenance,
-          appliedPathologyPatches: get().appliedPathologyPatches.filter(
-            (p) => p.id !== SYSTEM_NORMAL_PATCH_ID,
-          ),
-        });
+        // Preserve the system-owned patch in a suspended state so removing
+        // the final abnormal can restore the exact format impression rather
+        // than inventing a generic replacement. Protected/manual text never
+        // yields and therefore never enters the suspended state.
+        if (yieldResult.outcome === "removed") {
+          set({
+            impressionText: yieldResult.narrative.impression,
+            findingsText: yieldResult.narrative.findings,
+            recommendationText: yieldResult.narrative.recommendation,
+            techniqueText: yieldResult.narrative.technique,
+            clinicalHistoryText: yieldResult.narrative.clinicalHistory,
+            fieldProvenance: yieldResult.provenance,
+            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+              p.id === SYSTEM_NORMAL_PATCH_ID
+                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+                : p,
+            ),
+          });
+        }
       }
     }
 
     // Same-slot plan — CARE mutex identity. Incoming id is the survivor so Quick
     // Select selection / deselect-by-tile stay correct; evidence remaps onto it.
     const slotSiblings = findSameSlotSiblings(
-      get().appliedPathologyPatches.filter((p) => p.id !== draftId),
+      get().appliedPathologyPatches.filter((p) => p.id !== draftId && !p.stale),
       observation,
     );
     const contributionIsManual = Boolean(
@@ -1121,6 +1162,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }),
         id: stableId,
       };
+      // An explicitly materialized Full Normal baseline owns its exact atomic
+      // contribution. Carry that contract into the incoming abnormal so the
+      // existing overlay removes the baseline without heuristic text search.
+      if (plan.existing.observation.role === "baseline") {
+        observation = {
+          ...observation,
+          baselineReplaces:
+            plan.existing.lastRendered.findings
+            || plan.existing.lastRendered.impression
+            || observation.baselineReplaces,
+          role: "finding",
+        };
+      }
     } else {
       observation = { ...observation, id: stableId };
     }
@@ -1159,6 +1213,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // replacedBaseline so deselect can restore a normal/baseline.
     // Incoming id is the survivor; remap measurements / key images onto it.
     let patches = get().appliedPathologyPatches.filter((p) => !dropIds.has(p.id));
+    if (plan.action === "update" && plan.existing.observation.role === "baseline") {
+      const baselinePatch = get().appliedPathologyPatches.find((p) => p.id === plan.existing.id);
+      if (baselinePatch) {
+        patches.push({
+          ...baselinePatch,
+          stale: true,
+          lastRendered: {
+            ...baselinePatch.lastRendered,
+            findings: "",
+            impression: "",
+          },
+        });
+      }
+    }
 
     let nextMeasurements = get().structuredViewerMeasurements;
     if (vacatedId && vacatedId !== stableId) {
@@ -1445,14 +1513,40 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   seedSystemNormalImpression: () => {
-    // Idempotent: if a system normal patch already exists, do nothing.
-    if (findSystemNormalPatch(get().appliedPathologyPatches)) return;
     // Safety: never seed when impression-worthy abnormal observations exist.
     if (hasImpressionworthyAbnormal(get().appliedPathologyPatches)) return;
     // Safety: never seed when the radiologist has manually owned impression.
     if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
     // Safety: never seed on a finalized study.
     if (get().isFinalized) return;
+    const existing = findSystemNormalPatch(get().appliedPathologyPatches);
+    if (existing?.lastRendered.impression?.trim()) return;
+    // A full-format normal impression may be suspended while abnormalities
+    // exist. Restore its exact owned contribution after the last one is
+    // removed; do not degrade it to the generic "Normal study." string.
+    if (existing?.templates.impression?.trim()) {
+      const restored = mergeReportFieldContentWithProvenance({
+        field: "impression",
+        existing: get().impressionText,
+        incoming: existing.templates.impression,
+        source: "system",
+        existingProvenance: get().fieldProvenance.impression ?? {},
+      });
+      const restoredText = get().impressionText.trim()
+        ? restored.text
+        : existing.templates.impression;
+      set({
+        impressionText: restoredText,
+        fieldProvenance: { ...get().fieldProvenance, impression: restored.provenance },
+        appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+          p.id === existing.id
+            ? { ...p, lastRendered: { ...p.lastRendered, impression: existing.templates.impression } }
+            : p,
+        ),
+        isDirty: true,
+      });
+      return;
+    }
     const region = get().reportingContext.region ?? "*";
     const patch = buildSystemNormalPatch(region);
     // Write the canonical "Normal study." line into impressionText with
@@ -1824,14 +1918,46 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     } else {
       nextMs = detachStructuredMeasurementsFromObservation(nextMs, id).state;
     }
+    let nextPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
+    let nextProvenance = result.provenance;
+    const suspendedBaseline = patch.observation
+      ? nextPatches.find((candidate) =>
+          candidate.stale
+          && candidate.observation?.role === "baseline"
+          && observationsMutuallyExclusive(candidate.observation, patch.observation!))
+      : undefined;
+    if (suspendedBaseline && result.outcome === "removed") {
+      nextPatches = nextPatches.map((candidate) =>
+        candidate.id === suspendedBaseline.id
+          ? {
+              ...candidate,
+              stale: false,
+              lastRendered: { ...candidate.templates },
+            }
+          : candidate,
+      );
+      const restoredFindings = suspendedBaseline.templates.findings ?? "";
+      const restoredImpression = suspendedBaseline.templates.impression ?? "";
+      nextProvenance = {
+        ...nextProvenance,
+        findings: {
+          ...(nextProvenance.findings ?? {}),
+          ...provenanceFromText(restoredFindings, suspendedBaseline.source),
+        },
+        impression: {
+          ...(nextProvenance.impression ?? {}),
+          ...provenanceFromText(restoredImpression, suspendedBaseline.source),
+        },
+      };
+    }
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
       findingsText: result.narrative.findings,
       impressionText: result.narrative.impression,
       recommendationText: result.narrative.recommendation,
-      fieldProvenance: result.provenance,
-      appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => p.id !== id),
+      fieldProvenance: nextProvenance,
+      appliedPathologyPatches: nextPatches,
       selectedObservationId: get().selectedObservationId === id
         ? (remapTo || null)
         : get().selectedObservationId,
@@ -1883,6 +2009,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       appliedPathologyPatches: snap.appliedPathologyPatches,
       voiceComposerObservations: snap.voiceComposerObservations ?? [],
       voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
+      ...(snap.appliedFormatName !== undefined
+        ? { appliedFormatName: snap.appliedFormatName }
+        : {}),
+      ...(snap.appliedFormatReportTitle !== undefined
+        ? { appliedFormatReportTitle: snap.appliedFormatReportTitle }
+        : {}),
       lastPatchSnapshot: null,
       isDirty: true,
     });

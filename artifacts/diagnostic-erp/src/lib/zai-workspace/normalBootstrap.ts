@@ -156,7 +156,7 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   const hay = `${ctx.protocolName ?? ""} ${ctx.studyDescription ?? ""}`.trim();
 
   // 1. Modality + canonical region + complete-normal-only candidates.
-  const candidates = formats.filter((f) => {
+  let candidates = formats.filter((f) => {
     if (bootstrapModality(f.modality) !== modality) return false;
     const bp = canonicalContentRegion(f.bodyPart).toLowerCase() || (f.bodyPart ?? "").toLowerCase();
     if (!keys.includes(bp)) return false;
@@ -165,7 +165,6 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   if (candidates.length === 0) {
     return { status: "no-match", reason: "no complete-normal format for this region in the library" };
   }
-
   // 2. Protocol markers narrow the candidate set.
   const wantsContrast = CONTRAST_RE.test(hay) && !PLAIN_RE.test(hay);
   const wantsEpilepsy = EPILEPSY_RE.test(hay);
@@ -220,6 +219,11 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     pool = pool.filter((f) => !isScreeningVariant(f));
   }
 
+  // Within the correctly resolved protocol identity, curated versioned
+  // baselines outrank legacy prose-only normals.
+  const owned = pool.filter((f) => f.baselineManifest?.kind === "care.full_report_baseline.v1");
+  if (owned.length > 0) pool = owned;
+
   // 3. Exactly one survivor. Same-identity duplicates (local cache + server
   // copy of one format) collapse deterministically to the first.
   const dedupe = new Set(pool.map((f) => `${f.name}|${f.modality}|${canonicalContentRegion(f.bodyPart)}`));
@@ -252,16 +256,35 @@ export type CareReportFormatIdentity = {
   reportTitle?: string;
   /** ISO timestamp of when the baseline was applied. */
   appliedAt: string;
+  /** Server/local row id at apply time (advisory; name remains stable identity). */
+  formatId?: string;
+  /** Deterministic clinical-content revision. */
+  formatRevision?: string;
+  /** Curated baseline ownership contract. */
+  baselineManifestVersion?: number;
+  baselineManifestRevision?: string;
 };
 
 export function buildCareReportFormatIdentity(input: {
   name: string;
   reportTitle?: string | null;
+  formatId?: string | null;
+  formatRevision?: string | null;
+  baselineManifestVersion?: number | null;
+  baselineManifestRevision?: string | null;
 }): CareReportFormatIdentity {
   return {
     kind: CARE_REPORT_FORMAT_IDENTITY_KIND,
     name: input.name.trim(),
     ...(input.reportTitle?.trim() ? { reportTitle: input.reportTitle.trim() } : {}),
+    ...(input.formatId?.trim() ? { formatId: input.formatId.trim() } : {}),
+    ...(input.formatRevision?.trim() ? { formatRevision: input.formatRevision.trim() } : {}),
+    ...(input.baselineManifestVersion != null
+      ? { baselineManifestVersion: input.baselineManifestVersion }
+      : {}),
+    ...(input.baselineManifestRevision?.trim()
+      ? { baselineManifestRevision: input.baselineManifestRevision.trim() }
+      : {}),
     appliedAt: new Date().toISOString(),
   };
 }

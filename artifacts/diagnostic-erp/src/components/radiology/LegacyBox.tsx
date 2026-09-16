@@ -116,13 +116,19 @@ export interface LegacyBoxProps {
   printLayout?: ReportLayoutKey;
   onPrintLayoutChange?: (key: ReportLayoutKey) => void;
   clinicActiveLayout?: string | null;
+  /** Hide capabilities already promoted into the canonical Reporting Tools shell. */
+  excludeTabs?: LegacyBoxTab[];
 }
 
 export default function LegacyBox(props: LegacyBoxProps) {
   const { toast } = useToast();
   const [collapsed, setCollapsed] = useState(false);
   const [internalTab, setInternalTab] = useState<LegacyBoxTab>("links");
-  const tab = props.activeTab ?? internalTab;
+  const visibleTabs = TABS.filter((t) => !props.excludeTabs?.includes(t.id));
+  const requestedTab = props.activeTab ?? internalTab;
+  const tab = visibleTabs.some((t) => t.id === requestedTab)
+    ? requestedTab
+    : (visibleTabs[0]?.id ?? "links");
   const setTab = (t: LegacyBoxTab) => {
     setInternalTab(t);
     props.onTabChange?.(t);
@@ -361,7 +367,7 @@ export default function LegacyBox(props: LegacyBoxProps) {
           </p>
 
           <div className="flex flex-wrap gap-1" data-testid="legacy-box-tabs">
-            {TABS.map((t) => (
+          {visibleTabs.map((t) => (
               <button
                 key={t.id}
                 type="button"

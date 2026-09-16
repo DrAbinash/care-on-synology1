@@ -129,6 +129,7 @@ export function hasImpressionworthyAbnormal(
 ): boolean {
   return patches.some((p) => {
     if (isSystemNormalPatch(p)) return false;
+    if (p.stale || p.observation?.role === "baseline") return false;
     const concept = p.observation?.concept ?? null;
     return isImpressionworthyAbnormal(concept);
   });
