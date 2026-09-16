@@ -33,7 +33,7 @@ describe("Phase 2 owned baselines", () => {
     expect(counts).toEqual({
       "MRI Brain — Standard Normal": 13,
       "MRI Cervical Spine — Standard Normal": 39,
-      "MRI Knee — Standard Normal": 11,
+      "MRI Knee — Standard Normal": 12,
       "MRI Brain — Screening Normal": 7,
       "MRI Cervical Spine — Screening Normal": 8,
       "MRI Dorsal Spine — Screening Normal": 8,
@@ -88,13 +88,14 @@ describe("Phase 2 owned baselines", () => {
     expect(limitation!.observation?.role).toBe("screening");
   });
 
-  it("keeps Whole Spine regional normals on distinct level buckets", () => {
+  it("keeps Whole Spine regional normals on distinct regions and level buckets", () => {
     const whole = catalog.find((e) => e.name === "MRI Whole Spine — Screening Normal")!;
-    const levels = new Set(
-      whole.manifest.observations
-        .filter((o) => o.field === "findings" && o.concept !== SCREENING_LIMITATION_CONCEPT)
-        .map((o) => o.level),
+    const regional = whole.manifest.observations.filter(
+      (o) => o.field === "findings" && o.concept !== SCREENING_LIMITATION_CONCEPT,
     );
+    const regions = new Set(regional.map((o) => o.region));
+    const levels = new Set(regional.map((o) => o.level));
+    expect(regions).toEqual(new Set(["Cervical Spine", "Dorsal Spine", "LS Spine"]));
     expect(levels).toEqual(new Set(["cervical", "dorsal", "lumbar"]));
   });
 });

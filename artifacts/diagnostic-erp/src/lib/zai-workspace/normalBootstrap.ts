@@ -219,6 +219,13 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     pool = pool.filter((f) => !isScreeningVariant(f));
   }
 
+  // Whole-spine study wording is more specific than a lone regional screening
+  // normal (e.g. LS Screening Normal must not win for "LS + Whole Spine Screening").
+  if (/whole\s*spine/i.test(hay)) {
+    const wholeSpineNamed = pool.filter((f) => /whole\s*spine/i.test(f.name ?? ""));
+    if (wholeSpineNamed.length > 0) pool = wholeSpineNamed;
+  }
+
   // Within the correctly resolved protocol identity, curated versioned
   // baselines outrank legacy prose-only normals.
   const owned = pool.filter((f) => f.baselineManifest?.kind === "care.full_report_baseline.v1");

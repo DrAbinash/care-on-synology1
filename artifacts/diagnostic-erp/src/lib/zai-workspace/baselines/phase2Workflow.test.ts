@@ -138,9 +138,9 @@ describe("Phase 2 owned baseline workflows", () => {
     reset("Cervical Spine");
     const format = formatByName("MRI Cervical Spine — Standard Normal");
     useWorkspace.getState().applyFormatById(format.id);
-    const c56 = format.findings.match(/C5-C6:[^\n]+/)?.[0];
-    const c45 = format.findings.match(/C4-C5:[^\n]+/)?.[0];
-    expect(c56 && c45).toBeTruthy();
+    const c56Disc = "C5-C6: No significant disc bulge or protrusion is seen.";
+    const c45Disc = "C4-C5: No significant disc bulge or protrusion is seen.";
+    expect(useWorkspace.getState().findingsText).toContain(c56Disc);
     expect(applyOwned({
       id: "c56-bulge",
       concept: "disc_contour",
@@ -150,8 +150,9 @@ describe("Phase 2 owned baseline workflows", () => {
     })).toBe("applied");
     const text = useWorkspace.getState().findingsText;
     expect(text).toContain("Diffuse disc bulge at C5-C6");
-    expect(text).not.toContain(c56!);
-    expect(text).toContain(c45!);
+    expect(text).not.toContain(c56Disc);
+    expect(text).toContain(c45Disc);
+    expect(text).toContain("C5-C6: No spinal canal or thecal sac compression is seen.");
   });
 
   it("screening formats keep mandatory limitation through abnormal + undo", () => {
@@ -190,7 +191,7 @@ describe("Phase 2 owned baseline workflows", () => {
       id: "cervical-disc-abn",
       concept: "disc_contour",
       level: "cervical",
-      region: "Whole Spine",
+      region: "Cervical Spine",
       findings: "Cervical spine: Significant disc herniation is identified on screening sequences.",
     })).toBe("applied");
     const text = useWorkspace.getState().findingsText;

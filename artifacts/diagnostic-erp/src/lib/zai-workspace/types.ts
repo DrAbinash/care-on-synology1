@@ -103,6 +103,11 @@ export type BaselineManifestObservation = {
   anatomicalSection: string;
   level?: string;
   laterality?: string;
+  /**
+   * Optional anatomical region override for multi-region formats (Whole Spine).
+   * When set, ownership slots use this region instead of the format bodyPart.
+   */
+  region?: string;
   /** Exact atomic sentence materialized into the canonical report. */
   renderedText: string;
 };

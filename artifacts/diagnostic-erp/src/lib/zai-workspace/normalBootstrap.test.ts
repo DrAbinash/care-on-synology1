@@ -44,11 +44,11 @@ function resolve(input: Parameters<typeof resolveNormalBootstrapFormat>[0]) {
 // ─── Acceptance A — normal Brain: complete report present ───────────────────
 
 describe("normalBootstrap resolver — acceptance matrix", () => {
-  it("A. MRI Brain Plain → MRI Brain — Normal (complete report present)", () => {
+  it("A. MRI Brain Plain → MRI Brain — Standard Normal (owned complete report)", () => {
     const decision = resolve({ ctx: ctx({ modality: "MR", region: "Brain", studyDescription: "MRI BRAIN PLAIN" }), formats: FORMATS });
     expect(decision?.status).toBe("apply");
     if (decision?.status === "apply") {
-      expect(decision.format.name).toBe("MRI Brain — Normal");
+      expect(decision.format.name).toBe("MRI Brain — Standard Normal");
       // Complete: technique, findings, impression, recommendation all present.
       expect(decision.format.technique.trim()).not.toBe("");
       expect(decision.format.findings.trim()).not.toBe("");
@@ -87,7 +87,7 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
 
   it("spine identities resolve to their own region's normal (no cross-region bleed)", () => {
     const cervical = resolve({ ctx: ctx({ modality: "MR", region: "Cervical Spine", studyDescription: "MRI CERVICAL SPINE" }), formats: FORMATS });
-    expect(cervical && cervical.status === "apply" ? cervical.format.name : "").toBe("MRI Cervical Spine — Normal");
+    expect(cervical && cervical.status === "apply" ? cervical.format.name : "").toBe("MRI Cervical Spine — Standard Normal");
 
     const dorsal = resolve({ ctx: ctx({ modality: "MR", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE" }), formats: FORMATS });
     expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Normal");
@@ -113,7 +113,7 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
 
   it("cervical/dorsal screening identity → screening normal variants", () => {
     const dorsal = resolve({ ctx: ctx({ modality: "MR", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE SCREENING" }), formats: FORMATS });
-    expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Screening");
+    expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Screening Normal");
   });
 
   it("CT Brain → CT Brain — Normal; DX (X-ray) maps to XR formats", () => {
@@ -137,10 +137,11 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
     // is rejected by the candidate firewall).
     const whole = resolve({ ctx: ctx({ modality: "MR", region: "Whole Spine", studyDescription: "MRI WHOLE SPINE SCREENING" }), formats: FORMATS });
     expect(whole?.status).toBe("apply");
-    expect(whole && whole.status === "apply" ? whole.format.name : "").toBe("MRI Whole Spine — Screening");
-    // Unknown region → no formats for the region.
+    expect(whole && whole.status === "apply" ? whole.format.name : "").toBe("MRI Whole Spine — Screening Normal");
+    // Knee now has an owned Standard Normal Starting Canvas.
     const knee = resolve({ ctx: ctx({ modality: "MR", region: "Knee", studyDescription: "MRI KNEE" }), formats: FORMATS });
-    expect(knee?.status).toBe("no-match");
+    expect(knee?.status).toBe("apply");
+    expect(knee && knee.status === "apply" ? knee.format.name : "").toBe("MRI Knee — Standard Normal");
   });
 
   it("J. pathology / abnormal complete-case formats NEVER auto-apply", () => {

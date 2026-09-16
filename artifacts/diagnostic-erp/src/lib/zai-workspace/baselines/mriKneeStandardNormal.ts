@@ -1,12 +1,15 @@
 /**
  * MRI Knee — Standard Normal owned baseline.
  *
- * Canon: meniscus.
- * Slug fallbacks (not yet in CLINICAL_CONTENT_PACKS): acl, pcl, mcl, lcl,
- * articular_cartilage, bone_marrow, extensor_mechanism, patellofemoral, effusion.
+ * Canon: (none required beyond slug fallbacks).
+ * Slug fallbacks (not yet in CLINICAL_CONTENT_PACKS): medial_meniscus, lateral_meniscus,
+ * acl, pcl, mcl, lcl, articular_cartilage, bone_marrow, extensor_mechanism,
+ * patellofemoral, effusion.
  *
- * Deliberately unowned: laterality of the examined knee (study-level laterality
- * is outside this baseline; observations are ipsilateral-region normals).
+ * Note: CARE laterality slots are left/right/bilateral only — medial vs lateral
+ * meniscus ownership uses distinct concepts, not laterality.
+ *
+ * Deliberately unowned: examined-knee side (study-level laterality).
  */
 import { SYSTEM_NORMAL_CONCEPT } from "@/lib/conceptCanon/normalImpression";
 import type { BaselineManifest, BaselineManifestObservation } from "../types";
@@ -17,19 +20,17 @@ const KNEE_GENERAL_NORMALS: BaselineManifestObservation[] = [
   {
     id: "meniscus-medial",
     field: "findings",
-    concept: "meniscus",
-    conflictGroup: "meniscus",
+    concept: "medial_meniscus",
+    conflictGroup: "medial_meniscus",
     anatomicalSection: "medial meniscus",
-    laterality: "medial",
     renderedText: "Medial meniscus is intact without tear.",
   },
   {
     id: "meniscus-lateral",
     field: "findings",
-    concept: "meniscus",
-    conflictGroup: "meniscus",
+    concept: "lateral_meniscus",
+    conflictGroup: "lateral_meniscus",
     anatomicalSection: "lateral meniscus",
-    laterality: "lateral",
     renderedText: "Lateral meniscus is intact without tear.",
   },
   {

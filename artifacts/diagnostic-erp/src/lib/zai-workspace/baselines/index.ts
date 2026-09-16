@@ -63,12 +63,14 @@ import {
   SCREENING_LIMITATION_TEXT,
   SCREENING_LIMITATION_CONCEPT,
   screeningLimitationObservation,
+  screeningLimitationTechniqueFragment,
 } from "./screeningLimitation";
 
 export {
   SCREENING_LIMITATION_TEXT,
   SCREENING_LIMITATION_CONCEPT,
   screeningLimitationObservation,
+  screeningLimitationTechniqueFragment,
   MRI_BRAIN_STANDARD_NORMAL_NAME,
   MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
   MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,

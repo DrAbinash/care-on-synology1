@@ -15,6 +15,7 @@ export type BaselineManifestObservationInput = {
   anatomicalSection?: unknown;
   level?: unknown;
   laterality?: unknown;
+  region?: unknown;
   renderedText?: unknown;
 };
 
@@ -41,8 +42,10 @@ function slotIdentity(o: {
   concept: string;
   level?: string;
   laterality?: string;
+  region?: string;
 }): string {
   return [
+    (o.region ?? "*").trim().toLowerCase() || "*",
     o.field,
     o.concept.trim().toLowerCase(),
     (o.level ?? "*").trim().toLowerCase() || "*",
@@ -134,6 +137,7 @@ export function validateBaselineManifestForPersistence(opts: {
         concept: entry.concept,
         level: typeof entry.level === "string" ? entry.level : undefined,
         laterality: typeof entry.laterality === "string" ? entry.laterality : undefined,
+        region: typeof entry.region === "string" ? entry.region : undefined,
       });
       if (slots.has(slot)) details.push(`${path}: duplicate ownership slot ${slot}`);
       slots.add(slot);

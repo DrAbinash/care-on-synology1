@@ -108,6 +108,7 @@ export function FindingsEditor({
   fillHeight = false,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const canvasOverlayRef = useRef<HTMLDivElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
   const [highlightActive, setHighlightActive] = useState(false);
   const reduceMotion = typeof window !== "undefined"
@@ -321,46 +322,50 @@ export function FindingsEditor({
             );
           })}
         </div>
-        <div className={cn("relative flex-1", fillHeight && "min-h-0")}>
-          {canvasChangePieces && (
+        <div className={cn("grid flex-1", fillHeight && "min-h-0")}>
+          {/*
+            FindingsHighlightEditor technique: CSS-grid stacks an aria-hidden
+            highlight layer behind a transparent-background textarea so scroll
+            and box size stay in sync. Display-only — never written into clinical text.
+          */}
+          {(canvasChangePieces || highlightOverlay) && (
             <div
-              className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
-              data-testid={`canvas-change-overlay-${field}`}
-              data-editor-only="canvas-change"
+              ref={canvasOverlayRef}
+              className={cn(
+                "col-start-1 row-start-1 overflow-hidden whitespace-pre-wrap break-words pointer-events-none px-3 py-2.5 text-sm leading-[1.6] text-foreground",
+                fillHeight && "h-full min-h-[inherit]",
+              )}
+              data-testid={canvasChangePieces ? `canvas-change-overlay-${field}` : "abnormal-highlight-overlay"}
+              data-editor-only={canvasChangePieces ? "canvas-change" : "abnormal-highlight"}
               aria-hidden
             >
-              {canvasChangePieces.map((piece, i) => (
-                <span
-                  key={`${i}-${piece.text.slice(0, 12)}`}
-                  className={cn(
-                    piece.highlight && "canvas-change-highlight rounded-sm bg-amber-200/55 dark:bg-amber-700/35",
-                    piece.highlight && piece.bold && "known-abnormal-bold font-bold",
-                    !piece.highlight && "invisible",
-                  )}
-                  data-canvas-change={piece.highlight ? (piece.bold ? "abnormal" : "manual") : undefined}
-                >
-                  {piece.text}
-                </span>
-              ))}
-            </div>
-          )}
-          {highlightOverlay && (
-            <div
-              className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
-              data-testid="abnormal-highlight-overlay"
-              data-editor-only="abnormal-highlight"
-              aria-hidden
-            >
-              <span className="invisible">{highlightOverlay.before}</span>
-              <span
-                className={cn(
-                  "rounded-sm bg-amber-200/70 dark:bg-amber-700/40",
-                  !reduceMotion && "animate-pulse",
+              {canvasChangePieces
+                ? canvasChangePieces.map((piece, i) => (
+                  <span
+                    key={`${i}-${piece.text.slice(0, 12)}`}
+                    className={cn(
+                      piece.highlight && "canvas-change-highlight rounded-sm bg-amber-200/55 dark:bg-amber-700/35",
+                      piece.highlight && piece.bold && "known-abnormal-bold font-bold",
+                    )}
+                    data-canvas-change={piece.highlight ? (piece.bold ? "abnormal" : "manual") : undefined}
+                  >
+                    {piece.text}
+                  </span>
+                ))
+                : highlightOverlay && (
+                  <>
+                    <span className="text-transparent">{highlightOverlay.before}</span>
+                    <span
+                      className={cn(
+                        "rounded-sm bg-amber-200/70 dark:bg-amber-700/40 text-transparent",
+                        !reduceMotion && "animate-pulse",
+                      )}
+                    >
+                      {highlightOverlay.mid}
+                    </span>
+                    <span className="text-transparent">{highlightOverlay.after}</span>
+                  </>
                 )}
-              >
-                {highlightOverlay.mid}
-              </span>
-              <span className="invisible">{highlightOverlay.after}</span>
             </div>
           )}
           <textarea
@@ -384,13 +389,20 @@ export function FindingsEditor({
                 });
               }
             }}
+            onScroll={() => {
+              if (canvasOverlayRef.current && ref.current) {
+                canvasOverlayRef.current.scrollTop = ref.current.scrollTop;
+                canvasOverlayRef.current.scrollLeft = ref.current.scrollLeft;
+              }
+            }}
             onFocus={() => onClinicalFocus?.(field)}
             onKeyDown={hk}
             placeholder={placeholder ?? "Begin typing..."}
             spellCheck={false}
             aria-label={label}
             className={cn(
-              "relative z-[2] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50",
+              "col-start-1 row-start-1 relative w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] outline-none placeholder:text-muted-foreground/50",
+              canvasChangePieces ? "text-transparent caret-foreground" : "text-foreground",
               enableDictationBreaks && "whitespace-pre-wrap",
               fillHeight && "h-full min-h-[inherit] overflow-y-auto",
             )}
@@ -398,7 +410,7 @@ export function FindingsEditor({
             data-testid={`canonical-${field}-editor`}
           />
           {gt && gTarget === field && (
-            <div className="pointer-events-none absolute inset-0 z-[3] px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
+            <div className="pointer-events-none col-start-1 row-start-1 relative z-[1] px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
               <span className="invisible">{value}{value.endsWith("\n") ? "" : " "}</span>
               <span className="italic text-emerald-600/60">{gt}</span>
               <span className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-mono text-emerald-700 not-italic">Tab</span>

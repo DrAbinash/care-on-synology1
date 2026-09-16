@@ -16,3 +16,20 @@ export function screeningLimitationObservation(): BaselineManifestObservation {
     renderedText: SCREENING_LIMITATION_TEXT,
   };
 }
+
+/**
+ * Preserved technique fragment — survives format merge via formatSlotMerge
+ * techniqueFragments preserve machinery. Does not replace the findings-owned
+ * screening limitation observation; both carry the same exact sentence.
+ */
+export function screeningLimitationTechniqueFragment(): {
+  text: string;
+  dedupeKey: string;
+  preserve: true;
+} {
+  return {
+    text: SCREENING_LIMITATION_TEXT,
+    dedupeKey: "screening-limitation-exact",
+    preserve: true,
+  };
+}

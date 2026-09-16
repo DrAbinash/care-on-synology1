@@ -26,6 +26,8 @@ const baselineManifestObservationSchema = z.object({
   anatomicalSection: z.string().max(200),
   level: z.string().max(80).optional(),
   laterality: z.string().max(40).optional(),
+  /** Optional anatomical region override (Whole Spine regional ownership). */
+  region: z.string().max(100).optional(),
   renderedText: z.string().min(1).max(4000),
 });
 
@@ -86,9 +88,10 @@ function staffIdentity(req: unknown): { id: number | null; name: string } {
 
 function rowToFormat(row: typeof radiologySnippetsTable.$inferSelect) {
   let baselineManifest: unknown = undefined;
-  if (row.expansionText) {
+  const rawManifest = row.baselineManifest || row.expansionText;
+  if (rawManifest) {
     try {
-      const parsed = JSON.parse(row.expansionText);
+      const parsed = JSON.parse(rawManifest);
       if (parsed && typeof parsed === "object" && parsed.kind) baselineManifest = parsed;
     } catch {
       /* expansionText may hold unrelated macro data historically — ignore */
@@ -206,7 +209,7 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
       isGlobal: d.isGlobal,
       isPartialSection: false,
       // Persist owned baseline contract without a schema migration — unused for report_format.
-      expansionText: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null,
+      baselineManifest: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null,
       createdById: staff.id,
       createdByName: staff.name,
     })
@@ -276,7 +279,7 @@ radiologyReportFormatsRouter.post("/migrate", async (req, res) => {
         isActive: true,
         isGlobal: false,
         isPartialSection: false,
-        expansionText: f.baselineManifest ? JSON.stringify(f.baselineManifest) : null,
+        baselineManifest: f.baselineManifest ? JSON.stringify(f.baselineManifest) : null,
         createdById: staff.id,
         createdByName: staff.name,
       })
@@ -366,7 +369,7 @@ radiologyReportFormatsRouter.put("/:id", async (req, res) => {
       ...(d.isActive !== undefined ? { isActive: d.isActive } : {}),
       ...(d.isGlobal !== undefined ? { isGlobal: d.isGlobal } : {}),
       ...(d.baselineManifest !== undefined
-        ? { expansionText: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null }
+        ? { baselineManifest: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null }
         : {}),
       updatedAt: new Date(),
     })

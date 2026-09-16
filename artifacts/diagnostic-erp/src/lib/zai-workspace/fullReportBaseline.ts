@@ -280,7 +280,7 @@ export function validateBaselineManifest(
     const fieldText = entry.field === "findings" ? format.findings : format.impression;
     if (!fieldText.includes(entry.renderedText)) missing.push(entry.id);
     const observation = buildCanonicalObservation({
-      region: effectiveRegion,
+      region: entry.region?.trim() || effectiveRegion,
       concept: entry.concept,
       conflictGroup: entry.conflictGroup,
       anatomicalSection: entry.anatomicalSection,
@@ -347,7 +347,7 @@ export function materializeFormatBaseline(
         : ("impression" as const);
     const observation = buildCanonicalObservation({
       id,
-      region,
+      region: entry.region?.trim() || region,
       concept: entry.concept,
       conflictGroup: entry.conflictGroup,
       anatomicalSection: entry.anatomicalSection,

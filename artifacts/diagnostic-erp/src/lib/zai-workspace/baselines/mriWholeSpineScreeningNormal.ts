@@ -1,6 +1,6 @@
 /**
  * MRI Whole Spine — Screening Normal.
- * REGION-AWARE ownership via level buckets: cervical | dorsal | lumbar.
+ * REGION-AWARE ownership via per-entry `region` (Cervical / Dorsal / LS Spine).
  * Mandatory screening limitation appears once.
  */
 import { SYSTEM_NORMAL_CONCEPT } from "@/lib/conceptCanon/normalImpression";
@@ -9,66 +9,79 @@ import { screeningLimitationObservation, SCREENING_LIMITATION_TEXT } from "./scr
 
 export const MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME = "MRI Whole Spine — Screening Normal";
 
+const REGION_BY_BUCKET = {
+  cervical: "Cervical Spine",
+  dorsal: "Dorsal Spine",
+  lumbar: "LS Spine",
+} as const;
+
 function regionalNormals(
-  level: "cervical" | "dorsal" | "lumbar",
+  bucket: keyof typeof REGION_BY_BUCKET,
   label: string,
 ): BaselineManifestObservation[] {
+  const region = REGION_BY_BUCKET[bucket];
   const base: BaselineManifestObservation[] = [
     {
-      id: `${level}-alignment`,
+      id: `${bucket}-alignment`,
       field: "findings",
       concept: "alignment",
       conflictGroup: "alignment",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: Alignment is within normal limits on screening sequences.`,
     },
     {
-      id: `${level}-vertebral`,
+      id: `${bucket}-vertebral`,
       field: "findings",
       concept: "compression_fracture",
       conflictGroup: "compression_fracture",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: Vertebral bodies show normal height and marrow signal on screening images.`,
     },
     {
-      id: `${level}-disc`,
+      id: `${bucket}-disc`,
       field: "findings",
       concept: "disc_contour",
       conflictGroup: "disc_contour",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: No significant disc herniation is identified on screening sequences.`,
     },
     {
-      id: `${level}-canal`,
+      id: `${bucket}-canal`,
       field: "findings",
       concept: "canal_stenosis",
       conflictGroup: "canal_stenosis",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: No gross spinal canal compromise is seen.`,
     },
   ];
-  if (level === "lumbar") {
+  if (bucket === "lumbar") {
     base.push({
-      id: `${level}-conus`,
+      id: `${bucket}-conus`,
       field: "findings",
       concept: "conus",
       conflictGroup: "conus",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: Conus medullaris appears normal on screening images.`,
     });
   } else {
     base.push({
-      id: `${level}-cord`,
+      id: `${bucket}-cord`,
       field: "findings",
       concept: "cord_signal",
       conflictGroup: "cord_signal",
       anatomicalSection: label,
-      level,
+      region,
+      level: bucket,
       renderedText: `${label}: Cord morphology and signal are within normal limits on screening sequences.`,
     });
   }
@@ -90,7 +103,7 @@ export const MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION =
 export const MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST: BaselineManifest = {
   kind: "care.full_report_baseline.v1",
   version: 1,
-  revision: "mri-whole-spine-screening-normal-r1",
+  revision: "mri-whole-spine-screening-normal-r2",
   observations: [
     ...OBS,
     {
@@ -120,5 +133,4 @@ export const MRI_WHOLE_SPINE_SCREENING_NORMAL_META = {
   manifest: MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
 };
 
-// Ensure limitation text is exported for tests
 export { SCREENING_LIMITATION_TEXT };

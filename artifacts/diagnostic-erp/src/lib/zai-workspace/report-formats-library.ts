@@ -66,6 +66,7 @@ import {
 import {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_META,
 } from "./baselines/mriWholeSpineScreeningNormal";
+import { screeningLimitationTechniqueFragment } from "./baselines/screeningLimitation";
 
 const now = () => new Date().toISOString();
 const uid = () => `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -190,7 +191,10 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_BRAIN_SCREENING_NORMAL_META.recommendation,
     reportTitle: MRI_BRAIN_SCREENING_NORMAL_META.reportTitle,
     protocolScope: "Screening",
-    techniqueFragments: [{ text: MRI_BRAIN_SCREENING_NORMAL_META.technique, dedupeKey: "brain-screening-owned", preserve: true }],
+    techniqueFragments: [
+      { text: MRI_BRAIN_SCREENING_NORMAL_META.technique, dedupeKey: "brain-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
     baselineManifest: MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_CERVICAL_SCREENING_NORMAL_NAME, "MR", "Cervical Spine", ["screening", "normal", "owned baseline"], {
@@ -201,7 +205,10 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_CERVICAL_SCREENING_NORMAL_META.recommendation,
     reportTitle: MRI_CERVICAL_SCREENING_NORMAL_META.reportTitle,
     protocolScope: "Screening",
-    techniqueFragments: [{ text: MRI_CERVICAL_SCREENING_NORMAL_META.technique, dedupeKey: "cervical-screening-owned", preserve: true }],
+    techniqueFragments: [
+      { text: MRI_CERVICAL_SCREENING_NORMAL_META.technique, dedupeKey: "cervical-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
     baselineManifest: MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_DORSAL_SCREENING_NORMAL_NAME, "MR", "Dorsal Spine", ["screening", "normal", "owned baseline"], {
@@ -212,7 +219,10 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_DORSAL_SCREENING_NORMAL_META.recommendation,
     reportTitle: MRI_DORSAL_SCREENING_NORMAL_META.reportTitle,
     protocolScope: "Screening",
-    techniqueFragments: [{ text: MRI_DORSAL_SCREENING_NORMAL_META.technique, dedupeKey: "dorsal-screening-owned", preserve: true }],
+    techniqueFragments: [
+      { text: MRI_DORSAL_SCREENING_NORMAL_META.technique, dedupeKey: "dorsal-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
     baselineManifest: MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_LS_SCREENING_NORMAL_NAME, "MR", "LS Spine", ["screening", "normal", "owned baseline"], {
@@ -223,7 +233,10 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_LS_SCREENING_NORMAL_META.recommendation,
     reportTitle: MRI_LS_SCREENING_NORMAL_META.reportTitle,
     protocolScope: "Screening",
-    techniqueFragments: [{ text: MRI_LS_SCREENING_NORMAL_META.technique, dedupeKey: "ls-screening-owned", preserve: true }],
+    techniqueFragments: [
+      { text: MRI_LS_SCREENING_NORMAL_META.technique, dedupeKey: "ls-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
     baselineManifest: MRI_LS_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME, "MR", "Whole Spine", ["screening", "whole spine", "normal", "owned baseline"], {
@@ -234,7 +247,10 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.recommendation,
     reportTitle: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.reportTitle,
     protocolScope: "Screening",
-    techniqueFragments: [{ text: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.technique, dedupeKey: "whole-spine-screening-owned", preserve: true }],
+    techniqueFragments: [
+      { text: MRI_WHOLE_SPINE_SCREENING_NORMAL_META.technique, dedupeKey: "whole-spine-screening-owned", preserve: true },
+      screeningLimitationTechniqueFragment(),
+    ],
     baselineManifest: MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
   }, true),
   fmt("MRI LS Spine — Normal", "MR", "LS Spine", ["normal", "legacy"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Normal MRI lumbo-sacral spine. No acute bony or disc abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI LUMBOSACRAL SPINE", techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", dedupeKey: "ls-detailed", preserve: true }] }, true),
