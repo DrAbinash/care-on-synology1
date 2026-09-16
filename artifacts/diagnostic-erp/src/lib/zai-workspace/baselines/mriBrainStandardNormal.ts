@@ -144,4 +144,8 @@ export const MRI_BRAIN_STANDARD_NORMAL_META = {
     "MRI brain on 3T. Multiplanar T1W, T2W, FLAIR, DWI, ADC and GRE/SWI sequences were obtained.",
   recommendation: "Clinical correlation.",
   reportTitle: "MRI BRAIN PLAIN",
+  findings: MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
+  impression: MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
+  diagnosisTags: ["normal", "brain"],
+  manifest: MRI_BRAIN_STANDARD_NORMAL_MANIFEST,
 };

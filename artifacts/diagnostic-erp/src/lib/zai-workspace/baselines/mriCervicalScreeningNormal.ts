@@ -96,4 +96,8 @@ export const MRI_CERVICAL_SCREENING_NORMAL_META = {
     "Limited planar and limited sequence MRI cervical spine screening was performed (sagittal T1W/T2W with selected axial images).",
   recommendation: "Clinical correlation. Dedicated MRI cervical spine if clinically indicated.",
   reportTitle: "MRI CERVICAL SPINE SCREENING",
+  findings: MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
+  impression: MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
+  diagnosisTags: ["screening", "normal", "cervical"],
+  manifest: MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
 };

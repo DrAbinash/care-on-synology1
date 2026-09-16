@@ -1,5 +1,8 @@
-import type { BaselineManifest, Modality } from "../types";
-
+/**
+ * Catalog of Phase-2 owned Starting Canvas formats (excludes LS Standard Normal,
+ * which remains defined in fullReportBaseline.ts as the architectural reference).
+ */
+import type { BaselineManifest, ReportFormat } from "../types";
 import {
   MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
   MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
@@ -29,13 +32,6 @@ import {
   MRI_CERVICAL_SCREENING_NORMAL_NAME,
 } from "./mriCervicalScreeningNormal";
 import {
-  MRI_KNEE_STANDARD_NORMAL_FINDINGS,
-  MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
-  MRI_KNEE_STANDARD_NORMAL_MANIFEST,
-  MRI_KNEE_STANDARD_NORMAL_META,
-  MRI_KNEE_STANDARD_NORMAL_NAME,
-} from "./mriKneeStandardNormal";
-import {
   MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
   MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
   MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
@@ -50,6 +46,13 @@ import {
   MRI_LS_SCREENING_NORMAL_NAME,
 } from "./mriLsScreeningNormal";
 import {
+  MRI_KNEE_STANDARD_NORMAL_FINDINGS,
+  MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
+  MRI_KNEE_STANDARD_NORMAL_MANIFEST,
+  MRI_KNEE_STANDARD_NORMAL_META,
+  MRI_KNEE_STANDARD_NORMAL_NAME,
+} from "./mriKneeStandardNormal";
+import {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
   MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
   MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
@@ -57,24 +60,10 @@ import {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_NAME,
 } from "./mriWholeSpineScreeningNormal";
 import {
-  SCREENING_LIMITATION_CONCEPT,
   SCREENING_LIMITATION_TEXT,
+  SCREENING_LIMITATION_CONCEPT,
   screeningLimitationObservation,
 } from "./screeningLimitation";
-
-export type OwnedBaselineCatalogEntry = {
-  name: string;
-  bodyPart: string;
-  modality: Modality;
-  protocolScope?: string;
-  manifest: BaselineManifest;
-  findings: string;
-  impression: string;
-  clinicalHistory?: string;
-  technique?: string;
-  recommendation?: string;
-  reportTitle?: string;
-};
 
 export {
   SCREENING_LIMITATION_TEXT,
@@ -114,84 +103,52 @@ export {
   MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
 };
 
+export type OwnedBaselineCatalogEntry = {
+  name: string;
+  modality: "MR";
+  bodyPart: string;
+  protocolScope?: string;
+  clinicalHistory: string;
+  technique: string;
+  findings: string;
+  impression: string;
+  recommendation: string;
+  reportTitle: string;
+  diagnosisTags: string[];
+  manifest: BaselineManifest;
+};
+
+function asEntry(meta: OwnedBaselineCatalogEntry): OwnedBaselineCatalogEntry {
+  return meta;
+}
+
 /** Phase 2 owned baseline catalog (8 formats). Does not include LS Standard Normal. */
 export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
-  const rows: Array<{
-    meta: {
-      name: string;
-      bodyPart: string;
-      modality: Modality;
-      protocolScope?: string;
-      clinicalHistory?: string;
-      technique?: string;
-      recommendation?: string;
-      reportTitle?: string;
-    };
-    findings: string;
-    impression: string;
-    manifest: BaselineManifest;
-  }> = [
-    {
-      meta: MRI_BRAIN_STANDARD_NORMAL_META,
-      findings: MRI_BRAIN_STANDARD_NORMAL_FINDINGS,
-      impression: MRI_BRAIN_STANDARD_NORMAL_IMPRESSION,
-      manifest: MRI_BRAIN_STANDARD_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_CERVICAL_STANDARD_NORMAL_META,
-      findings: MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
-      impression: MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
-      manifest: MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_KNEE_STANDARD_NORMAL_META,
-      findings: MRI_KNEE_STANDARD_NORMAL_FINDINGS,
-      impression: MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
-      manifest: MRI_KNEE_STANDARD_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_BRAIN_SCREENING_NORMAL_META,
-      findings: MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
-      impression: MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
-      manifest: MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_CERVICAL_SCREENING_NORMAL_META,
-      findings: MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
-      impression: MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
-      manifest: MRI_CERVICAL_SCREENING_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_DORSAL_SCREENING_NORMAL_META,
-      findings: MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
-      impression: MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
-      manifest: MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_LS_SCREENING_NORMAL_META,
-      findings: MRI_LS_SCREENING_NORMAL_FINDINGS,
-      impression: MRI_LS_SCREENING_NORMAL_IMPRESSION,
-      manifest: MRI_LS_SCREENING_NORMAL_MANIFEST,
-    },
-    {
-      meta: MRI_WHOLE_SPINE_SCREENING_NORMAL_META,
-      findings: MRI_WHOLE_SPINE_SCREENING_NORMAL_FINDINGS,
-      impression: MRI_WHOLE_SPINE_SCREENING_NORMAL_IMPRESSION,
-      manifest: MRI_WHOLE_SPINE_SCREENING_NORMAL_MANIFEST,
-    },
+  return [
+    asEntry(MRI_BRAIN_STANDARD_NORMAL_META),
+    asEntry(MRI_CERVICAL_STANDARD_NORMAL_META),
+    asEntry(MRI_KNEE_STANDARD_NORMAL_META),
+    asEntry(MRI_BRAIN_SCREENING_NORMAL_META),
+    asEntry(MRI_CERVICAL_SCREENING_NORMAL_META),
+    asEntry(MRI_DORSAL_SCREENING_NORMAL_META),
+    asEntry(MRI_LS_SCREENING_NORMAL_META),
+    asEntry(MRI_WHOLE_SPINE_SCREENING_NORMAL_META),
   ];
+}
 
-  return rows.map(({ meta, findings, impression, manifest }) => ({
-    name: meta.name,
-    bodyPart: meta.bodyPart,
-    modality: meta.modality,
-    protocolScope: meta.protocolScope,
-    manifest,
-    findings,
-    impression,
-    clinicalHistory: meta.clinicalHistory,
-    technique: meta.technique,
-    recommendation: meta.recommendation,
-    reportTitle: meta.reportTitle,
-  }));
+/** Built-in name → manifest map for hydration. */
+export function ownedBaselineManifestByName(): Map<string, BaselineManifest> {
+  const map = new Map<string, BaselineManifest>();
+  for (const e of ownedBaselineCatalog()) map.set(e.name, e.manifest);
+  return map;
+}
+
+export function ownershipCount(manifest: BaselineManifest): number {
+  return manifest.observations.length;
+}
+
+export function formatLooksLikeOwnedBaseline(
+  format: Pick<ReportFormat, "name" | "modality" | "bodyPart">,
+): boolean {
+  return ownedBaselineManifestByName().has(format.name);
 }

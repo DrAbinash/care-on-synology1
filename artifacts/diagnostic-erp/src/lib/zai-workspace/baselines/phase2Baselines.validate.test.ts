@@ -26,6 +26,22 @@ describe("Phase 2 owned baselines", () => {
     ]);
   });
 
+  it("reports ownership counts for each Phase 2 format", () => {
+    const counts = Object.fromEntries(
+      catalog.map((e) => [e.name, e.manifest.observations.length]),
+    );
+    expect(counts).toEqual({
+      "MRI Brain — Standard Normal": 13,
+      "MRI Cervical Spine — Standard Normal": 39,
+      "MRI Knee — Standard Normal": 11,
+      "MRI Brain — Screening Normal": 7,
+      "MRI Cervical Spine — Screening Normal": 8,
+      "MRI Dorsal Spine — Screening Normal": 8,
+      "MRI LS Spine — Screening Normal": 8,
+      "MRI Whole Spine — Screening Normal": 17,
+    });
+  });
+
   it("validates every Phase 2 manifest without missing text or duplicate slots", () => {
     for (const entry of catalog) {
       const format = {

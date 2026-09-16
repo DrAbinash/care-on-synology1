@@ -127,4 +127,8 @@ export const MRI_KNEE_STANDARD_NORMAL_META = {
     "MRI knee on 3T. Multiplanar proton-density fat-saturated, T1W and T2W sequences were obtained.",
   recommendation: "Clinical correlation.",
   reportTitle: "MRI KNEE",
+  findings: MRI_KNEE_STANDARD_NORMAL_FINDINGS,
+  impression: MRI_KNEE_STANDARD_NORMAL_IMPRESSION,
+  diagnosisTags: ["normal", "knee"],
+  manifest: MRI_KNEE_STANDARD_NORMAL_MANIFEST,
 };

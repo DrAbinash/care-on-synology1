@@ -95,4 +95,8 @@ export const MRI_LS_SCREENING_NORMAL_META = {
     "Limited planar and limited sequence MRI lumbosacral spine screening was performed (sagittal T1W, T2W and STIR).",
   recommendation: "Clinical correlation. Dedicated MRI LS spine if clinically indicated.",
   reportTitle: "MRI LUMBOSACRAL SPINE SCREENING",
+  findings: MRI_LS_SCREENING_NORMAL_FINDINGS,
+  impression: MRI_LS_SCREENING_NORMAL_IMPRESSION,
+  diagnosisTags: ["screening", "normal", "ls spine"],
+  manifest: MRI_LS_SCREENING_NORMAL_MANIFEST,
 };

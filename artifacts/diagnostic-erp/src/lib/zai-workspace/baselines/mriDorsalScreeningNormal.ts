@@ -96,4 +96,8 @@ export const MRI_DORSAL_SCREENING_NORMAL_META = {
     "Limited planar and limited sequence MRI dorsal spine screening was performed (sagittal T1W, T2W and STIR).",
   recommendation: "Clinical correlation. Dedicated MRI dorsal spine if clinically indicated.",
   reportTitle: "MRI DORSAL SPINE SCREENING",
+  findings: MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
+  impression: MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
+  diagnosisTags: ["screening", "normal", "dorsal"],
+  manifest: MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
 };

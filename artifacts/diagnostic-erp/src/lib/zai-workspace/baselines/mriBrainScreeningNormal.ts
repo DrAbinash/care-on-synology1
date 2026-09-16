@@ -93,6 +93,10 @@ export const MRI_BRAIN_SCREENING_NORMAL_META = {
     "Limited planar and limited sequence MRI brain screening was performed. Dedicated multiplanar complete brain protocol was not obtained.",
   recommendation: "Clinical correlation. Dedicated MRI brain if clinically indicated.",
   reportTitle: "MRI BRAIN SCREENING",
+  findings: MRI_BRAIN_SCREENING_NORMAL_FINDINGS,
+  impression: MRI_BRAIN_SCREENING_NORMAL_IMPRESSION,
+  diagnosisTags: ["screening", "normal", "brain"],
+  manifest: MRI_BRAIN_SCREENING_NORMAL_MANIFEST,
 };
 
 /** Re-export for catalog consumers that need the phrase constant nearby. */

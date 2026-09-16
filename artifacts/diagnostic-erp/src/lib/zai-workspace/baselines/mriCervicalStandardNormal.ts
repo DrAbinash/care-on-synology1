@@ -180,4 +180,8 @@ export const MRI_CERVICAL_STANDARD_NORMAL_META = {
     "MRI cervical spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.",
   recommendation: "Clinical correlation.",
   reportTitle: "MRI CERVICAL SPINE",
+  findings: MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
+  impression: MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
+  diagnosisTags: ["normal", "cervical"],
+  manifest: MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
 };
