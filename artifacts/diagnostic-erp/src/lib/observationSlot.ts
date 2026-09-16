@@ -397,6 +397,9 @@ export function sentenceOwnedBySlot(
     if (mentioned && mentioned !== "bilateral" && mentioned !== obsLat) return false;
   }
   if (sentenceMatchesConcept(sentence, obs.concept)) return true;
+  // A resolved concept is the ownership boundary. Anatomy/level identifies
+  // where the concept lives, but must not absorb other concepts at that site.
+  if (obs.concept) return false;
   const section = (obs.anatomicalSection ?? "").trim();
   if (section && !isBroadAnatomy(section) && sentence.toLowerCase().includes(section.toLowerCase())) {
     return true;
