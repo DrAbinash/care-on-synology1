@@ -277,10 +277,10 @@ export function ReportAccordionSection({
         }}
         className={cn(
           continuousPrimary
-            ? (showBody ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden")
+            ? (showBody ? "flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden")
             : continuous
               ? (showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden")
-              : (active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
+              : (active ? "flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
         )}
       >
         {children}

@@ -5944,7 +5944,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     ) : studySetup.highlightFindings ? (
                       <ConnectedFindingsHighlightEditor
                         placeholder="Type findings. Abnormal lines tint amber."
-                        className="min-h-[220px]"
+                        className="min-h-[50vh]"
                         disabled={isLocked || isFinalized}
                         dataEditor="findings"
                       />
@@ -5954,7 +5954,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <FindingsEditor
                         field="findings"
                         label=""
-                        minHeight="220px"
+                        minHeight="50vh"
+                        fillHeight
                         placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost."
                         showGhost
                         hideQuickSelect
@@ -6283,7 +6284,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="220px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost
+                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />

@@ -83,7 +83,7 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
   it("collapsing is visual only — children stay mounted so state survives", () => {
     // Progressive mode hides inactive bodies with `hidden` (display:none);
     // children stay mounted so editors/drawers never lose state.
-    expect(accordion).toMatch(/active \? "min-h-0 flex-1 overflow-y-auto[^"]*" : "hidden"/);
+    expect(accordion).toMatch(/active \? "flex min-h-0 flex-1 flex-col overflow-y-auto[^"]*" : "hidden"/);
     expect(accordion).toContain("{children}");
     // Guard against a regression to conditional rendering.
     expect(accordion).not.toMatch(/\{active && children\}/);
@@ -108,6 +108,9 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
   it("opens Findings/Impression with clinical ~2/3 reporting focus", () => {
     expect(workspace).toContain("enterClinicalEditorFocus");
     expect(workspace).toContain('sectionId === "findings" || sectionId === "impression"');
+    expect(workspace).toContain('minHeight="50vh"');
+    expect(workspace).toContain('minHeight="40vh"');
+    expect(workspace).toContain("fillHeight");
   });
 
   it("adds Alt+1…9 without colliding with existing shortcuts", () => {
