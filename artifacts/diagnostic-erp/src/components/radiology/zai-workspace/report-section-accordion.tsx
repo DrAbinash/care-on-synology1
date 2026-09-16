@@ -119,13 +119,16 @@ export function ReportAccordionSection({
       data-density={density}
       className={cn(
         // Solid backgrounds + overflow clip prevent stacked-row ghosting.
+        // Active / continuous-primary sections MUST get a real flex height —
+        // without min-h-[…] + basis-0, flex-1 collapses to a 1–2 line editor
+        // when the canvas was scrollable (content-sized) instead of viewport-bound.
         "flex flex-col overflow-hidden rounded-lg border bg-card transition-colors isolate",
         continuousPrimary
-          ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
+          ? "min-h-[42vh] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/40"
           : continuous
             ? "shrink-0 border-border/50"
             : active
-              ? "min-h-0 flex-1 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
+              ? "min-h-[66vh] flex-1 basis-0 border-emerald-300/80 bg-card shadow-sm shadow-emerald-100/60"
               : isPrimary
                 ? "shrink-0 border-emerald-200/80 hover:border-emerald-300"
                 : "shrink-0 border-border/70 hover:border-emerald-200",
@@ -274,10 +277,10 @@ export function ReportAccordionSection({
         }}
         className={cn(
           continuousPrimary
-            ? (showBody ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden")
+            ? (showBody ? "flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden")
             : continuous
               ? (showBody ? "min-h-0 overflow-y-visible px-2.5 pb-2.5 pt-0.5" : "hidden")
-              : (active ? "min-h-0 flex-1 overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
+              : (active ? "flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-2.5 pt-0.5" : "hidden"),
         )}
       >
         {children}

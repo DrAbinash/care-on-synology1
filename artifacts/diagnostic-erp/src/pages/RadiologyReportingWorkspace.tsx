@@ -593,12 +593,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [lastClinicalTarget, setLastClinicalTarget] = useState<PersonalTemplateTarget>("findings");
   /** Late-bound: reporting focus chrome + optional 2/3 split (set after layout hooks). */
   const enterReportingFocusModeRef = useRef<() => void>(() => {});
+  const enterClinicalEditorFocusRef = useRef<() => void>(() => {});
   const exclusiveReportSectionsRef = useRef(false);
   const focusClinicalEditor = useCallback((field: PersonalTemplateTarget) => {
     setLastClinicalTarget(field);
     setActiveReportSection(field);
     // Layout-only: never mutates clinical text / observations / study.
-    if (exclusiveReportSectionsRef.current) {
+    // Findings / Impression always request ~2/3 report column; other clinical
+    // targets still collapse chrome on laptop exclusive mode.
+    if (field === "findings" || field === "impression") {
+      enterClinicalEditorFocusRef.current();
+    } else if (exclusiveReportSectionsRef.current) {
       enterReportingFocusModeRef.current();
     }
     requestAnimationFrame(() => {
@@ -1335,6 +1340,34 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   ]);
   enterReportingFocusModeRef.current = enterReportingFocusMode;
   exclusiveReportSectionsRef.current = exclusiveReportSections;
+
+  /**
+   * Findings / Impression activation: collapse chrome and bias the OHIF|Report
+   * split toward ~2/3 report so the clinical editor is actually usable.
+   * Honors session manual splitter override (same as laptop auto-focus).
+   */
+  const enterClinicalEditorFocus = useCallback(() => {
+    enterReportingFocusMode();
+    if (!showEmbeddedViewer) return;
+    if (
+      !shouldApplyAutomaticPaneFocus({
+        constrained: true, // clinical open always wants the 2/3 bias when not overridden
+        mode: layoutMode === "viewerFocus" ? "viewerFocus" : "split",
+        manualOverride: paneManualOverrideRef.current,
+      })
+    ) {
+      return;
+    }
+    if (layoutMode === "viewerFocus") setLayoutMode("split");
+    applyPaneFocusSplit("reporting");
+  }, [
+    enterReportingFocusMode,
+    showEmbeddedViewer,
+    layoutMode,
+    setLayoutMode,
+    applyPaneFocusSplit,
+  ]);
+  enterClinicalEditorFocusRef.current = enterClinicalEditorFocus;
 
   const enterViewerPaneFocus = useCallback(() => {
     if (!showEmbeddedViewer) return;
@@ -4441,6 +4474,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   /** Shared props for every accordion header — keeps the nine call sites terse. */
   const accordionProps = (id: ReportSectionId, extra?: { collapsedWarning?: ReactNode }) => {
     const meta = sectionMeta(id);
+    const clinicalEditor = id === "findings" || id === "impression";
     return {
       id,
       index: meta.index,
@@ -4451,10 +4485,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       active: activeReportSection === id,
       onActivate: (sectionId: ReportSectionId) => {
         activateReportSection(sectionId);
-        if (exclusiveReportSections) enterReportingFocusMode();
+        // Findings / Impression: grow the report column (~2/3) so the editor
+        // is not a 1–2 line slit beside OHIF. Other sections still collapse
+        // chrome on laptop exclusive mode.
+        if (sectionId === "findings" || sectionId === "impression") {
+          enterClinicalEditorFocus();
+        } else if (exclusiveReportSections) {
+          enterReportingFocusMode();
+        }
       },
       collapsedWarning: extra?.collapsedWarning,
       density: (compactAccordion ? "compact" : "comfortable") as "compact" | "comfortable",
+      // Primary clinical sections already get emphasis via continuous/active
+      // height rules — mark Findings / Impression for the larger min-heights.
+      ...(clinicalEditor ? { emphasis: "primary" as const } : {}),
     };
   };
 
@@ -5198,12 +5242,15 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
                   {/* Reporting pane — exclusive one-active on laptop; continuous
                       Findings+Impression only on wide desktop. Layout focus never
-                      mutates clinical report state. */}
+                      mutates clinical report state.
+                      Always overflow-hidden (not overflow-y-auto): flex-1
+                      Findings/Impression need a bounded flex parent or they
+                      collapse to a 1–2 line editor. Section bodies scroll. */}
                   <div
                     className={
                       exclusiveReportSections
                         ? "flex min-h-0 flex-1 flex-col gap-1 overflow-hidden p-2"
-                        : "flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3"
+                        : "flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden p-3"
                     }
                     data-testid="reporting-canvas-r2"
                     data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}
@@ -5424,7 +5471,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                          and exactly ONE assistance drawer open at a time below. */}
                     <ReportAccordionSection
                       {...accordionProps("findings")}
-                      {...(!exclusiveReportSections ? { continuous: true as const } : {})}
                       emphasis="primary"
                       onActivate={() => focusClinicalEditor("findings")}
                       onBodyActivate={() => focusClinicalEditor("findings")}
@@ -5918,7 +5964,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     ) : studySetup.highlightFindings ? (
                       <ConnectedFindingsHighlightEditor
                         placeholder="Type findings. Abnormal lines tint amber."
-                        className="min-h-[220px]"
+                        className="min-h-[50vh]"
                         disabled={isLocked || isFinalized}
                         dataEditor="findings"
                       />
@@ -5928,7 +5974,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       <FindingsEditor
                         field="findings"
                         label=""
-                        minHeight="220px"
+                        minHeight="50vh"
+                        fillHeight
                         placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost."
                         showGhost
                         hideQuickSelect
@@ -6195,7 +6242,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                         ) : null,
                       })}
-                      {...(!exclusiveReportSections ? { continuous: true as const } : {})}
                       emphasis="primary"
                       onActivate={() => focusClinicalEditor("impression")}
                       onBodyActivate={() => focusClinicalEditor("impression")}
@@ -6258,7 +6304,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        <FindingsEditor field="impression" label="" minHeight="100px" placeholder="Conclusion. Ctrl+I for AI impression." showGhost
+                        <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />

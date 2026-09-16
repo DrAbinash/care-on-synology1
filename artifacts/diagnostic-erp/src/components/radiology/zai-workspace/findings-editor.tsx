@@ -47,6 +47,11 @@ interface Props {
    * Enabled for Findings / Impression in the live reporting cockpit.
    */
   enableDictationBreaks?: boolean;
+  /**
+   * Fill the expanded accordion: use CSS height from minHeight and skip
+   * content-only auto-grow so Findings/Impression are not 1–2 line slits.
+   */
+  fillHeight?: boolean;
 }
 
 const G: Record<string, string> = { error: "✕", warning: "△", info: "◌" };
@@ -96,6 +101,7 @@ export function FindingsEditor({
   transientHighlight = null,
   onClinicalFocus,
   enableDictationBreaks = false,
+  fillHeight = false,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [provenanceOpen, setProvenanceOpen] = useState(false);
@@ -162,11 +168,15 @@ export function FindingsEditor({
   );
 
   useEffect(() => {
-    if (ref.current) {
-      ref.current.style.height = "auto";
-      ref.current.style.height = Math.max(parseInt(minHeight), ref.current.scrollHeight) + "px";
+    if (!ref.current) return;
+    if (fillHeight) {
+      // Accordion owns height — clear inline content-grow so CSS minHeight/height win.
+      ref.current.style.height = "";
+      return;
     }
-  }, [value, minHeight]);
+    ref.current.style.height = "auto";
+    ref.current.style.height = Math.max(parseInt(minHeight, 10) || 0, ref.current.scrollHeight) + "px";
+  }, [value, minHeight, fillHeight]);
   useEffect(() => {
     if (gTarget === field && gt && ref.current) {
       ref.current.focus();
@@ -190,7 +200,12 @@ export function FindingsEditor({
   const lines = (typeof value === "string" ? value : "").split("\n");
 
   return (
-    <div className="relative w-full" data-report-field={field} data-testid={`findings-editor-${field}`}>
+    <div
+      className={cn("relative w-full", fillHeight && "flex min-h-0 flex-1 flex-col")}
+      data-report-field={field}
+      data-testid={`findings-editor-${field}`}
+      data-fill-height={fillHeight ? "true" : undefined}
+    >
       {enableDictationBreaks && (
         <ClinicalTextTools
           className="mb-1.5"
@@ -248,7 +263,7 @@ export function FindingsEditor({
         </div>
       )}
 
-      <div className="relative flex">
+      <div className={cn("relative flex", fillHeight && "min-h-0 flex-1")}>
         <div className="flex-none w-8 select-none border-r border-emerald-200/40 bg-gradient-to-b from-emerald-50/40 to-emerald-50/10 text-right text-[10px] leading-[1.6] font-mono pt-2.5 text-emerald-600/60" aria-hidden>
           {lines.map((_, i) => {
             const ln = i + 1;
@@ -276,7 +291,7 @@ export function FindingsEditor({
             );
           })}
         </div>
-        <div className="relative flex-1">
+        <div className={cn("relative flex-1", fillHeight && "min-h-0")}>
           {highlightOverlay && (
             <div
               className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
@@ -325,8 +340,9 @@ export function FindingsEditor({
             className={cn(
               "relative z-[2] w-full resize-none border-0 bg-transparent px-3 py-2.5 text-sm leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/50",
               enableDictationBreaks && "whitespace-pre-wrap",
+              fillHeight && "h-full min-h-[inherit] overflow-y-auto",
             )}
-            style={{ minHeight }}
+            style={fillHeight ? { minHeight, height: minHeight } : { minHeight }}
             data-testid={`canonical-${field}-editor`}
           />
           {gt && gTarget === field && (

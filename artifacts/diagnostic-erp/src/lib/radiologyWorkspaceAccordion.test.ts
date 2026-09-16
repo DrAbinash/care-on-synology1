@@ -34,14 +34,21 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     ]) {
       expect(workspace).toContain(`accordionProps("${id}"`);
     }
-    // Findings + Impression stay continuously visible on wide desktop; laptop
-    // uses exclusive one-active (`data-report-accordion` switches at runtime).
+    // Findings + Impression use exclusive expand (min-h ~66vh) so opening one
+    // clinical panel is usable. Other rows remain progressive; laptop still
+    // flips data-report-accordion to "exclusive" for chrome density.
     expect(workspace).toContain('data-testid="reporting-canvas-r2"');
-    expect(workspace).toContain('data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}');
+    expect(workspace).toContain(
+      'data-report-accordion={exclusiveReportSections ? "exclusive" : "cockpit"}',
+    );
     expect(workspace).toContain("exclusiveReportSections");
-    expect(workspace).toContain('{...(!exclusiveReportSections ? { continuous: true as const } : {})}');
+    expect(workspace).toContain("enterClinicalEditorFocus");
     expect(workspace).toContain('focusClinicalEditor("findings")');
     expect(workspace).toContain('focusClinicalEditor("impression")');
+    // Continuous dual-open for Findings+Impression was the tiny-editor bug.
+    expect(workspace).not.toContain(
+      '{...(!exclusiveReportSections ? { continuous: true as const } : {})}',
+    );
   });
 
   it("keeps the clinical top-to-bottom order", () => {
@@ -76,7 +83,7 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
   it("collapsing is visual only — children stay mounted so state survives", () => {
     // Progressive mode hides inactive bodies with `hidden` (display:none);
     // children stay mounted so editors/drawers never lose state.
-    expect(accordion).toMatch(/active \? "min-h-0 flex-1 overflow-y-auto[^"]*" : "hidden"/);
+    expect(accordion).toMatch(/active \? "flex min-h-0 flex-1 flex-col overflow-y-auto[^"]*" : "hidden"/);
     expect(accordion).toContain("{children}");
     // Guard against a regression to conditional rendering.
     expect(accordion).not.toMatch(/\{active && children\}/);
@@ -85,9 +92,25 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
   });
 
   it("the active section owns the remaining height and scrolls internally", () => {
-    expect(accordion).toContain("min-h-0 flex-1 border-emerald-300/80");
+    // Exclusive active / continuous primary need a real min-height — flex-1 alone
+    // collapses to a 1–2 line editor when the canvas was content-sized.
+    expect(accordion).toContain("min-h-[66vh] flex-1 basis-0");
+    expect(accordion).toContain("min-h-[42vh] flex-1 basis-0");
     expect(accordion).toContain("overflow-y-auto");
     expect(workspace).toContain('className="flex flex-1 min-w-0 flex-col min-h-0"');
+    // Canvas must stay overflow-hidden so flex children receive viewport height.
+    expect(workspace).toContain('data-testid="reporting-canvas-r2"');
+    expect(workspace).toContain("overflow-hidden p-2");
+    expect(workspace).toContain("overflow-hidden p-3");
+    expect(workspace).not.toContain("overflow-y-auto p-3");
+  });
+
+  it("opens Findings/Impression with clinical ~2/3 reporting focus", () => {
+    expect(workspace).toContain("enterClinicalEditorFocus");
+    expect(workspace).toContain('sectionId === "findings" || sectionId === "impression"');
+    expect(workspace).toContain('minHeight="50vh"');
+    expect(workspace).toContain('minHeight="40vh"');
+    expect(workspace).toContain("fillHeight");
   });
 
   it("adds Alt+1…9 without colliding with existing shortcuts", () => {
