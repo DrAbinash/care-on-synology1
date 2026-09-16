@@ -52,9 +52,15 @@ describe("API ↔ shared baselineManifest parity", () => {
 
   it("rejects unknown kind with the same unsupported signal", () => {
     const sample = sampleValid();
-    sample.baselineManifest.kind = "care.full_report_baseline.v99";
-    const structural = validateBaselineManifestStructure(sample);
-    const api = validateBaselineManifestForPersistence(sample);
+    const bad = {
+      ...sample,
+      baselineManifest: {
+        ...sample.baselineManifest,
+        kind: "care.full_report_baseline.v99",
+      },
+    };
+    const structural = validateBaselineManifestStructure(bad);
+    const api = validateBaselineManifestForPersistence(bad);
     expect(structural.ok).toBe(false);
     expect(structural.unsupported).toBe(true);
     expect(api.ok).toBe(false);
