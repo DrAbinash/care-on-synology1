@@ -6193,10 +6193,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         <div className="space-y-2" data-testid="findings-suggestions">
                           {!isLocked && workflow.currentRow?.patientId && (
                             <PriorComparisonToolbar
-                              patientId={workflow.currentRow.patientId}
+                              patientId={workflow.currentRow!.patientId ?? undefined}
                               excludeStudyId={studyId ?? undefined}
-                              modality={workflow.currentRow.modality ?? ""}
-                              studyDescription={workflow.currentRow.studyDescription ?? ""}
+                              modality={workflow.currentRow!.modality ?? ""}
+                              studyDescription={workflow.currentRow!.studyDescription ?? ""}
                               comparisonMissing={false}
                               disabled={isLocked || isFinalized}
                               onInsertFindings={appendFindings}
@@ -6205,7 +6205,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           )}
                           {!isLocked && workflow.currentRow?.studyInstanceUID && (
                             <ViewerMeasurementsBanner
-                              studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                              studyInstanceUID={workflow.currentRow!.studyInstanceUID!}
                               disabled={isLocked || isFinalized}
                               onInsertAll={(lines) => {
                                 for (const line of lines) appendFindings(line);
@@ -6220,11 +6220,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             />
                           )}
                           {companionEligible && workflow.currentRow?.studyInstanceUID && (
-                            <ModuleErrorBoundary resetKey={String(workflow.currentRow.studyInstanceUID)}>
+                            <ModuleErrorBoundary resetKey={String(workflow.currentRow!.studyInstanceUID)}>
                               <UsgCompanionPanel
-                                studyInstanceUID={workflow.currentRow.studyInstanceUID}
+                                studyInstanceUID={workflow.currentRow!.studyInstanceUID ?? ""}
                                 studyId={studyId ?? undefined}
-                                patientId={workflow.currentRow.patientId ?? undefined}
+                                patientId={workflow.currentRow!.patientId ?? undefined}
                                 disabled={isLocked || isFinalized}
                                 templateSelected={studySetup.selectedTemplateId != null}
                                 protocolSelected={!!studySetup.activeProtocol}
@@ -6233,7 +6233,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                                 copilotClear={true}
                                 userEdited={isDirty || !!lastSavedAt}
                                 reportSaved={!!lastSavedAt}
-                                reportFinalized={isFinalized || workflow.currentRow.status === "REPORT_FINAL"}
+                                reportFinalized={isFinalized || workflow.currentRow!.status === "REPORT_FINAL"}
                                 currentTechnique={techniqueText}
                                 currentFindings={findingsText}
                                 currentImpression={impressionText.split("\n").filter(Boolean)}
