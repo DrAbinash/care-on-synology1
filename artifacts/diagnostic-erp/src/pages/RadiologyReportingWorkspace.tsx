@@ -7018,6 +7018,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                           </div>
                         ),
                         ai: (
+                          <ModuleErrorBoundary resetKey={`ai-tools-${workflow.currentRow?.studyInstanceUID ?? studyId ?? "none"}`}>
                           <div className="space-y-3">
                           <CopilotRail
                             spinalStudyId={workflow.currentRow?.studyId ?? studyId ?? null}
@@ -7078,6 +7079,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             }}
                           />
                           </div>
+                          </ModuleErrorBoundary>
                         ),
                         more: (
                           <div className="space-y-3">

@@ -50,9 +50,16 @@ export function CopilotRail({
   aiDraftPreferOpen = false,
   hideReportFormats = false,
 }: CopilotRailProps = {}) {
-  const stage = useWorkspaceSelector(s => s.railStage); const setStage = useWorkspaceSelector(s => s.setRailStage); const items = useWorkspaceSelector(s => s.copilotItems); const ack = useWorkspaceSelector(s => s.acknowledgedCopilotIds); const ins = useWorkspaceSelector(s => s.insertCopilotText);
-  const priors = useWorkspaceSelector(s => s.priors); const ms = useWorkspaceSelector(s => s.measurements); const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
-  const ft = useWorkspaceSelector(s => s.findingsText); const it = useWorkspaceSelector(s => s.impressionText);
+  const stage = useWorkspaceSelector(s => s.railStage);
+  const setStage = useWorkspaceSelector(s => s.setRailStage);
+  const items = useWorkspaceSelector(s => s.copilotItems) ?? [];
+  const ack = useWorkspaceSelector(s => s.acknowledgedCopilotIds) ?? new Set<string>();
+  const ins = useWorkspaceSelector(s => s.insertCopilotText);
+  const priors = useWorkspaceSelector(s => s.priors) ?? [];
+  const ms = useWorkspaceSelector(s => s.measurements) ?? [];
+  const study = useWorkspaceSelector(s => s.studies.find(x => x.id === s.activeStudyId));
+  const ft = useWorkspaceSelector(s => s.findingsText) ?? "";
+  const it = useWorkspaceSelector(s => s.impressionText) ?? "";
   const dorsalForced = useWorkspaceSelector(s => s.dorsalCanalForced);
   const q = useMemo(() => { const iss = runLintRules(ft + "\n" + it, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }); return computeQualityScore({ findingsText: ft, impressionText: it, measurements: ms, issues: iss }); }, [ft, it, ms, study]);
   const vis = items.filter(i => !ack.has(i.id));
