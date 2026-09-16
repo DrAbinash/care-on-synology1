@@ -367,8 +367,10 @@ describe("PR #662 — Clinical Composition Hardening (cross-producer A–O)", ()
     });
 
     patches = useWorkspace.getState().appliedPathologyPatches;
-    // System normal patch is gone.
-    expect(patches.some((p) => p.id === SYSTEM_NORMAL_PATCH_ID)).toBe(false);
+    // System normal patch remains suspended so its exact template can return.
+    const suspended = patches.find((p) => p.id === SYSTEM_NORMAL_PATCH_ID);
+    expect(suspended).toBeDefined();
+    expect(suspended?.lastRendered.impression).toBe("");
     // "Normal study." sentence is gone from impression text.
     expect(useWorkspace.getState().impressionText).not.toContain(SYSTEM_NORMAL_IMPRESSION_TEXT);
     // Abnormal observation survives.
@@ -391,13 +393,13 @@ describe("PR #662 — Clinical Composition Hardening (cross-producer A–O)", ()
       id: "qs-bulge-l45",
     });
     let patches = useWorkspace.getState().appliedPathologyPatches;
-    expect(patches.some((p) => p.id === SYSTEM_NORMAL_PATCH_ID)).toBe(false);
+    expect(patches.find((p) => p.id === SYSTEM_NORMAL_PATCH_ID)?.lastRendered.impression).toBe("");
 
     // Remove the abnormal observation.
     useWorkspace.getState().removeObservation("qs-bulge-l45");
     patches = useWorkspace.getState().appliedPathologyPatches;
-    // System normal patch returns.
-    expect(patches.some((p) => p.id === SYSTEM_NORMAL_PATCH_ID)).toBe(true);
+    // System normal patch resumes its exact contribution.
+    expect(patches.find((p) => p.id === SYSTEM_NORMAL_PATCH_ID)?.lastRendered.impression).toContain(SYSTEM_NORMAL_IMPRESSION_TEXT);
     // Impression text contains "Normal study." again.
     expect(useWorkspace.getState().impressionText).toContain(SYSTEM_NORMAL_IMPRESSION_TEXT);
   });
