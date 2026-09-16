@@ -1650,6 +1650,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         source: "system",
         existingProvenance: get().fieldProvenance.impression ?? {},
       });
+      const restoredText = get().impressionText.trim()
+        ? restored.text
+        : existing.templates.impression;
       // #region agent log
       agentDebugLog("F,G,H", "store.ts:seedSystemNormalImpression:restore-merge", "exact template restore merged", {
         exact: restored.text === existing.templates.impression,
@@ -1659,7 +1662,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       });
       // #endregion
       set({
-        impressionText: restored.text,
+        impressionText: restoredText,
         fieldProvenance: { ...get().fieldProvenance, impression: restored.provenance },
         appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
           p.id === existing.id
