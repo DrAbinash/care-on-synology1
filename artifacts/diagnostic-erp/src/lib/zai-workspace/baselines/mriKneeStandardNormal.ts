@@ -15,12 +15,22 @@ export const MRI_KNEE_STANDARD_NORMAL_NAME = "MRI Knee — Standard Normal";
 
 const KNEE_GENERAL_NORMALS: BaselineManifestObservation[] = [
   {
-    id: "meniscus",
+    id: "meniscus-medial",
     field: "findings",
     concept: "meniscus",
     conflictGroup: "meniscus",
-    anatomicalSection: "menisci",
-    renderedText: "Medial and lateral menisci are intact without tear.",
+    anatomicalSection: "medial meniscus",
+    laterality: "medial",
+    renderedText: "Medial meniscus is intact without tear.",
+  },
+  {
+    id: "meniscus-lateral",
+    field: "findings",
+    concept: "meniscus",
+    conflictGroup: "meniscus",
+    anatomicalSection: "lateral meniscus",
+    laterality: "lateral",
+    renderedText: "Lateral meniscus is intact without tear.",
   },
   {
     id: "acl",

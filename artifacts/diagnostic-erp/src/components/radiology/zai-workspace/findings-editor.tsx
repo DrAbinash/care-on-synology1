@@ -19,6 +19,10 @@ import {
   toClinicalTitleCase,
 } from "@/lib/dictationObservationBreak";
 import { cn } from "@/lib/utils";
+import {
+  buildStartingCanvasChangeHighlights,
+  workspaceOverlayPieces,
+} from "@/lib/zai-workspace/startingCanvasHighlight";
 
 interface Props {
   field: "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
@@ -117,6 +121,10 @@ export function FindingsEditor({
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
+  const startingCanvasBaseline = useWorkspaceSelector((s) => s.startingCanvasBaseline);
+  const appliedPathologyPatches = useWorkspaceSelector((s) => s.appliedPathologyPatches);
+  const findingsText = useWorkspaceSelector((s) => s.findingsText);
+  const impressionText = useWorkspaceSelector((s) => s.impressionText);
   const valueDebounced = useDebouncedValue(value, 200);
   const issues: LintIssue[] = useMemo(() => {
     if (!valueDebounced) return [];
@@ -151,6 +159,28 @@ export function FindingsEditor({
     const after = text.slice(idx + needle.length);
     return { before, mid: needle, after };
   }, [field, highlightActive, transientHighlight?.needle, value]);
+
+  const canvasChangePieces = useMemo(() => {
+    if (field !== "findings" && field !== "impression") return null;
+    if (!startingCanvasBaseline) return null;
+    const spans = buildStartingCanvasChangeHighlights({
+      baseline: startingCanvasBaseline,
+      findingsText,
+      impressionText,
+      patches: appliedPathologyPatches,
+    });
+    if (spans.length === 0) return null;
+    const text = typeof value === "string" ? value : "";
+    return workspaceOverlayPieces(text, spans, field);
+  }, [
+    field,
+    startingCanvasBaseline,
+    findingsText,
+    impressionText,
+    appliedPathologyPatches,
+    value,
+  ]);
+
   const assistedKinds = useMemo(() => uniqueAssistedSources(segments), [segments]);
   const showProvenanceUi = assistedKinds.size > 0;
   // Read-only attribution: CARE already knows how each segment got here, so the
@@ -292,6 +322,28 @@ export function FindingsEditor({
           })}
         </div>
         <div className={cn("relative flex-1", fillHeight && "min-h-0")}>
+          {canvasChangePieces && (
+            <div
+              className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
+              data-testid={`canvas-change-overlay-${field}`}
+              data-editor-only="canvas-change"
+              aria-hidden
+            >
+              {canvasChangePieces.map((piece, i) => (
+                <span
+                  key={`${i}-${piece.text.slice(0, 12)}`}
+                  className={cn(
+                    piece.highlight && "canvas-change-highlight rounded-sm bg-amber-200/55 dark:bg-amber-700/35",
+                    piece.highlight && piece.bold && "known-abnormal-bold font-bold",
+                    !piece.highlight && "invisible",
+                  )}
+                  data-canvas-change={piece.highlight ? (piece.bold ? "abnormal" : "manual") : undefined}
+                >
+                  {piece.text}
+                </span>
+              ))}
+            </div>
+          )}
           {highlightOverlay && (
             <div
               className="pointer-events-none absolute inset-0 px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap z-[1]"
