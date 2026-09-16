@@ -138,9 +138,16 @@ export function isBroadAnatomy(raw: string | null | undefined): boolean {
 }
 
 /** Canonical spine level: L4-L5, C5-C6, D7-D8. Empty if none. */
+/** Regional buckets for Whole Spine screening ownership (not disc levels). */
+const REGIONAL_LEVEL_BUCKETS = new Set(["cervical", "dorsal", "lumbar"]);
+
 export function normalizeLevel(raw: string | null | undefined): string {
   const t = (raw ?? "").trim().toUpperCase().replace(/[–—]/g, "-");
   if (!t) return "";
+  const bucket = t.toLowerCase();
+  if (REGIONAL_LEVEL_BUCKETS.has(bucket) || bucket === "thoracic") {
+    return bucket === "thoracic" ? "dorsal" : bucket;
+  }
   const compact = t.replace(/\s+/g, "").replace(/\//g, "-").replace(/T/g, "D");
   const paired = compact.match(/^([LCDS])(\d{1,2})-?([LCDS])?(\d{1,2})$/);
   if (paired) {
@@ -179,6 +186,12 @@ function extractLevelFromText(raw: string | null | undefined): string {
 export function sentenceHasLevel(sentence: string, level: string): boolean {
   const want = normalizeLevel(level);
   if (!want) return true;
+  if (REGIONAL_LEVEL_BUCKETS.has(want)) {
+    const s = sentence.toLowerCase();
+    if (want === "dorsal") return /\b(dorsal|thoracic)\b/.test(s);
+    if (want === "lumbar") return /\b(lumbar|lumbosacral)\b/.test(s);
+    return s.includes(want);
+  }
   const got = extractLevelFromText(sentence);
   if (got) return got === want;
   // Compact forms: L4L5, L4 5
