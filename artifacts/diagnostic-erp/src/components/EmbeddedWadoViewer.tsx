@@ -95,6 +95,15 @@ export interface EmbeddedViewerHandle {
   getOhifWindow: () => Window | null;
   /** Live OHIF launch URL used by the iframe (for origin allowlist / outbound targetOrigin). */
   getOhifLaunchUrl: () => string | null;
+  /** Current viewer tab (OHIF vs Frames). */
+  getViewMode: () => EmbeddedViewMode;
+  /**
+   * Capture a frozen key image from the active viewer.
+   * - Frames: JPEG of the visible viewport → onCaptureViewport
+   * - OHIF: requests annotated capture via onRequestOhifAnnotatedCapture
+   * Returns which path ran, or "unavailable" when nothing can be captured yet.
+   */
+  captureKeyImage: () => Promise<"frames" | "ohif" | "unavailable">;
 }
 
 const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
@@ -420,6 +429,70 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const nextFrame = () => setSelectedInstIdx((i) => Math.min(i + 1, instances.length - 1));
   const prevFrame = () => setSelectedInstIdx((i) => Math.max(i - 1, 0));
 
+  // OHIF is the default whenever the launch endpoint produced a URL; the
+  // frames renderer is the fallback (and stays available as an explicit tab).
+  const viewMode: EmbeddedViewMode = chosenMode ?? (launchData?.ohifUrl ? "OHIF" : "FRAMES");
+  const chooseMode = (m: EmbeddedViewMode) => {
+    setChosenMode(m);
+    try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
+  };
+
+  const captureFramesKeyImage = useCallback(async (): Promise<boolean> => {
+    if (!onCaptureViewport || captureBusy) return false;
+    if (!selectedSeriesUID || !instances[selectedInstIdx] || !frameUrl) return false;
+    const img = imgRef.current;
+    const viewport = framesViewportRef.current;
+    if (!img || !viewport || !img.complete || !img.naturalWidth) return false;
+    const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
+    const inst = instances[selectedInstIdx];
+    try {
+      const result = await captureFramesViewport({
+        img,
+        viewport,
+        zoom,
+        panX,
+        panY,
+        brightness,
+        contrast,
+      });
+      const context: ViewportContext = {
+        studyInstanceUID,
+        seriesInstanceUID: selectedSeriesUID,
+        sopInstanceUID: inst.uid,
+        frameNumber: selectedInstIdx + 1,
+        instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+        seriesDescription: seriesMeta?.description ?? undefined,
+        totalFrames: instances.length || seriesMeta?.numInstances || undefined,
+        modality: seriesMeta?.modality ?? undefined,
+        viewer: "frames",
+      };
+      await onCaptureViewport({
+        blob: result.blob,
+        mimeType: result.mimeType,
+        snapshotJson: JSON.stringify(result.snapshot),
+        context,
+      });
+      return true;
+    } catch (e) {
+      console.warn("[frames] viewport capture failed", e instanceof Error ? e.message : "unknown");
+      return false;
+    }
+  }, [
+    onCaptureViewport,
+    captureBusy,
+    selectedSeriesUID,
+    instances,
+    selectedInstIdx,
+    frameUrl,
+    series,
+    zoom,
+    panX,
+    panY,
+    brightness,
+    contrast,
+    studyInstanceUID,
+  ]);
+
   // M1.6B2 — same setters the toolbar buttons call, nothing more.
   useImperativeHandle(controlRef, () => ({
     nextFrame,
@@ -457,6 +530,18 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     },
     getOhifWindow: () => ohifIframeRef.current?.contentWindow ?? null,
     getOhifLaunchUrl: () => bestOhifUrl,
+    getViewMode: () => viewMode,
+    captureKeyImage: async () => {
+      if (viewMode === "FRAMES") {
+        const ok = await captureFramesKeyImage();
+        return ok ? "frames" : "unavailable";
+      }
+      if (viewMode === "OHIF" && onRequestOhifAnnotatedCapture) {
+        onRequestOhifAnnotatedCapture();
+        return "ohif";
+      }
+      return "unavailable";
+    },
   }));
 
   // Escape exits near-fullscreen overlay (column expand is restored via its own control).
@@ -470,13 +555,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const imageTransform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   const imageFilter = `brightness(${brightness}%) contrast(${contrast}%)`;
 
-  // OHIF is the default whenever the launch endpoint produced a URL; the
-  // frames renderer is the fallback (and stays available as an explicit tab).
-  const viewMode: EmbeddedViewMode = chosenMode ?? (launchData?.ohifUrl ? "OHIF" : "FRAMES");
-  const chooseMode = (m: EmbeddedViewMode) => {
-    setChosenMode(m);
-    try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
-  };
 
   const toggleColumnExpanded = () => onColumnExpandedChange?.(!columnExpanded);
 
@@ -778,43 +856,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                 data-testid="frames-capture-key-image"
                 title="Capture visible viewport as frozen key image (no annotation overlays in Frames)"
                 disabled={!!captureBusy || !frameUrl}
-                onClick={async () => {
-                  const img = imgRef.current;
-                  const viewport = framesViewportRef.current;
-                  if (!img || !viewport || !img.complete || !img.naturalWidth) return;
-                  const seriesMeta = series.find((s) => s.uid === selectedSeriesUID);
-                  const inst = instances[selectedInstIdx];
-                  try {
-                    const result = await captureFramesViewport({
-                      img,
-                      viewport,
-                      zoom,
-                      panX,
-                      panY,
-                      brightness,
-                      contrast,
-                    });
-                    const context: ViewportContext = {
-                      studyInstanceUID,
-                      seriesInstanceUID: selectedSeriesUID,
-                      sopInstanceUID: inst.uid,
-                      frameNumber: selectedInstIdx + 1,
-                      instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
-                      seriesDescription: seriesMeta?.description ?? undefined,
-                      totalFrames: instances.length || seriesMeta?.numInstances || undefined,
-                      modality: seriesMeta?.modality ?? undefined,
-                      viewer: "frames",
-                    };
-                    await onCaptureViewport({
-                      blob: result.blob,
-                      mimeType: result.mimeType,
-                      snapshotJson: JSON.stringify(result.snapshot),
-                      context,
-                    });
-                  } catch (e) {
-                    console.warn("[frames] viewport capture failed", e instanceof Error ? e.message : "unknown");
-                  }
-                }}
+                onClick={() => { void captureFramesKeyImage(); }}
               >
                 <Camera className="h-3.5 w-3.5" />
                 {captureBusy ? "Capturing…" : "Capture key image"}
