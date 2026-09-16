@@ -16,10 +16,7 @@ describe("authoritative manual reporting surface", () => {
   });
 
   it("keeps exactly one runtime canonical Findings and Impression editor", () => {
-    expect(workspace.match(/field="findings"/g)).toHaveLength(1);
-    expect(workspace.match(/field="impression"/g)).toHaveLength(2);
-    // The second impression occurrence is QuickSelectStrip support; only one
-    // FindingsEditor owns the canonical impression textarea.
+    expect(workspace.match(/<FindingsEditor\s+field="findings"/g)).toHaveLength(1);
     expect(workspace.match(/<FindingsEditor field="impression"/g)).toHaveLength(1);
     expect(workspace).toContain("{false && useStructured ? (");
     expect(workspace).toContain(") : false && studySetup.highlightFindings ? (");

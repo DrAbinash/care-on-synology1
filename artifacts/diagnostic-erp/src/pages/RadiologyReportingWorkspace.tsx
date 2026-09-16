@@ -5825,7 +5825,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         Undo Last Abnormal
                       </Button>
                     </div>
-                    )}
                     <ObservationLedgerPanel
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}

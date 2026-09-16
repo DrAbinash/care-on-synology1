@@ -93,7 +93,7 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
     expect(dorsal && dorsal.status === "apply" ? dorsal.format.name : "").toBe("MRI Dorsal Spine — Normal");
 
     const ls = resolve({ ctx: ctx({ modality: "MR", region: "LS Spine", studyDescription: "MRI LS SPINE" }), formats: FORMATS });
-    expect(ls && ls.status === "apply" ? ls.format.name : "").toBe("MRI LS Spine — Normal");
+    expect(ls && ls.status === "apply" ? ls.format.name : "").toBe("MRI LS Spine — Standard Normal");
   });
 
   it("G. LS + Whole Spine Screening → the NORMAL variant, mandatory screening phrase intact", () => {

@@ -165,11 +165,6 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   if (candidates.length === 0) {
     return { status: "no-match", reason: "no complete-normal format for this region in the library" };
   }
-  // Curated, versioned normal baselines are safer than legacy prose-only
-  // normals because Quick Insert can replace explicit concept slots.
-  const owned = candidates.filter((f) => f.baselineManifest?.kind === "care.full_report_baseline.v1");
-  if (owned.length > 0) candidates = owned;
-
   // 2. Protocol markers narrow the candidate set.
   const wantsContrast = CONTRAST_RE.test(hay) && !PLAIN_RE.test(hay);
   const wantsEpilepsy = EPILEPSY_RE.test(hay);
@@ -223,6 +218,11 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     // Non-screening study → prefer the detailed/plain normal variant.
     pool = pool.filter((f) => !isScreeningVariant(f));
   }
+
+  // Within the correctly resolved protocol identity, curated versioned
+  // baselines outrank legacy prose-only normals.
+  const owned = pool.filter((f) => f.baselineManifest?.kind === "care.full_report_baseline.v1");
+  if (owned.length > 0) pool = owned;
 
   // 3. Exactly one survivor. Same-identity duplicates (local cache + server
   // copy of one format) collapse deterministically to the first.
