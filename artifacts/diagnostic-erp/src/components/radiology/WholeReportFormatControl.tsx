@@ -4,13 +4,14 @@
  * Reuses the same Zustand applyFormatById engine as the right-rail picker.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { lookupFormatsForPicker } from "@/lib/zai-workspace/report-formats-library";
 import type { ReportingStudyContext } from "@/lib/reportingStudyContext";
 import { FileText } from "lucide-react";
 import { REPORT_FORMAT_SETTINGS } from "@/lib/reportSectionAccordion";
 import { SectionSettingsLink } from "@/components/radiology/zai-workspace/section-settings-link";
+import { Button } from "@/components/ui/button";
 
 export type WholeReportFormatControlProps = {
   reportingContext: ReportingStudyContext;
@@ -75,6 +76,18 @@ export function WholeReportFormatControl({
     const rest = allModality.filter((f) => !preferred.has(f.id));
     return [...formatLookup.formats, ...rest];
   }, [effectiveModality, formatLookup, reportFormats]);
+  const rankedFormats = useMemo(
+    () => [...formats].sort((a, b) =>
+      Number(Boolean(b.baselineManifest)) - Number(Boolean(a.baselineManifest))),
+    [formats],
+  );
+  const preferred = rankedFormats.find((f) => f.baselineManifest) ?? rankedFormats[0] ?? null;
+  const [selectedId, setSelectedId] = useState("");
+  useEffect(() => {
+    if (!selectedId || !rankedFormats.some((f) => f.id === selectedId)) {
+      setSelectedId(preferred?.id ?? "");
+    }
+  }, [preferred?.id, rankedFormats, selectedId]);
   const locked = Boolean(disabled || isFinalized);
   const appliedLabel = appliedFormatName || appliedFormatReportTitle;
 
@@ -104,32 +117,40 @@ export function WholeReportFormatControl({
         )}
         <select
           className="h-8 min-w-[11rem] max-w-[18rem] flex-1 rounded-md border border-border bg-background px-2 text-[11px] font-medium"
-          value=""
+          value={selectedId}
           disabled={locked || formats.length === 0}
-          onChange={(e) => {
-            const id = e.target.value;
-            if (id) applyFormatById(id);
-            e.currentTarget.value = "";
-          }}
+          onChange={(e) => setSelectedId(e.target.value)}
           data-testid="whole-report-format-select"
           aria-label="Whole report format"
           title="One click applies reporting region (when unambiguous), title, technique, findings, impression, and recommendation"
         >
-          <option value="">
+          {rankedFormats.length === 0 ? <option value="">
             {formats.length === 0
               ? "No formats for this modality"
               : appliedLabel
                 ? "Replace format…"
                 : "Select format…"}
-          </option>
-          {formats.map((f) => (
+          </option> : null}
+          {rankedFormats.map((f) => (
             <option key={f.id} value={f.id}>
               {f.name}
+              {f.baselineManifest ? " · owned baseline" : ""}
               {f.bodyPart ? ` · ${f.bodyPart}` : ""}
               {f.reportTitle ? ` · ${f.reportTitle}` : ""}
             </option>
           ))}
         </select>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 shrink-0 text-[10px]"
+          disabled={locked || !selectedId}
+          onClick={() => selectedId && applyFormatById(selectedId)}
+          data-testid="apply-full-report"
+        >
+          Apply Full Report
+        </Button>
         <SectionSettingsLink
           {...REPORT_FORMAT_SETTINGS}
           testId="report-format-settings-link"
@@ -164,30 +185,44 @@ export function WholeReportFormatControl({
       </div>
       <select
         className="h-8 w-full min-w-[14rem] rounded-md border border-border bg-background px-2 text-[12px] font-medium"
-        value=""
+        value={selectedId}
         disabled={locked || formats.length === 0}
-        onChange={(e) => {
-          const id = e.target.value;
-          if (id) applyFormatById(id);
-          e.currentTarget.value = "";
-        }}
+        onChange={(e) => setSelectedId(e.target.value)}
         data-testid="whole-report-format-select"
         aria-label="Whole report format"
         title="One click applies reporting region (when unambiguous), title, technique, findings, impression, and recommendation"
       >
-        <option value="">
+        {rankedFormats.length === 0 ? <option value="">
           {formats.length === 0
             ? "No formats for this modality yet"
             : "Optional — seed Technique / Findings / Impression…"}
-        </option>
-        {formats.map((f) => (
+        </option> : null}
+        {rankedFormats.map((f) => (
           <option key={f.id} value={f.id}>
             {f.name}
+            {f.baselineManifest ? " · owned baseline" : ""}
             {f.bodyPart ? ` · ${f.bodyPart}` : ""}
             {f.reportTitle ? ` · ${f.reportTitle}` : ""}
           </option>
         ))}
       </select>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground">
+          {preferred?.baselineManifest
+            ? "Recommended normal canvas · concept-owned and reversible"
+            : "Legacy narrative format · replacement ownership unavailable"}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 shrink-0 bg-emerald-600 text-[11px] hover:bg-emerald-700"
+          disabled={locked || !selectedId}
+          onClick={() => selectedId && applyFormatById(selectedId)}
+          data-testid="apply-full-report"
+        >
+          Apply Full Report
+        </Button>
+      </div>
     </div>
   );
 }

@@ -98,9 +98,13 @@ describe("structured_json envelope (A4 cache + format values)", () => {
 
   const IDENTITY = {
     kind: CARE_REPORT_FORMAT_IDENTITY_KIND,
-    name: "MRI Brain — Normal",
-    reportTitle: "MRI BRAIN PLAIN",
+    name: "MRI LS Spine — Standard Normal",
+    reportTitle: "MRI LUMBOSACRAL SPINE",
     appliedAt: "2026-09-04T00:00:00.000Z",
+    formatId: "42",
+    formatRevision: "fnv1a-1234abcd",
+    baselineManifestVersion: 1,
+    baselineManifestRevision: "mri-ls-standard-normal-r1",
   } as const;
 
   it("identity alone turns the column into an envelope without dropping legacy array", () => {

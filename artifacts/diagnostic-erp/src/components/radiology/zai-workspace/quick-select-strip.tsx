@@ -228,7 +228,6 @@ export function QuickSelectStrip({
                   label: tile.label,
                   findingsText: tile.sentence,
                   supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
-                  force: tile.category === "abnormal" || tile.category === "critical",
                 });
               } else {
                 ws.mergeField(field, tile.sentence, "quick-select");

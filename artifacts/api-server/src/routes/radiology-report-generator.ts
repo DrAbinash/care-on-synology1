@@ -1630,6 +1630,10 @@ const SaveDraftBody = z.object({
     name: z.string().min(1),
     reportTitle: z.string().optional(),
     appliedAt: z.string().optional(),
+    formatId: z.string().optional(),
+    formatRevision: z.string().optional(),
+    baselineManifestVersion: z.number().int().positive().optional(),
+    baselineManifestRevision: z.string().optional(),
   }).nullish(),
 });
 

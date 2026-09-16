@@ -3,6 +3,13 @@ import { mergeTwoFormats } from "./types";
 import { canonicalContentRegion, contentStudyTypes, type ReportingStudyContext } from "@/lib/reportingStudyContext";
 import { formatsMissingOnServer, mergeAuthoritativeFormats, formatDedupeKey } from "./reportFormatSync";
 import { formatContextRank, type FormatLookupExtras } from "./fullReportFormat";
+import {
+  baselineManifestForFormat,
+  MRI_LS_SPINE_STANDARD_NORMAL_FINDINGS,
+  MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION,
+  MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST,
+  MRI_LS_SPINE_STANDARD_NORMAL_NAME,
+} from "./fullReportBaseline";
 
 const now = () => new Date().toISOString();
 const uid = () => `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -21,6 +28,7 @@ function fmt(
     reportTitle?: string;
     protocolScope?: string;
     techniqueFragments?: Array<{ text: string; dedupeKey: string; preserve?: boolean }>;
+    baselineManifest?: ReportFormat["baselineManifest"];
   },
   c = false,
 ): ReportFormat {
@@ -41,11 +49,12 @@ function fmt(
     reportTitle: body.reportTitle ?? "",
     protocolScope: body.protocolScope ?? "",
     techniqueFragments: body.techniqueFragments,
+    baselineManifest: body.baselineManifest,
   };
 }
 
 export function hydrateFormat(raw: Partial<ReportFormat> & { name: string }): ReportFormat {
-  return {
+  const hydrated: ReportFormat = {
     id: raw.id ?? uid(),
     name: raw.name,
     modality: (raw.modality ?? "MR") as Modality,
@@ -59,6 +68,7 @@ export function hydrateFormat(raw: Partial<ReportFormat> & { name: string }): Re
     reportTitle: raw.reportTitle ?? "",
     protocolScope: raw.protocolScope ?? "",
     techniqueFragments: raw.techniqueFragments,
+    baselineManifest: raw.baselineManifest,
     isCommon: raw.isCommon ?? false,
     custom: raw.custom,
     favorite: raw.favorite,
@@ -66,6 +76,8 @@ export function hydrateFormat(raw: Partial<ReportFormat> & { name: string }): Re
     createdAt: raw.createdAt ?? now(),
     updatedAt: raw.updatedAt ?? now(),
   };
+  hydrated.baselineManifest = baselineManifestForFormat(hydrated);
+  return hydrated;
 }
 
 export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
@@ -76,7 +88,17 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
   fmt("MRI Brain — Acute infarct (MCA)", "MR", "Brain", ["stroke", "infarct", "critical"], { technique: "MRI brain on 3T. T1W, T2W, FLAIR, DWI, ADC, GRE/SWI. 5 mm.", findings: "Restricted diffusion in the left middle cerebral artery territory on DWI/ADC, consistent with acute infarct. No hemorrhagic transformation. Mass effect minimal. Brain parenchyma otherwise normal. Ventricular system and cisternal spaces are normal. No midline shift. Flow voids: left MCA flow void absent, consistent with occlusion.", impression: "Acute left MCA territory infarct. No hemorrhagic transformation. ASPECTS: ___/10.", recommendation: "Immediate stroke team notification. If within thrombolysis window, consider IV tPA. MRA head and neck recommended." }, true),
   fmt("MRI Cervical Spine — Normal", "MR", "Cervical Spine", ["normal"], { clinicalHistory: "MRI cervical spine requested. Correlate with neck pain or radiculopathy.", technique: "MRI cervical spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 3 mm.", findings: "Cervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. Prevertebral soft tissues are unremarkable.", impression: "Normal MRI cervical spine. No cord compression or significant disc herniation.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI CERVICAL SPINE" }, true),
   fmt("MRI Cervical Spine — Screening", "MR", "Cervical Spine", ["screening"], { technique: "MRI cervical spine screening on 3T. Sagittal T1W, T2W; selected axial T2W (limited planar and limited sequence).", findings: "Cervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. Prevertebral soft tissues are unremarkable.", impression: "Normal MRI cervical spine screening. No cord compression or significant disc herniation.", recommendation: "", reportTitle: "MRI CERVICAL SPINE SCREENING", protocolScope: "Screening", techniqueFragments: [{ text: "Limited cervical spine screening with sagittal T1W, T2W; selected axial T2W (limited planar and limited sequence).", dedupeKey: "cervical-screening", preserve: true }] }, true),
-  fmt("MRI LS Spine — Normal", "MR", "LS Spine", ["normal"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Normal MRI lumbo-sacral spine. No acute bony or disc abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI LUMBOSACRAL SPINE", techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", dedupeKey: "ls-detailed", preserve: true }] }, true),
+  fmt(MRI_LS_SPINE_STANDARD_NORMAL_NAME, "MR", "LS Spine", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: "MRI lumbosacral spine requested. Correlate with low-back pain or radicular symptoms.",
+    technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.",
+    findings: MRI_LS_SPINE_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION,
+    recommendation: "Clinical correlation.",
+    reportTitle: "MRI LUMBOSACRAL SPINE",
+    techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W and STIR; axial T1W and T2W images were obtained.", dedupeKey: "ls-standard-owned", preserve: true }],
+    baselineManifest: MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt("MRI LS Spine — Normal", "MR", "LS Spine", ["normal", "legacy"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. Disc spaces are maintained. No acute fracture. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Normal MRI lumbo-sacral spine. No acute bony or disc abnormality.", recommendation: "Clinical correlation. Follow-up as clinically indicated.", reportTitle: "MRI LUMBOSACRAL SPINE", techniqueFragments: [{ text: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", dedupeKey: "ls-detailed", preserve: true }] }, true),
   fmt("MRI LS Spine — Disc herniation L4-L5", "MR", "LS Spine", ["disc", "herniation"], { technique: "MRI lumbo-sacral spine on 3T. Sagittal T1W, T2W; axial T1W, T2W. 4 mm.", findings: "Broad-based disc bulge at L4-L5 with posterocentral-right paracentral protrusion causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis. Lumbar vertebrae show normal alignment and marrow signal. No spondylolisthesis. L4-L5 disc shows mild desiccation with reduced T2 signal. Other disc spaces are maintained. Conus medullaris at L1 with normal appearance. Cauda equina nerve roots are normally distributed. Paraspinal soft tissues are unremarkable. Sacroiliac joints are normal.", impression: "Disc herniation at L4-L5 causing indentation on the thecal sac and mild narrowing of bilateral neural foramina. No significant central canal stenosis.", recommendation: "Conservative management with NSAIDs and physiotherapy. MRI if radicular symptoms persist. Surgical referral if neurological deficits develop.", reportTitle: "MRI LUMBOSACRAL SPINE" }, true),
   fmt("MRI Dorsal Spine — Screening", "MR", "Dorsal Spine", ["screening"], { technique: "Limited dorsal spine screening with sagittal T1W, T2W and STIR (limited planar and limited sequence).", findings: "DORSAL SPINE SCREENING\nDorsal vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. This is a limited screening examination.", impression: "Normal dorsal spine screening. No cord compression.", recommendation: "", reportTitle: "MRI DORSAL SPINE SCREENING", protocolScope: "Screening", techniqueFragments: [{ text: "Limited dorsal spine screening with sagittal T1W, T2W and STIR (limited planar and limited sequence).", dedupeKey: "dorsal-screening", preserve: true }] }, true),
   fmt("MRI Whole Spine — Screening", "MR", "Whole Spine", ["screening", "whole spine"], { technique: "Limited whole-spine screening was performed with sagittal T1W, T2W and STIR sequences of the cervical and dorsal spine (limited planar and limited sequence).", findings: "CERVICAL SPINE SCREENING\nCervical vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. This is a limited screening examination.\n\nDORSAL SPINE SCREENING\nDorsal vertebrae show normal alignment and marrow signal. Disc spaces are maintained. No cord compression. Spinal cord signal is normal. This is a limited screening examination.", impression: "Normal cervical and dorsal spine screening. No cord compression.", recommendation: "", reportTitle: "MRI WHOLE SPINE SCREENING", protocolScope: "Screening", techniqueFragments: [{ text: "Limited whole-spine screening was performed with sagittal T1W, T2W and STIR sequences of the cervical and dorsal spine (limited planar and limited sequence).", dedupeKey: "whole-spine-screening", preserve: true }] }, true),

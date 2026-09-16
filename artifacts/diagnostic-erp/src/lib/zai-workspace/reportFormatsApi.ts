@@ -112,7 +112,18 @@ export async function migrateLocalReportFormatsToServer(): Promise<{
 export async function hydrateReportFormatsLibrary(): Promise<ReportFormat[]> {
   if (isServerFormatsAuthoritative()) {
     try {
-      return await fetchReportFormatsFromServer();
+      const server = await fetchReportFormatsFromServer();
+      const requiredOwned = DEFAULT_REPORT_FORMATS.filter((f) => f.baselineManifest);
+      const missingOwned = formatsMissingOnServer(requiredOwned, server);
+      if (missingOwned.length === 0) return server;
+      // Additive rollout of curated Standard Normal formats. The migrate API
+      // dedupes by identity and never deletes or rewrites clinic formats.
+      const res = await api.post<MigrateResponse>("/api/radiology/report-formats/migrate", {
+        formats: missingOwned.map(payloadForApi),
+      });
+      const items = asFormats(res?.items);
+      cacheFormatsLocally(items);
+      return items;
     } catch {
       const cached = readLocalFormatsCache();
       return cached.length > 0 ? cached : DEFAULT_REPORT_FORMATS;
