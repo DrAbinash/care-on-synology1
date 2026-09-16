@@ -16,13 +16,14 @@ describe("Radiology Reporting Workspace handwritten notes", () => {
   const refDoc = read("components/ReferringDoctorQuickSelect.tsx");
   const doctorsPage = read("pages/Doctors.tsx");
 
-  it("Report images collapse OHIF and hide the selected list (right rail)", () => {
+  it("Report images live under the one Reporting Tools measurements/images pane", () => {
     expect(picker).toContain("onExpandChange");
     expect(picker).toContain("hideSelectedList");
-    expect(workspace).toContain("onExpandChange={setReportImagesOpen}");
+    expect(workspace).toContain('measurements: (');
+    expect(workspace).toContain("<ReportImagePicker");
+    expect(workspace).toContain("<ReportImagePanel");
     expect(workspace).toContain("hideSelectedList");
-    expect(workspace).toContain("reportImagesOpen");
-    expect(workspace).toContain('data-testid="selected-images-rail"');
+    expect(workspace).toContain("<ReportingToolsPanel");
   });
 
   it("reading queue defaults to MRI + Today & Yesterday and Next uses CARE order", () => {
