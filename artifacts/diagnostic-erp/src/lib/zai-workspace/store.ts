@@ -1532,8 +1532,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         source: "system",
         existingProvenance: get().fieldProvenance.impression ?? {},
       });
+      const restoredText = get().impressionText.trim()
+        ? restored.text
+        : existing.templates.impression;
       set({
-        impressionText: restored.text,
+        impressionText: restoredText,
         fieldProvenance: { ...get().fieldProvenance, impression: restored.provenance },
         appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
           p.id === existing.id
