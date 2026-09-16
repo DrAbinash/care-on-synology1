@@ -20,6 +20,7 @@
     "@google/generative-ai": "^0.24.1",
     "@simplewebauthn/server": "^13.3.0",
     "@workspace/api-zod": "workspace:*",
+    "@workspace/baseline-manifest": "workspace:*",
     "@workspace/crypto": "workspace:*",
     "@workspace/db": "workspace:*",
     "@workspace/emergency-billing": "workspace:*",

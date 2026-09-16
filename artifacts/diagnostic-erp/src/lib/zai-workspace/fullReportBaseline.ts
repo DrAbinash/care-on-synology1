@@ -4,6 +4,9 @@ import {
   SYSTEM_NORMAL_CONCEPT,
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
+import {
+  validateBaselineManifestStructure,
+} from "@workspace/baseline-manifest";
 import type {
   BaselineManifest,
   BaselineManifestObservation,
@@ -262,23 +265,59 @@ export type BaselineManifestValidation = {
   duplicateSlots: string[];
 };
 
-/** Fail closed: ownership is materialized only when every exact contribution exists. */
+/**
+ * Domain materialize gate for owned baselines.
+ *
+ * Shared structural + ownership-slot invariants come from
+ * `@workspace/baseline-manifest` (same as API persistence). This function then
+ * runs concept-canon-aware `buildCanonicalObservation` slotKeys so materialize
+ * fails closed if aliases collapse onto one runtime slot.
+ */
 export function validateBaselineManifest(
   format: Pick<ReportFormat, "findings" | "impression" | "baselineManifest"> &
     Partial<Pick<ReportFormat, "bodyPart">>,
   region?: string,
 ): BaselineManifestValidation {
   const manifest = format.baselineManifest;
-  if (!manifest || manifest.kind !== FULL_REPORT_BASELINE_KIND || manifest.version !== 1) {
+  if (!manifest) {
     return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
   }
+
   const effectiveRegion = region ?? format.bodyPart ?? "LS Spine";
-  const missing: string[] = [];
+  const structural = validateBaselineManifestStructure({
+    findings: format.findings,
+    impression: format.impression,
+    defaultRegion: effectiveRegion,
+    baselineManifest: manifest,
+  });
+
+  if (!structural.ok) {
+    if (structural.unsupported || /kind|version|revision|observations must/i.test(structural.reason)) {
+      return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
+    }
+    const missing: string[] = [];
+    const duplicateSlots: string[] = [];
+    for (const detail of structural.details) {
+      const m = detail.match(/^observations\[(\d+)\]/);
+      const idx = m ? Number(m[1]) : -1;
+      const id =
+        idx >= 0 && Array.isArray(manifest.observations)
+          ? String(manifest.observations[idx]?.id ?? `index:${idx}`)
+          : detail;
+      if (/duplicate ownership slot/i.test(detail)) duplicateSlots.push(id);
+      else if (/renderedText missing/i.test(detail)) missing.push(id);
+      else missing.push(id);
+    }
+    if (!missing.length && !duplicateSlots.length) {
+      return { ok: false, missing: ["baselineManifest"], duplicateSlots: [] };
+    }
+    return { ok: false, missing, duplicateSlots };
+  }
+
+  // Canon-aware materialize: catch alias collapse the structural raw-concept key misses.
   const slots = new Set<string>();
   const duplicateSlots: string[] = [];
   for (const entry of manifest.observations) {
-    const fieldText = entry.field === "findings" ? format.findings : format.impression;
-    if (!fieldText.includes(entry.renderedText)) missing.push(entry.id);
     const observation = buildCanonicalObservation({
       region: entry.region?.trim() || effectiveRegion,
       concept: entry.concept,
@@ -288,11 +327,10 @@ export function validateBaselineManifest(
       level: entry.level,
       laterality: entry.laterality,
     });
-    // The one report-normal impression is intentionally a separate global slot.
     if (slots.has(observation.slotKey)) duplicateSlots.push(entry.id);
     slots.add(observation.slotKey);
   }
-  return { ok: missing.length === 0 && duplicateSlots.length === 0, missing, duplicateSlots };
+  return { ok: duplicateSlots.length === 0, missing: [], duplicateSlots };
 }
 
 const BUILTIN_OWNED_BY_NAME = new Map<string, { bodyPart: string; manifest: BaselineManifest }>([

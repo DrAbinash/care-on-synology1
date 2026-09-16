@@ -10,6 +10,13 @@
  */
 
 import {
+  SLOT_WILDCARD,
+  normalizeSlotPart,
+  normalizeLevel,
+  normalizeLaterality,
+  persistenceOwnershipSlotKey,
+} from "@workspace/baseline-manifest";
+import {
   normalizeForDedupe,
   splitToSentences,
   type FieldProvenanceMap,
@@ -24,6 +31,13 @@ import {
   canonicalConceptTokens,
   generateConceptCanonRecord,
 } from "./conceptCanon/conceptCanon";
+
+export {
+  SLOT_WILDCARD,
+  normalizeSlotPart,
+  normalizeLevel,
+  normalizeLaterality,
+};
 
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
@@ -90,8 +104,6 @@ export type CanonicalObservation = {
   updatedAt?: string;
 };
 
-export const SLOT_WILDCARD = "*";
-
 /** Anatomy words that must not be exclusive ownership when structured metadata exists. */
 export const BROAD_ANATOMY = new Set([
   "disc", "discs", "spine", "cord", "brain", "white matter", "parenchyma",
@@ -126,10 +138,6 @@ const CONCEPT_HINTS: Array<{ concept: string; re: RegExp }> = [
   { concept: "disc_contour", re: /\b(disc\s+)?(bulge|herniation|protrusion|no bulge|disc contour)\b/i },
 ];
 
-export function normalizeSlotPart(raw: string | null | undefined): string {
-  return (raw ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
 export function isBroadAnatomy(raw: string | null | undefined): boolean {
   const n = normalizeSlotPart(raw);
   if (!n) return false;
@@ -137,34 +145,8 @@ export function isBroadAnatomy(raw: string | null | undefined): boolean {
   return [...BROAD_ANATOMY].some((w) => n === w);
 }
 
-/** Canonical spine level: L4-L5, C5-C6, D7-D8. Empty if none. */
 /** Regional buckets for Whole Spine screening ownership (not disc levels). */
 const REGIONAL_LEVEL_BUCKETS = new Set(["cervical", "dorsal", "lumbar"]);
-
-export function normalizeLevel(raw: string | null | undefined): string {
-  const t = (raw ?? "").trim().toUpperCase().replace(/[–—]/g, "-");
-  if (!t) return "";
-  const bucket = t.toLowerCase();
-  if (REGIONAL_LEVEL_BUCKETS.has(bucket) || bucket === "thoracic") {
-    return bucket === "thoracic" ? "dorsal" : bucket;
-  }
-  const compact = t.replace(/\s+/g, "").replace(/\//g, "-").replace(/T/g, "D");
-  const paired = compact.match(/^([LCDS])(\d{1,2})-?([LCDS])?(\d{1,2})$/);
-  if (paired) {
-    const a = paired[1]!;
-    const aN = paired[2]!;
-    const b = paired[3] || a;
-    const bN = paired[4]!;
-    return `${a}${aN}-${b}${bN}`;
-  }
-  const embedded = t.match(/\b([LCDST])\s*(\d{1,2})\s*[-\/]\s*([LCDST])?\s*(\d{1,2})\b/i);
-  if (embedded) {
-    const a = embedded[1]!.toUpperCase().replace("T", "D");
-    const b = (embedded[3] || embedded[1]!).toUpperCase().replace("T", "D");
-    return `${a}${embedded[2]}-${b}${embedded[4]}`;
-  }
-  return "";
-}
 
 export function extractLevel(...texts: Array<string | null | undefined>): string {
   for (const t of texts) {
@@ -198,15 +180,6 @@ export function sentenceHasLevel(sentence: string, level: string): boolean {
   const compactWant = want.replace(/-/g, "");
   const compactSent = sentence.toUpperCase().replace(/[–—\s\/]/g, "").replace(/T/g, "D");
   return compactSent.includes(compactWant);
-}
-
-export function normalizeLaterality(raw: string | null | undefined): string {
-  const n = normalizeSlotPart(raw);
-  if (n === "left" || n === "right" || n === "bilateral") return n;
-  if (n === "l") return "left";
-  if (n === "r") return "right";
-  if (n === "b/l" || n === "bilat" || n === "bl") return "bilateral";
-  return "";
 }
 
 /**
@@ -284,11 +257,12 @@ export function buildSlotKey(parts: {
   level: string;
   laterality: string;
 }): string {
-  const region = (parts.region ?? "").trim() || SLOT_WILDCARD;
-  const concept = parts.concept || SLOT_WILDCARD;
-  const level = normalizeLevel(parts.level) || SLOT_WILDCARD;
-  const laterality = normalizeLaterality(parts.laterality) || SLOT_WILDCARD;
-  return `${region}|${concept}|${level}|${laterality}`;
+  return persistenceOwnershipSlotKey({
+    region: parts.region,
+    concept: parts.concept ?? "",
+    level: parts.level,
+    laterality: parts.laterality,
+  });
 }
 
 export function buildCanonicalObservation(input: ObservationSlotInput): CanonicalObservation {

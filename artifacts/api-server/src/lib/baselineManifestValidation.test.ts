@@ -74,6 +74,39 @@ describe("server baselineManifest integrity", () => {
     expect(r.details?.some((d) => /duplicate ownership slot/i.test(d))).toBe(true);
   });
 
+  it("rejects findings+impression duplicate ownership of the same concept", () => {
+    const r = validateBaselineManifestForPersistence({
+      findings: "Normal parenchyma.",
+      impression: "Normal parenchyma.",
+      defaultRegion: "Brain",
+      baselineManifest: {
+        kind: FULL_REPORT_BASELINE_KIND,
+        version: 1,
+        revision: "r1",
+        observations: [
+          {
+            id: "a",
+            field: "findings",
+            concept: "parenchyma",
+            conflictGroup: "parenchyma",
+            anatomicalSection: "parenchyma",
+            renderedText: "Normal parenchyma.",
+          },
+          {
+            id: "b",
+            field: "impression",
+            concept: "parenchyma",
+            conflictGroup: "parenchyma",
+            anatomicalSection: "",
+            renderedText: "Normal parenchyma.",
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.details?.some((d) => /duplicate ownership slot/i.test(d))).toBe(true);
+  });
+
   it("accepts a valid supported manifest", () => {
     const r = validateBaselineManifestForPersistence({
       findings: "Normal lumbar lordosis is maintained.",

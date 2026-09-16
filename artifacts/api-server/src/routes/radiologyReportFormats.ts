@@ -59,11 +59,17 @@ const formatBodySchema = z.object({
 
 function assertBaselineManifestOrReject(
   res: { status: (code: number) => { json: (body: unknown) => void } },
-  d: { findings?: string; impression?: string; baselineManifest?: unknown },
+  d: {
+    findings?: string;
+    impression?: string;
+    bodyPart?: string;
+    baselineManifest?: unknown;
+  },
 ): boolean {
   const validation = validateBaselineManifestForPersistence({
     findings: d.findings,
     impression: d.impression,
+    defaultRegion: d.bodyPart,
     baselineManifest: (d.baselineManifest ?? null) as never,
   });
   if (validation.ok) return true;
@@ -208,7 +214,7 @@ radiologyReportFormatsRouter.post("/", async (req, res) => {
       isActive: d.isActive,
       isGlobal: d.isGlobal,
       isPartialSection: false,
-      // Persist owned baseline contract without a schema migration — unused for report_format.
+      // Owned baseline contract → radiology_snippets.baseline_manifest (migration 0014).
       baselineManifest: d.baselineManifest ? JSON.stringify(d.baselineManifest) : null,
       createdById: staff.id,
       createdByName: staff.name,
