@@ -67,6 +67,8 @@ export default function FrozenKeyImagesRail({
   onFocusObservation,
   aiSelectedIds,
   onAiSelectedIdsChange,
+  onCaptureRequest,
+  captureBusy,
 }: {
   draftId: number | null;
   disabled?: boolean;
@@ -76,6 +78,9 @@ export default function FrozenKeyImagesRail({
   /** Session AI selection — independent of includeInReport. */
   aiSelectedIds?: number[];
   onAiSelectedIdsChange?: (ids: number[]) => void;
+  /** Capture frozen viewport from the active viewer (Frames or OHIF Annotate). */
+  onCaptureRequest?: () => void;
+  captureBusy?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState<FrozenKeyImage | null>(null);
@@ -91,6 +96,7 @@ export default function FrozenKeyImagesRail({
   const aiSelected = useMemo(() => new Set(aiSelectedIds ?? []), [aiSelectedIds]);
   const eligibleItems = useMemo(() => items.filter(isEligibleForAiSelection), [items]);
   const aiSelectionEnabled = typeof onAiSelectedIdsChange === "function";
+  const canCapture = typeof onCaptureRequest === "function" && !disabled;
 
   const toggleAi = (id: number) => {
     if (!onAiSelectedIdsChange || disabled) return;
@@ -145,7 +151,6 @@ export default function FrozenKeyImagesRail({
           data-testid="frozen-key-images-rail-toggle"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          <Camera className="h-3 w-3" />
           Key Images ({items.length})
           {aiSelectionEnabled && aiSelected.size > 0 ? (
             <Badge variant="outline" className="text-[9px] h-4 border-violet-300 text-violet-800" data-testid="frozen-key-images-ai-count">
@@ -154,6 +159,28 @@ export default function FrozenKeyImagesRail({
           ) : null}
           {filterObservationId ? <Badge variant="outline" className="text-[9px] h-4">filtered</Badge> : null}
         </button>
+        {canCapture ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-6 w-6 p-0 shrink-0 text-sky-700 hover:text-sky-900 hover:bg-sky-50"
+            title={captureBusy ? "Capturing…" : "Capture key image from active viewer"}
+            data-testid="frozen-key-images-capture"
+            disabled={!!captureBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCaptureRequest?.();
+            }}
+          >
+            <Camera className={`h-3.5 w-3.5 ${captureBusy ? "animate-pulse" : ""}`} />
+            <span className="sr-only">{captureBusy ? "Capturing" : "Capture key image"}</span>
+          </Button>
+        ) : (
+          <span className="inline-flex h-6 w-6 items-center justify-center text-slate-400" aria-hidden>
+            <Camera className="h-3.5 w-3.5" />
+          </span>
+        )}
         {aiSelectionEnabled && !disabled && eligibleItems.length > 0 ? (
           <div className="flex gap-0.5 shrink-0">
             <Button
@@ -185,8 +212,10 @@ export default function FrozenKeyImagesRail({
       {open && (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {items.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground py-2">
-              No frozen captures yet. Use Capture key image in Frames mode.
+            <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-empty-hint">
+              {canCapture
+                ? "No frozen captures yet. Click the camera to capture the active viewer, or use Capture key image in Frames mode."
+                : "No frozen captures yet. Use Capture key image in Frames mode."}
             </p>
           ) : (
             items.map((img) => {

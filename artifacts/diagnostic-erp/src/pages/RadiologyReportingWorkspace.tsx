@@ -3547,6 +3547,54 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());
   const ohifTargetOriginRef = useRef<string | null>(null);
   const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
+
+  const requestOhifAnnotatedCapture = useCallback(() => {
+    if (isLocked || isFinalized) return;
+    const requestId = `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    ohifCapturePendingRef.current.add(requestId);
+    const win = embeddedViewerRef.current?.getOhifWindow?.();
+    let targetOrigin = ohifTargetOriginRef.current;
+    if (!targetOrigin) {
+      const launch = embeddedViewerRef.current?.getOhifLaunchUrl?.();
+      if (launch) {
+        try { targetOrigin = new URL(launch).origin; } catch { /* ignore */ }
+      }
+    }
+    const ok = requestOhifViewportCapture({
+      target: win,
+      requestId,
+      targetOrigin,
+    });
+    if (!ok) {
+      ohifCapturePendingRef.current.delete(requestId);
+      toast({
+        title: "OHIF capture unavailable",
+        description: "OHIF iframe is not ready. Switch to Frames or open OHIF in a new tab.",
+        variant: "destructive",
+      });
+      return;
+    }
+    toast({
+      title: "Annotated capture requested",
+      description: "Waiting for CARE OHIF extension. Falls back to Frames/upload if unsupported.",
+    });
+    window.setTimeout(() => {
+      ohifCapturePendingRef.current.delete(requestId);
+    }, 60_000);
+  }, [isLocked, isFinalized, toast]);
+
+  /** Key Images rail camera — same capture paths as Frames / OHIF Annotate buttons. */
+  const requestFrozenKeyImageCapture = useCallback(async () => {
+    if (isLocked || isFinalized || captureBusy) return;
+    const result = await embeddedViewerRef.current?.captureKeyImage?.();
+    if (result === "frames" || result === "ohif") return;
+    toast({
+      title: "Capture unavailable",
+      description: "Switch to Frames with a loaded image, or stay in OHIF and wait for the viewer to load.",
+      variant: "destructive",
+    });
+  }, [isLocked, isFinalized, captureBusy, toast]);
+
   useEffect(() => {
     const uid = workflow.currentRow?.studyInstanceUID ?? null;
     if (!uid) return;
@@ -4942,41 +4990,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       }}
                       captureBusy={captureBusy}
                       onRequestOhifAnnotatedCapture={
-                        isLocked || isFinalized
-                          ? undefined
-                          : () => {
-                              const requestId = `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-                              ohifCapturePendingRef.current.add(requestId);
-                              const win = embeddedViewerRef.current?.getOhifWindow?.();
-                              let targetOrigin = ohifTargetOriginRef.current;
-                              if (!targetOrigin) {
-                                const launch = embeddedViewerRef.current?.getOhifLaunchUrl?.();
-                                if (launch) {
-                                  try { targetOrigin = new URL(launch).origin; } catch { /* ignore */ }
-                                }
-                              }
-                              const ok = requestOhifViewportCapture({
-                                target: win,
-                                requestId,
-                                targetOrigin,
-                              });
-                              if (!ok) {
-                                ohifCapturePendingRef.current.delete(requestId);
-                                toast({
-                                  title: "OHIF capture unavailable",
-                                  description: "OHIF iframe is not ready. Switch to Frames or open OHIF in a new tab.",
-                                  variant: "destructive",
-                                });
-                                return;
-                              }
-                              toast({
-                                title: "Annotated capture requested",
-                                description: "Waiting for CARE OHIF extension. Falls back to Frames/upload if unsupported.",
-                              });
-                              window.setTimeout(() => {
-                                ohifCapturePendingRef.current.delete(requestId);
-                              }, 60_000);
-                            }
+                        isLocked || isFinalized ? undefined : requestOhifAnnotatedCapture
                       }
                       onCaptureViewport={
                         isLocked || isFinalized
@@ -5094,6 +5108,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         }}
                         aiSelectedIds={aiSelectedKeyImageIds}
                         onAiSelectedIdsChange={setAiSelectedKeyImageIds}
+                        captureBusy={captureBusy}
+                        onCaptureRequest={
+                          isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"
+                            ? undefined
+                            : () => { void requestFrozenKeyImageCapture(); }
+                        }
                       />
                       {keyImageFilterObsId ? (
                         <div className="px-2 pb-1">
