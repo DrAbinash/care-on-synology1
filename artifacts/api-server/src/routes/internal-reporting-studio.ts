@@ -9,9 +9,11 @@
  *
  *   GET  /ping
  *   GET  /worklist?status=pending&since=<iso>
+ *   GET  /audit          — dead-man last-sync + 24h/7d counters
  *   POST /finalize
  *   GET  /billing-status?accessions=A,B,C
  */
+import { createHash } from "node:crypto";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { db } from "@workspace/db";
 import {
@@ -23,6 +25,7 @@ import {
   billPaymentLinksTable,
   testsTable,
   patientsTable,
+  bridgeSyncLogTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, gte, notInArray, sql, desc } from "drizzle-orm";
 import { safeEqual } from "../lib/internalApiKeyAuth";
@@ -36,6 +39,15 @@ import {
   isOpenUpiLinkStatus,
   type StudioBillingStatus,
 } from "../lib/reportingStudioBilling";
+import {
+  validateStudioWorklistRow,
+  detectSentinels,
+  accumulateSentinels,
+  emptySentinelCounters,
+  buildRowsByModality,
+  type WorklistAuditMeta,
+  type SentinelCounters,
+} from "../lib/reportingStudioContract";
 
 const router = Router();
 
@@ -61,6 +73,39 @@ router.use(requireStudioKey);
 
 function erpVersion(): string {
   return process.env["ERP_VERSION"] || process.env["npm_package_version"] || "0.0.0";
+}
+
+/**
+ * Stable studio source id for bridge_sync_log — prefer explicit header so
+ * admins can label studios; otherwise fingerprint the API key (never store
+ * the raw secret).
+ */
+export function studioSourceId(req: Request): string {
+  const header =
+    (req.header("x-studio-id") ?? req.header("x-reporting-studio-source") ?? "").trim();
+  if (header) return header.slice(0, 128);
+  const key = req.header("x-api-key") ?? "";
+  const fingerprint = createHash("sha256").update(key).digest("hex").slice(0, 16);
+  return `key:${fingerprint}`;
+}
+
+async function recordBridgeSyncLog(input: {
+  sourceId: string;
+  rowsServed: number;
+  rowsByModality: Record<string, number>;
+  sentinelCounters: SentinelCounters;
+  validationFailures: number;
+  statusFilter: string;
+}): Promise<void> {
+  await db.insert(bridgeSyncLogTable).values({
+    sourceId: input.sourceId,
+    syncedAt: new Date(),
+    rowsServed: input.rowsServed,
+    rowsByModality: input.rowsByModality,
+    sentinelCounters: input.sentinelCounters,
+    validationFailures: input.validationFailures,
+    statusFilter: input.statusFilter,
+  });
 }
 
 function toIsoStudyDate(raw: string | null | undefined): string {
@@ -276,8 +321,18 @@ router.get("/worklist", async (req, res) => {
       .filter((id): id is number => typeof id === "number" && Number.isFinite(id));
     const billingMap = await billingStatusForBillIds([...new Set(billIds)]);
 
-    res.json(
-      rows.map((r) => ({
+    const sourceId = studioSourceId(req);
+    let validationFailures = 0;
+    let sentinels = emptySentinelCounters();
+
+    const payloadRows = rows.map((r) => {
+      const refWorklist = (r.referringDoctor ?? "").trim();
+      const refStudy = (r.studyReferringDoctor ?? "").trim();
+      const referringDoctorWasBlank = !refWorklist && !refStudy;
+      const referringDoctor =
+        refWorklist || refStudy || "Self/Walk-in";
+
+      const mapped = {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
         patientName: r.patientName,
@@ -294,17 +349,188 @@ router.get("/worklist", async (req, res) => {
         billNumber: r.billNumber ?? "",
         patientAge: ageFor(r),
         patientGender: (r.sex ?? "") || (r.patientGender ?? ""),
-        referringDoctor: (r.referringDoctor ?? "") || (r.studyReferringDoctor ?? "") || "Self/Walk-in",
+        referringDoctor,
         testName: r.testName ?? r.studyDescription ?? "",
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
         studyInstanceUid: r.studyInstanceUID ?? null,
         billingStatus: r.billId != null ? (billingMap.get(r.billId) ?? null) : null,
-      })),
+      };
+
+      // Contract validation — never silently drop; log + count failures.
+      const validated = validateStudioWorklistRow(mapped);
+      if (!validated.ok) {
+        validationFailures += 1;
+        for (const issue of validated.issues) {
+          logger.error(
+            {
+              worklistId: issue.worklistId || mapped.worklistId,
+              field: issue.field,
+              message: issue.message,
+              sourceId,
+            },
+            "reporting-studio worklist contract validation failed",
+          );
+        }
+      }
+
+      const flags = detectSentinels({
+        patientAge: mapped.patientAge,
+        sourceAge: r.age,
+        patientDob: r.patientDob,
+        accessionNumber: mapped.accessionNumber,
+        referringDoctor: mapped.referringDoctor,
+        referringDoctorWasBlank,
+      });
+      sentinels = accumulateSentinels(sentinels, flags);
+
+      return mapped;
+    });
+
+    const rowsByModality = buildRowsByModality(payloadRows);
+    const syncedAt = new Date().toISOString();
+    const meta: WorklistAuditMeta = {
+      syncedAt,
+      rowsServed: payloadRows.length,
+      rowsByModality,
+      validationFailures,
+      sentinels,
+      sourceId,
+    };
+
+    logger.info(
+      {
+        sourceId,
+        rowsServed: meta.rowsServed,
+        rowsByModality,
+        validationFailures,
+        sentinels,
+        statusFilter,
+      },
+      "reporting-studio worklist served",
     );
+
+    try {
+      await recordBridgeSyncLog({
+        sourceId,
+        rowsServed: meta.rowsServed,
+        rowsByModality,
+        sentinelCounters: sentinels,
+        validationFailures,
+        statusFilter,
+      });
+    } catch (err) {
+      // Audit write must not fail the studio pull — but it must be LOUD.
+      logger.error({ err, sourceId }, "reporting-studio bridge_sync_log write failed");
+    }
+
+    // Additive envelope: row objects unchanged; meta is new. Studios that
+    // previously expected a bare array should read `.rows` (or ignore `.meta`).
+    res.json({ rows: payloadRows, meta });
   } catch (err) {
     logger.error({ err }, "reporting-studio worklist failed");
     res.status(500).json({ error: "worklist query failed" });
+  }
+});
+
+// ── GET /audit ───────────────────────────────────────────────────────────────
+// Dead-man view: last pull per studio, 24h/7d row counts, sentinel + validation
+// totals. Same x-api-key gate as the rest of the bridge.
+router.get("/audit", async (_req, res) => {
+  try {
+    const now = Date.now();
+    const since24h = new Date(now - 24 * 60 * 60 * 1000);
+    const since7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
+
+    const recent = await db
+      .select()
+      .from(bridgeSyncLogTable)
+      .where(gte(bridgeSyncLogTable.syncedAt, since7d))
+      .orderBy(desc(bridgeSyncLogTable.syncedAt))
+      .limit(5000);
+
+    const lastBySource = new Map<
+      string,
+      {
+        sourceId: string;
+        syncedAt: string;
+        minutesAgo: number;
+        rowsServed: number;
+        validationFailures: number;
+        sentinels: SentinelCounters;
+        statusFilter: string | null;
+      }
+    >();
+
+    let rows24h = 0;
+    let rows7d = 0;
+    let pulls24h = 0;
+    let pulls7d = 0;
+    const sentinels24h = emptySentinelCounters();
+    const sentinels7d = emptySentinelCounters();
+    let validationFailures24h = 0;
+    let validationFailures7d = 0;
+
+    for (const row of recent) {
+      const syncedAt = row.syncedAt instanceof Date ? row.syncedAt : new Date(row.syncedAt);
+      const syncedMs = syncedAt.getTime();
+      const counters = (row.sentinelCounters ?? emptySentinelCounters()) as SentinelCounters;
+
+      if (!lastBySource.has(row.sourceId)) {
+        lastBySource.set(row.sourceId, {
+          sourceId: row.sourceId,
+          syncedAt: syncedAt.toISOString(),
+          minutesAgo: Math.max(0, Math.round((now - syncedMs) / 60_000)),
+          rowsServed: row.rowsServed,
+          validationFailures: row.validationFailures,
+          sentinels: counters,
+          statusFilter: row.statusFilter,
+        });
+      }
+
+      rows7d += row.rowsServed;
+      pulls7d += 1;
+      validationFailures7d += row.validationFailures;
+      sentinels7d.ageSuspicious += counters.ageSuspicious ?? 0;
+      sentinels7d.placeholderDob += counters.placeholderDob ?? 0;
+      sentinels7d.blankAccession += counters.blankAccession ?? 0;
+      sentinels7d.blankReferringDoctor += counters.blankReferringDoctor ?? 0;
+
+      if (syncedMs >= since24h.getTime()) {
+        rows24h += row.rowsServed;
+        pulls24h += 1;
+        validationFailures24h += row.validationFailures;
+        sentinels24h.ageSuspicious += counters.ageSuspicious ?? 0;
+        sentinels24h.placeholderDob += counters.placeholderDob ?? 0;
+        sentinels24h.blankAccession += counters.blankAccession ?? 0;
+        sentinels24h.blankReferringDoctor += counters.blankReferringDoctor ?? 0;
+      }
+    }
+
+    const lastSyncPerStudio = [...lastBySource.values()].sort(
+      (a, b) => new Date(b.syncedAt).getTime() - new Date(a.syncedAt).getTime(),
+    );
+
+    res.json({
+      ok: true,
+      asOf: new Date(now).toISOString(),
+      lastSyncPerStudio,
+      totals24h: {
+        pulls: pulls24h,
+        rowsServed: rows24h,
+        validationFailures: validationFailures24h,
+        sentinels: sentinels24h,
+      },
+      totals7d: {
+        pulls: pulls7d,
+        rowsServed: rows7d,
+        validationFailures: validationFailures7d,
+        sentinels: sentinels7d,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, "reporting-studio audit failed");
+    res.status(500).json({ error: "audit query failed" });
   }
 });
 

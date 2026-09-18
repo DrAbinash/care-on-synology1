@@ -16,12 +16,45 @@ import {
   testsTable,
   billsTable,
   ordersTable,
+  bridgeSyncLogTable,
 } from "@workspace/db/schema";
 import { eq, like } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
 const dbAvailable = hasDatabaseUrl();
 const STUDIO_KEY = `studio-test-key-${randomUUID().replace(/-/g, "")}`;
+
+/** Unwrap additive { rows, meta } envelope (or legacy bare array). */
+function worklistRows(body: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(body)) return body as Array<Record<string, unknown>>;
+  if (body && typeof body === "object" && Array.isArray((body as { rows?: unknown }).rows)) {
+    return (body as { rows: Array<Record<string, unknown>> }).rows;
+  }
+  return [];
+}
+
+function worklistMeta(body: unknown): Record<string, unknown> | null {
+  if (body && typeof body === "object" && (body as { meta?: unknown }).meta) {
+    return (body as { meta: Record<string, unknown> }).meta;
+  }
+  return null;
+}
+
+/** Assert + narrow Array.find result for strict noUncheckedIndexedAccess typecheck. */
+function requireRow(
+  rows: Array<Record<string, unknown>>,
+  worklistId: number,
+): Record<string, unknown> {
+  const row = rows.find((r) => r.worklistId === String(worklistId));
+  if (!row) throw new Error(`worklist row ${worklistId} not found in response`);
+  return row;
+}
+
+function requireMeta(body: unknown): Record<string, unknown> {
+  const meta = worklistMeta(body);
+  if (!meta) throw new Error("worklist response meta missing");
+  return meta;
+}
 
 describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () => {
   let app: Express;
@@ -144,6 +177,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
   });
 
   afterEach(async () => {
+    await db.delete(bridgeSyncLogTable).where(like(bridgeSyncLogTable.sourceId, "%")).catch(() => {});
     await db.delete(radiologyAuditLogTable).where(eq(radiologyAuditLogTable.worklistId, worklistId)).catch(() => {});
     await db.delete(patientReportsTable).where(like(patientReportsTable.reportNumber, "RPT-%")).catch(() => {});
     // Delete reports tied to this patient more precisely
@@ -190,9 +224,8 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.accessionNumber).toBe(`ACC-RS-${marker}`);
     expect(row.patientName).toContain("Studio Patient");
     expect(row.modality).toBe("MR");
@@ -205,8 +238,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientId).toBe(patientId);
     expect(row.patientPhone).toBe("9000000001");
     expect(row.patientAddress).toBe("Bridge Test Lane 1, Deoghar");
@@ -227,8 +259,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("42");
     expect(row.patientGender).toBe("female");
     expect(row.referringDoctor).toBe("Dr. Referrer");
@@ -250,8 +281,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("40");
     expect(row.patientAge).not.toBe("126");
   });
@@ -272,8 +302,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("");
   });
 
@@ -291,8 +320,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.referringDoctor).toBe("Self/Walk-in");
   });
 
@@ -301,8 +329,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.status).toBeTruthy(); // STUDY_RECEIVED | AI_DRAFT_READY | REPORT_IN_PROGRESS
   });
 
@@ -322,9 +349,8 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=all")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    const row = requireRow(worklistRows(res.body), worklistId);
   });
 
   test("billing-status maps accessions", async () => {
@@ -416,5 +442,95 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(res.status).toBe(409);
     expect(res.body.ok).toBe(false);
     expect(res.body.error).toMatch(/Match Center/i);
+  });
+
+  test("contract validation catches a malformed row and keeps it in the payload", async () => {
+    // Blank patientName fails studioWorklistRowSchema.min(1) but must NOT be dropped.
+    await db
+      .update(radiologyWorklistTable)
+      .set({ patientName: "" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY)
+      .set("x-studio-id", `studio-malformed-${marker}`);
+    expect(res.status).toBe(200);
+    const row = requireRow(worklistRows(res.body), worklistId);
+    expect(row.patientName).toBe("");
+    const meta = requireMeta(res.body);
+    expect(Number(meta.validationFailures)).toBeGreaterThanOrEqual(1);
+  });
+
+  test("sentinel detector flags age 126 and 1900-01-01 DOB in meta counters", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({ age: "126" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await db
+      .update(patientsTable)
+      .set({ ageValue: 40, ageUnit: "years", dateOfBirth: "1900-01-01" })
+      .where(eq(patientsTable.id, patientId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY)
+      .set("x-studio-id", `studio-sentinel-${marker}`);
+    expect(res.status).toBe(200);
+    const meta = requireMeta(res.body);
+    const sentinels = meta.sentinels as {
+      ageSuspicious: number;
+      placeholderDob: number;
+    };
+    expect(sentinels.ageSuspicious).toBeGreaterThanOrEqual(1);
+    expect(sentinels.placeholderDob).toBeGreaterThanOrEqual(1);
+    // Happy-path age still Highway-correct
+    const row = requireRow(worklistRows(res.body), worklistId);
+    expect(row.patientAge).toBe("40");
+  });
+
+  test("bridge_sync_log records a row on successful worklist GET", async () => {
+    const studioId = `studio-sync-${marker}`;
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY)
+      .set("x-studio-id", studioId);
+    expect(res.status).toBe(200);
+    expect(worklistMeta(res.body)?.sourceId).toBe(studioId);
+
+    const logs = await db
+      .select()
+      .from(bridgeSyncLogTable)
+      .where(eq(bridgeSyncLogTable.sourceId, studioId));
+    expect(logs.length).toBeGreaterThanOrEqual(1);
+    expect(logs[0]!.rowsServed).toBeGreaterThanOrEqual(1);
+    expect(logs[0]!.rowsByModality).toBeTruthy();
+  });
+
+  test("GET /audit requires API key and returns counters", async () => {
+    const studioId = `studio-audit-${marker}`;
+    await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY)
+      .set("x-studio-id", studioId);
+
+    const noKey = await request(app).get("/api/internal/reporting-studio/audit");
+    expect(noKey.status).toBe(401);
+
+    const ok = await request(app)
+      .get("/api/internal/reporting-studio/audit")
+      .set("x-api-key", STUDIO_KEY);
+    expect(ok.status).toBe(200);
+    expect(ok.body.ok).toBe(true);
+    expect(Array.isArray(ok.body.lastSyncPerStudio)).toBe(true);
+    expect(ok.body.totals24h).toBeTruthy();
+    expect(ok.body.totals7d).toBeTruthy();
+    expect(typeof ok.body.totals24h.rowsServed).toBe("number");
+    expect(ok.body.totals24h.sentinels).toBeTruthy();
+    const mine = ok.body.lastSyncPerStudio.find(
+      (s: { sourceId: string }) => s.sourceId === studioId,
+    );
+    if (!mine) throw new Error(`audit lastSync missing for ${studioId}`);
+    expect(typeof mine.minutesAgo).toBe("number");
   });
 });
