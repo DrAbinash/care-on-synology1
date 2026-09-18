@@ -261,9 +261,11 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .update(radiologyWorklistTable)
       .set({ age: "126" })
       .where(eq(radiologyWorklistTable.id, worklistId));
+    // date_of_birth is NOT NULL — use a future DOB so Priority 2 yields no age,
+    // forcing Priority 3 (machine age) which must hard-reject >110.
     await db
       .update(patientsTable)
-      .set({ ageValue: null, ageUnit: null, dateOfBirth: null })
+      .set({ ageValue: null, ageUnit: null, dateOfBirth: "2099-01-01" })
       .where(eq(patientsTable.id, patientId));
 
     const res = await request(app)
