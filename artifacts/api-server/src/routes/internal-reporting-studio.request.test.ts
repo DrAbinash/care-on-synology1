@@ -234,6 +234,66 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(row.referringDoctor).toBe("Dr. Referrer");
   });
 
+  test("Highway Rule: bill-desk age_value wins over machine dummy age 126", async () => {
+    // Live bug: MWL/machine pushes age "126" from a 1900-01-01 DOB while
+    // Bill Desk correctly stored age_value=40. Highway Rule prefers Bill Desk.
+    await db
+      .update(radiologyWorklistTable)
+      .set({ age: "126" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await db
+      .update(patientsTable)
+      .set({ ageValue: 40, ageUnit: "years", dateOfBirth: "1900-01-01" })
+      .where(eq(patientsTable.id, patientId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.patientAge).toBe("40");
+    expect(row.patientAge).not.toBe("126");
+  });
+
+  test("Highway Rule: hard-rejects machine age >110 when bill-desk age_value is null", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({ age: "126" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await db
+      .update(patientsTable)
+      .set({ ageValue: null, ageUnit: null, dateOfBirth: null })
+      .where(eq(patientsTable.id, patientId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.patientAge).toBe("");
+  });
+
+  test("worklist referringDoctor falls back to Self/Walk-in when blank", async () => {
+    await db
+      .update(radiologyWorklistTable)
+      .set({ referringDoctor: "" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    await db
+      .update(radiologyStudiesTable)
+      .set({ referringDoctor: null })
+      .where(eq(radiologyStudiesTable.id, studyId));
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: { worklistId: string }) => r.worklistId === String(worklistId));
+    expect(row).toBeTruthy();
+    expect(row.referringDoctor).toBe("Self/Walk-in");
+  });
+
   test("worklist surfaces ERP status field (v6.14 freeze support)", async () => {
     const res = await request(app)
       .get("/api/internal/reporting-studio/worklist?status=pending")

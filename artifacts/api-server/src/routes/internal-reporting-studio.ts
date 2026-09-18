@@ -79,25 +79,46 @@ function toIsoStudyDate(raw: string | null | undefined): string {
   return raw;
 }
 
-/** Bill-desk age fallback when PACS mirror columns are blank. */
+/**
+ * Highway Rule — Bill Desk is the single source of truth for patient age.
+ *
+ * Priority:
+ *  1. patients.age_value / age_unit (bill desk)
+ *  2. patients.date_of_birth (bill desk)
+ *  3. radiology_worklist.age (MWL/machine) — only when age_value is null,
+ *     and hard-rejected when the parsed number is > 110 (kills dummy "126"
+ *     ages derived from 1900-01-01 DOBs that machines sometimes push).
+ */
 function ageFor(r: {
   age: string | null;
   patientDob: string | null;
   patientAgeValue: number | null;
   patientAgeUnit: string | null;
 }): string {
-  if (r.age && r.age.trim()) return r.age.trim();
+  // PRIORITY 1 — Bill Desk age_value / age_unit
   if (r.patientAgeValue != null && Number.isFinite(r.patientAgeValue)) {
+    if (r.patientAgeValue > 110 || r.patientAgeValue < 0) return "";
     const unit = (r.patientAgeUnit ?? "").toLowerCase();
     if (unit.startsWith("month")) return `${r.patientAgeValue}M`;
     if (unit.startsWith("day")) return `${r.patientAgeValue}D`;
     return String(r.patientAgeValue);
   }
+
+  // PRIORITY 2 — Bill Desk DOB
   const dob = (r.patientDob ?? "").trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(dob)) {
     const years = Math.floor((Date.now() - new Date(dob).getTime()) / 31_557_600_000);
     if (years > 0 && years < 130) return String(years);
   }
+
+  // PRIORITY 3 — Machine/MWL age only when bill-desk age_value is null
+  if (r.patientAgeValue == null && r.age && r.age.trim()) {
+    const raw = r.age.trim();
+    const parsed = Number.parseFloat(raw);
+    if (Number.isFinite(parsed) && parsed > 110) return "";
+    return raw;
+  }
+
   return "";
 }
 
@@ -273,7 +294,7 @@ router.get("/worklist", async (req, res) => {
         billNumber: r.billNumber ?? "",
         patientAge: ageFor(r),
         patientGender: (r.sex ?? "") || (r.patientGender ?? ""),
-        referringDoctor: (r.referringDoctor ?? "") || (r.studyReferringDoctor ?? ""),
+        referringDoctor: (r.referringDoctor ?? "") || (r.studyReferringDoctor ?? "") || "Self/Walk-in",
         testName: r.testName ?? r.studyDescription ?? "",
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
