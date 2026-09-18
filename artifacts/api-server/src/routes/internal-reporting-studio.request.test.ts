@@ -40,6 +40,22 @@ function worklistMeta(body: unknown): Record<string, unknown> | null {
   return null;
 }
 
+/** Assert + narrow Array.find result for strict noUncheckedIndexedAccess typecheck. */
+function requireRow(
+  rows: Array<Record<string, unknown>>,
+  worklistId: number,
+): Record<string, unknown> {
+  const row = rows.find((r) => r.worklistId === String(worklistId));
+  if (!row) throw new Error(`worklist row ${worklistId} not found in response`);
+  return row;
+}
+
+function requireMeta(body: unknown): Record<string, unknown> {
+  const meta = worklistMeta(body);
+  if (!meta) throw new Error("worklist response meta missing");
+  return meta;
+}
+
 describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () => {
   let app: Express;
   let marker: string;
@@ -209,8 +225,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.rows)).toBe(true);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.accessionNumber).toBe(`ACC-RS-${marker}`);
     expect(row.patientName).toContain("Studio Patient");
     expect(row.modality).toBe("MR");
@@ -223,8 +238,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientId).toBe(patientId);
     expect(row.patientPhone).toBe("9000000001");
     expect(row.patientAddress).toBe("Bridge Test Lane 1, Deoghar");
@@ -245,8 +259,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("42");
     expect(row.patientGender).toBe("female");
     expect(row.referringDoctor).toBe("Dr. Referrer");
@@ -268,8 +281,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("40");
     expect(row.patientAge).not.toBe("126");
   });
@@ -290,8 +302,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.patientAge).toBe("");
   });
 
@@ -309,8 +320,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.referringDoctor).toBe("Self/Walk-in");
   });
 
@@ -319,8 +329,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.status).toBeTruthy(); // STUDY_RECEIVED | AI_DRAFT_READY | REPORT_IN_PROGRESS
   });
 
@@ -341,8 +350,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.rows)).toBe(true);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
+    const row = requireRow(worklistRows(res.body), worklistId);
   });
 
   test("billing-status maps accessions", async () => {
@@ -448,12 +456,10 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .set("x-api-key", STUDIO_KEY)
       .set("x-studio-id", `studio-malformed-${marker}`);
     expect(res.status).toBe(200);
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row).toBeTruthy();
-    expect(row!.patientName).toBe("");
-    const meta = worklistMeta(res.body);
-    expect(meta).toBeTruthy();
-    expect(Number(meta!.validationFailures)).toBeGreaterThanOrEqual(1);
+    const row = requireRow(worklistRows(res.body), worklistId);
+    expect(row.patientName).toBe("");
+    const meta = requireMeta(res.body);
+    expect(Number(meta.validationFailures)).toBeGreaterThanOrEqual(1);
   });
 
   test("sentinel detector flags age 126 and 1900-01-01 DOB in meta counters", async () => {
@@ -471,17 +477,16 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .set("x-api-key", STUDIO_KEY)
       .set("x-studio-id", `studio-sentinel-${marker}`);
     expect(res.status).toBe(200);
-    const meta = worklistMeta(res.body);
-    expect(meta).toBeTruthy();
-    const sentinels = meta!.sentinels as {
+    const meta = requireMeta(res.body);
+    const sentinels = meta.sentinels as {
       ageSuspicious: number;
       placeholderDob: number;
     };
     expect(sentinels.ageSuspicious).toBeGreaterThanOrEqual(1);
     expect(sentinels.placeholderDob).toBeGreaterThanOrEqual(1);
     // Happy-path age still Highway-correct
-    const row = worklistRows(res.body).find((r) => r.worklistId === String(worklistId));
-    expect(row!.patientAge).toBe("40");
+    const row = requireRow(worklistRows(res.body), worklistId);
+    expect(row.patientAge).toBe("40");
   });
 
   test("bridge_sync_log records a row on successful worklist GET", async () => {
@@ -525,7 +530,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     const mine = ok.body.lastSyncPerStudio.find(
       (s: { sourceId: string }) => s.sourceId === studioId,
     );
-    expect(mine).toBeTruthy();
+    if (!mine) throw new Error(`audit lastSync missing for ${studioId}`);
     expect(typeof mine.minutesAgo).toBe("number");
   });
 });
