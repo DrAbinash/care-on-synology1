@@ -169,6 +169,7 @@ export * from "./aiClinicalConfig";
 export * from "./aiReportComposer";
 export * from "./aiInterop";
 export * from "./operationalHealthRuns";
+export * from "./bridgeSyncLog";
 // ── HOPE → CARE diagnostic referral integration (additive; see
 // docs/hope-care-integration/) ──────────────────────────────────────────────
 export * from "./integrationPartners";
