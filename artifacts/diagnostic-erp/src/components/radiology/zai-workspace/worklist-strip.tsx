@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { patientAccent, modalityAccent } from "@/lib/zai-workspace/types";
+import { matchesReadingQueueModality } from "@/lib/readingQueueModality";
 import { Clock, Lock, AlertTriangle, ChevronRight, Archive, Flame } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -53,15 +54,18 @@ export function WorklistStrip({
   const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
 
   const orderedStudies = useMemo(() => {
-    if (sortMode !== "name-az") return studies;
-    return [...studies].sort((a, b) => {
+    const base = modalityFilter && modalityFilter !== "all"
+      ? studies.filter((s) => matchesReadingQueueModality(s.modality, modalityFilter))
+      : studies;
+    if (sortMode !== "name-az") return base;
+    return [...base].sort((a, b) => {
       const an = (a.patient?.name ?? "").trim();
       const bn = (b.patient?.name ?? "").trim();
       const cmp = an.localeCompare(bn, undefined, { sensitivity: "base", numeric: true });
       if (cmp !== 0) return cmp;
       return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
     });
-  }, [studies, sortMode]);
+  }, [studies, sortMode, modalityFilter]);
 
   const visibleStudies = orderedStudies.slice(0, visibleCount);
   const hasMore = orderedStudies.length > visibleCount;
@@ -73,7 +77,7 @@ export function WorklistStrip({
           <div>
             <div className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Reading Queue</div>
             <div className="text-[10px] text-emerald-600/70">
-              {studies.length - completed.size} pending · {completed.size} signed · {parked.size} parked
+              {orderedStudies.filter((s) => !completed.has(s.id)).length} pending · {completed.size} signed · {parked.size} parked
             </div>
           </div>
           <button

@@ -8,7 +8,7 @@ import {
   isStudyParked, sanitizeQueueStudies,
 } from "@/lib/reportingWorkflow";
 import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
-import { isUltrasoundModality } from "@/lib/usgModality";
+import { matchesReadingQueueModality } from "@/lib/readingQueueModality";
 import { toISTDateStr, studyDateInRange } from "@/lib/dateRangePresets";
 import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
 
@@ -69,14 +69,7 @@ export interface ReportingWorkflowOptions {
 }
 
 function matchesQueueModality(modality: string | null | undefined, filter: string): boolean {
-  if (!filter || filter === "all") return true;
-  if (filter === "US") return isUltrasoundModality(modality);
-  const m = (modality ?? "").toUpperCase();
-  if (filter === "XR" || filter === "XRAY") {
-    return m === "CR" || m === "DX" || m === "XR" || m === "XA" || m === "RF"
-      || m.includes("X-RAY") || m.includes("XRAY");
-  }
-  return m.startsWith(filter.toUpperCase());
+  return matchesReadingQueueModality(modality, filter);
 }
 
 function matchesQueueDate(
