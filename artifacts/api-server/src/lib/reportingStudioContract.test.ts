@@ -9,6 +9,8 @@ import {
   accumulateSentinels,
   emptySentinelCounters,
   buildRowsByModality,
+  suppressMachineGhosts,
+  isMachineGhostRow,
 } from "./reportingStudioContract";
 
 const goodRow = {
@@ -132,5 +134,59 @@ describe("buildRowsByModality", () => {
       { modality: "US" },
       { modality: null },
     ])).toEqual({ MR: 2, US: 1, UNKNOWN: 1 });
+  });
+});
+
+describe("suppressMachineGhosts", () => {
+  const billed = {
+    worklistId: "1",
+    patientName: "Rina Devi",
+    billNumber: "BILL-1",
+    billingStatus: "PAID" as const,
+    patientAge: "40",
+    referringDoctor: "Dr. Referrer",
+  };
+  const ghost = {
+    worklistId: "2",
+    patientName: "Rina Devi",
+    billNumber: "",
+    billingStatus: null,
+    patientAge: "",
+    referringDoctor: "Self/Walk-in",
+  };
+
+  test("isMachineGhostRow detects unbilled empty-age / Self/Walk-in", () => {
+    expect(isMachineGhostRow(ghost)).toBe(true);
+    expect(isMachineGhostRow(billed)).toBe(false);
+  });
+
+  test("suppresses unbilled ghost when billed row exists for same patient", () => {
+    const { rows, suppressed } = suppressMachineGhosts([ghost, billed]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.worklistId).toBe("1");
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0]!.worklistId).toBe("2");
+  });
+
+  test("keeps a lone unbilled walk-in (never drop the only record)", () => {
+    const { rows, suppressed } = suppressMachineGhosts([ghost]);
+    expect(rows).toHaveLength(1);
+    expect(suppressed).toHaveLength(0);
+  });
+
+  test("keeps all rows when multiples exist but none are billed", () => {
+    const ghost2 = { ...ghost, worklistId: "3", patientName: "Rina Devi" };
+    const { rows, suppressed } = suppressMachineGhosts([ghost, ghost2]);
+    expect(rows).toHaveLength(2);
+    expect(suppressed).toHaveLength(0);
+  });
+
+  test("matches patientName case-insensitively", () => {
+    const { rows } = suppressMachineGhosts([
+      ghost,
+      { ...billed, patientName: "  rina devi " },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.billNumber).toBe("BILL-1");
   });
 });

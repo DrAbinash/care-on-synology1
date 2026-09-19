@@ -45,6 +45,7 @@ import {
   accumulateSentinels,
   emptySentinelCounters,
   buildRowsByModality,
+  suppressMachineGhosts,
   type WorklistAuditMeta,
   type SentinelCounters,
 } from "../lib/reportingStudioContract";
@@ -387,11 +388,26 @@ router.get("/worklist", async (req, res) => {
       return mapped;
     });
 
-    const rowsByModality = buildRowsByModality(payloadRows);
+    // Orthanc→ERP sync can create unbilled "ghost" rows alongside Bill Desk
+    // truth for the same patientName. Prefer billed rows; never drop a lone row.
+    const { rows: dedupedRows, suppressed: ghostsSuppressed } =
+      suppressMachineGhosts(payloadRows);
+    if (ghostsSuppressed.length > 0) {
+      logger.info(
+        {
+          sourceId,
+          suppressed: ghostsSuppressed.length,
+          worklistIds: ghostsSuppressed.map((r) => r.worklistId),
+        },
+        "reporting-studio suppressed unbilled machine ghost worklist rows",
+      );
+    }
+
+    const rowsByModality = buildRowsByModality(dedupedRows);
     const syncedAt = new Date().toISOString();
     const meta: WorklistAuditMeta = {
       syncedAt,
-      rowsServed: payloadRows.length,
+      rowsServed: dedupedRows.length,
       rowsByModality,
       validationFailures,
       sentinels,
@@ -402,6 +418,7 @@ router.get("/worklist", async (req, res) => {
       {
         sourceId,
         rowsServed: meta.rowsServed,
+        ghostsSuppressed: ghostsSuppressed.length,
         rowsByModality,
         validationFailures,
         sentinels,
@@ -426,7 +443,7 @@ router.get("/worklist", async (req, res) => {
 
     // Additive envelope: row objects unchanged; meta is new. Studios that
     // previously expected a bare array should read `.rows` (or ignore `.meta`).
-    res.json({ rows: payloadRows, meta });
+    res.json({ rows: dedupedRows, meta });
   } catch (err) {
     logger.error({ err }, "reporting-studio worklist failed");
     res.status(500).json({ error: "worklist query failed" });
