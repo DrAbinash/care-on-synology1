@@ -8,10 +8,11 @@ describe("worklistModalitySqlFilter", () => {
     expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "")).toBeUndefined();
   });
 
-  it("returns SQL fragments for US, XR, and MR filters", () => {
+  it("returns SQL fragments for US, XR, and MR filters (exclusive families)", () => {
     expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "US")).toBeTruthy();
     expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "USG")).toBeTruthy();
     expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "XR")).toBeTruthy();
     expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "MR")).toBeTruthy();
+    expect(worklistModalitySqlFilter(radiologyWorklistTable.modality, "CT")).toBeTruthy();
   });
 });

@@ -20,6 +20,19 @@ export const READING_QUEUE_MODALITY_STORAGE_KEY = "care_reading_queue_modality";
 
 const OPTION_SET = new Set<string>(READING_QUEUE_MODALITY_OPTIONS);
 
+const XR_FAMILY = new Set([
+  "XR",
+  "CR",
+  "DX",
+  "XA",
+  "RF",
+  "XRAY",
+  "X-RAY",
+]);
+
+/** Modalities that are "unknown" for queue bucketing — All only. */
+const UNKNOWN_BUCKETS = new Set(["", "OT", "OTHER", "UN", "UNKNOWN"]);
+
 export function isReadingQueueModality(value: string): value is ReadingQueueModality {
   return OPTION_SET.has(value);
 }
@@ -85,4 +98,49 @@ export function resolveReadingQueueModality(opts: {
     modality: readStoredReadingQueueModality(opts.storage ?? null, opts.fallback ?? "MR"),
     fromDeepLink: false,
   };
+}
+
+/**
+ * Exclusive Reading Queue modality predicate.
+ *
+ * - "all" → every row
+ * - blank / OT / unknown → never matches a specific family (All only)
+ * - US / USG → ultrasound family only (normalizeModality === "US")
+ * - MR → MR* only; CT → CT*; XR → CR/DX/XR/…
+ *
+ * Also used by WorklistStrip so a sticky out-of-filter currentRow (e.g. open
+ * MRI while USG is selected) cannot clutter the visible queue.
+ */
+export function matchesReadingQueueModality(
+  modality: string | null | undefined,
+  filter: string,
+): boolean {
+  const f = (filter ?? "").trim();
+  if (!f || f === "all") return true;
+
+  const raw = (modality ?? "").trim();
+  if (!raw) return false;
+
+  const normalized = normalizeModality(raw);
+  if (!normalized || UNKNOWN_BUCKETS.has(normalized)) return false;
+
+  const bucket = f.toUpperCase() === "USG" ? "US" : f.toUpperCase();
+
+  if (bucket === "US") {
+    return normalized === "US";
+  }
+  if (bucket === "XR" || bucket === "XRAY" || bucket === "X-RAY") {
+    return (
+      XR_FAMILY.has(normalized)
+      || normalized.includes("X-RAY")
+      || normalized.includes("XRAY")
+    );
+  }
+  if (bucket === "MR") {
+    return normalized === "MR" || normalized.startsWith("MR");
+  }
+  if (bucket === "CT") {
+    return normalized === "CT" || normalized.startsWith("CT");
+  }
+  return normalized === bucket || normalized.startsWith(bucket);
 }
