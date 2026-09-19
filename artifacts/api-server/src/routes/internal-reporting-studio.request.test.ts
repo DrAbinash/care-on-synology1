@@ -178,11 +178,18 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
 
   afterEach(async () => {
     await db.delete(bridgeSyncLogTable).where(like(bridgeSyncLogTable.sourceId, "%")).catch(() => {});
-    await db.delete(radiologyAuditLogTable).where(eq(radiologyAuditLogTable.worklistId, worklistId)).catch(() => {});
+    // Ghost rows share patientId — wipe all worklist + audit for this patient.
+    const wlRows = await db
+      .select({ id: radiologyWorklistTable.id })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.patientId, patientId))
+      .catch(() => [] as Array<{ id: number }>);
+    for (const wl of wlRows) {
+      await db.delete(radiologyAuditLogTable).where(eq(radiologyAuditLogTable.worklistId, wl.id)).catch(() => {});
+    }
+    await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.patientId, patientId)).catch(() => {});
     await db.delete(patientReportsTable).where(like(patientReportsTable.reportNumber, "RPT-%")).catch(() => {});
-    // Delete reports tied to this patient more precisely
     await db.delete(patientReportsTable).where(eq(patientReportsTable.patientId, patientId)).catch(() => {});
-    await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId)).catch(() => {});
     await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
     await db.delete(billsTable).where(eq(billsTable.id, billId)).catch(() => {});
     await db.delete(ordersTable).where(eq(ordersTable.patientId, patientId)).catch(() => {});
@@ -532,5 +539,54 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     );
     if (!mine) throw new Error(`audit lastSync missing for ${studioId}`);
     expect(typeof mine.minutesAgo).toBe("number");
+  });
+
+  test("worklist suppresses unbilled machine ghost when billed row exists for same patient", async () => {
+    // Bill Desk truth on the fixture row.
+    await db
+      .update(patientsTable)
+      .set({ ageValue: 40, ageUnit: "years" })
+      .where(eq(patientsTable.id, patientId));
+    await db
+      .update(radiologyWorklistTable)
+      .set({ age: "40", referringDoctor: "Dr. Referrer" })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    // Orthanc ghost: same display name, unmatched patientId, dummy age, blank referrer,
+    // no study/bill link — Highway strips 126 → "" and referrer falls back to Self/Walk-in.
+    const patientName = `Studio Patient ${marker}`;
+    const [ghost] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        studyId: null,
+        patientId: null,
+        patientName,
+        age: "126",
+        sex: "F",
+        modality: "MR",
+        studyDescription: `Ghost MRI ${marker}`,
+        studyDate: "2026-08-29",
+        accessionNumber: "",
+        studyInstanceUID: `1.2.840.ghost.${marker}`,
+        referringDoctor: "",
+        status: "STUDY_RECEIVED",
+        matchScore: "RED",
+        matchPoints: 0,
+        matchDecision: "PENDING",
+      })
+      .returning();
+
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY)
+      .set("x-studio-id", `studio-ghost-${marker}`);
+    expect(res.status).toBe(200);
+
+    const sameName = worklistRows(res.body).filter((r) => r.patientName === patientName);
+    expect(sameName).toHaveLength(1);
+    expect(sameName[0]!.worklistId).toBe(String(worklistId));
+    expect(sameName[0]!.billNumber).toBe(`BILL-RS-${marker}`);
+    expect(sameName[0]!.billingStatus).toBe("PAID");
+    expect(sameName[0]!.worklistId).not.toBe(String(ghost.id));
   });
 });

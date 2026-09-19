@@ -168,3 +168,77 @@ export function buildRowsByModality(rows: Array<{ modality?: string | null }>): 
   }
   return out;
 }
+
+/** Fields needed to decide Bill Desk truth vs Orthanc machine ghost. */
+export type GhostDedupeRow = {
+  worklistId: string;
+  patientName: string;
+  billNumber?: string | null;
+  billingStatus?: string | null;
+  patientAge: string;
+  referringDoctor: string;
+};
+
+function normalizePatientName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function hasBillDeskTruth(row: GhostDedupeRow): boolean {
+  return Boolean((row.billNumber ?? "").trim()) || Boolean(row.billingStatus);
+}
+
+/**
+ * Orthanc→ERP sync "ghost": unbilled, Highway-stripped age and/or Self/Walk-in
+ * referrer — typically a DICOM study that never matched Bill Desk intake.
+ */
+export function isMachineGhostRow(row: GhostDedupeRow): boolean {
+  if (hasBillDeskTruth(row)) return false;
+  const emptyAge = !(row.patientAge ?? "").trim();
+  const walkIn = (row.referringDoctor ?? "").trim() === "Self/Walk-in";
+  return emptyAge || walkIn;
+}
+
+/**
+ * When the same patientName appears more than once, prefer Bill Desk billed
+ * rows and drop unbilled machine ghosts. Never drop a patient's only row
+ * (true walk-ins must remain). When multiples exist but none are billed,
+ * keep all — there is no Bill Desk truth to prefer.
+ */
+export function suppressMachineGhosts<T extends GhostDedupeRow>(rows: T[]): {
+  rows: T[];
+  suppressed: T[];
+} {
+  const byName = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = normalizePatientName(row.patientName);
+    const list = byName.get(key);
+    if (list) list.push(row);
+    else byName.set(key, [row]);
+  }
+
+  const kept: T[] = [];
+  const suppressed: T[] = [];
+
+  for (const group of byName.values()) {
+    if (group.length === 1) {
+      kept.push(group[0]!);
+      continue;
+    }
+
+    const hasBilled = group.some(hasBillDeskTruth);
+    if (!hasBilled) {
+      kept.push(...group);
+      continue;
+    }
+
+    for (const row of group) {
+      if (isMachineGhostRow(row)) {
+        suppressed.push(row);
+        continue;
+      }
+      kept.push(row);
+    }
+  }
+
+  return { rows: kept, suppressed };
+}
