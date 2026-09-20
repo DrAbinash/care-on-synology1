@@ -17,7 +17,9 @@
     "db:manage": "tsx scripts/db-manage.ts",
     "phase-f:assess": "tsx scripts/phase-f-template-consolidation.ts assess",
     "phase-f:execute": "tsx scripts/phase-f-template-consolidation.ts execute",
-    "phase-f:rollback": "tsx scripts/phase-f-template-consolidation.ts rollback"
+    "phase-f:rollback": "tsx scripts/phase-f-template-consolidation.ts rollback",
+    "stamp-accession:dry-run": "tsx scripts/stamp-blank-accession-usg.ts",
+    "stamp-accession:execute": "tsx scripts/stamp-blank-accession-usg.ts --execute"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",
