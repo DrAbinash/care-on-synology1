@@ -1,0 +1,6 @@
+---
+description: Clinic systems memory — read before any radiology/ERP/studio change
+globs: artifacts/diagnostic-erp/src/**, ../../usg-reports/src/**
+---
+Read docs/ai-memory/workspace-analysis.md first. Obey §2 invariants and §5 conventions.
+Register every new finding in §3; append decisions to §7 changelog. Never re-derive §1 topology.
