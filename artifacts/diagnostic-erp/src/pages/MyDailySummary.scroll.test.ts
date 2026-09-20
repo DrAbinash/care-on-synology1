@@ -39,10 +39,27 @@ describe("My Daily Summary — page fills the pane and scrolls", () => {
   });
 });
 
+describe("My Daily Summary — Imaging & Pathology Billed sits high and expands by default", () => {
+  it("places diagnostic billing after the date selector and before Money flow", () => {
+    expect(pageSrc).toContain('title="Imaging & Pathology Billed"');
+    expect(pageSrc).toContain("defaultOpen");
+
+    const datePicker = pageSrc.indexOf("Date Range Picker");
+    const imagingBilled = pageSrc.indexOf('title="Imaging & Pathology Billed"');
+    const moneyFlow = pageSrc.indexOf("Money flow");
+    const imagingVsPacs = pageSrc.indexOf('title="Imaging vs PACS"');
+
+    expect(imagingBilled).toBeGreaterThan(datePicker);
+    expect(moneyFlow).toBeGreaterThan(imagingBilled);
+    // Keep Billing vs PACS independent and lower on the page
+    expect(imagingVsPacs).toBeGreaterThan(moneyFlow);
+  });
+});
+
 describe("My Daily Summary — secondary boxes sit below Discounts Given", () => {
-  it("collapses payments, bills, inventory, imaging, and peak boxes by default after discounts", () => {
+  it("collapses payments, bills, inventory, imaging-vs-pacs, and peak boxes by default after discounts", () => {
     expect(pageSrc).toContain("function SummaryCollapsibleBox");
-    expect(pageSrc).toContain("const [open, setOpen] = useState(false)");
+    expect(pageSrc).toContain("const [open, setOpen] = useState(defaultOpen)");
 
     const moneyFlow = pageSrc.indexOf("Money flow");
     const discounts = pageSrc.indexOf("Discounts Given — detailed table");
@@ -50,7 +67,6 @@ describe("My Daily Summary — secondary boxes sit below Discounts Given", () =>
     const bills = pageSrc.indexOf('title="Bills Created by Me"');
     const inventory = pageSrc.indexOf('title="Inventory"');
     const imagingVsPacs = pageSrc.indexOf('title="Imaging vs PACS"');
-    const imagingBilled = pageSrc.indexOf('title="Imaging Billed"');
     const peak = pageSrc.indexOf('title="Clinic Peak / Billing Lane"');
 
     expect(discounts).toBeGreaterThan(moneyFlow);
@@ -58,8 +74,7 @@ describe("My Daily Summary — secondary boxes sit below Discounts Given", () =>
     expect(bills).toBeGreaterThan(payments);
     expect(inventory).toBeGreaterThan(bills);
     expect(imagingVsPacs).toBeGreaterThan(inventory);
-    expect(imagingBilled).toBeGreaterThan(imagingVsPacs);
-    expect(peak).toBeGreaterThan(imagingBilled);
+    expect(peak).toBeGreaterThan(imagingVsPacs);
   });
 });
 

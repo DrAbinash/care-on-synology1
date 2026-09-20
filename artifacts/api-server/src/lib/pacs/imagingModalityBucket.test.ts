@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyDiagnosticService,
   classifyImagingBucket,
+  isPathologyService,
   MODALITY_DISPLAY_LABEL,
   resolveModalityQuery,
 } from "./imagingModalityBucket";
@@ -39,6 +41,26 @@ describe("classifyImagingBucket", () => {
   });
 });
 
+describe("isPathologyService / classifyDiagnosticService", () => {
+  it("consolidates pathology departments into Pathology", () => {
+    expect(isPathologyService({ department: "Pathology" })).toBe(true);
+    expect(isPathologyService({ department: "Biochemistry", category: "Lab" })).toBe(true);
+    expect(isPathologyService({ category: "Pathology", department: "Clinical Pathology" })).toBe(true);
+    expect(classifyDiagnosticService({ department: "Pathology", testName: "CBC" })).toBe("Pathology");
+  });
+
+  it("never double-counts imaging as pathology", () => {
+    expect(isPathologyService({ department: "MRI", category: "Pathology" })).toBe(false);
+    expect(classifyDiagnosticService({ department: "MRI", testName: "MRI Brain" })).toBe("MRI");
+  });
+
+  it("excludes OPD / ECG from pathology consolidation", () => {
+    expect(isPathologyService({ department: "OPD" })).toBe(false);
+    expect(isPathologyService({ department: "ECG" })).toBe(false);
+    expect(classifyDiagnosticService({ department: "OPD" })).toBeNull();
+  });
+});
+
 describe("resolveModalityQuery", () => {
   it("accepts MRI / USG / OPG", () => {
     expect(resolveModalityQuery("MRI")).toBe("MRI");
@@ -58,10 +80,15 @@ describe("resolveModalityQuery", () => {
     expect(resolveModalityQuery("x ray")).toBe("X-Ray");
   });
 
+  it("accepts Pathology aliases", () => {
+    expect(resolveModalityQuery("Pathology")).toBe("Pathology");
+    expect(resolveModalityQuery("path")).toBe("Pathology");
+  });
+
   it("rejects unknown values", () => {
-    expect(resolveModalityQuery("Pathology")).toBeNull();
     expect(resolveModalityQuery("")).toBeNull();
     expect(resolveModalityQuery(undefined)).toBeNull();
+    expect(resolveModalityQuery("OPD")).toBeNull();
   });
 });
 
@@ -71,5 +98,6 @@ describe("MODALITY_DISPLAY_LABEL", () => {
     expect(MODALITY_DISPLAY_LABEL.MRI).toBe("MRI");
     expect(MODALITY_DISPLAY_LABEL.USG).toBe("USG");
     expect(MODALITY_DISPLAY_LABEL["X-Ray"]).toBe("X-Ray");
+    expect(MODALITY_DISPLAY_LABEL.Pathology).toBe("Pathology");
   });
 });
