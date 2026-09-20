@@ -477,7 +477,11 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       accessionNumber: accessionNumberRaw,
       referringDoctor: referringFromTag,
     });
-    const accessionNumber: string | null = reconciledIds.accessionNumber || null;
+    // Migrated schema: radiology_worklist.accession_number is NOT NULL DEFAULT ''.
+    // Blank Orthanc AccessionNumber must persist as "" — never null — so
+    // care-erp-sync can ingest pre-stamp USG studies and STAMP_ACCESSION_FROM_BILL
+    // can fill them later.
+    const accessionNumber = (reconciledIds.accessionNumber ?? "").trim();
     const referringDoctor: string | null = reconciledIds.referringDoctor || null;
     const studyInstanceUID = typeof b.studyInstanceUID === "string" ? b.studyInstanceUID.trim() || null : (typeof b.StudyInstanceUID === "string" ? b.StudyInstanceUID.trim() || null : null);
     const aeTitle = typeof b.aeTitle === "string" ? b.aeTitle.trim() || null : null;

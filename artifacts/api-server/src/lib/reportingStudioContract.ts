@@ -35,6 +35,11 @@ export const studioWorklistRowSchema = z.object({
   patientPhone: z.string().optional(),
   patientAddress: z.string().optional(),
   billNumber: z.string().optional(),
+  /** Bill Desk join key used for this row (null = unmatched). */
+  matchedKey: z
+    .enum(["billNumber", "accessionNumber", "worklistId", "singleHit"])
+    .nullable()
+    .optional(),
 });
 
 export type StudioWorklistRow = z.infer<typeof studioWorklistRowSchema>;
@@ -78,9 +83,9 @@ export type SentinelInput = {
   sourceAge?: string | null;
   patientDob?: string | null;
   accessionNumber: string;
-  /** Referring doctor AFTER the fallback chain (may be "Self/Walk-in"). */
+  /** Referring doctor AFTER Bill Desk resolution (empty when truly blank — never Self/Walk-in). */
   referringDoctor: string;
-  /** True when both worklist + study referrers were blank before Self/Walk-in. */
+  /** True when Bill Desk / worklist referrers were blank. */
   referringDoctorWasBlank?: boolean;
 };
 
@@ -194,8 +199,10 @@ function hasBillDeskTruth(row: GhostDedupeRow): boolean {
 export function isMachineGhostRow(row: GhostDedupeRow): boolean {
   if (hasBillDeskTruth(row)) return false;
   const emptyAge = !(row.patientAge ?? "").trim();
-  const walkIn = (row.referringDoctor ?? "").trim() === "Self/Walk-in";
-  return emptyAge || walkIn;
+  const ref = (row.referringDoctor ?? "").trim();
+  // Blank referrer (Bill Desk truth) or legacy Self/Walk-in synthesis.
+  const blankReferrer = !ref || ref === "Self/Walk-in";
+  return emptyAge || blankReferrer;
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   testsTable,
   billsTable,
   ordersTable,
+  doctorsTable,
   bridgeSyncLogTable,
 } from "@workspace/db/schema";
 import { eq, like } from "drizzle-orm";
@@ -60,6 +61,8 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
   let app: Express;
   let marker: string;
   let patientId: number;
+  let doctorId: number;
+  let orderId: number;
   let testId: number;
   let billId: number;
   let studyId: number;
@@ -96,6 +99,15 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .returning();
     patientId = patient.id;
 
+    const [doctor] = await db
+      .insert(doctorsTable)
+      .values({
+        name: "Dr. Referrer",
+        specialization: "General",
+      })
+      .returning();
+    doctorId = doctor.id;
+
     const [test] = await db
       .insert(testsTable)
       .values({
@@ -114,11 +126,13 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .insert(ordersTable)
       .values({
         patientId,
+        doctorId,
         orderNumber: `ORD-RS-${marker}`,
         status: "completed",
         totalAmount: "5000",
       })
       .returning();
+    orderId = order.id;
 
     const [bill] = await db
       .insert(billsTable)
@@ -192,8 +206,9 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     await db.delete(patientReportsTable).where(eq(patientReportsTable.patientId, patientId)).catch(() => {});
     await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, studyId)).catch(() => {});
     await db.delete(billsTable).where(eq(billsTable.id, billId)).catch(() => {});
-    await db.delete(ordersTable).where(eq(ordersTable.patientId, patientId)).catch(() => {});
+    await db.delete(ordersTable).where(eq(ordersTable.id, orderId)).catch(() => {});
     await db.delete(testsTable).where(eq(testsTable.id, testId)).catch(() => {});
+    await db.delete(doctorsTable).where(eq(doctorsTable.id, doctorId)).catch(() => {});
     await db.delete(patientsTable).where(eq(patientsTable.id, patientId)).catch(() => {});
   });
 
@@ -232,12 +247,19 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.rows)).toBe(true);
+    expect(res.body.meta).toBeTruthy();
+    const meta = requireMeta(res.body);
+    expect(meta.matchedBy).toBeTruthy();
+    expect(typeof (meta.matchedBy as { accessionNumber?: number }).accessionNumber).toBe("number");
     const row = requireRow(worklistRows(res.body), worklistId);
     expect(row.accessionNumber).toBe(`ACC-RS-${marker}`);
     expect(row.patientName).toContain("Studio Patient");
     expect(row.modality).toBe("MR");
     expect(row.billingStatus).toBe("PAID");
     expect(row.testName).toContain("MRI Brain");
+    // Bill Desk join: accession on study → bill_id (chain key 2).
+    expect(row.matchedKey).toBe("accessionNumber");
+    expect(row.referringDoctor).toBe("Dr. Referrer");
   });
 
   test("worklist carries bill-desk demographics (USG Studio v6 bridge extension)", async () => {
@@ -313,7 +335,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(row.patientAge).toBe("");
   });
 
-  test("worklist referringDoctor falls back to Self/Walk-in when blank", async () => {
+  test("worklist referringDoctor stays empty when bill desk has none — never Self/Walk-in", async () => {
     await db
       .update(radiologyWorklistTable)
       .set({ referringDoctor: "" })
@@ -322,13 +344,19 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .update(radiologyStudiesTable)
       .set({ referringDoctor: null })
       .where(eq(radiologyStudiesTable.id, studyId));
+    // Bill Desk truth: order has no referring doctor.
+    await db
+      .update(ordersTable)
+      .set({ doctorId: null })
+      .where(eq(ordersTable.id, orderId));
 
     const res = await request(app)
       .get("/api/internal/reporting-studio/worklist?status=pending")
       .set("x-api-key", STUDIO_KEY);
     expect(res.status).toBe(200);
     const row = requireRow(worklistRows(res.body), worklistId);
-    expect(row.referringDoctor).toBe("Self/Walk-in");
+    expect(row.referringDoctor).toBe("");
+    expect(row.referringDoctor).not.toBe("Self/Walk-in");
   });
 
   test("worklist surfaces ERP status field (v6.14 freeze support)", async () => {
@@ -553,7 +581,7 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
       .where(eq(radiologyWorklistTable.id, worklistId));
 
     // Orthanc ghost: same display name, unmatched patientId, dummy age, blank referrer,
-    // no study/bill link — Highway strips 126 → "" and referrer falls back to Self/Walk-in.
+    // no study/bill link — Highway strips 126 → "" and referrer stays "" (never Self/Walk-in).
     const patientName = `Studio Patient ${marker}`;
     const [ghost] = await db
       .insert(radiologyWorklistTable)
