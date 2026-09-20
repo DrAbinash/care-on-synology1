@@ -172,7 +172,7 @@ describe.skipIf(!dbAvailable)("stamp accession → care-erp-sync re-intake loop"
         studyInstanceUID: studyUid,
         PatientID: `STAMP-${marker}`,
       });
-    expect(firstIntake.status).toBeLessThan(400);
+    expect(firstIntake.status, JSON.stringify(firstIntake.body)).toBeLessThan(400);
     expect(firstIntake.body.success !== false).toBe(true);
 
     const before = await db
