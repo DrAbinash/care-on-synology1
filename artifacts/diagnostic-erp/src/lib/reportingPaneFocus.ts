@@ -12,11 +12,17 @@ export const CONSTRAINED_REPORTING_VIEWPORT_MAX_PX = 1366;
 /** Very narrow: keep both panes usable rather than crushing either. */
 export const NARROW_REPORTING_VIEWPORT_MAX_PX = 1100;
 
+/** Phone portrait / small mobile — OHIF needs nearly the full width. */
+export const PHONE_REPORTING_VIEWPORT_MAX_PX = 767;
+
 export type ReportingPaneBias = "reporting" | "viewer";
 
 /** Target shares of the OHIF+Report band (queue excluded). ~1/3 : 2/3. */
 export const REPORTING_FOCUS_VIEWER_SHARE = 0.33;
 export const VIEWER_FOCUS_VIEWER_SHARE = 0.67;
+/** Phone: give OHIF almost the full band so images are clinically usable. */
+export const PHONE_VIEWER_FOCUS_VIEWER_SHARE = 0.88;
+export const PHONE_REPORTING_FOCUS_VIEWER_SHARE = 0.72;
 
 export const DEFAULT_QUEUE_EXPANDED_PCT = 18;
 export const DEFAULT_QUEUE_COLLAPSED_PCT = 3;
@@ -29,6 +35,11 @@ export function isConstrainedReportingViewport(widthPx: number): boolean {
 export function isNarrowReportingViewport(widthPx: number): boolean {
   if (!Number.isFinite(widthPx) || widthPx <= 0) return true;
   return widthPx <= NARROW_REPORTING_VIEWPORT_MAX_PX;
+}
+
+export function isPhoneReportingViewport(widthPx: number): boolean {
+  if (!Number.isFinite(widthPx) || widthPx <= 0) return true;
+  return widthPx <= PHONE_REPORTING_VIEWPORT_MAX_PX;
 }
 
 /**
@@ -56,6 +67,8 @@ export function outerPanelPercents(opts: {
   queueCollapsedPct?: number;
   /** Soften toward 50/50 when the whole window is very narrow. */
   narrow?: boolean;
+  /** Phone: bias hard toward OHIF so the image is not a thin vertical slit. */
+  phone?: boolean;
 }): { queue: number; viewer: number; report: number } {
   const queueCollapsed = opts.queueCollapsed !== false;
   const queue = queueCollapsed
@@ -65,7 +78,12 @@ export function outerPanelPercents(opts: {
 
   let viewerShare =
     opts.bias === "viewer" ? VIEWER_FOCUS_VIEWER_SHARE : REPORTING_FOCUS_VIEWER_SHARE;
-  if (opts.narrow) {
+  if (opts.phone) {
+    viewerShare =
+      opts.bias === "viewer"
+        ? PHONE_VIEWER_FOCUS_VIEWER_SHARE
+        : PHONE_REPORTING_FOCUS_VIEWER_SHARE;
+  } else if (opts.narrow) {
     // Avoid 70/30 when both panes would become clinically awkward.
     viewerShare = opts.bias === "viewer" ? 0.58 : 0.42;
   }
@@ -73,6 +91,21 @@ export function outerPanelPercents(opts: {
   const viewer = Math.round(remainder * viewerShare);
   const report = Math.max(1, remainder - viewer);
   return { queue, viewer, report };
+}
+
+/**
+ * CSS shell for the embedded DICOM viewer when enlarged.
+ * Phone uses true edge-to-edge so OHIF can fill the viewport.
+ */
+export function viewerOverlayShellClass(opts: {
+  expanded: boolean;
+  phone: boolean;
+}): string {
+  if (!opts.expanded) return "relative h-full flex flex-col rounded-lg border overflow-hidden min-h-0";
+  if (opts.phone) {
+    return "fixed inset-0 z-[70] flex flex-col bg-background overflow-hidden min-h-0";
+  }
+  return "fixed inset-4 z-50 flex flex-col rounded-lg border overflow-hidden min-h-0 bg-background shadow-2xl";
 }
 
 /** True when inactive accordion rows should use single-line compact chrome. */

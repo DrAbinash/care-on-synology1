@@ -343,6 +343,7 @@ import {
 import {
   isNarrowReportingViewport,
   outerPanelPercents,
+  isPhoneReportingViewport,
   shouldApplyAutomaticPaneFocus,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
@@ -1279,6 +1280,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       bias,
       queueCollapsed: true,
       narrow: isNarrowReportingViewport(viewportWidthPx),
+      phone: isPhoneReportingViewport(viewportWidthPx),
     });
     // Transient only — never write viewerPct/reportPct into byMode.
     // Remembered layout comes from manual drag / mode defaults only.
@@ -4597,13 +4599,28 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     isFinalized,
   }, { locked: isLocked });
 
-  // ─── Auto-collapse panels on mobile ──────────────────────────────────────
+  // ─── Auto-collapse panels on mobile + give OHIF room to breathe ──────────
   useEffect(() => {
-    if (isMobile) {
-      leftPanelRef.current?.collapse();
-      rightPanelRef.current?.collapse();
+    if (!isMobile) return;
+    leftPanelRef.current?.collapse();
+    rightPanelRef.current?.collapse();
+    if (!showEmbeddedViewer) return;
+    // Promote Split → Viewer+ once so OHIF owns the band; then phone-bias resize.
+    if (layoutMode === "split") {
+      setLayoutMode("viewerFocus", { reenableAutoFocus: true });
+      return;
     }
-  }, [isMobile]);
+    if (layoutMode !== "viewerFocus") return;
+    const pct = outerPanelPercents({
+      bias: "viewer",
+      queueCollapsed: true,
+      phone: true,
+    });
+    requestAnimationFrame(() => {
+      viewerPanelRef.current?.resize(pct.viewer);
+      reportPanelRef.current?.resize(pct.report);
+    });
+  }, [isMobile, showEmbeddedViewer, layoutMode, setLayoutMode]);
 
   // ─── Debounced server auto-save (30 s after last keystroke) ─────────────────
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5040,9 +5057,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                 ref={viewerPanelRef}
                 id="workspace-viewer"
                 order={2}
-                defaultSize={layoutMode === "viewerFocus" ? 65 : 32}
-                minSize={22}
-                maxSize={72}
+                defaultSize={layoutMode === "viewerFocus" ? (isMobile ? 88 : 65) : 32}
+                minSize={isMobile ? 45 : 22}
+                maxSize={isMobile ? 92 : 72}
               >
                 <div
                   className="flex h-full flex-col"
@@ -5226,8 +5243,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             ref={reportPanelRef}
             id="workspace-report"
             order={3}
-            defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? 32 : 65) : 82}
-            minSize={28}
+            defaultSize={showEmbeddedViewer ? (layoutMode === "viewerFocus" ? (isMobile ? 9 : 32) : 65) : 82}
+            minSize={isMobile ? 8 : 28}
           >
             <ResizablePanelGroup direction="horizontal">
               {/* Editor column */}

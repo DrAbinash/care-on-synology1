@@ -77,6 +77,23 @@ describe("outerPanelPercents — Reporting Focus ↔ Viewer Focus", () => {
     expect(p.viewer).toBeGreaterThan(35);
     expect(p.report).toBeLessThan(65);
   });
+
+  it("phone viewports give OHIF nearly the full band", () => {
+    const viewer = outerPanelPercents({ bias: "viewer", queueCollapsed: true, phone: true });
+    expect(viewer.viewer).toBeGreaterThanOrEqual(80);
+    expect(viewer.report).toBeLessThanOrEqual(15);
+    const reporting = outerPanelPercents({ bias: "reporting", queueCollapsed: true, phone: true });
+    expect(reporting.viewer).toBeGreaterThanOrEqual(65);
+  });
+});
+
+describe("viewerOverlayShellClass", () => {
+  it("uses edge-to-edge overlay on phone", async () => {
+    const { viewerOverlayShellClass } = await import("./reportingPaneFocus");
+    expect(viewerOverlayShellClass({ expanded: false, phone: true })).toContain("relative");
+    expect(viewerOverlayShellClass({ expanded: true, phone: true })).toContain("inset-0");
+    expect(viewerOverlayShellClass({ expanded: true, phone: false })).toContain("inset-4");
+  });
 });
 
 describe("compactAccordionSummary", () => {
