@@ -1016,9 +1016,14 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       patientId: order.patientId,
       priority: isVip ? "vip" : "routine",
       dicomFields,
-    }).catch((err) => {
-      console.warn("Radiology study fan-out failed:", err);
-    }),
+    })
+      .then(async () => {
+        const { maybeStampAccessionsAfterBill } = await import("../lib/pacs/stampAccessionFromBill");
+        await maybeStampAccessionsAfterBill({ billId: bill.id });
+      })
+      .catch((err) => {
+        console.warn("Radiology study fan-out failed:", err);
+      }),
   );
 
   // Post-commit fan-out that the response DOES need — the queue token and the
