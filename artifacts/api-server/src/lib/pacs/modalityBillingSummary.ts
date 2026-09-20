@@ -1,10 +1,15 @@
 /**
- * Clinic-wide imaging modality billing counts for My Daily Summary.
+ * Clinic-wide diagnostic-service billing for My Daily Summary
+ * (imaging modalities + consolidated Pathology).
  *
  * Counts active order-test lines on non-cancelled bills created in the date
  * range (bill createdAt, IST), bucketed by diagnostic_tests.department via
- * classifyImagingBucket — same axis as Daily Summary category-test-summary,
+ * classifyDiagnosticService — same axis as Daily Summary category-test-summary,
  * not radiology studyDate (Billing vs PACS).
+ *
+ * Amounts are SUM(order_tests.price) per bucket — the line billed price already
+ * stored on the order line. Bill-level discounts / payments / dues are NOT
+ * reapplied here (preserves existing Imaging Billed semantics).
  */
 import { db } from "@workspace/db";
 import {
@@ -17,12 +22,12 @@ import {
 } from "@workspace/db/schema";
 import { and, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import {
-  classifyImagingBucket,
-  emptyBucketCounts,
-  IMAGING_BUCKETS,
+  classifyDiagnosticService,
+  emptyDiagnosticServiceCounts,
   MODALITY_DISPLAY_LABEL,
   MODALITY_REPORT_KEYS,
   resolveModalityQuery,
+  type DiagnosticServiceKey,
   type ImagingBucket,
 } from "./imagingModalityBucket";
 
@@ -30,17 +35,34 @@ export {
   MODALITY_DISPLAY_LABEL,
   MODALITY_REPORT_KEYS,
   resolveModalityQuery,
+  type DiagnosticServiceKey,
   type ImagingBucket,
 };
 
+export type RateKind = "single" | "multiple" | "none";
+
 export type ModalityBillingRow = {
-  key: ImagingBucket;
+  key: DiagnosticServiceKey;
   label: string;
-  /** Active imaging test lines billed in range */
+  /** Active diagnostic test lines billed in range (one order_tests row = one count) */
   testCount: number;
-  /** Distinct bills that include at least one line of this modality */
+  /** Distinct bills that include at least one line of this service */
   billCount: number;
+  /** Sum of order_tests.price for matching lines — authoritative billed amount */
   grossBilling: number;
+  /**
+   * Price presentation metadata derived from distinct line prices.
+   * - single: every line shares the same rate → unitRate is that rate
+   * - multiple: heterogeneous prices → show Avg (avgRate); do not invent a tariff
+   * - none: zero lines
+   */
+  rateKind: RateKind;
+  /** Present when rateKind === "single" */
+  unitRate: number | null;
+  /** grossBilling / testCount when testCount > 0 */
+  avgRate: number | null;
+  /** Distinct positive line prices observed (capped metadata; for drill-down clarity) */
+  distinctRateCount: number;
 };
 
 export type ModalityBillingSummary = {
@@ -62,7 +84,7 @@ export type ModalityBillLine = {
   billAmount: number;
   status: string;
   createdAt: string;
-  /** Imaging tests of the selected modality on this bill */
+  /** Tests of the selected service on this bill */
   tests: string;
   modalityAmount: number;
 };
@@ -80,7 +102,34 @@ function patientNameOf(r: { patientFirstName: string | null; patientLastName: st
     : "Unknown";
 }
 
-async function fetchBilledImagingLines(from: string, to: string) {
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function normalizeLinePrice(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 0;
+  return roundMoney(n);
+}
+
+export function deriveRateMeta(
+  testCount: number,
+  grossBilling: number,
+  distinctPrices: Iterable<number>,
+): Pick<ModalityBillingRow, "rateKind" | "unitRate" | "avgRate" | "distinctRateCount"> {
+  const unique = [...new Set([...distinctPrices].map(normalizeLinePrice))];
+  const distinctRateCount = unique.length;
+  if (testCount <= 0 || distinctRateCount === 0) {
+    return { rateKind: "none", unitRate: null, avgRate: null, distinctRateCount: 0 };
+  }
+  const avgRate = roundMoney(grossBilling / testCount);
+  if (distinctRateCount === 1) {
+    return { rateKind: "single", unitRate: unique[0]!, avgRate, distinctRateCount };
+  }
+  return { rateKind: "multiple", unitRate: null, avgRate, distinctRateCount };
+}
+
+async function fetchBilledDiagnosticLines(from: string, to: string) {
   const { start, end } = dayBoundsRange(from, to);
   return db
     .select({
@@ -120,49 +169,69 @@ export async function buildModalityBillingSummary(
   from: string,
   to: string,
 ): Promise<ModalityBillingSummary> {
-  const lines = await fetchBilledImagingLines(from, to);
+  const lines = await fetchBilledDiagnosticLines(from, to);
 
-  const testCounts = emptyBucketCounts();
-  const billSets: Record<ImagingBucket, Set<number>> = {
+  const testCounts = emptyDiagnosticServiceCounts();
+  const billSets: Record<DiagnosticServiceKey, Set<number>> = {
     MRI: new Set(),
     USG: new Set(),
     CT: new Set(),
     "X-Ray": new Set(),
     OPG: new Set(),
+    Pathology: new Set(),
   };
-  const grossBilling: Record<ImagingBucket, number> = {
+  const grossBilling: Record<DiagnosticServiceKey, number> = {
     MRI: 0,
     USG: 0,
     CT: 0,
     "X-Ray": 0,
     OPG: 0,
+    Pathology: 0,
+  };
+  const priceSets: Record<DiagnosticServiceKey, Set<number>> = {
+    MRI: new Set(),
+    USG: new Set(),
+    CT: new Set(),
+    "X-Ray": new Set(),
+    OPG: new Set(),
+    Pathology: new Set(),
   };
 
   for (const row of lines) {
-    const bucket = classifyImagingBucket({
+    const bucket = classifyDiagnosticService({
       department: row.department,
+      category: row.category,
       testName: row.testName,
     });
     if (!bucket) continue;
+    const price = normalizeLinePrice(row.linePrice);
     testCounts[bucket] += 1;
     billSets[bucket].add(row.billId);
-    grossBilling[bucket] += Number(row.linePrice) || 0;
+    grossBilling[bucket] += price;
+    priceSets[bucket].add(price);
   }
 
-  // Prefer primary report modalities first; append OPG when it has activity.
-  const keys: ImagingBucket[] = [...MODALITY_REPORT_KEYS];
+  // Prefer primary report modalities first; append OPG / Pathology when active.
+  const keys: DiagnosticServiceKey[] = [...MODALITY_REPORT_KEYS];
   if (testCounts.OPG > 0) keys.push("OPG");
+  if (testCounts.Pathology > 0) keys.push("Pathology");
 
-  const modalities: ModalityBillingRow[] = keys.map((key) => ({
-    key,
-    label: MODALITY_DISPLAY_LABEL[key],
-    testCount: testCounts[key],
-    billCount: billSets[key].size,
-    grossBilling: Math.round(grossBilling[key] * 100) / 100,
-  }));
+  const modalities: ModalityBillingRow[] = keys.map((key) => {
+    const testCount = testCounts[key];
+    const amount = roundMoney(grossBilling[key]);
+    const rates = deriveRateMeta(testCount, amount, priceSets[key]);
+    return {
+      key,
+      label: MODALITY_DISPLAY_LABEL[key],
+      testCount,
+      billCount: billSets[key].size,
+      grossBilling: amount,
+      ...rates,
+    };
+  });
 
   const allBillIds = new Set<number>();
-  for (const key of IMAGING_BUCKETS) {
+  for (const key of keys) {
     for (const id of billSets[key]) allBillIds.add(id);
   }
 
@@ -173,7 +242,7 @@ export async function buildModalityBillingSummary(
     totals: {
       testCount: modalities.reduce((s, m) => s + m.testCount, 0),
       billCount: allBillIds.size,
-      grossBilling: Math.round(modalities.reduce((s, m) => s + m.grossBilling, 0) * 100) / 100,
+      grossBilling: roundMoney(modalities.reduce((s, m) => s + m.grossBilling, 0)),
     },
   };
 }
@@ -181,9 +250,9 @@ export async function buildModalityBillingSummary(
 export async function listModalityBills(
   from: string,
   to: string,
-  modality: ImagingBucket,
+  modality: DiagnosticServiceKey,
 ): Promise<{
-  modality: ImagingBucket;
+  modality: DiagnosticServiceKey;
   label: string;
   from: string;
   to: string;
@@ -191,7 +260,7 @@ export async function listModalityBills(
   rows: (string | number | null)[][];
   bills: ModalityBillLine[];
 }> {
-  const lines = await fetchBilledImagingLines(from, to);
+  const lines = await fetchBilledDiagnosticLines(from, to);
   const byBill = new Map<
     number,
     {
@@ -202,15 +271,16 @@ export async function listModalityBills(
   >();
 
   for (const row of lines) {
-    const bucket = classifyImagingBucket({
+    const bucket = classifyDiagnosticService({
       department: row.department,
+      category: row.category,
       testName: row.testName,
     });
     if (bucket !== modality) continue;
 
     const existing = byBill.get(row.billId);
     const testLabel = row.testName;
-    const price = Number(row.linePrice) || 0;
+    const price = normalizeLinePrice(row.linePrice);
     if (existing) {
       existing.testNames.push(testLabel);
       existing.modalityAmount += price;
@@ -239,15 +309,16 @@ export async function listModalityBills(
   const bills: ModalityBillLine[] = Array.from(byBill.values()).map(({ bill, testNames, modalityAmount }) => ({
     ...bill,
     tests: testNames.join(", "),
-    modalityAmount: Math.round(modalityAmount * 100) / 100,
+    modalityAmount: roundMoney(modalityAmount),
   }));
 
+  const amountCol = modality === "Pathology" ? "Pathology Amount" : "Modality Amount";
   const columns = [
     "Bill #",
     "Patient",
     "Referring Doctor",
     "Tests",
-    "Modality Amount",
+    amountCol,
     "Bill Amount",
     "Status",
     "Created At",

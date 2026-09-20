@@ -10,12 +10,18 @@ import {
 } from "@/components/ui/dialog";
 import { Inbox, Loader2, ScanLine } from "lucide-react";
 
+export type RateKind = "single" | "multiple" | "none";
+
 export type ModalityBillingRow = {
   key: string;
   label: string;
   testCount: number;
   billCount: number;
   grossBilling: number;
+  rateKind?: RateKind;
+  unitRate?: number | null;
+  avgRate?: number | null;
+  distinctRateCount?: number;
 };
 
 export type ModalityBillingSummary = {
@@ -38,7 +44,12 @@ type ModalityBillsResponse = {
   rows: (string | number | null)[][];
 };
 
-const AMOUNT_COLUMNS = new Set(["Modality Amount", "Bill Amount", "Amount"]);
+const AMOUNT_COLUMNS = new Set([
+  "Modality Amount",
+  "Pathology Amount",
+  "Bill Amount",
+  "Amount",
+]);
 
 function fmtCell(value: string | number | null, column: string): string {
   if (value === null || value === undefined) return "—";
@@ -68,12 +79,48 @@ function fmtCell(value: string | number | null, column: string): string {
   return value;
 }
 
-function fmtInr(n: number): string {
+function fmtInr(n: number, fractionDigits = 0): string {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
-    maximumFractionDigits: 0,
+    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: 0,
   }).format(n);
+}
+
+function fmtDateLabel(from: string, to: string): string {
+  if (from === to) {
+    const [y, m, d] = from.split("-");
+    if (y && m && d) return `${d}-${m}-${y}`;
+    return from;
+  }
+  return `${from} → ${to}`;
+}
+
+function countNoun(row: ModalityBillingRow): string {
+  return row.key === "Pathology" ? "tests" : "cases";
+}
+
+function rateDisplay(row: ModalityBillingRow): { primary: string; hint?: string } {
+  if (row.testCount <= 0 || row.rateKind === "none") {
+    return { primary: "—" };
+  }
+  if (row.rateKind === "single" && row.unitRate != null) {
+    return {
+      primary: fmtInr(row.unitRate),
+      hint: `${row.testCount} × ${fmtInr(row.unitRate)}`,
+    };
+  }
+  if (row.avgRate != null) {
+    return {
+      primary: `Avg ${fmtInr(row.avgRate)}`,
+      hint: row.distinctRateCount && row.distinctRateCount > 1
+        ? "Multiple rates"
+        : undefined,
+    };
+  }
+  // Legacy payloads without rate metadata — do not invent a rate
+  return { primary: "Multiple rates", hint: "See drill-down" };
 }
 
 type Props = {
@@ -105,14 +152,15 @@ export default function ModalityBillingKpi({ from, to, hideHeader = false }: Pro
   if (isLoading) {
     return (
       <div className={hideHeader ? "p-4" : "bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm"}>
-        <div className="h-24 bg-gray-100 dark:bg-muted/30 rounded-lg animate-pulse" />
+        <div className="h-28 bg-gray-100 dark:bg-muted/30 rounded-lg animate-pulse" />
       </div>
     );
   }
 
   if (isError || !data) return null;
 
-  const dateLabel = from === to ? from : `${from} → ${to}`;
+  const dateLabel = fmtDateLabel(from, to);
+  const subtitle = `${dateLabel} · clinic-wide · modality/service-wise billing · tap a row to open bills`;
 
   return (
     <>
@@ -123,49 +171,131 @@ export default function ModalityBillingKpi({ from, to, hideHeader = false }: Pro
         data-testid="modality-billing-kpi"
       >
         {!hideHeader && (
-        <div>
-          <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-            <ScanLine size={14} className="text-sky-600" />
-            Imaging billed
-          </h3>
-          <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-            {dateLabel} · clinic-wide · tap a modality to open bills
-          </p>
-        </div>
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
+              <ScanLine size={14} className="text-sky-600" />
+              Imaging &amp; Pathology Billed
+            </h3>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{subtitle}</p>
+          </div>
         )}
         {hideHeader && (
-          <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            {dateLabel} · clinic-wide · tap a modality to open bills
-          </p>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">{subtitle}</p>
         )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {data.modalities.map((row) => (
-            <button
-              key={row.key}
-              type="button"
-              onClick={() => setSelected(row)}
-              className="rounded-lg border border-gray-100 dark:border-card-border bg-gray-50/80 dark:bg-muted/20 p-3 text-left transition-colors hover:border-sky-400 hover:bg-sky-50/70 dark:hover:bg-sky-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              data-testid={`modality-billing-${row.key}`}
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wide text-gray-700 dark:text-gray-300">
-                {row.label}
-              </p>
-              <p className="text-2xl font-extrabold tabular-nums leading-none mt-1.5 text-gray-900 dark:text-foreground">
-                {row.testCount}
-              </p>
-              <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1">
-                {row.billCount} bill{row.billCount === 1 ? "" : "s"}
-                {row.grossBilling > 0 ? ` · ${fmtInr(row.grossBilling)}` : ""}
-              </p>
-            </button>
-          ))}
+        {/* Desktop / tablet table */}
+        <div className="hidden sm:block overflow-x-auto">
+          <table className="w-full text-sm" data-testid="modality-billing-table">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-card-border">
+                <th className="text-left font-semibold py-2 pr-3">Modality / Service</th>
+                <th className="text-right font-semibold py-2 px-3">Cases / Tests</th>
+                <th className="text-right font-semibold py-2 px-3">Rate / Avg</th>
+                <th className="text-right font-semibold py-2 pl-3">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.modalities.map((row) => {
+                const rate = rateDisplay(row);
+                return (
+                  <tr key={row.key} className="border-b border-gray-50 dark:border-card-border/60 last:border-0">
+                    <td className="py-2 pr-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelected(row)}
+                        className="font-bold text-gray-900 dark:text-foreground hover:text-sky-700 dark:hover:text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 rounded"
+                        data-testid={`modality-billing-${row.key}`}
+                      >
+                        {row.label}
+                      </button>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        {row.billCount} bill{row.billCount === 1 ? "" : "s"}
+                      </p>
+                    </td>
+                    <td className="py-2 px-3 text-right tabular-nums text-gray-800 dark:text-foreground">
+                      <span className="font-semibold">{row.testCount}</span>
+                      <span className="text-[10px] text-gray-400 ml-1">{countNoun(row)}</span>
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      <div className="tabular-nums font-medium text-gray-800 dark:text-foreground">{rate.primary}</div>
+                      {rate.hint && (
+                        <div className="text-[10px] text-gray-400 mt-0.5">{rate.hint}</div>
+                      )}
+                    </td>
+                    <td className="py-2 pl-3 text-right tabular-nums font-bold text-gray-900 dark:text-foreground">
+                      {row.grossBilling > 0 ? fmtInr(row.grossBilling) : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="bg-sky-50/80 dark:bg-sky-950/30 border-t-2 border-sky-200 dark:border-sky-800">
+                <td className="py-2.5 pr-3 font-extrabold text-sky-900 dark:text-sky-100 uppercase text-xs tracking-wide">
+                  Total
+                </td>
+                <td className="py-2.5 px-3 text-right tabular-nums font-extrabold text-sky-900 dark:text-sky-100">
+                  {data.totals.testCount}
+                  <span className="text-[10px] font-semibold text-sky-700/80 dark:text-sky-300/80 ml-1">
+                    tests/cases
+                  </span>
+                </td>
+                <td className="py-2.5 px-3 text-right text-[10px] text-sky-700/70 dark:text-sky-300/70">
+                  {data.totals.billCount} bill{data.totals.billCount === 1 ? "" : "s"}
+                </td>
+                <td
+                  className="py-2.5 pl-3 text-right tabular-nums font-extrabold text-sky-900 dark:text-sky-100"
+                  data-testid="modality-billing-grand-total"
+                >
+                  {fmtInr(data.totals.grossBilling)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
 
-        <p className="text-[10px] text-gray-500 dark:text-gray-400">
-          Totals: {data.totals.testCount} studies · {data.totals.billCount} bills
-          {data.totals.grossBilling > 0 ? ` · ${fmtInr(data.totals.grossBilling)}` : ""}
-        </p>
+        {/* Mobile compact rows */}
+        <div className="sm:hidden space-y-2" data-testid="modality-billing-mobile">
+          {data.modalities.map((row) => {
+            const rate = rateDisplay(row);
+            return (
+              <button
+                key={row.key}
+                type="button"
+                onClick={() => setSelected(row)}
+                className="w-full rounded-lg border border-gray-100 dark:border-card-border bg-gray-50/80 dark:bg-muted/20 p-3 text-left transition-colors hover:border-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                data-testid={`modality-billing-${row.key}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wide text-gray-800 dark:text-foreground">
+                      {row.label}
+                    </p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      {row.testCount} {countNoun(row)} · {rate.primary}
+                    </p>
+                  </div>
+                  <p className="text-sm font-extrabold tabular-nums text-gray-900 dark:text-foreground shrink-0">
+                    {row.grossBilling > 0 ? fmtInr(row.grossBilling) : "—"}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+          <div className="rounded-lg border-2 border-sky-200 dark:border-sky-800 bg-sky-50/80 dark:bg-sky-950/30 px-3 py-2.5 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wide text-sky-800 dark:text-sky-200">
+                Grand total
+              </p>
+              <p className="text-[11px] text-sky-700/80 dark:text-sky-300/80">
+                {data.totals.testCount} tests/cases · {data.totals.billCount} bills
+              </p>
+            </div>
+            <p className="text-base font-extrabold tabular-nums text-sky-900 dark:text-sky-100">
+              {fmtInr(data.totals.grossBilling)}
+            </p>
+          </div>
+        </div>
       </div>
 
       <Dialog
@@ -180,7 +310,11 @@ export default function ModalityBillingKpi({ from, to, hideHeader = false }: Pro
               {selected ? `${selected.label} bills` : ""}
             </DialogTitle>
             <p className="text-xs text-muted-foreground">
-              {dateLabel} · {selected?.testCount ?? 0} studies on {selected?.billCount ?? 0} bills
+              {dateLabel} · {selected?.testCount ?? 0} {selected ? countNoun(selected) : "cases"} on{" "}
+              {selected?.billCount ?? 0} bills
+              {selected && selected.grossBilling > 0
+                ? ` · billed ${fmtInr(selected.grossBilling)}`
+                : ""}
             </p>
           </DialogHeader>
 
@@ -245,8 +379,15 @@ export default function ModalityBillingKpi({ from, to, hideHeader = false }: Pro
           </div>
 
           {billsQ.data && billsQ.data.rows.length > 0 && (
-            <div className="px-5 py-2.5 border-t border-border shrink-0 text-xs text-muted-foreground">
-              {billsQ.data.rows.length} bill{billsQ.data.rows.length !== 1 ? "s" : ""}
+            <div className="px-5 py-2.5 border-t border-border shrink-0 text-xs text-muted-foreground flex justify-between gap-3">
+              <span>
+                {billsQ.data.rows.length} bill{billsQ.data.rows.length !== 1 ? "s" : ""}
+              </span>
+              {selected && selected.grossBilling > 0 && (
+                <span className="font-semibold tabular-nums text-foreground">
+                  Service total {fmtInr(selected.grossBilling)}
+                </span>
+              )}
             </div>
           )}
         </DialogContent>

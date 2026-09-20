@@ -1998,14 +1998,19 @@ function SummaryCollapsibleBox({
   headerRight,
   children,
   testId,
+  defaultOpen = false,
+  subtitle,
 }: {
   title: string;
   icon?: ReactNode;
   headerRight?: ReactNode;
   children: ReactNode;
   testId?: string;
+  /** When true, panel starts expanded (Imaging & Pathology Billed). */
+  defaultOpen?: boolean;
+  subtitle?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div
       className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden"
@@ -2018,10 +2023,17 @@ function SummaryCollapsibleBox({
           className="flex-1 min-w-0 flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-muted/20 transition-colors"
           aria-expanded={open}
         >
-          <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2 min-w-0">
-            {icon}
-            <span className="truncate">{title}</span>
-          </h3>
+          <div className="min-w-0">
+            <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2 min-w-0">
+              {icon}
+              <span className="truncate">{title}</span>
+            </h3>
+            {subtitle && (
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 truncate pl-6">
+                {subtitle}
+              </p>
+            )}
+          </div>
           {open
             ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
             : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
@@ -2560,6 +2572,21 @@ export default function MyDailySummary() {
           </p>
         )}
       </div>
+
+      {/* Imaging & Pathology Billed — high on page, expanded by default (admin) */}
+      {isOwner && (
+        <SummaryCollapsibleBox
+          title="Imaging & Pathology Billed"
+          icon={<ScanLine size={14} className="text-sky-600" />}
+          testId="imaging-billed"
+          defaultOpen
+          subtitle={`${from === to
+            ? from.split("-").reverse().join("-")
+            : `${from} → ${to}`} · clinic-wide · modality/service-wise billing`}
+        >
+          <ModalityBillingKpi from={from} to={to} hideHeader />
+        </SummaryCollapsibleBox>
+      )}
 
       {/* ── Loading State ── */}
       {isLoading && (
@@ -3245,14 +3272,6 @@ export default function MyDailySummary() {
             testId="imaging-vs-pacs"
           >
             <BillingVsPacsKpi from={from} to={to} hideHeader />
-          </SummaryCollapsibleBox>
-
-          <SummaryCollapsibleBox
-            title="Imaging Billed"
-            icon={<ScanLine size={14} className="text-sky-600" />}
-            testId="imaging-billed"
-          >
-            <ModalityBillingKpi from={from} to={to} hideHeader />
           </SummaryCollapsibleBox>
 
           <SummaryCollapsibleBox

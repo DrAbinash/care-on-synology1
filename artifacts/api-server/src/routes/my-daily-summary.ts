@@ -1402,7 +1402,7 @@ myDailySummaryRouter.get("/modality-bills", requireAdminRole, async (req: StaffA
   }
   if (!modality) {
     return res.status(400).json({
-      error: "Invalid modality — use MRI, CT, CT Scan, USG, X-Ray, or OPG",
+      error: "Invalid modality — use MRI, CT, CT Scan, USG, X-Ray, OPG, or Pathology",
     });
   }
 
