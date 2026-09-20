@@ -49,6 +49,12 @@ import {
   type WorklistAuditMeta,
   type SentinelCounters,
 } from "../lib/reportingStudioContract";
+import {
+  accumulateMatchKey,
+  emptyMatchKeyCounters,
+  resolveBillDeskForWorklistRows,
+  type MatchKeyCounters,
+} from "../lib/studioWorklistBillJoin";
 
 const router = Router();
 
@@ -127,13 +133,8 @@ function toIsoStudyDate(raw: string | null | undefined): string {
 
 /**
  * Highway Rule — Bill Desk is the single source of truth for patient age.
- *
- * Priority:
- *  1. patients.age_value / age_unit (bill desk)
- *  2. patients.date_of_birth (bill desk)
- *  3. radiology_worklist.age (MWL/machine) — only when age_value is null,
- *     and hard-rejected when the parsed number is > 110 (kills dummy "126"
- *     ages derived from 1900-01-01 DOBs that machines sometimes push).
+ * Prefer resolveBillDeskForWorklistRows / sanitizePatientAge; this helper
+ * remains for legacy call sites and hard-rejects >110 / <0 (never emit 126).
  */
 function ageFor(r: {
   age: string | null;
@@ -141,7 +142,6 @@ function ageFor(r: {
   patientAgeValue: number | null;
   patientAgeUnit: string | null;
 }): string {
-  // PRIORITY 1 — Bill Desk age_value / age_unit
   if (r.patientAgeValue != null && Number.isFinite(r.patientAgeValue)) {
     if (r.patientAgeValue > 110 || r.patientAgeValue < 0) return "";
     const unit = (r.patientAgeUnit ?? "").toLowerCase();
@@ -150,18 +150,18 @@ function ageFor(r: {
     return String(r.patientAgeValue);
   }
 
-  // PRIORITY 2 — Bill Desk DOB
   const dob = (r.patientDob ?? "").trim();
   if (/^\d{4}-\d{2}-\d{2}/.test(dob)) {
     const years = Math.floor((Date.now() - new Date(dob).getTime()) / 31_557_600_000);
-    if (years > 0 && years < 130) return String(years);
+    if (years > 0 && years <= 110) return String(years);
+    return "";
   }
 
-  // PRIORITY 3 — Machine/MWL age only when bill-desk age_value is null
+  // Machine/MWL age only when bill-desk age is absent — hard-reject >110.
   if (r.patientAgeValue == null && r.age && r.age.trim()) {
     const raw = r.age.trim();
     const parsed = Number.parseFloat(raw);
-    if (Number.isFinite(parsed) && parsed > 110) return "";
+    if (Number.isFinite(parsed) && (parsed > 110 || parsed < 0)) return "";
     return raw;
   }
 
@@ -317,48 +317,80 @@ router.get("/worklist", async (req, res) => {
       .orderBy(desc(radiologyWorklistTable.updatedAt))
       .limit(500);
 
-    const billIds = rows
+    const billIdsFromStudy = rows
       .map((r) => r.billId)
       .filter((id): id is number => typeof id === "number" && Number.isFinite(id));
-    const billingMap = await billingStatusForBillIds([...new Set(billIds)]);
+
+    const billDeskByWorklist = await resolveBillDeskForWorklistRows(
+      rows.map((r) => ({
+        worklistId: r.id,
+        accessionNumber: r.accessionNumber,
+        studyId: r.studyId,
+        patientId: r.patientId,
+        patientName: r.patientName,
+        modality: r.modality,
+        studyDate: r.studyDate,
+      })),
+    );
+
+    const resolvedBillIds = [
+      ...new Set(
+        [
+          ...billIdsFromStudy,
+          ...[...billDeskByWorklist.values()]
+            .map((d) => d.billId)
+            .filter((id): id is number => typeof id === "number"),
+        ],
+      ),
+    ];
+    const billingMap = await billingStatusForBillIds(resolvedBillIds);
 
     const sourceId = studioSourceId(req);
     let validationFailures = 0;
     let sentinels = emptySentinelCounters();
+    let matchKeys = emptyMatchKeyCounters();
 
     const payloadRows = rows.map((r) => {
-      const refWorklist = (r.referringDoctor ?? "").trim();
-      const refStudy = (r.studyReferringDoctor ?? "").trim();
-      const referringDoctorWasBlank = !refWorklist && !refStudy;
-      const referringDoctor =
-        refWorklist || refStudy || "Self/Walk-in";
+      const desk = billDeskByWorklist.get(r.id);
+      matchKeys = accumulateMatchKey(matchKeys, desk?.matchedKey ?? null);
+
+      // Bill Desk wins for referrer / age / sex. Never synthesize Self/Walk-in.
+      const referringDoctor = desk?.matchedKey
+        ? desk.referringDoctor
+        : "";
+      const referringDoctorWasBlank = !referringDoctor;
+
+      const patientAge = desk?.matchedKey
+        ? desk.patientAge
+        : ageFor(r);
+      const patientGender = desk?.matchedKey
+        ? desk.patientSex
+        : ((r.sex ?? "") || (r.patientGender ?? ""));
+
+      const billId = desk?.billId ?? r.billId ?? null;
+      const billNumber = desk?.billNumber || r.billNumber || "";
 
       const mapped = {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
         patientName: r.patientName,
-        // v6.14: surface the ERP worklist status so the studio can freeze
-        // REPORTED rows (don't overwrite a finalized report) and skip
-        // DELIVERED rows from billing follow-up.
         status: r.status,
-        // USG Studio v6 bridge extension — additive, optional for callers:
-        // bill-desk demographics so Form F and the patient header never need
-        // retyping. Studios built against PR #639 ignore unknown keys.
-        patientId: r.patientId ?? null,
-        patientPhone: r.patientPhone ?? "",
-        patientAddress: r.patientAddress ?? "",
-        billNumber: r.billNumber ?? "",
-        patientAge: ageFor(r),
-        patientGender: (r.sex ?? "") || (r.patientGender ?? ""),
+        patientId: desk?.patientId ?? r.patientId ?? null,
+        patientPhone: desk?.matchedKey ? desk.patientPhone : (r.patientPhone ?? ""),
+        patientAddress: desk?.matchedKey ? desk.patientAddress : (r.patientAddress ?? ""),
+        billNumber,
+        patientAge,
+        patientGender,
+        /** Additive: Bill Desk join key used for this row (null = unmatched). */
+        matchedKey: desk?.matchedKey ?? null,
         referringDoctor,
         testName: r.testName ?? r.studyDescription ?? "",
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
         studyInstanceUid: r.studyInstanceUID ?? null,
-        billingStatus: r.billId != null ? (billingMap.get(r.billId) ?? null) : null,
+        billingStatus: billId != null ? (billingMap.get(billId) ?? null) : null,
       };
 
-      // Contract validation — never silently drop; log + count failures.
       const validated = validateStudioWorklistRow(mapped);
       if (!validated.ok) {
         validationFailures += 1;
@@ -405,13 +437,14 @@ router.get("/worklist", async (req, res) => {
 
     const rowsByModality = buildRowsByModality(dedupedRows);
     const syncedAt = new Date().toISOString();
-    const meta: WorklistAuditMeta = {
+    const meta: WorklistAuditMeta & { matchedBy: MatchKeyCounters } = {
       syncedAt,
       rowsServed: dedupedRows.length,
       rowsByModality,
       validationFailures,
       sentinels,
       sourceId,
+      matchedBy: matchKeys,
     };
 
     logger.info(
