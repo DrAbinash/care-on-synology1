@@ -20,6 +20,8 @@ import {
   VIEWER_NETWORK_MODE_EVENT,
 } from "@/lib/viewerNetworkPreference";
 import { prefetchActiveStudySeries } from "@/lib/mriStudyPrefetch";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { viewerOverlayShellClass } from "@/lib/reportingPaneFocus";
 
 interface Series {
   uid: string;
@@ -236,6 +238,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
   const [isExpanded, setIsExpanded] = useState(false);
+  const isMobile = useIsMobile();
   const [series, setSeries] = useState<Series[]>([]);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
@@ -437,6 +440,13 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     try { localStorage.setItem(VIEW_MODE_KEY, m); } catch { /* private mode */ }
   };
 
+  // Phone: OHIF opens edge-to-edge so the image is not a thin slit beside Report.
+  // Re-fit when the study changes; Escape / Fit toggle still exits.
+  useEffect(() => {
+    if (!isMobile) return;
+    if (viewMode === "OHIF") setIsExpanded(true);
+  }, [isMobile, viewMode, studyInstanceUID]);
+
   const captureFramesKeyImage = useCallback(async (): Promise<boolean> => {
     if (!onCaptureViewport || captureBusy) return false;
     if (!selectedSeriesUID || !instances[selectedInstIdx] || !frameUrl) return false;
@@ -557,12 +567,24 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
 
 
   const toggleColumnExpanded = () => onColumnExpandedChange?.(!columnExpanded);
+  const shellClass = viewerOverlayShellClass({ expanded: isExpanded, phone: isMobile });
+  const enlargeToFit = () => {
+    // On phone, "Maximize" and "Fit" both mean fill the screen — column-only
+    // vertical grow cannot fix a horizontally crushed OHIF pane.
+    if (isMobile) {
+      setIsExpanded(true);
+      return;
+    }
+    if (isExpanded) setIsExpanded(false);
+    toggleColumnExpanded();
+  };
 
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden min-h-0 ${isExpanded ? "fixed inset-4 z-50 bg-background shadow-2xl" : "relative h-full"}`}>
+    <div className={shellClass} data-testid="embedded-wado-shell" data-expanded={isExpanded ? "1" : "0"} data-phone={isMobile ? "1" : "0"}>
       {/* Three enlarge modes:
           1) Maximize — grow view box UP/DOWN inside the center column only
-          2) Expand — near-fullscreen overlay (whole workspace chrome)
+             (on phone → same as Fit / edge-to-edge fullscreen)
+          2) Expand / Fit — near-fullscreen overlay (edge-to-edge on phone)
           3) ExternalLink — OHIF in a new browser tab
           Double-click header also toggles near-fullscreen. */}
       <div
@@ -662,23 +684,30 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
           ) : null}
           <Button
             size="sm"
-            variant={columnExpanded ? "secondary" : "ghost"}
+            variant={columnExpanded && !isMobile ? "secondary" : "ghost"}
             className="h-7 w-7 p-0"
-            onClick={(e) => { e.stopPropagation(); if (isExpanded) setIsExpanded(false); toggleColumnExpanded(); }}
-            title={columnExpanded ? "Restore Report/Print panels below" : "Enlarge view box up & down (center column only)"}
+            onClick={(e) => { e.stopPropagation(); enlargeToFit(); }}
+            title={
+              isMobile
+                ? "Enlarge OHIF to fill the screen"
+                : columnExpanded
+                  ? "Restore Report/Print panels below"
+                  : "Enlarge view box up & down (center column only)"
+            }
             data-testid="viewer-column-expand"
           >
-            {columnExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {columnExpanded && !isMobile ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </Button>
           <Button
             size="sm"
-            variant={isExpanded ? "secondary" : "ghost"}
-            className="h-7 w-7 p-0"
+            variant={isExpanded ? "secondary" : isMobile ? "default" : "ghost"}
+            className={isMobile ? "h-8 gap-1 px-2.5 text-xs font-semibold" : "h-7 w-7 p-0"}
             onClick={(e) => { e.stopPropagation(); setIsExpanded((v) => !v); }}
             title={isExpanded ? "Exit fullscreen overlay" : "Fill whole screen"}
             data-testid="viewer-fullscreen"
           >
             {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
+            {isMobile ? <span>{isExpanded ? "Exit" : "Fit"}</span> : null}
           </Button>
         </div>
       </div>
