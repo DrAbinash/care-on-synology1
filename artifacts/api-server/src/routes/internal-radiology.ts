@@ -2508,6 +2508,58 @@ router.get("/dicom-agent/config", requireInternalApiKey, async (_req, res) => {
   });
 });
 
+// ── GET /api/internal/radiology/retention-policy ─────────────────────────────
+// Polled by care-pacs orthanc-retention sidecar. Default OFF.
+router.get("/radiology/retention-policy", requireInternalApiKey, async (_req, res) => {
+  const rows = await db
+    .select({ key: pacsSettingsTable.key, value: pacsSettingsTable.value })
+    .from(pacsSettingsTable)
+    .where(
+      or(
+        eq(pacsSettingsTable.key, "orthanc_auto_retention_enabled"),
+        eq(pacsSettingsTable.key, "orthanc_retention_keep_studies"),
+        eq(pacsSettingsTable.key, "orthanc_retention_cleanup_trigger"),
+      )!,
+    );
+
+  const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const enabled = map.orthanc_auto_retention_enabled === "true";
+  const keepStudies = Number(map.orthanc_retention_keep_studies ?? 500);
+  const cleanupTrigger = Number(map.orthanc_retention_cleanup_trigger ?? 520);
+  res.json({
+    enabled,
+    keepStudies: Number.isFinite(keepStudies) && keepStudies > 0 ? keepStudies : 500,
+    cleanupTrigger: Number.isFinite(cleanupTrigger) && cleanupTrigger > 0 ? cleanupTrigger : 520,
+  });
+});
+
+// ── POST /api/internal/radiology/purge-reconcile ─────────────────────────────
+// After Orthanc DELETE by the retention sidecar, scrub matching ERP cache rows.
+router.post("/radiology/purge-reconcile", requireInternalApiKey, async (req, res) => {
+  try {
+    const { scrubErpStudyCache, logPurgeEvent } = await import("../lib/pacs/orthancPurge");
+    const body = req.body as { studyInstanceUIDs?: unknown };
+    const uids = Array.isArray(body.studyInstanceUIDs)
+      ? body.studyInstanceUIDs.map((u) => String(u || "").trim()).filter(Boolean)
+      : [];
+    if (uids.length === 0) {
+      res.status(400).json({ error: "studyInstanceUIDs array required" });
+      return;
+    }
+    const erp = await scrubErpStudyCache(uids);
+    await logPurgeEvent({
+      message: `ERP reconcile after Orthanc retention: ${uids.length} UIDs`,
+      studyInstanceUIDs: uids,
+      payload: { erp, count: uids.length },
+      severity: "info",
+    });
+    res.json({ ok: true, count: uids.length, erp });
+  } catch (err) {
+    logger.error({ err }, "purge-reconcile failed");
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // ── GET /api/internal/radiology/mwl ──────────────────────────────────────────
 // Structured MWL JSON for the Windows DICOM MWL SCP agent.
 // Returns scheduled procedures so the agent can serve DICOM C-FIND responses

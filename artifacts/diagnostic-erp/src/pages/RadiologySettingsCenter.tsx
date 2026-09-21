@@ -22,6 +22,7 @@ import {
   RefreshCw, Save,
   Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen, ScanLine
 } from "lucide-react";
+import OrthancPurgePanel from "@/components/radiology/OrthancPurgePanel";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
 // page) + per-radiologist overrides (radiologist_voice_preferences)
@@ -1551,6 +1552,18 @@ export default function RadiologySettingsCenter() {
             </h3>
             <RisMonitorCommandGrid />
           </div>
+
+          <OrthancPurgePanel
+            isAdmin={isAdmin}
+            autoRetentionEnabled={svOn("orthanc_auto_retention_enabled", false)}
+            onToggleAutoRetention={(enabled) =>
+              upsertSetting.mutate({
+                key: "orthanc_auto_retention_enabled",
+                value: enabled ? "true" : "false",
+                category: "orthanc",
+              })
+            }
+          />
 
           <div className="rounded-xl border bg-card p-5 space-y-3">
             <h3 className="font-semibold text-sm flex items-center gap-2">
