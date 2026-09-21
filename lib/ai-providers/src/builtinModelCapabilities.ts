@@ -100,6 +100,23 @@ export const BUILTIN_MODEL_CAPABILITIES: BuiltinModelCapability[] = [
     experimental: true,
     displayName: "GPT-4o mini",
   },
+  /**
+   * Default served-model id for a local OpenAI-compatible server.
+   * Display name "Bonsai 2 27B" is the initial clinic config — the provider
+   * itself remains vendor-neutral (local_openai_compatible).
+   * Vision is declared here for the known default; other model ids fail
+   * closed unless Settings marks supportsVision (see capability helpers).
+   */
+  {
+    provider: "local_openai_compatible",
+    model: "bonsai",
+    supportsVision: true,
+    supportsGroundedJson: true,
+    supportsLongContext: true,
+    phiEligible: true,
+    isLocal: true,
+    displayName: "Bonsai 2 27B",
+  },
 ];
 
 export function lookupBuiltinCapability(
@@ -119,6 +136,11 @@ export function modelSupportsVision(provider: string, model: string): boolean {
   if (row) return row.supportsVision;
   if (provider === "ollama") {
     return /vl|vision|llava|minicpm-v|moondream/.test(model.toLowerCase());
+  }
+  // Local OpenAI-compatible: never infer vision from model name alone.
+  // Unknown models fail closed until Settings / builtin declares vision.
+  if (provider === "local_openai_compatible") {
+    return false;
   }
   return false;
 }

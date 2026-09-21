@@ -1847,6 +1847,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   );
   /** Background composer drafting mode — default TEXT_ONLY; never silently SELECTED_IMAGES. */
   const [composerAiMode, setComposerAiMode] = useState<"TEXT_ONLY" | "SELECTED_IMAGES">("TEXT_ONLY");
+  /** Session-only AI provider/model override (workspace A/B). Does not mutate Settings. */
+  const [composerSessionModelKey, setComposerSessionModelKey] = useState("");
   /** Session AI selection of frozen key-image IDs (independent of includeInReport). */
   const [aiSelectedKeyImageIds, setAiSelectedKeyImageIds] = useState<number[]>([]);
   const persistAiAssistantMinimized = (minimized: boolean) => {
@@ -1862,8 +1864,57 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   useEffect(() => {
     setAiSelectedKeyImageIds([]);
     setComposerAiMode("TEXT_ONLY");
+    setComposerSessionModelKey("");
     setAbnormalHighlight((h) => clearHighlightIfStudyChanged(h, studyId != null ? String(studyId) : null));
   }, [studyId, draftId]);
+
+  const { data: aiProviderSettingsForComposer } = useQuery<{
+    providers: Record<
+      string,
+      {
+        provider: string;
+        isEnabled: boolean;
+        defaultModel: string | null;
+        label: string;
+        displayName?: string | null;
+        execution?: string;
+      }
+    >;
+  }>({
+    queryKey: ["ai-reporting-settings-composer-models"],
+    queryFn: () => api.get("/api/ai-reporting/settings"),
+    staleTime: 60_000,
+  });
+
+  const composerSessionModelOptions = useMemo(() => {
+    const providers = aiProviderSettingsForComposer?.providers ?? {};
+    const opts: Array<{ value: string; label: string; provider: string; model: string }> = [];
+    for (const p of Object.values(providers)) {
+      if (!p.isEnabled) continue;
+      const model = (p.defaultModel ?? "").trim();
+      if (!model) continue;
+      const exec = p.execution === "LOCAL" || p.provider === "ollama" || p.provider === "local_openai_compatible"
+        ? "Local"
+        : "Cloud";
+      const display =
+        (p.displayName ?? "").trim() ||
+        `${p.label} · ${model}`;
+      opts.push({
+        value: `${p.provider}::${model}`,
+        label: `${display} (${exec})`,
+        provider: p.provider,
+        model,
+      });
+    }
+    return opts;
+  }, [aiProviderSettingsForComposer]);
+
+  const composerSessionResolved = useMemo(() => {
+    if (!composerSessionModelKey.trim()) return { provider: null as string | null, model: null as string | null };
+    const hit = composerSessionModelOptions.find((o) => o.value === composerSessionModelKey);
+    if (!hit) return { provider: null, model: null };
+    return { provider: hit.provider, model: hit.model };
+  }, [composerSessionModelKey, composerSessionModelOptions]);
 
   const handleUndoLastAbnormal = useCallback(() => {
     const ws = useWorkspace.getState();
@@ -1993,6 +2044,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     aiMode: composerAiMode,
     selectedKeyImages: composerSelectedKeyImages,
     primaryRegionLabel: composerPrimaryRegionLabel,
+    sessionProvider: composerSessionResolved.provider,
+    sessionModel: composerSessionResolved.model,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -7089,6 +7142,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             onAiModeChange={setComposerAiMode}
                             primaryRegionLabel={composerPrimaryRegionLabel}
                             selectedKeyImageCount={composerSelectedKeyImages.length}
+                            sessionModelOptions={composerSessionModelOptions}
+                            sessionModelValue={composerSessionModelKey}
+                            onSessionModelChange={setComposerSessionModelKey}
                             onCompose={() => void reportComposer.composeFull()}
                             onImpression={() => void reportComposer.composeImpression()}
                             onToggleReview={reportComposer.setReviewOpen}
@@ -7305,6 +7361,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
           onAiModeChange={setComposerAiMode}
           primaryRegionLabel={composerPrimaryRegionLabel}
           selectedKeyImageCount={composerSelectedKeyImages.length}
+          sessionModelOptions={composerSessionModelOptions}
+          sessionModelValue={composerSessionModelKey}
+          onSessionModelChange={setComposerSessionModelKey}
           onCompose={() => void reportComposer.composeFull()}
           onImpression={() => void reportComposer.composeImpression()}
           onToggleReview={reportComposer.setReviewOpen}

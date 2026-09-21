@@ -120,6 +120,14 @@ export const ComposerInputSnapshotSchema = z.object({
    * Never base64. Optional — old snapshots without this field still parse.
    */
   selectedKeyImages: z.array(SelectedKeyImageRefSchema).optional(),
+  /**
+   * Session-only provider override for this draft (workspace A/B selector).
+   * Does NOT mutate clinic AI Settings / Model Routing.
+   * Excluded from clinical freshness hashes.
+   */
+  sessionProvider: z.string().optional(),
+  /** Session-only model override paired with sessionProvider. */
+  sessionModel: z.string().optional(),
 });
 
 export function parseComposerSnapshot(

@@ -50,4 +50,14 @@ describe("provider-neutral cloud consolidation", () => {
     if (prev.q !== undefined) process.env.QWEN_API_KEY = prev.q;
     if (prev.o !== undefined) process.env.OPENAI_API_KEY = prev.o;
   });
+
+  it("treats local_openai_compatible as LOCAL for image egress", () => {
+    expect(
+      assertCloudImageEgress({
+        provider: "local_openai_compatible",
+        imageCount: 1,
+        cloudVisionAllowed: false,
+      }).ok,
+    ).toBe(true);
+  });
 });

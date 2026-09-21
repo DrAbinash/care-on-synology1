@@ -323,6 +323,19 @@ export const BUILTIN_PROVIDER_CONFIGS: Record<string, AiProviderConfig> = {
     defaultModels: ["deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
     placeholder: "sk-...",
   },
+  /**
+   * Vendor-neutral local OpenAI-compatible server (llama.cpp / vLLM / etc.).
+   * Initial display/model defaults target PrismML Bonsai — configuration-driven,
+   * not hard-coded into Composer.
+   */
+  local_openai_compatible: {
+    name: "local_openai_compatible",
+    label: "Local OpenAI-Compatible",
+    needsApiKey: false,
+    needsEndpointUrl: true,
+    defaultModels: ["bonsai"],
+    placeholder: "http://<AI-PC>:8080/v1",
+  },
 };
 
 export const BUILTIN_PROVIDER_NAMES = Object.keys(BUILTIN_PROVIDER_CONFIGS);
@@ -353,7 +366,7 @@ export function validateProviderModel(provider: string, model: string): ModelVal
   if (!BUILTIN_PROVIDER_NAMES.includes(provider)) return { ok: false, message: `Unknown provider: ${provider}` };
   const m = (model ?? "").trim();
   if (!m) return { ok: false, message: "Model cannot be empty." };
-  if (provider === "ollama") return { ok: true }; // pulled model names are arbitrary
+  if (provider === "ollama" || provider === "local_openai_compatible") return { ok: true }; // served names are arbitrary
   const known = BUILTIN_PROVIDER_CONFIGS[provider]?.defaultModels ?? [];
   if (known.includes(m)) return { ok: true };
   const pattern = MODEL_FAMILY_PATTERNS[provider];
@@ -837,6 +850,15 @@ export async function createAiProvider(
   if (name === "gemini" && apiKey) return new GeminiProvider(apiKey);
   if (name === "anthropic" && apiKey) return new AnthropicProvider(apiKey);
   if (name === "ollama" && endpointUrl) return new OllamaProvider(endpointUrl);
+  if (name === "local_openai_compatible" && endpointUrl) {
+    const { OpenAiCompatibleProvider } = await import("./openAiCompatibleProvider");
+    const { readEnvApiKey } = await import("./openAiCompatible");
+    const key = (apiKey?.trim() || readEnvApiKey(name) || "").trim();
+    return new OpenAiCompatibleProvider(name, key, endpointUrl.replace(/\/$/, ""), config, {
+      allowEmptyApiKey: true,
+      defaultJsonMode: false,
+    });
+  }
   if ((name === "deepseek" || name === "qwen") && apiKey) {
     const { OpenAiCompatibleProvider } = await import("./openAiCompatibleProvider");
     const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("./openAiCompatible");
@@ -974,6 +996,11 @@ export async function createAiProviderFromDb(name: string): Promise<AiProvider |
     const url = config ? await getProviderEndpointUrl(name) : null;
     if (name === "ollama") {
       endpointUrl = (url?.trim().replace(/\/$/, "") || envOllamaEndpoint());
+    } else if (name === "local_openai_compatible") {
+      const { readEnvBaseUrl } = await import("./openAiCompatible");
+      endpointUrl =
+        url?.trim().replace(/\/$/, "") || readEnvBaseUrl(name) || undefined;
+      if (!endpointUrl) return null;
     } else if (name === "deepseek" || name === "qwen" || name === "openai") {
       const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("./openAiCompatible");
       endpointUrl =
@@ -986,6 +1013,17 @@ export async function createAiProviderFromDb(name: string): Promise<AiProvider |
       return null;
     } else {
       endpointUrl = url;
+    }
+  }
+
+  // Optional API key for local OpenAI-compatible (DB or env); empty is allowed.
+  if (name === "local_openai_compatible" && !apiKey) {
+    const dbKey = config ? await getProviderApiKey(name) : null;
+    if (dbKey) {
+      apiKey = dbKey;
+    } else {
+      const { readEnvApiKey } = await import("./openAiCompatible");
+      apiKey = readEnvApiKey(name) ?? undefined;
     }
   }
 
@@ -1059,8 +1097,9 @@ export async function generateAiResponse(
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
 
-  // Central cloud image egress — DEFAULT DENY. Identical for Qwen/DeepSeek/OpenAI.
-  if (imgs.length > 0 && providerName !== "ollama") {
+  // Central cloud image egress — DEFAULT DENY. Local providers (Ollama +
+  // Local OpenAI-Compatible) are never gated as cloud.
+  if (imgs.length > 0) {
     const { assertCloudImageEgress } = await import("./cloudImagePolicy");
     const { modelSupportsVision } = await import("./builtinModelCapabilities");
     const model = options?.model ?? "";
@@ -1225,10 +1264,10 @@ export interface AiTaskDef {
  */
 export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "radiology_draft", label: "Radiology AI Draft", description: "AI-assisted radiology report drafting from study context/images.", vision: true },
-  /** Report Composer text path — CARE persona + observations (default local Ollama). */
-  { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama.", vision: false },
+  /** Report Composer text path — CARE persona + observations (default local Ollama unless admin routes otherwise). */
+  { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama unless an admin sets Model Routing.", vision: false },
   /** Selected-image vision drafts in Report Composer. */
-  { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama qwen3-vl.", vision: true },
+  { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama unless an admin sets Model Routing.", vision: true },
   /** Overnight shadow pipeline vision. Default MUST remain local Ollama. */
   { key: "overnight_vision", label: "Overnight Vision", description: "Overnight provisional AI draft from representative images. Default: local Ollama only.", vision: true },
   { key: "report_enhancement", label: "Report Enhancement", description: "Auto-generate findings, impression and measurements for a report.", vision: false },

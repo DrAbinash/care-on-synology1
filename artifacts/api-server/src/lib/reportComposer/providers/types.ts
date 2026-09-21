@@ -2,7 +2,12 @@
  * Provider-neutral Report Composer / CARE AI gateway types.
  * Clinical code should depend on capabilities + roles, not vendor names.
  */
-export type ComposerProviderName = "ollama" | "qwen" | "deepseek" | "openai";
+export type ComposerProviderName =
+  | "ollama"
+  | "qwen"
+  | "deepseek"
+  | "openai"
+  | "local_openai_compatible";
 
 export type AiExecution = "LOCAL" | "CLOUD";
 
