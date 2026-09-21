@@ -12,7 +12,7 @@ import {
   loadProviderConfig,
 } from "@workspace/ai-providers";
 import { db } from "@workspace/db";
-import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
+import { aiProviderSettingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 export const LOCAL_OPENAI_COMPATIBLE_ID = LOCAL_OPENAI_COMPATIBLE_PROVIDER;
@@ -112,8 +112,10 @@ export function localOpenAiConfiguredPublicStatus(): {
 }
 
 /**
- * Soft-seed provider row + report_composer / selected_image_vision routes
- * when absent. Does NOT overwrite admin changes. No schema migration.
+ * Soft-seed the Local OpenAI-Compatible *provider* row only (Bonsai-friendly
+ * pre-filled Settings values). Does NOT create or modify ai_model_routes.
+ * Opening AI Settings must never change task routing.
+ * No schema migration.
  */
 export async function ensureLocalOpenAiCompatibleDefaults(): Promise<void> {
   const [existing] = await db
@@ -132,22 +134,5 @@ export async function ensureLocalOpenAiCompatibleDefaults(): Promise<void> {
       endpointUrl: envUrl || null,
       settingsJson: JSON.stringify(DEFAULT_SETTINGS),
     });
-  }
-
-  for (const taskKey of ["report_composer", "selected_image_vision"] as const) {
-    const [route] = await db
-      .select({ id: aiModelRoutesTable.id })
-      .from(aiModelRoutesTable)
-      .where(eq(aiModelRoutesTable.taskKey, taskKey))
-      .limit(1);
-    if (!route) {
-      await db.insert(aiModelRoutesTable).values({
-        taskKey,
-        provider: LOCAL_OPENAI_COMPATIBLE_ID,
-        model: LOCAL_OPENAI_DEFAULT_MODEL,
-        isActive: true,
-        updatedBy: "local_openai_compatible_defaults",
-      });
-    }
   }
 }

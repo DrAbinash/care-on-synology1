@@ -1264,10 +1264,10 @@ export interface AiTaskDef {
  */
 export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "radiology_draft", label: "Radiology AI Draft", description: "AI-assisted radiology report drafting from study context/images.", vision: true },
-  /** Report Composer text path — CARE persona + observations. */
-  { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: Local OpenAI-Compatible (configurable).", vision: false },
+  /** Report Composer text path — CARE persona + observations (default local Ollama unless admin routes otherwise). */
+  { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama unless an admin sets Model Routing.", vision: false },
   /** Selected-image vision drafts in Report Composer. */
-  { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: Local OpenAI-Compatible (configurable).", vision: true },
+  { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama unless an admin sets Model Routing.", vision: true },
   /** Overnight shadow pipeline vision. Default MUST remain local Ollama. */
   { key: "overnight_vision", label: "Overnight Vision", description: "Overnight provisional AI draft from representative images. Default: local Ollama only.", vision: true },
   { key: "report_enhancement", label: "Report Enhancement", description: "Auto-generate findings, impression and measurements for a report.", vision: false },

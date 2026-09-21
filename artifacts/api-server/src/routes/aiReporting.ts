@@ -325,7 +325,9 @@ router.get("/settings", async (req, res): Promise<void> => {
       .orderBy(aiPromptTemplatesTable.modality, aiPromptTemplatesTable.name),
   ]);
 
-  // Soft-seed Local OpenAI-Compatible defaults + report_composer routes (no migration).
+  // Soft-seed Local OpenAI-Compatible *provider* row only (Bonsai-friendly
+  // Settings pre-fill). Never creates/modifies ai_model_routes — opening
+  // Settings must not change task routing.
   try {
     const { ensureLocalOpenAiCompatibleDefaults } = await import(
       "../lib/reportComposer/providers/localOpenAiCompatibleConfig"

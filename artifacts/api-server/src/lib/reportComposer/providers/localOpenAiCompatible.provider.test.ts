@@ -2,6 +2,8 @@
  * Focused tests for vendor-neutral Local OpenAI-Compatible provider.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   assertCloudImageEgress,
   assertVisionCapable,
@@ -332,9 +334,37 @@ describe("session override snapshot fields", () => {
     expect(h1.reportRevision).toBe(h2.reportRevision);
   });
 
+  it("clearing session fields leaves snapshot on Settings/Ollama path (no session keys)", () => {
+    const snap = parseComposerSnapshot({
+      findings: "a",
+      impression: "b",
+      recommendation: "",
+      clinicalHistory: "",
+      technique: "",
+      observations: [],
+    });
+    expect(snap.sessionProvider).toBeUndefined();
+    expect(snap.sessionModel).toBeUndefined();
+  });
+
   it("does not infer vision merely from model name for local provider", () => {
     expect(modelSupportsVision("local_openai_compatible", "some-random-vl-name")).toBe(false);
     expect(modelSupportsVision("local_openai_compatible", "bonsai")).toBe(true);
     expect(assertVisionCapable("local_openai_compatible", "unknown-model").ok).toBe(false);
+  });
+});
+
+describe("workspace override never mutates global routes (source contract)", () => {
+  it("useReportComposer only embeds sessionProvider in snapshot — no model-routing API writes", () => {
+    const src = readFileSync(
+      join(
+        __dirname,
+        "../../../../../diagnostic-erp/src/hooks/useReportComposer.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toMatch(/sessionProvider/);
+    expect(src).not.toMatch(/ai-model-routing/);
+    expect(src).not.toMatch(/ai_model_routes/);
   });
 });
