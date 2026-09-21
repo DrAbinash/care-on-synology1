@@ -26,6 +26,13 @@ type Props = {
   onAiModeChange: (mode: "TEXT_ONLY" | "SELECTED_IMAGES") => void;
   primaryRegionLabel: string;
   selectedKeyImageCount: number;
+  /**
+   * Session-only AI model options from configured/enabled providers.
+   * Empty/default uses Settings Model Routing.
+   */
+  sessionModelOptions?: Array<{ value: string; label: string; provider: string; model: string }>;
+  sessionModelValue?: string;
+  onSessionModelChange?: (value: string) => void;
   onCompose: () => void;
   onImpression: () => void;
   onToggleReview: (open: boolean) => void;
@@ -241,6 +248,25 @@ export function ReportComposerAssistant(props: Props) {
             Draft with Selected Images
           </label>
         </div>
+        {(props.sessionModelOptions?.length ?? 0) > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-[10px] pt-0.5" data-testid="ai-session-model">
+            <span className="font-semibold text-muted-foreground uppercase tracking-wide">AI Model</span>
+            <select
+              className="h-7 max-w-[220px] rounded border bg-background px-1.5 text-[11px]"
+              value={props.sessionModelValue ?? ""}
+              onChange={(e) => props.onSessionModelChange?.(e.target.value)}
+              data-testid="ai-session-model-select"
+            >
+              <option value="">Default (Settings routing)</option>
+              {props.sessionModelOptions!.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <span className="text-muted-foreground">Session only — does not change clinic Settings</span>
+          </div>
+        )}
         <p className="text-[10px] text-muted-foreground">
           Region: <span className="font-medium text-foreground">{props.primaryRegionLabel}</span>
           {" · "}

@@ -1,9 +1,13 @@
 /**
  * Pre-adapter policy gate for Report Composer domain facade.
- * Ollama remains default. Cloud providers require API keys (env or DB).
+ * Ollama + Local OpenAI-Compatible are LOCAL (no cloud vision gate).
+ * Cloud providers require API keys (env or DB).
  * Cloud vision requires explicit cloudVisionAllowed for ALL cloud vendors.
  */
-import { isCompatibleProviderConfigured } from "@workspace/ai-providers";
+import {
+  isCompatibleProviderConfigured,
+  isLocalOpenAiCompatibleProvider,
+} from "@workspace/ai-providers";
 import type { ComposerProviderName, ComposerProviderImage } from "./types";
 
 export type ComposerProviderPolicyInput = {
@@ -12,6 +16,8 @@ export type ComposerProviderPolicyInput = {
   cloudVisionAllowed?: boolean;
   images?: ComposerProviderImage[];
   imageCount?: number;
+  /** When set, Local OpenAI-Compatible is considered configured (endpoint present). */
+  localEndpointConfigured?: boolean;
 };
 
 export type ComposerProviderPolicyResult =
@@ -34,6 +40,19 @@ export function assertComposerProviderPolicy(
     if (aiMode === "SELECTED_IMAGES" && imageCount <= 0) {
       return { ok: false, safeError: "selected_images_empty" };
     }
+    return { ok: true };
+  }
+
+  if (isLocalOpenAiCompatibleProvider(provider)) {
+    // Optional API key is intentionally allowed. Endpoint must be configured
+    // (checked via localEndpointConfigured or env at call sites).
+    if (input.localEndpointConfigured === false) {
+      return { ok: false, safeError: "local_openai_compatible_endpoint_not_configured" };
+    }
+    if (aiMode === "SELECTED_IMAGES" && imageCount <= 0) {
+      return { ok: false, safeError: "selected_images_empty" };
+    }
+    // Never apply cloud_vision_not_allowed — this provider is LOCAL.
     return { ok: true };
   }
 

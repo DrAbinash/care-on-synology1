@@ -42,6 +42,7 @@ import {
 } from "../lib/reportComposer/providers/deepseekConfig";
 import { qwenConfiguredPublicStatus, QWEN_DEFAULT_MODEL } from "../lib/reportComposer/providers/qwenConfig";
 import { openaiConfiguredPublicStatus } from "../lib/reportComposer/providers/openaiConfig";
+import { localOpenAiConfiguredPublicStatus } from "../lib/reportComposer/providers/localOpenAiCompatibleConfig";
 import {
   defaultModelFor,
   parseComposerProviderName,
@@ -363,13 +364,16 @@ reportComposerRouter.get("/diagnostics", async (req, res): Promise<void> => {
     aiProviders: Object.keys(BUILTIN_PROVIDER_CONFIGS).map((id) => ({
       id,
       label: BUILTIN_PROVIDER_CONFIGS[id]?.label ?? id,
-      execution: id === "ollama" ? "LOCAL" : "CLOUD",
+      execution:
+        id === "ollama" || id === "local_openai_compatible" ? "LOCAL" : "CLOUD",
       configured:
         id === "ollama"
           ? null
           : id === "deepseek" || id === "qwen" || id === "openai"
             ? isCompatibleProviderConfigured(id)
-            : undefined,
+            : id === "local_openai_compatible"
+              ? isCompatibleProviderConfigured(id)
+              : undefined,
     })),
     models: listBuiltinModels().map((m) => ({
       provider: m.provider,
@@ -425,15 +429,16 @@ async function runComposerTestOnce(opts: {
   });
   const provider = (run.provenance?.provider ?? opts.provider) as string;
   const isCloud = provider === "deepseek" || provider === "qwen" || provider === "openai";
+  const isLocalOpenAi = provider === "local_openai_compatible";
   const cloudCalled =
     run.ok === true && run.fallbackUsed !== true && isCloud;
-  const ollamaCalled =
+  const localCalled =
     run.ok === true &&
     run.fallbackUsed !== true &&
     (run.model ?? "").toLowerCase() !== "deterministic" &&
-    provider === "ollama";
+    (provider === "ollama" || isLocalOpenAi);
   const personaLoaded = Boolean(
-    (ollamaCalled || cloudCalled) && run.provenance?.personaVersion,
+    (localCalled || cloudCalled) && run.provenance?.personaVersion,
   );
   const requestedProvider = opts.provider;
   const requestedModel = modelOverride || runtimeBefore.model;
@@ -458,12 +463,22 @@ async function runComposerTestOnce(opts: {
           : provider === "openai"
             ? openaiConfiguredPublicStatus().baseUrl
             : deepseekConfiguredPublicStatus().baseUrl
-        : runtimeBefore.endpoint,
-      endpointSource: isCloud ? `${provider}_official_api` : runtimeBefore.endpointSource,
+        : isLocalOpenAi
+          ? localOpenAiConfiguredPublicStatus().baseUrl
+          : runtimeBefore.endpoint,
+      endpointSource: isCloud
+        ? `${provider}_official_api`
+        : isLocalOpenAi
+          ? "local_openai_compatible"
+          : runtimeBefore.endpointSource,
       hasFallback: !!runtimeBefore.fallbackModel,
       statusMessage: composerRuntimeStatusMessage(runtimeBefore),
       localOnly: runtimeBefore.localOnly,
-      transport: isCloud ? `${provider}_official` : "ollama",
+      transport: isCloud
+        ? `${provider}_official`
+        : isLocalOpenAi
+          ? "openai_compatible_local"
+          : "ollama",
     },
     hashes,
     compose: {

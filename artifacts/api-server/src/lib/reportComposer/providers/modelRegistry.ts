@@ -85,6 +85,17 @@ export function modelCapabilities(
       local: true,
     };
   }
+  if (provider === "local_openai_compatible") {
+    // Vision is enforced asynchronously via Settings in the adapter.
+    // Builtin "bonsai" declares vision; unknown models stay local + text.
+    const builtinVision = modelSupportsVision("local_openai_compatible", modelId);
+    return {
+      text: true,
+      vision: builtinVision,
+      structuredOutput: true,
+      local: true,
+    };
+  }
   return { text: true, vision: false, structuredOutput: true, local: false };
 }
 
@@ -93,7 +104,14 @@ export function assertModelSupportsCapability(
   modelId: string,
   need: "text" | "vision",
 ): { ok: true } | { ok: false; safeError: string } {
-  if (need === "vision") return assertVisionCapable(provider, modelId);
+  if (need === "vision") {
+    if (provider === "local_openai_compatible") {
+      // Adapter enforces Settings.supportsVision fail-closed asynchronously.
+      // Sync builtin check is informational; do not block configured served ids here.
+      return { ok: true };
+    }
+    return assertVisionCapable(provider, modelId);
+  }
   return { ok: true };
 }
 

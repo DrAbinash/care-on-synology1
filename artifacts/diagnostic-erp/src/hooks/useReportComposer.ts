@@ -49,6 +49,9 @@ export function useReportComposer(opts: {
   selectedKeyImages?: ComposerInputSnapshot["selectedKeyImages"];
   /** Human-readable primary region for UI (e.g. MRI Brain). */
   primaryRegionLabel?: string;
+  /** Session-only provider/model override (workspace A/B). Does not mutate Settings. */
+  sessionProvider?: string | null;
+  sessionModel?: string | null;
 }) {
   const { toast } = useToast();
   const [job, setJob] = useState<ComposeJobView | null>(null);
@@ -218,6 +221,12 @@ export function useReportComposer(opts: {
       jobKindHint: jobKind ?? "FULL_REPORT",
       aiMode: opts.aiMode ?? "TEXT_ONLY",
       selectedKeyImages: opts.selectedKeyImages ?? [],
+      ...(opts.sessionProvider?.trim()
+        ? {
+            sessionProvider: opts.sessionProvider.trim(),
+            sessionModel: opts.sessionModel?.trim() || undefined,
+          }
+        : {}),
       ...extra,
     };
     const hashes = await computeSnapshotHashes(snap);

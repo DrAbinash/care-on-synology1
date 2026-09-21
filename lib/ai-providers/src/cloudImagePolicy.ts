@@ -1,7 +1,10 @@
 /**
  * Central cloud image egress policy for @workspace/ai-providers.
  * DEFAULT = DENY for all non-local providers. Explicit trial opt-in required.
+ * Local OpenAI-compatible servers are LOCAL — never gated as cloud.
  */
+import { isLocalExecutionProvider } from "./openAiCompatible";
+
 export type CloudImageEgressInput = {
   provider: string;
   imageCount: number;
@@ -17,7 +20,8 @@ export type CloudImageEgressResult =
 
 export function assertCloudImageEgress(input: CloudImageEgressInput): CloudImageEgressResult {
   if (input.imageCount <= 0) return { ok: true };
-  if (input.provider === "ollama") return { ok: true };
+  // Ollama + Local OpenAI-Compatible remain on-prem from CARE's policy.
+  if (isLocalExecutionProvider(input.provider)) return { ok: true };
 
   if (input.cloudVisionAllowed !== true) {
     return {

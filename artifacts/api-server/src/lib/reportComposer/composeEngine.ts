@@ -27,9 +27,15 @@ import {
   assertComposerProviderPolicy,
   defaultModelFor,
   assertModelSupportsCapability,
+  parseComposerProviderName,
   type ComposerProviderName,
 } from "./providers";
+import {
+  getLocalOpenAiBaseUrl,
+  getLocalOpenAiDefaultModel,
+} from "./providers/localOpenAiCompatibleConfig";
 import type { AiComposeJobKind } from "@workspace/db/schema";
+import { resolveTaskRoute } from "@workspace/ai-providers";
 
 export type ComposeRunResult = {
   ok: boolean;
@@ -116,11 +122,11 @@ export async function runReportComposer(opts: {
   allowDeterministicFallback?: boolean;
   /** Authoritative ownership context for SELECTED_IMAGES (resolved server-side). */
   ownership?: KeyImageOwnershipContext | null;
-  /** Optional provider override (test / trial). Default remains ollama. */
+  /** Optional provider override (test lab / workspace session). */
   providerOverride?: ComposerProviderName | null;
-  /** Explicit opt-in to send images to cloud DeepSeek vision. */
+  /** Explicit opt-in to send images to cloud vision. */
   cloudVisionAllowed?: boolean;
-  /** Optional model override (e.g. DeepSeek text/vision trial models). */
+  /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
 }): Promise<ComposeRunResult> {
   const started = Date.now();
@@ -135,9 +141,41 @@ export async function runReportComposer(opts: {
   };
 
   const runtime = await resolveComposerRuntime(true);
-  if (!runtime.enabled || !runtime.model) {
+
+  // Provider resolution (session snapshot → explicit opts → task route → ollama):
+  // Settings / Model Routing remain the clinic default source of truth.
+  // snapshot.sessionProvider / sessionModel are draft-scoped only.
+  const sessionProvider = parseComposerProviderName(
+    opts.snapshot.sessionProvider ?? opts.providerOverride ?? null,
+  );
+  const hasExplicitProvider =
+    Boolean(opts.providerOverride) || Boolean(opts.snapshot.sessionProvider?.trim());
+
+  let providerName: ComposerProviderName = "ollama";
+  let routeModel: string | null = null;
+  if (hasExplicitProvider) {
+    providerName = sessionProvider;
+  } else {
+    const taskKey = aiMode === "SELECTED_IMAGES" ? "selected_image_vision" : "report_composer";
+    try {
+      const route = await resolveTaskRoute(taskKey);
+      if (route?.provider) {
+        providerName = parseComposerProviderName(route.provider);
+        routeModel = (route.model ?? "").trim() || null;
+      }
+    } catch {
+      providerName = "ollama";
+    }
+  }
+
+  const isCloud =
+    providerName === "deepseek" || providerName === "qwen" || providerName === "openai";
+  const isLocalOpenAi = providerName === "local_openai_compatible";
+  const isOllama = providerName === "ollama";
+
+  // Ollama path still requires Local AI composer runtime. Other providers do not.
+  if (isOllama && (!runtime.enabled || !runtime.model)) {
     if (aiMode === "SELECTED_IMAGES") {
-      // Never silently claim image review via deterministic text fallback.
       return {
         ok: false,
         safeError: "composer_model_not_configured",
@@ -172,25 +210,16 @@ export async function runReportComposer(opts: {
     };
   }
 
-  // Provider adapter — default Ollama. Cloud only when explicitly overridden.
-  const providerName: ComposerProviderName =
-    opts.providerOverride === "deepseek" ||
-    opts.providerOverride === "openai" ||
-    opts.providerOverride === "ollama" ||
-    opts.providerOverride === "qwen"
-      ? opts.providerOverride
-      : "ollama";
+  const localEndpoint = isLocalOpenAi ? await getLocalOpenAiBaseUrl(null) : null;
   const providerAdapter = resolveComposerProvider(providerName);
-  const isCloud =
-    providerName === "deepseek" || providerName === "qwen" || providerName === "openai";
   const cloudVisionAllowed = opts.cloudVisionAllowed === true && isCloud;
   const policy = assertComposerProviderPolicy({
     provider: providerName,
     aiMode,
     cloudVisionAllowed,
-    // Image bytes are resolved later; policy only needs the count/presence signal.
     imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
     images: undefined,
+    localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
   });
   if (!policy.ok) {
     return {
@@ -206,7 +235,7 @@ export async function runReportComposer(opts: {
     };
   }
 
-  if (providerName === "ollama") {
+  if (isOllama) {
     const guard = validateOllamaUrl(runtime.endpoint, runtime.localOnly);
     if (!guard.ok) {
       return {
@@ -222,9 +251,19 @@ export async function runReportComposer(opts: {
     }
   }
 
-  const textModel =
+  const sessionModel =
     (opts.modelOverride ?? "").trim() ||
-    (isCloud ? defaultModelFor(providerName, "text") || runtime.model : runtime.model);
+    (opts.snapshot.sessionModel ?? "").trim() ||
+    "";
+  const localDefaultModel = isLocalOpenAi ? await getLocalOpenAiDefaultModel() : null;
+  const textModel =
+    sessionModel ||
+    routeModel ||
+    (isCloud
+      ? defaultModelFor(providerName, "text") || runtime.model
+      : isLocalOpenAi
+        ? localDefaultModel || defaultModelFor(providerName, "text") || "bonsai"
+        : runtime.model);
 
   let provenance: ComposerEvidenceProvenance = {
     ...baseProvenance,
@@ -265,13 +304,16 @@ export async function runReportComposer(opts: {
       };
     }
 
-    // Prefer configured vision model; cloud uses registry capability (no Ollama /api/show).
+    // Prefer configured vision model; cloud/local-openai use registry + settings.
     let visionModel =
-      isCloud
-        ? ((opts.modelOverride ?? "").trim() || defaultModelFor(providerName, "vision") || textModel)
+      isCloud || isLocalOpenAi
+        ? (sessionModel ||
+            routeModel ||
+            defaultModelFor(providerName, "vision") ||
+            textModel)
         : (runtime.visionModel || "").trim() || runtime.model;
 
-    if (providerName === "ollama") {
+    if (isOllama) {
       let visionOk = await assertVisionCapableModel({
         endpoint: runtime.endpoint,
         model: visionModel,
@@ -299,7 +341,7 @@ export async function runReportComposer(opts: {
           },
         };
       }
-    } else {
+    } else if (isCloud) {
       const visCap = assertModelSupportsCapability(providerName, visionModel, "vision");
       if (!visCap.ok) {
         return {
@@ -315,12 +357,13 @@ export async function runReportComposer(opts: {
         };
       }
     }
+    // local_openai_compatible: adapter enforces Settings.supportsVision fail-closed.
 
     // Respect canonical runtime settings — never silently inflate numCtx/timeout.
     // If the configured context window is below the clinic minimum for vision
     // drafts, fail with an actionable error instead of mutating admin settings.
     const MIN_VISION_NUM_CTX = 2048;
-    if (providerName === "ollama" && runtime.numCtx < MIN_VISION_NUM_CTX) {
+    if (isOllama && runtime.numCtx < MIN_VISION_NUM_CTX) {
       return {
         ok: false,
         safeError: "composer_num_ctx_insufficient",
@@ -353,7 +396,7 @@ export async function runReportComposer(opts: {
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
       numCtx: runtime.numCtx,
-      endpoint: runtime.endpoint,
+      endpoint: isLocalOpenAi ? (localEndpoint ?? undefined) : runtime.endpoint,
       localOnly: runtime.localOnly,
       // Preserve each resolved image's actual MIME (jpeg/png/webp) — do not coerce to JPEG.
       images: resolved.images.map((img) => ({
@@ -408,14 +451,14 @@ export async function runReportComposer(opts: {
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
       numCtx: runtime.numCtx,
-      endpoint: runtime.endpoint,
+      endpoint: isLocalOpenAi ? (localEndpoint ?? undefined) : runtime.endpoint,
       localOnly: runtime.localOnly,
     });
 
   let text = primary.ok ? primary.text : undefined;
   let model = textModel;
   let fallbackUsed = false;
-  if (!primary.ok && runtime.fallbackModel) {
+  if (!primary.ok && isOllama && runtime.fallbackModel) {
     const fb = await providerAdapter.compose({
       systemPrompt: system,
       userPrompt: user,
@@ -441,7 +484,7 @@ export async function runReportComposer(opts: {
       };
     }
   } else if (!primary.ok) {
-    if (opts.allowDeterministicFallback !== false) {
+    if (opts.allowDeterministicFallback !== false && isOllama) {
       const draft = deterministicComposeFromSnapshot(opts.snapshot, opts.kind);
       return {
         ok: true,
@@ -463,9 +506,9 @@ export async function runReportComposer(opts: {
       ok: false,
       safeError: primary.safeError ?? "compose_failed",
       latencyMs: Date.now() - started,
-      model: runtime.model,
+      model: textModel,
       fallbackUsed: false,
-      provenance: { ...baseProvenance, model: runtime.model, provider: providerName, fallbackUsed: false },
+      provenance: { ...baseProvenance, model: textModel, provider: providerName, fallbackUsed: false },
     };
   }
 

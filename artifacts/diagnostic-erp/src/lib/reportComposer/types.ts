@@ -88,6 +88,12 @@ export type ComposerInputSnapshot = {
     seriesDescription?: string | null;
     caption?: string;
   }>;
+  /**
+   * Session-only provider override for this draft (workspace A/B).
+   * Not part of clinical freshness hashes. Does not mutate global Settings.
+   */
+  sessionProvider?: string;
+  sessionModel?: string;
 };
 
 export const COMPOSER_MAX_SELECTED_KEY_IMAGES = 4;

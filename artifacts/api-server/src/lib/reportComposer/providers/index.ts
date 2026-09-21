@@ -19,6 +19,7 @@ export { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 export { DeepSeekComposerAdapter } from "./deepseekComposerAdapter";
 export { OpenAiComposerAdapter } from "./openaiComposerAdapter";
 export { QwenComposerAdapter } from "./qwenComposerAdapter";
+export { LocalOpenAiCompatibleComposerAdapter } from "./localOpenAiCompatibleComposerAdapter";
 
 export {
   resolveComposerProvider,
@@ -34,3 +35,10 @@ export {
 } from "./deepseekConfig";
 export { qwenConfiguredPublicStatus, QWEN_DEFAULT_MODEL } from "./qwenConfig";
 export { openaiConfiguredPublicStatus } from "./openaiConfig";
+export {
+  localOpenAiConfiguredPublicStatus,
+  ensureLocalOpenAiCompatibleDefaults,
+  LOCAL_OPENAI_COMPATIBLE_ID,
+  LOCAL_OPENAI_DEFAULT_DISPLAY_NAME,
+  LOCAL_OPENAI_DEFAULT_MODEL,
+} from "./localOpenAiCompatibleConfig";

@@ -45,12 +45,10 @@ interface ProviderInfo {
   needsEndpointUrl: boolean;
   defaultModels: string[];
   placeholder: string;
-}
-
-interface SettingsResponse {
-  global: GlobalSettings;
-  providers: Record<string, ProviderInfo>;
-  promptTemplates: string[];
+  displayName?: string | null;
+  supportsVision?: boolean;
+  supportsText?: boolean;
+  execution?: "LOCAL" | "CLOUD";
 }
 
 interface ProviderDraft {
@@ -59,9 +57,19 @@ interface ProviderDraft {
   apiKey: string;
   endpointUrl: string;
   defaultModel: string;
+  displayName: string;
+  supportsVision: boolean;
   showKey: boolean;
   testStatus: "idle" | "testing" | "ok" | "fail";
   testMessage: string;
+  textProbe?: "pass" | "fail" | null;
+  visionProbe?: "pass" | "fail" | null;
+}
+
+interface SettingsResponse {
+  global: GlobalSettings;
+  providers: Record<string, ProviderInfo>;
+  promptTemplates: string[];
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -69,6 +77,10 @@ const PROVIDER_COLORS: Record<string, string> = {
   gemini: "from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20 border-blue-200 dark:border-blue-800",
   anthropic: "from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20 border-orange-200 dark:border-orange-800",
   ollama: "from-purple-50 to-violet-50 dark:from-purple-950/20 dark:to-violet-950/20 border-purple-200 dark:border-purple-800",
+  deepseek: "from-sky-50 to-cyan-50 dark:from-sky-950/20 dark:to-cyan-950/20 border-sky-200 dark:border-sky-800",
+  qwen: "from-rose-50 to-pink-50 dark:from-rose-950/20 dark:to-pink-950/20 border-rose-200 dark:border-rose-800",
+  local_openai_compatible:
+    "from-teal-50 to-cyan-50 dark:from-teal-950/20 dark:to-cyan-950/20 border-teal-200 dark:border-teal-800",
 };
 
 const ALL_ROLES = ["admin", "super_admin", "doctor", "radiologist", "technician", "receptionist"];
@@ -177,6 +189,8 @@ function ProviderCard({
   const color = PROVIDER_COLORS[name] ?? "bg-muted/50 border-muted";
   const models = meta.defaultModels ?? [];
   const needsApiKey = meta.needsApiKey ?? false;
+  const needsEndpointUrl = meta.needsEndpointUrl ?? false;
+  const isLocalCompat = name === "local_openai_compatible";
   const readOnly = syncedFromLocalAi || name === "ollama";
 
   return (
@@ -184,6 +198,9 @@ function ProviderCard({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h3 className="font-semibold text-sm">{meta.label}</h3>
+          {isLocalCompat && (
+            <span className="text-[10px] bg-teal-700 text-white px-1.5 py-0.5 rounded-full font-semibold">LOCAL</span>
+          )}
           {draft.isDefault && (
             <span className="text-[10px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full font-semibold">DEFAULT</span>
           )}
@@ -208,57 +225,86 @@ function ProviderCard({
         </p>
       )}
 
-      {/* API Key or Endpoint URL */}
-      <div className="space-y-1.5">
-        {needsApiKey ? (
-          <>
-            <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
-              <Key size={11} /> API Key
-            </label>
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <input
-                  type={draft.showKey ? "text" : "password"}
-                  value={draft.apiKey}
-                  onChange={(e) => onChange({ apiKey: e.target.value })}
-                  placeholder={draft.apiKey ? "••••••••••••••••" : `Enter ${meta.label} API key (${meta.placeholder})`}
-                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono"
-                />
-                <button
-                  type="button"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
-                  onClick={() => onChange({ showKey: !draft.showKey })}
-                >
-                  {draft.showKey ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
+      {isLocalCompat && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground">Display name</label>
+          <input
+            type="text"
+            value={draft.displayName}
+            onChange={(e) => onChange({ displayName: e.target.value })}
+            placeholder="e.g. Bonsai 2 27B"
+            className="w-full h-9 px-3 text-xs rounded-lg border bg-background"
+            data-testid="local-openai-display-name"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Shown in the radiology workspace selector. Provider id stays vendor-neutral.
+          </p>
+        </div>
+      )}
+
+      {/* Endpoint URL — required for Ollama + Local OpenAI-Compatible (+ optional for cloud OpenAI-compat) */}
+      {(needsEndpointUrl || isLocalCompat) && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+            <Key size={11} /> Base URL / Endpoint
+          </label>
+          <input
+            type="text"
+            value={draft.endpointUrl}
+            onChange={(e) => { if (!readOnly) onChange({ endpointUrl: e.target.value }); }}
+            readOnly={readOnly}
+            disabled={readOnly}
+            placeholder={meta.placeholder || "http://<host>:8080/v1"}
+            className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono disabled:opacity-70"
+            data-testid={isLocalCompat ? "local-openai-endpoint" : undefined}
+          />
+          {!readOnly && (
+            <p className="text-[10px] text-muted-foreground">
+              {isLocalCompat
+                ? "OpenAI-compatible base URL (include /v1). Leave blank to keep existing."
+                : "Leave blank to keep existing URL. Only updated when you type a new one."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* API Key — required for cloud; optional for Local OpenAI-Compatible */}
+      {(needsApiKey || isLocalCompat) && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
+            <Key size={11} /> API Key{isLocalCompat ? " (optional)" : ""}
+          </label>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <input
+                type={draft.showKey ? "text" : "password"}
+                value={draft.apiKey}
+                onChange={(e) => onChange({ apiKey: e.target.value })}
+                placeholder={
+                  draft.apiKey
+                    ? "••••••••••••••••"
+                    : isLocalCompat
+                      ? "Optional — leave blank if server does not require auth"
+                      : `Enter ${meta.label} API key (${meta.placeholder})`
+                }
+                className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono"
+              />
+              <button
+                type="button"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                onClick={() => onChange({ showKey: !draft.showKey })}
+              >
+                {draft.showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
             </div>
-            <p className="text-[10px] text-muted-foreground">Leave blank to keep existing key. Only updated when you type a new one.</p>
-          </>
-        ) : (
-          <>
-            <label className="text-xs font-semibold text-muted-foreground flex items-center gap-1">
-              <Key size={11} /> Endpoint URL
-            </label>
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <input
-                  type="text"
-                  value={draft.endpointUrl}
-                  onChange={(e) => { if (!readOnly) onChange({ endpointUrl: e.target.value }); }}
-                  readOnly={readOnly}
-                  disabled={readOnly}
-                  placeholder={draft.endpointUrl ? draft.endpointUrl : `Enter ${meta.label} endpoint (${meta.placeholder})`}
-                  className="w-full h-9 px-3 pr-9 text-xs rounded-lg border bg-background font-mono disabled:opacity-70"
-                />
-              </div>
-            </div>
-            {!readOnly && (
-              <p className="text-[10px] text-muted-foreground">Leave blank to keep existing URL. Only updated when you type a new one.</p>
-            )}
-          </>
-        )}
-      </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {isLocalCompat
+              ? "Optional. Secrets are never returned to the UI after save."
+              : "Leave blank to keep existing key. Only updated when you type a new one."}
+          </p>
+        </div>
+      )}
 
       {/* Default Model */}
       <div className="space-y-1.5">
@@ -285,10 +331,24 @@ function ProviderCard({
               onChange={(e) => onChange({ defaultModel: e.target.value })}
               placeholder="or type custom model name"
               className="w-48 h-9 px-3 text-xs rounded-lg border bg-background font-mono"
+              data-testid={isLocalCompat ? "local-openai-model" : undefined}
             />
           )}
         </div>
       </div>
+
+      {isLocalCompat && (
+        <label className="flex items-center gap-2 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={draft.supportsVision}
+            onChange={(e) => onChange({ supportsVision: e.target.checked })}
+            className="w-3.5 h-3.5"
+            data-testid="local-openai-supports-vision"
+          />
+          <span>Vision capable (selected-image drafts). Uncheck to fail closed on images.</span>
+        </label>
+      )}
 
       {/* Actions */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -314,6 +374,16 @@ function ProviderCard({
         {draft.testStatus === "fail" && (
           <span className="flex items-center gap-1 text-xs text-red-600 font-medium max-w-xs truncate">
             <XCircle size={13} /> {draft.testMessage || "Connection failed"}
+          </span>
+        )}
+        {isLocalCompat && draft.textProbe && (
+          <span className={`text-[10px] font-semibold ${draft.textProbe === "pass" ? "text-green-600" : "text-red-600"}`}>
+            Text: {draft.textProbe.toUpperCase()}
+          </span>
+        )}
+        {isLocalCompat && draft.visionProbe && (
+          <span className={`text-[10px] font-semibold ${draft.visionProbe === "pass" ? "text-green-600" : "text-red-600"}`}>
+            Vision: {draft.visionProbe.toUpperCase()}
           </span>
         )}
 
@@ -722,9 +792,13 @@ export function AiReportingPanel() {
         apiKey: "",
         endpointUrl: pd.endpointUrl ?? "",
         defaultModel,
+        displayName: pd.displayName ?? (p === "local_openai_compatible" ? "Bonsai 2 27B" : ""),
+        supportsVision: pd.supportsVision !== false,
         showKey: false,
         testStatus: "idle",
         testMessage: "",
+        textProbe: null,
+        visionProbe: null,
       };
     }
     setProviderDrafts(newDrafts);
@@ -835,13 +909,24 @@ export function AiReportingPanel() {
   ]).filter((m) => !lastDiscoveredTags.includes(m));
 
   function handleSave() {
-    const providers: Record<string, Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage">> = {};
+    const providers: Record<
+      string,
+      Omit<ProviderDraft, "showKey" | "testStatus" | "testMessage" | "textProbe" | "visionProbe">
+    > = {};
     for (const p of Object.keys(providerDrafts)) {
       // Ollama endpoint/model are owned by Local AI (clinic_settings) and synced
       // server-side — never overwrite them from the multi-provider form.
       if (p === "ollama") continue;
       const d = providerDrafts[p];
-      providers[p] = { isEnabled: d.isEnabled, isDefault: d.isDefault, apiKey: d.apiKey, endpointUrl: d.endpointUrl, defaultModel: d.defaultModel };
+      providers[p] = {
+        isEnabled: d.isEnabled,
+        isDefault: d.isDefault,
+        apiKey: d.apiKey,
+        endpointUrl: d.endpointUrl,
+        defaultModel: d.defaultModel,
+        displayName: d.displayName,
+        supportsVision: d.supportsVision,
+      };
     }
     saveMutation.mutate({ global: globalDraft, providers });
   }
@@ -849,30 +934,47 @@ export function AiReportingPanel() {
   async function handleTestProvider(name: string) {
     setProviderDrafts((prev) => ({
       ...prev,
-      [name]: { ...prev[name], testStatus: "testing", testMessage: "" },
+      [name]: {
+        ...prev[name],
+        testStatus: "testing",
+        testMessage: "",
+        textProbe: null,
+        visionProbe: null,
+      },
     }));
     try {
-      const payload: Record<string, unknown> = { provider: name, model: providerDrafts[name].defaultModel };
+      const payload: Record<string, unknown> = {
+        provider: name,
+        model: providerDrafts[name].defaultModel,
+      };
       if (name === "ollama") {
         payload.endpointUrl = providerDrafts[name].endpointUrl || undefined;
       } else {
         payload.apiKey = providerDrafts[name].apiKey || undefined;
-        // Qwen / DeepSeek / OpenAI need the OpenAI-compatible base URL; send draft
-        // endpoint when present so Test Connection matches Save + env fallbacks.
         if (providerDrafts[name].endpointUrl?.trim()) {
           payload.endpointUrl = providerDrafts[name].endpointUrl.trim();
         }
       }
-      const res = await api.post<{ success: boolean; response?: string; error?: string; availableModels?: string[] }>(
-        "/api/ai-reporting/test-provider",
-        payload,
-      );
+      if (name === "local_openai_compatible") {
+        payload.probeVision = true;
+      }
+      const res = await api.post<{
+        success: boolean;
+        response?: string;
+        error?: string;
+        availableModels?: string[];
+        text?: "pass" | "fail";
+        vision?: "pass" | "fail" | "skipped";
+      }>("/api/ai-reporting/test-provider", payload);
       setProviderDrafts((prev) => ({
         ...prev,
         [name]: {
           ...prev[name],
           testStatus: res.success ? "ok" : "fail",
           testMessage: res.error ?? res.response ?? "",
+          textProbe: res.text ?? (res.success ? "pass" : "fail"),
+          visionProbe:
+            res.vision === "pass" || res.vision === "fail" ? res.vision : null,
         },
       }));
     } catch (e: unknown) {
@@ -882,6 +984,7 @@ export function AiReportingPanel() {
           ...prev[name],
           testStatus: "fail",
           testMessage: e instanceof Error ? e.message : "Connection failed",
+          textProbe: "fail",
         },
       }));
     }

@@ -325,9 +325,50 @@ router.get("/settings", async (req, res): Promise<void> => {
       .orderBy(aiPromptTemplatesTable.modality, aiPromptTemplatesTable.name),
   ]);
 
+  // Soft-seed Local OpenAI-Compatible defaults + report_composer routes (no migration).
+  try {
+    const { ensureLocalOpenAiCompatibleDefaults } = await import(
+      "../lib/reportComposer/providers/localOpenAiCompatibleConfig"
+    );
+    await ensureLocalOpenAiCompatibleDefaults();
+  } catch {
+    /* non-fatal */
+  }
+
+  // Re-load providers after soft-seed so the new row appears.
+  const providersFresh = await loadProviderConfigs();
+
   const providersOut: Record<string, object> = {};
-  for (const p of providers) {
+  for (const p of providersFresh) {
     const meta = BUILTIN_PROVIDER_CONFIGS[p.provider];
+    let displayName: string | null = null;
+    let supportsVision = true;
+    let supportsText = true;
+    let execution: "LOCAL" | "CLOUD" =
+      p.provider === "ollama" || p.provider === "local_openai_compatible" ? "LOCAL" : "CLOUD";
+    if (p.provider === "local_openai_compatible") {
+      const [row] = await db
+        .select({ settingsJson: aiProviderSettingsTable.settingsJson })
+        .from(aiProviderSettingsTable)
+        .where(eq(aiProviderSettingsTable.provider, "local_openai_compatible"))
+        .limit(1);
+      if (row?.settingsJson) {
+        try {
+          const parsed = JSON.parse(row.settingsJson) as {
+            displayName?: string;
+            supportsVision?: boolean;
+            supportsText?: boolean;
+          };
+          displayName = parsed.displayName?.trim() || "Bonsai 2 27B";
+          supportsVision = parsed.supportsVision !== false;
+          supportsText = parsed.supportsText !== false;
+        } catch {
+          displayName = "Bonsai 2 27B";
+        }
+      } else {
+        displayName = "Bonsai 2 27B";
+      }
+    }
     providersOut[p.provider] = {
       provider: p.provider,
       isEnabled: p.isEnabled ?? false,
@@ -341,6 +382,10 @@ router.get("/settings", async (req, res): Promise<void> => {
       needsEndpointUrl: meta?.needsEndpointUrl ?? false,
       defaultModels: meta?.defaultModels ?? [],
       placeholder: meta?.placeholder ?? "",
+      displayName,
+      supportsVision,
+      supportsText,
+      execution,
     };
   }
 
@@ -386,6 +431,10 @@ router.post("/settings", async (req, res): Promise<void> => {
       apiKey?: string;
       defaultModel?: string;
       endpointUrl?: string;
+      displayName?: string;
+      supportsVision?: boolean;
+      supportsText?: boolean;
+      jsonMode?: boolean;
     }>;
   };
 
@@ -434,6 +483,27 @@ router.post("/settings", async (req, res): Promise<void> => {
     if (pd.endpointUrl && pd.endpointUrl.trim().length > 0) {
       update.endpointUrl = pd.endpointUrl.trim();
     }
+    if (provName === "local_openai_compatible") {
+      const prevJson = existing[0]?.settingsJson
+        ? (() => {
+            try {
+              return JSON.parse(existing[0].settingsJson!) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })()
+        : {};
+      update.settingsJson = JSON.stringify({
+        ...prevJson,
+        displayName:
+          typeof pd.displayName === "string" && pd.displayName.trim()
+            ? pd.displayName.trim()
+            : (prevJson.displayName as string) || "Bonsai 2 27B",
+        supportsVision: pd.supportsVision !== false,
+        supportsText: pd.supportsText !== false,
+        jsonMode: pd.jsonMode === true ? true : (prevJson.jsonMode === true),
+      });
+    }
 
     if (existing[0]) {
       if (Object.keys(update).length > 0) {
@@ -460,7 +530,13 @@ router.post("/test-provider", async (req, res): Promise<void> => {
   const sReq = req as StaffAuthRequest;
   if (!canConfigure(sReq)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
 
-  const { provider, apiKey, model, endpointUrl } = req.body as { provider: string; apiKey?: string; model?: string; endpointUrl?: string };
+  const { provider, apiKey, model, endpointUrl, probeVision } = req.body as {
+    provider: string;
+    apiKey?: string;
+    model?: string;
+    endpointUrl?: string;
+    probeVision?: boolean;
+  };
 
   if (!BUILTIN_PROVIDER_NAMES.includes(provider)) {
     res.status(400).json({ error: "Unknown provider." }); return;
@@ -475,10 +551,12 @@ router.post("/test-provider", async (req, res): Promise<void> => {
       const stored = await getProviderEndpointUrl(provider);
       if (stored) {
         url = stored;
-      } else if (provider === "deepseek" || provider === "qwen" || provider === "openai") {
-        // Same resolver as createAiProvider / Report Composer: env override, then official default.
-        // Without this, Model Studio "Test Connection" fails with "No endpoint URL configured"
-        // even when QWEN_BASE_URL (or vendor default) is available server-side.
+      } else if (
+        provider === "deepseek" ||
+        provider === "qwen" ||
+        provider === "openai" ||
+        provider === "local_openai_compatible"
+      ) {
         const { readEnvBaseUrl, COMPATIBLE_PROVIDER_DEFAULTS } = await import("@workspace/ai-providers");
         url = (readEnvBaseUrl(provider) || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.baseURL || "").trim();
       }
@@ -510,6 +588,16 @@ router.post("/test-provider", async (req, res): Promise<void> => {
     }
   }
 
+  // Local OpenAI-Compatible: optional API key (DB/env); empty allowed.
+  if (provider === "local_openai_compatible" && !key) {
+    const stored = await getProviderApiKey(provider);
+    if (stored) key = stored;
+    else {
+      const { readEnvApiKey } = await import("@workspace/ai-providers");
+      key = readEnvApiKey(provider) ?? "";
+    }
+  }
+
   // Resolve which model to test — submitted (validated, verbatim) or the stored
   // default when omitted. Never a hard-coded probe model when a model is given.
   const hasModelField = Object.prototype.hasOwnProperty.call((req.body ?? {}) as object, "model");
@@ -524,13 +612,23 @@ router.post("/test-provider", async (req, res): Promise<void> => {
   }
 
   const result = await instance.testConnection(modelToTest);
+  let visionResult: "pass" | "fail" | "skipped" = "skipped";
+  if (probeVision === true && provider === "local_openai_compatible") {
+    const maybeVision = instance as { testVision?: (model?: string) => Promise<{ ok: boolean; message: string }> };
+    if (typeof maybeVision.testVision === "function") {
+      const v = await maybeVision.testVision(modelToTest ?? undefined);
+      visionResult = v.ok ? "pass" : "fail";
+    }
+  }
+
   res.json({
     success: result.ok,
-    // Echo the model actually tested so the UI can confirm the selection was honoured.
     model: modelToTest ?? null,
     response: result.message.substring(0, 200),
     availableModels: result.availableModels,
     error: result.ok ? undefined : result.message,
+    text: result.ok ? "pass" : "fail",
+    vision: visionResult,
   });
 });
 
