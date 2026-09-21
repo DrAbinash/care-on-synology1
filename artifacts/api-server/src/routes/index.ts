@@ -93,6 +93,7 @@ import { websiteRouter } from "./website";
 import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
+import { orthancPurgeRouter } from "./orthancPurge";
 import internalRadiologyRouter from "./internal-radiology";
 import internalReportingStudioRouter from "./internal-reporting-studio";
 import dicomAgentRouter from "./dicom-agent";
@@ -748,6 +749,9 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
+// Orthanc storage purge — admin-only (destructive). Separate from /radiology
+// permission so non-admins cannot gain purge via Settings → Users toggles.
+router.use("/radiology", requireStaffAuth, requireAdminRole, orthancPurgeRouter);
 // Phase P3 — AI clinical workflow (scheduler/policy/preferences/draft). Every
 // endpoint is internally gated by the ff_radiology_ai master flag + per-scope
 // policy (default OFF), so mounting it exposes nothing until an admin enables it.
