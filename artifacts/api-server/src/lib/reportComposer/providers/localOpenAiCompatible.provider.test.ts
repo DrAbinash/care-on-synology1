@@ -300,6 +300,38 @@ describe("session override snapshot fields", () => {
     expect(snap.sessionModel).toBe("bonsai");
   });
 
+  it("session provider/model are excluded from clinical inputHash", async () => {
+    const { computeSnapshotHashes } = await import("../snapshot");
+    const base = {
+      findings: "disc bulge",
+      impression: "radiculopathy",
+      recommendation: "",
+      clinicalHistory: "",
+      technique: "MRI",
+      observations: [] as [],
+      modality: "MRI",
+      region: "LS Spine",
+    };
+    const h1 = computeSnapshotHashes(parseComposerSnapshot(base));
+    const h2 = computeSnapshotHashes(
+      parseComposerSnapshot({
+        ...base,
+        sessionProvider: "local_openai_compatible",
+        sessionModel: "bonsai",
+      }),
+    );
+    const h3 = computeSnapshotHashes(
+      parseComposerSnapshot({
+        ...base,
+        sessionProvider: "ollama",
+        sessionModel: "qwen3:14b",
+      }),
+    );
+    expect(h1.inputHash).toBe(h2.inputHash);
+    expect(h2.inputHash).toBe(h3.inputHash);
+    expect(h1.reportRevision).toBe(h2.reportRevision);
+  });
+
   it("does not infer vision merely from model name for local provider", () => {
     expect(modelSupportsVision("local_openai_compatible", "some-random-vl-name")).toBe(false);
     expect(modelSupportsVision("local_openai_compatible", "bonsai")).toBe(true);
