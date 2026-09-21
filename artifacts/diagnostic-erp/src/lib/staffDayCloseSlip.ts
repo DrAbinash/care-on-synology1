@@ -460,9 +460,24 @@ export function autoPrintStaffDayClose(
 ): void {
   const w = openStaffDayClosePrint(c, clinic, staffLabel);
   if (!w) return;
-  w.onload = () => {
-    w.focus();
-    w.print();
-    setTimeout(() => w.close(), 800);
+  const runPrint = () => {
+    try {
+      w.focus();
+      w.print();
+    } catch {
+      /* print UI may already be open */
+    }
+    setTimeout(() => {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+    }, 800);
   };
+  if (w.document.readyState === "complete") {
+    runPrint();
+  } else {
+    w.onload = runPrint;
+  }
 }

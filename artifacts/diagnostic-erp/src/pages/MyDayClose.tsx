@@ -23,6 +23,7 @@ import {
   type StaffPrintActivity,
   type StaffSlipClinic,
 } from "@/lib/staffDayCloseSlip";
+import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
 
 type MethodTotals = {
   cash: number; upi: number; card: number; cheque: number; other: number;
@@ -226,29 +227,34 @@ export default function MyDayClose() {
       } else {
         toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
       }
-      setConfirmOpen(false);
-      setVarianceNote("");
-      setNotes("");
-      setDenomCounts(EMPTY_DENOMS);
-      setDenomOverrideReason("");
-      qc.invalidateQueries({ queryKey: ["my-day-close-preview"] });
-      qc.invalidateQueries({ queryKey: ["my-day-close-list"] });
-      qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
-      qc.invalidateQueries({ queryKey: ["drawer-status"] });
-      qc.invalidateQueries({ queryKey: ["my-drawer-status"] });
-      if (clinicQ.data?.dayCloseAutoPrint !== false) {
-        autoPrintStaffDayClose(
-          { ...closure, userName: closure.userName ?? myName },
-          clinicQ.data ?? {},
-          myName,
-        );
-      }
-      // Defer reload so the print window can open before the page unloads.
-      setTimeout(() => window.location.reload(), 600);
+      const shouldPrint = clinicQ.data?.dayCloseAutoPrint !== false;
+      const clinic = clinicQ.data ?? {};
+      const slip = { ...closure, userName: closure.userName ?? myName };
+      // Close confirm first; defer print + reload so Radix can clear body pointer-events.
+      dismissDialogThen(setConfirmOpen, () => {
+        setVarianceNote("");
+        setNotes("");
+        setDenomCounts(EMPTY_DENOMS);
+        setDenomOverrideReason("");
+        qc.invalidateQueries({ queryKey: ["my-day-close-preview"] });
+        qc.invalidateQueries({ queryKey: ["my-day-close-list"] });
+        qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
+        qc.invalidateQueries({ queryKey: ["drawer-status"] });
+        qc.invalidateQueries({ queryKey: ["my-drawer-status"] });
+        if (shouldPrint) {
+          autoPrintStaffDayClose(slip, clinic, myName);
+        }
+        // Give print window time to open before unload.
+        setTimeout(() => window.location.reload(), shouldPrint ? 900 : 200);
+      });
     },
     onError: (e: Error) => toast({ title: "Close failed", description: e.message, variant: "destructive" }),
   });
 
+  const closeConfirmDialog = (open: boolean) => {
+    setConfirmOpen(open);
+    if (!open) restoreBodyPointerEvents();
+  };
   const printClosure = async (c: MyClose) => {
     setPrintingId(c.id);
     try {
@@ -732,7 +738,7 @@ export default function MyDayClose() {
       </Card>
 
       {/* Confirm dialog */}
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Dialog open={confirmOpen} onOpenChange={closeConfirmDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -775,7 +781,7 @@ export default function MyDayClose() {
             </p>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => closeConfirmDialog(false)}>Cancel</Button>
             <Button
               onClick={() => closeMut.mutate()}
               disabled={closeMut.isPending}

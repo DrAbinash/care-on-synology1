@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import StaffDayCloseDialog, { type StaffWindowBill } from "@/components/StaffDayCloseDialog";
+import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
 
 type MethodTotals = { cash: number; upi: number; card: number; cheque: number; other: number; total: number; count: number };
 type StaffRow = MethodTotals & { userId: number | null; userName: string };
@@ -368,7 +369,27 @@ function openReportWindow(c: Closure, clinic: ClinicLite) {
 function autoPrintSlip(c: Closure, clinic: ClinicLite) {
   const w = openReportWindow(c, clinic);
   if (!w) return;
-  w.onload = () => { w.focus(); w.print(); setTimeout(() => w.close(), 800); };
+  const runPrint = () => {
+    try {
+      w.focus();
+      w.print();
+    } catch {
+      /* print UI may already be open */
+    }
+    setTimeout(() => {
+      try {
+        w.close();
+      } catch {
+        /* ignore */
+      }
+    }, 800);
+  };
+  // document.write + close often fires load before onload is assigned.
+  if (w.document.readyState === "complete") {
+    runPrint();
+  } else {
+    w.onload = runPrint;
+  }
 }
 
 function downloadReportPdf(c: Closure, clinic: ClinicLite) {
@@ -520,17 +541,25 @@ export default function DayClose() {
       }),
     onSuccess: (closure) => {
       toast({ title: "Day closed", description: `Variance: ${inr(n(closure.variance))}` });
-      setConfirmOpen(false);
-      setVarianceNote("");
-      qc.invalidateQueries({ queryKey: ["day-close-preview"] });
-      qc.invalidateQueries({ queryKey: ["day-close-list"] });
-      if (clinicQ.data?.dayCloseAutoPrint !== false) {
-        autoPrintSlip(closure, clinicQ.data ?? {});
-      }
+      const shouldPrint = clinicQ.data?.dayCloseAutoPrint !== false;
+      const clinic = clinicQ.data ?? {};
+      // Close confirm FIRST, then defer print — opening the native print dialog
+      // while Radix Dialog is still tearing down leaves body pointer-events:none
+      // and freezes Cancel / X / Confirm.
+      dismissDialogThen(setConfirmOpen, () => {
+        setVarianceNote("");
+        qc.invalidateQueries({ queryKey: ["day-close-preview"] });
+        qc.invalidateQueries({ queryKey: ["day-close-list"] });
+        if (shouldPrint) autoPrintSlip(closure, clinic);
+      });
     },
     onError: (e: Error) => toast({ title: "Close failed", description: e.message, variant: "destructive" }),
   });
 
+  const closeConfirmDialog = (open: boolean) => {
+    setConfirmOpen(open);
+    if (!open) restoreBodyPointerEvents();
+  };
   const reopenMut = useMutation<Closure, Error, { id: number; reason: string }>({
     mutationFn: (vars) =>
       api.post<Closure>(`/api/day-close/${vars.id}/reopen`, { reason: vars.reason }),
@@ -1154,7 +1183,7 @@ export default function DayClose() {
       {/* ── Dialogs ─────────────────────────────────────────────────────────── */}
 
       {/* Confirm close */}
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Dialog open={confirmOpen} onOpenChange={closeConfirmDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1177,7 +1206,7 @@ export default function DayClose() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => closeConfirmDialog(false)}>Cancel</Button>
             <Button onClick={() => closeMut.mutate()} disabled={closeMut.isPending} className="bg-blue-700 hover:bg-blue-800">
               {closeMut.isPending ? "Closing..." : "Confirm & Close"}
             </Button>
