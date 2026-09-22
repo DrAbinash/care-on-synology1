@@ -2,7 +2,10 @@ import { describe, expect, test, vi } from "vitest";
 
 vi.mock("@workspace/db", () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn() } }));
 vi.mock("../email", () => ({ getTransporter: vi.fn(), getEmailSettings: vi.fn() }));
-vi.mock("../lib/pacs/billingVsPacsSummary", () => ({ buildBillingVsPacsSummary: vi.fn() }));
+vi.mock("../lib/pacs/billingVsPacsSummary", () => ({
+  buildBillingVsPacsSummary: vi.fn(),
+  verifyBillingVsPacsLinks: vi.fn(),
+}));
 vi.mock("../lib/pacs/modalityBillingSummary", () => ({
   buildModalityBillingSummary: vi.fn(),
   listModalityBills: vi.fn(),
@@ -25,12 +28,13 @@ function routeStack(path: string, method: "get" | "post" = "get") {
 
 describe("My Daily Summary clinic-wide KPIs — admin gate", () => {
   test.each([
-    "/billing-vs-pacs",
-    "/modality-billing",
-    "/modality-bills",
-    "/low-stock",
-  ])("%s is wired [requireAdminRole, handler]", (path) => {
-    const stack = routeStack(path);
+    ["/billing-vs-pacs", "get"],
+    ["/billing-vs-pacs/verify", "post"],
+    ["/modality-billing", "get"],
+    ["/modality-bills", "get"],
+    ["/low-stock", "get"],
+  ] as const)("%s is wired [requireAdminRole, handler]", (path, method) => {
+    const stack = routeStack(path, method);
     expect(stack).toHaveLength(2);
     expect(stack[0].handle).toBe(requireAdminRole);
   });
