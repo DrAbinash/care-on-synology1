@@ -2007,9 +2007,9 @@ export default function MyDailySummary() {
   // staff's post-closure activity, not the logged-in admin's own (which was
   // the bug — the box always queried "my-post-closure-activity" regardless
   // of staffFilter, so it silently showed the admin's own empty data instead
-  // of the selected staff's). "All Staff / Total" has no single staff to
-  // scope to, so the box is skipped in that mode.
-  const isDrawerClosed = drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened";
+  // of the selected staff's). On "All Staff / Total" we still show the
+  // logged-in user's own post-closure so admins who bill after close get the
+  // loud same-day warning.
   const postClosureStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : myName;
   const postClosureQ = useQuery<PostClosureActivity>({
     queryKey: ["post-closure-activity", postClosureStaffName],
@@ -2017,7 +2017,6 @@ export default function MyDailySummary() {
       isSuperAdmin && staffFilter.trim()
         ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
         : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
-    enabled: !isSuperAdmin || !!staffFilter.trim(),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2485,6 +2484,14 @@ export default function MyDailySummary() {
         </SummaryCollapsibleBox>
       )}
 
+      {/* ── Post-closure (outside summary gate — must stay visible when s is loading) ── */}
+      {postClosureQ.data && (
+        <PostClosureActivityBox
+          data={postClosureQ.data}
+          scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
+        />
+      )}
+
       {/* ── Loading State ── */}
       {isLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
@@ -2751,14 +2758,6 @@ export default function MyDailySummary() {
               status={drawerQ.data}
               isOwner={isOwner}
               staffLabel={drawerStaffName}
-            />
-          )}
-
-          {/* ── Post-Closure Activity Box ── */}
-          {postClosureQ.data && (
-            <PostClosureActivityBox
-              data={postClosureQ.data}
-              scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
             />
           )}
 
