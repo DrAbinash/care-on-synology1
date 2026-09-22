@@ -31,7 +31,7 @@ import {
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
@@ -1822,6 +1822,28 @@ radiologyRouter.post("/pacs-settings", async (req, res) => {
       changedBy,
       changedByName,
     });
+  }
+
+  // Drop shadow rows when writing the canonical category for keys that historically
+  // were saved under the wrong category (unique is key+category, so duplicates can
+  // silently disagree with pacsConfig / presentationTemplateStore readers).
+  const CANONICAL_SETTINGS: Record<string, string> = {
+    report_presentation_template: "report",
+    report_presentation_template_patient: "report",
+    report_presentation_template_referrer: "report",
+    orthanc_http_port: "orthanc",
+    orthanc_ae_title: "orthanc",
+    orthanc_ip: "orthanc",
+    orthanc_dicom_port: "orthanc",
+    orthanc_dicomweb_url: "orthanc",
+    orthanc_wado_url: "orthanc",
+    orthanc_auto_retention_enabled: "orthanc",
+  };
+  const canonicalCategory = CANONICAL_SETTINGS[key];
+  if (canonicalCategory && category === canonicalCategory) {
+    await db
+      .delete(pacsSettingsTable)
+      .where(and(eq(pacsSettingsTable.key, key), ne(pacsSettingsTable.category, canonicalCategory)));
   }
 
   // Premium Report master switch → canonical presentation template (R1.1/R1.2).
