@@ -16,7 +16,7 @@ import {
   TEST_CANCEL_REFUND_NOTES_PREFIX,
 } from "../lib/dailySummaryCollectible";
 import { buildStaffActivityRows, BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
-import { buildBillingVsPacsSummary } from "../lib/pacs/billingVsPacsSummary";
+import { buildBillingVsPacsSummary, verifyBillingVsPacsLinks } from "../lib/pacs/billingVsPacsSummary";
 import {
   buildModalityBillingSummary,
   listModalityBills,
@@ -1361,6 +1361,32 @@ myDailySummaryRouter.get("/billing-vs-pacs", requireAdminRole, async (req: Staff
   } catch (err) {
     req.log.error({ err, from, to }, "billing-vs-pacs summary failed");
     return res.status(500).json({ error: "Failed to load imaging reconciliation summary" });
+  }
+});
+
+// POST /billing-vs-pacs/verify — auto-link unlinked PACS rows to billed studies, then re-summarize
+myDailySummaryRouter.post("/billing-vs-pacs/verify", requireAdminRole, async (req: StaffAuthRequest, res) => {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const body = (req.body ?? {}) as { from?: string; to?: string };
+  const from = typeof body.from === "string" ? body.from : today;
+  const to = typeof body.to === "string" ? body.to : from;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Invalid date format — use YYYY-MM-DD" });
+  }
+  if (from > to) {
+    return res.status(400).json({ error: "from must be on or before to" });
+  }
+
+  try {
+    const actor = req.staffSession?.subjectName
+      ? `verify:${req.staffSession.subjectName}`
+      : "billing-vs-pacs-verify";
+    const result = await verifyBillingVsPacsLinks(from, to, actor);
+    return res.json(result);
+  } catch (err) {
+    req.log.error({ err, from, to }, "billing-vs-pacs verify failed");
+    return res.status(500).json({ error: "Failed to verify billed vs PACS links" });
   }
 });
 

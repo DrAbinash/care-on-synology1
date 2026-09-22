@@ -3266,7 +3266,7 @@ export default function MyDailySummary() {
             icon={<ScanSearch size={14} className="text-violet-600" />}
             headerRight={
               <Link href="/radiology/my-collection?filter=unbilled" className="text-[11px] font-semibold text-primary hover:underline whitespace-nowrap">
-                Review in Match Center →
+                Match Center →
               </Link>
             }
             testId="imaging-vs-pacs"
