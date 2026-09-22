@@ -19,6 +19,11 @@ import {
 } from "@/components/ui/dialog";
 import StaffDayCloseDialog, { type StaffWindowBill } from "@/components/StaffDayCloseDialog";
 import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
+import {
+  SameDayAfterCloseBadge,
+  StaffPostClosureOverviewBanner,
+} from "@/components/PostClosureLoudAlert";
+import { Link } from "wouter";
 
 type MethodTotals = { cash: number; upi: number; card: number; cheque: number; other: number; total: number; count: number };
 type StaffRow = MethodTotals & { userId: number | null; userName: string };
@@ -44,6 +49,16 @@ type StaffUserStatus = {
   handoverNote: string | null;
   /** How many drawer closes this staff has on IST today (may include prior overall windows). */
   todayCloseCount?: number;
+  postClosure?: {
+    billCount: number;
+    billTotal: number;
+    paymentCount: number;
+    paymentTotal: number;
+    sameDayBillCount: number;
+    sameDayBillTotal: number;
+    sameDayPaymentCount: number;
+    sameDayPaymentTotal: number;
+  } | null;
 };
 
 type TodayStaffClose = {
@@ -69,6 +84,7 @@ type StaffStatusResult = {
   lastOverallClose: string | null;
   todayIst?: string;
   todayCloses?: TodayStaffClose[];
+  sameDayAfterPriorClose?: { billCount: number; billTotal: number };
 };
 
 type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
@@ -85,6 +101,16 @@ type Preview = {
   suspenseTotal?: number;
   suspenseCount?: number;
   suspenseItems?: SuspenseItem[];
+  sameDayAfterPriorClose?: { billCount: number; billTotal: number };
+  sameDayAfterPriorCloseBills?: Array<{
+    id: number;
+    billNumber: string;
+    patientName: string;
+    totalAmount: number;
+    paidAmount: number;
+    createdAt: string;
+    sameDayAfterPriorClose: true;
+  }>;
 };
 
 type RefundDetail = { id: number; billNumber: string; patientName: string; totalAmount: number; refundAmount: number };
@@ -145,10 +171,12 @@ type StaffCloseDetail = {
 type PostClosureActivity = {
   closedAt: string | null;
   closureId?: number;
-  bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string }[];
-  payments: { id: number; billId: number; amount: number; method: string; createdAt: string }[];
+  bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string; sameDayAfterClose?: boolean }[];
+  payments: { id: number; billId: number; amount: number; method: string; createdAt: string; sameDayAfterClose?: boolean }[];
   billTotal: number;
   paymentTotal: number;
+  sameDayBillCount?: number;
+  sameDayBillTotal?: number;
 };
 
 type ClinicLite = { name?: string; dayCloseAutoPrint?: boolean };
@@ -621,6 +649,9 @@ export default function DayClose() {
 
   const openStaffCount = staffStatusQ.data?.users.filter((u) => !u.isClosed || u.drawerStatus === "reopened").length ?? 0;
   const expected = previewQ.data?.expected;
+  const staffWithPostClosure = (staffStatusQ.data?.users ?? [])
+    .filter((u) => u.postClosure && (u.postClosure.billCount > 0 || u.postClosure.paymentCount > 0))
+    .map((u) => ({ userName: u.userName, postClosure: u.postClosure! }));
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto min-w-0">
@@ -633,6 +664,10 @@ export default function DayClose() {
           <RefreshCw size={14} className={`mr-2 ${previewQ.isFetching ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
+
+      {isOwner && staffWithPostClosure.length > 0 && (
+        <StaffPostClosureOverviewBanner rows={staffWithPostClosure} />
+      )}
 
       {/* ── Staff Drawer Close Reconciliation Table (owner/admin only) ─────── */}
       {isOwner && staffStatusQ.data && (
@@ -649,6 +684,11 @@ export default function DayClose() {
                     {mismatched > 0 && (
                       <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300 text-xs font-bold flex items-center gap-1">
                         <AlertTriangle size={10} /> {mismatched} mismatch
+                      </span>
+                    )}
+                    {staffWithPostClosure.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-orange-600 text-white text-xs font-black flex items-center gap-1 uppercase tracking-wide">
+                        <AlertTriangle size={10} /> {staffWithPostClosure.length} billed after close
                       </span>
                     )}
                     <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
@@ -721,6 +761,14 @@ export default function DayClose() {
                                 <div className="text-[10px] text-muted-foreground mt-0.5">
                                   Closed {u.todayCloseCount}× today
                                   {!u.isClosed ? " · earlier window(s)" : (u.todayCloseCount ?? 0) > 1 ? " (incl. earlier)" : ""}
+                                </div>
+                              )}
+                              {u.postClosure && (u.postClosure.billCount > 0 || u.postClosure.paymentCount > 0) && (
+                                <div className="mt-1 flex flex-wrap items-center gap-1">
+                                  <span className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-orange-600 text-white">
+                                    After close · {u.postClosure.billCount} bill{u.postClosure.billCount !== 1 ? "s" : ""} · {inr(u.postClosure.billTotal)}
+                                  </span>
+                                  {u.postClosure.sameDayBillCount > 0 && <SameDayAfterCloseBadge />}
                                 </div>
                               )}
                               {u.handoverNote && (
@@ -921,6 +969,52 @@ export default function DayClose() {
             <div><div className="text-muted-foreground">Bills</div><div className="font-medium">{previewQ.data?.billsCount ?? 0}</div></div>
             <div><div className="text-muted-foreground">Payments</div><div className="font-medium">{previewQ.data?.paymentsCount ?? 0}</div></div>
           </div>
+
+          {(previewQ.data?.sameDayAfterPriorClose?.billCount ?? 0) > 0 && (
+            <div
+              className="rounded-lg border-2 border-orange-500 bg-orange-50 dark:bg-orange-950/30 p-3 space-y-2"
+              data-testid="overall-same-day-after-close"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <SameDayAfterCloseBadge />
+                <span className="text-sm font-black text-orange-900 dark:text-orange-100 uppercase tracking-wide">
+                  Next-window additions from same-day after prior close
+                </span>
+              </div>
+              <p className="text-xs text-orange-800 dark:text-orange-200 font-semibold">
+                {previewQ.data!.sameDayAfterPriorClose!.billCount} bill
+                {previewQ.data!.sameDayAfterPriorClose!.billCount !== 1 ? "s" : ""} ·{" "}
+                {inr(previewQ.data!.sameDayAfterPriorClose!.billTotal)} billed after the previous overall close
+                but still on that IST calendar day — counted here as the next window, marked distinctly.
+              </p>
+              {(previewQ.data?.sameDayAfterPriorCloseBills?.length ?? 0) > 0 && (
+                <div className="overflow-x-auto rounded border border-orange-300 dark:border-orange-700">
+                  <table className="w-full text-xs">
+                    <thead className="bg-orange-100 dark:bg-orange-900/40">
+                      <tr>
+                        <th className="px-2 py-1.5 text-left font-bold">Bill #</th>
+                        <th className="px-2 py-1.5 text-left font-bold">Patient</th>
+                        <th className="px-2 py-1.5 text-right font-bold">Amount</th>
+                        <th className="px-2 py-1.5 text-left font-bold">Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-orange-200 dark:divide-orange-800 bg-white/70 dark:bg-black/20">
+                      {previewQ.data!.sameDayAfterPriorCloseBills!.map((b) => (
+                        <tr key={b.id} className="bg-orange-50/80 dark:bg-orange-950/20">
+                          <td className="px-2 py-1.5 font-bold">
+                            <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
+                          </td>
+                          <td className="px-2 py-1.5 max-w-[140px] truncate">{b.patientName}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums font-semibold">{inr(b.totalAmount)}</td>
+                          <td className="px-2 py-1.5">{fmtTime(b.createdAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1494,21 +1588,32 @@ export default function DayClose() {
 
                 {/* Bills/payments made AFTER this close (only when viewing the latest closure) */}
                 {detailIsLatestForUser && staffPostClosureQ.data && staffPostClosureQ.data.bills.length > 0 && (
-                  <div className="p-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 rounded text-xs space-y-1.5">
-                    <p className="font-bold text-amber-800 dark:text-amber-300 uppercase flex items-center gap-1">
-                      <AlertTriangle size={11} /> After this close — {staffPostClosureQ.data.bills.length} new bill
+                  <div className="p-3 bg-orange-50 dark:bg-orange-950/40 border-2 border-orange-500 dark:border-orange-400 rounded-lg text-xs space-y-2">
+                    <p className="font-black text-orange-900 dark:text-orange-100 uppercase flex items-center gap-1.5 tracking-wide">
+                      <AlertTriangle size={13} /> After this close — {staffPostClosureQ.data.bills.length} new bill
                       {staffPostClosureQ.data.bills.length !== 1 ? "s" : ""} ({inr(staffPostClosureQ.data.billTotal)})
                     </p>
-                    <div className="divide-y divide-amber-200 dark:divide-amber-800">
+                    {(staffPostClosureQ.data.sameDayBillCount ?? 0) > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <SameDayAfterCloseBadge />
+                        <span className="font-semibold text-orange-800 dark:text-orange-200">
+                          {staffPostClosureQ.data.sameDayBillCount} on the same IST day as close
+                        </span>
+                      </div>
+                    )}
+                    <div className="divide-y divide-orange-200 dark:divide-orange-800 rounded border border-orange-200 dark:border-orange-800 overflow-hidden bg-white/60 dark:bg-black/20">
                       {staffPostClosureQ.data.bills.map((b) => (
-                        <div key={b.id} className="flex justify-between py-1">
-                          <span className="font-semibold">{b.billNumber}</span>
-                          <span className="tabular-nums">{inr(b.totalAmount)}</span>
+                        <div key={b.id} className={`flex justify-between py-1.5 px-2 ${b.sameDayAfterClose ? "bg-orange-100/80 dark:bg-orange-900/30" : ""}`}>
+                          <span className="font-semibold flex items-center gap-1.5">
+                            {b.billNumber}
+                            {b.sameDayAfterClose && <SameDayAfterCloseBadge />}
+                          </span>
+                          <span className="tabular-nums font-bold">{inr(b.totalAmount)}</span>
                         </div>
                       ))}
                     </div>
-                    <p className="text-[10px] text-amber-700 dark:text-amber-400">
-                      These count toward the next window, not this closure.
+                    <p className="text-[10px] font-semibold text-orange-800 dark:text-orange-300">
+                      These count toward the next window / next-day additions — not this closure.
                     </p>
                   </div>
                 )}

@@ -19,6 +19,7 @@ import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribu
 import { isCollectiblePayment } from "../lib/financialIntegrity";
 import { loadPostClosureActivity } from "../lib/postClosureActivity";
 import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
+import { isSameDayAfterClose, summarizeSameDayBills } from "../lib/sameDayAfterClose";
 import { computeStaffSlipFormula } from "../lib/staffSlipFormula";
 import {
   computeGrossRestoreForTestCancelRefunds,
@@ -302,6 +303,13 @@ async function summarizeWindow(from: Date | null, to: Date) {
   const totalDue = billRows.reduce((s, b) => s + n(b.balanceAmount), 0);
   const billsCount = billRows.length;
   const cancelledBills = billRows.filter((b) => b.status === "cancelled");
+  const sameDayAfterPriorClose = summarizeSameDayBills(
+    billRows.map((b) => ({
+      createdAt: b.createdAt,
+      totalAmount: n(b.totalAmount),
+    })),
+    from,
+  );
 
   // Aggregate expenses
   const totalExpenses = expRows.reduce((s, e) => s + n(e.amount), 0);
@@ -404,6 +412,19 @@ async function summarizeWindow(from: Date | null, to: Date) {
     // visibility and correction.
     totalSuspense,
     suspenseItems,
+    sameDayAfterPriorClose,
+    sameDayAfterPriorCloseBills: billRows
+      .filter((b) => isSameDayAfterClose(b.createdAt, from) && b.status !== "cancelled")
+      .slice(0, 40)
+      .map((b) => ({
+        id: b.id,
+        billNumber: b.billNumber ?? String(b.id),
+        patientName: b.patientName,
+        totalAmount: n(b.totalAmount),
+        paidAmount: n(b.paidAmount),
+        createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
+        sameDayAfterPriorClose: true as const,
+      })),
   };
 }
 
@@ -428,6 +449,8 @@ dayCloseRouter.get("/preview", requireOwnerOrAdmin, async (_req, res) => {
     suspenseTotal: summary.totalSuspense,
     suspenseCount: summary.suspenseItems.length,
     suspenseItems: summary.suspenseItems,
+    sameDayAfterPriorClose: summary.sameDayAfterPriorClose,
+    sameDayAfterPriorCloseBills: summary.sameDayAfterPriorCloseBills,
   });
 });
 
@@ -746,8 +769,14 @@ type UserSummary = {
     referringDoctor: string | null;
     createdByName: string;
     createdAt: string;
+    /** Same IST day as prior close — next-window carry from evening billing. */
+    sameDayAfterPriorClose: boolean;
   }>;
   printActivity: StaffPrintActivity;
+  sameDayAfterPriorClose: {
+    billCount: number;
+    billTotal: number;
+  };
 };
 
 function toIso(v: unknown): string {
@@ -894,21 +923,29 @@ async function summarizeUserWindow(
     .where(bWhere)
     .orderBy(desc(billsTable.createdAt));
 
-  const bills = billRows.map((b) => ({
-    id: b.id,
-    billNumber: b.billNumber ?? String(b.id),
-    patientName: b.patientName,
-    totalAmount: n(b.totalAmount),
-    paidAmount: n(b.paidAmount),
-    balanceAmount: n(b.balanceAmount),
-    discount: n(b.discount),
-    discountReason: b.discountReason ?? null,
-    discountReasonNote: b.discountReasonNote ?? null,
-    status: b.status ?? "pending",
-    referringDoctor: b.referringDoctor ?? null,
-    createdByName: b.createdByName ?? "",
-    createdAt: b.createdAt ? new Date(b.createdAt).toISOString() : "",
-  }));
+  const bills = billRows.map((b) => {
+    const createdAt = b.createdAt ? new Date(b.createdAt).toISOString() : "";
+    return {
+      id: b.id,
+      billNumber: b.billNumber ?? String(b.id),
+      patientName: b.patientName,
+      totalAmount: n(b.totalAmount),
+      paidAmount: n(b.paidAmount),
+      balanceAmount: n(b.balanceAmount),
+      discount: n(b.discount),
+      discountReason: b.discountReason ?? null,
+      discountReasonNote: b.discountReasonNote ?? null,
+      status: b.status ?? "pending",
+      referringDoctor: b.referringDoctor ?? null,
+      createdByName: b.createdByName ?? "",
+      createdAt,
+      sameDayAfterPriorClose: isSameDayAfterClose(createdAt || null, from),
+    };
+  });
+  const sameDayAfterPriorClose = summarizeSameDayBills(
+    bills.map((b) => ({ createdAt: b.createdAt, totalAmount: b.totalAmount })),
+    from,
+  );
   const activeBills = bills.filter((b) => b.status !== "cancelled");
 
   // Bills this staff cancelled in the window (any original createdAt).
@@ -1101,6 +1138,10 @@ async function summarizeUserWindow(
     expenseDetails,
     billEdits,
     voucherEdits,
+    sameDayAfterPriorClose: {
+      billCount: sameDayAfterPriorClose.billCount,
+      billTotal: sameDayAfterPriorClose.billTotal,
+    },
   };
 
   return {
@@ -1140,6 +1181,7 @@ dayCloseRouter.get("/my-preview", async (req, res) => {
     suspenseCount: s.suspenseItems.length,
     suspenseItems: s.suspenseItems,
     bills:         s.bills,
+    sameDayAfterPriorClose: s.sameDayAfterPriorClose,
   });
 });
 
@@ -1653,9 +1695,40 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
   for (const c of todayCloses) {
     todayCloseCountByUser.set(c.userName, (todayCloseCountByUser.get(c.userName) ?? 0) + 1);
   }
-  const usersWithTodayCounts = users.map((u) => ({
-    ...u,
-    todayCloseCount: todayCloseCountByUser.get(u.userName) ?? 0,
+
+  // Loud post-closure signals for staff who already closed (or reopened):
+  // same-day evening billing after close must be visible on the admin board.
+  const usersWithTodayCounts = await Promise.all(users.map(async (u) => {
+    const base = {
+      ...u,
+      todayCloseCount: todayCloseCountByUser.get(u.userName) ?? 0,
+      postClosure: null as null | {
+        billCount: number;
+        billTotal: number;
+        paymentCount: number;
+        paymentTotal: number;
+        sameDayBillCount: number;
+        sameDayBillTotal: number;
+        sameDayPaymentCount: number;
+        sameDayPaymentTotal: number;
+      },
+    };
+    if (!u.isClosed && u.drawerStatus !== "reopened") return base;
+    const pc = await loadPostClosureActivity(u.userName);
+    if (!pc.closedAt || (pc.bills.length === 0 && pc.payments.length === 0)) return base;
+    return {
+      ...base,
+      postClosure: {
+        billCount: pc.bills.length,
+        billTotal: pc.billTotal,
+        paymentCount: pc.payments.length,
+        paymentTotal: pc.paymentTotal,
+        sameDayBillCount: pc.sameDayBillCount,
+        sameDayBillTotal: pc.sameDayBillTotal,
+        sameDayPaymentCount: pc.sameDayPaymentCount,
+        sameDayPaymentTotal: pc.sameDayPaymentTotal,
+      },
+    };
   }));
 
   res.json({
@@ -1663,6 +1736,7 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
     lastOverallClose: lastOverall,
     todayIst: istToday,
     todayCloses,
+    sameDayAfterPriorClose: liveWindow.sameDayAfterPriorClose,
   });
 });
 
@@ -2152,6 +2226,10 @@ async function postClosureActivity(userName: string) {
     payments: result.payments,
     billTotal: result.billTotal,
     paymentTotal: result.paymentTotal,
+    sameDayBillCount: result.sameDayBillCount,
+    sameDayBillTotal: result.sameDayBillTotal,
+    sameDayPaymentCount: result.sameDayPaymentCount,
+    sameDayPaymentTotal: result.sameDayPaymentTotal,
   };
 }
 

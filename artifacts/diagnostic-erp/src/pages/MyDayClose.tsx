@@ -10,9 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   Lock, RefreshCw, CheckCircle2, AlertTriangle, TrendingUp, Wallet,
-  ChevronDown, ChevronUp, Calculator, IndianRupee, Printer,
+  ChevronDown, ChevronUp, Calculator, Printer,
 } from "lucide-react";
-import { Link } from "wouter";
 import { readStaffSession } from "@/lib/staffSession";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -24,6 +23,7 @@ import {
   type StaffSlipClinic,
 } from "@/lib/staffDayCloseSlip";
 import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
+import { PostClosureLoudAlert } from "@/components/PostClosureLoudAlert";
 
 type MethodTotals = {
   cash: number; upi: number; card: number; cheque: number; other: number;
@@ -133,10 +133,14 @@ export default function MyDayClose() {
   // "chocolate box" callout.
   type PostClosureActivity = {
     closedAt: string | null;
-    bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string }[];
-    payments: { id: number; billId: number; amount: number; method: string; createdAt: string }[];
+    bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string; sameDayAfterClose?: boolean }[];
+    payments: { id: number; billId: number; amount: number; method: string; createdAt: string; sameDayAfterClose?: boolean }[];
     billTotal: number;
     paymentTotal: number;
+    sameDayBillCount?: number;
+    sameDayBillTotal?: number;
+    sameDayPaymentCount?: number;
+    sameDayPaymentTotal?: number;
   };
   const postClosureQ = useQuery<PostClosureActivity>({
     queryKey: ["my-post-closure-activity"],
@@ -297,98 +301,10 @@ export default function MyDayClose() {
         </Button>
       </div>
 
-      {/* ── Post-Closure Activity Chocolate Box ── */}
-      {postClosureQ.data?.closedAt && (postClosureQ.data.bills.length > 0 || postClosureQ.data.payments.length > 0) && (() => {
-        const d = postClosureQ.data!;
-        const hasBills    = d.bills.length > 0;
-        const hasPayments = d.payments.length > 0;
-        return (
-          <div className="bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-400 dark:border-amber-600 rounded-xl overflow-hidden shadow-md">
-            <div className="px-4 py-3 bg-amber-400/20 dark:bg-amber-900/40 flex items-center gap-2.5">
-              <div className="p-1.5 rounded-lg bg-amber-500 text-white flex-shrink-0">
-                <AlertTriangle size={14} />
-              </div>
-              <div>
-                <p className="text-sm font-extrabold text-amber-900 dark:text-amber-200">Post-Closure Activity Detected</p>
-                <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                  Billing continued after drawer closed at {fmtIst(d.closedAt)} ·{" "}
-                  {hasBills && `${d.bills.length} bill${d.bills.length !== 1 ? "s" : ""} (${inr(d.billTotal)})`}
-                  {hasBills && hasPayments && " · "}
-                  {hasPayments && `${d.payments.length} payment${d.payments.length !== 1 ? "s" : ""} (${inr(d.paymentTotal)})`}
-                </p>
-                <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase mt-0.5">
-                  These will be counted in the next reconciliation window
-                </p>
-              </div>
-            </div>
-            <div className="p-4 space-y-3">
-              {hasBills && (
-                <div>
-                  <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase mb-1.5 flex items-center gap-1.5">
-                    <IndianRupee size={11} /> Bills Created Post-Closure
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700">
-                    <table className="w-full text-xs">
-                      <thead className="bg-amber-100 dark:bg-amber-900/40">
-                        <tr>
-                          <th className="px-3 py-1.5 text-left font-semibold text-amber-900 dark:text-amber-200">Bill #</th>
-                          <th className="px-3 py-1.5 text-right font-semibold text-amber-900 dark:text-amber-200">Amount</th>
-                          <th className="px-3 py-1.5 text-right font-semibold text-amber-900 dark:text-amber-200">Paid</th>
-                          <th className="px-3 py-1.5 text-left font-semibold text-amber-900 dark:text-amber-200">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-amber-200 dark:divide-amber-800">
-                        {d.bills.map((b) => (
-                          <tr key={b.id} className="hover:bg-amber-100/60 dark:hover:bg-amber-900/20">
-                            <td className="px-3 py-1.5 font-semibold">
-                              <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
-                            </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums font-semibold">{inr(b.totalAmount)}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-green-700 dark:text-green-400">{inr(b.paidAmount)}</td>
-                            <td className="px-3 py-1.5 capitalize">{b.status}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-              {hasPayments && (
-                <div>
-                  <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase mb-1.5 flex items-center gap-1.5">
-                    <Wallet size={11} /> Payments Collected Post-Closure
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700">
-                    <table className="w-full text-xs">
-                      <thead className="bg-amber-100 dark:bg-amber-900/40">
-                        <tr>
-                          <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Bill #</th>
-                          <th className="px-3 py-2 text-right font-semibold text-amber-900 dark:text-amber-200">Amount</th>
-                          <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Method</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-amber-200 dark:divide-amber-800">
-                        {d.payments.map((p) => (
-                          <tr key={p.id} className="hover:bg-amber-100/60 dark:hover:bg-amber-900/20">
-                            <td className="px-3 py-1.5 font-semibold">
-                              <Link href={`/billing/${p.billId}`} className="text-primary hover:underline">Bill #{p.billId}</Link>
-                            </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-green-700 dark:text-green-400">{inr(p.amount)}</td>
-                            <td className="px-3 py-1.5 capitalize text-amber-700 dark:text-amber-400">{p.method}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-              <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/40 rounded-lg px-3 py-2">
-                Billing is never blocked after drawer close. This activity will be included in your <strong>next reconciliation window</strong>.
-              </p>
-            </div>
-          </div>
-        );
-      })()}
+      {/* ── Post-closure activity (loud) ── */}
+      {postClosureQ.data && (
+        <PostClosureLoudAlert data={postClosureQ.data} scopeLabel="Your drawer" />
+      )}
 
       {/* Open window summary */}
       <Card>
