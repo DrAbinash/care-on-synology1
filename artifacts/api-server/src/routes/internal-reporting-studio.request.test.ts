@@ -617,4 +617,170 @@ describe.skipIf(!dbAvailable)("Reporting Studio bridge — request level", () =>
     expect(sameName[0]!.billingStatus).toBe("PAID");
     expect(sameName[0]!.worklistId).not.toBe(String(ghost.id));
   });
+
+  test("no since/limit/cursor returns legacy { rows, meta } shape", async () => {
+    process.env.REPORTING_WORKLIST_INCREMENTAL = "1";
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    expect(res.body.meta).toBeTruthy();
+    expect(res.body.orders).toBeUndefined();
+    expect(res.body.nextCursor).toBeUndefined();
+  });
+
+  test("incremental since excludes boundary and returns { orders, nextCursor, serverTime, truncated }", async () => {
+    process.env.REPORTING_WORKLIST_INCREMENTAL = "1";
+    const t0 = new Date("2026-09-20T10:00:00.000Z");
+    const t1 = new Date("2026-09-20T12:00:00.000Z");
+    const t2 = new Date("2026-09-20T14:00:00.000Z");
+
+    await db
+      .update(radiologyWorklistTable)
+      .set({ updatedAt: t1 })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const [older] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        studyId: null,
+        patientId,
+        patientName: `Older ${marker}`,
+        age: "40",
+        sex: "F",
+        modality: "MR",
+        studyDescription: `Older ${marker}`,
+        studyDate: "2026-08-28",
+        accessionNumber: `ACC-OLD-${marker}`,
+        studyInstanceUID: `1.2.840.old.${marker}`,
+        referringDoctor: "Dr. Referrer",
+        status: "STUDY_RECEIVED",
+        matchScore: "GREEN",
+        matchPoints: 50,
+        matchDecision: "PENDING",
+        updatedAt: t0,
+        createdAt: t0,
+      })
+      .returning();
+
+    const [newer] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        studyId: null,
+        patientId,
+        patientName: `Newer ${marker}`,
+        age: "41",
+        sex: "F",
+        modality: "MR",
+        studyDescription: `Newer ${marker}`,
+        studyDate: "2026-08-30",
+        accessionNumber: `ACC-NEW-${marker}`,
+        studyInstanceUID: `1.2.840.new.${marker}`,
+        referringDoctor: "Dr. Referrer",
+        status: "STUDY_RECEIVED",
+        matchScore: "GREEN",
+        matchPoints: 50,
+        matchDecision: "PENDING",
+        updatedAt: t2,
+        createdAt: t2,
+      })
+      .returning();
+
+    const res = await request(app)
+      .get(
+        `/api/internal/reporting-studio/worklist?status=pending&since=${encodeURIComponent(t1.toISOString())}&limit=50`,
+      )
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.orders)).toBe(true);
+    expect(typeof res.body.serverTime).toBe("number");
+    expect(typeof res.body.truncated).toBe("boolean");
+    expect(res.body.rows).toBeUndefined();
+
+    const ids = (res.body.orders as Array<{ worklistId: string }>).map((o) => o.worklistId);
+    expect(ids).toContain(String(newer.id));
+    expect(ids).not.toContain(String(worklistId)); // equal to since → excluded
+    expect(ids).not.toContain(String(older.id));
+  });
+
+  test("incremental cursor pages with no duplicates", async () => {
+    process.env.REPORTING_WORKLIST_INCREMENTAL = "1";
+    const stamp = new Date("2026-09-21T08:00:00.000Z");
+    const extraIds: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const [row] = await db
+        .insert(radiologyWorklistTable)
+        .values({
+          studyId: null,
+          patientId,
+          patientName: `Page ${marker} ${i}`,
+          age: "30",
+          sex: "M",
+          modality: "MR",
+          studyDescription: `Page ${marker} ${i}`,
+          studyDate: "2026-09-01",
+          accessionNumber: `ACC-PG-${marker}-${i}`,
+          studyInstanceUID: `1.2.840.pg.${marker}.${i}`,
+          referringDoctor: "Dr. Referrer",
+          status: "STUDY_RECEIVED",
+          matchScore: "GREEN",
+          matchPoints: 50,
+          matchDecision: "PENDING",
+          updatedAt: stamp,
+          createdAt: stamp,
+        })
+        .returning();
+      extraIds.push(row.id);
+    }
+    // Include the fixture row too
+    await db
+      .update(radiologyWorklistTable)
+      .set({ updatedAt: stamp })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+
+    const since = new Date("2026-09-21T00:00:00.000Z").toISOString();
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const qs = new URLSearchParams({
+        status: "pending",
+        since,
+        limit: "2",
+      });
+      if (cursor) qs.set("cursor", cursor);
+      const res = await request(app)
+        .get(`/api/internal/reporting-studio/worklist?${qs.toString()}`)
+        .set("x-api-key", STUDIO_KEY);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.orders)).toBe(true);
+      pages += 1;
+      for (const o of res.body.orders as Array<{ worklistId: string }>) {
+        expect(seen.has(o.worklistId)).toBe(false);
+        seen.add(o.worklistId);
+      }
+      if (!res.body.truncated) {
+        expect(res.body.nextCursor).toBeNull();
+        break;
+      }
+      expect(typeof res.body.nextCursor).toBe("string");
+      cursor = res.body.nextCursor as string;
+      expect(pages).toBeLessThan(20);
+    }
+    expect(seen.has(String(worklistId))).toBe(true);
+    for (const id of extraIds) expect(seen.has(String(id))).toBe(true);
+  });
+
+  test("flag off keeps legacy shape even with since/limit", async () => {
+    process.env.REPORTING_WORKLIST_INCREMENTAL = "0";
+    const res = await request(app)
+      .get("/api/internal/reporting-studio/worklist?status=pending&since=2020-01-01T00:00:00.000Z&limit=10")
+      .set("x-api-key", STUDIO_KEY);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    expect(res.body.meta).toBeTruthy();
+    expect(res.body.orders).toBeUndefined();
+    delete process.env.REPORTING_WORKLIST_INCREMENTAL;
+  });
 });
