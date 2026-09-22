@@ -15,6 +15,7 @@ import {
   parseWorklistCursor,
   parseWorklistLimit,
   rowChangeAt,
+  type IncrementalPageResult,
 } from "./reportingStudioWorklistIncremental";
 
 describe("isReportingWorklistIncrementalEnabled", () => {
@@ -139,11 +140,13 @@ describe("pageIncrementalRows", () => {
     let cursor: number | null = null;
     let pages = 0;
     for (;;) {
-      const { page, nextCursor, truncated } = pageIncrementalRows(rows, {
-        since,
-        cursor,
-        limit: 7,
-      });
+      // Explicit result type breaks TS7022 circular inference through `cursor` ↔ `nextCursor`.
+      const { page, nextCursor, truncated }: IncrementalPageResult<(typeof rows)[number]> =
+        pageIncrementalRows(rows, {
+          since,
+          cursor,
+          limit: 7,
+        });
       pages += 1;
       for (const r of page) {
         expect(seen.has(r.id)).toBe(false);
