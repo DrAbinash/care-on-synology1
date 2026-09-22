@@ -2,6 +2,11 @@ import { db } from "@workspace/db";
 import { billsTable, paymentsTable, userDayClosuresTable } from "@workspace/db/schema";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { isCollectiblePayment } from "./financialIntegrity";
+import {
+  isSameDayAfterClose,
+  summarizeSameDayBills,
+  summarizeSameDayPayments,
+} from "./sameDayAfterClose";
 
 function n(v: unknown): number {
   return Number(v ?? 0) || 0;
@@ -18,6 +23,8 @@ export type PostClosureActivityResult = {
     paidAmount: number;
     status: string | null;
     createdAt: Date | null;
+    /** Same IST calendar day as the close, after the close timestamp. */
+    sameDayAfterClose: boolean;
   }>;
   payments: Array<{
     id: number;
@@ -25,9 +32,14 @@ export type PostClosureActivityResult = {
     amount: number;
     method: string;
     createdAt: Date | null;
+    sameDayAfterClose: boolean;
   }>;
   billTotal: number;
   paymentTotal: number;
+  sameDayBillCount: number;
+  sameDayBillTotal: number;
+  sameDayPaymentCount: number;
+  sameDayPaymentTotal: number;
 };
 
 const EMPTY: PostClosureActivityResult = {
@@ -38,6 +50,10 @@ const EMPTY: PostClosureActivityResult = {
   payments: [],
   billTotal: 0,
   paymentTotal: 0,
+  sameDayBillCount: 0,
+  sameDayBillTotal: 0,
+  sameDayPaymentCount: 0,
+  sameDayPaymentTotal: 0,
 };
 
 /**
@@ -104,24 +120,34 @@ export async function loadPostClosureActivity(userName: string): Promise<PostClo
   const collectiblePayments = payments.filter(isCollectiblePayment);
   const billTotal = bills.reduce((s, b) => s + n(b.totalAmount), 0);
   const paymentTotal = collectiblePayments.reduce((s, p) => s + n(p.amount), 0);
+  const mappedBills = bills.map((b) => ({
+    ...b,
+    totalAmount: n(b.totalAmount),
+    paidAmount: n(b.paidAmount),
+    sameDayAfterClose: isSameDayAfterClose(b.createdAt, since),
+  }));
+  const mappedPayments = collectiblePayments.map((p) => ({
+    id: p.id,
+    billId: p.billId,
+    amount: n(p.amount),
+    method: p.method,
+    createdAt: p.createdAt,
+    sameDayAfterClose: isSameDayAfterClose(p.createdAt, since),
+  }));
+  const sameDayBills = summarizeSameDayBills(mappedBills, since);
+  const sameDayPays = summarizeSameDayPayments(mappedPayments, since);
 
   return {
     closedAt: latestClose.closedAt,
     closureId: latestClose.id,
     drawerStatus: latestClose.drawerStatus,
-    bills: bills.map((b) => ({
-      ...b,
-      totalAmount: n(b.totalAmount),
-      paidAmount: n(b.paidAmount),
-    })),
-    payments: collectiblePayments.map((p) => ({
-      id: p.id,
-      billId: p.billId,
-      amount: n(p.amount),
-      method: p.method,
-      createdAt: p.createdAt,
-    })),
+    bills: mappedBills,
+    payments: mappedPayments,
     billTotal,
     paymentTotal,
+    sameDayBillCount: sameDayBills.billCount,
+    sameDayBillTotal: sameDayBills.billTotal,
+    sameDayPaymentCount: sameDayPays.paymentCount,
+    sameDayPaymentTotal: sameDayPays.paymentTotal,
   };
 }

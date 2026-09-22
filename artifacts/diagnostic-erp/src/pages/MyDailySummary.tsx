@@ -16,6 +16,7 @@ import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
 import ModalityBillingKpi from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
+import { PostClosureLoudAlert, SameDayAfterCloseBadge } from "@/components/PostClosureLoudAlert";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -256,10 +257,14 @@ type MyDailySummaryData = {
 type PostClosureActivity = {
   closedAt: string | null;
   closureId?: number;
-  bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string }[];
-  payments: { id: number; billId: number; amount: number; method: string; createdAt: string }[];
+  bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string; sameDayAfterClose?: boolean }[];
+  payments: { id: number; billId: number; amount: number; method: string; createdAt: string; sameDayAfterClose?: boolean }[];
   billTotal: number;
   paymentTotal: number;
+  sameDayBillCount?: number;
+  sameDayBillTotal?: number;
+  sameDayPaymentCount?: number;
+  sameDayPaymentTotal?: number;
 };
 
 type DrawerStatus = {
@@ -1633,142 +1638,10 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   );
 }
 
-// ─── Post-Closure Activity Chocolate Box ─────────────────────────────────────
+// ─── Post-Closure Activity (loud, always expanded) ───────────────────────────
 
-function PostClosureActivityBox({ data }: { data: PostClosureActivity }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!data.closedAt || (data.bills.length === 0 && data.payments.length === 0)) return null;
-
-  const hasBills    = data.bills.length > 0;
-  const hasPayments = data.payments.length > 0;
-
-  return (
-    <div className="bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-400 dark:border-amber-600 rounded-xl shadow-md overflow-hidden">
-      {/* Header */}
-      <button
-        type="button"
-        className="w-full px-4 py-3 flex items-center justify-between gap-3 bg-amber-400/20 dark:bg-amber-900/40 hover:bg-amber-400/30 dark:hover:bg-amber-900/60 transition-colors"
-        onClick={() => setExpanded((e) => !e)}
-      >
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-amber-500 text-white">
-            <AlertTriangle size={14} />
-          </div>
-          <div className="text-left">
-            <p className="text-sm font-extrabold text-amber-900 dark:text-amber-200">
-              Post-Closure Activity Detected
-            </p>
-            <p className="text-[11px] text-amber-700 dark:text-amber-400">
-              Billing continued after drawer closed at {fmtIst(data.closedAt)} ·{" "}
-              {hasBills && `${data.bills.length} bill${data.bills.length !== 1 ? "s" : ""} (${fmt(data.billTotal)})`}
-              {hasBills && hasPayments && " · "}
-              {hasPayments && `${data.payments.length} payment${data.payments.length !== 1 ? "s" : ""} (${fmt(data.paymentTotal)})`}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase">
-            Next drawer close · after midnight → next day money flow
-          </span>
-          {expanded ? <ChevronRight size={14} className="text-amber-700 -rotate-90" /> : <ChevronRight size={14} className="text-amber-700 rotate-90" />}
-        </div>
-      </button>
-
-      {/* Expanded content */}
-      {expanded && (
-        <div className="p-4 space-y-4">
-          {/* Bills table */}
-          {hasBills && (
-            <div>
-              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                <IndianRupee size={11} /> Bills Created Post-Closure
-              </p>
-              <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700">
-                <table className="w-full text-xs">
-                  <thead className="bg-amber-100 dark:bg-amber-900/40">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Bill #</th>
-                      <th className="px-3 py-2 text-right font-semibold text-amber-900 dark:text-amber-200">Amount</th>
-                      <th className="px-3 py-2 text-right font-semibold text-amber-900 dark:text-amber-200">Paid</th>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Status</th>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-amber-200 dark:divide-amber-800">
-                    {data.bills.map((b) => (
-                      <tr key={b.id} className="hover:bg-amber-100/60 dark:hover:bg-amber-900/20">
-                        <td className="px-3 py-1.5 font-semibold">
-                          <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums font-semibold">{fmt(b.totalAmount)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-green-700 dark:text-green-400">{fmt(b.paidAmount)}</td>
-                        <td className="px-3 py-1.5">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold capitalize bg-white/60 dark:bg-black/20">{b.status}</span>
-                        </td>
-                        <td className="px-3 py-1.5 text-amber-700 dark:text-amber-400">{fmtTime(b.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-amber-100 dark:bg-amber-900/40 border-t border-amber-300 dark:border-amber-700">
-                    <tr>
-                      <td className="px-3 py-1.5 font-bold text-amber-900 dark:text-amber-200">Total</td>
-                      <td className="px-3 py-1.5 text-right font-bold tabular-nums text-amber-900 dark:text-amber-200">{fmt(data.billTotal)}</td>
-                      <td colSpan={3} />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Payments table */}
-          {hasPayments && (
-            <div>
-              <p className="text-xs font-bold text-amber-800 dark:text-amber-300 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                <Wallet size={11} /> Payments Collected Post-Closure
-              </p>
-              <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700">
-                <table className="w-full text-xs">
-                  <thead className="bg-amber-100 dark:bg-amber-900/40">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Bill #</th>
-                      <th className="px-3 py-2 text-right font-semibold text-amber-900 dark:text-amber-200">Amount</th>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Method</th>
-                      <th className="px-3 py-2 text-left font-semibold text-amber-900 dark:text-amber-200">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-amber-200 dark:divide-amber-800">
-                    {data.payments.map((p) => (
-                      <tr key={p.id} className="hover:bg-amber-100/60 dark:hover:bg-amber-900/20">
-                        <td className="px-3 py-1.5 font-semibold">
-                          <Link href={`/billing/${p.billId}`} className="text-primary hover:underline">Bill #{p.billId}</Link>
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-green-700 dark:text-green-400">{fmt(p.amount)}</td>
-                        <td className="px-3 py-1.5 capitalize text-amber-700 dark:text-amber-400">{p.method}</td>
-                        <td className="px-3 py-1.5 text-amber-700 dark:text-amber-400">{fmtTime(p.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-amber-100 dark:bg-amber-900/40 border-t border-amber-300 dark:border-amber-700">
-                    <tr>
-                      <td className="px-3 py-1.5 font-bold text-amber-900 dark:text-amber-200">Total</td>
-                      <td className="px-3 py-1.5 text-right font-bold tabular-nums text-amber-900 dark:text-amber-200">{fmt(data.paymentTotal)}</td>
-                      <td colSpan={2} />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/40 rounded-lg px-3 py-2">
-            Billing is never blocked after drawer close. The above activity was recorded after your drawer was closed
-            and will automatically be included in the <strong>next reconciliation window</strong>.
-          </p>
-        </div>
-      )}
-    </div>
-  );
+function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivity; scopeLabel?: string }) {
+  return <PostClosureLoudAlert data={data} scopeLabel={scopeLabel ?? "Drawer"} />;
 }
 
 // ─── Unified Activity Log (replaces Control Logs + Bill Activity by Me) ───────
@@ -2134,9 +2007,9 @@ export default function MyDailySummary() {
   // staff's post-closure activity, not the logged-in admin's own (which was
   // the bug — the box always queried "my-post-closure-activity" regardless
   // of staffFilter, so it silently showed the admin's own empty data instead
-  // of the selected staff's). "All Staff / Total" has no single staff to
-  // scope to, so the box is skipped in that mode.
-  const isDrawerClosed = drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened";
+  // of the selected staff's). On "All Staff / Total" we still show the
+  // logged-in user's own post-closure so admins who bill after close get the
+  // loud same-day warning.
   const postClosureStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : myName;
   const postClosureQ = useQuery<PostClosureActivity>({
     queryKey: ["post-closure-activity", postClosureStaffName],
@@ -2144,7 +2017,6 @@ export default function MyDailySummary() {
       isSuperAdmin && staffFilter.trim()
         ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
         : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
-    enabled: !isSuperAdmin || !!staffFilter.trim(),
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2158,6 +2030,7 @@ export default function MyDailySummary() {
     totalBilled: number;
     totalDue: number;
     expected: { cash: number; upi: number; card: number; cheque: number; other: number; total: number; count: number };
+    sameDayAfterPriorClose?: { billCount: number; billTotal: number };
     bills: Array<{
       id: number;
       billNumber: string;
@@ -2170,6 +2043,7 @@ export default function MyDailySummary() {
       referringDoctor: string | null;
       createdByName: string;
       createdAt: string;
+      sameDayAfterPriorClose?: boolean;
     }>;
   }>({
     queryKey: ["my-day-close-preview"],
@@ -2450,22 +2324,37 @@ export default function MyDailySummary() {
           {/* ── Open Window Bills Table ── */}
           {myPreviewQ.data.bills && myPreviewQ.data.bills.length > 0 && (
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
                 <h4 className="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wide">Bills in Open Window</h4>
-                <span className="text-xs text-gray-400">{myPreviewQ.data.bills.length} bill{myPreviewQ.data.bills.length !== 1 ? "s" : ""}</span>
+                <div className="flex items-center gap-2">
+                  {(myPreviewQ.data.sameDayAfterPriorClose?.billCount ?? 0) > 0 && (
+                    <span className="text-[10px] font-black uppercase tracking-wide text-orange-800 dark:text-orange-200 bg-orange-100 dark:bg-orange-950/50 px-2 py-0.5 rounded border border-orange-300 dark:border-orange-700">
+                      {myPreviewQ.data.sameDayAfterPriorClose!.billCount} same-day after prior close · ₹
+                      {myPreviewQ.data.sameDayAfterPriorClose!.billTotal.toFixed(0)}
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-400">{myPreviewQ.data.bills.length} bill{myPreviewQ.data.bills.length !== 1 ? "s" : ""}</span>
+                </div>
               </div>
               <div className="overflow-x-auto snap-x">
-                <table className="w-full text-xs min-w-[800px]">
+                <table className="w-full text-xs min-w-[900px]">
                   <thead className="bg-gray-50 dark:bg-muted/30">
                     <tr>
-                      {["Bill #", "Patient", "Total", "Paid", "Balance", "Discount", "Status", "Referral Doctor", "Created By"].map((h) => (
+                      {["Bill #", "Patient", "Total", "Paid", "Balance", "Discount", "Status", "Window mark", "Referral Doctor", "Created By"].map((h) => (
                         <th key={h} className="px-2 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-card-border">
                     {myPreviewQ.data.bills.map((b) => (
-                      <tr key={b.id} className="hover:bg-gray-50 dark:hover:bg-muted/20">
+                      <tr
+                        key={b.id}
+                        className={
+                          b.sameDayAfterPriorClose
+                            ? "bg-orange-50/90 dark:bg-orange-950/25 hover:bg-orange-100/80 dark:hover:bg-orange-950/40"
+                            : "hover:bg-gray-50 dark:hover:bg-muted/20"
+                        }
+                      >
                         <td className="px-2 py-2 font-semibold">
                           <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
                         </td>
@@ -2479,6 +2368,13 @@ export default function MyDailySummary() {
                             style={{ background: `${statusColors[b.status] ?? "#94a3b8"}22`, color: statusColors[b.status] ?? "#94a3b8" }}>
                             {b.status}
                           </span>
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          {b.sameDayAfterPriorClose ? (
+                            <SameDayAfterCloseBadge />
+                          ) : (
+                            <span className="text-[10px] font-semibold text-slate-500 uppercase">New window</span>
+                          )}
                         </td>
                         <td className="px-2 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap">
                           {b.referringDoctor ? b.referringDoctor : <span className="text-gray-400">—</span>}
@@ -2494,7 +2390,7 @@ export default function MyDailySummary() {
                       <td className="px-2 py-2 font-bold tabular-nums text-green-700">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.paidAmount, 0))}</td>
                       <td className="px-2 py-2 font-bold tabular-nums text-red-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.balanceAmount, 0))}</td>
                       <td className="px-2 py-2 font-bold tabular-nums text-amber-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.discount, 0))}</td>
-                      <td colSpan={3} />
+                      <td colSpan={4} />
                     </tr>
                   </tfoot>
                 </table>
@@ -2586,6 +2482,14 @@ export default function MyDailySummary() {
         >
           <ModalityBillingKpi from={from} to={to} hideHeader />
         </SummaryCollapsibleBox>
+      )}
+
+      {/* ── Post-closure (outside summary gate — must stay visible when s is loading) ── */}
+      {postClosureQ.data && (
+        <PostClosureActivityBox
+          data={postClosureQ.data}
+          scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
+        />
       )}
 
       {/* ── Loading State ── */}
@@ -2856,9 +2760,6 @@ export default function MyDailySummary() {
               staffLabel={drawerStaffName}
             />
           )}
-
-          {/* ── Post-Closure Activity Box ── */}
-          {postClosureQ.data && <PostClosureActivityBox data={postClosureQ.data} />}
 
           {/* ── Staff Activity (action-based — not personal drawer shortage) ── */}
           {data?.byStaff && data.byStaff.length > 0 && (

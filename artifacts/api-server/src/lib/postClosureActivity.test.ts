@@ -96,7 +96,8 @@ describe("loadPostClosureActivity", () => {
   });
 
   test("detects post-close activity after balanced close", async () => {
-    const closedAt = new Date("2026-08-21T18:00:00Z");
+    // 14:00 UTC = 19:30 IST on 2026-08-21; bill at 16:00 UTC = 21:30 IST same day
+    const closedAt = new Date("2026-08-21T14:00:00Z");
     selectResults.push([
       { id: 3, closedAt, drawerStatus: "balanced" },
     ]);
@@ -107,7 +108,7 @@ describe("loadPostClosureActivity", () => {
         totalAmount: "1200",
         paidAmount: "1200",
         status: "paid",
-        createdAt: new Date("2026-08-21T20:00:00Z"),
+        createdAt: new Date("2026-08-21T16:00:00Z"),
       },
     ]);
     selectResults.push([]);
@@ -117,5 +118,8 @@ describe("loadPostClosureActivity", () => {
     expect(result.bills).toHaveLength(1);
     expect(result.billTotal).toBe(1200);
     expect(result.paymentTotal).toBe(0);
+    expect(result.bills[0].sameDayAfterClose).toBe(true);
+    expect(result.sameDayBillCount).toBe(1);
+    expect(result.sameDayBillTotal).toBe(1200);
   });
 });
