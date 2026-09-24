@@ -268,6 +268,27 @@ type PostClosureActivity = {
   sameDayPaymentTotal?: number;
 };
 
+/** Subset of /api/day-close/staff-status used for all-staff post-closure on this page. */
+type StaffStatusPostClosure = {
+  billCount: number;
+  billTotal: number;
+  paymentCount: number;
+  paymentTotal: number;
+  sameDayBillCount: number;
+  sameDayBillTotal: number;
+  sameDayPaymentCount: number;
+  sameDayPaymentTotal: number;
+};
+
+type StaffStatusUserRow = {
+  userName: string;
+  postClosure?: StaffStatusPostClosure | null;
+};
+
+type StaffStatusResult = {
+  users: StaffStatusUserRow[];
+};
+
 type DrawerStatus = {
   drawerStatus: "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
   userName: string;
@@ -2007,26 +2028,40 @@ export default function MyDailySummary() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
-  // Post-closure activity — always fetch so the admin can see yesterday's
-  // post-closure bills even when today's drawer is open.
-  //
-  // Scoped to whichever staff member this page is currently showing: when a
-  // super-admin has a specific staff selected via staffFilter, fetch THAT
-  // staff's post-closure activity, not the logged-in admin's own (which was
-  // the bug — the box always queried "my-post-closure-activity" regardless
-  // of staffFilter, so it silently showed the admin's own empty data instead
-  // of the selected staff's). On "All Staff / Total" we still show the
-  // logged-in user's own post-closure so admins who bill after close get the
-  // loud same-day warning.
+  // Post-closure activity — scoped to the staff this page is showing.
+  // All-staff (owner) view uses /staff-status merged into Staff Activity instead
+  // of a single loud alert for the logged-in admin.
   const postClosureStaffName = isSuperAdmin && staffFilter.trim() ? staffFilter.trim() : myName;
+  const showIndividualPostClosure = !isOwner || !!staffFilter.trim();
   const postClosureQ = useQuery<PostClosureActivity>({
     queryKey: ["post-closure-activity", postClosureStaffName],
     queryFn: () =>
       isSuperAdmin && staffFilter.trim()
         ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
         : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
+    enabled: showIndividualPostClosure,
     ...FINANCIAL_QUERY_OPTIONS,
   });
+
+  // All-staff post-closure overview (same source as admin Day Close orange banner).
+  const staffStatusQ = useQuery<StaffStatusResult>({
+    queryKey: ["day-close-staff-status"],
+    queryFn: () => api.get<StaffStatusResult>("/api/day-close/staff-status"),
+    enabled: isOwner && !staffFilter.trim(),
+    ...FINANCIAL_QUERY_OPTIONS,
+  });
+  const staffWithPostClosure = useMemo(
+    () =>
+      (staffStatusQ.data?.users ?? [])
+        .filter((u) => u.postClosure && (u.postClosure.billCount > 0 || u.postClosure.paymentCount > 0))
+        .map((u) => ({ userName: u.userName, postClosure: u.postClosure! })),
+    [staffStatusQ.data],
+  );
+  const postClosureByStaff = useMemo(() => {
+    const m = new Map<string, StaffStatusPostClosure>();
+    for (const row of staffWithPostClosure) m.set(row.userName, row.postClosure);
+    return m;
+  }, [staffWithPostClosure]);
 
   // Same query key as ModalityBillingKpi — shared cache for the collapsed header summary.
   const modalityBillingQ = useQuery<ModalityBillingSummary>({
@@ -2649,8 +2684,8 @@ export default function MyDailySummary() {
         </SummaryCollapsibleBox>
       )}
 
-      {/* ── Post-closure (outside summary gate — must stay visible when s is loading) ── */}
-      {postClosureQ.data && (
+      {/* ── Post-closure (single-staff / non-owner). All-staff orange lives in Staff Activity. ── */}
+      {showIndividualPostClosure && postClosureQ.data && (
         <PostClosureActivityBox
           data={postClosureQ.data}
           scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
@@ -2791,68 +2826,197 @@ export default function MyDailySummary() {
             />
           )}
 
-          {/* ── Staff Activity (action-based — not personal drawer shortage) ── */}
-          {data?.byStaff && data.byStaff.length > 0 && (
-            <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border bg-gray-50 dark:bg-muted/30">
-                <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2">
-                  <Users size={14} className="text-emerald-600" /> Staff Activity
-                </h3>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                  Each action stays with the person who did it. Cancel/refund by someone else does not erase the original bill or collection.
-                  This is <strong>not</strong> a personal cash-shortage or amount-payable table.
-                </p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Staff</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Created</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Collected</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Cancelled</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Refunded</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Collected</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Refunded</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-card-border">
-                    {data.byStaff.map((st) => {
-                      const billsCreated = st.billsCreated ?? st.grossBilled;
-                      const cashCollected = st.cashCollected ?? st.cashIn;
-                      const billsCancelled = st.billsCancelled ?? st.cancelled;
-                      return (
-                        <tr key={st.name} className="hover:bg-emerald-50/40 dark:hover:bg-muted/20">
-                          <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">{st.name}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{fmt(billsCreated)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">{fmt(cashCollected)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">{billsCancelled > 0 ? fmt(billsCancelled) : "—"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{st.cashRefunded > 0 ? fmt(st.cashRefunded) : "—"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">{st.digitalIn > 0 ? fmt(st.digitalIn) : "—"}</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-violet-500 dark:text-violet-400">{st.digitalRefunded > 0 ? fmt(st.digitalRefunded) : "—"}</td>
+          {/* ── Staff Activity + all-staff post-closure (merged) ── */}
+          {((data?.byStaff && data.byStaff.length > 0) || staffWithPostClosure.length > 0) && (
+            <div
+              className={`rounded-xl shadow-sm overflow-hidden border ${
+                staffWithPostClosure.length > 0
+                  ? "border-orange-500 dark:border-orange-400 ring-2 ring-orange-200/70 dark:ring-orange-900/40"
+                  : "border-gray-200 dark:border-card-border bg-white dark:bg-card"
+              }`}
+              data-testid="staff-activity-panel"
+            >
+              {staffWithPostClosure.length > 0 && (() => {
+                const totalBills = staffWithPostClosure.reduce((s, r) => s + r.postClosure.billCount, 0);
+                const totalAmt = staffWithPostClosure.reduce((s, r) => s + r.postClosure.billTotal, 0);
+                const sameDayBills = staffWithPostClosure.reduce((s, r) => s + r.postClosure.sameDayBillCount, 0);
+                return (
+                  <div
+                    className="px-4 py-3 bg-gradient-to-r from-orange-600 to-amber-500 text-white flex flex-wrap items-center gap-3"
+                    role="alert"
+                    data-testid="staff-post-closure-overview"
+                  >
+                    <AlertTriangle size={18} className="flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-black uppercase text-sm tracking-wide">
+                        Staff billed after their drawer close
+                      </p>
+                      <p className="text-xs text-orange-50 font-medium mt-0.5">
+                        {staffWithPostClosure.length} staff · {totalBills} bill{totalBills !== 1 ? "s" : ""} ({fmt(totalAmt)}) after close
+                        {sameDayBills > 0 ? ` · ${sameDayBills} same-day after close` : ""} — next window, not closed drawer
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <div className="hidden sm:flex flex-col items-end leading-tight" data-testid="staff-post-closure-overview-summary">
+                        <span className="text-xl font-black tabular-nums">{totalBills}</span>
+                        <span className="text-[10px] font-bold uppercase opacity-90">new bills</span>
+                        <span className="text-sm font-black tabular-nums">{fmt(totalAmt)}</span>
+                      </div>
+                      <Link href="/day-close">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-8 text-xs font-bold bg-white text-orange-800 hover:bg-orange-50 border-0"
+                        >
+                          Day Close
+                        </Button>
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="bg-white dark:bg-card">
+                <div className="px-4 py-3 border-b border-gray-100 dark:border-card-border bg-gray-50 dark:bg-muted/30 flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-foreground flex items-center gap-2 flex-wrap">
+                      <Users size={14} className="text-emerald-600" /> Staff Activity
+                      {staffWithPostClosure.length > 0 && (
+                        <span className="px-2 py-0.5 rounded-full bg-orange-600 text-white text-[10px] font-black uppercase tracking-wide flex items-center gap-1">
+                          <AlertTriangle size={10} /> {staffWithPostClosure.length} billed after close
+                        </span>
+                      )}
+                    </h3>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                      Each action stays with the person who did it. Cancel/refund by someone else does not erase the original bill or collection.
+                      {staffWithPostClosure.length > 0
+                        ? " Orange After close is live drawer activity — not in the closed drawer."
+                        : " This is not a personal cash-shortage or amount-payable table."}
+                    </p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Staff</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Created</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Collected</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bills Cancelled</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Cash Refunded</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Collected</th>
+                        <th className="px-3 py-2 text-right font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Digital Refunded</th>
+                        <th className="px-3 py-2 text-left font-semibold text-orange-800 dark:text-orange-200 whitespace-nowrap">After close</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-card-border">
+                      {(() => {
+                        const activityByName = new Map((data?.byStaff ?? []).map((st) => [st.name, st]));
+                        const names = Array.from(
+                          new Set([
+                            ...(data?.byStaff ?? []).map((st) => st.name),
+                            ...staffWithPostClosure.map((r) => r.userName),
+                          ]),
+                        ).sort((a, b) => {
+                          const aPc = postClosureByStaff.has(a) ? 1 : 0;
+                          const bPc = postClosureByStaff.has(b) ? 1 : 0;
+                          if (aPc !== bPc) return bPc - aPc;
+                          return a.localeCompare(b);
+                        });
+                        return names.map((name) => {
+                          const st = activityByName.get(name);
+                          const pc = postClosureByStaff.get(name);
+                          const billsCreated = st ? (st.billsCreated ?? st.grossBilled) : 0;
+                          const cashCollected = st ? (st.cashCollected ?? st.cashIn) : 0;
+                          const billsCancelled = st ? (st.billsCancelled ?? st.cancelled) : 0;
+                          return (
+                            <tr
+                              key={name}
+                              className={
+                                pc
+                                  ? "bg-orange-50/80 dark:bg-orange-950/20 hover:bg-orange-100/70 dark:hover:bg-orange-950/30"
+                                  : "hover:bg-emerald-50/40 dark:hover:bg-muted/20"
+                              }
+                              data-testid={pc ? `staff-activity-after-close-${name}` : undefined}
+                            >
+                              <td className="px-3 py-2 font-semibold whitespace-nowrap text-gray-800 dark:text-gray-200">
+                                {isSuperAdmin ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => saveStaffFilter(name)}
+                                    className="text-left hover:text-primary hover:underline"
+                                    title="Filter My Daily Summary to this staff"
+                                  >
+                                    {name}
+                                  </button>
+                                ) : (
+                                  name
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">
+                                {st ? fmt(billsCreated) : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-blue-700 dark:text-blue-400">
+                                {st ? fmt(cashCollected) : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-red-600 dark:text-red-400">
+                                {st && billsCancelled > 0 ? fmt(billsCancelled) : st ? "—" : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">
+                                {st && st.cashRefunded > 0 ? fmt(st.cashRefunded) : st ? "—" : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-violet-700 dark:text-violet-400">
+                                {st && st.digitalIn > 0 ? fmt(st.digitalIn) : st ? "—" : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-violet-500 dark:text-violet-400">
+                                {st && st.digitalRefunded > 0 ? fmt(st.digitalRefunded) : st ? "—" : "—"}
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {pc ? (
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <span className="tabular-nums font-bold text-orange-900 dark:text-orange-100">
+                                      {pc.billCount} bill{pc.billCount !== 1 ? "s" : ""} · {fmt(pc.billTotal)}
+                                    </span>
+                                    {pc.sameDayBillCount > 0 && <SameDayAfterCloseBadge />}
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                      {(data?.byStaff?.length ?? 0) > 0 && (
+                        <tr className="bg-gray-100 dark:bg-gray-900/40 font-bold border-t-2 border-gray-200 dark:border-gray-700">
+                          <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL (Clinic)</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + (st.billsCreated ?? st.grossBilled), 0))}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + (st.cashCollected ?? st.cashIn), 0))}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + (st.billsCancelled ?? st.cancelled), 0))}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + st.cashRefunded, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + st.digitalIn, 0))}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(data!.byStaff!.reduce((a, st) => a + st.digitalRefunded, 0))}</td>
+                          <td className="px-3 py-2 tabular-nums font-black text-orange-800 dark:text-orange-200">
+                            {staffWithPostClosure.length > 0
+                              ? `${staffWithPostClosure.reduce((a, r) => a + r.postClosure.billCount, 0)} · ${fmt(staffWithPostClosure.reduce((a, r) => a + r.postClosure.billTotal, 0))}`
+                              : "—"}
+                          </td>
                         </tr>
-                      );
-                    })}
-                    <tr className="bg-gray-100 dark:bg-gray-900/40 font-bold border-t-2 border-gray-200 dark:border-gray-700">
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-900 dark:text-gray-100">TOTAL (Clinic)</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCreated ?? st.grossBilled), 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.cashCollected ?? st.cashIn), 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + (st.billsCancelled ?? st.cancelled), 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.cashRefunded, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalIn, 0))}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{fmt(data.byStaff.reduce((a, st) => a + st.digitalRefunded, 0))}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div className="px-4 py-2 bg-emerald-50/80 dark:bg-emerald-950/20 border-t border-emerald-100 dark:border-emerald-900 text-[12px]">
-                <span className="font-bold text-emerald-800 dark:text-emerald-300">Net Cash Available (clinic): </span>
-                <span className="tabular-nums font-extrabold text-emerald-900 dark:text-emerald-200">
-                  {fmt((s.netClinicCash ?? (s.cashIn - s.cashRefunded)))}
-                </span>
-                <span className="text-gray-500 dark:text-gray-400 ml-2">
-                  = Cash collected {fmt(s.cashIn)} − Cash refunded {fmt(s.cashRefunded)}
-                </span>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                {s && (
+                  <div className="px-4 py-2 bg-emerald-50/80 dark:bg-emerald-950/20 border-t border-emerald-100 dark:border-emerald-900 text-[12px]">
+                    <span className="font-bold text-emerald-800 dark:text-emerald-300">Net Cash Available (clinic): </span>
+                    <span className="tabular-nums font-extrabold text-emerald-900 dark:text-emerald-200">
+                      {fmt((s.netClinicCash ?? (s.cashIn - s.cashRefunded)))}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400 ml-2">
+                      = Cash collected {fmt(s.cashIn)} − Cash refunded {fmt(s.cashRefunded)}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           )}
