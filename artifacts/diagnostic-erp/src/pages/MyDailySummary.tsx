@@ -2437,9 +2437,9 @@ export default function MyDailySummary() {
                     <div className="w-[calc(50%-0.375rem)] sm:w-[calc(33.333%-0.5rem)] xl:w-auto xl:flex-1 min-w-0">
                       <MiniKpi
                         icon={Wallet}
-                        label="Outstanding / Dues"
+                        label="Outstanding (unpaid)"
                         value={fmt(s.outstanding)}
-                        sub="Unpaid balance"
+                        sub="Balance still due on open bills — not dues collected"
                         theme="orange"
                         onClick={() => setDrilldownType("outstandingDues")}
                       />
@@ -2450,7 +2450,14 @@ export default function MyDailySummary() {
                         icon={Calculator}
                         label="Collectible Amount"
                         value={fmt(collectible)}
-                        sub="What should be in hand + bank"
+                        sub={
+                          s.duesCollectedTotal > 0
+                            ? `Bills ${fmt(s.grossBilledIncludingCancelled)} + Dues collected ${fmt(s.duesCollectedTotal)}` +
+                              (s.outstanding > 0 || (s.cancelledAmount ?? 0) > 0
+                                ? " (− cancel/outstanding/refunds)"
+                                : " — matches slip Expected when expenses/refunds/outstanding are ₹0")
+                            : "What should be in hand + bank"
+                        }
                         solid="blue"
                         onClick={() => setDrilldownType("collectibleAmount")}
                       />

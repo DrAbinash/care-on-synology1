@@ -119,5 +119,41 @@ describe("buildStaffDayCloseSlipHtml", () => {
     expect(html).toContain("99,075.00");
     expect(html).toContain("1,73,150.00");
     expect(html).toContain("DISCOUNTS GIVEN → Rs. 2,375.00");
+    expect(html).toContain("line emphasize");
+    expect(html).toContain("Expected = Bill Gen + Dues Collected");
+  });
+
+  test("24-Sep Suraj-style bridge: Bill Gen 132900 + Dues 3000 = Expected 135900", () => {
+    const html = buildStaffDayCloseSlipHtml(
+      {
+        ...sample,
+        userName: "SURAJ JHA",
+        totalBilled: 132900,
+        totalDue: 0,
+        expectedUpi: 57500,
+        expectedCash: 78400,
+        totalExpected: 135900,
+        totalActual: 135900,
+        variance: 0,
+        printActivity: {
+          ...sample.printActivity!,
+          dueReceived: 3000,
+          cancelledBillsAmount: 0,
+          refundsAmount: 0,
+          discountsGiven: 2450,
+          totalExpenses: 0,
+          expenseDetails: [],
+          billEdits: [],
+        },
+      },
+      { name: "Care Diagnostics" },
+      "SURAJ JHA",
+    );
+    expect(html).toContain("1,32,900.00");
+    expect(html).toContain("3,000.00");
+    expect(html).toContain("1,35,900.00");
+    expect(html).toContain("57,500.00");
+    expect(html).toContain("78,400.00");
+    expect(html).toContain("line emphasize");
   });
 });
