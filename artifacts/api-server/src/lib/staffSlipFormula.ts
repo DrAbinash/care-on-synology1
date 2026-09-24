@@ -69,15 +69,16 @@ export function computeStaffSlipFormula(input: StaffSlipFormulaInput): StaffSlip
  * Dues collected for a staff drawer window.
  *
  * Bill Gen only includes bills this staff created inside (from, to]. Any
- * positive payment they record on a bill outside that set is dues — the payment
- * time is already constrained by the drawer window (e.g. Suraj's PINKI ₹3000 at
- * 11:16am on 24 Sept, before day close, correctly sat in UPI+CASH).
+ * positive payment they record on a bill outside that set is dues.
  *
- * The older rule (bill.createdAt ≤ prior close) could still drop that in-window
- * payment from Dues Collected when the bill was outside this staff's Bill Gen
- * but not strictly before `from` — so Expected undershot UPI+CASH by exactly
- * the dues amount while the slip still said Balanced. Matching My Daily Summary:
- * dues = payments on bills that are not this staff's window Bill Gen.
+ * Suraj #170 (confirmed from bill + audit screenshots):
+ *   - PINKI 20260918133 created 23 Sept 6:18pm by ASHOK (₹4000, ₹1000 paid)
+ *   - Suraj's drawer window started ~23 Sept 5:42pm (his prior close)
+ *   - Suraj collected remaining ₹3000 at 24 Sept 11:16am (before day close)
+ * Old rule required bill.createdAt ≤ prior close → 6:18pm ≰ 5:42pm → Dues 0,
+ * while UPI+CASH still held ₹3000 (Expected short by exactly dues). Calendar-day
+ * My Daily Summary correctly showed Dues ₹3000 because the bill predates 24 Sept.
+ * Sanjeev was fine: his dues bills were created before *his* prior close.
  */
 export function computeDueReceivedForWindow(opts: {
   /** Bill ids this staff created inside the drawer window (Bill Gen set). */
