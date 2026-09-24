@@ -64,3 +64,38 @@ export function computeStaffSlipFormula(input: StaffSlipFormulaInput): StaffSlip
     expected,
   };
 }
+
+/**
+ * Dues collected for a staff drawer window.
+ *
+ * Bill Gen only includes bills this staff created inside (from, to]. Any
+ * positive payment they record on a bill outside that set is dues — the payment
+ * time is already constrained by the drawer window (e.g. Suraj's PINKI ₹3000 at
+ * 11:16am on 24 Sept, before day close, correctly sat in UPI+CASH).
+ *
+ * The older rule (bill.createdAt ≤ prior close) could still drop that in-window
+ * payment from Dues Collected when the bill was outside this staff's Bill Gen
+ * but not strictly before `from` — so Expected undershot UPI+CASH by exactly
+ * the dues amount while the slip still said Balanced. Matching My Daily Summary:
+ * dues = payments on bills that are not this staff's window Bill Gen.
+ */
+export function computeDueReceivedForWindow(opts: {
+  /** Bill ids this staff created inside the drawer window (Bill Gen set). */
+  windowBillIds: Iterable<number>;
+  payments: Array<{ billId?: number | null; amount: unknown }>;
+}): number {
+  const mine = new Set<number>();
+  for (const id of opts.windowBillIds) {
+    if (typeof id === "number" && Number.isFinite(id)) mine.add(id);
+  }
+  let due = 0;
+  for (const p of opts.payments) {
+    const amt = money(p.amount);
+    if (amt <= 0) continue;
+    const billId = p.billId;
+    if (billId == null || !Number.isFinite(Number(billId))) continue;
+    if (mine.has(Number(billId))) continue;
+    due += amt;
+  }
+  return due;
+}

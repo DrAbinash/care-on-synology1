@@ -20,7 +20,7 @@ import { isCollectiblePayment } from "../lib/financialIntegrity";
 import { loadPostClosureActivity } from "../lib/postClosureActivity";
 import type { StaffPrintActivity } from "../lib/postClosureActivityTypes";
 import { isSameDayAfterClose, summarizeSameDayBills } from "../lib/sameDayAfterClose";
-import { computeStaffSlipFormula } from "../lib/staffSlipFormula";
+import { computeDueReceivedForWindow, computeStaffSlipFormula } from "../lib/staffSlipFormula";
 import {
   computeGrossRestoreForTestCancelRefunds,
   computeRefundsExcludedFromCollectible,
@@ -966,32 +966,16 @@ async function summarizeUserWindow(
   const cancelledBillIds = new Set(cancelledByMeRows.map((r) => r.id));
   const cancelledBillsAmountFull = cancelledByMeRows.reduce((s, r) => s + n(r.totalAmount), 0);
 
-  // Dues collected: this staff's positive payments in the window on bills
-  // created at or before the previous close (from). First-ever close has
-  // no prior window, so dues are 0 — those bills are in totalBilled.
+  // Dues collected: positive payments already in this drawer window whose
+  // bill is NOT in this staff's Bill Gen (bills they created in the window).
+  // Do not gate on bill.createdAt ≤ prior close — that dropped in-window
+  // dues like Suraj #170 (PINKI ₹3000 at 11:16am before close): UPI+CASH
+  // had the money, Dues/Expected did not. Aligns with My Daily Summary.
   const collectiblePays = payments.filter(isCollectiblePayment);
-  let dueReceived = 0;
-  if (from) {
-    const dueCandidateIds = [...new Set(
-      collectiblePays
-        .filter((p) => n(p.amount) > 0 && p.billId != null)
-        .map((p) => p.billId as number),
-    )];
-    if (dueCandidateIds.length > 0) {
-      const dueBills = await db
-        .select({ id: billsTable.id, createdAt: billsTable.createdAt })
-        .from(billsTable)
-        .where(inArray(billsTable.id, dueCandidateIds));
-      const priorIds = new Set(
-        dueBills
-          .filter((b) => b.createdAt && new Date(b.createdAt) <= from)
-          .map((b) => b.id),
-      );
-      dueReceived = collectiblePays
-        .filter((p) => n(p.amount) > 0 && priorIds.has(p.billId))
-        .reduce((s, p) => s + n(p.amount), 0);
-    }
-  }
+  const dueReceived = computeDueReceivedForWindow({
+    windowBillIds: bills.map((b) => b.id),
+    payments: collectiblePays,
+  });
 
   // Partial test-cancel auto-refunds: same attribution as my-daily-summary —
   // canceller owns them; creator gross is restored so their slip is unchanged.
