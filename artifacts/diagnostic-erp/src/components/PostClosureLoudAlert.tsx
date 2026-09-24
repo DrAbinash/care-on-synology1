@@ -102,21 +102,31 @@ export function PostClosureLoudAlert({
             <p className="text-base sm:text-lg font-black tracking-tight uppercase">
               Billing continued after close
             </p>
-            <p className="text-sm font-semibold text-orange-50 mt-0.5">
-              {scopeLabel} closed at {fmtIst(data.closedAt)} — fresh bills/payments{" "}
-              {open ? "below" : "inside"} belong to the{" "}
-              <span className="underline decoration-2 underline-offset-2">next reconciliation window</span>
-              , not the closed drawer.
-            </p>
-            {hasSameDay && (
-              <p
-                className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white text-orange-800 text-xs font-black uppercase tracking-wide"
-                data-testid="same-day-after-close-badge"
-              >
-                Same-day after close · {sameDayBillCount} bill
-                {sameDayBillCount !== 1 ? "s" : ""} ({inr(sameDayBillTotal)})
-                {sameDayPaymentCount > 0 &&
-                  ` · ${sameDayPaymentCount} payment${sameDayPaymentCount !== 1 ? "s" : ""} (${inr(sameDayPaymentTotal)})`}
+            {open ? (
+              <>
+                <p className="text-sm font-semibold text-orange-50 mt-0.5">
+                  {scopeLabel} closed at {fmtIst(data.closedAt)} — fresh bills/payments below belong to the{" "}
+                  <span className="underline decoration-2 underline-offset-2">next reconciliation window</span>
+                  , not the closed drawer.
+                </p>
+                {hasSameDay && (
+                  <p
+                    className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white text-orange-800 text-xs font-black uppercase tracking-wide"
+                    data-testid="same-day-after-close-badge"
+                  >
+                    Same-day after close · {sameDayBillCount} bill
+                    {sameDayBillCount !== 1 ? "s" : ""} ({inr(sameDayBillTotal)})
+                    {sameDayPaymentCount > 0 &&
+                      ` · ${sameDayPaymentCount} payment${sameDayPaymentCount !== 1 ? "s" : ""} (${inr(sameDayPaymentTotal)})`}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs sm:text-sm font-semibold text-orange-50 mt-0.5 truncate">
+                Closed {fmtIst(data.closedAt)}
+                {hasSameDay
+                  ? ` · ${sameDayBillCount} same-day bill${sameDayBillCount !== 1 ? "s" : ""}`
+                  : " · next window"}
               </p>
             )}
           </div>
