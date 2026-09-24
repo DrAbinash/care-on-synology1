@@ -36,4 +36,13 @@ describe("post-closure billing visibility (source contract)", () => {
     expect(src).toContain('data-testid="same-day-after-close-row-badge"');
     expect(src).toContain('data-testid="staff-post-closure-overview"');
   });
+
+  it("loud alert starts collapsed with crisp ribbon summary still visible", () => {
+    const src = readFileSync(join(root, "components/PostClosureLoudAlert.tsx"), "utf8");
+    expect(src).toContain("defaultOpen = false");
+    expect(src).toContain('data-testid="post-closure-loud-alert-toggle"');
+    expect(src).toContain('data-testid="post-closure-loud-alert-summary"');
+    expect(src).toContain('data-testid="post-closure-loud-alert-body"');
+    expect(src).toContain("{open && (");
+  });
 });

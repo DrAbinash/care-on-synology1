@@ -14,6 +14,7 @@ import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliatio
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
 import ModalityBillingKpi from "@/components/ModalityBillingKpi";
+import type { ModalityBillingSummary } from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { PostClosureLoudAlert, SameDayAfterCloseBadge } from "@/components/PostClosureLoudAlert";
@@ -1638,7 +1639,7 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   );
 }
 
-// ─── Post-Closure Activity (loud, always expanded) ───────────────────────────
+// ─── Post-Closure Activity (loud ribbon; tables collapsed by default) ────────
 
 function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivity; scopeLabel?: string }) {
   return <PostClosureLoudAlert data={data} scopeLabel={scopeLabel ?? "Drawer"} />;
@@ -1869,6 +1870,7 @@ function SummaryCollapsibleBox({
   title,
   icon,
   headerRight,
+  summary,
   children,
   testId,
   defaultOpen = false,
@@ -1877,9 +1879,11 @@ function SummaryCollapsibleBox({
   title: string;
   icon?: ReactNode;
   headerRight?: ReactNode;
+  /** Crisp totals always visible on the header (collapsed or open). */
+  summary?: ReactNode;
   children: ReactNode;
   testId?: string;
-  /** When true, panel starts expanded (Imaging & Pathology Billed). */
+  /** When true, panel starts expanded. */
   defaultOpen?: boolean;
   subtitle?: string;
 }) {
@@ -1888,6 +1892,7 @@ function SummaryCollapsibleBox({
     <div
       className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden"
       data-testid={testId}
+      data-collapsed={!open ? "true" : "false"}
     >
       <div className="flex items-stretch">
         <button
@@ -1907,9 +1912,12 @@ function SummaryCollapsibleBox({
               </p>
             )}
           </div>
-          {open
-            ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
-            : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+          <div className="flex items-center gap-3 shrink-0">
+            {summary}
+            {open
+              ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
+              : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+          </div>
         </button>
         {headerRight && (
           <div className="flex items-center pr-4 shrink-0">
@@ -2017,6 +2025,15 @@ export default function MyDailySummary() {
       isSuperAdmin && staffFilter.trim()
         ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
         : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
+    ...FINANCIAL_QUERY_OPTIONS,
+  });
+
+  // Same query key as ModalityBillingKpi — shared cache for the collapsed header summary.
+  const modalityBillingQ = useQuery<ModalityBillingSummary>({
+    queryKey: ["modality-billing", from, to],
+    queryFn: () =>
+      api.get(`/api/dashboard/my-daily-summary/modality-billing?from=${from}&to=${to}`),
+    enabled: isOwner,
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2469,16 +2486,36 @@ export default function MyDailySummary() {
         )}
       </div>
 
-      {/* Imaging & Pathology Billed — high on page, expanded by default (admin) */}
+      {/* Imaging & Pathology Billed — high on page, collapsed with crisp header totals */}
       {isOwner && (
         <SummaryCollapsibleBox
           title="Imaging & Pathology Billed"
           icon={<ScanLine size={14} className="text-sky-600" />}
           testId="imaging-billed"
-          defaultOpen
           subtitle={`${from === to
             ? from.split("-").reverse().join("-")
             : `${from} → ${to}`} · clinic-wide · modality/service-wise billing`}
+          summary={
+            modalityBillingQ.data ? (
+              <div
+                className="flex flex-col items-end gap-0.5 text-right"
+                data-testid="imaging-billed-summary"
+              >
+                <span className="text-base sm:text-lg font-black tabular-nums text-sky-900 dark:text-sky-100 leading-none">
+                  {new Intl.NumberFormat("en-IN", {
+                    style: "currency",
+                    currency: "INR",
+                    maximumFractionDigits: 0,
+                  }).format(modalityBillingQ.data.totals.grossBilling)}
+                </span>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-sky-700/80 dark:text-sky-300/80">
+                  {modalityBillingQ.data.totals.testCount} tests/cases ·{" "}
+                  {modalityBillingQ.data.totals.billCount} bill
+                  {modalityBillingQ.data.totals.billCount === 1 ? "" : "s"}
+                </span>
+              </div>
+            ) : undefined
+          }
         >
           <ModalityBillingKpi from={from} to={to} hideHeader />
         </SummaryCollapsibleBox>

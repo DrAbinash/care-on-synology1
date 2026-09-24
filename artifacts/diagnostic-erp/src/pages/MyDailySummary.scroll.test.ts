@@ -39,10 +39,16 @@ describe("My Daily Summary — page fills the pane and scrolls", () => {
   });
 });
 
-describe("My Daily Summary — Imaging & Pathology Billed sits high and expands by default", () => {
+describe("My Daily Summary — Imaging & Pathology Billed sits high and collapses by default", () => {
   it("places diagnostic billing after the date selector and before Money flow", () => {
     expect(pageSrc).toContain('title="Imaging & Pathology Billed"');
-    expect(pageSrc).toContain("defaultOpen");
+    expect(pageSrc).toContain('data-testid="imaging-billed-summary"');
+    // Collapsed by default — no defaultOpen on this panel
+    const imagingBlock = pageSrc.slice(
+      pageSrc.indexOf('title="Imaging & Pathology Billed"'),
+      pageSrc.indexOf('title="Imaging & Pathology Billed"') + 900,
+    );
+    expect(imagingBlock).not.toMatch(/defaultOpen\b/);
 
     const datePicker = pageSrc.indexOf("Date Range Picker");
     const imagingBilled = pageSrc.indexOf('title="Imaging & Pathology Billed"');
