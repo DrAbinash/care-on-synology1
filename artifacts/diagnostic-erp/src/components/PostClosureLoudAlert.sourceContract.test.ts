@@ -21,6 +21,17 @@ describe("post-closure billing visibility (source contract)", () => {
     expect(src).toContain("sameDayAfterPriorClose");
   });
 
+  it("My Daily Summary merges all-staff post-closure into Staff Activity", () => {
+    const src = readFileSync(join(root, "pages/MyDailySummary.tsx"), "utf8");
+    expect(src).toContain('data-testid="staff-activity-panel"');
+    expect(src).toContain('data-testid="staff-post-closure-overview"');
+    expect(src).toContain("/api/day-close/staff-status");
+    expect(src).toContain("showIndividualPostClosure");
+    expect(src).toContain("After close");
+    // All-staff orange is in Staff Activity — not a detached duplicate banner call
+    expect(src).not.toContain("<StaffPostClosureOverviewBanner");
+  });
+
   it("admin Day Close shows staff post-closure overview + open-window same-day mark", () => {
     const src = readFileSync(join(root, "pages/DayClose.tsx"), "utf8");
     expect(src).toContain("StaffPostClosureOverviewBanner");
