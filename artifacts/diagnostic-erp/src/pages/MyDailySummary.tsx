@@ -14,6 +14,7 @@ import { buildReconciliationLedger, simpleLedgerRows } from "@/lib/reconciliatio
 import { SummaryDrilldownModal, type DrilldownType } from "@/components/SummaryDrilldownModal";
 import BillingVsPacsKpi from "@/components/BillingVsPacsKpi";
 import ModalityBillingKpi from "@/components/ModalityBillingKpi";
+import type { ModalityBillingSummary } from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { PostClosureLoudAlert, SameDayAfterCloseBadge } from "@/components/PostClosureLoudAlert";
@@ -1638,7 +1639,7 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   );
 }
 
-// ─── Post-Closure Activity (loud, always expanded) ───────────────────────────
+// ─── Post-Closure Activity (loud ribbon; tables collapsed by default) ────────
 
 function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivity; scopeLabel?: string }) {
   return <PostClosureLoudAlert data={data} scopeLabel={scopeLabel ?? "Drawer"} />;
@@ -1869,6 +1870,7 @@ function SummaryCollapsibleBox({
   title,
   icon,
   headerRight,
+  summary,
   children,
   testId,
   defaultOpen = false,
@@ -1877,9 +1879,11 @@ function SummaryCollapsibleBox({
   title: string;
   icon?: ReactNode;
   headerRight?: ReactNode;
+  /** Crisp totals always visible on the header (collapsed or open). */
+  summary?: ReactNode;
   children: ReactNode;
   testId?: string;
-  /** When true, panel starts expanded (Imaging & Pathology Billed). */
+  /** When true, panel starts expanded. */
   defaultOpen?: boolean;
   subtitle?: string;
 }) {
@@ -1888,6 +1892,7 @@ function SummaryCollapsibleBox({
     <div
       className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl shadow-sm overflow-hidden"
       data-testid={testId}
+      data-collapsed={!open ? "true" : "false"}
     >
       <div className="flex items-stretch">
         <button
@@ -1907,9 +1912,12 @@ function SummaryCollapsibleBox({
               </p>
             )}
           </div>
-          {open
-            ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
-            : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+          <div className="flex items-center gap-3 shrink-0">
+            {summary}
+            {open
+              ? <ChevronUp size={18} className="text-gray-400 shrink-0" />
+              : <ChevronDown size={18} className="text-gray-400 shrink-0" />}
+          </div>
         </button>
         {headerRight && (
           <div className="flex items-center pr-4 shrink-0">
@@ -2017,6 +2025,15 @@ export default function MyDailySummary() {
       isSuperAdmin && staffFilter.trim()
         ? api.get<PostClosureActivity>(`/api/day-close/staff-post-closure-activity/${encodeURIComponent(postClosureStaffName)}`)
         : api.get<PostClosureActivity>("/api/day-close/my-post-closure-activity"),
+    ...FINANCIAL_QUERY_OPTIONS,
+  });
+
+  // Same query key as ModalityBillingKpi — shared cache for the collapsed header summary.
+  const modalityBillingQ = useQuery<ModalityBillingSummary>({
+    queryKey: ["modality-billing", from, to],
+    queryFn: () =>
+      api.get(`/api/dashboard/my-daily-summary/modality-billing?from=${from}&to=${to}`),
+    enabled: isOwner,
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
@@ -2253,17 +2270,6 @@ export default function MyDailySummary() {
                 Expense
               </Button>
             </Link>
-            <Link href="/my-day-close">
-              <Button
-                size="sm"
-                className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5"
-              >
-                <Lock size={13} />
-                {drawerQ.data && drawerQ.data.drawerStatus !== "open" && drawerQ.data.drawerStatus !== "reopened"
-                  ? "My Day Close"
-                  : "Close My Drawer"}
-              </Button>
-            </Link>
             <SummaryExportToolbar
               config={exportConfig}
               emailEndpoint="/api/dashboard/my-daily-summary/send-email"
@@ -2277,128 +2283,6 @@ export default function MyDailySummary() {
 
       <div className="px-4 sm:px-6 pb-10 space-y-5">
       {isOwner && <InfrastructurePulseStrip />}
-
-      {/* ── Drawer Status Warning Chips ── */}
-      {drawerQ.data && <DrawerChips status={drawerQ.data} />}
-
-      {/* ── Day Close Open Window Quick View ── */}
-      {myPreviewQ.data && (
-        <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
-            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
-              {myPreviewQ.data.coveredFromTs
-                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
-                : "Since start — now · not calendar Today (IST)"}
-            </span>
-            <Link href="/my-day-close">
-              <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
-                <Lock size={12} /> Close My Drawer
-              </Button>
-            </Link>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-2.5">
-              <div className="text-xs text-gray-500 dark:text-gray-400">Bills</div>
-              <div className="text-lg font-bold text-blue-700 dark:text-blue-300">{myPreviewQ.data.billsCount}</div>
-              <div className="text-xs text-gray-400">₹{myPreviewQ.data.totalBilled.toFixed(0)} billed</div>
-            </div>
-            <div className="bg-green-50 dark:bg-green-950/30 rounded-lg p-2.5">
-              <div className="text-xs text-gray-500 dark:text-gray-400">Payments</div>
-              <div className="text-lg font-bold text-green-700 dark:text-green-300">{myPreviewQ.data.paymentsCount}</div>
-              <div className="text-xs text-gray-400">₹{myPreviewQ.data.expected.total.toFixed(0)} collected</div>
-            </div>
-            <div className="bg-amber-50 dark:bg-amber-950/30 rounded-lg p-2.5">
-              <div className="text-xs text-gray-500 dark:text-gray-400">Total Due</div>
-              <div className="text-lg font-bold text-amber-700 dark:text-amber-300">₹{myPreviewQ.data.totalDue.toFixed(0)}</div>
-              <div className="text-xs text-gray-400">outstanding</div>
-            </div>
-            <div className="bg-violet-50 dark:bg-violet-950/30 rounded-lg p-2.5">
-              <div className="text-xs text-gray-500 dark:text-gray-400">Expected Cash</div>
-              <div className="text-lg font-bold text-violet-700 dark:text-violet-300">₹{myPreviewQ.data.expected.cash.toFixed(0)}</div>
-              <div className="text-xs text-gray-400">in hand</div>
-            </div>
-          </div>
-
-          {/* ── Open Window Bills Table ── */}
-          {myPreviewQ.data.bills && myPreviewQ.data.bills.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-                <h4 className="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wide">Bills in Open Window</h4>
-                <div className="flex items-center gap-2">
-                  {(myPreviewQ.data.sameDayAfterPriorClose?.billCount ?? 0) > 0 && (
-                    <span className="text-[10px] font-black uppercase tracking-wide text-orange-800 dark:text-orange-200 bg-orange-100 dark:bg-orange-950/50 px-2 py-0.5 rounded border border-orange-300 dark:border-orange-700">
-                      {myPreviewQ.data.sameDayAfterPriorClose!.billCount} same-day after prior close · ₹
-                      {myPreviewQ.data.sameDayAfterPriorClose!.billTotal.toFixed(0)}
-                    </span>
-                  )}
-                  <span className="text-xs text-gray-400">{myPreviewQ.data.bills.length} bill{myPreviewQ.data.bills.length !== 1 ? "s" : ""}</span>
-                </div>
-              </div>
-              <div className="overflow-x-auto snap-x">
-                <table className="w-full text-xs min-w-[900px]">
-                  <thead className="bg-gray-50 dark:bg-muted/30">
-                    <tr>
-                      {["Bill #", "Patient", "Total", "Paid", "Balance", "Discount", "Status", "Window mark", "Referral Doctor", "Created By"].map((h) => (
-                        <th key={h} className="px-2 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-card-border">
-                    {myPreviewQ.data.bills.map((b) => (
-                      <tr
-                        key={b.id}
-                        className={
-                          b.sameDayAfterPriorClose
-                            ? "bg-orange-50/90 dark:bg-orange-950/25 hover:bg-orange-100/80 dark:hover:bg-orange-950/40"
-                            : "hover:bg-gray-50 dark:hover:bg-muted/20"
-                        }
-                      >
-                        <td className="px-2 py-2 font-semibold">
-                          <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
-                        </td>
-                        <td className="px-2 py-2 text-gray-800 dark:text-foreground font-semibold">{b.patientName}</td>
-                        <td className="px-2 py-2 font-semibold text-gray-900 dark:text-foreground tabular-nums">{fmt(b.totalAmount)}</td>
-                        <td className="px-2 py-2 text-green-700 dark:text-green-400 tabular-nums">{fmt(b.paidAmount)}</td>
-                        <td className="px-2 py-2 tabular-nums" style={{ color: b.balanceAmount > 0 ? "#dc2626" : "#16a34a" }}>{fmt(b.balanceAmount)}</td>
-                        <td className="px-2 py-2 text-amber-600 tabular-nums">{b.discount > 0 ? fmt(b.discount) : "—"}</td>
-                        <td className="px-2 py-2">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold capitalize"
-                            style={{ background: `${statusColors[b.status] ?? "#94a3b8"}22`, color: statusColors[b.status] ?? "#94a3b8" }}>
-                            {b.status}
-                          </span>
-                        </td>
-                        <td className="px-2 py-2 whitespace-nowrap">
-                          {b.sameDayAfterPriorClose ? (
-                            <SameDayAfterCloseBadge />
-                          ) : (
-                            <span className="text-[10px] font-semibold text-slate-500 uppercase">New window</span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {b.referringDoctor ? b.referringDoctor : <span className="text-gray-400">—</span>}
-                        </td>
-                        <td className="px-2 py-2 text-gray-600 dark:text-gray-400 whitespace-nowrap">{b.createdByName}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-gray-50 dark:bg-muted/30 border-t-2 border-gray-200 dark:border-card-border">
-                    <tr>
-                      <td className="px-2 py-2 font-bold text-gray-800 dark:text-foreground" colSpan={2}>Total ({myPreviewQ.data.bills.length} bills)</td>
-                      <td className="px-2 py-2 font-bold tabular-nums text-gray-900 dark:text-foreground">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.totalAmount, 0))}</td>
-                      <td className="px-2 py-2 font-bold tabular-nums text-green-700">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.paidAmount, 0))}</td>
-                      <td className="px-2 py-2 font-bold tabular-nums text-red-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.balanceAmount, 0))}</td>
-                      <td className="px-2 py-2 font-bold tabular-nums text-amber-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.discount, 0))}</td>
-                      <td colSpan={4} />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ── Date Range Picker ── */}
       <div className="bg-white dark:bg-card border border-gray-200 dark:border-card-border rounded-xl p-4 shadow-sm space-y-3">
@@ -2469,29 +2353,6 @@ export default function MyDailySummary() {
         )}
       </div>
 
-      {/* Imaging & Pathology Billed — high on page, expanded by default (admin) */}
-      {isOwner && (
-        <SummaryCollapsibleBox
-          title="Imaging & Pathology Billed"
-          icon={<ScanLine size={14} className="text-sky-600" />}
-          testId="imaging-billed"
-          defaultOpen
-          subtitle={`${from === to
-            ? from.split("-").reverse().join("-")
-            : `${from} → ${to}`} · clinic-wide · modality/service-wise billing`}
-        >
-          <ModalityBillingKpi from={from} to={to} hideHeader />
-        </SummaryCollapsibleBox>
-      )}
-
-      {/* ── Post-closure (outside summary gate — must stay visible when s is loading) ── */}
-      {postClosureQ.data && (
-        <PostClosureActivityBox
-          data={postClosureQ.data}
-          scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
-        />
-      )}
-
       {/* ── Loading State ── */}
       {isLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
@@ -2501,9 +2362,8 @@ export default function MyDailySummary() {
         </div>
       )}
 
-      {/* ── KPI layout (presentation only — formulas unchanged) ───────────
-            Primary: 5 always-visible cards in money-flow order.
-            Details: remaining metrics behind a collapsible section.
+      {/* ── Finance cluster (directly under date/staff filters) ───────────
+            Money flow → Financial Details → Daily Financial Reconciliation.
             Collectible math matches UnifiedReconciliationPanel (refunds on
             same-period cancelled bills excluded from double-subtract). */}
       {s && (
@@ -2751,7 +2611,177 @@ export default function MyDailySummary() {
             staffName={data.staffName}
             periodLabel={from === to ? from : `${from} → ${to}`}
           />
+        </>
+      )}
 
+      {/* Imaging & Pathology Billed — after dated finance cluster */}
+      {isOwner && (
+        <SummaryCollapsibleBox
+          title="Imaging & Pathology Billed"
+          icon={<ScanLine size={14} className="text-sky-600" />}
+          testId="imaging-billed"
+          subtitle={`${from === to
+            ? from.split("-").reverse().join("-")
+            : `${from} → ${to}`} · clinic-wide · modality/service-wise billing`}
+          summary={
+            modalityBillingQ.data ? (
+              <div
+                className="flex flex-col items-end gap-0.5 text-right"
+                data-testid="imaging-billed-summary"
+              >
+                <span className="text-base sm:text-lg font-black tabular-nums text-sky-900 dark:text-sky-100 leading-none">
+                  {new Intl.NumberFormat("en-IN", {
+                    style: "currency",
+                    currency: "INR",
+                    maximumFractionDigits: 0,
+                  }).format(modalityBillingQ.data.totals.grossBilling)}
+                </span>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-sky-700/80 dark:text-sky-300/80">
+                  {modalityBillingQ.data.totals.testCount} tests/cases ·{" "}
+                  {modalityBillingQ.data.totals.billCount} bill
+                  {modalityBillingQ.data.totals.billCount === 1 ? "" : "s"}
+                </span>
+              </div>
+            ) : undefined
+          }
+        >
+          <ModalityBillingKpi from={from} to={to} hideHeader />
+        </SummaryCollapsibleBox>
+      )}
+
+      {/* ── Post-closure (outside summary gate — must stay visible when s is loading) ── */}
+      {postClosureQ.data && (
+        <PostClosureActivityBox
+          data={postClosureQ.data}
+          scopeLabel={isSuperAdmin && staffFilter.trim() ? `${postClosureStaffName}'s drawer` : "Your drawer"}
+        />
+      )}
+
+      {/* ── Drawer actions (below finance — Close My Drawer lives here) ── */}
+      {/* ── Drawer Status Warning Chips ── */}
+      {drawerQ.data && <DrawerChips status={drawerQ.data} />}
+
+      {/* ── Day Close Open Window Quick View ── */}
+      {myPreviewQ.data && (
+        <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
+            <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
+              {myPreviewQ.data.coveredFromTs
+                ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
+                : "Since start — now · not calendar Today (IST)"}
+            </span>
+            <Link href="/my-day-close">
+              <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
+                <Lock size={12} /> Close My Drawer
+              </Button>
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-2.5">
+              <div className="text-xs text-gray-500 dark:text-gray-400">Bills</div>
+              <div className="text-lg font-bold text-blue-700 dark:text-blue-300">{myPreviewQ.data.billsCount}</div>
+              <div className="text-xs text-gray-400">₹{myPreviewQ.data.totalBilled.toFixed(0)} billed</div>
+            </div>
+            <div className="bg-green-50 dark:bg-green-950/30 rounded-lg p-2.5">
+              <div className="text-xs text-gray-500 dark:text-gray-400">Payments</div>
+              <div className="text-lg font-bold text-green-700 dark:text-green-300">{myPreviewQ.data.paymentsCount}</div>
+              <div className="text-xs text-gray-400">₹{myPreviewQ.data.expected.total.toFixed(0)} collected</div>
+            </div>
+            <div className="bg-amber-50 dark:bg-amber-950/30 rounded-lg p-2.5">
+              <div className="text-xs text-gray-500 dark:text-gray-400">Total Due</div>
+              <div className="text-lg font-bold text-amber-700 dark:text-amber-300">₹{myPreviewQ.data.totalDue.toFixed(0)}</div>
+              <div className="text-xs text-gray-400">outstanding</div>
+            </div>
+            <div className="bg-violet-50 dark:bg-violet-950/30 rounded-lg p-2.5">
+              <div className="text-xs text-gray-500 dark:text-gray-400">Expected Cash</div>
+              <div className="text-lg font-bold text-violet-700 dark:text-violet-300">₹{myPreviewQ.data.expected.cash.toFixed(0)}</div>
+              <div className="text-xs text-gray-400">in hand</div>
+            </div>
+          </div>
+
+          {/* ── Open Window Bills Table ── */}
+          {myPreviewQ.data.bills && myPreviewQ.data.bills.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                <h4 className="text-xs font-bold text-gray-600 dark:text-gray-300 uppercase tracking-wide">Bills in Open Window</h4>
+                <div className="flex items-center gap-2">
+                  {(myPreviewQ.data.sameDayAfterPriorClose?.billCount ?? 0) > 0 && (
+                    <span className="text-[10px] font-black uppercase tracking-wide text-orange-800 dark:text-orange-200 bg-orange-100 dark:bg-orange-950/50 px-2 py-0.5 rounded border border-orange-300 dark:border-orange-700">
+                      {myPreviewQ.data.sameDayAfterPriorClose!.billCount} same-day after prior close · ₹
+                      {myPreviewQ.data.sameDayAfterPriorClose!.billTotal.toFixed(0)}
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-400">{myPreviewQ.data.bills.length} bill{myPreviewQ.data.bills.length !== 1 ? "s" : ""}</span>
+                </div>
+              </div>
+              <div className="overflow-x-auto snap-x">
+                <table className="w-full text-xs min-w-[900px]">
+                  <thead className="bg-gray-50 dark:bg-muted/30">
+                    <tr>
+                      {["Bill #", "Patient", "Total", "Paid", "Balance", "Discount", "Status", "Window mark", "Referral Doctor", "Created By"].map((h) => (
+                        <th key={h} className="px-2 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-card-border">
+                    {myPreviewQ.data.bills.map((b) => (
+                      <tr
+                        key={b.id}
+                        className={
+                          b.sameDayAfterPriorClose
+                            ? "bg-orange-50/90 dark:bg-orange-950/25 hover:bg-orange-100/80 dark:hover:bg-orange-950/40"
+                            : "hover:bg-gray-50 dark:hover:bg-muted/20"
+                        }
+                      >
+                        <td className="px-2 py-2 font-semibold">
+                          <Link href={`/billing/${b.id}`} className="text-primary hover:underline">{b.billNumber}</Link>
+                        </td>
+                        <td className="px-2 py-2 text-gray-800 dark:text-foreground font-semibold">{b.patientName}</td>
+                        <td className="px-2 py-2 font-semibold text-gray-900 dark:text-foreground tabular-nums">{fmt(b.totalAmount)}</td>
+                        <td className="px-2 py-2 text-green-700 dark:text-green-400 tabular-nums">{fmt(b.paidAmount)}</td>
+                        <td className="px-2 py-2 tabular-nums" style={{ color: b.balanceAmount > 0 ? "#dc2626" : "#16a34a" }}>{fmt(b.balanceAmount)}</td>
+                        <td className="px-2 py-2 text-amber-600 tabular-nums">{b.discount > 0 ? fmt(b.discount) : "—"}</td>
+                        <td className="px-2 py-2">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold capitalize"
+                            style={{ background: `${statusColors[b.status] ?? "#94a3b8"}22`, color: statusColors[b.status] ?? "#94a3b8" }}>
+                            {b.status}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2 whitespace-nowrap">
+                          {b.sameDayAfterPriorClose ? (
+                            <SameDayAfterCloseBadge />
+                          ) : (
+                            <span className="text-[10px] font-semibold text-slate-500 uppercase">New window</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {b.referringDoctor ? b.referringDoctor : <span className="text-gray-400">—</span>}
+                        </td>
+                        <td className="px-2 py-2 text-gray-600 dark:text-gray-400 whitespace-nowrap">{b.createdByName}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-gray-50 dark:bg-muted/30 border-t-2 border-gray-200 dark:border-card-border">
+                    <tr>
+                      <td className="px-2 py-2 font-bold text-gray-800 dark:text-foreground" colSpan={2}>Total ({myPreviewQ.data.bills.length} bills)</td>
+                      <td className="px-2 py-2 font-bold tabular-nums text-gray-900 dark:text-foreground">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.totalAmount, 0))}</td>
+                      <td className="px-2 py-2 font-bold tabular-nums text-green-700">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.paidAmount, 0))}</td>
+                      <td className="px-2 py-2 font-bold tabular-nums text-red-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.balanceAmount, 0))}</td>
+                      <td className="px-2 py-2 font-bold tabular-nums text-amber-600">{fmt(myPreviewQ.data.bills.reduce((s, b) => s + b.discount, 0))}</td>
+                      <td colSpan={4} />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {s && (
+        <>
           {/* ── Drawer Close Status Card ── */}
           {drawerQ.data && (
             <DrawerStatusCard

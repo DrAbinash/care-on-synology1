@@ -39,20 +39,39 @@ describe("My Daily Summary — page fills the pane and scrolls", () => {
   });
 });
 
-describe("My Daily Summary — Imaging & Pathology Billed sits high and expands by default", () => {
-  it("places diagnostic billing after the date selector and before Money flow", () => {
+describe("My Daily Summary — dated finance cluster sits under filters", () => {
+  it("orders Clinic systems → date/staff → money flow → imaging → drawer close", () => {
     expect(pageSrc).toContain('title="Imaging & Pathology Billed"');
-    expect(pageSrc).toContain("defaultOpen");
+    expect(pageSrc).toContain('data-testid="imaging-billed-summary"');
+    expect(pageSrc).toContain("Finance cluster (directly under date/staff filters)");
+    expect(pageSrc).toContain("Drawer actions (below finance — Close My Drawer lives here)");
+
+    const imagingBlock = pageSrc.slice(
+      pageSrc.indexOf('title="Imaging & Pathology Billed"'),
+      pageSrc.indexOf('title="Imaging & Pathology Billed"') + 900,
+    );
+    expect(imagingBlock).not.toMatch(/defaultOpen\b/);
 
     const datePicker = pageSrc.indexOf("Date Range Picker");
-    const imagingBilled = pageSrc.indexOf('title="Imaging & Pathology Billed"');
     const moneyFlow = pageSrc.indexOf("Money flow");
+    const financialDetails = pageSrc.indexOf("Financial Details");
+    const recon = pageSrc.indexOf("<UnifiedReconciliationPanel");
+    const imagingBilled = pageSrc.indexOf('title="Imaging & Pathology Billed"');
+    const drawerActions = pageSrc.indexOf("Drawer actions (below finance");
     const imagingVsPacs = pageSrc.indexOf('title="Imaging vs PACS"');
+    const pageHeaderClose = pageSrc.indexOf("<PageHeader");
+    const pulse = pageSrc.indexOf("{isOwner && <InfrastructurePulseStrip");
+    const headerSlice = pageSrc.slice(pageHeaderClose, pulse);
 
-    expect(imagingBilled).toBeGreaterThan(datePicker);
-    expect(moneyFlow).toBeGreaterThan(imagingBilled);
-    // Keep Billing vs PACS independent and lower on the page
-    expect(imagingVsPacs).toBeGreaterThan(moneyFlow);
+    expect(pulse).toBeGreaterThan(pageHeaderClose);
+    expect(headerSlice).not.toContain("Close My Drawer");
+    expect(datePicker).toBeGreaterThan(pulse);
+    expect(moneyFlow).toBeGreaterThan(datePicker);
+    expect(financialDetails).toBeGreaterThan(moneyFlow);
+    expect(recon).toBeGreaterThan(financialDetails);
+    expect(imagingBilled).toBeGreaterThan(recon);
+    expect(drawerActions).toBeGreaterThan(imagingBilled);
+    expect(imagingVsPacs).toBeGreaterThan(drawerActions);
   });
 });
 

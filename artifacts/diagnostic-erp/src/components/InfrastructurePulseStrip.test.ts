@@ -36,6 +36,13 @@ describe("InfrastructurePulseStrip hover panel", () => {
     expect(src).toContain("Do not stop sending from the USG machine");
   });
 
+  test("Clinic Systems details start collapsed behind the ribbon", () => {
+    expect(src).toContain("defaultOpen = false");
+    expect(src).toContain('data-testid="clinic-systems-toggle"');
+    expect(src).toContain('data-collapsed={!detailsOpen ? "true" : "false"}');
+    expect(src).toContain("{detailsOpen && (");
+  });
+
   test("dense desktop ribbon + grid layout markers (no orange ICICI branding)", () => {
     expect(src).toContain('data-testid="clinic-systems-health-ribbon"');
     expect(src).toContain("xl:grid-cols-4");

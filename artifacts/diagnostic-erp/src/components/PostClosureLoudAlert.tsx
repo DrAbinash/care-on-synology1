@@ -1,4 +1,5 @@
-import { AlertTriangle, IndianRupee, Wallet } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp, IndianRupee, Wallet } from "lucide-react";
 import { Link } from "wouter";
 
 const inr = (n: number) =>
@@ -49,14 +50,22 @@ export type PostClosureLoudData = {
   sameDayPaymentTotal?: number;
 };
 
-/** Loud, always-expanded alert for billing that continued after drawer close. */
+/**
+ * Loud post-closure alert. Starts collapsed so the orange ribbon + crisp
+ * bill/amount summary stay visible; expand to see bill/payment tables.
+ */
 export function PostClosureLoudAlert({
   data,
   scopeLabel = "your drawer",
+  defaultOpen = false,
 }: {
   data: PostClosureLoudData;
   scopeLabel?: string;
+  /** When true, bill/payment tables start expanded. Default: collapsed. */
+  defaultOpen?: boolean;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+
   if (!data.closedAt || (data.bills.length === 0 && data.payments.length === 0)) return null;
 
   const sameDayBillCount =
@@ -76,8 +85,15 @@ export function PostClosureLoudAlert({
       className="rounded-xl overflow-hidden border-4 border-orange-500 dark:border-orange-400 shadow-lg ring-4 ring-orange-200/80 dark:ring-orange-900/50"
       role="alert"
       data-testid="post-closure-loud-alert"
+      data-collapsed={!open ? "true" : "false"}
     >
-      <div className="px-4 py-3.5 bg-gradient-to-r from-orange-600 to-amber-500 text-white">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full text-left px-4 py-3.5 bg-gradient-to-r from-orange-600 to-amber-500 text-white hover:from-orange-600/95 hover:to-amber-500/95 transition-colors"
+        aria-expanded={open}
+        data-testid="post-closure-loud-alert-toggle"
+      >
         <div className="flex items-start gap-3">
           <div className="p-2 rounded-lg bg-white/20 flex-shrink-0">
             <AlertTriangle size={20} className="text-white" />
@@ -86,136 +102,160 @@ export function PostClosureLoudAlert({
             <p className="text-base sm:text-lg font-black tracking-tight uppercase">
               Billing continued after close
             </p>
-            <p className="text-sm font-semibold text-orange-50 mt-0.5">
-              {scopeLabel} closed at {fmtIst(data.closedAt)} — fresh bills/payments below belong to the{" "}
-              <span className="underline decoration-2 underline-offset-2">next reconciliation window</span>
-              , not the closed drawer.
-            </p>
-            {hasSameDay && (
-              <p
-                className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white text-orange-800 text-xs font-black uppercase tracking-wide"
-                data-testid="same-day-after-close-badge"
-              >
-                Same-day after close · {sameDayBillCount} bill
-                {sameDayBillCount !== 1 ? "s" : ""} ({inr(sameDayBillTotal)})
-                {sameDayPaymentCount > 0 &&
-                  ` · ${sameDayPaymentCount} payment${sameDayPaymentCount !== 1 ? "s" : ""} (${inr(sameDayPaymentTotal)})`}
+            {open ? (
+              <>
+                <p className="text-sm font-semibold text-orange-50 mt-0.5">
+                  {scopeLabel} closed at {fmtIst(data.closedAt)} — fresh bills/payments below belong to the{" "}
+                  <span className="underline decoration-2 underline-offset-2">next reconciliation window</span>
+                  , not the closed drawer.
+                </p>
+                {hasSameDay && (
+                  <p
+                    className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white text-orange-800 text-xs font-black uppercase tracking-wide"
+                    data-testid="same-day-after-close-badge"
+                  >
+                    Same-day after close · {sameDayBillCount} bill
+                    {sameDayBillCount !== 1 ? "s" : ""} ({inr(sameDayBillTotal)})
+                    {sameDayPaymentCount > 0 &&
+                      ` · ${sameDayPaymentCount} payment${sameDayPaymentCount !== 1 ? "s" : ""} (${inr(sameDayPaymentTotal)})`}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs sm:text-sm font-semibold text-orange-50 mt-0.5 truncate">
+                Closed {fmtIst(data.closedAt)}
+                {hasSameDay
+                  ? ` · ${sameDayBillCount} same-day bill${sameDayBillCount !== 1 ? "s" : ""}`
+                  : " · next window"}
               </p>
             )}
           </div>
-          <div className="hidden sm:flex flex-col items-end gap-1 flex-shrink-0">
-            <span className="text-2xl font-black tabular-nums">{data.bills.length}</span>
+          <div
+            className="flex flex-col items-end gap-0.5 flex-shrink-0"
+            data-testid="post-closure-loud-alert-summary"
+          >
+            <span className="text-2xl font-black tabular-nums leading-none">{data.bills.length}</span>
             <span className="text-[10px] font-bold uppercase opacity-90">new bills</span>
-            <span className="text-lg font-black tabular-nums">{inr(data.billTotal)}</span>
+            <span className="text-lg font-black tabular-nums leading-tight">{inr(data.billTotal)}</span>
+            {data.payments.length > 0 && (
+              <span className="text-[10px] font-bold uppercase opacity-90 mt-0.5">
+                {data.payments.length} payment{data.payments.length !== 1 ? "s" : ""} · {inr(data.paymentTotal)}
+              </span>
+            )}
+          </div>
+          <div className="flex-shrink-0 pt-1 text-white/90" aria-hidden>
+            {open ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
           </div>
         </div>
-      </div>
+      </button>
 
-      <div className="p-4 space-y-4 bg-orange-50 dark:bg-orange-950/40">
-        {data.bills.length > 0 && (
-          <div>
-            <p className="text-xs font-black text-orange-900 dark:text-orange-200 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-              <IndianRupee size={12} /> Bills after close
-            </p>
-            <div className="overflow-x-auto rounded-lg border-2 border-orange-300 dark:border-orange-700">
-              <table className="w-full text-xs">
-                <thead className="bg-orange-200/70 dark:bg-orange-900/50">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Bill #</th>
-                    <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Amount</th>
-                    <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Paid</th>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">When</th>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Mark</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-orange-200 dark:divide-orange-800 bg-white/70 dark:bg-black/20">
-                  {data.bills.map((b) => (
-                    <tr
-                      key={b.id}
-                      className={
-                        b.sameDayAfterClose
-                          ? "bg-orange-100/80 dark:bg-orange-900/30"
-                          : "hover:bg-orange-50 dark:hover:bg-orange-950/20"
-                      }
-                    >
-                      <td className="px-3 py-2 font-bold">
-                        <Link href={`/billing/${b.id}`} className="text-primary hover:underline">
-                          {b.billNumber}
-                        </Link>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-bold">{inr(b.totalAmount)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums text-green-700 dark:text-green-400">
-                        {inr(b.paidAmount)}
-                      </td>
-                      <td className="px-3 py-2 text-orange-800 dark:text-orange-300">{fmtTime(b.createdAt)}</td>
-                      <td className="px-3 py-2">
-                        {b.sameDayAfterClose ? (
-                          <SameDayAfterCloseBadge />
-                        ) : (
-                          <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                            Next-day addition
-                          </span>
-                        )}
-                      </td>
+      {open && (
+        <div className="p-4 space-y-4 bg-orange-50 dark:bg-orange-950/40" data-testid="post-closure-loud-alert-body">
+          {data.bills.length > 0 && (
+            <div>
+              <p className="text-xs font-black text-orange-900 dark:text-orange-200 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                <IndianRupee size={12} /> Bills after close
+              </p>
+              <div className="overflow-x-auto rounded-lg border-2 border-orange-300 dark:border-orange-700">
+                <table className="w-full text-xs">
+                  <thead className="bg-orange-200/70 dark:bg-orange-900/50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Bill #</th>
+                      <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Amount</th>
+                      <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Paid</th>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">When</th>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Mark</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-orange-200 dark:divide-orange-800 bg-white/70 dark:bg-black/20">
+                    {data.bills.map((b) => (
+                      <tr
+                        key={b.id}
+                        className={
+                          b.sameDayAfterClose
+                            ? "bg-orange-100/80 dark:bg-orange-900/30"
+                            : "hover:bg-orange-50 dark:hover:bg-orange-950/20"
+                        }
+                      >
+                        <td className="px-3 py-2 font-bold">
+                          <Link href={`/billing/${b.id}`} className="text-primary hover:underline">
+                            {b.billNumber}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums font-bold">{inr(b.totalAmount)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-green-700 dark:text-green-400">
+                          {inr(b.paidAmount)}
+                        </td>
+                        <td className="px-3 py-2 text-orange-800 dark:text-orange-300">{fmtTime(b.createdAt)}</td>
+                        <td className="px-3 py-2">
+                          {b.sameDayAfterClose ? (
+                            <SameDayAfterCloseBadge />
+                          ) : (
+                            <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                              Next-day addition
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {data.payments.length > 0 && (
-          <div>
-            <p className="text-xs font-black text-orange-900 dark:text-orange-200 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-              <Wallet size={12} /> Payments after close
-            </p>
-            <div className="overflow-x-auto rounded-lg border-2 border-orange-300 dark:border-orange-700">
-              <table className="w-full text-xs">
-                <thead className="bg-orange-200/70 dark:bg-orange-900/50">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Bill</th>
-                    <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Amount</th>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Method</th>
-                    <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Mark</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-orange-200 dark:divide-orange-800 bg-white/70 dark:bg-black/20">
-                  {data.payments.map((p) => (
-                    <tr
-                      key={p.id}
-                      className={p.sameDayAfterClose ? "bg-orange-100/80 dark:bg-orange-900/30" : undefined}
-                    >
-                      <td className="px-3 py-2 font-bold">
-                        <Link href={`/billing/${p.billId}`} className="text-primary hover:underline">
-                          Bill #{p.billId}
-                        </Link>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums font-bold text-green-700 dark:text-green-400">
-                        {inr(p.amount)}
-                      </td>
-                      <td className="px-3 py-2 capitalize">{p.method}</td>
-                      <td className="px-3 py-2">
-                        {p.sameDayAfterClose ? <SameDayAfterCloseBadge /> : (
-                          <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                            Next-day addition
-                          </span>
-                        )}
-                      </td>
+          {data.payments.length > 0 && (
+            <div>
+              <p className="text-xs font-black text-orange-900 dark:text-orange-200 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                <Wallet size={12} /> Payments after close
+              </p>
+              <div className="overflow-x-auto rounded-lg border-2 border-orange-300 dark:border-orange-700">
+                <table className="w-full text-xs">
+                  <thead className="bg-orange-200/70 dark:bg-orange-900/50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Bill</th>
+                      <th className="px-3 py-2 text-right font-bold text-orange-950 dark:text-orange-100">Amount</th>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Method</th>
+                      <th className="px-3 py-2 text-left font-bold text-orange-950 dark:text-orange-100">Mark</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-orange-200 dark:divide-orange-800 bg-white/70 dark:bg-black/20">
+                    {data.payments.map((p) => (
+                      <tr
+                        key={p.id}
+                        className={p.sameDayAfterClose ? "bg-orange-100/80 dark:bg-orange-900/30" : undefined}
+                      >
+                        <td className="px-3 py-2 font-bold">
+                          <Link href={`/billing/${p.billId}`} className="text-primary hover:underline">
+                            Bill #{p.billId}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums font-bold text-green-700 dark:text-green-400">
+                          {inr(p.amount)}
+                        </td>
+                        <td className="px-3 py-2 capitalize">{p.method}</td>
+                        <td className="px-3 py-2">
+                          {p.sameDayAfterClose ? <SameDayAfterCloseBadge /> : (
+                            <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                              Next-day addition
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <p className="text-xs font-semibold text-orange-900 dark:text-orange-200 bg-orange-200/60 dark:bg-orange-900/40 rounded-lg px-3 py-2">
-          These amounts are <strong>not</strong> in the closed drawer. They will appear as{" "}
-          <strong>next-window / next-day additions</strong> with a same-day-after-close mark when the prior
-          close was earlier today.
-        </p>
-      </div>
+          <p className="text-xs font-semibold text-orange-900 dark:text-orange-200 bg-orange-200/60 dark:bg-orange-900/40 rounded-lg px-3 py-2">
+            These amounts are <strong>not</strong> in the closed drawer. They will appear as{" "}
+            <strong>next-window / next-day additions</strong> with a same-day-after-close mark when the prior
+            close was earlier today.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
