@@ -69,6 +69,7 @@ export default function FrozenKeyImagesRail({
   onAiSelectedIdsChange,
   onCaptureRequest,
   captureBusy,
+  captureBlockedTitle,
 }: {
   draftId: number | null;
   disabled?: boolean;
@@ -81,6 +82,8 @@ export default function FrozenKeyImagesRail({
   /** Capture frozen viewport from the active viewer (Frames or OHIF Annotate). */
   onCaptureRequest?: () => void;
   captureBusy?: boolean;
+  /** When set, the camera stays visible but cannot start an OHIF annotated capture. */
+  captureBlockedTitle?: string;
 }) {
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState<FrozenKeyImage | null>(null);
@@ -97,6 +100,7 @@ export default function FrozenKeyImagesRail({
   const eligibleItems = useMemo(() => items.filter(isEligibleForAiSelection), [items]);
   const aiSelectionEnabled = typeof onAiSelectedIdsChange === "function";
   const canCapture = typeof onCaptureRequest === "function" && !disabled;
+  const captureBlocked = Boolean(captureBlockedTitle);
 
   const toggleAi = (id: number) => {
     if (!onAiSelectedIdsChange || disabled) return;
@@ -159,17 +163,18 @@ export default function FrozenKeyImagesRail({
           ) : null}
           {filterObservationId ? <Badge variant="outline" className="text-[9px] h-4">filtered</Badge> : null}
         </button>
-        {canCapture ? (
+        {canCapture || captureBlocked ? (
           <Button
             type="button"
             size="sm"
             variant="ghost"
             className="h-6 w-6 p-0 shrink-0 text-sky-700 hover:text-sky-900 hover:bg-sky-50"
-            title={captureBusy ? "Capturing…" : "Capture key image from active viewer"}
+            title={captureBlocked ? captureBlockedTitle : captureBusy ? "Capturing…" : "Capture key image from active viewer"}
             data-testid="frozen-key-images-capture"
-            disabled={!!captureBusy}
+            disabled={!!captureBusy || captureBlocked}
             onClick={(e) => {
               e.stopPropagation();
+              if (captureBlocked) return;
               onCaptureRequest?.();
             }}
           >
