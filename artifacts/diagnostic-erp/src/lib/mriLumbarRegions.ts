@@ -9,6 +9,14 @@ import {
   spineSegmentFromRegion,
   type SpineSegment,
 } from "./reportingStudyContext";
+import {
+  composeNeuroSpineFinding,
+  modicGradeFromLegacy,
+  type CordSignalGradeId,
+  type MeyerdingGradeId,
+  type ModicGradeId,
+  type PfirrmannGradeId,
+} from "./mriSpineGrading";
 
 export type MriLumbarRegionKey =
   | "L1-L2"
@@ -119,6 +127,12 @@ export type LumbarLevelSelection = {
   canalApMm?: number | null;
   desiccation?: boolean;
   reducedHeight?: boolean;
+  /** Neuro-spine grading engine (Pfirrmann / Meyerding / cord signal). */
+  pfirrmann?: PfirrmannGradeId | null;
+  meyerding?: MeyerdingGradeId | null;
+  cordSignal?: CordSignalGradeId | null;
+  /** Standardized Modic 0–III; when set, preferred over legacy `modic`. */
+  modicGrade?: ModicGradeId | null;
 };
 
 /** Compose a natural findings sentence from level selections (preview + narrative glue). */
@@ -134,6 +148,47 @@ export function composeLumbarLevelNarrative(level: string, sel: LumbarLevelSelec
   const lat = LATERALITY_OPTIONS.find((o) => o.id === sel.laterality);
   const canal = CANAL_STENOSIS_OPTIONS.find((o) => o.id === sel.canal);
   const modic = MODIC_OPTIONS.find((o) => o.id === sel.modic);
+
+  // Neurosurgical grading sentence (Pfirrmann / canal / foraminal / Modic / Meyerding / cord).
+  const gradingCompose = composeNeuroSpineFinding(level, {
+    pfirrmann: sel.pfirrmann,
+    modicGrade: sel.modicGrade ?? modicGradeFromLegacy(sel.modic),
+    meyerding: sel.meyerding,
+    cordSignal: sel.cordSignal,
+    foraminalSeverity: sel.foraminalSeverity,
+    foraminalLaterality: sel.foraminalLaterality,
+    centralCanalSeverity: sel.canal && sel.canal !== "none"
+      ? (sel.canal as "mild" | "moderate" | "severe")
+      : "none",
+    canalApMm: sel.canalApMm,
+  });
+
+  if (sel.pfirrmann && gradingCompose.findings) {
+    // When Pfirrmann drives the level, use the neurosurgical sentence as primary.
+    let findings = gradingCompose.findings;
+    let impression = gradingCompose.impression;
+    if (morph && morph.id !== "normal") {
+      const latPhrase = lat ? `${lat.label.toLowerCase()} ` : "";
+      findings += ` Associated ${latPhrase}${morph.findings}.`;
+      if (morph.impression) {
+        impression = impression
+          ? `${impression.replace(/\.$/, "")}; ${latPhrase}${morph.impression}.`
+          : `${level}: ${latPhrase}${morph.impression}.`;
+      }
+    }
+    if (sel.rootContact) {
+      const root = (sel.rootLevel ?? "").trim() || inferTraversingRoot(level);
+      const relation = sel.rootRelation === "compression" ? "compression" : "contact";
+      findings += ` Disc material ${relation === "compression" ? "compresses" : "contacts"} the ${root} nerve root.`;
+    }
+    return {
+      findings,
+      impression,
+      severity: canal?.severity ?? "",
+      laterality: lat?.id ?? "",
+      concept: "pfirrmann",
+    };
+  }
 
   if (!morph || morph.id === "normal") {
     const parts = [`At ${level}, disc height and signal are preserved with no herniation.`];

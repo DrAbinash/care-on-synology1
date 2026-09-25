@@ -36,6 +36,7 @@ import {
   cervicalExitingRootHint,
 } from "@/lib/mriCervicalLevelState";
 import type { MriCervicalRegionDef } from "@/lib/mriSpineCanvasRegions";
+import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
 
 export function MriCervicalLevelBlock({
   region,
@@ -298,6 +299,32 @@ export function MriCervicalLevelBlock({
               </button>
             ) : null}
           </label>
+          <SpineNeuroGradingControls
+            testIdPrefix={`mri-cerv-grade-${region.key}`}
+            showCordSignal
+            disabled={disabled}
+            value={{
+              pfirrmann: sel.pfirrmann,
+              modicGrade: sel.modicGrade,
+              meyerding: sel.meyerding,
+              cordSignal: sel.cordSignal,
+            }}
+            onChange={(g) =>
+              setSel((s) => ({
+                ...s,
+                pfirrmann: g.pfirrmann,
+                modicGrade: g.modicGrade,
+                meyerding: g.meyerding,
+                cordSignal: g.cordSignal,
+                cord:
+                  g.cordSignal === "2"
+                    ? "t2-change"
+                    : g.cordSignal === "0"
+                      ? "normal"
+                      : s.cord,
+              }))
+            }
+          />
           <button
             type="button"
             disabled={disabled || !cervicalLevelApplyHasContent(sel)}

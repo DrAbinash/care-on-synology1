@@ -31,6 +31,7 @@ import {
 } from "@/lib/mriDorsalLevelState";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import type { MriDorsalRegionDef } from "@/lib/mriSpineCanvasRegions";
+import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
 
 export function MriDorsalLevelBlock({
   region,
@@ -246,6 +247,32 @@ export function MriDorsalLevelBlock({
             value={sel.infection}
             onChange={(id) => setSel((s) => ({ ...s, infection: id as DorsalLevelSelection["infection"] }))}
             disabled={disabled}
+          />
+          <SpineNeuroGradingControls
+            testIdPrefix={`mri-dors-grade-${region.key}`}
+            showCordSignal
+            disabled={disabled}
+            value={{
+              pfirrmann: sel.pfirrmann,
+              modicGrade: sel.modicGrade,
+              meyerding: sel.meyerding,
+              cordSignal: sel.cordSignal,
+            }}
+            onChange={(g) =>
+              setSel((s) => ({
+                ...s,
+                pfirrmann: g.pfirrmann,
+                modicGrade: g.modicGrade,
+                meyerding: g.meyerding,
+                cordSignal: g.cordSignal,
+                cord:
+                  g.cordSignal === "2"
+                    ? "t2-change"
+                    : g.cordSignal === "0"
+                      ? "normal"
+                      : s.cord,
+              }))
+            }
           />
           <button
             type="button"
