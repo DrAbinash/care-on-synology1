@@ -7,6 +7,7 @@ const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string; action
     rows: [
       { keys: "Ctrl + S", action: "Save draft" },
       { keys: "Ctrl + Enter", action: "Finalize report" },
+      { keys: "Ctrl + Shift + Enter", action: "Save & Next" },
       { keys: "Ctrl + K", action: "Command palette" },
       { keys: "/", action: "Focus Quick Findings search" },
       { keys: "?", action: "Show this shortcut list" },

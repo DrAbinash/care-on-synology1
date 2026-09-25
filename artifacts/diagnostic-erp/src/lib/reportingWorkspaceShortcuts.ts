@@ -41,6 +41,26 @@ export function shouldHandleAltUndoAbnormal(e: {
 }
 
 /**
+ * Ctrl+Shift+Enter is Save & Next. Shift keeps it off plain Ctrl+Enter
+ * finalize and off the AI-instruction Run key.
+ */
+export function shouldHandleSaveAndNextShortcut(e: {
+  key: string;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+}): boolean {
+  return Boolean(e.ctrlKey && e.shiftKey && e.key === "Enter");
+}
+
+/** Findings and impression must both have text before Save & Next finalizes. */
+export function saveAndNextFieldsReady(fields: {
+  findings?: string | null;
+  impression?: string | null;
+}): boolean {
+  return Boolean(fields.findings?.trim() && fields.impression?.trim());
+}
+
+/**
  * Ctrl/Cmd+Enter finalizes — unless the AI instruction textarea is focused
  * (that field owns Ctrl/Cmd+Enter to Run).
  */

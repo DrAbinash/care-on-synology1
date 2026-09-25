@@ -273,6 +273,7 @@ import {
   type AbnormalHighlightState,
 } from "@/lib/abnormalSelectionFeedback";
 import {
+  saveAndNextFieldsReady,
   shouldHandleAltUndoAbnormal,
   shouldHandleFinalizeShortcut,
   isAiInstructionTextarea,
@@ -3399,6 +3400,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }), [saveDraft, finalizeReport, workflow, studyId, goNextStudy, goPrevStudy, focusReportField, enterReportingFocusMode, setLayoutMode]);
   commandDispatcherRef.current = commandDispatcher;
 
+  const handleFrictionlessSaveAndNext = useCallback(async () => {
+    if (contentLocked || useWorkspace.getState().isFinalizing) return;
+    await saveDraft({ silent: true });
+    const live = readWorkspaceClinicalTexts();
+    if (!saveAndNextFieldsReady({ findings: live.findingsText, impression: live.impressionText })) {
+      toast({ title: "Please complete findings/impression before Save & Next" });
+      return;
+    }
+    await finalizeReport();
+  }, [contentLocked, saveDraft, finalizeReport, toast]);
+
   // ─── Global keyboard shortcuts (voice keys FIRST, then workspace) ──────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -3422,6 +3434,12 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         else if (action === "ptt-start") voiceSession.startListening("ptt");
         else if (action === "confirm-pending") voiceSession.confirmPending("enter");
         else voiceSession.cancel();
+        return;
+      }
+
+      if (e.ctrlKey && e.shiftKey && e.key === "Enter") {
+        e.preventDefault();
+        void handleFrictionlessSaveAndNext();
         return;
       }
 
@@ -3533,6 +3551,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [
     commandDispatcher, leftCollapsed, rightCollapsed, showEmbeddedViewer, setLayoutMode,
     voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal, activateReportSection,
+    handleFrictionlessSaveAndNext,
   ]);
 
   // ─── AI auto-impression (Ctrl+I) ───────────────────────────────────────────
@@ -7388,6 +7407,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         <div className="flex items-center gap-3">
           <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌘K</kbd> palette</span>
           <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃↵</kbd> finalize</span>
+          <span data-testid="footer-save-and-next"><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧↵</kbd> save & next</span>
           <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃S</kbd> save</span>
           <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧N</kbd> next</span>
           <span><kbd className="rounded bg-emerald-100 text-emerald-700 border border-emerald-200 px-1 py-0.5 font-mono shadow-sm">⌃⇧P</kbd> previous</span>

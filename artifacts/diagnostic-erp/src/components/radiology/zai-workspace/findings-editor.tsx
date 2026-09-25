@@ -219,7 +219,7 @@ export function FindingsEditor({
   const hk = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Tab" && gt && gTarget === field) { e.preventDefault(); accept(); return; }
     if (e.key === "Escape" && gt) { e.preventDefault(); setGhost(null, null); return; }
-    if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); sg(); return; }
+    if (e.ctrlKey && !e.shiftKey && e.key === "Enter") { e.preventDefault(); sg(); return; }
   };
   const sg = () => {
     let s: string | null = null;
