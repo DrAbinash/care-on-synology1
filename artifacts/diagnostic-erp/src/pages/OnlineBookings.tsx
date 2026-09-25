@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import PageHeader from "@/components/PageHeader";
+import { WhatsAppDeliveryQueuePanel } from "@/components/WhatsAppDeliveryQueuePanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -309,6 +310,8 @@ export default function OnlineBookingsPage() {
           </div>
         }
       />
+
+      <WhatsAppDeliveryQueuePanel />
 
       {/* Filter bar */}
       <div className="bg-card border border-card-border rounded-xl p-4 flex flex-wrap items-center gap-3">

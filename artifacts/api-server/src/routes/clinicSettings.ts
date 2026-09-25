@@ -126,6 +126,10 @@ async function getOrCreate() {
       accreditationMessage: "NABL Accredited / ISO 9001:2015 Certified",
       showWhatsAppBooking: false,
       whatsAppBookingMessage: "Book appointments on WhatsApp: +91",
+      whatsappDeliveryRouting: "patient_only",
+      whatsappAutoOfferAfterPrint: true,
+      whatsappClicktochatNumber: "",
+      whatsappRememberStationChoice: true,
       showCustomFooterMessage: false,
       customFooterMessage: "",
       // Form F scanner fallbacks
@@ -327,6 +331,8 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "expenseSelfApprovalAllowed",
     // Cancel of paid bill requires refund
     "cancelRequiresRefund",
+    // WhatsApp Delivery v2
+    "whatsappAutoOfferAfterPrint", "whatsappRememberStationChoice",
   ] as const;
   
   const textFields = [
@@ -345,7 +351,9 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "disclaimerText", "disclaimerDisplayPosition", "disclaimerFontSize", "preferredScanner",
     // Refactored fields
     "activePaymentGateway", "customIciciBannerUrl", "customPhonepeBannerUrl", "customBharatpeBannerUrl", "customPayuBannerUrl",
-    "queueVipMode", "queuePrivacyMode"
+    "queueVipMode", "queuePrivacyMode",
+    // WhatsApp Delivery v2
+    "whatsappDeliveryRouting", "whatsappClicktochatNumber",
   ] as const;
   
   if (body.preferredScanner !== undefined) {

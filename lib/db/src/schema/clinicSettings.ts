@@ -328,6 +328,16 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   // Scanner overhaul: retention period (days) for unlinked/temp scanned_documents rows.
   scanRetentionDays: integer("scan_retention_days").notNull().default(30),
 
+  // ── WhatsApp Delivery v2 (Lane 1 = wa.me; never silent auto-send) ──
+  /** patient_only | patient_and_doctor | doctor_only */
+  whatsappDeliveryRouting: text("whatsapp_delivery_routing").notNull().default("patient_only"),
+  /** After Print & Send: open share dialog (true) or skip (false). */
+  whatsappAutoOfferAfterPrint: boolean("whatsapp_auto_offer_after_print").notNull().default(true),
+  /** Clinic number for Click-to-Chat (inbound) — digits, default country 91. */
+  whatsappClicktochatNumber: text("whatsapp_clicktochat_number").notNull().default(""),
+  /** Allow localStorage remember-last-choice on this station (UI toggle still per-station). */
+  whatsappRememberStationChoice: boolean("whatsapp_remember_station_choice").notNull().default(true),
+
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

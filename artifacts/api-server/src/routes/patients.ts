@@ -192,6 +192,16 @@ patientsRouter.post("/", requireStaffSubPermission("/patients", "create"), async
 
   const insertBase = { ...parsed.data } as Record<string, unknown>;
   if (photo.value !== undefined) insertBase.photoDataUrl = photo.value;
+  // WhatsApp Delivery v2 consent — not yet on OpenAPI CreatePatientBody.
+  const bodyRec = (req.body ?? {}) as Record<string, unknown>;
+  if (bodyRec.whatsappConsent === true || bodyRec.whatsappConsent === "true") {
+    insertBase.whatsappConsent = true;
+    insertBase.whatsappConsentedBy =
+      typeof bodyRec.whatsappConsentedBy === "string" && bodyRec.whatsappConsentedBy.trim()
+        ? bodyRec.whatsappConsentedBy.trim()
+        : "registration";
+    insertBase.whatsappConsentedAt = new Date();
+  }
   const patient = await insertPatientWithIdRetry((patientId) => ({
     ...insertBase,
     patientId,

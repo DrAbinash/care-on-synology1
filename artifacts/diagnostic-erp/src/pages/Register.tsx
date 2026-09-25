@@ -37,6 +37,7 @@ const emptyPatient: NewPatientData = {
   ageUnit: "years",
   email: "",
   address: "",
+  whatsappConsent: false,
 };
 
 /**
@@ -125,6 +126,9 @@ export default function Register() {
         dateOfBirth,
         ageValue,
         ageUnit,
+        whatsappConsent: Boolean(body.whatsappConsent),
+        whatsappConsentedBy: body.whatsappConsent ? "registration" : null,
+        whatsappConsentedAt: body.whatsappConsent ? new Date().toISOString() : null,
       });
     },
     onSuccess: (p) => {

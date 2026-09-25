@@ -49,3 +49,9 @@ Traps learned: /g sed injections hit early returns; guard `if "usgFormFEnabled ?
 
 ## 6. Changelog
 2026-09-20 v1 — initial analysis; F1–F10 registered; studio fixes/pending listed.
+2026-09-25 — WhatsApp Delivery v2 (Lane 1): pure `whatsappDelivery` lib (phone/routing/PHI messages/wa.me); clinic settings `whatsapp_delivery_routing` / `whatsapp_auto_offer_after_print` / `whatsapp_clicktochat_number` / station-remember; patient `whatsapp_consent` (+ by/at) on registration & online booking; Bill tab WhatsApp + Print & Send (print once then offer; draft/cancelled disabled); signed 7-day `/share/bill|report/:token` pages (SESSION_SECRET HMAC, noindex, expired → clean leak-free page); booking confirm + chatbot handoff enqueue `wa_delivery_queue`; front-desk one-click Send → sent + `wa_delivery_audit`; Settings → Audit WA panel (security). No Meta/Cloud API; never silent auto-send. Branch `cursor/erp-whatsapp-delivery-c2ab`.
+
+## 7. Open follow-ups (this change)
+- Lane 2 Cloud API/BSP adapter plugs into `DeliveryChannel` stub (`cloud-api` + `notConfigured`) without rework.
+- Report workspace share dialog still uses legacy Meta share path for verified reports — migrate to Lane-1 dialog when Meta remains unavailable.
+- Synology: apply `migrations/zzzz_whatsapp_delivery_v2.sql` (or boot ALTER) before relying on queue/audit tables in prod.

@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -18,6 +18,10 @@ export const patientsTable = pgTable("patients", {
   portalPinHash: text("portal_pin_hash"),
   ageValue: integer("age_value"),
   ageUnit: text("age_unit"),
+  /** WhatsApp Delivery v2 — patient opted in to wa.me / Click-to-Chat delivery. */
+  whatsappConsent: boolean("whatsapp_consent").notNull().default(false),
+  whatsappConsentedBy: text("whatsapp_consented_by"),
+  whatsappConsentedAt: timestamp("whatsapp_consented_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
