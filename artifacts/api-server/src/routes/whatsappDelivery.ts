@@ -45,7 +45,16 @@ function sharePageUrl(origin: string, kind: "bill" | "report", token: string): s
 }
 
 async function getClinicRow() {
-  const [row] = await db.select().from(clinicSettingsTable).limit(1);
+  const [row] = await db
+    .select({
+      name: clinicSettingsTable.name,
+      whatsappDeliveryRouting: clinicSettingsTable.whatsappDeliveryRouting,
+      whatsappAutoOfferAfterPrint: clinicSettingsTable.whatsappAutoOfferAfterPrint,
+      whatsappClicktochatNumber: clinicSettingsTable.whatsappClicktochatNumber,
+      whatsappRememberStationChoice: clinicSettingsTable.whatsappRememberStationChoice,
+    })
+    .from(clinicSettingsTable)
+    .limit(1);
   return row ?? null;
 }
 
