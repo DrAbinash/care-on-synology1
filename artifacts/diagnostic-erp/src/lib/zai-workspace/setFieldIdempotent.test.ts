@@ -14,6 +14,22 @@ describe("setField / mergeField idempotency (React #185 guard)", () => {
     expect(after.isDirty).toBe(beforeDirty);
   });
 
+  it("accepts a quick-normal source string and does not mark the impression stale", () => {
+    const store = useWorkspace.getState();
+    store.setField("technique", "Multiplanar multisequence MRI.", "quick-normal");
+    store.setField("findings", "Normal study.", "quick-normal");
+    store.setField("impression", "Normal study.", "quick-normal");
+    store.setField("recommendation", "Clinical correlation is recommended.", "quick-normal");
+    const after = useWorkspace.getState();
+    expect(after.techniqueText).toBe("Multiplanar multisequence MRI.");
+    expect(after.findingsText).toBe("Normal study.");
+    expect(after.impressionText).toBe("Normal study.");
+    expect(after.recommendationText).toBe("Clinical correlation is recommended.");
+    expect(after.impressionNeedsRefresh).toBe(false);
+    expect(after.fieldProvenance.findings["normal study"]).toEqual(["quick-normal"]);
+    expect(after.fieldProvenance.impression["normal study"]).toEqual(["quick-normal"]);
+  });
+
   it("mergeField is a no-op when merge produces identical text and provenance", () => {
     const store = useWorkspace.getState();
     store.replaceField("impression", "No acute abnormality.", "template");

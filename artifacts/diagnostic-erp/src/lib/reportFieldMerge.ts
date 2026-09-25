@@ -17,6 +17,7 @@ export type InsertSource =
   | "quick-findings"
   | "protocol"
   | "template"
+  | "quick-normal"
   | "template-a"
   | "template-b"
   | "structured-template"
@@ -54,6 +55,7 @@ const SOURCE_ORDER: InsertSource[] = [
   "quick-findings",
   "protocol",
   "template",
+  "quick-normal",
   "template-a",
   "template-b",
   "structured-template",
@@ -71,6 +73,7 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   "quick-findings": "Quick Findings",
   protocol: "Protocol",
   template: "Template",
+  "quick-normal": "Quick Normal",
   "template-a": "Format A",
   "template-b": "Format B",
   "structured-template": "Structured",

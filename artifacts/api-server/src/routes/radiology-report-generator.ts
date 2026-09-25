@@ -111,6 +111,7 @@ import {
   persistCareObservationLedger,
   persistCareViewerMeasurements,
   persistCareReportFormatIdentity,
+  persistCareLinkedStudy,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -1635,6 +1636,16 @@ const SaveDraftBody = z.object({
     baselineManifestVersion: z.number().int().positive().optional(),
     baselineManifestRevision: z.string().optional(),
   }).nullish(),
+  /** Combined-report second worklist row. Stored as structuredJson.linkedStudyId. */
+  linkedStudy: z.object({
+    studyId: z.union([z.number().int().positive(), z.string().min(1)]),
+    title: z.string().min(1),
+    modality: z.string().nullish(),
+    studyDescription: z.string().nullish(),
+    region: z.string().nullish(),
+    accessionNumber: z.string().nullish(),
+    studyInstanceUID: z.string().nullish(),
+  }).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1912,6 +1923,17 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] viewer measurements persist failed (non-fatal):",
+        err,
+      );
+    }
+  }
+
+  if (draft?.id && rest.linkedStudy !== undefined) {
+    try {
+      await persistCareLinkedStudy(draft.id, rest.linkedStudy ?? null);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] linked study persist failed (non-fatal):",
         err,
       );
     }

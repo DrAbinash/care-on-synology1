@@ -410,7 +410,12 @@ describe("Collapsed-section preferences", () => {
       join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
       "utf8",
     );
-    expect(page).toMatch(/impression-collapsed-warning/);
+    expect(page).toMatch(/ImpressionWarningStrip/);
+    const warningStrip = readFileSync(
+      join(__dirname, "../components/radiology/reporting-canvas/ImpressionWarningStrip.tsx"),
+      "utf8",
+    );
+    expect(warningStrip).toMatch(/impression-warning-strip/);
     expect(page).toMatch(/sectionsRequiringReveal/);
     expect(page).toMatch(/nextAutoRevealSection/);
     expect(page).toMatch(/isImpressionContradictionWarning/);

@@ -20,21 +20,21 @@ Conventions in §5 are binding. Open work lives in §3 (findings) and §4 (studi
 - Normal auto-bootstrap: ONE decision per studyId; guards = no draft, no content, no local backup, not locked/finalized.
 - Finalize gauntlet order: session → AI-pending gate → save dirty → PCPNDT gate → validate → quality eval → critical detect → signatures (prefer Dr Sugandha) → composition gate → promptFinalize → finalize → honest toast → Hope push → cleanup → auto-advance.
 - Layout: workspaceLayoutPrefs byMode; resize via ImperativePanelHandle only; paneManualOverrideRef; auto ~2/3 report bias on findings/impression focus.
-- Retired via {false && …}: chocolate boxes, structured cards, inline FindingsToolDrawer group, recommendation accordion, floating AI assistant, viewer-column PrintImagePicker. Authoritative surface = ReportingToolsPanel.
+- Retired via {false && …}: chocolate boxes, structured cards, inline FindingsToolDrawer group, floating AI assistant, viewer-column PrintImagePicker. Authoritative surface = ReportingToolsPanel. Recommendation accordion was restored to the main report (F1, 2026-09-25); do not re-retire it.
 - Voice: deterministic grammar only (no AI rewrite of dictation); audit POST voice-command-audit.
 - OHIF bridge: postMessage with derived allowed origins; annotated capture via CARE OHIF extension; Frames fallback.
 
 ## 3. Findings register (merge doctor's 10 points as D1–D10)
-F1 Retired UI vs muscle memory (Recommendation only under Tools→More) — friction — OPEN
-F2 Normal-bootstrap vs contradiction loop (banner never auto-resolves; extra click per abnormal) — HIGH-FREQ — OPEN
-F3 Signed-report "Edit report" trial unlock in toast, no role check — COMPLIANCE — OPEN
-F4 Force release shown to locked-out user, no owner/admin check — consistency — OPEN
+F1 Retired UI vs muscle memory (Recommendation only under Tools→More) — friction — DONE 2026-09-25 (accordion restored; More duplicate removed)
+F2 Normal-bootstrap vs contradiction loop (banner never auto-resolves; extra click per abnormal) — HIGH-FREQ — DONE 2026-09-25 (auto-refresh unless radiologist-manual)
+F3 Signed-report "Edit report" trial unlock in toast, no role check — COMPLIANCE — DONE 2026-09-25 (owner/admin only)
+F4 Force release shown to locked-out user, no owner/admin check — consistency — DONE 2026-09-25
 F5 Demography edits session-local only (demographyOverrides never reach patient master) — data quality — OPEN
-F6 Queue defaults MR + today-yesterday on fresh browsers — minor — OPEN
-F7 Three impression warning surfaces at once — noise — OPEN
-F8 Left queue auto-collapses on every study open — minor — OPEN
-F9 Polling without tab-visibility pause (30s pcpndt, 30s mri-warm, 5min session) — perf — OPEN
-F10 OHIF capture capability not preflighted at viewer load — minor — OPEN
+F6 Queue defaults MR + today-yesterday on fresh browsers — minor — DONE 2026-09-25 (fresh browsers default to today; saved preset still honored)
+F7 Three impression warning surfaces at once — noise — DONE 2026-09-25 (ImpressionWarningStrip)
+F8 Left queue auto-collapses on every study open — minor — DONE 2026-09-25 (setting auto_collapse_queue_on_study_open, default true)
+F9 Polling without tab-visibility pause (30s pcpndt, 30s mri-warm, 5min session) — perf — DONE 2026-09-25
+F10 OHIF capture capability not preflighted at viewer load — minor — DONE 2026-09-25
 
 ## 4. USG studio state (2026-09-20)
 Fixed: sync ReferenceError (full param); PACS fallback via DICOM-Web; Form F master-switch gate; stampIST honest IST labels; composer grid conditional; PACS Viewer nav item (page pending); UsgPacsQueue loud errors.
@@ -48,6 +48,8 @@ Traps learned: /g sed injections hit early returns; guard `if "usgFormFEnabled ?
 - Fire-drill: docker stop care-api to exercise PACS fallback.
 
 ## 6. Changelog
+2026-09-25 — Multi-study combined report + workspace usability F1–F4, F6–F10 (F5 untouched). Primary studyId stays the route. Linked study lives in structuredJson.linkedStudyId. Findings sub-sections stitch around applyPathologyOverlay (single triad ingress). Finalize marks both worklist rows REPORT_FINAL. Branch `feat/multi-study-and-usability`.
+2026-09-25 — Quick Normal fallback on the Starting Canvas (`quick-normal-fallback`). Wholesale `setField(..., "quick-normal")` fills technique, findings, impression, and recommendation without the format picker. Provenance source `quick-normal` is not radiologist-manual, so it does not raise the stale impression banner. Recommendation accordion stays on the main report.
 2026-09-20 v1 — initial analysis; F1–F10 registered; studio fixes/pending listed.
 2026-09-25 — WhatsApp Delivery v2 (Lane 1): pure `whatsappDelivery` lib (phone/routing/PHI messages/wa.me); clinic settings `whatsapp_delivery_routing` / `whatsapp_auto_offer_after_print` / `whatsapp_clicktochat_number` / station-remember; patient `whatsapp_consent` (+ by/at) on registration & online booking; Bill tab WhatsApp + Print & Send (print once then offer; draft/cancelled disabled); signed 7-day `/share/bill|report/:token` pages (SESSION_SECRET HMAC, noindex, expired → clean leak-free page); booking confirm + chatbot handoff enqueue `wa_delivery_queue`; front-desk one-click Send → sent + `wa_delivery_audit`; Settings → Audit WA panel (security). No Meta/Cloud API; never silent auto-send. Branch `cursor/erp-whatsapp-delivery-c2ab`.
 
