@@ -52,6 +52,7 @@ import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
 import paymentDisplayRouter from "./paymentDisplay";
 import { whatsappRouter } from "./whatsapp";
+import { whatsappDeliveryRouter, publicShareRouter } from "./whatsappDelivery";
 import { waChatbotRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
 import { staffRouter } from "./staff";
@@ -93,6 +94,7 @@ import { websiteRouter } from "./website";
 import { verifyRouter } from "./verify";
 import internalCronRouter from "./internal-cron";
 import internalAutomationsWhatsappRouter from "./internal-automations-whatsapp";
+import { orthancPurgeRouter } from "./orthancPurge";
 import internalRadiologyRouter from "./internal-radiology";
 import internalReportingStudioRouter from "./internal-reporting-studio";
 import dicomAgentRouter from "./dicom-agent";
@@ -302,6 +304,7 @@ router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
+router.use("/share", publicShareRouter);
 // Public tokenized patient feedback / NPS form — no staff auth. Serves a
 // self-contained HTML page and records the response. Gated by ff_feedback_nps.
 router.use("/f", publicFeedbackRouter);
@@ -748,6 +751,9 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
+// Orthanc storage purge — admin-only (destructive). Separate from /radiology
+// permission so non-admins cannot gain purge via Settings → Users toggles.
+router.use("/radiology", requireStaffAuth, requireAdminRole, orthancPurgeRouter);
 // Phase P3 — AI clinical workflow (scheduler/policy/preferences/draft). Every
 // endpoint is internally gated by the ff_radiology_ai master flag + per-scope
 // policy (default OFF), so mounting it exposes nothing until an admin enables it.
@@ -1059,6 +1065,7 @@ router.use("/dashboard/reconciliation", requireStaffAuth, reconciliationRouter);
 router.use("/dashboard/my-daily-summary", requireStaffAuth, myDailySummaryRouter);
 router.use("/packages", requireStaffAuth, packagesRouter);
 router.use("/whatsapp", requireStaffAuth, whatsappRouter);
+router.use("/whatsapp-delivery", whatsappDeliveryRouter);
 router.use("/tokens", requireStaffAuth, requireStaffPermission("/queue"), tokensRouter);
 router.use("/test-tokens", requireStaffAuth, requireStaffPermission("/queue"), testTokensRouter);
 

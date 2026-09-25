@@ -2,14 +2,22 @@ import { useEffect, useState } from "react";
 import { MessageCircle, X } from "lucide-react";
 import type { SiteSettings, Popup } from "./types";
 
-// WhatsApp floating button
+// WhatsApp floating button — Click-to-Chat (Lane 1)
 export function WhatsAppFab({ settings }: { settings: SiteSettings }) {
   if (!settings.whatsappEnabled || !settings.whatsappNumber) return null;
   const num = settings.whatsappNumber.replace(/[^0-9]/g, "");
   const msg = encodeURIComponent(settings.whatsappGreeting || "Hi, I'd like to know more.");
   return (
-    <a className="cd-wa-fab" href={`https://wa.me/${num}?text=${msg}`} target="_blank" rel="noreferrer" aria-label="WhatsApp">
+    <a
+      className="cd-wa-fab"
+      href={`https://wa.me/${num}?text=${msg}`}
+      target="_blank"
+      rel="noreferrer"
+      aria-label="Continue on WhatsApp"
+      title="Continue on WhatsApp"
+    >
       <MessageCircle size={26} />
+      <span className="cd-wa-fab-label">Continue on WhatsApp</span>
     </a>
   );
 }

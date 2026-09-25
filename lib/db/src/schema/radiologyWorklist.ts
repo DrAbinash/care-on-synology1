@@ -98,6 +98,9 @@ export const radiologyWorklistTable = pgTable(
     byUid: index("radiology_worklist_uid_idx").on(t.studyInstanceUID),
     byStatus: index("radiology_worklist_status_idx").on(t.status),
     byPatient: index("radiology_worklist_patient_idx").on(t.patientId),
+    // Incremental studio pull: WHERE COALESCE(updated_at, created_at) > :since ORDER BY id
+    byUpdatedAt: index("radiology_worklist_updated_at_idx").on(t.updatedAt),
+    byUpdatedAtId: index("radiology_worklist_updated_at_id_idx").on(t.updatedAt, t.id),
   }),
 );
 

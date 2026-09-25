@@ -26,6 +26,18 @@
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "@/lib/zai-workspace/store";
 import { normalizeLevel } from "@/lib/observationSlot";
 import { inferCervicalExitingRoot } from "./mriSpineCanvasRegions";
+import {
+  buildSpineGradingAtoms,
+  parseCordSignalFromText,
+  parseMeyerdingFromText,
+  parseModicGradeFromText,
+  parsePfirrmannFromText,
+  spineGradingHasContent,
+  type CordSignalGradeId,
+  type MeyerdingGradeId,
+  type ModicGradeId,
+  type PfirrmannGradeId,
+} from "./mriSpineGrading";
 
 // ─── Cervical clinical concepts ──────────────────────────────────────────
 
@@ -117,6 +129,11 @@ export type CervicalLevelSelection = {
   facet?: (typeof CERVICAL_FACET_OPTIONS)[number]["id"];
   ligament?: (typeof CERVICAL_LIGAMENT_OPTIONS)[number]["id"];
   canalApMm?: number | null;
+  /** Neuro-spine grading engine. */
+  pfirrmann?: PfirrmannGradeId | null;
+  modicGrade?: ModicGradeId | null;
+  meyerding?: MeyerdingGradeId | null;
+  cordSignal?: CordSignalGradeId | null;
 };
 
 // ─── Baselines ────────────────────────────────────────────────────────────
@@ -140,6 +157,13 @@ export function cervicalLevelApplyHasContent(sel: CervicalLevelSelection): boole
     || sel.facet
     || sel.ligament
     || sel.canalApMm != null
+    || spineGradingHasContent({
+      pfirrmann: sel.pfirrmann,
+      modicGrade: sel.modicGrade,
+      meyerding: sel.meyerding,
+      cordSignal: sel.cordSignal,
+      foraminalSeverity: sel.foraminalSeverity,
+    })
   );
 }
 
@@ -233,9 +257,24 @@ export function deriveCervicalLevelSelection(
     }
 
     if (concept === "cord_compression" || concept === "cord_signal" || /cord/.test(findings)) {
+      const cs = parseCordSignalFromText(findings, sev, (p.observation?.state || "").toLowerCase());
+      if (cs) sel.cordSignal = cs;
       if (/t2.*hyperintense|myelopath/.test(findings)) sel.cord = "t2-change";
       else if (/compress/.test(findings)) sel.cord = "compression";
       else if (/normal.*cord|cord.*normal/.test(findings)) sel.cord = "normal";
+    }
+
+    if (concept === "pfirrmann" || /pfirrmann/.test(findings)) {
+      const pf = parsePfirrmannFromText(findings, sev);
+      if (pf) sel.pfirrmann = pf;
+    }
+    if (concept === "endplate" || /modic/.test(findings)) {
+      const mg = parseModicGradeFromText(findings, sev);
+      if (mg) sel.modicGrade = mg;
+    }
+    if (concept === "spondylolisthesis" || /meyerding|listhesis/.test(findings)) {
+      const my = parseMeyerdingFromText(findings, sev);
+      if (my) sel.meyerding = my;
     }
 
     if (concept === "facet_joint" || /facet/.test(findings)) {
@@ -580,6 +619,43 @@ export function buildCervicalLevelApplyBundle(opts: {
       measurement: String(sel.canalApMm),
       label: `${level} canal_ap`,
       findingsText: findings,
+      bundleId,
+    });
+  }
+
+  // 8. Neuro-spine grading atoms (Pfirrmann / Modic / Meyerding / cord signal).
+  // Prefer explicit cordSignal grade over legacy cord t2-change for cord_signal slot.
+  const gradingAtoms = buildSpineGradingAtoms(level, {
+    pfirrmann: sel.pfirrmann,
+    modicGrade: sel.modicGrade,
+    meyerding: sel.meyerding,
+    cordSignal: sel.cordSignal ?? (sel.cord === "t2-change" ? "2" : sel.cord === "normal" ? "0" : null),
+  });
+  for (const atom of gradingAtoms) {
+    if (atom.concept === "cord_signal" && observations.some((o) => o.concept === "cord_signal")) {
+      continue;
+    }
+    observations.push({
+      id: cervicalPatchId(level, atom.concept, atom.laterality),
+      incoming: { findings: atom.findings, impression: atom.impression },
+      templates: { findings: atom.findings, impression: atom.impression },
+      ownership: {
+        anatomicalSection: level,
+        conflictGroup: atom.concept,
+        baselineReplaces: atom.baselineReplaces ?? "",
+        concept: atom.concept,
+        level,
+        laterality: atom.laterality,
+      },
+      source: "structured-template",
+      region,
+      level,
+      laterality: atom.laterality,
+      concept: atom.concept,
+      severity: atom.severity,
+      state: atom.state,
+      label: `${level} ${atom.concept}`,
+      findingsText: atom.findings,
       bundleId,
     });
   }

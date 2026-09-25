@@ -22,6 +22,7 @@ import {
   RefreshCw, Save,
   Zap, ShieldCheck, PlayCircle, Info, Palette, Mic, Waves, Cpu, BookOpen, ScanLine
 } from "lucide-react";
+import OrthancPurgePanel from "@/components/radiology/OrthancPurgePanel";
 import type { UseMutationResult } from "@tanstack/react-query";
 // M1.6B2/B3 — voice layer settings (same pacs_settings persistence as this
 // page) + per-radiologist overrides (radiologist_voice_preferences)
@@ -341,9 +342,28 @@ export default function RadiologySettingsCenter() {
 
 
   // Mutation to update pacs settings
-  // Phase E helper: read a saved setting value by key ("" when unset)
-  const sv = (key: string, fallback = "") =>
-    settings.find((x) => x.key === key)?.value ?? fallback;
+  // Prefer canonical category when the same key exists under multiple categories
+  // (pacs_settings is unique on key+category). Fall back to any row for the key.
+  const CANONICAL_SETTING_CATEGORY: Record<string, string> = {
+    report_presentation_template: "report",
+    report_presentation_template_patient: "report",
+    report_presentation_template_referrer: "report",
+    orthanc_http_port: "orthanc",
+    orthanc_ae_title: "orthanc",
+    orthanc_ip: "orthanc",
+    orthanc_dicom_port: "orthanc",
+    orthanc_dicomweb_url: "orthanc",
+    orthanc_wado_url: "orthanc",
+    orthanc_auto_retention_enabled: "orthanc",
+  };
+  const sv = (key: string, fallback = "") => {
+    const preferred = CANONICAL_SETTING_CATEGORY[key];
+    if (preferred) {
+      const hit = settings.find((x) => x.key === key && x.category === preferred);
+      if (hit) return hit.value ?? fallback;
+    }
+    return settings.find((x) => x.key === key)?.value ?? fallback;
+  };
   const svOn = (key: string, defaultOn = true) => {
     const v = sv(key);
     return v === "" ? defaultOn : v === "true";
@@ -378,7 +398,7 @@ export default function RadiologySettingsCenter() {
     upsertSetting.mutate({
       key: "report_presentation_template",
       value: layout,
-      category: "premium",
+      category: "report",
       reason,
     });
     upsertSetting.mutate({
@@ -451,7 +471,7 @@ export default function RadiologySettingsCenter() {
     <div className="p-4 md:p-6 space-y-6">
       <PageHeader
         title="Radiology Settings Center"
-        subtitle="Admin hub for PACS, viewers, MWL, report style, voice, and USG — start on the General tab"
+        subtitle="Admin hub for PACS, viewers, MWL, report style, voice, and USG — start on the Overview tab"
         actions={
           <Button variant="outline" size="sm" onClick={() => { refetchSettings(); refetchClinic(); refetchHealth(); }}>
             <RefreshCw size={14} className="mr-1.5" /> Reload Config
@@ -757,16 +777,16 @@ export default function RadiologySettingsCenter() {
             </p>
             <div className="grid md:grid-cols-3 gap-3">
               {([
-                ["network_lan_host", "LAN Host (clinic)", hostForProfile("LAN")],
-                ["network_tailscale_host", "Tailscale Host (remote)", hostForProfile("TAILSCALE")],
-                ["network_public_domain", "Public Domain", hostForProfile("PUBLIC")],
-                ["orthanc_http_port", "Orthanc HTTP Port", "8042"],
-                ["ohif_http_port", "OHIF Port", "3010"],
-              ] as const).map(([key, label, ph]) => (
+                ["network_lan_host", "LAN Host (clinic)", hostForProfile("LAN"), "viewer"],
+                ["network_tailscale_host", "Tailscale Host (remote)", hostForProfile("TAILSCALE"), "viewer"],
+                ["network_public_domain", "Public Domain", hostForProfile("PUBLIC"), "viewer"],
+                ["orthanc_http_port", "Orthanc HTTP Port", "8042", "orthanc"],
+                ["ohif_http_port", "OHIF Port", "3010", "viewer"],
+              ] as const).map(([key, label, ph, category]) => (
                 <div key={key} className="space-y-1">
                   <Label className="text-xs">{label}</Label>
                   <Input className="h-8 text-sm font-mono" placeholder={ph} defaultValue={sv(key)} disabled={!isAdmin}
-                    onBlur={(e) => upsertSetting.mutate({ key, value: e.target.value.trim(), category: "viewer" })} />
+                    onBlur={(e) => upsertSetting.mutate({ key, value: e.target.value.trim(), category })} />
                 </div>
               ))}
             </div>
@@ -1321,47 +1341,6 @@ export default function RadiologySettingsCenter() {
         </TabsContent>
 
         {/* Tab content 8.5: Institutional Report Style */}
-        {/* ── Phase E: PREMIUM REPORT — admin toggles (module itself preserved) ── */}
-        <TabsContent value="premium" className="space-y-4">
-          <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
-            <h3 className="text-sm font-bold">Premium Report Presentation</h3>
-            <p className="text-xs text-muted-foreground">
-              Choose the clinic-wide report layout below. All print, PDF, and workspace preview surfaces use the same canonical server renderer. Radiologists can still compare layouts in the Reading Room preview without changing this default.
-            </p>
-            <ReportLayoutQuickSelect
-              value={activeReportLayout}
-              activeKey={activeReportLayout}
-              disabled={!isAdmin}
-              onChange={setActiveReportLayout}
-              className="max-w-md"
-            />
-            <div className="grid md:grid-cols-2 gap-2">
-              {([
-                ["premium_image_panel", "Image Panel", "Right-side representative DICOM images from Orthanc."],
-                ["premium_qr_verification", "QR Verification", "Printed QR code for report authenticity checks."],
-                ["premium_digital_signature", "Digital Signature", "Radiologist signature block on the final report."],
-                ["premium_journal_style", "Journal Style", "Academic journal-style typography."],
-                ["premium_structured_reports", "Structured Reports", "Section-structured findings layout."],
-                ["premium_multipage", "Multi-page Reports", "Allow reports to span multiple printed pages."],
-                ["premium_hospital_branding", "Hospital Branding", "Clinic logo and letterhead on premium reports."],
-                ["premium_themes", "Report Themes", "Allow selecting alternative premium themes."],
-              ] as const).map(([key, label, help]) => (
-                <div key={key} className="flex items-center justify-between border rounded-lg p-3">
-                  <div className="pr-3">
-                    <Label className="text-xs font-semibold">{label}</Label>
-                    <p className="text-[11px] text-muted-foreground">{help}</p>
-                  </div>
-                  <Switch
-                    checked={svOn(key, false)}
-                    disabled={!isAdmin}
-                    onCheckedChange={(v) => upsertSetting.mutate({ key, value: String(v), category: "premium" })}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </TabsContent>
-
         <TabsContent value="style" className="space-y-4">
 
           <div className="rounded-xl border bg-card p-5 space-y-3 max-w-3xl">
@@ -1551,6 +1530,18 @@ export default function RadiologySettingsCenter() {
             </h3>
             <RisMonitorCommandGrid />
           </div>
+
+          <OrthancPurgePanel
+            isAdmin={isAdmin}
+            autoRetentionEnabled={svOn("orthanc_auto_retention_enabled", false)}
+            onToggleAutoRetention={(enabled) =>
+              upsertSetting.mutate({
+                key: "orthanc_auto_retention_enabled",
+                value: enabled ? "true" : "false",
+                category: "orthanc",
+              })
+            }
+          />
 
           <div className="rounded-xl border bg-card p-5 space-y-3">
             <h3 className="font-semibold text-sm flex items-center gap-2">

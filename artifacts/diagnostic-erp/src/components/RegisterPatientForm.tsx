@@ -22,6 +22,7 @@ export interface NewPatientData {
   ageUnit: "years" | "months" | "days";
   email?: string;
   address?: string;
+  whatsappConsent?: boolean;
 }
 
 const GENDERS = ["male", "female"];
@@ -198,6 +199,22 @@ export function RegisterPatientForm({
           />
         </div>
       </div>
+
+      <label className="flex items-start gap-2 text-xs cursor-pointer">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={Boolean(newPatient.whatsappConsent)}
+          onChange={(e) =>
+            onPatientChange({ ...newPatient, whatsappConsent: e.target.checked })
+          }
+          data-testid="register-whatsapp-consent"
+        />
+        <span>
+          Patient consents to receive bills / reports / booking updates via WhatsApp
+          (Click-to-Chat / staff-initiated links only).
+        </span>
+      </label>
 
       <Button
         onClick={onSubmit}

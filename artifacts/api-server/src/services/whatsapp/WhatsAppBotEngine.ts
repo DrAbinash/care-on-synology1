@@ -15,6 +15,7 @@ import {
   clinicSettingsTable, staffTable, patientsTable,
   knowledgeBaseEntriesTable, knowledgeBaseSearchLogTable,
   whatsappSettingsTable,
+  waDeliveryQueueTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, gte, sql, or, ilike } from "drizzle-orm";
 import { generateAiForTask } from "@workspace/ai-providers";
@@ -472,8 +473,45 @@ Reply in a helpful, friendly manner. Be concise.`;
     if (conv) {
       await db.update(waConversationsTable).set({ status: "human", currentFlow: "human_handover" }).where(eq(waConversationsTable.id, conv.id));
     }
+    const [contact] = await db
+      .select({ phone: waContactsTable.phone, name: waContactsTable.name })
+      .from(waContactsTable)
+      .where(eq(waContactsTable.id, contactId))
+      .limit(1);
+    const [clinic] = await db
+      .select({
+        click: clinicSettingsTable.whatsappClicktochatNumber,
+        name: clinicSettingsTable.name,
+      })
+      .from(clinicSettingsTable)
+      .limit(1);
+    const prefilled =
+      `Hello${contact?.name ? `, I am ${contact.name}` : ""}. I need help from ${clinic?.name || "Care Diagnostics"} staff.`;
+    await db.insert(waDeliveryQueueTable).values({
+      kind: "chatbot_handoff",
+      status: "pending",
+      patientPhone: contact?.phone || "",
+      prefilledMessage: prefilled,
+      recordId: `handoff-${contactId}-${Date.now()}`,
+      patientName: contact?.name || "",
+      source: "chatbot",
+      createdByName: "chatbot",
+    });
+    const digits = String(clinic?.click || "").replace(/\D/g, "");
+    const normalized = digits
+      ? (digits.length === 10 ? `91${digits}` : digits)
+      : "";
+    const clickToChat = normalized
+      ? `https://wa.me/${normalized}?text=${encodeURIComponent(prefilled)}`
+      : null;
+    const linkLine = clickToChat
+      ? `\n\nContinue on WhatsApp: ${clickToChat}`
+      : "\n\n(Click-to-Chat number not configured in clinic settings.)";
     return {
-      text: "Connecting you to our staff...\n\nA team member will reply shortly. Please share your query and we will assist you.\n\nReply BOT to return to automated menu.",
+      text:
+        "Connecting you to our staff...\n\nA team member will reply shortly. Please share your query and we will assist you."
+        + linkLine
+        + "\n\nReply BOT to return to automated menu.",
       action: "handover_human",
     };
   }

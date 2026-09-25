@@ -902,6 +902,10 @@ type ClinicSettings = {
   accreditationMessage?: string;
   showWhatsAppBooking?: boolean;
   whatsAppBookingMessage?: string;
+  whatsappDeliveryRouting?: string;
+  whatsappAutoOfferAfterPrint?: boolean;
+  whatsappClicktochatNumber?: string;
+  whatsappRememberStationChoice?: boolean;
   showCustomFooterMessage?: boolean;
   customFooterMessage?: string;
 };
@@ -3884,6 +3888,71 @@ function auditActionStyle(action: string): string {
   return "bg-muted text-muted-foreground";
 }
 
+function WhatsAppDeliveryAuditPanel() {
+  const { data, isLoading } = useQuery<{
+    rows: Array<{
+      id: number;
+      actor: string;
+      kind: string;
+      recordId: string;
+      maskedPhone: string;
+      tokenExpiry: string | null;
+      channel: string;
+      consentOverride: boolean;
+      notes: string;
+      ts: string;
+    }>;
+  }>({
+    queryKey: ["wa-delivery-audit"],
+    queryFn: () => api.get("/api/whatsapp-delivery/audit?limit=50"),
+  });
+  const rows = data?.rows ?? [];
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4 space-y-3" data-testid="wa-delivery-audit">
+      <div>
+        <h3 className="font-bold flex items-center gap-2"><MessageCircle size={15} /> WhatsApp Delivery Audit</h3>
+        <p className="text-xs text-muted-foreground mt-1">
+          Lane-1 staff-click sends and consent overrides (masked phone). Owner / security role only.
+        </p>
+      </div>
+      {isLoading ? (
+        <p className="text-xs text-muted-foreground animate-pulse">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No WhatsApp delivery events yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="py-1.5 pr-2">When</th>
+                <th className="py-1.5 pr-2">Actor</th>
+                <th className="py-1.5 pr-2">Kind</th>
+                <th className="py-1.5 pr-2">Record</th>
+                <th className="py-1.5 pr-2">Phone</th>
+                <th className="py-1.5 pr-2">Channel</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b border-border/50">
+                  <td className="py-1.5 pr-2 whitespace-nowrap">{new Date(r.ts).toLocaleString("en-IN")}</td>
+                  <td className="py-1.5 pr-2">{r.actor}</td>
+                  <td className="py-1.5 pr-2">
+                    {r.kind}{r.consentOverride ? " (override)" : ""}
+                  </td>
+                  <td className="py-1.5 pr-2 font-mono">{r.recordId}</td>
+                  <td className="py-1.5 pr-2">{r.maskedPhone}</td>
+                  <td className="py-1.5 pr-2">{r.channel}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditLogTab() {
   const [action, setAction] = useState("");
   const [moduleName, setModuleName] = useState("");
@@ -3928,6 +3997,8 @@ function AuditLogTab() {
           and account administration — plus billing and other module events. Entries are append-only and cannot be edited or deleted.
         </p>
       </div>
+
+      <WhatsAppDeliveryAuditPanel />
 
       {/* Filters */}
       <div className="bg-card border border-card-border rounded-xl p-4 grid gap-3 md:grid-cols-4">
@@ -8114,6 +8185,10 @@ function ReceiptMessagesTab() {
         accreditationMessage: body.accreditationMessage,
         showWhatsAppBooking: body.showWhatsAppBooking,
         whatsAppBookingMessage: body.whatsAppBookingMessage,
+        whatsappDeliveryRouting: body.whatsappDeliveryRouting,
+        whatsappAutoOfferAfterPrint: body.whatsappAutoOfferAfterPrint,
+        whatsappClicktochatNumber: body.whatsappClicktochatNumber,
+        whatsappRememberStationChoice: body.whatsappRememberStationChoice,
         showCustomFooterMessage: body.showCustomFooterMessage,
         customFooterMessage: body.customFooterMessage,
       };
@@ -8237,6 +8312,47 @@ function ReceiptMessagesTab() {
                   <Label className="text-sm font-medium">WhatsApp Booking</Label>
                   <Input value={current.whatsAppBookingMessage || ""} onChange={(e) => update("whatsAppBookingMessage", e.target.value)} className="mt-1" placeholder="Book appointments on WhatsApp: +91" />
                 </div>
+              </div>
+              {/* WhatsApp Delivery v2 (Lane 1) */}
+              <div className="rounded-lg border border-border/60 p-3 space-y-3 bg-muted/20">
+                <Label className="text-sm font-semibold">WhatsApp Delivery (staff-click / wa.me)</Label>
+                <div>
+                  <Label className="text-xs">Default routing</Label>
+                  <select
+                    className="mt-1 w-full h-9 border rounded-md px-2 bg-background text-sm"
+                    value={current.whatsappDeliveryRouting || "patient_only"}
+                    onChange={(e) => update("whatsappDeliveryRouting", e.target.value)}
+                  >
+                    <option value="patient_only">Patient only</option>
+                    <option value="patient_and_doctor">Patient and doctor</option>
+                    <option value="doctor_only">Doctor only</option>
+                  </select>
+                </div>
+                <div>
+                  <Label className="text-xs">Click-to-Chat clinic number</Label>
+                  <Input
+                    value={current.whatsappClicktochatNumber || ""}
+                    onChange={(e) => update("whatsappClicktochatNumber", e.target.value)}
+                    className="mt-1"
+                    placeholder="e.g. 9973497200"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={current.whatsappAutoOfferAfterPrint !== false}
+                    onChange={(e) => update("whatsappAutoOfferAfterPrint", e.target.checked)}
+                  />
+                  Auto-offer WhatsApp after Print &amp; Send
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={current.whatsappRememberStationChoice !== false}
+                    onChange={(e) => update("whatsappRememberStationChoice", e.target.checked)}
+                  />
+                  Allow “remember my choice on this station”
+                </label>
               </div>
               {/* Custom Message */}
               <div className="flex items-start gap-3">

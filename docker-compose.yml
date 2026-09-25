@@ -330,6 +330,7 @@ services:
       # every container restart.
       BOOTSTRAP_ADMIN_FORCE: ${BOOTSTRAP_ADMIN_FORCE:-false}
       ORTHANC_URL: ${ORTHANC_URL:-}
+      STAMP_ACCESSION_FROM_BILL: ${STAMP_ACCESSION_FROM_BILL:-false}
       # Internal Docker service name for server-side health probes (never use LAN IP here)
       ORTHANC_INTERNAL_URL: ${ORTHANC_INTERNAL_URL:-http://care-orthanc:8042}
       # ── Orthanc → ERP study sync: RUN EXACTLY ONE ─────────────────────────

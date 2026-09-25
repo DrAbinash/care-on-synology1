@@ -8,10 +8,15 @@
  * Mounted at: /api/internal/reporting-studio  (see routes/index.ts)
  *
  *   GET  /ping
- *   GET  /worklist?status=pending&since=<iso>
+ *   GET  /worklist?status=pending&since=<iso|epochMs>&limit=&cursor=
+ *        — no since/limit/cursor → legacy { rows, meta } (backward compatible)
+ *        — with since/limit/cursor + REPORTING_WORKLIST_INCREMENTAL (default on)
+ *          → { orders, nextCursor, serverTime, truncated }
  *   GET  /audit          — dead-man last-sync + 24h/7d counters
  *   POST /finalize
  *   GET  /billing-status?accessions=A,B,C
+ *
+ * Contract: docs/reporting-studio/INTERNAL_WORKLIST_CONTRACT.md
  */
 import { createHash } from "node:crypto";
 import { Router, type Request, type Response, type NextFunction } from "express";
@@ -27,7 +32,7 @@ import {
   patientsTable,
   bridgeSyncLogTable,
 } from "@workspace/db/schema";
-import { and, eq, inArray, gte, notInArray, sql, desc } from "drizzle-orm";
+import { and, eq, inArray, gte, gt, notInArray, sql, desc, asc } from "drizzle-orm";
 import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
@@ -55,6 +60,12 @@ import {
   resolveBillDeskForWorklistRows,
   type MatchKeyCounters,
 } from "../lib/studioWorklistBillJoin";
+import {
+  WORKLIST_LEGACY_LIMIT,
+  buildIncrementalResponse,
+  isReportingWorklistIncrementalEnabled,
+  parseIncrementalQuery,
+} from "../lib/reportingStudioWorklistIncremental";
 
 const router = Router();
 
@@ -251,9 +262,20 @@ router.get("/ping", (_req, res) => {
 router.get("/worklist", async (req, res) => {
   try {
     const statusFilter = String(req.query.status ?? "pending").toLowerCase();
-    const sinceRaw = typeof req.query.since === "string" ? req.query.since.trim() : "";
-    const sinceDate = sinceRaw ? new Date(sinceRaw) : null;
-    const sinceValid = sinceDate && !Number.isNaN(sinceDate.getTime()) ? sinceDate : null;
+    const incrementalFlag = isReportingWorklistIncrementalEnabled();
+    const incrementalQ = parseIncrementalQuery({
+      since: typeof req.query.since === "string" ? req.query.since : null,
+      limit: typeof req.query.limit === "string" ? req.query.limit : null,
+      cursor: typeof req.query.cursor === "string" ? req.query.cursor : null,
+    });
+    const useIncremental = incrementalFlag && incrementalQ.requested;
+
+    // Legacy path (flag off, or no since/limit/cursor): keep prior since semantics
+    // (inclusive gte on updatedAt) and the { rows, meta } envelope.
+    const sinceRawLegacy = typeof req.query.since === "string" ? req.query.since.trim() : "";
+    const sinceDateLegacy = sinceRawLegacy ? new Date(sinceRawLegacy) : null;
+    const sinceValidLegacy =
+      sinceDateLegacy && !Number.isNaN(sinceDateLegacy.getTime()) ? sinceDateLegacy : null;
 
     // v6.14: ?status=all returns the full day's record (pending + final)
     // so the studio can do billing follow-up without flipping tabs.
@@ -275,9 +297,24 @@ router.get("/worklist", async (req, res) => {
       : [...PENDING_STATUSES, "REPORT_FINAL", "DELIVERED"]; // all
 
     const conds = [inArray(radiologyWorklistTable.status, statusValues)];
-    if (sinceValid) {
-      conds.push(gte(radiologyWorklistTable.updatedAt, sinceValid));
+
+    if (useIncremental) {
+      // Exclusive watermark on COALESCE(updated_at, created_at); keyset on id.
+      if (incrementalQ.since) {
+        conds.push(
+          sql`COALESCE(${radiologyWorklistTable.updatedAt}, ${radiologyWorklistTable.createdAt}) > ${incrementalQ.since}`,
+        );
+      }
+      if (incrementalQ.cursor != null) {
+        conds.push(gt(radiologyWorklistTable.id, incrementalQ.cursor));
+      }
+    } else if (sinceValidLegacy) {
+      conds.push(gte(radiologyWorklistTable.updatedAt, sinceValidLegacy));
     }
+
+    const fetchLimit = useIncremental
+      ? incrementalQ.limit + 1 // +1 to detect truncated / nextCursor
+      : WORKLIST_LEGACY_LIMIT;
 
     const rows = await db
       .select({
@@ -307,6 +344,8 @@ router.get("/worklist", async (req, res) => {
         // v6.14: include worklist status so the studio can freeze REPORTED
         // rows (don't overwrite finalized reports on re-sync).
         status: radiologyWorklistTable.status,
+        updatedAt: radiologyWorklistTable.updatedAt,
+        createdAt: radiologyWorklistTable.createdAt,
       })
       .from(radiologyWorklistTable)
       .leftJoin(radiologyStudiesTable, eq(radiologyWorklistTable.studyId, radiologyStudiesTable.id))
@@ -314,15 +353,31 @@ router.get("/worklist", async (req, res) => {
       .leftJoin(patientsTable, eq(radiologyWorklistTable.patientId, patientsTable.id))
       .leftJoin(billsTable, eq(radiologyStudiesTable.billId, billsTable.id))
       .where(and(...conds))
-      .orderBy(desc(radiologyWorklistTable.updatedAt))
-      .limit(500);
+      .orderBy(
+        useIncremental
+          ? asc(radiologyWorklistTable.id)
+          : desc(radiologyWorklistTable.updatedAt),
+      )
+      .limit(fetchLimit);
 
-    const billIdsFromStudy = rows
+    let truncated = false;
+    let pageRows = rows;
+    let nextCursor: string | null = null;
+    if (useIncremental) {
+      truncated = rows.length > incrementalQ.limit;
+      pageRows = truncated ? rows.slice(0, incrementalQ.limit) : rows;
+      nextCursor =
+        truncated && pageRows.length > 0
+          ? String(pageRows[pageRows.length - 1]!.id)
+          : null;
+    }
+
+    const billIdsFromStudy = pageRows
       .map((r) => r.billId)
       .filter((id): id is number => typeof id === "number" && Number.isFinite(id));
 
     const billDeskByWorklist = await resolveBillDeskForWorklistRows(
-      rows.map((r) => ({
+      pageRows.map((r) => ({
         worklistId: r.id,
         accessionNumber: r.accessionNumber,
         studyId: r.studyId,
@@ -350,7 +405,7 @@ router.get("/worklist", async (req, res) => {
     let sentinels = emptySentinelCounters();
     let matchKeys = emptyMatchKeyCounters();
 
-    const payloadRows = rows.map((r) => {
+    const payloadRows = pageRows.map((r) => {
       const desk = billDeskByWorklist.get(r.id);
       matchKeys = accumulateMatchKey(matchKeys, desk?.matchedKey ?? null);
 
@@ -437,25 +492,19 @@ router.get("/worklist", async (req, res) => {
 
     const rowsByModality = buildRowsByModality(dedupedRows);
     const syncedAt = new Date().toISOString();
-    const meta: WorklistAuditMeta & { matchedBy: MatchKeyCounters } = {
-      syncedAt,
-      rowsServed: dedupedRows.length,
-      rowsByModality,
-      validationFailures,
-      sentinels,
-      sourceId,
-      matchedBy: matchKeys,
-    };
+    const serverTime = Date.now();
 
     logger.info(
       {
         sourceId,
-        rowsServed: meta.rowsServed,
+        rowsServed: dedupedRows.length,
         ghostsSuppressed: ghostsSuppressed.length,
         rowsByModality,
         validationFailures,
         sentinels,
         statusFilter,
+        incremental: useIncremental,
+        truncated: useIncremental ? truncated : undefined,
       },
       "reporting-studio worklist served",
     );
@@ -463,7 +512,7 @@ router.get("/worklist", async (req, res) => {
     try {
       await recordBridgeSyncLog({
         sourceId,
-        rowsServed: meta.rowsServed,
+        rowsServed: dedupedRows.length,
         rowsByModality,
         sentinelCounters: sentinels,
         validationFailures,
@@ -473,6 +522,21 @@ router.get("/worklist", async (req, res) => {
       // Audit write must not fail the studio pull — but it must be LOUD.
       logger.error({ err, sourceId }, "reporting-studio bridge_sync_log write failed");
     }
+
+    if (useIncremental) {
+      res.json(buildIncrementalResponse(dedupedRows, nextCursor, truncated, serverTime));
+      return;
+    }
+
+    const meta: WorklistAuditMeta & { matchedBy: MatchKeyCounters } = {
+      syncedAt,
+      rowsServed: dedupedRows.length,
+      rowsByModality,
+      validationFailures,
+      sentinels,
+      sourceId,
+      matchedBy: matchKeys,
+    };
 
     // Additive envelope: row objects unchanged; meta is new. Studios that
     // previously expected a bare array should read `.rows` (or ignore `.meta`).

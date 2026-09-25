@@ -230,6 +230,8 @@ const Website         = lazy(() => import("@/pages/Website"));
 const WhatsAppChatbot = lazy(() => import("@/pages/WhatsAppChatbot"));
 const Portal          = lazy(() => import("@/pages/Portal"));
 const VerifyReceipt   = lazy(() => import("@/pages/VerifyReceipt"));
+const ShareBillPage   = lazy(() => import("@/pages/SharePages").then((m) => ({ default: m.ShareBillPage })));
+const ShareReportPage = lazy(() => import("@/pages/SharePages").then((m) => ({ default: m.ShareReportPage })));
 const PaymentQrDisplay = lazy(() => import("@/pages/PaymentQrDisplay"));
 const OnlineBookings  = lazy(() => import("@/pages/OnlineBookings"));
 const TechnicianWorkflow    = lazy(() => import("@/pages/TechnicianWorkflow"));
@@ -398,6 +400,8 @@ function Router() {
             here (Display.tsx, QueueDisplay.tsx) were unreachable at their
             documented TV URLs and were removed; see clinic-site instead. */}
         <Route path="/kiosk" component={Kiosk} />
+        <Route path="/share/bill/:token" component={ShareBillPage} />
+        <Route path="/share/report/:token" component={ShareReportPage} />
         <Route>
           <PermissionGuard />
           <Layout>

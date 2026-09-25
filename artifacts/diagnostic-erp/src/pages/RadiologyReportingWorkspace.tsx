@@ -211,6 +211,7 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
+import { isBrainMeasuresReportingContext } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
@@ -226,6 +227,7 @@ import {
   ContradictionBanner,
   ImpressionStaleBanner,
   SpineApCanalMeasurements,
+  BrainMeasuresStrip,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import {
@@ -5664,6 +5666,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       />
                     )}
 
+                    {isBrainMeasuresReportingContext({
+                      modality: workflow.currentRow?.modality,
+                      region: studySetup.matchedStudyRegion,
+                      family: studySetup.studyContext?.family,
+                      studyDescription: workflow.currentRow?.studyDescription ?? null,
+                    }) && (
+                      <BrainMeasuresStrip
+                        disabled={isLocked || isFinalized}
+                        region={studySetup.matchedStudyRegion ?? "Brain"}
+                      />
+                    )}
+
                     {isMriLumbarReportingContext({
                       modality: workflow.currentRow?.modality,
                       region: studySetup.matchedStudyRegion,
@@ -6834,6 +6848,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                               }}
                               onAcceptImpression={acceptStructuredImpressionCandidate}
                             />
+                            {isBrainMeasuresReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <BrainMeasuresStrip
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "Brain"}
+                              />
+                            ) : null}
                             {isMriLumbarReportingContext({
                               modality: workflow.currentRow?.modality,
                               region: studySetup.matchedStudyRegion,

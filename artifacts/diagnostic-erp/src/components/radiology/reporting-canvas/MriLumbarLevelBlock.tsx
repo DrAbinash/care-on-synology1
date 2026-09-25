@@ -21,6 +21,8 @@ import {
 } from "@/lib/mriLumbarLevelState";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import { formatAnchorChip } from "@/lib/observationAnchor";
+import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
+import { legacyModicFromGrade } from "@/lib/mriSpineGrading";
 
 export function MriLumbarLevelBlock({
   region,
@@ -390,6 +392,28 @@ export function MriLumbarLevelBlock({
               </button>
             ) : null}
           </label>
+          <SpineNeuroGradingControls
+            testIdPrefix={`mri-ls-grade-${region.key}`}
+            showCordSignal
+            disabled={disabled}
+            value={{
+              pfirrmann: sel.pfirrmann,
+              modicGrade: sel.modicGrade,
+              meyerding: sel.meyerding,
+              cordSignal: sel.cordSignal,
+            }}
+            onChange={(g) =>
+              setSel((s) => ({
+                ...s,
+                pfirrmann: g.pfirrmann,
+                modicGrade: g.modicGrade,
+                meyerding: g.meyerding,
+                cordSignal: g.cordSignal,
+                // Keep legacy Modic chips in sync when standardized grade changes.
+                modic: legacyModicFromGrade(g.modicGrade) ?? s.modic,
+              }))
+            }
+          />
           <div className="rounded border border-dashed border-amber-200 bg-white/80 p-1.5">
             <div className="text-[8px] font-bold uppercase text-amber-800">Composed preview</div>
             <p className="text-[10px] text-slate-800" data-testid={`mri-level-preview-${region.key}`}>

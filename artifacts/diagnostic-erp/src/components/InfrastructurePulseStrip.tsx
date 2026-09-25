@@ -13,7 +13,7 @@ import {
 } from "@/lib/clinicSystemsSummary";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { RefreshCw, Gauge, ShieldCheck } from "lucide-react";
+import { RefreshCw, Gauge, ShieldCheck, ChevronDown, ChevronUp } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type OpsReport = {
@@ -120,7 +120,13 @@ function ClinicSystemsStatusPill({ pill }: { pill: PulsePill }) {
   );
 }
 
-export function InfrastructurePulseStrip() {
+export function InfrastructurePulseStrip({
+  defaultOpen = false,
+}: {
+  /** When true, operational grid / USG row start expanded. Default: collapsed. */
+  defaultOpen?: boolean;
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(defaultOpen);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const { data, isLoading, isFetching, refetch, error } = useQuery<OpsReport>({
     queryKey: ["/api/admin/operations/health", "infrastructure-pulse"],
@@ -189,12 +195,20 @@ export function InfrastructurePulseStrip() {
     <div
       className="rounded-md border border-slate-200/80 dark:border-card-border bg-white/90 dark:bg-card/80 px-2 py-1.5 shadow-sm space-y-1.5"
       data-testid="infrastructure-pulse-strip"
+      data-collapsed={!detailsOpen ? "true" : "false"}
     >
-      {/* ROW 1 — Server Health Ribbon (wraps on narrow; prefers one line on wide desktops) */}
+      {/* ROW 1 — Server Health Ribbon (always visible; details collapse below) */}
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1" data-testid="clinic-systems-health-ribbon">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground shrink-0">
+        <button
+          type="button"
+          onClick={() => setDetailsOpen((o) => !o)}
+          className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground shrink-0 hover:text-foreground transition-colors"
+          aria-expanded={detailsOpen}
+          data-testid="clinic-systems-toggle"
+        >
           Clinic systems
-        </span>
+          {detailsOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
 
         {isLoading ? (
           <span className="text-[10px] text-muted-foreground flex items-center gap-1">
@@ -250,93 +264,97 @@ export function InfrastructurePulseStrip() {
         </div>
       </div>
 
-      {verifyMsg && (
-        <div className="rounded px-2 py-0.5 text-[10px] leading-snug bg-emerald-50 text-emerald-900 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-100 dark:border-emerald-800">
-          {verifyMsg}
-        </div>
-      )}
+      {detailsOpen && (
+        <>
+          {verifyMsg && (
+            <div className="rounded px-2 py-0.5 text-[10px] leading-snug bg-emerald-50 text-emerald-900 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-100 dark:border-emerald-800">
+              {verifyMsg}
+            </div>
+          )}
 
-      {/* ROW 2 — compact multi-column operational grid */}
-      {summary && (
-        <div
-          className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-3 gap-y-1 text-[11px] leading-4 font-mono"
-          data-testid="clinic-systems-emergency"
-        >
-          {summary.sections.map((section) => (
-            <div key={section.title} className="min-w-0">
-              <div className="text-[9px] font-sans font-semibold uppercase tracking-wide text-muted-foreground mb-0.5 truncate">
-                {section.title}
-              </div>
-              {section.rows.map((row) => (
-                <div key={row.key} className="flex justify-between gap-2 py-px">
-                  <span className="text-muted-foreground font-sans truncate">{row.label}</span>
-                  <span className={`shrink-0 tabular-nums ${ROW_VALUE[row.tone]}`}>{row.value}</span>
+          {/* ROW 2 — compact multi-column operational grid */}
+          {summary && (
+            <div
+              className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-3 gap-y-1 text-[11px] leading-4 font-mono"
+              data-testid="clinic-systems-emergency"
+            >
+              {summary.sections.map((section) => (
+                <div key={section.title} className="min-w-0">
+                  <div className="text-[9px] font-sans font-semibold uppercase tracking-wide text-muted-foreground mb-0.5 truncate">
+                    {section.title}
+                  </div>
+                  {section.rows.map((row) => (
+                    <div key={row.key} className="flex justify-between gap-2 py-px">
+                      <span className="text-muted-foreground font-sans truncate">{row.label}</span>
+                      <span className={`shrink-0 tabular-nums ${ROW_VALUE[row.tone]}`}>{row.value}</span>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* ROW 3 — thin emergency warning strips */}
-      {summary && summary.alerts.length > 0 && (
-        <div className="space-y-0.5" data-testid="clinic-systems-emergency-alerts">
-          {summary.alerts.map((alert) => (
-            <div
-              key={alert.id}
-              className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded px-2 py-0.5 text-[10px] leading-snug ${
-                alert.severity === "red"
-                  ? "bg-red-50 text-red-900 border border-red-200 dark:bg-red-950/40 dark:text-red-100 dark:border-red-800"
-                  : "bg-amber-50 text-amber-950 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:border-amber-800"
-              }`}
-            >
-              <span className="min-w-0">
-                {alert.severity === "red" ? "⚠ " : ""}
-                {alert.message}
-              </span>
-              <Link href="/settings?tab=emergency-billing" className="underline shrink-0">
-                Emergency Billing
-              </Link>
+          {/* ROW 3 — thin emergency warning strips */}
+          {summary && summary.alerts.length > 0 && (
+            <div className="space-y-0.5" data-testid="clinic-systems-emergency-alerts">
+              {summary.alerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded px-2 py-0.5 text-[10px] leading-snug ${
+                    alert.severity === "red"
+                      ? "bg-red-50 text-red-900 border border-red-200 dark:bg-red-950/40 dark:text-red-100 dark:border-red-800"
+                      : "bg-amber-50 text-amber-950 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:border-amber-800"
+                  }`}
+                >
+                  <span className="min-w-0">
+                    {alert.severity === "red" ? "⚠ " : ""}
+                    {alert.message}
+                  </span>
+                  <Link href="/settings?tab=emergency-billing" className="underline shrink-0">
+                    Emergency Billing
+                  </Link>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* ROW 4 — compact USG ERP pipeline */}
-      {usgSettings && (
-        <div
-          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3 rounded border px-2 py-1 text-[10px] leading-snug bg-sky-50/80 border-sky-200 dark:bg-sky-950/30 dark:border-sky-800"
-          data-testid="usg-erp-pipeline-switch"
-        >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
-            <span className="font-semibold text-sky-950 dark:text-sky-100 shrink-0">USG ERP Pipeline</span>
-            <span
-              className={`inline-flex items-center gap-1 font-medium shrink-0 ${
-                usgSettings.pipelineEnabled !== false ? "text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-200"
-              }`}
+          {/* ROW 4 — compact USG ERP pipeline */}
+          {usgSettings && (
+            <div
+              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3 rounded border px-2 py-1 text-[10px] leading-snug bg-sky-50/80 border-sky-200 dark:bg-sky-950/30 dark:border-sky-800"
+              data-testid="usg-erp-pipeline-switch"
             >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  usgSettings.pipelineEnabled !== false ? "bg-emerald-500" : "bg-amber-500"
-                }`}
-                aria-hidden
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                <span className="font-semibold text-sky-950 dark:text-sky-100 shrink-0">USG ERP Pipeline</span>
+                <span
+                  className={`inline-flex items-center gap-1 font-medium shrink-0 ${
+                    usgSettings.pipelineEnabled !== false ? "text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-200"
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      usgSettings.pipelineEnabled !== false ? "bg-emerald-500" : "bg-amber-500"
+                    }`}
+                    aria-hidden
+                  />
+                  {usgSettings.pipelineEnabled !== false ? "ON" : "PAUSED"}
+                </span>
+                <span className="text-muted-foreground min-w-0">
+                  {usgSettings.pipelineEnabled !== false
+                    ? "Machine C-STORE → Orthanc remains independent of the ERP USG pipeline."
+                    : "Paused — images stay in Orthanc only. Do not stop sending from the USG machine. Recabling LAN is optional; this software pause is the billing/USG green lane."}
+                </span>
+              </div>
+              <Switch
+                checked={usgSettings.pipelineEnabled !== false}
+                disabled={usgPipelineMutation.isPending}
+                onCheckedChange={(on) => usgPipelineMutation.mutate(on)}
+                aria-label="USG ERP pipeline"
+                className="shrink-0 self-end sm:self-auto"
               />
-              {usgSettings.pipelineEnabled !== false ? "ON" : "PAUSED"}
-            </span>
-            <span className="text-muted-foreground min-w-0">
-              {usgSettings.pipelineEnabled !== false
-                ? "Machine C-STORE → Orthanc remains independent of the ERP USG pipeline."
-                : "Paused — images stay in Orthanc only. Do not stop sending from the USG machine. Recabling LAN is optional; this software pause is the billing/USG green lane."}
-            </span>
-          </div>
-          <Switch
-            checked={usgSettings.pipelineEnabled !== false}
-            disabled={usgPipelineMutation.isPending}
-            onCheckedChange={(on) => usgPipelineMutation.mutate(on)}
-            aria-label="USG ERP pipeline"
-            className="shrink-0 self-end sm:self-auto"
-          />
-        </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
