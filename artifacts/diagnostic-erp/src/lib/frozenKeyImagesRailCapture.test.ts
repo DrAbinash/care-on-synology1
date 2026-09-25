@@ -24,5 +24,7 @@ describe("FrozenKeyImagesRail capture camera", () => {
     expect(workspace).toContain("requestFrozenKeyImageCapture");
     expect(workspace).toContain("onCaptureRequest=");
     expect(workspace).toContain("captureKeyImage");
+    expect(workspace).toContain('captureBlockedTitle={ohifUnavailable ? "OHIF not reachable for this study" : undefined}');
+    expect(rail).toContain("captureBlockedTitle");
   });
 });

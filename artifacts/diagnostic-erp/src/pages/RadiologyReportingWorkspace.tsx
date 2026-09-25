@@ -4590,8 +4590,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   useEffect(() => {
     if (layoutMode !== "reportFocus") return;
+    if (!autoCollapseQueueOnStudyOpen) return;
     requestAnimationFrame(() => leftPanelRef.current?.collapse());
-  }, [layoutMode]);
+  }, [layoutMode, autoCollapseQueueOnStudyOpen]);
 
 
   // Dual Screen: open Legacy Open Study (popup viewer). Fall back to Split if blocked.
@@ -5382,8 +5383,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         aiSelectedIds={aiSelectedKeyImageIds}
                         onAiSelectedIdsChange={setAiSelectedKeyImageIds}
                         captureBusy={captureBusy}
+                        captureBlockedTitle={ohifUnavailable ? "OHIF not reachable for this study" : undefined}
                         onCaptureRequest={
-                          isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"
+                          isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL" || ohifUnavailable
                             ? undefined
                             : () => { void requestFrozenKeyImageCapture(); }
                         }
