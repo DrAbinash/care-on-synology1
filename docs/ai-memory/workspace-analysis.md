@@ -48,6 +48,7 @@ Traps learned: /g sed injections hit early returns; guard `if "usgFormFEnabled ?
 - Fire-drill: docker stop care-api to exercise PACS fallback.
 
 ## 6. Changelog
+2026-09-25 — Ctrl+Shift+Enter Save & Next: silent draft save, then finalize when findings and impression are both filled. Empty sections toast “Please complete findings/impression before Save & Next” and do not open the finalize dialog. Listed on the workspace footer as ⌃⇧↵ save & next. Finalize still owns Zero-Click Read Loop auto-advance.
 2026-09-25 — Multi-study combined report + workspace usability F1–F4, F6–F10 (F5 untouched). Primary studyId stays the route. Linked study lives in structuredJson.linkedStudyId. Findings sub-sections stitch around applyPathologyOverlay (single triad ingress). Finalize marks both worklist rows REPORT_FINAL. Branch `feat/multi-study-and-usability`.
 2026-09-25 — Quick Normal fallback on the Starting Canvas (`quick-normal-fallback`). Wholesale `setField(..., "quick-normal")` fills technique, findings, impression, and recommendation without the format picker. Provenance source `quick-normal` is not radiologist-manual, so it does not raise the stale impression banner. Recommendation accordion stays on the main report.
 2026-09-25 — `auto_collapse_queue_on_study_open` also gates Report Focus queue collapse. Key-image rail camera is disabled with “OHIF not reachable for this study” when the viewer has no OHIF launch URL.

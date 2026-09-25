@@ -37,8 +37,10 @@ import {
 } from "./abnormalSelectionFeedback";
 import {
   isEditableTarget,
+  saveAndNextFieldsReady,
   shouldHandleAltUndoAbnormal,
   shouldHandleFinalizeShortcut,
+  shouldHandleSaveAndNextShortcut,
   shortcutBlockedWhileTyping,
 } from "./reportingWorkspaceShortcuts";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -91,6 +93,10 @@ describe("AI instruction key handling", () => {
   it("Ctrl+Enter and Cmd+Enter invoke Run", () => {
     expect(shouldSubmitAiInstructionKey({ key: "Enter", ctrlKey: true })).toBe(true);
     expect(shouldSubmitAiInstructionKey({ key: "Enter", metaKey: true })).toBe(true);
+  });
+
+  it("Ctrl+Shift+Enter stays available for Save & Next", () => {
+    expect(shouldSubmitAiInstructionKey({ key: "Enter", ctrlKey: true, shiftKey: true })).toBe(false);
   });
 });
 
@@ -563,6 +569,27 @@ describe("Keyboard shortcut safety", () => {
       ctrlKey: true,
       target: { id: "other", tagName: "DIV" } as unknown as EventTarget,
     })).toBe(true);
+  });
+
+  it("Ctrl+Shift+Enter is Save & Next and requires findings plus impression", () => {
+    expect(shouldHandleSaveAndNextShortcut({ key: "Enter", ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(shouldHandleSaveAndNextShortcut({ key: "Enter", ctrlKey: true, shiftKey: false })).toBe(false);
+    expect(shouldHandleSaveAndNextShortcut({ key: "Enter", shiftKey: true })).toBe(false);
+    expect(saveAndNextFieldsReady({ findings: "Normal study.", impression: "Normal study." })).toBe(true);
+    expect(saveAndNextFieldsReady({ findings: "  ", impression: "Normal study." })).toBe(false);
+    expect(saveAndNextFieldsReady({ findings: "Normal study.", impression: "" })).toBe(false);
+
+    const page = readFileSync(
+      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
+      "utf8",
+    );
+    expect(page).toMatch(/if \(e\.ctrlKey && e\.shiftKey && e\.key === "Enter"\)/);
+    expect(page).toMatch(/void handleFrictionlessSaveAndNext\(\)/);
+    expect(page).toMatch(/await saveDraft\(\{ silent: true \}\)/);
+    expect(page).toMatch(/Please complete findings\/impression before Save & Next/);
+    expect(page).toMatch(/await finalizeReport\(\)/);
+    expect(page).toMatch(/data-testid="footer-save-and-next"/);
+    expect(page).toMatch(/save & next/);
   });
 
   it("plain keys while typing are blocked from accidental shortcut handling", () => {
