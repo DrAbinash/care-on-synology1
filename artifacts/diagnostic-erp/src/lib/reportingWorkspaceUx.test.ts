@@ -411,6 +411,16 @@ describe("Collapsed-section preferences", () => {
       "utf8",
     );
     expect(page).toMatch(/ImpressionWarningStrip/);
+    expect(page).not.toMatch(/accordionProps\("impression",\s*\{[^}]*collapsedWarning/);
+    expect(page).not.toMatch(/<ImpressionStaleBanner/);
+    expect(page).not.toMatch(/<ContradictionBanner/);
+    expect(page.match(/if \(!autoCollapseQueueOnStudyOpen\) return;/g)?.length).toBeGreaterThanOrEqual(2);
+    const settings = readFileSync(
+      join(__dirname, "../pages/RadiologySettingsCenter.tsx"),
+      "utf8",
+    );
+    expect(settings).toContain('data-testid="auto-collapse-queue-setting"');
+    expect(settings).toContain("auto_collapse_queue_on_study_open");
     const warningStrip = readFileSync(
       join(__dirname, "../components/radiology/reporting-canvas/ImpressionWarningStrip.tsx"),
       "utf8",
