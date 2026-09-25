@@ -921,6 +921,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     referringDoctorId: data.referringDoctorId ?? null,
                     referringDoctorName: data.referringDoctorName || "",
                     slotModality: data.slotModality || "",
+                    whatsappConsent: Boolean(pd.whatsappConsent),
                   });
                   loadCatalog();
                   setStep(1);
