@@ -189,3 +189,59 @@ export function reportingContextEqual(
     && a.protocolName === b.protocolName
   );
 }
+
+/**
+ * MRI Brain reporting context — activates Brain measures strip (ABC/2, midline,
+ * ASPECTS, aneurysm). Mirrors isMriLumbarReportingContext / cervical / dorsal.
+ */
+export function isMriBrainReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").toUpperCase();
+  if (mod && mod !== "MR" && mod !== "MRI") return false;
+  if (opts.family === "brain") return true;
+  const canonical = canonicalContentRegion(opts.region);
+  if (canonical === "Brain" || /^brain$/i.test((opts.region ?? "").trim())) return true;
+  if (familyFromRegion(opts.region) === "brain") return true;
+  const desc = (opts.studyDescription ?? "").toLowerCase();
+  if (/\b(mri|mr)\b/.test(desc) && /\bbrain\b/.test(desc) && !/\bspine\b/.test(desc)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * CT Brain / stroke reporting context — same Brain measures strip for NCCT
+ * stroke workups (ASPECTS, ICH ABC/2, midline).
+ */
+export function isCtBrainReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").toUpperCase();
+  if (mod && mod !== "CT" && mod !== "CTA") return false;
+  if (opts.family === "brain") return true;
+  const canonical = canonicalContentRegion(opts.region);
+  if (canonical === "Brain" || /^brain$/i.test((opts.region ?? "").trim())) return true;
+  if (familyFromRegion(opts.region) === "brain") return true;
+  const desc = (opts.studyDescription ?? "").toLowerCase();
+  if (/\bct\b/.test(desc) && /\b(brain|head|stroke)\b/.test(desc) && !/\bspine\b/.test(desc)) {
+    return true;
+  }
+  return false;
+}
+
+/** True when either MRI or CT brain context should show Brain measures. */
+export function isBrainMeasuresReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  return isMriBrainReportingContext(opts) || isCtBrainReportingContext(opts);
+}
