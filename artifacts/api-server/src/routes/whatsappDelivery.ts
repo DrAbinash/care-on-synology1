@@ -99,6 +99,39 @@ whatsappDeliveryRouter.get("/settings", requireStaffAuth, async (_req, res) => {
   });
 });
 
+/** Partial update for Lane-1 delivery knobs only (avoids full clinic_settings RETURNING). */
+whatsappDeliveryRouter.put("/settings", requireStaffAuth, requireStaffSubPermission("/settings", "clinic"), async (req, res) => {
+  const body = req.body ?? {};
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (typeof body.whatsappDeliveryRouting === "string") {
+    const r = body.whatsappDeliveryRouting;
+    if (r === "patient_only" || r === "patient_and_doctor" || r === "doctor_only") {
+      patch.whatsappDeliveryRouting = r;
+    } else {
+      res.status(400).json({ error: "whatsappDeliveryRouting must be patient_only|patient_and_doctor|doctor_only" });
+      return;
+    }
+  }
+  if (body.whatsappAutoOfferAfterPrint !== undefined) {
+    patch.whatsappAutoOfferAfterPrint = Boolean(body.whatsappAutoOfferAfterPrint);
+  }
+  if (typeof body.whatsappClicktochatNumber === "string") {
+    patch.whatsappClicktochatNumber = body.whatsappClicktochatNumber.trim();
+  }
+  if (body.whatsappRememberStationChoice !== undefined) {
+    patch.whatsappRememberStationChoice = Boolean(body.whatsappRememberStationChoice);
+  }
+  await db.update(clinicSettingsTable).set(patch);
+  const clinic = await getClinicRow();
+  res.json({
+    whatsappDeliveryRouting: clinic?.whatsappDeliveryRouting ?? "patient_only",
+    whatsappAutoOfferAfterPrint: clinic?.whatsappAutoOfferAfterPrint ?? true,
+    whatsappClicktochatNumber: clinic?.whatsappClicktochatNumber ?? "",
+    whatsappRememberStationChoice: clinic?.whatsappRememberStationChoice ?? true,
+    clinicName: clinic?.name ?? "Care Diagnostics",
+  });
+});
+
 /** Mint a signed share URL for bill or report (7-day default). */
 whatsappDeliveryRouter.post("/share-token", requireStaffAuth, async (req, res) => {
   const kind = String(req.body?.kind || "");
