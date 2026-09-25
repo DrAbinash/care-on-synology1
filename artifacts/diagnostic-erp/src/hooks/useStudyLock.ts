@@ -179,6 +179,7 @@ export function useStudyLock(studyId: number | undefined, opts: { enabled: boole
     status,
     lockView,
     ownerName: lockView?.lockUserName ?? null,
+    ownerId: lockView?.lockUserId ?? null,
     expiresAt: lockView?.lockExpiresAt ?? null,
     claim: () => claim(),
     release,

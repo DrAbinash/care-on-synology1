@@ -49,6 +49,15 @@ import {
   type ReportNarrative,
 } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
+import {
+  ensureSectionedFindings,
+  findingsSectionBlocks,
+  flattenSectionedFindings,
+  mergeScopedFindingsProvenance,
+  replaceFindingsSectionBody,
+  routeChipToFindingsSection,
+  type FindingsStudySection,
+} from "@/lib/multiStudyReport";
 import { applyChangePlan } from "@/lib/voiceReportComposer/applyChangePlan";
 import type { VoiceChangePlan, VoiceObservation } from "@/lib/voiceReportComposer/types";
 import {
@@ -178,6 +187,10 @@ export type PendingPathologyPatch = {
   properties?: string;
   supportsLaterality?: boolean;
   findingsText?: string;
+  /** Chip study-tab / region used only to route multi-study findings sub-sections. */
+  studyType?: string;
+  /** Explicit findings sub-section. When omitted, overlay routes from chip metadata then active focus. */
+  findingsSectionId?: string;
   bundleId?: string;
   sectionsOwned?: CanonicalObservation["sectionsOwned"];
   role?: CanonicalObservation["role"];
@@ -420,11 +433,17 @@ interface S {
   preloadTriggered: boolean;
   /** Resolved reporting identity — content selectors must use this, not DICOM bodyPart. */
   reportingContext: ReportingStudyContext;
+  /** Primary study heading when a second study is linked into this report. */
+  primaryFindingsSection: FindingsStudySection | null;
+  /** Second worklist study combined into this report. Persisted as structuredJson.linkedStudyId. */
+  linkedStudy: FindingsStudySection | null;
+  /** Findings sub-section that receives chips when metadata does not pick a unique section. */
+  activeFindingsSectionId: string | null;
 }
 
 export type WorkspaceStore = S & {
   setStudies: (s: unknown) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
-  setField: (f: EditorField, v: string, opts?: { source?: InsertSource; replaceProvenance?: boolean }) => void;
+  setField: (f: EditorField, v: string, opts?: InsertSource | { source?: InsertSource; replaceProvenance?: boolean }) => void;
   /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …). */
   mergeField: (f: EditorField, incoming: string, source: InsertSource) => void;
   /** Fill only when the field is empty; assigns provenance for the inserted block. */
@@ -448,6 +467,9 @@ export type WorkspaceStore = S & {
   applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   toggleFormatFavorite: (id: string) => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
+  setLinkedStudies: (primary: FindingsStudySection, linked: FindingsStudySection, opts?: { markDirty?: boolean }) => void;
+  clearLinkedStudy: () => void;
+  setActiveFindingsSection: (studyId: string | null) => void;
   applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending";
   /**
    * Bundle deselect: remove only this bundle's observations that are (a) not protected
@@ -603,6 +625,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   snippetMacros: typeof window !== "undefined" ? loadMacros() : DEFAULT_SNIPPET_MACROS, macroEditorOpen: false, editingMacro: null, activeMacroPrompt: null,
   signOffProfiles: typeof window !== "undefined" ? loadProfiles() : DEFAULT_SIGN_OFF_PROFILES, preloadTriggered: false,
   reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
+  primaryFindingsSection: null,
+  linkedStudy: null,
+  activeFindingsSectionId: null,
 
   setStudies: (s) => {
     const next = normalizeWorkspaceStudies(s);
@@ -629,9 +654,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
-  setField: (f, v, opts) => {
+  setField: (f, v, optsOrSource) => {
+    const opts = typeof optsOrSource === "string"
+      ? { source: optsOrSource, replaceProvenance: true as const }
+      : optsOrSource;
     const key = fieldTextKey(f);
     const prevText = get()[key];
     const prevProv = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;
@@ -1099,6 +1127,44 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       pendingPathologyPatch: null,
     });
   },
+  setLinkedStudies: (primary, linked, opts) => {
+    if (!primary?.studyId || !linked?.studyId || primary.studyId === linked.studyId) return;
+    const findingsText = ensureSectionedFindings(get().findingsText, primary, linked);
+    const active = get().activeFindingsSectionId;
+    const activeOk = active === primary.studyId || active === linked.studyId;
+    set({
+      primaryFindingsSection: primary,
+      linkedStudy: linked,
+      activeFindingsSectionId: activeOk ? active : primary.studyId,
+      findingsText,
+      isDirty: opts?.markDirty === false ? get().isDirty : true,
+    });
+  },
+  clearLinkedStudy: () => {
+    const primary = get().primaryFindingsSection;
+    const linked = get().linkedStudy;
+    const findingsText = primary && linked
+      ? flattenSectionedFindings(get().findingsText, [primary, linked])
+      : get().findingsText;
+    set({
+      primaryFindingsSection: null,
+      linkedStudy: null,
+      activeFindingsSectionId: null,
+      findingsText,
+      isDirty: true,
+    });
+  },
+  setActiveFindingsSection: (studyId) => {
+    const primary = get().primaryFindingsSection;
+    const linked = get().linkedStudy;
+    if (!studyId || !primary || !linked) {
+      set({ activeFindingsSectionId: null });
+      return;
+    }
+    if (studyId !== primary.studyId && studyId !== linked.studyId) return;
+    if (get().activeFindingsSectionId === studyId) return;
+    set({ activeFindingsSectionId: studyId });
+  },
   applyPathologyOverlay: (opts) => {
     if (get().isFinalized) return "applied";
 
@@ -1236,6 +1302,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     const narrative = narrativeFromState(get());
     const provenance = get().fieldProvenance;
+    const primarySection = get().primaryFindingsSection;
+    const linkedSection = get().linkedStudy;
+    const sectionList = primarySection && linkedSection ? [primarySection, linkedSection] : [];
+    const routedSectionId = sectionList.length === 2
+      ? routeChipToFindingsSection({
+        sections: sectionList,
+        activeSectionId: opts.findingsSectionId ?? get().activeFindingsSectionId,
+        anatomicalSection: opts.ownership?.anatomicalSection,
+        region: opts.region,
+        studyType: opts.studyType,
+      })
+      : null;
+    const sectionBefore = routedSectionId
+      ? (findingsSectionBlocks(narrative.findings, sectionList).find((b) => b.studyId === routedSectionId)?.body ?? "")
+      : "";
+    const overlayNarrative = routedSectionId
+      ? { ...narrative, findings: sectionBefore }
+      : narrative;
     // Drop same-slot siblings from the ledger only. Do not pre-strip their
     // sentences — structured overlay owns replacement and records
     // replacedBaseline so deselect can restore a normal/baseline.
@@ -1274,13 +1358,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const needsSlotConfirm = plan.action === "update" && plan.requiresConfirmation && !opts.force;
 
     const result = overlayPathology({
-      existing: narrative,
+      existing: overlayNarrative,
       incoming,
       ownership,
       provenance,
       source: opts.source,
       force: opts.force || (plan.action === "update" && !needsSlotConfirm),
     });
+    if (routedSectionId) {
+      const sectionAfter = result.narrative.findings;
+      result.narrative.findings = replaceFindingsSectionBody(
+        narrative.findings,
+        sectionList,
+        routedSectionId,
+        sectionAfter,
+      );
+      result.provenance = {
+        ...result.provenance,
+        findings: mergeScopedFindingsProvenance({
+          previous: provenance.findings,
+          sectionBefore,
+          sectionAfter,
+          sectionProvenance: result.provenance.findings,
+        }),
+      };
+    }
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
@@ -1341,6 +1443,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
             : {}),
         },
         selectedObservationId: stableId,
+        ...(routedSectionId ? { activeFindingsSectionId: routedSectionId } : {}),
       });
       return "pending";
     }
@@ -1357,6 +1460,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       structuredViewerMeasurements: nextMeasurements,
       ownershipReviewWarnings,
       selectedObservationId: stableId,
+      ...(routedSectionId ? { activeFindingsSectionId: routedSectionId } : {}),
       impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
         result.narrative.impression,
         nextPatches.map(toLedgerPatch),

@@ -5,6 +5,7 @@ import {
   STRUCTURED_JSON_ENVELOPE_KIND,
   composeStructuredJsonColumn,
   extractA4Cache,
+  extractCareLinkedStudy,
   extractCareReportFormatIdentity,
   extractCareStructuredFormat,
 } from "./structuredJsonColumn";
@@ -135,6 +136,27 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     const regen = composeStructuredJsonColumn({ existing: withIdentity, a4Cache: nextCache });
     expect(extractA4Cache(regen)).toEqual(nextCache);
     expect(extractCareReportFormatIdentity(regen)).toEqual(IDENTITY);
+  });
+
+  it("stores linkedStudyId on the envelope and keeps it across cache rewrites", () => {
+    const linked = {
+      studyId: 88,
+      title: "MRI CERVICAL SPINE",
+      modality: "MR",
+      studyDescription: "MRI Cervical Spine",
+    };
+    const col = composeStructuredJsonColumn({ existing: CACHE, linkedStudy: linked });
+    expect(extractCareLinkedStudy(col)).toEqual({
+      ...linked,
+      region: null,
+      accessionNumber: null,
+      studyInstanceUID: null,
+    });
+    expect((col as { linkedStudyId?: number }).linkedStudyId).toBe(88);
+    const regen = composeStructuredJsonColumn({ existing: col, a4Cache: [{ findingId: 3 }] });
+    expect(extractCareLinkedStudy(regen)?.studyId).toBe(88);
+    const cleared = composeStructuredJsonColumn({ existing: regen, linkedStudy: null });
+    expect(extractCareLinkedStudy(cleared)).toBeNull();
   });
 
   it("malformed identity payloads are ignored, not persisted", () => {

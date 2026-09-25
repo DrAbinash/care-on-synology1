@@ -39,6 +39,10 @@ export interface FinalizeStudyContext {
   studyDescription?: string | null;
   accessionNumber?: string | null;
   studyInstanceUID?: string | null;
+  /** Second worklist row included in this combined report. */
+  linkedStudyId?: number | string | null;
+  linkedAccessionNumber?: string | null;
+  linkedStudyInstanceUID?: string | null;
 }
 
 export interface FinalizeReportContent {
@@ -95,6 +99,10 @@ export interface FinalizeResult {
    *  configured", "role_cannot_sign", or the server's error message). null
    *  when signed is true, or when no report row exists to sign. */
   signError: string | null;
+  /** True when a linked second study was also marked REPORT_FINAL. */
+  linkedMarkedFinal?: boolean;
+  /** Set when the linked worklist flip failed. Primary finalize still stands. */
+  linkedMarkError?: string | null;
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -298,6 +306,28 @@ export async function finalizeRadiologyReport(
     ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
   });
 
+  const primaryKey = String(study.worklistId ?? study.studyId ?? "");
+  const linkedKey = study.linkedStudyId == null ? "" : String(study.linkedStudyId).trim();
+  let linkedMarkedFinal = false;
+  let linkedMarkError: string | null = null;
+  if (linkedKey && linkedKey !== primaryKey) {
+    const linkedWorklistId = Number(linkedKey);
+    try {
+      await api.post("/api/internal/radiology/report-status", {
+        worklistId: Number.isInteger(linkedWorklistId) ? linkedWorklistId : undefined,
+        accessionNumber: study.linkedAccessionNumber ?? undefined,
+        studyInstanceUID: study.linkedStudyInstanceUID ?? undefined,
+        status: "REPORT_FINAL",
+        deliveryStatus: "READY_TO_SEND",
+        reportId: reportId ?? undefined,
+        actor: content.actor,
+      });
+      linkedMarkedFinal = true;
+    } catch (err) {
+      linkedMarkError = err instanceof Error ? err.message : "Could not mark the linked study REPORT_FINAL";
+    }
+  }
+
   return {
     reportId,
     report: reportRow,
@@ -308,6 +338,8 @@ export async function finalizeRadiologyReport(
     reportCreationSkipped,
     signed: signed || alreadySignedByD5,
     signError,
+    linkedMarkedFinal,
+    linkedMarkError,
   };
 }
 

@@ -34,6 +34,19 @@ export type StructuredJsonEnvelope = {
   careCanalApProvenance?: unknown;
   /** Applied whole-report format identity (care.report_format_identity.v1). */
   careReportFormatIdentity?: unknown;
+  /** Second worklist row combined into this draft. */
+  linkedStudyId?: number | string | null;
+  careLinkedStudy?: CareLinkedStudy | null;
+};
+
+export type CareLinkedStudy = {
+  studyId: number | string;
+  title: string;
+  modality?: string | null;
+  studyDescription?: string | null;
+  region?: string | null;
+  accessionNumber?: string | null;
+  studyInstanceUID?: string | null;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -110,6 +123,24 @@ export type CareReportFormatIdentity = {
   baselineManifestRevision?: string;
 };
 
+export function extractCareLinkedStudy(column: unknown): CareLinkedStudy | null {
+  if (!isRecord(column)) return null;
+  const raw = isRecord(column.careLinkedStudy) ? column.careLinkedStudy : null;
+  const id = column.linkedStudyId ?? raw?.studyId;
+  if (id == null || (typeof id !== "number" && typeof id !== "string") || id === "") return null;
+  const studyId = typeof raw?.studyId === "number" || typeof raw?.studyId === "string" ? raw.studyId : id;
+  const title = typeof raw?.title === "string" ? raw.title.trim() : "";
+  return {
+    studyId,
+    title,
+    modality: typeof raw?.modality === "string" ? raw.modality : null,
+    studyDescription: typeof raw?.studyDescription === "string" ? raw.studyDescription : null,
+    region: typeof raw?.region === "string" ? raw.region : null,
+    accessionNumber: typeof raw?.accessionNumber === "string" ? raw.accessionNumber : null,
+    studyInstanceUID: typeof raw?.studyInstanceUID === "string" ? raw.studyInstanceUID : null,
+  };
+}
+
 export function extractCareReportFormatIdentity(column: unknown): CareReportFormatIdentity | null {
   if (!isRecord(column)) return null;
   if (isCareReportFormatIdentity(column)) return column;
@@ -132,6 +163,8 @@ export function composeStructuredJsonColumn(opts: {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   reportFormatIdentity?: unknown;
+  /** undefined keeps the existing linked study; null clears it. */
+  linkedStudy?: CareLinkedStudy | null;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
@@ -147,7 +180,10 @@ export function composeStructuredJsonColumn(opts: {
   const reportFormatIdentity = opts.reportFormatIdentity !== undefined
     ? opts.reportFormatIdentity
     : extractCareReportFormatIdentity(opts.existing);
-  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity) return a4 ?? null;
+  const linkedStudy = opts.linkedStudy !== undefined
+    ? opts.linkedStudy
+    : extractCareLinkedStudy(opts.existing);
+  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity && !linkedStudy) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -157,5 +193,9 @@ export function composeStructuredJsonColumn(opts: {
   if (viewerMs) env.careViewerMeasurements = viewerMs;
   if (canalProv) env.careCanalApProvenance = canalProv;
   if (reportFormatIdentity) env.careReportFormatIdentity = reportFormatIdentity;
+  if (linkedStudy && linkedStudy.studyId !== "" && linkedStudy.studyId != null) {
+    env.linkedStudyId = linkedStudy.studyId;
+    env.careLinkedStudy = linkedStudy;
+  }
   return env;
 }

@@ -102,6 +102,32 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     expect(mockPost).not.toHaveBeenCalledWith(expect.stringMatching(/\/sign$/), expect.anything());
   });
 
+  it("marks the linked worklist row REPORT_FINAL as well as the primary study", async () => {
+    mockSignatures = [{ id: 1, name: "Dr. Sugandha", isActive: true }];
+    mockHappyReportCreation();
+    const result = await finalizeRadiologyReport(
+      {
+        patientId: 2,
+        studyId: 1,
+        worklistId: 1,
+        linkedStudyId: 44,
+        linkedAccessionNumber: "ACC-44",
+        linkedStudyInstanceUID: "1.2.3",
+      },
+      CONTENT,
+    );
+    expect(result.linkedMarkedFinal).toBe(true);
+    expect(result.linkedMarkError).toBeNull();
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/internal/radiology/report-status",
+      expect.objectContaining({ worklistId: 1, status: "REPORT_FINAL" }),
+    );
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/internal/radiology/report-status",
+      expect.objectContaining({ worklistId: 44, status: "REPORT_FINAL", accessionNumber: "ACC-44" }),
+    );
+  });
+
   it("reports a clear reason when no active signature exists at all", async () => {
     mockSignatures = [{ id: 1, name: "Dr. Retired", isActive: false }];
     mockHappyReportCreation();

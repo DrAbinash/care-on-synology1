@@ -143,6 +143,8 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   captureBusy?: boolean;
   /** Ask CARE OHIF extension for annotated viewport capture (parent registers requestId). */
   onRequestOhifAnnotatedCapture?: () => void;
+  /** Preflight: OHIF launch URL was not available for this study. */
+  ohifAnnotatedCaptureBlocked?: boolean;
 }>(function EmbeddedWadoViewer({
   studyInstanceUID,
   worklistId,
@@ -155,6 +157,7 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   onCaptureViewport,
   captureBusy,
   onRequestOhifAnnotatedCapture,
+  ohifAnnotatedCaptureBlocked,
 }, ref) {
   const initialUid = (studyInstanceUID ?? "").trim();
   const canResolve = !initialUid && typeof worklistId === "number" && worklistId > 0;
@@ -201,13 +204,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       onCaptureViewport={onCaptureViewport}
       captureBusy={captureBusy}
       onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
+      ohifAnnotatedCaptureBlocked={ohifAnnotatedCaptureBlocked}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -229,6 +233,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   }) => void | Promise<void>;
   captureBusy?: boolean;
   onRequestOhifAnnotatedCapture?: () => void;
+  ohifAnnotatedCaptureBlocked?: boolean;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -546,7 +551,7 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         const ok = await captureFramesKeyImage();
         return ok ? "frames" : "unavailable";
       }
-      if (viewMode === "OHIF" && onRequestOhifAnnotatedCapture) {
+      if (viewMode === "OHIF" && onRequestOhifAnnotatedCapture && !ohifAnnotatedCaptureBlocked) {
         onRequestOhifAnnotatedCapture();
         return "ohif";
       }
@@ -668,9 +673,9 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
             <button
               type="button"
               className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-amber-700/70 bg-amber-950 text-amber-100 text-[10px] font-medium hover:bg-amber-900 disabled:opacity-50"
-              title="Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot."
+              title={ohifAnnotatedCaptureBlocked ? "OHIF not reachable for this study" : "Annotated OHIF capture requires the CARE OHIF extension (viewport-capture protocol). Without it, switch to Frames for viewport capture, save the DICOM frame, or upload a screenshot."}
               data-testid="ohif-capture-fallback-hint"
-              disabled={captureBusy || !onRequestOhifAnnotatedCapture}
+              disabled={captureBusy || !onRequestOhifAnnotatedCapture || ohifAnnotatedCaptureBlocked}
               onClick={(e) => {
                 e.stopPropagation();
                 onRequestOhifAnnotatedCapture?.();

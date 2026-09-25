@@ -65,6 +65,18 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     ].map(at);
     const sorted = [...order].sort((a, b) => a - b);
     expect(order).toEqual(sorted);
+    const recommendationAt = workspace.indexOf('accordionProps("recommendation"');
+    expect(workspace.slice(Math.max(0, recommendationAt - 180), recommendationAt)).not.toContain("{false &&");
+  });
+
+  it("puts Quick Normal on the live starting canvas, not the retired format slot", () => {
+    const canvas = at('data-testid="full-normal-starting-canvas"');
+    const button = at('data-testid="quick-normal-fallback"');
+    const retired = at('data-testid="report-format-primary-slot"');
+    expect(button).toBeGreaterThan(canvas);
+    expect(button).toBeLessThan(retired);
+    expect(workspace).toContain('setField("findings", "Normal study.", "quick-normal")');
+    expect(workspace).toContain('setField("recommendation", "Clinical correlation is recommended.", "quick-normal")');
   });
 
   it("drives one-active-section state through the accordion helpers", () => {

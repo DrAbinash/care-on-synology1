@@ -624,6 +624,25 @@ export default function RadiologySettingsCenter() {
             </p>
           </div>
 
+          <div className="rounded-xl border bg-card p-5 space-y-4 max-w-3xl" data-testid="radiology-workspace-settings">
+            <h4 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Workspace</h4>
+            <div className="flex items-center justify-between border rounded-lg p-3">
+              <div>
+                <Label className="text-xs font-semibold">Auto-collapse reading queue when a study opens</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  ON (default): opening a study collapses the left queue so the report has room.
+                  OFF: the queue stays open. Stored as auto_collapse_queue_on_study_open.
+                </p>
+              </div>
+              <Switch
+                checked={svOn("auto_collapse_queue_on_study_open", true)}
+                disabled={!isAdmin}
+                data-testid="auto-collapse-queue-setting"
+                onCheckedChange={(v) => upsertSetting.mutate({ key: "auto_collapse_queue_on_study_open", value: String(v), category: "radiology" })}
+              />
+            </div>
+          </div>
+
           <div className="rounded-xl border bg-card p-5 space-y-2 max-w-3xl" data-testid="reading-suite-tab">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <BookOpen size={16} className="text-sky-600" /> Reading Suite
