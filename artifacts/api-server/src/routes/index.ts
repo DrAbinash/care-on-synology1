@@ -52,6 +52,7 @@ import displayRouter from "./display";
 import queueDisplaySettingsRouter from "./queueDisplaySettings";
 import paymentDisplayRouter from "./paymentDisplay";
 import { whatsappRouter } from "./whatsapp";
+import { whatsappDeliveryRouter, publicShareRouter } from "./whatsappDelivery";
 import { waChatbotRouter } from "./waChatbot";
 import { printersRouter } from "./printers";
 import { staffRouter } from "./staff";
@@ -303,6 +304,7 @@ router.use("/payment-display", paymentDisplayRouter);
 router.use("/bridge", bridgeRouter);
 // Public tokenized PDF download for patient WhatsApp links — no staff auth.
 router.use("/p/r", publicReportsRouter);
+router.use("/share", publicShareRouter);
 // Public tokenized patient feedback / NPS form — no staff auth. Serves a
 // self-contained HTML page and records the response. Gated by ff_feedback_nps.
 router.use("/f", publicFeedbackRouter);
@@ -1063,6 +1065,7 @@ router.use("/dashboard/reconciliation", requireStaffAuth, reconciliationRouter);
 router.use("/dashboard/my-daily-summary", requireStaffAuth, myDailySummaryRouter);
 router.use("/packages", requireStaffAuth, packagesRouter);
 router.use("/whatsapp", requireStaffAuth, whatsappRouter);
+router.use("/whatsapp-delivery", whatsappDeliveryRouter);
 router.use("/tokens", requireStaffAuth, requireStaffPermission("/queue"), tokensRouter);
 router.use("/test-tokens", requireStaffAuth, requireStaffPermission("/queue"), testTokensRouter);
 

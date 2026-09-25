@@ -15,7 +15,12 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, History, Clock, ShieldAlert, Trash2, AlertTriangle, Printer, Ban, Undo2, XCircle, AlertCircle, Search, X, CheckSquare, Square, RotateCcw, Stethoscope, MessageCircle } from "lucide-react";
+import {
+  WhatsAppDeliveryDialog,
+  isBillIssuableForWhatsApp,
+  runPrintThenOfferWhatsApp,
+} from "@/components/WhatsAppDeliveryDialog";
 import {
   filterSwapCatalogTests,
   formatSwapCatalogLabel,
@@ -154,6 +159,7 @@ export default function BillDetail({ id }: { id: number }) {
   const [superEditOpen, setSuperEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [reprintOpen, setReprintOpen] = useState(false);
+  const [waShareOpen, setWaShareOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [waiveOpen, setWaiveOpen] = useState(false);
   const [waiveReason, setWaiveReason] = useState("");
@@ -210,6 +216,17 @@ export default function BillDetail({ id }: { id: number }) {
   }>({
     queryKey: ["clinic-settings"],
     queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 5 * 60_000,
+  });
+
+  const { data: waDeliverySettings } = useQuery<{
+    whatsappDeliveryRouting?: string;
+    whatsappAutoOfferAfterPrint?: boolean;
+    whatsappRememberStationChoice?: boolean;
+    clinicName?: string;
+  }>({
+    queryKey: ["wa-delivery-settings"],
+    queryFn: () => api.get("/api/whatsapp-delivery/settings"),
     staleTime: 5 * 60_000,
   });
 
@@ -658,6 +675,38 @@ export default function BillDetail({ id }: { id: number }) {
   const session = readStaffSession();
   const canEdit = bill.status !== "paid" && bill.status !== "cancelled" && (!session || hasSubPermission(session, "/billing", "edit"));
   const canReprint = !session || hasSubPermission(session, "/billing", "reprint");
+  const waBillIssuable = isBillIssuableForWhatsApp(bill?.status);
+  const waDraftTitle = !bill
+    ? "Bill not loaded"
+    : bill.status === "cancelled"
+      ? "Cancelled bills cannot be shared on WhatsApp"
+      : bill.status === "draft"
+        ? "Draft bills cannot be shared — issue the bill first"
+        : "WhatsApp share unavailable";
+
+  const printBillOnce = () => {
+    const html = buildHtmlForCurrent();
+    if (html) printViaIframe(html);
+  };
+
+  const handlePrintAndSend = async () => {
+    if (!waBillIssuable) {
+      toast({ title: "Draft / cancelled bill", description: waDraftTitle, variant: "destructive" });
+      return;
+    }
+    const autoOffer = waDeliverySettings?.whatsappAutoOfferAfterPrint !== false;
+    await runPrintThenOfferWhatsApp({
+      printOnce: printBillOnce,
+      autoOffer,
+      openDialog: () => setWaShareOpen(true),
+    });
+    if (!autoOffer) {
+      toast({
+        title: "Printed",
+        description: "WhatsApp auto-offer is off for this clinic — open WhatsApp manually if needed.",
+      });
+    }
+  };
   const canRefund = !session || hasSubPermission(session, "/billing", "refund");
   const printPageOpts = resolveBillPrintPageOpts(
     billPrintSettings,
@@ -757,6 +806,26 @@ export default function BillDetail({ id }: { id: number }) {
                 <Printer size={14} className="mr-1" /> Re-print
               </Button>
             )}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!waBillIssuable}
+              title={!waBillIssuable ? waDraftTitle : "Share bill link via WhatsApp (staff click)"}
+              onClick={() => setWaShareOpen(true)}
+              data-testid="bill-whatsapp-btn"
+            >
+              <MessageCircle size={14} className="mr-1" /> WhatsApp
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!waBillIssuable}
+              title={!waBillIssuable ? waDraftTitle : "Print once, then offer WhatsApp share"}
+              onClick={() => void handlePrintAndSend()}
+              data-testid="bill-print-and-send-btn"
+            >
+              <Printer size={14} className="mr-1" /> Print &amp; Send
+            </Button>
             <Button size="sm" variant="outline" onClick={() => { setAuditOpen(true); }}>
               <History size={14} className="mr-1" /> History
             </Button>
@@ -1760,6 +1829,20 @@ export default function BillDetail({ id }: { id: number }) {
           </form>
         </DialogContent>
       </Dialog>
+
+      <WhatsAppDeliveryDialog
+        open={waShareOpen}
+        onOpenChange={setWaShareOpen}
+        kind="bill"
+        recordId={bill.id}
+        clinicName={waDeliverySettings?.clinicName || clinic?.name}
+        patientPhone={bill.patient?.phone}
+        doctorPhone={(bill.order?.doctor as { phone?: string } | undefined)?.phone}
+        patientName={bill.patient ? `${bill.patient.firstName} ${bill.patient.lastName}`.trim() : undefined}
+        whatsappConsent={Boolean((bill.patient as { whatsappConsent?: boolean } | undefined)?.whatsappConsent)}
+        defaultRouting={(waDeliverySettings?.whatsappDeliveryRouting as "patient_only" | "patient_and_doctor" | "doctor_only") || "patient_only"}
+        rememberStationAllowed={waDeliverySettings?.whatsappRememberStationChoice !== false}
+      />
 
     </div>
   );

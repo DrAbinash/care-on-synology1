@@ -83,6 +83,7 @@ export * from "./billPaymentLinks";
 export * from "./abdmConsent";
 export * from "./whatsapp";
 export * from "./whatsappOutbox";
+export * from "./whatsappDelivery";
 export * from "./structuredReportTemplates";
 export * from "./radiologyFindingLibrary";
 export * from "./teleradiologyUsers";

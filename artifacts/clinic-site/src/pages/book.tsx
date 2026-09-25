@@ -232,8 +232,10 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
       referringDoctorId: null as number | null,
       referringDoctorName: "",
       slotModality: "",
+      whatsappConsent: false,
     };
   });
+  const [waClickToChat, setWaClickToChat] = useState<string | null>(null);
   const [selTests, setSelTests] = useState<Set<number>>(new Set());
   const [quickTab, setQuickTab] = useState("All");
   const [selPkgs, setSelPkgs] = useState<Set<number>>(new Set());
@@ -361,6 +363,19 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
           setConfirming(false);
           // Clean URL so refresh doesn't re-trigger
           window.history.replaceState({}, "", window.location.pathname);
+          // Lane-1: enqueue staff Click-to-Chat delivery (never auto-sends).
+          const slot = `${b.selectedDate || ""} ${b.timeSlot || ""}`.trim();
+          const msg =
+            `Hello ${b.name || "Patient"}, your booking at ${settings.siteTitle || "Care Diagnostics"} is confirmed for ${slot || "your appointment"}. Ref: ${b.bookingRef || ref}. Reply here if you need help.`;
+          bookingPost<{ clickToChat?: string | null }>("/api/whatsapp-delivery/public/enqueue-booking", {
+            bookingRef: b.bookingRef || ref,
+            patientPhone: b.phone || "",
+            patientName: b.name || "",
+            prefilledMessage: msg,
+            whatsappConsent: Boolean(pd.whatsappConsent),
+          })
+            .then((r) => { if (r.clickToChat) setWaClickToChat(r.clickToChat); })
+            .catch(() => { /* non-fatal */ });
         })
         .catch(() => {
           // Still show basic confirmation with ref only
@@ -658,6 +673,18 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
             });
             setTokenNo(detailRes.tokenNo);
             setStep(6);
+            const slot = `${b.selectedDate || ""} ${b.timeSlot || ""}`.trim();
+            const msg =
+              `Hello ${b.name || "Patient"}, your booking at ${settings.siteTitle || "Care Diagnostics"} is confirmed for ${slot || "your appointment"}. Ref: ${b.bookingRef || qrBookingRef}. Reply here if you need help.`;
+            bookingPost<{ clickToChat?: string | null }>("/api/whatsapp-delivery/public/enqueue-booking", {
+              bookingRef: b.bookingRef || qrBookingRef,
+              patientPhone: b.phone || "",
+              patientName: b.name || "",
+              prefilledMessage: msg,
+              whatsappConsent: Boolean(pd.whatsappConsent),
+            })
+              .then((r) => { if (r.clickToChat) setWaClickToChat(r.clickToChat); })
+              .catch(() => {});
           })
           .catch(() => {
             setStep(3);
@@ -894,6 +921,7 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                     referringDoctorId: data.referringDoctorId ?? null,
                     referringDoctorName: data.referringDoctorName || "",
                     slotModality: data.slotModality || "",
+                    whatsappConsent: Boolean(pd.whatsappConsent),
                   });
                   loadCatalog();
                   setStep(1);
@@ -1415,6 +1443,22 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                 >
                   <Receipt size={16} /> Print Receipt
                 </button>
+                {(waClickToChat || confirmedBooking) && (
+                  <a
+                    href={
+                      waClickToChat
+                      || `https://wa.me/?text=${encodeURIComponent(
+                        `Hello, my booking ref is ${confirmedBooking?.bookingRef || successRef}.`,
+                      )}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ ...btnOutline, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}
+                    data-testid="continue-on-whatsapp"
+                  >
+                    <MessageCircle size={16} /> Continue on WhatsApp
+                  </a>
+                )}
                 <a href={BASE} style={{ ...btnOutline, textDecoration: "none" }}>
                   <ChevronLeft size={16} /> Back to Home
                 </a>
@@ -1531,6 +1575,19 @@ export default function BookPage({ settings }: { settings: SiteSettings }) {
                   <li>Cancellation of online bookings will entail a deduction of {100 - (config?.disclaimerRefundPercentage ?? 90)}% administrative fee as per clinic policy.</li>
                 </ul>
               </div>
+
+              <label style={{ display: "flex", alignItems: "flex-start", gap: ".5rem", fontSize: ".82rem", marginBottom: "1rem", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(pd.whatsappConsent)}
+                  onChange={(e) => setPd((prev) => ({ ...prev, whatsappConsent: e.target.checked }))}
+                  data-testid="booking-whatsapp-consent"
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  I consent to receive booking updates via WhatsApp (staff-initiated Click-to-Chat only — no automated marketing).
+                </span>
+              </label>
 
               {error && (
                 <div style={{ color: "hsl(0 72% 40%)", fontSize: ".85rem", marginBottom: ".75rem", padding: ".75rem", background: "hsl(0 85% 96%)", borderRadius: "var(--site-radius)", border: "1px solid hsl(0 72% 90%)" }}>
