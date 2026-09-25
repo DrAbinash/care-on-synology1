@@ -15,6 +15,16 @@ import {
 } from "@/lib/mriLumbarRegions";
 import { normalizeLevel } from "@/lib/observationSlot";
 import { splitToSentences } from "@/lib/reportFieldMerge";
+import {
+  buildSpineGradingAtoms,
+  legacyModicFromGrade,
+  modicGradeFromLegacy,
+  parseCordSignalFromText,
+  parseMeyerdingFromText,
+  parseModicGradeFromText,
+  parsePfirrmannFromText,
+  spineGradingHasContent,
+} from "@/lib/mriSpineGrading";
 
 /** Per-level baseline from CARE LS structured format (LEVEL_NORMAL). */
 export const LS_LEVEL_DISC_BASELINE =
@@ -38,6 +48,14 @@ export function lumbarLevelApplyHasContent(sel: LumbarLevelSelection): boolean {
     || sel.rootContact
     || sel.foraminalSeverity
     || sel.canalApMm != null
+    || spineGradingHasContent({
+      pfirrmann: sel.pfirrmann,
+      modicGrade: sel.modicGrade ?? modicGradeFromLegacy(sel.modic),
+      meyerding: sel.meyerding,
+      cordSignal: sel.cordSignal,
+      foraminalSeverity: sel.foraminalSeverity,
+      centralCanalSeverity: sel.canal && sel.canal !== "none" ? sel.canal as "mild" | "moderate" | "severe" : null,
+    })
   );
 }
 
@@ -132,9 +150,28 @@ export function deriveLumbarLevelSelection(
     }
 
     if (concept === "endplate" || /modic/.test(findings)) {
-      if (/type\s*3|modic 3/.test(findings)) sel.modic = "type3";
+      const mg = parseModicGradeFromText(findings, sev);
+      if (mg) {
+        sel.modicGrade = mg;
+        sel.modic = legacyModicFromGrade(mg) ?? undefined;
+      } else if (/type\s*3|modic 3/.test(findings)) sel.modic = "type3";
       else if (/type\s*2|modic 2/.test(findings)) sel.modic = "type2";
       else if (/type\s*1|modic 1/.test(findings)) sel.modic = "type1";
+    }
+
+    if (concept === "pfirrmann" || /pfirrmann/.test(findings)) {
+      const pf = parsePfirrmannFromText(findings, sev);
+      if (pf) sel.pfirrmann = pf;
+    }
+
+    if (concept === "spondylolisthesis" || /meyerding|spondylolisthesis|listhesis/.test(findings)) {
+      const my = parseMeyerdingFromText(findings, sev);
+      if (my) sel.meyerding = my;
+    }
+
+    if (concept === "cord_signal" || (/cord/.test(findings) && /t2|hyperintens|myelopath|faint|bright/.test(findings))) {
+      const cs = parseCordSignalFromText(findings, sev, (p.observation?.state || "").toLowerCase());
+      if (cs) sel.cordSignal = cs;
     }
 
     if (concept === "root_contact" || /root contact|nerve root|root compression|root impingement/.test(findings)) {
@@ -454,7 +491,7 @@ export function buildLumbarLevelApplyBundle(opts: {
     });
   }
 
-  if (modic && modic.id !== "none" && modic.findings) {
+  if (modic && modic.id !== "none" && modic.findings && !sel.modicGrade && !sel.pfirrmann) {
     const findings = `At ${level}, ${modic.findings} are present.`;
     const impression = `${level}: ${modic.findings}.`;
     observations.push({
@@ -474,6 +511,45 @@ export function buildLumbarLevelApplyBundle(opts: {
       concept: "endplate",
       label: `${level} endplate`,
       findingsText: findings,
+      bundleId,
+    });
+  }
+
+  // Neuro-spine grading atoms (Pfirrmann / Modic grade / Meyerding / cord signal).
+  // Same-slot replacement via concept|level — does not alter store shape.
+  const gradingAtoms = buildSpineGradingAtoms(level, {
+    pfirrmann: sel.pfirrmann,
+    modicGrade: sel.modicGrade ?? modicGradeFromLegacy(sel.modic),
+    meyerding: sel.meyerding,
+    cordSignal: sel.cordSignal,
+  });
+  for (const atom of gradingAtoms) {
+    // Avoid duplicate endplate when legacy Modic path already emitted.
+    if (atom.concept === "endplate" && observations.some((o) => o.concept === "endplate")) {
+      continue;
+    }
+    observations.push({
+      id: patchId(level, atom.concept, atom.laterality),
+      incoming: { findings: atom.findings, impression: atom.impression },
+      templates: { findings: atom.findings, impression: atom.impression },
+      ownership: {
+        anatomicalSection: level,
+        conflictGroup: atom.concept,
+        baselineReplaces: atom.baselineReplaces ?? "",
+        concept: atom.concept,
+        level,
+        laterality: atom.laterality,
+      },
+      source: "structured-template",
+      region,
+      level,
+      laterality: atom.laterality,
+      concept: atom.concept,
+      severity: atom.severity,
+      state: atom.state,
+      measurement: atom.measurement,
+      label: `${level} ${atom.concept}`,
+      findingsText: atom.findings,
       bundleId,
     });
   }

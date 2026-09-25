@@ -15,6 +15,18 @@
 
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "@/lib/zai-workspace/store";
 import { normalizeLevel } from "@/lib/observationSlot";
+import {
+  buildSpineGradingAtoms,
+  parseCordSignalFromText,
+  parseMeyerdingFromText,
+  parseModicGradeFromText,
+  parsePfirrmannFromText,
+  spineGradingHasContent,
+  type CordSignalGradeId,
+  type MeyerdingGradeId,
+  type ModicGradeId,
+  type PfirrmannGradeId,
+} from "./mriSpineGrading";
 
 // ─── Dorsal clinical concepts ────────────────────────────────────────────
 
@@ -93,6 +105,12 @@ export type DorsalLevelSelection = {
   cord?: (typeof DORSAL_CORD_OPTIONS)[number]["id"];
   vertebral?: (typeof DORSAL_VERTEBRAL_OPTIONS)[number]["id"];
   infection?: (typeof DORSAL_INFECTION_OPTIONS)[number]["id"];
+  /** Neuro-spine grading engine. */
+  pfirrmann?: PfirrmannGradeId | null;
+  modicGrade?: ModicGradeId | null;
+  meyerding?: MeyerdingGradeId | null;
+  cordSignal?: CordSignalGradeId | null;
+  canalApMm?: number | null;
 };
 
 // ─── Baselines ────────────────────────────────────────────────────────────
@@ -114,6 +132,14 @@ export function dorsalLevelApplyHasContent(sel: DorsalLevelSelection): boolean {
     || sel.cord
     || sel.vertebral
     || sel.infection
+    || sel.canalApMm != null
+    || spineGradingHasContent({
+      pfirrmann: sel.pfirrmann,
+      modicGrade: sel.modicGrade,
+      meyerding: sel.meyerding,
+      cordSignal: sel.cordSignal,
+      foraminalSeverity: sel.foraminalSeverity,
+    })
   );
 }
 
@@ -199,8 +225,23 @@ export function deriveDorsalLevelSelection(
     }
 
     if (concept === "cord_compression" || concept === "cord_signal" || /cord/.test(findings)) {
+      const cs = parseCordSignalFromText(findings, sev, (p.observation?.state || "").toLowerCase());
+      if (cs) sel.cordSignal = cs;
       if (/t2.*hyperintense|myelopath/.test(findings)) sel.cord = "t2-change";
       else if (/compress/.test(findings)) sel.cord = "compression";
+    }
+
+    if (concept === "pfirrmann" || /pfirrmann/.test(findings)) {
+      const pf = parsePfirrmannFromText(findings, sev);
+      if (pf) sel.pfirrmann = pf;
+    }
+    if (concept === "endplate" || /modic/.test(findings)) {
+      const mg = parseModicGradeFromText(findings, sev);
+      if (mg) sel.modicGrade = mg;
+    }
+    if (concept === "spondylolisthesis" || /meyerding|listhesis/.test(findings)) {
+      const my = parseMeyerdingFromText(findings, sev);
+      if (my) sel.meyerding = my;
     }
 
     if (concept === "compression_fracture" || /fracture/.test(findings)) {
@@ -517,6 +558,42 @@ export function buildDorsalLevelApplyBundle(opts: {
       concept: conceptId,
       label: `${level} ${conceptId}`,
       findingsText: findings,
+      bundleId,
+    });
+  }
+
+  // 7. Neuro-spine grading atoms
+  const gradingAtoms = buildSpineGradingAtoms(level, {
+    pfirrmann: sel.pfirrmann,
+    modicGrade: sel.modicGrade,
+    meyerding: sel.meyerding,
+    cordSignal: sel.cordSignal ?? (sel.cord === "t2-change" ? "2" : sel.cord === "normal" ? "0" : null),
+  });
+  for (const atom of gradingAtoms) {
+    if (atom.concept === "cord_signal" && observations.some((o) => o.concept === "cord_signal")) {
+      continue;
+    }
+    observations.push({
+      id: dorsalPatchId(level, atom.concept, atom.laterality),
+      incoming: { findings: atom.findings, impression: atom.impression },
+      templates: { findings: atom.findings, impression: atom.impression },
+      ownership: {
+        anatomicalSection: level,
+        conflictGroup: atom.concept,
+        baselineReplaces: atom.baselineReplaces ?? "",
+        concept: atom.concept,
+        level,
+        laterality: atom.laterality,
+      },
+      source: "structured-template",
+      region,
+      level,
+      laterality: atom.laterality,
+      concept: atom.concept,
+      severity: atom.severity,
+      state: atom.state,
+      label: `${level} ${atom.concept}`,
+      findingsText: atom.findings,
       bundleId,
     });
   }
