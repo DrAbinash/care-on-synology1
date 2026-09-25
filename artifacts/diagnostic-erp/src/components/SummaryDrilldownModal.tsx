@@ -42,7 +42,7 @@ export const DRILLDOWN_TITLES: Record<DrilldownType, string> = {
   totalBills: "Total Bills Generated",
   duesCollected: "Dues Collected",
   cancellations: "Cancellations (₹)",
-  outstandingDues: "Outstanding / Dues",
+  outstandingDues: "Outstanding (unpaid)",
   collectibleAmount: "Collectible Amount",
   netDigitalCollection: "Net Digital Collection",
   totalExpenses: "Total Expenses",

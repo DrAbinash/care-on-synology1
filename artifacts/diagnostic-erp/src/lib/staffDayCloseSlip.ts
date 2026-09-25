@@ -160,8 +160,14 @@ function emptyActivity(): StaffPrintActivity {
   };
 }
 
-function summaryLine(label: string, amount: number, opts?: { strong?: boolean; subtotal?: boolean }): string {
-  const cls = opts?.strong ? "line strong" : opts?.subtotal ? "line subtotal" : "line";
+function summaryLine(label: string, amount: number, opts?: { strong?: boolean; subtotal?: boolean; emphasize?: boolean }): string {
+  const cls = opts?.strong
+    ? "line strong"
+    : opts?.subtotal
+      ? "line subtotal"
+      : opts?.emphasize
+        ? "line emphasize"
+        : "line";
   return `<div class="${cls}"><span class="lbl">${esc(label)}</span><span class="val">${esc(inr(amount))}</span></div>`;
 }
 
@@ -313,6 +319,12 @@ export function buildStaffDayCloseSlipHtml(
     font-size: 15px;
     font-weight: 900;
   }
+  .line.emphasize {
+    background: #fff7ed;
+    border-bottom: 2px solid #000;
+    font-weight: 900;
+    padding: 3px 2px;
+  }
   .line.method { font-size: 14px; font-weight: 800; }
   .lbl { flex: 1; }
   .val { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
@@ -399,13 +411,14 @@ export function buildStaffDayCloseSlipHtml(
     <div class="col">
       <div class="col-h">Summary</div>
       ${summaryLine("Total Bill Gen", totalBilled)}
-      ${summaryLine("Dues Collected", duesCollected)}
+      ${summaryLine("Dues Collected", duesCollected, { emphasize: duesCollected > 0 })}
       ${summaryLine("Subtotal", subtotal, { subtotal: true })}
       ${summaryLine("Cancelled bills", cancelledBills)}
       ${summaryLine("Refunds", refunds)}
       ${summaryLine("Outstanding", outstanding)}
       ${summaryLine("Expense", expense)}
       ${summaryLine("Expected", expected, { strong: true })}
+      ${duesCollected > 0 ? `<div class="note ok">Expected = Bill Gen + Dues Collected − cancel/refund/outstanding/expense. UPI+CASH should match Expected (not Bill Gen alone).</div>` : ""}
       ${methodBlock}
     </div>
     <div class="col">

@@ -64,3 +64,39 @@ export function computeStaffSlipFormula(input: StaffSlipFormulaInput): StaffSlip
     expected,
   };
 }
+
+/**
+ * Dues collected for a staff drawer window.
+ *
+ * Bill Gen only includes bills this staff created inside (from, to]. Any
+ * positive payment they record on a bill outside that set is dues.
+ *
+ * Suraj #170 (confirmed from bill + audit screenshots):
+ *   - PINKI 20260918133 created 23 Sept 6:18pm by ASHOK (₹4000, ₹1000 paid)
+ *   - Suraj's drawer window started ~23 Sept 5:42pm (his prior close)
+ *   - Suraj collected remaining ₹3000 at 24 Sept 11:16am (before day close)
+ * Old rule required bill.createdAt ≤ prior close → 6:18pm ≰ 5:42pm → Dues 0,
+ * while UPI+CASH still held ₹3000 (Expected short by exactly dues). Calendar-day
+ * My Daily Summary correctly showed Dues ₹3000 because the bill predates 24 Sept.
+ * Sanjeev was fine: his dues bills were created before *his* prior close.
+ */
+export function computeDueReceivedForWindow(opts: {
+  /** Bill ids this staff created inside the drawer window (Bill Gen set). */
+  windowBillIds: Iterable<number>;
+  payments: Array<{ billId?: number | null; amount: unknown }>;
+}): number {
+  const mine = new Set<number>();
+  for (const id of opts.windowBillIds) {
+    if (typeof id === "number" && Number.isFinite(id)) mine.add(id);
+  }
+  let due = 0;
+  for (const p of opts.payments) {
+    const amt = money(p.amount);
+    if (amt <= 0) continue;
+    const billId = p.billId;
+    if (billId == null || !Number.isFinite(Number(billId))) continue;
+    if (mine.has(Number(billId))) continue;
+    due += amt;
+  }
+  return due;
+}

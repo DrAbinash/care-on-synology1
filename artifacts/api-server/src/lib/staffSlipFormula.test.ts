@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { computeStaffSlipFormula } from "./staffSlipFormula";
+import { computeDueReceivedForWindow, computeStaffSlipFormula } from "./staffSlipFormula";
 
 describe("computeStaffSlipFormula", () => {
   test("Suraj handwritten A5: billed + dues − refunds − outstanding = expected; UPI+CASH match", () => {
@@ -80,5 +80,90 @@ describe("computeStaffSlipFormula", () => {
       expense: 0,
     });
     expect(vijay.expected).toBe(-3_400);
+  });
+});
+
+describe("computeDueReceivedForWindow", () => {
+  test("Suraj #170: PINKI ₹3000 collected 11:16am before close counts as dues", () => {
+    // Evidence from production screenshots:
+    //   Bill 20260918133 created 23 Sept 6:18pm by ASHOK (total ₹4000, ₹1000 paid)
+    //   Suraj prior close / window from ~23 Sept 5:42pm → bill is AFTER that cutoff
+    //   Suraj collects remaining ₹3000 at 24 Sept 11:16am (inside his drawer)
+    // My Daily Summary (calendar day): bill before 24 Sept → Dues ₹3000 ✓
+    // Old slip rule (createdAt ≤ from): 6:18pm ≰ 5:42pm → Dues 0 ✗ while UPI+CASH has ₹3000
+    // Sanjeev OK because his dues bills were created BEFORE his prior close.
+    const surajWindowBillIds = [101, 102, 103]; // Suraj Bill Gen only (Ashok's bill not here)
+    const payments = [
+      { billId: 101, amount: 1_500 },
+      { billId: 999, amount: 3_000 }, // PINKI — Ashok bill, outside Suraj Bill Gen
+      { billId: 102, amount: 2_000 },
+    ];
+    const dues = computeDueReceivedForWindow({
+      windowBillIds: surajWindowBillIds,
+      payments,
+    });
+    expect(dues).toBe(3_000);
+
+    const f = computeStaffSlipFormula({
+      billed: 132_900,
+      duesCollected: dues,
+      cancelledBills: 0,
+      refundsRecorded: 0,
+      refundsOnBillsICancelled: 0,
+      outstanding: 0,
+      expense: 0,
+    });
+    expect(f.expected).toBe(135_900);
+    expect(57_500 + 78_400).toBe(f.expected);
+  });
+
+  test("classic prior-day dues still count (bill not in window set)", () => {
+    expect(
+      computeDueReceivedForWindow({
+        windowBillIds: [10, 11],
+        payments: [
+          { billId: 10, amount: 500 },
+          { billId: 55, amount: 5_500 }, // Sanjeev-style prior bill
+        ],
+      }),
+    ).toBe(5_500);
+  });
+
+  test("payments on own window bills are not dues (already in Bill Gen)", () => {
+    expect(
+      computeDueReceivedForWindow({
+        windowBillIds: [1, 2],
+        payments: [
+          { billId: 1, amount: 1_000 },
+          { billId: 2, amount: 2_000 },
+        ],
+      }),
+    ).toBe(0);
+  });
+
+  test("ignores refunds, null billId, and non-finite amounts", () => {
+    expect(
+      computeDueReceivedForWindow({
+        windowBillIds: [1],
+        payments: [
+          { billId: 9, amount: -500 },
+          { billId: null, amount: 300 },
+          { billId: 9, amount: "2000" },
+          { billId: 9, amount: "nope" },
+        ],
+      }),
+    ).toBe(2_000);
+  });
+
+  test("first-ever close (empty Bill Gen set): all positive bill-linked payments are dues", () => {
+    // from=null loads all of this staff's historical bills into Bill Gen; when
+    // that set is empty (new cashier), others' bill payments must still land
+    // in dues so Expected matches UPI+CASH.
+    expect(
+      computeDueReceivedForWindow({
+        windowBillIds: [],
+        payments: [{ billId: 42, amount: 1_200 }],
+      }),
+    ).toBe(1_200);
   });
 });

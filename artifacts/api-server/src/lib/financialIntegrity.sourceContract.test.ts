@@ -64,6 +64,14 @@ describe("financialIntegrity source contracts", () => {
     expect(src("routes/daily-summary.ts")).toContain("isCollectiblePayment");
   });
 
+  it("day-close dues use window Bill Gen exclusion (not createdAt≤from only)", () => {
+    const text = src("routes/day-close.ts");
+    expect(text).toContain("computeDueReceivedForWindow");
+    // Regression: Suraj #170 PINKI ₹3000 collected 11:16am before close was
+    // in UPI+CASH but missed Dues when gated only on bill.createdAt <= from.
+    expect(text).not.toMatch(/new Date\(b\.createdAt\)\s*<=\s*from/);
+  });
+
   it("reports exclude non-collectible settlement statuses", () => {
     const text = src("routes/reports.ts");
     expect(text).toContain("isCollectiblePayment");
