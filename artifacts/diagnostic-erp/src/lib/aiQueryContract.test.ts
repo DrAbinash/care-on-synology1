@@ -56,7 +56,6 @@ describe("AI query endpoint — single typed entry point", () => {
 
   it("every former promptText call site now uses the typed client", () => {
     for (const rel of [
-      "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/DicomViewer.tsx",
       "components/NeuroPromptPanel.tsx",

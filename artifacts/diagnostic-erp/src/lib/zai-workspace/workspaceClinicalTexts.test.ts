@@ -3,15 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "./workspaceClinicalTexts";
+import { readModularWorkspaceSrc } from "../readModularWorkspaceSrc";
 
-const workspaceSrc = [
-  readFileSync(join(__dirname, "../../pages/RadiologyReportingWorkspace.tsx"), "utf8"),
-  // Phase 3: saveDraft live-store read lives in useDraftPersistence.
-  readFileSync(
-    join(__dirname, "../../hooks/radiology-workspace/useDraftPersistence.ts"),
-    "utf8",
-  ),
-].join("\n");
+// Phase 4: debounced bridge + saveDraft live-read live across hooks/shell.
+const workspaceSrc = readModularWorkspaceSrc(join(__dirname, "../.."));
 const hookSrc = readFileSync(join(__dirname, "workspaceClinicalTexts.ts"), "utf8");
 
 describe("workspaceClinicalTexts", () => {
