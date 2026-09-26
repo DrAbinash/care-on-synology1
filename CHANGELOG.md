@@ -4,6 +4,21 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology — Workspace modularization Phase 2 (hooks) — 2026-09-26
+
+Behavior-preserving extraction from `RadiologyReportingWorkspace.tsx` into
+`hooks/radiology-workspace/`. No store/API contract changes; data-testids unchanged.
+
+**Changed**
+- **`useReportSectionChrome`** — accordion / progressive disclosure, study-details +
+  Starting Canvas collapse, clinical editor focus helpers.
+- **`useWorkspaceLayout`** — panel refs, layout prefs/mode, viewer/reporting focus,
+  pane split apply, outer panel layout.
+- **`useVoiceReporting`** — voice prefs/capabilities session, A2 `structuredFindings`,
+  V-04 pending-preview confirm path, Quick Select external search from speech.
+- Source-grep tests (`radiologyReportingWorkspace.testids`, `radiologyWorkspaceAccordion`)
+  scan the page plus the new hooks directory.
+
 ### Accounting — Balance Sheet correctness + printable Schedule III statements — 2026-07-23
 
 Fixes a real double-entry defect and adds filing-ready financial statements. **No change to voucher

@@ -63,7 +63,6 @@ import { readingQueueShouldSearchOrthanc } from "@/lib/pacsWorklistQuery";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
-import { useVoiceSession } from "@/hooks/useVoiceSession";
 import { useCopilotLearning } from "@/hooks/useCopilotLearning";
 import { useCopilotPrefs } from "@/hooks/useCopilotPrefs";
 import { useRadiologyDraftId, type RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
@@ -141,16 +140,7 @@ import {
   type ReadingQueueModality,
 } from "@/lib/readingQueueModality";
 import { loadReadingSession, toggleReadingSession, bumpSessionCompleted } from "@/lib/readingSession";
-import {
-  parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
-  fetchTranscribeCapabilities, type TranscribeCapabilities,
-} from "@/lib/voiceTranscription";
 import { voiceKeyAction } from "@/lib/voiceSessionState";
-import {
-  normalizeDictationText, describeIntent,
-  type ParsedVoiceCommand, type ViewerOp,
-} from "@/lib/voiceCommandGrammar";
-import type { VoiceExecutionResult } from "@/hooks/useVoiceSession";
 import {
   matchStudyCombination, buildCombination, combinationInserts,
 } from "@/lib/studyCombinations";
@@ -308,6 +298,9 @@ import StudyLocalFindingEditDialog, {
 } from "@/components/radiology/StudyLocalFindingEditDialog";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
+import { useReportSectionChrome } from "@/hooks/radiology-workspace/useReportSectionChrome";
+import { useWorkspaceLayout } from "@/hooks/radiology-workspace/useWorkspaceLayout";
+import { useVoiceReporting } from "@/hooks/radiology-workspace/useVoiceReporting";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -499,18 +492,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const isOnline = useOnlineStatus();
   const qc = useQueryClient();
 
-  // Refs declared early — voice/viewer callbacks close over these.
-  const embeddedViewerRef = useRef<EmbeddedViewerHandle>(null);
-  const leftPanelRef = useRef<ImperativePanelHandle>(null);
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
-  const templatePanelRef = useRef<ImperativePanelHandle>(null);
-  const viewerPanelRef = useRef<ImperativePanelHandle>(null);
-  const reportPanelRef = useRef<ImperativePanelHandle>(null);
-  /** Session-only: manual splitter drag wins over auto 33/67 until mode reset. */
-  const paneManualOverrideRef = useRef<PaneManualOverrideState>({});
-  const paneFocusApplyingRef = useRef(false);
-  /** Skip one layoutMode→resize apply after interaction-driven focus already resized. */
-  const suppressNextModeSizeApplyRef = useRef(false);
+  // Panel refs + layout focus live in useWorkspaceLayout (Phase 2).
   const hydratedDraftForStudyRef = useRef<number | null>(null);
   /** Study whose server draft was restored into the editor this open. */
   const restoredDraftForStudyRef = useRef<number | null>(null);
@@ -575,83 +557,24 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // Radiologist-local demography overrides — never written to patient master.
   const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
 
-  // ─── Main-pane progressive disclosure ─────────────────────────────────────
-  // One major report section is expanded at a time; every other section stays
-  // MOUNTED but hidden (see report-section-accordion.tsx) so no editor, drawer
-  // or panel loses state and no effect re-inserts text on expand.
-  // `activeFindingsTool` is the nested Findings assistance drawer and is
-  // deliberately independent of the major accordion.
-  const [sectionCollapsePrefs, setSectionCollapsePrefs] = useState<ReportSectionCollapsePrefs>(() =>
-    readReportSectionCollapsePrefs(typeof window !== "undefined" ? window.localStorage : null),
-  );
-  const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>(
-    () => sectionCollapsePrefs.preferredActive || "findings",
-  );
-  /** Study details (Demography / Ref Doctor / Region) — closed while clinically reporting. */
-  const [studyDetailsOpen, setStudyDetailsOpen] = useState(false);
-  /** Starting Canvas body — thin header by default so Findings can own height. */
-  const [startingCanvasExpanded, setStartingCanvasExpanded] = useState(false);
-
+  // ─── Main-pane progressive disclosure (Phase 2 hook) ─────────────────────
+  const {
+    sectionCollapsePrefs, setSectionCollapsePrefs,
+    activeReportSection, setActiveReportSection,
+    studyDetailsOpen, setStudyDetailsOpen,
+    startingCanvasExpanded, setStartingCanvasExpanded,
+    lastClinicalTarget, setLastClinicalTarget,
+    activeFindingsTool, activeFindingsAnatomy, setActiveFindingsAnatomy,
+    activateReportSection, selectFindingsTool,
+    focusClinicalEditor, focusReportField,
+    enterReportingFocusModeRef, enterClinicalEditorFocusRef, exclusiveReportSectionsRef,
+  } = useReportSectionChrome();
+  const [abnormalHighlight, setAbnormalHighlight] = useState<AbnormalHighlightState | null>(null);
   // Mouse-first personal macro templates (local workstation library).
   const [personalTemplates, setPersonalTemplates] = useState<PersonalReportTemplate[]>(() =>
     readPersonalReportTemplates(typeof window !== "undefined" ? window.localStorage : null),
   );
   const [templateRailCollapsed, setTemplateRailCollapsed] = useState(false);
-  const [lastClinicalTarget, setLastClinicalTarget] = useState<PersonalTemplateTarget>("findings");
-  /** Late-bound: reporting focus chrome + optional 2/3 split (set after layout hooks). */
-  const enterReportingFocusModeRef = useRef<() => void>(() => {});
-  const enterClinicalEditorFocusRef = useRef<() => void>(() => {});
-  const exclusiveReportSectionsRef = useRef(false);
-  const focusClinicalEditor = useCallback((field: PersonalTemplateTarget) => {
-    setLastClinicalTarget(field);
-    setActiveReportSection(field);
-    // Layout-only: never mutates clinical text / observations / study.
-    // Findings / Impression always request ~2/3 report column; other clinical
-    // targets still collapse chrome on laptop exclusive mode.
-    if (field === "findings" || field === "impression") {
-      enterClinicalEditorFocusRef.current();
-    } else if (exclusiveReportSectionsRef.current) {
-      enterReportingFocusModeRef.current();
-    }
-    requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLTextAreaElement>(`[data-testid="canonical-${field}-editor"]`);
-      el?.focus();
-    });
-  }, []);
-
-  const [activeFindingsTool, setActiveFindingsTool] = useState<FindingsToolId | null>(null);
-  /** Shared anatomy chip selection — filters clinic tiles + Quick Select wall. */
-  const [activeFindingsAnatomy, setActiveFindingsAnatomy] = useState<string | null>(null);
-  const [abnormalHighlight, setAbnormalHighlight] = useState<AbnormalHighlightState | null>(null);
-  const activateReportSection = useCallback((id: ReportSectionId) => {
-    setActiveReportSection((cur) => {
-      const next = nextActiveSection(cur, id);
-      const prefs = prefsAfterSectionActivate(sectionCollapsePrefs, next, cur);
-      setSectionCollapsePrefs(prefs);
-      writeReportSectionCollapsePrefs(
-        typeof window !== "undefined" ? window.localStorage : null,
-        prefs,
-      );
-      return next;
-    });
-  }, [sectionCollapsePrefs]);
-
-  // Setup chrome (Starting Canvas body + Study details) collapses whenever a
-  // clinical section owns the accordion — including auto-reveal / focus helpers
-  // that set activeReportSection without going through activateReportSection.
-  useEffect(() => {
-    if (isStudyDetailsSection(activeReportSection)) {
-      setStudyDetailsOpen(true);
-      return;
-    }
-    if (shouldCollapseSetupChrome(activeReportSection)) {
-      setStudyDetailsOpen(false);
-      setStartingCanvasExpanded(false);
-    }
-  }, [activeReportSection]);
-  const selectFindingsTool = useCallback((id: FindingsToolId) => {
-    setActiveFindingsTool((cur) => nextFindingsTool(cur, id));
-  }, []);
 
   // Structured Normal/Abnormal section cards (legacy parity)
   const [useStructured, setUseStructured] = useState(false);
@@ -837,37 +760,29 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // 5. Finalize flow (promise-based sign dialog)
   const finalizeFlow = useFinalizeFlow();
 
-  // 6. Voice session — Care pipeline (prefs + grammar + safety + multi-provider)
-  const { data: pacsSettingsRows } = useQuery<Array<{ id: number; key: string; value: string | null; category: string }>>({
-    queryKey: ["pacs-settings"],
-    queryFn: () => api.get("/api/radiology/pacs-settings"),
-    staleTime: 5 * 60_000,
+  // ─── Layout prefs / panel focus (Phase 2 hook) ───────────────────────────
+  const {
+    embeddedViewerRef, leftPanelRef, rightPanelRef, templatePanelRef,
+    viewerPanelRef, reportPanelRef, paneManualOverrideRef,
+    layoutPrefs, setLayoutPrefs, layoutMode, showEmbeddedViewer,
+    exclusiveReportSections, compactAccordion, setLayoutMode,
+    viewerColumnExpanded, setViewerColumnExpanded,
+    reportImagesOpen, setReportImagesOpen,
+    leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed,
+    captureBusy, setCaptureBusy, keyImageFilterObsId, setKeyImageFilterObsId,
+    viewerFocusMode, setViewerFocus,
+    applyPaneFocusSplit, applySavedModePanelSizes,
+    enterReportingFocusMode, enterClinicalEditorFocus, enterViewerPaneFocus,
+    handleOuterPanelLayout,
+  } = useWorkspaceLayout({
+    myUserId,
+    studyId,
+    modality: workflow.currentRow?.modality,
+    viewportWidthPx,
+    enterReportingFocusModeRef,
+    enterClinicalEditorFocusRef,
+    exclusiveReportSectionsRef,
   });
-  const clinicVoiceSettings = useMemo(() => parseVoiceSettings(pacsSettingsRows), [pacsSettingsRows]);
-  const autoCollapseQueueOnStudyOpen = useMemo(() => {
-    const row = pacsSettingsRows?.find((r) => r.key === "auto_collapse_queue_on_study_open");
-    if (!row || row.value == null || String(row.value).trim() === "") return true;
-    const v = String(row.value).trim().toLowerCase();
-    return v === "true" || v === "1" || v === "yes";
-  }, [pacsSettingsRows]);
-  const { data: voiceUserPrefsRaw } = useQuery<unknown>({
-    queryKey: ["voice-user-preferences"],
-    queryFn: () => api.get("/api/radiology/report-generator/voice-preferences"),
-    enabled: clinicVoiceSettings.enabled,
-    staleTime: 5 * 60_000,
-  });
-  const voiceSettings = useMemo(
-    () => mergeVoiceSettings(clinicVoiceSettings, voiceUserPrefsRaw ? parseVoiceUserPrefs(voiceUserPrefsRaw) : null),
-    [clinicVoiceSettings, voiceUserPrefsRaw],
-  );
-  const { data: voiceCapabilities = { server: false, local: false } } = useQuery<TranscribeCapabilities>({
-    queryKey: ["voice-transcribe-status"],
-    queryFn: fetchTranscribeCapabilities,
-    enabled: voiceSettings.enabled,
-    staleTime: 5 * 60_000,
-  });
-
-  const [qsExternalSearch, setQsExternalSearch] = useState<{ seq: number; term: string } | null>(null);
 
   // ─── Report preferences sync (server → local state) ───────────────────────
   // Fetch once on mount; headingCase, sectionSpacing, impressionStyle, and
@@ -917,316 +832,35 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
   const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
-  const voiceParkReasonRef = useRef<string | null>(null);
-
-  const focusReportField = useCallback((field: "findings" | "impression" | "technique" | "clinicalHistory" | "recommendation") => {
-    const sectionByField: Record<typeof field, ReportSectionId> = {
-      clinicalHistory: "history",
-      technique: "technique",
-      findings: "findings",
-      impression: "impression",
-      recommendation: "recommendation",
-    };
-    activateReportSection(sectionByField[field]);
-    window.setTimeout(() => {
-      const el = document.querySelector(`[data-report-field="${field}"] textarea`) as HTMLTextAreaElement | null;
-      el?.focus();
-      el?.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 50);
-  }, [activateReportSection]);
-
-  const voiceComposerComposeRef = useRef<(text: string, genImp?: boolean) => Promise<void>>(async () => {});
-
-  const executeVoiceCommand = useCallback((parse: ParsedVoiceCommand): VoiceExecutionResult => {
-    const intent = parse.intent;
-    if (!intent) return { ok: false, message: "Nothing to execute" };
-
-    if (intent.type === "cancel") return { ok: true, message: "Cancelled" };
-    if (intent.type === "confirm") return { ok: false, message: "Nothing to confirm" };
-    if (intent.type === "handsfree") return { ok: false, message: "Hands-free is controlled from the voice bar" };
-    if (intent.type === "viewer-unsupported") {
-      return { ok: false, message: `The embedded viewer does not support ${intent.capability}` };
-    }
-
-    if (intent.type === "dictate") {
-      const state = useWorkspace.getState();
-      if (state.isFinalized && !allowEditSigned) {
-        return { ok: false, message: "Report is finalized — read-only" };
-      }
-      if (studyLock.status === "locked-by-other") {
-        return { ok: false, message: "Study is locked by another user — read-only" };
-      }
-      const text = normalizeDictationText(intent.text, { autoPunctuation: voiceSettings.autoPunctuation });
-      if (!text) return { ok: false, message: "Nothing to insert" };
-      const mode = intent.mode;
-      const voiceSource = "radiologist-voice" as const;
-      if (intent.target === "findings") {
-        // V-04: catalog-matching prose (after pending-preview confirm) toggles
-        // Quick Findings → applyPathologyOverlay. Zero-match stays narrative.
-        if (mode === "append") {
-          const catalog = quickFindingTemplatesRef.current;
-          const resolved = resolveQuickFindingFromSpeech(text, catalog);
-          if (resolved.status === "ambiguous") {
-            return {
-              ok: false,
-              message: `Multiple findings match “${resolved.matchedVia}”: ${resolved.candidates.slice(0, 3).map((c) => c.label).join(" · ")} — say the full name`,
-            };
-          }
-          if (resolved.status === "matches") {
-            const applied: QuickFinding[] = [];
-            for (const hit of resolved.findings) {
-              const f = catalog.find((c) => c.id === hit.finding.id);
-              if (!f) continue;
-              if (!selectedQuickIdsRef.current.has(f.id)) {
-                handleQuickToggleRef.current(f, true);
-                applied.push(f);
-              }
-            }
-            if (applied.length > 0) {
-              trackWorkspaceEvent({
-                type: "voice_catalog_apply",
-                studyId: studyId ?? null,
-                meta: { count: applied.length, labels: applied.map((a) => a.label).join("|") },
-              });
-              return {
-                ok: true,
-                message: `Applied ${applied.map((a) => a.label).join(" · ")}`,
-                undo: () => {
-                  for (const f of applied) handleQuickToggleRef.current(f, false);
-                },
-                undoLabel: "voice catalog findings",
-              };
-            }
-          }
-        }
-        const prev = state.findingsText;
-        if (mode === "replace") {
-          state.replaceField("findings", text, voiceSource);
-        } else {
-          state.mergeField("findings", text, voiceSource);
-        }
-        return {
-          ok: true,
-          message: `${mode === "replace" ? "Replaced" : "Appended to"} findings`,
-          undo: () => useWorkspace.getState().setField("findings", prev),
-          undoLabel: "findings edit",
-        };
-      }
-      if (intent.target === "impression") {
-        const prev = state.impressionText;
-        if (mode === "replace") {
-          state.replaceField("impression", text, voiceSource);
-        } else {
-          state.mergeField("impression", text, voiceSource);
-        }
-        return {
-          ok: true,
-          message: `${mode === "replace" ? "Replaced" : "Appended to"} impression`,
-          undo: () => useWorkspace.getState().setField("impression", prev),
-          undoLabel: "impression edit",
-        };
-      }
-      if (intent.target === "recommendation") {
-        const prev = state.recommendationText;
-        if (mode === "replace") {
-          state.replaceField("recommendation", text, voiceSource);
-        } else {
-          state.mergeField("recommendation", text, voiceSource);
-        }
-        return {
-          ok: true,
-          message: `${mode === "replace" ? "Replaced" : "Appended to"} recommendation`,
-          undo: () => useWorkspace.getState().setField("recommendation", prev),
-          undoLabel: "recommendation edit",
-        };
-      }
-      if (intent.target === "technique") {
-        const prev = state.techniqueText;
-        if (mode === "replace") {
-          state.replaceField("technique", text, voiceSource);
-        } else {
-          state.mergeField("technique", text, voiceSource);
-        }
-        return {
-          ok: true,
-          message: `${mode === "replace" ? "Replaced" : "Appended to"} technique`,
-          undo: () => useWorkspace.getState().setField("technique", prev),
-          undoLabel: "technique edit",
-        };
-      }
-      const prev = state.clinicalHistoryText;
-      if (mode === "replace") {
-        state.replaceField("clinicalHistory", text, voiceSource);
-      } else {
-        state.mergeField("clinicalHistory", text, voiceSource);
-      }
-      return {
-        ok: true,
-        message: `${mode === "replace" ? "Replaced" : "Appended to"} clinical history`,
-        undo: () => useWorkspace.getState().setField("clinicalHistory", prev),
-        undoLabel: "history edit",
-      };
-    }
-
-    if (intent.type === "workflow") {
-      if (intent.command === "generate-impression") {
-        void voiceComposerComposeRef.current("generate impression", true);
-        return { ok: true, message: "Composing impression preview…" };
-      }
-      if (intent.command === "park") voiceParkReasonRef.current = intent.reason ?? "";
-      if (intent.command === "focus-findings") {
-        focusReportField("findings");
-        return { ok: true, message: describeIntent(intent) };
-      }
-      if (intent.command === "focus-impression") {
-        focusReportField("impression");
-        return { ok: true, message: describeIntent(intent) };
-      }
-      const res = commandDispatcherRef.current?.dispatch(intent.command);
-      if (intent.command === "park") voiceParkReasonRef.current = null;
-      if (!res) return { ok: false, message: "Command dispatcher unavailable" };
-      return res.executed
-        ? { ok: true, message: describeIntent(intent) }
-        : { ok: false, message: `Command not available (${res.reason ?? "unknown"})` };
-    }
-
-    if (intent.type === "viewer") {
-      const h = embeddedViewerRef.current;
-      if (!h) return { ok: false, message: "Embedded viewer is not open for this study" };
-      const ops: Record<ViewerOp, () => void> = {
-        "next-image": () => h.nextFrame(),
-        "previous-image": () => h.prevFrame(),
-        "zoom-in": () => h.zoomIn(),
-        "zoom-out": () => h.zoomOut(),
-        "reset-view": () => h.resetView(),
-      };
-      ops[intent.op]();
-      return { ok: true, message: describeIntent(intent) };
-    }
-
-    if (intent.type === "quick-select") {
-      if (intent.action === "search") {
-        setQsExternalSearch((prev) => ({ seq: (prev?.seq ?? 0) + 1, term: intent.term }));
-        openLegacyTabRef.current("library");
-        rightPanelRef.current?.expand();
-        return { ok: true, message: `Searching quick findings for “${intent.term}”` };
-      }
-      const templates = quickFindingTemplatesRef.current;
-      if (!templates.length) {
-        return { ok: false, message: "Quick findings are not loaded yet — open Clinic Quick Select once" };
-      }
-      const selected = selectedQuickIdsRef.current;
-      const pool = intent.action === "remove" ? templates.filter((f) => selected.has(f.id)) : templates;
-      const matched = matchQuickFindingBySpokenTerm(intent.term, templates, { pool });
-      if (matched.status === "zero-match") {
-        return {
-          ok: false,
-          message: intent.action === "remove"
-            ? `No selected finding matches “${intent.term}”`
-            : `No quick finding matches “${intent.term}”`,
-        };
-      }
-      if (matched.status === "ambiguous") {
-        return {
-          ok: false,
-          message: `Multiple findings match “${intent.term}”: ${matched.candidates.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name`,
-        };
-      }
-      const f = templates.find((t) => t.id === matched.finding.id);
-      if (!f) return { ok: false, message: `No quick finding matches “${intent.term}”` };
-      const nowSelected = intent.action === "select";
-      if (nowSelected && selected.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
-      handleQuickToggleRef.current(f, nowSelected);
-      return {
-        ok: true,
-        message: `${nowSelected ? "Selected" : "Removed"} “${f.label}”`,
-        undo: () => handleQuickToggleRef.current(f, !nowSelected),
-        undoLabel: `quick finding ${nowSelected ? "selection" : "removal"}`,
-      };
-    }
-
-    if (intent.type === "quick-modifier") {
-      return {
-        ok: false,
-        message: "Quick modifiers need a selected structured finding — use Clinic Quick Select chips first",
-      };
-    }
-
-    if (intent.type === "combination") {
-      const combo = matchStudyCombination(intent.term);
-      if (!combo) return { ok: false, message: `No study combination matches “${intent.term}”` };
-      const assembled = buildCombination(combo.templateIds);
-      if (!assembled) return { ok: false, message: `Could not assemble “${combo.label}”` };
-      const inserts = combinationInserts(assembled);
-      const state = useWorkspace.getState();
-      const prev = {
-        findings: state.findingsText,
-        impression: state.impressionText,
-        technique: state.techniqueText,
-        recommendation: state.recommendationText,
-      };
-      if (inserts.technique) state.mergeField("technique", inserts.technique, "protocol");
-      for (const block of inserts.findingsBlocks) {
-        const text = `${block.heading}\n${block.text}`.trim();
-        useWorkspace.getState().mergeField("findings", text, "protocol");
-      }
-      for (const line of inserts.impression) {
-        useWorkspace.getState().mergeField("impression", line, "protocol");
-      }
-      if (inserts.recommendation) {
-        useWorkspace.getState().mergeField("recommendation", inserts.recommendation, "protocol");
-      }
-      return {
-        ok: true,
-        message: `Applied ${combo.label}`,
-        undo: () => {
-          const s = useWorkspace.getState();
-          s.setField("findings", prev.findings);
-          s.setField("impression", prev.impression);
-          s.setField("technique", prev.technique);
-          s.setField("recommendation", prev.recommendation);
-        },
-        undoLabel: "combination insert",
-      };
-    }
-
-    return { ok: false, message: "Unrecognized voice intent" };
-  }, [voiceSettings.autoPunctuation, focusReportField, allowEditSigned, studyLock.status, studyId]);
-
-  const voiceSession = useVoiceSession({
-    studyId: studyId ?? undefined,
-    settings: voiceSettings,
-    capabilities: voiceCapabilities,
-    getContext: () => ({
-      studyId: studyId ?? null,
-      dirty: useWorkspace.getState().isDirty,
-      // Voice safety treats isLocked as read-only for dictate/finalize — include finalized.
-      isLocked: studyLock.status === "locked-by-other" || isFinalized
-        || (workflow.currentRow?.status === "REPORT_FINAL" && !allowEditSigned),
-      lockedByOther: studyLock.status === "locked-by-other",
-      lockLost: studyLock.status === "expired-lost" || studyLock.status === "connection-lost",
-      canVerify: canVerifyRef.current,
-      structuredFindings: useStructured,
-      requiresCatalogConfirm: (text) => {
-        const r = resolveQuickFindingFromSpeech(text, quickFindingTemplatesRef.current);
-        return r.status === "matches" || r.status === "ambiguous";
-      },
-      viewerAvailable: embeddedViewerRef.current != null,
-      confirmationPolicy: voiceSettings.confirmationPolicy,
-    }),
-    execute: executeVoiceCommand,
-    // Deterministic normalization only — do not send dictation to an AI rewrite model.
-    onAudit: (commandType, outcome) => {
-      api.post("/api/radiology/voice-command-audit", { commandType, studyId, outcome }).catch((err) => console.warn("[VoiceAudit] Failed:", err));
-    },
+  // ─── Voice session (Phase 2 hook — A2/V-04) ──────────────────────────────
+  const {
+    pacsSettingsRows,
+    autoCollapseQueueOnStudyOpen,
+    voiceSettings,
+    voiceCapabilities,
+    voiceSession,
+    focusVoiceBar,
+    qsExternalSearch,
+    setQsExternalSearch,
+    voiceParkReasonRef,
+    voiceComposerComposeRef,
+  } = useVoiceReporting({
+    studyId,
+    allowEditSigned,
+    useStructured,
+    isFinalized,
+    studyLockStatus: studyLock.status,
+    worklistStatus: workflow.currentRow?.status,
+    focusReportField,
+    embeddedViewerRef,
+    rightPanelRef,
+    commandDispatcherRef,
+    canVerifyRef,
+    openLegacyTabRef,
+    quickFindingTemplatesRef,
+    selectedQuickIdsRef,
+    handleQuickToggleRef,
   });
-
-  const focusVoiceBar = useCallback(() => {
-    document.querySelector("[data-testid='voice-command-bar']")?.scrollIntoView({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  }, []);
 
   // 7. Copilot learning + prefs
   const { prefs: copilotPrefs } = useCopilotPrefs();
@@ -1239,51 +873,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   // 9. Reading session (auto-advance toggle)
   const [readingSession, setReadingSession] = useState(() => loadReadingSession());
 
-  // 10. Layout prefs (Report / Split / Viewer) — per-modality memory (V1)
-  const [layoutPrefs, setLayoutPrefs] = useState(() => loadWorkspaceLayoutPrefs(myUserId));
-  const layoutMode = layoutPrefs.mode;
-  const showEmbeddedViewer = shouldShowEmbeddedViewer(layoutMode);
-  const exclusiveReportSections = shouldUseExclusiveReportSections({
-    viewportWidthPx,
-    layoutMode,
-  });
-  const compactAccordion = shouldUseCompactAccordion({
-    viewportWidthPx,
-    layoutMode,
-  });
-  const setLayoutMode = useCallback((
-    mode: WorkspaceLayoutMode,
-    opts?: { reenableAutoFocus?: boolean },
-  ) => {
-    if (opts?.reenableAutoFocus) {
-      paneManualOverrideRef.current = clearPaneManualOverride(
-        paneManualOverrideRef.current,
-        mode,
-      );
-    }
-    setLayoutPrefs((prev) => {
-      const modality = workflow.currentRow?.modality ?? null;
-      const next = withModalityLayoutMode(prev, modality, mode);
-      saveWorkspaceLayoutPrefs(myUserId, next);
-      return next;
-    });
-    if (mode === "reportFocus") setViewerColumnExpanded(false);
-  }, [myUserId, workflow.currentRow?.modality]);
-
-  // Apply saved layout for this study's modality after study identity settles.
-  // Does not fight an in-progress Dual Screen popup — only runs on studyId change.
-  useEffect(() => {
-    if (!studyId) return;
-    const modality = workflow.currentRow?.modality ?? null;
-    setLayoutPrefs((prev) => {
-      const preferred = resolveLayoutModeForModality(prev, modality);
-      if (preferred === prev.mode) return prev;
-      const next = { ...prev, mode: preferred };
-      // Do not rewrite byModality here — only apply what was already saved.
-      return next;
-    });
-  }, [studyId, workflow.currentRow?.modality]);
-
   // Legacy clinic Quick Select + critical checklist
   const [selectedQuickIds, setSelectedQuickIds] = useState<Set<number>>(() => new Set());
   const [quickSide, setQuickSide] = useState<Side>("left");
@@ -1293,270 +882,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
-
-  // Viewer vertical enlarge (center column only) + left worklist collapse
-  const [viewerColumnExpanded, setViewerColumnExpanded] = useState(false);
-  const [reportImagesOpen, setReportImagesOpen] = useState(false);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [captureBusy, setCaptureBusy] = useState(false);
-  const [keyImageFilterObsId, setKeyImageFilterObsId] = useState<string | null>(null);
-
-  // Viewer focus — collapse app sidebar via Layout; sticky while writing
-  const [viewerFocusMode, setViewerFocusMode] = useState(false);
-  const viewerFocusRef = useRef(false);
-  const setViewerFocus = useCallback((on: boolean) => {
-    if (viewerFocusRef.current === on) return;
-    viewerFocusRef.current = on;
-    setViewerFocusMode(on);
-    try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: on })); } catch { /* noop */ }
-  }, []);
-
-  useEffect(() => {
-    if (!showEmbeddedViewer) {
-      setViewerFocus(false);
-      setViewerColumnExpanded(false);
-    }
-  }, [showEmbeddedViewer, setViewerFocus]);
-
-  useEffect(() => {
-    if (showEmbeddedViewer) setViewerFocus(true);
-  }, [showEmbeddedViewer, setViewerFocus]);
-
-  useEffect(() => () => {
-    if (viewerFocusRef.current) {
-      try { window.dispatchEvent(new CustomEvent("care:viewer-focus", { detail: false })); } catch { /* noop */ }
-    }
-  }, []);
-
-  const applyPaneFocusSplit = useCallback((bias: ReportingPaneBias) => {
-    if (!showEmbeddedViewer) return;
-    if (paneFocusApplyingRef.current) return;
-    const pct = outerPanelPercents({
-      bias,
-      queueCollapsed: true,
-      narrow: isNarrowReportingViewport(viewportWidthPx),
-      phone: isPhoneReportingViewport(viewportWidthPx),
-    });
-    // Transient only — never write viewerPct/reportPct into byMode.
-    // Remembered layout comes from manual drag / mode defaults only.
-    paneFocusApplyingRef.current = true;
-    leftPanelRef.current?.collapse();
-    rightPanelRef.current?.collapse();
-    templatePanelRef.current?.collapse();
-    suppressNextModeSizeApplyRef.current = true;
-    requestAnimationFrame(() => {
-      try {
-        viewerPanelRef.current?.resize(pct.viewer);
-        reportPanelRef.current?.resize(pct.report);
-      } finally {
-        paneFocusApplyingRef.current = false;
-      }
-    });
-  }, [showEmbeddedViewer, viewportWidthPx]);
-
-  /** Restore persisted byMode sizes via resize() — never rely on defaultSize alone. */
-  const applySavedModePanelSizes = useCallback((mode: WorkspaceLayoutMode) => {
-    if (paneFocusApplyingRef.current) return;
-    const state = layoutPrefs.byMode[mode] ?? layoutPrefs.byMode.split;
-    paneFocusApplyingRef.current = true;
-    if (state.leftCollapsed) leftPanelRef.current?.collapse();
-    else {
-      leftPanelRef.current?.expand();
-      leftPanelRef.current?.resize(clampLeftPct(state.left));
-    }
-    if (state.rightCollapsed) rightPanelRef.current?.collapse();
-    else {
-      rightPanelRef.current?.expand();
-      rightPanelRef.current?.resize(state.right);
-    }
-    requestAnimationFrame(() => {
-      try {
-        if (!shouldShowEmbeddedViewer(mode)) {
-          reportPanelRef.current?.resize(resolveViewerReportPcts(mode, state).reportPct);
-          return;
-        }
-        const { viewerPct, reportPct } = resolveViewerReportPcts(mode, state);
-        viewerPanelRef.current?.resize(viewerPct);
-        reportPanelRef.current?.resize(reportPct);
-      } finally {
-        paneFocusApplyingRef.current = false;
-      }
-    });
-  }, [layoutPrefs.byMode]);
-
-  const enterReportingFocusMode = useCallback(() => {
-    leftPanelRef.current?.collapse();
-    rightPanelRef.current?.collapse();
-    templatePanelRef.current?.collapse();
-    setViewerFocus(true);
-    if (!shouldShowEmbeddedViewer(layoutMode)) setLayoutMode("split");
-    else if (layoutMode === "viewerFocus") setLayoutMode("split");
-    // Laptop only: transient ~2/3 report — skipped when user manually sized this mode.
-    if (
-      showEmbeddedViewer &&
-      shouldApplyAutomaticPaneFocus({
-        constrained: exclusiveReportSections,
-        mode: "split",
-        manualOverride: paneManualOverrideRef.current,
-      })
-    ) {
-      applyPaneFocusSplit("reporting");
-    }
-    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-  }, [
-    layoutMode,
-    setLayoutMode,
-    setViewerFocus,
-    showEmbeddedViewer,
-    exclusiveReportSections,
-    applyPaneFocusSplit,
-  ]);
-  enterReportingFocusModeRef.current = enterReportingFocusMode;
-  exclusiveReportSectionsRef.current = exclusiveReportSections;
-
-  /**
-   * Findings / Impression activation: collapse chrome and bias the OHIF|Report
-   * split toward ~2/3 report so the clinical editor is actually usable.
-   * Honors session manual splitter override (same as laptop auto-focus).
-   */
-  const enterClinicalEditorFocus = useCallback(() => {
-    enterReportingFocusMode();
-    if (!showEmbeddedViewer) return;
-    if (
-      !shouldApplyAutomaticPaneFocus({
-        constrained: true, // clinical open always wants the 2/3 bias when not overridden
-        mode: layoutMode === "viewerFocus" ? "viewerFocus" : "split",
-        manualOverride: paneManualOverrideRef.current,
-      })
-    ) {
-      return;
-    }
-    if (layoutMode === "viewerFocus") setLayoutMode("split");
-    applyPaneFocusSplit("reporting");
-  }, [
-    enterReportingFocusMode,
-    showEmbeddedViewer,
-    layoutMode,
-    setLayoutMode,
-    applyPaneFocusSplit,
-  ]);
-  enterClinicalEditorFocusRef.current = enterClinicalEditorFocus;
-
-  const enterViewerPaneFocus = useCallback(() => {
-    if (!showEmbeddedViewer) return;
-    if (layoutMode !== "viewerFocus") setLayoutMode("viewerFocus");
-    setViewerFocus(true);
-    leftPanelRef.current?.collapse();
-    if (
-      shouldApplyAutomaticPaneFocus({
-        constrained: exclusiveReportSections,
-        mode: "viewerFocus",
-        manualOverride: paneManualOverrideRef.current,
-      })
-    ) {
-      applyPaneFocusSplit("viewer");
-    } else {
-      // Wide desktop, or constrained with session manual override — remembered sizes only.
-      applySavedModePanelSizes("viewerFocus");
-    }
-    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-  }, [
-    showEmbeddedViewer,
-    layoutMode,
-    setLayoutMode,
-    setViewerFocus,
-    exclusiveReportSections,
-    applyPaneFocusSplit,
-    applySavedModePanelSizes,
-  ]);
-
-  // Mode toolbar / modality restore → apply persisted sizes (ImperativePanelHandle).
-  useEffect(() => {
-    if (suppressNextModeSizeApplyRef.current) {
-      suppressNextModeSizeApplyRef.current = false;
-      return;
-    }
-    if (paneFocusApplyingRef.current) return;
-    applySavedModePanelSizes(layoutMode);
-  }, [layoutMode, applySavedModePanelSizes]);
-
-  const handleOuterPanelLayout = useCallback((sizes: number[]) => {
-    if (paneFocusApplyingRef.current) return;
-    // Manual drag: remember sizes in byMode AND arm session override (no 2.5s expiry).
-    paneManualOverrideRef.current = markPaneManualOverride(
-      paneManualOverrideRef.current,
-      layoutMode,
-    );
-    setLayoutPrefs((prev) => {
-      const mode = prev.mode;
-      const cur = prev.byMode[mode];
-      const nextState = { ...cur };
-      if (shouldShowEmbeddedViewer(mode) && sizes.length >= 3) {
-        const [queueSize, viewerSize, reportSize] = sizes;
-        if (typeof queueSize === "number") {
-          nextState.leftCollapsed = queueSize <= LEFT_COLLAPSED_PCT + 1;
-          if (!nextState.leftCollapsed) nextState.left = clampLeftPct(queueSize);
-        }
-        if (typeof viewerSize === "number") nextState.viewerPct = clampViewerPct(viewerSize);
-        if (typeof reportSize === "number") nextState.reportPct = clampReportPct(reportSize);
-      } else if (sizes.length >= 2) {
-        const [queueSize, reportSize] = sizes;
-        if (typeof queueSize === "number") {
-          nextState.leftCollapsed = queueSize <= LEFT_COLLAPSED_PCT + 1;
-          if (!nextState.leftCollapsed) nextState.left = clampLeftPct(queueSize);
-        }
-        if (typeof reportSize === "number") nextState.reportPct = clampReportPct(reportSize);
-        nextState.viewerPct = 0;
-      } else {
-        return prev;
-      }
-      if (
-        nextState.left === cur.left &&
-        nextState.leftCollapsed === cur.leftCollapsed &&
-        nextState.viewerPct === cur.viewerPct &&
-        nextState.reportPct === cur.reportPct
-      ) {
-        return prev;
-      }
-      const next = { ...prev, byMode: { ...prev.byMode, [mode]: nextState } };
-      saveWorkspaceLayoutPrefs(myUserId, next);
-      return next;
-    });
-  }, [myUserId, layoutMode]);  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("focus") !== "1") return;
-    enterReportingFocusMode();
-    params.delete("focus");
-    const qs = params.toString();
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
-    );
-  }, [studyId, enterReportingFocusMode]);
-
-  // Clicking inside the OHIF iframe does not bubble to React. Window blur +
-  // activeElement === the embed is the same "I am looking at images" signal.
-  useEffect(() => {
-    const onBlur = () => {
-      requestAnimationFrame(() => {
-        const ae = document.activeElement;
-        if (ae instanceof HTMLIFrameElement && ae.getAttribute("data-testid") === "ohif-embed") {
-          enterViewerPaneFocus();
-        }
-      });
-    };
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
-  }, [enterViewerPaneFocus]);
-
-  useEffect(() => {
-    try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: true })); } catch { /* noop */ }
-    return () => {
-      try { window.dispatchEvent(new CustomEvent("care:workspace-focus", { detail: false })); } catch { /* noop */ }
-    };
-  }, []);
 
   // Auto-link toast when worklist entry was auto-linked to a billed study
   const { data: workspaceEntry } = useQuery<{
