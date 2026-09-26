@@ -576,10 +576,12 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       aeTitle: radiologyWorklistTable.aeTitle,
       ipAddress: radiologyWorklistTable.ipAddress,
       port: radiologyWorklistTable.port,
+      // Prefer Settings → Doctors master name when order.doctor_id is linked so
+      // the client can attach doctors.degree (never invent degree from free text).
       referringDoctor: sql<string | null>`COALESCE(
+        NULLIF(TRIM(${doctorsTable.name}), ''),
         NULLIF(TRIM(${radiologyWorklistTable.referringDoctor}), ''),
-        NULLIF(TRIM(${radiologyStudiesTable.referringDoctor}), ''),
-        NULLIF(TRIM(${doctorsTable.name}), '')
+        NULLIF(TRIM(${radiologyStudiesTable.referringDoctor}), '')
       )`,
       weasisUrl: radiologyWorklistTable.weasisUrl,
       sourcePacs: radiologyWorklistTable.sourcePacs,
@@ -621,8 +623,13 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       // Phase C (unified worklist) — ADDITIVE fields only, no schema change.
       uhid: patientsTable.patientId,
       billNumber: billsTable.billNumber,
+      testId: radiologyStudiesTable.testId,
       testName: testsTable.name,
       billedTestName: testsTable.name,
+      referringDoctorId: ordersTable.doctorId,
+      /** Settings → Doctors → degree (never invent from free-text name). */
+      referringDoctorDegree: doctorsTable.degree,
+      referringDoctorMasterName: doctorsTable.name,
       billedPatientName: sql<string | null>`NULLIF(TRIM(CONCAT(
         COALESCE(${studyPatients.firstName}, ''),
         ' ',
@@ -787,8 +794,12 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
             lockExpiresAt: null,
             uhid: null,
             billNumber: null,
+            testId: null,
             testName: null,
             billedTestName: null,
+            referringDoctorId: null,
+            referringDoctorDegree: null,
+            referringDoctorMasterName: null,
             billedPatientName: null,
             billedPatientUHID: null,
             billedAccessionNumber: null,

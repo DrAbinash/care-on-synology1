@@ -32,6 +32,12 @@ export interface VoiceContext {
   /** Findings editor is in structured (per-section) mode — free-text findings
    *  dictation has no unambiguous target there. */
   structuredFindings: boolean;
+  /**
+   * A1 / V-04 — when true for a findings-append transcript, catalog-matching
+   * prose must take the pending-preview confirm path (never silent chip toggle).
+   * Explicit `select/remove finding` intents do not use this gate.
+   */
+  requiresCatalogConfirm?: (text: string) => boolean;
   /** The embedded viewer is mounted and controllable. */
   viewerAvailable: boolean;
   confirmationPolicy: VoiceConfirmationPolicy;
@@ -66,7 +72,16 @@ function classify(intent: VoiceIntent, ctx: VoiceContext): VoiceSafetyClass {
       // exactly like a replace, even though the workspace apply is additive.
       return "CONFIRM_REQUIRED";
     case "dictate":
-      return intent.mode === "replace" ? "CONFIRM_REQUIRED" : "REVERSIBLE_EDIT";
+      if (intent.mode === "replace") return "CONFIRM_REQUIRED";
+      // V-04 A1: prose that catalog-matches needs preview confirm before ledger toggle.
+      if (
+        intent.target === "findings"
+        && intent.mode === "append"
+        && ctx.requiresCatalogConfirm?.(intent.text)
+      ) {
+        return "CONFIRM_REQUIRED";
+      }
+      return "REVERSIBLE_EDIT";
     case "workflow":
       switch (intent.command) {
         case "focus-findings":
