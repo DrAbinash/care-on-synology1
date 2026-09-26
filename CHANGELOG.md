@@ -14,8 +14,10 @@ Behavior-preserving extraction from `RadiologyReportingWorkspace.tsx` into
   Starting Canvas collapse, clinical editor focus helpers.
 - **`useWorkspaceLayout`** — panel refs, layout prefs/mode, viewer/reporting focus,
   pane split apply, outer panel layout.
-- **`useVoiceReporting`** — voice prefs/capabilities session, A2 `structuredFindings`,
-  V-04 pending-preview confirm path, Quick Select external search from speech.
+- **`useVoiceReporting`** — voice prefs/capabilities session, A2 `structuredFindings: useStructured`,
+  V-04 pending-preview confirm path (`requiresCatalogConfirm` → CONFIRM_REQUIRED; post-confirm
+  apply via `applyCatalogAfterConfirmRef`; explicit select/remove keeps `handleQuickToggleRef`),
+  Quick Select external search from speech; voice PTT/confirm keys owned by the hook.
 - Source-grep tests (`radiologyReportingWorkspace.testids`, `radiologyWorkspaceAccordion`)
   scan the page plus the new hooks directory.
 

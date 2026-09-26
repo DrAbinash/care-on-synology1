@@ -1,10 +1,16 @@
 /**
  * Voice session + V-04 catalog-match adapter for RadiologyReportingWorkspace.
- * Phase 2 extraction — A2 (structuredFindings) + A1 pending-preview preserved.
+ * Phase 2 extraction — A2 (structuredFindings) + V-04 pending-preview preserved.
+ *
+ * V-04 contract:
+ *   - Explicit `quick-select` select/remove → immediate chip toggle via handleQuickToggleRef.
+ *   - Prose `dictate` that catalog-matches → requiresCatalogConfirm → CONFIRM_REQUIRED
+ *     pending-preview in useVoiceSession; only after confirm does execute apply chips
+ *     via applyCatalogAfterConfirmRef (never handleQuickToggle on the dictate path).
  */
 
 import {
-  useCallback, useMemo, useRef, useState,
+  useCallback, useEffect, useMemo, useRef, useState,
   type Dispatch, type MutableRefObject, type RefObject, type SetStateAction,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +20,7 @@ import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
   fetchTranscribeCapabilities, type TranscribeCapabilities, type VoiceSettings,
 } from "@/lib/voiceTranscription";
+import { voiceKeyAction } from "@/lib/voiceSessionState";
 import {
   normalizeDictationText, describeIntent,
   type ParsedVoiceCommand, type ViewerOp,
@@ -47,7 +54,14 @@ export type UseVoiceReportingOptions = {
   /** Shared with Quick Select UI — templates loaded by the workspace. */
   quickFindingTemplatesRef: MutableRefObject<QuickFinding[]>;
   selectedQuickIdsRef: MutableRefObject<Set<number>>;
+  /** Explicit select/remove finding intents only. */
   handleQuickToggleRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => void>;
+  /**
+   * Post-confirm ledger apply for V-04 catalog-matching prose.
+   * Same implementation as Quick Select toggle on the page, but a distinct ref
+   * so the dictate path never calls handleQuickToggle.
+   */
+  applyCatalogAfterConfirmRef: MutableRefObject<(finding: QuickFinding, nowSelected: boolean) => void>;
 };
 
 export function useVoiceReporting(opts: UseVoiceReportingOptions) {
@@ -55,6 +69,7 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
     studyId, allowEditSigned, useStructured, isFinalized, studyLockStatus, worklistStatus,
     focusReportField, embeddedViewerRef, rightPanelRef, commandDispatcherRef, canVerifyRef,
     openLegacyTabRef, quickFindingTemplatesRef, selectedQuickIdsRef, handleQuickToggleRef,
+    applyCatalogAfterConfirmRef,
   } = opts;
 
   const { data: pacsSettingsRows } = useQuery<Array<{ id: number; key: string; value: string | null; category: string }>>({
@@ -116,6 +131,10 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
       const voiceSource = "radiologist-voice" as const;
       if (intent.target === "findings") {
         if (mode === "append") {
+          // V-04: catalog-matching prose is CONFIRM_REQUIRED via requiresCatalogConfirm
+          // (pending-preview in useVoiceSession). This execute branch only runs after
+          // confirmPending — never silent chip toggle. Negated hits ("no fatty liver")
+          // resolve to zero-match and fall through to narrative append.
           const catalog = quickFindingTemplatesRef.current;
           const resolved = resolveQuickFindingFromSpeech(text, catalog);
           if (resolved.status === "ambiguous") {
@@ -130,7 +149,7 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
               const f = catalog.find((c) => c.id === hit.finding.id);
               if (!f) continue;
               if (!selectedQuickIdsRef.current.has(f.id)) {
-                handleQuickToggleRef.current(f, true);
+                applyCatalogAfterConfirmRef.current(f, true);
                 applied.push(f);
               }
             }
@@ -144,7 +163,7 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
                 ok: true,
                 message: `Applied ${applied.map((a) => a.label).join(" · ")}`,
                 undo: () => {
-                  for (const f of applied) handleQuickToggleRef.current(f, false);
+                  for (const f of applied) applyCatalogAfterConfirmRef.current(f, false);
                 },
                 undoLabel: "voice catalog findings",
               };
@@ -330,7 +349,7 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
     return { ok: false, message: "Unrecognized voice intent" };
   }, [
     voiceSettings.autoPunctuation, focusReportField, allowEditSigned, studyLockStatus, studyId,
-    quickFindingTemplatesRef, selectedQuickIdsRef, handleQuickToggleRef,
+    quickFindingTemplatesRef, selectedQuickIdsRef, handleQuickToggleRef, applyCatalogAfterConfirmRef,
     commandDispatcherRef, embeddedViewerRef, openLegacyTabRef, rightPanelRef,
   ]);
 
@@ -346,7 +365,9 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
       lockedByOther: studyLockStatus === "locked-by-other",
       lockLost: studyLockStatus === "expired-lost" || studyLockStatus === "connection-lost",
       canVerify: canVerifyRef.current,
+      // A2 — live structured mode (never hardcoded false).
       structuredFindings: useStructured,
+      // V-04 — catalog-matching prose → CONFIRM_REQUIRED pending-preview before execute.
       requiresCatalogConfirm: (text) => {
         const r = resolveQuickFindingFromSpeech(text, quickFindingTemplatesRef.current);
         return r.status === "matches" || r.status === "ambiguous";
@@ -366,6 +387,45 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
       behavior: "smooth",
     });
   }, []);
+
+  // Voice PTT / confirm-pending / cancel — owned here so the page does not
+  // double-mount voiceKeyAction listeners alongside this hook.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const action = voiceKeyAction(
+        {
+          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
+          shiftKey: e.shiftKey, repeat: e.repeat,
+          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
+        },
+        {
+          enabled: voiceSession.enabled,
+          pttKey: voiceSettings.pttKey,
+          capturing: voiceSession.capturing,
+          hasPendingPreview: voiceSession.pending != null,
+          confirmViaEnterAllowed: voiceSession.pending?.verdict.confirmViaEnterAllowed ?? false,
+        },
+      );
+      if (!action) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (action === "toggle-listen") voiceSession.toggleListening();
+      else if (action === "ptt-start") voiceSession.startListening("ptt");
+      else if (action === "confirm-pending") voiceSession.confirmPending("enter");
+      else voiceSession.cancel();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === " " && voiceSession.captureTrigger === "ptt") {
+        voiceSession.stopListening();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
+  }, [voiceSession, voiceSettings.pttKey]);
 
   return {
     pacsSettingsRows,

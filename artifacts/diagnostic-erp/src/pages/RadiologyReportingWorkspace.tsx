@@ -140,7 +140,6 @@ import {
   type ReadingQueueModality,
 } from "@/lib/readingQueueModality";
 import { loadReadingSession, toggleReadingSession, bumpSessionCompleted } from "@/lib/readingSession";
-import { voiceKeyAction } from "@/lib/voiceSessionState";
 import {
   matchStudyCombination, buildCombination, combinationInserts,
 } from "@/lib/studyCombinations";
@@ -771,7 +770,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     leftCollapsed, setLeftCollapsed, rightCollapsed, setRightCollapsed,
     captureBusy, setCaptureBusy, keyImageFilterObsId, setKeyImageFilterObsId,
     viewerFocusMode, setViewerFocus,
-    applyPaneFocusSplit, applySavedModePanelSizes,
     enterReportingFocusMode, enterClinicalEditorFocus, enterViewerPaneFocus,
     handleOuterPanelLayout,
   } = useWorkspaceLayout({
@@ -832,6 +830,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [studyLocalEdit, setStudyLocalEdit] = useState<QuickFinding | null>(null);
   const selectedQuickIdsRef = useRef<Set<number>>(new Set());
   const handleQuickToggleRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
+  /** V-04 post-confirm catalog apply — same fn as Quick Select, distinct ref. */
+  const applyCatalogAfterConfirmRef = useRef<(finding: QuickFinding, nowSelected: boolean) => void>(() => {});
   // ─── Voice session (Phase 2 hook — A2/V-04) ──────────────────────────────
   const {
     pacsSettingsRows,
@@ -860,6 +860,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     quickFindingTemplatesRef,
     selectedQuickIdsRef,
     handleQuickToggleRef,
+    applyCatalogAfterConfirmRef,
   });
 
   // 7. Copilot learning + prefs
@@ -1857,6 +1858,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
   }, [quickSide, toast, studySetup.matchedStudyRegion]);
   handleQuickToggleRef.current = handleQuickToggle;
+  applyCatalogAfterConfirmRef.current = handleQuickToggle;
   selectedQuickIdsRef.current = selectedQuickIds;
 
   useEffect(() => {
@@ -2762,32 +2764,9 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     await finalizeReport();
   }, [contentLocked, saveDraft, finalizeReport, toast]);
 
-  // ─── Global keyboard shortcuts (voice keys FIRST, then workspace) ──────────
+  // ─── Global keyboard shortcuts (voice PTT/confirm owned by useVoiceReporting) ─
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const action = voiceKeyAction(
-        {
-          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
-          shiftKey: e.shiftKey, repeat: e.repeat,
-          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
-        },
-        {
-          enabled: voiceSession.enabled,
-          pttKey: voiceSettings.pttKey,
-          capturing: voiceSession.capturing,
-          hasPendingPreview: voiceSession.pending != null,
-          confirmViaEnterAllowed: voiceSession.pending?.verdict.confirmViaEnterAllowed ?? false,
-        },
-      );
-      if (action) {
-        e.preventDefault();
-        if (action === "toggle-listen") voiceSession.toggleListening();
-        else if (action === "ptt-start") voiceSession.startListening("ptt");
-        else if (action === "confirm-pending") voiceSession.confirmPending("enter");
-        else voiceSession.cancel();
-        return;
-      }
-
       if (e.ctrlKey && e.shiftKey && e.key === "Enter") {
         e.preventDefault();
         void handleFrictionlessSaveAndNext();
@@ -2888,20 +2867,13 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
         }
       }
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === " " && voiceSession.captureTrigger === "ptt") {
-        voiceSession.stopListening();
-      }
-    };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKeyUp);
     };
   }, [
     commandDispatcher, leftCollapsed, rightCollapsed, showEmbeddedViewer, setLayoutMode,
-    voiceSession, voiceSettings.pttKey, focusVoiceBar, handleUndoLastAbnormal, activateReportSection,
+    voiceSession, focusVoiceBar, handleUndoLastAbnormal, activateReportSection,
     handleFrictionlessSaveAndNext,
   ]);
 
