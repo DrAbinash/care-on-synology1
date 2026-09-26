@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { filterRegionNamesForModality, matchStudyRegion, nextStudyRegions } from "./studyRegion";
+import {
+  filterRegionNamesForModality,
+  matchStudyRegion,
+  nextStudyRegions,
+  resolveAutoStudyRegion,
+} from "./studyRegion";
 
 // Region names in display (sortOrder) order — generic modality-neutral regions
 // sort before the modality-prefixed CT tabs, exactly as radiology_study_tabs is
@@ -84,5 +89,61 @@ describe("nextStudyRegions — last-clicked becomes primary", () => {
 
   it("refuses to drop the last remaining region", () => {
     expect(nextStudyRegions(["Brain"], "Brain")).toBeNull();
+  });
+});
+
+describe("resolveAutoStudyRegion — billed procedure primary, DICOM fallback", () => {
+  const MRI_REGIONS = ["Brain", "Cervical Spine", "LS Spine", "Spine", "Abdomen", "Chest"];
+
+  it("prefers billed test name over a conflicting DICOM StudyDescription", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      billedTestName: "MRI LS Spine",
+      studyDescription: "MRI Brain Plain",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.source).toBe("billed");
+    expect(match.region).toBe("LS Spine");
+    expect(match.billedRegion).toBe("LS Spine");
+    expect(match.dicomRegion).toBe("Brain");
+  });
+
+  it("falls back to DICOM when billed name does not match any Study Tab", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      billedTestName: "Special Package A",
+      studyDescription: "MRI Cervical Spine",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.source).toBe("dicom");
+    expect(match.region).toBe("Cervical Spine");
+    expect(match.billedRegion).toBeNull();
+    expect(match.dicomRegion).toBe("Cervical Spine");
+  });
+
+  it("uses billed when DICOM is empty or unmatched", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      billedTestName: "MRI Brain",
+      studyDescription: "",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match).toEqual({
+      region: "Brain",
+      source: "billed",
+      billedRegion: "Brain",
+      dicomRegion: null,
+    });
+  });
+
+  it("returns unresolved when neither hint matches", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      billedTestName: "Unknown package",
+      studyDescription: "Nuclear medicine bone scan",
+      orderedRegionNames: MRI_REGIONS,
+    });
+    expect(match.region).toBeNull();
+    expect(match.source).toBeNull();
   });
 });

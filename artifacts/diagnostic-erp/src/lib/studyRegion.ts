@@ -78,6 +78,53 @@ export function matchStudyRegion(
   return best;
 }
 
+export type AutoStudyRegionMatch = {
+  region: string | null;
+  /** Which hint produced `region`. null when unresolved. */
+  source: "billed" | "dicom" | null;
+  billedRegion: string | null;
+  dicomRegion: string | null;
+};
+
+function composeStudyRegionHint(
+  modality: string | null | undefined,
+  freeText: string | null | undefined,
+): string {
+  const mod = (modality ?? "").trim();
+  const text = (freeText ?? "").trim();
+  if (!mod && !text) return "";
+  if (!text) return mod;
+  if (!mod) return text;
+  return `${mod} ${text}`;
+}
+
+/**
+ * Auto region at study-open: billed procedure name first, DICOM / worklist
+ * StudyDescription second. Manual overrides stay outside this helper.
+ */
+export function resolveAutoStudyRegion(opts: {
+  modality?: string | null;
+  studyDescription?: string | null;
+  /** Catalog / order test name (`testName` or `billedTestName` from worklist). */
+  billedTestName?: string | null;
+  orderedRegionNames: string[];
+}): AutoStudyRegionMatch {
+  const regions = opts.orderedRegionNames;
+  const billedHint = composeStudyRegionHint(opts.modality, opts.billedTestName);
+  const dicomHint = composeStudyRegionHint(opts.modality, opts.studyDescription);
+
+  const billedRegion = billedHint ? matchStudyRegion(billedHint, regions) : null;
+  const dicomRegion = dicomHint ? matchStudyRegion(dicomHint, regions) : null;
+
+  if (billedRegion) {
+    return { region: billedRegion, source: "billed", billedRegion, dicomRegion };
+  }
+  if (dicomRegion) {
+    return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion };
+  }
+  return { region: null, source: null, billedRegion: null, dicomRegion: null };
+}
+
 /**
  * Last-clicked region becomes primary (index 0). That is what drives macros,
  * Quick Select, and structured suggestions.

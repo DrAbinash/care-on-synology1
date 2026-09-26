@@ -1,13 +1,14 @@
 /**
  * ReportingStudyContext — ONE resolved reporting identity per open study.
  *
- * DICOM hint → region matching stays in studyRegion.ts (`matchStudyRegion`
+ * Region matching lives in studyRegion.ts (`resolveAutoStudyRegion`: billed
+ * procedure first, then modality+StudyDescription via `matchStudyRegion`
  * against `radiology_study_tabs.name`). This module consumes that already-
  * resolved region (plus optional manual override) and derives the stable
  * identifiers every content consumer must use.
  *
- * Downstream features must NOT re-parse `modality + StudyDescription` once
- * a context exists. StudyDescription / DICOM body part are provenance only.
+ * Downstream features must NOT re-parse modality + StudyDescription / billed
+ * name once a context exists. StudyDescription / DICOM body part are provenance only.
  *
  * Live canonical keys (not a new taxonomy):
  *   region     = radiology_study_tabs.name  e.g. "Cervical Spine"
@@ -21,7 +22,13 @@ import { templateCatalogModality } from "./radiologyTemplateModality";
 
 export type ReportingFamily = "brain" | "spine" | "chest" | "abdomen" | "unknown";
 export type SpineSegment = "cervical" | "dorsal" | "lumbar" | "whole" | "generic";
-export type ReportingSource = "auto" | "override" | "unresolved";
+/**
+ * How the primary region was chosen.
+ * - billed / dicom: auto match at study-open (billed procedure preferred)
+ * - auto: legacy synonym still accepted by builders/tests (treat as dicom-era auto)
+ * - override / unresolved: manual or no match
+ */
+export type ReportingSource = "billed" | "dicom" | "auto" | "override" | "unresolved";
 
 export type ReportingStudyContext = {
   modality: string | null;
