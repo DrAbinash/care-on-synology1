@@ -24,6 +24,12 @@ import {
   retryExpenseAccounting,
   voidExpense,
 } from "../lib/expenseV2Service";
+import {
+  buildExpenseListSearchCondition,
+  getPayeeUsualDetails,
+  recentExpensePayees,
+  suggestExpensePayees,
+} from "../lib/expensePayeeSearch";
 
 const router = Router();
 
@@ -76,7 +82,7 @@ router.get("/", async (req, res) => {
     to ? lte(expensesTable.expenseDate, to) : undefined,
     paymentMode ? eq(expensesTable.paymentMode, paymentMode) : undefined,
     paymentStatus ? eq(expensesTable.paymentStatus, paymentStatus) : undefined,
-    search ? ilike(expensesTable.description, `%${search}%`) : undefined,
+    search ? buildExpenseListSearchCondition(search) : undefined,
     sql`${expensesTable.paymentStatus} <> 'VOID'`,
   ].filter(Boolean);
 
@@ -93,7 +99,9 @@ router.get("/", async (req, res) => {
       paymentMode: expensesTable.paymentMode,
       paymentStatus: expensesTable.paymentStatus,
       accountingStatus: expensesTable.accountingStatus,
+      accountingError: expensesTable.accountingError,
       paidTo: expensesTable.paidTo,
+      metaJson: expensesTable.metaJson,
       vendorId: expensesTable.vendorId,
       vendorNameSnapshot: expensesTable.vendorNameSnapshot,
       invoiceNumber: expensesTable.invoiceNumber,
@@ -147,6 +155,46 @@ router.get("/summary", async (req, res) => {
 router.get("/categories", async (_req, res) => {
   const rows = await listExpenseCategories();
   return res.json(rows);
+});
+
+/** Universal Vendor / Paid To autocomplete (Vendor Master + historical payees). */
+router.get("/payees/suggest", async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  const limit = Number(req.query.limit ?? 12);
+  try {
+    const items = await suggestExpensePayees({ query: q, limit: Number.isFinite(limit) ? limit : 12 });
+    return res.json({ items });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+router.get("/payees/recent", async (req, res) => {
+  const limit = Number(req.query.limit ?? 8);
+  try {
+    const items = await recentExpensePayees(Number.isFinite(limit) ? limit : 8);
+    return res.json({ items });
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
+});
+
+router.get("/payees/usual", async (req, res) => {
+  const vendorIdRaw = req.query.vendorId;
+  const vendorId =
+    typeof vendorIdRaw === "string" && vendorIdRaw.trim()
+      ? Number(vendorIdRaw)
+      : null;
+  const payeeName = typeof req.query.name === "string" ? req.query.name : "";
+  try {
+    const details = await getPayeeUsualDetails({
+      vendorId: vendorId != null && Number.isFinite(vendorId) ? vendorId : null,
+      payeeName,
+    });
+    return res.json(details);
+  } catch (err) {
+    return res.status(httpStatus(err)).json({ error: errMessage(err) });
+  }
 });
 
 // Open payables — register BEFORE /:id
@@ -360,6 +408,7 @@ router.post("/", async (req, res) => {
       referenceNumber: typeof raw.referenceNumber === "string" ? raw.referenceNumber : null,
       paymentDate: typeof raw.paymentDate === "string" ? raw.paymentDate : null,
       ocrMetaJson: typeof raw.ocrMetaJson === "string" ? raw.ocrMetaJson : null,
+      metaJson: typeof raw.metaJson === "string" ? raw.metaJson : null,
     });
 
     // If the create carried an AI-scan / form receipt data-URL, also persist it
@@ -420,9 +469,8 @@ router.patch("/:id", async (req, res) => {
   const [before] = await db.select().from(expensesTable).where(eq(expensesTable.id, paramsParsed.data.id));
   if (!before) return res.status(404).json({ error: "Expense not found" });
 
-  // V2: expense_payments is canonical. Never let header financial fields diverge —
-  // require Void + re-enter for amount / paymentMode / category on any bill that
-  // has a billAmount, payments, or non-null accounting status other than blank legacy.
+  // V2: expense_payments + vouchers are canonical. Block financially significant
+  // edits once money or ledger links exist — require Void + re-enter.
   const touchingFinancial =
     bodyParsed.data.amount !== undefined ||
     bodyParsed.data.paymentMode !== undefined ||
@@ -430,7 +478,19 @@ router.patch("/:id", async (req, res) => {
   if (touchingFinancial) {
     return res.status(400).json({
       error:
-        "Cannot edit amount / payment mode / category on a posted expense. Void and re-enter the bill (metadata-only fields remain editable).",
+        "Cannot edit amount / payment mode / category after save. Void and re-enter the bill (metadata-only fields remain editable).",
+    });
+  }
+  const hasLedger =
+    Boolean(before.voucherId) ||
+    Boolean(before.accrualVoucherId) ||
+    ["POSTED", "PARTIAL", "REVERSED"].includes((before.accountingStatus || "").toUpperCase());
+  const touchingPayeeOrDate =
+    bodyParsed.data.paidTo !== undefined || bodyParsed.data.expenseDate !== undefined;
+  if (hasLedger && touchingPayeeOrDate) {
+    return res.status(400).json({
+      error:
+        "Cannot change vendor/payee or expense date after accounting vouchers are linked. Void and re-enter if correction is required.",
     });
   }
 

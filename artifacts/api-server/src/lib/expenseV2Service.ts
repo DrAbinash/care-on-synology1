@@ -54,6 +54,8 @@ export type CreateExpenseV2Input = {
   referenceNumber?: string | null;
   paymentDate?: string | null;
   ocrMetaJson?: string | null;
+  /** Optional Operations work metadata — never drives vouchers. */
+  metaJson?: string | null;
 };
 
 function httpError(status: number, message: string): Error {
@@ -314,6 +316,7 @@ export async function createExpenseV2(input: CreateExpenseV2Input) {
         subcategoryId: input.subcategoryId ?? null,
         accountingStatus: "PENDING",
         ocrMetaJson: input.ocrMetaJson ?? null,
+        metaJson: input.metaJson ?? null,
       })
       .returning();
 
