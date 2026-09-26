@@ -10,7 +10,16 @@ const voiceReporting = readFileSync(
   resolve(ERP_SRC, "hooks/radiology-workspace/useVoiceReporting.ts"),
   "utf8",
 );
-const workspaceTree = `${workspace}\n${voiceReporting}`;
+/** Phase 3: saveDraft / finalize live in dedicated hooks. */
+const draftPersistence = readFileSync(
+  resolve(ERP_SRC, "hooks/radiology-workspace/useDraftPersistence.ts"),
+  "utf8",
+);
+const studyFinalize = readFileSync(
+  resolve(ERP_SRC, "hooks/radiology-workspace/useStudyFinalize.ts"),
+  "utf8",
+);
+const workspaceTree = `${workspace}\n${voiceReporting}\n${draftPersistence}\n${studyFinalize}`;
 
 describe("RadiologyReportingWorkspace — consolidation contracts", () => {
   it("uses the canonical report demography model", () => {
@@ -130,9 +139,9 @@ describe("Structured impression candidates stay in the tray", () => {
 
 describe("Save/finalize payloads — provenance never persisted", () => {
   it("saveDraft posts plain clinical fields only (no fieldProvenance)", () => {
-    const saveIdx = workspace.indexOf("() => saveRadiologyDraft<{");
+    const saveIdx = workspaceTree.indexOf("() => saveRadiologyDraft<{");
     expect(saveIdx).toBeGreaterThan(-1);
-    const slice = workspace.slice(saveIdx, saveIdx + 500);
+    const slice = workspaceTree.slice(saveIdx, saveIdx + 500);
     // Live store snapshot (editor-isolation) — plain strings, never provenance maps.
     expect(slice).toContain("rawFindings: live.findingsText");
     expect(slice).toContain("technique: live.techniqueText");
@@ -140,9 +149,9 @@ describe("Save/finalize payloads — provenance never persisted", () => {
   });
 
   it("finalize validation uses plain field strings only", () => {
-    const valIdx = workspace.indexOf("const validationIssues = validateReport({");
+    const valIdx = workspaceTree.indexOf("const validationIssues = validateReport({");
     expect(valIdx).toBeGreaterThan(-1);
-    const slice = workspace.slice(valIdx, valIdx + 200);
+    const slice = workspaceTree.slice(valIdx, valIdx + 200);
     expect(slice).toContain("findings: live.findingsText");
     expect(slice).not.toContain("fieldProvenance");
   });

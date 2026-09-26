@@ -300,6 +300,9 @@ import { useReportingStudySetup } from "@/hooks/useReportingStudySetup";
 import { useReportSectionChrome } from "@/hooks/radiology-workspace/useReportSectionChrome";
 import { useWorkspaceLayout } from "@/hooks/radiology-workspace/useWorkspaceLayout";
 import { useVoiceReporting } from "@/hooks/radiology-workspace/useVoiceReporting";
+import { useDraftPersistence } from "@/hooks/radiology-workspace/useDraftPersistence";
+import { useStudyFinalize } from "@/hooks/radiology-workspace/useStudyFinalize";
+import { useWorkspaceExportShare } from "@/hooks/radiology-workspace/useWorkspaceExportShare";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -492,26 +495,18 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const qc = useQueryClient();
 
   // Panel refs + layout focus live in useWorkspaceLayout (Phase 2).
-  const hydratedDraftForStudyRef = useRef<number | null>(null);
-  /** Study whose server draft was restored into the editor this open. */
-  const restoredDraftForStudyRef = useRef<number | null>(null);
-  const saveGenerationRef = useRef(0);
-  const studyIdRef = useRef<number | undefined>(undefined);
+  // Draft hydrate marker lifted for useReportingStudySetup call order (Phase 3).
   const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
+  const setLastSavedAtRef = useRef<(d: Date | null) => void>(() => {});
   const [appliedNormalFormatName, setAppliedNormalFormatName] = useState<string | null>(null);
   const [bootstrapAppliedThisOpen, setBootstrapAppliedThisOpen] = useState(false);
   const [stagedAiProposals, setStagedAiProposals] = useState<StagedAiProposal[]>([]);
-  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [linkStudyOpen, setLinkStudyOpen] = useState(false);
   const [ohifUnavailable, setOhifUnavailable] = useState(false);
-  const leaveResolverRef = useRef<((choice: LeaveChoice) => void) | null>(null);
-  const leavePromptReasonRef = useRef("This report has unsaved changes.");
   const commandDispatcherRef = useRef<{ dispatch: (cmd: string) => DispatchResult } | null>(null);
   const canVerifyRef = useRef(false);
   const verifyActionRef = useRef<(() => void) | null>(null);
-  const pcpndtBlockedRef = useRef(false);
-  const [formFFinalizeOpen, setFormFFinalizeOpen] = useState(false);
-  const formFContinueFinalizeRef = useRef(false);
+  // linkedReportIdRef late-bound by useWorkspaceExportShare; early shell for reportComposer.
   const linkedReportIdRef = useRef<number | null>(null);
   const openLegacyTabRef = useRef<(tab: LegacyBoxTab) => void>(() => {});
   const openReportingToolsRef = useRef<(
@@ -524,9 +519,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [quickInsertSource, setQuickInsertSource] =
     useState<QuickInsertSource>("quick-select");
   const [whatsappShareOpen, setWhatsappShareOpen] = useState(false);
-  const [exportingWord, setExportingWord] = useState(false);
-  const [exportingPdf, setExportingPdf] = useState(false);
-  const [printingLikeFinal, setPrintingLikeFinal] = useState(false);
   const [headingCase, setHeadingCase] = useState<ReportHeadingCase>("all_caps");
   const [sectionSpacing, setSectionSpacing] = useState<ReportSectionSpacing>("spaced");
   const [impressionStyle, setImpressionStyle] = useState<ReportImpressionStyle>("bulleted");
@@ -549,9 +541,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [previewLayoutOverride, setPreviewLayoutOverride] = useState<ReportLayoutKey | null>(null);
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [confirmImpressionReplace, setConfirmImpressionReplace] = useState(false);
-  const [confirmVerify, setConfirmVerify] = useState(false);
-  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle"|"saving"|"saved"|"error">("idle");
-  const [verifyBusy, setVerifyBusy] = useState(false);
   const [sendHopeBusy, setSendHopeBusy] = useState(false);
   // Radiologist-local demography overrides — never written to patient master.
   const [demographyOverrides, setDemographyOverrides] = useState<Partial<ReportDemography>>({});
@@ -596,9 +585,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const structuredTouchedRef = useRef(false);
   const structuredFormatDrivingRef = useRef(false);
   const lastStructuredFindingsLinesRef = useRef<Record<string, string>>({});
-  const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
-  const draftIdRef = useRef<number | null>(null);
-
   const [queueModality, setQueueModality] = useState<ReadingQueueModality>(() => {
     const resolved = resolveReadingQueueModality({
       search: typeof window !== "undefined" ? window.location.search : "",
@@ -740,7 +726,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
-  draftIdRef.current = draftId ?? null;
 
   // 4. Local draft backup (30-snapshot localStorage)
   const draftBackup = useLocalDraftBackup({
@@ -882,7 +867,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
   const [checklistComm, setChecklistComm] = useState({ phoned: false, annotated: false, dispatched: false });
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
   // Auto-link toast when worklist entry was auto-linked to a billed study
   const { data: workspaceEntry } = useQuery<{
@@ -905,49 +889,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     });
   }, [workspaceEntry?.autoLinkMeta, studyId, toast]);
 
-  // Reset patient-specific editor state when switching studies
-  useEffect(() => {
-    saveGenerationRef.current += 1;
-    studyIdRef.current = studyId;
-    setFindingsMap({});
-    setUseStructured(false);
-    startReportUndoRef.current = null;
-    setCanUndoStartReport(false);
-    setStructuredValues({});
-    restoredDraftForStudyRef.current = null;
-    setAppliedNormalFormatName(null);
-    setBootstrapAppliedThisOpen(false);
-    setStagedAiProposals([]);
-    structuredTouchedRef.current = false;
-    structuredFormatDrivingRef.current = false;
-    lastStructuredFindingsLinesRef.current = {};
-    setSelectedQuickIds(new Set());
-    setActiveFindingsAnatomy(null);
-    setIsCritical(false);
-    setCriticalNote("");
-    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
-    // Clear zustand editor unconditionally — worklist navigate() does not call
-    // selectStudy, so Patient A text must not linger on Patient B.
-    useWorkspace.setState({
-      findingsText: "",
-      impressionText: "",
-      recommendationText: "",
-      techniqueText: "",
-      clinicalHistoryText: "",
-      fieldProvenance: {},
-      isDirty: false,
-      isFinalized: false,
-      isFinalizing: false,
-      ghostText: null,
-      ghostTextTarget: null,
-      primaryFindingsSection: null,
-      linkedStudy: null,
-      activeFindingsSectionId: null,
-    });
-    // Draft identity resets inside useRadiologyDraftId on studyId change —
-    // do not call captureSavedDraftId(null) here (that pattern caused React #185).
-  }, [studyId]);
-
   // Arrival + wrong-patient cross-check (queue identity at transition vs loaded row).
   useEffect(() => {
     const row = workflow.currentRow;
@@ -965,14 +906,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       });
     }
   }, [workflow.currentRow?.id, workflow.currentRow?.patientId, workflow, toast]);
-
-  // Browser tab close / hard navigation while dirty.
-  useEffect(() => {
-    if (!isDirty) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [isDirty]);
 
   // Keep findingsText in sync when structured cards drive the report
   useEffect(() => {
@@ -1068,6 +1001,78 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     techniqueProvenance,
     onToast: (opts) => toast({ title: opts.title, description: opts.description, variant: opts.variant }),
   });
+
+  // Late-bound openStudy for draft leave navigation (assigned below).
+  const openStudyRef = useRef<(id: string | number) => void>(() => {});
+
+  const onStudySwitchPageReset = useCallback(() => {
+    setFindingsMap({});
+    setUseStructured(false);
+    startReportUndoRef.current = null;
+    setCanUndoStartReport(false);
+    setStructuredValues({});
+    setAppliedNormalFormatName(null);
+    setBootstrapAppliedThisOpen(false);
+    setStagedAiProposals([]);
+    structuredTouchedRef.current = false;
+    structuredFormatDrivingRef.current = false;
+    lastStructuredFindingsLinesRef.current = {};
+    setSelectedQuickIds(new Set());
+    setActiveFindingsAnatomy(null);
+    setIsCritical(false);
+    setCriticalNote("");
+    setChecklistComm({ phoned: false, annotated: false, dispatched: false });
+  }, [setActiveFindingsAnatomy]);
+
+  // ─── Draft persistence / hydrate / leave / autosave (Phase 3) ─────────────
+  const {
+    saveDraft,
+    ensureDraftOnce,
+    autoSaveStatus,
+    lastSavedAt,
+    setLastSavedAt,
+    restoredDraftForStudyRef,
+    leaveDialogOpen,
+    resolveLeaveChoice,
+    goNextStudy,
+    goPrevStudy,
+    openStudyGuarded,
+    saveDraftRef,
+    draftIdRef,
+    saveGenerationRef,
+    leavePromptReasonRef,
+    leaveResolverRef,
+    setLeaveDialogOpen,
+  } = useDraftPersistence({
+    studyId,
+    draftId,
+    isOnline,
+    isDirty,
+    isFinalized,
+    isMobile,
+    useStructured,
+    findingsMap,
+    structuredValues,
+    studySetup,
+    workflow,
+    existingDraft,
+    isLoadingExistingDraft,
+    captureSavedDraftId,
+    toast,
+    openStudy: (id) => openStudyRef.current(id),
+    onStudySwitchPageReset,
+    setStructuredValues,
+    setSelectedQuickIds,
+    structuredTouchedRef,
+    findingsText,
+    impressionText,
+    techniqueText,
+    recommendationText,
+    clinicalHistoryText,
+    draftHydratedStudyId,
+    setDraftHydratedStudyId,
+  });
+  setLastSavedAtRef.current = setLastSavedAt;
 
   const composerRegion = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0] ?? "LS Spine";
   const [composerDraft, setComposerDraft] = useFindingComposerDraft(composerRegion);
@@ -1226,7 +1231,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   }, [liveDictationText, composerDraft.sourceTranscript, composerRegion]);
 
   const [microInstruction, setMicroInstruction] = useState("");
-  const [aiFinalizeGate, setAiFinalizeGate] = useState<"idle" | "pending">("idle");
   const [aiAssistantMinimized, setAiAssistantMinimized] = useState(() =>
     readAiAssistantMinimizedPreference(typeof window !== "undefined" ? window.localStorage : null),
   );
@@ -1243,7 +1247,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       minimized,
     );
   };
-  const aiFinalizeBypassRef = useRef(false);
 
   // Clear AI image selection + reset mode when study/draft switches (wrong-patient guard).
   useEffect(() => {
@@ -1431,6 +1434,37 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     primaryRegionLabel: composerPrimaryRegionLabel,
     sessionProvider: composerSessionResolved.provider,
     sessionModel: composerSessionResolved.model,
+  });
+
+  // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────
+  const {
+    finalizeReport,
+    formFFinalizeOpen,
+    setFormFFinalizeOpen,
+    aiFinalizeGate,
+    setAiFinalizeGate,
+    formFContinueFinalizeRef,
+    pcpndtBlockedRef,
+    aiFinalizeBypassRef,
+  } = useStudyFinalize({
+    studyId,
+    draftId,
+    isOnline,
+    checklistPercent: studySetup.checklistPercent,
+    saveDraft,
+    finalizeFlow,
+    draftBackup,
+    qc,
+    toast,
+    isCritical,
+    criticalNote,
+    checklistComm,
+    session,
+    sessionFresh,
+    reportComposer,
+    workflow,
+    goNextStudy,
+    setReadingSession,
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -1771,22 +1805,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
-    setLastSavedAt(null);
+    setLastSavedAtRef.current(null);
     setAllowEditSigned(false);
   }, [selectStudy, navigate, autoCollapseQueueOnStudyOpen]);
-
-  // goNextStudy / goPrevStudy / openStudyGuarded are defined after saveDraft
-  // (unified leave needs ensureDraftOnce + save). Placeholders assigned below.
-  const goNextStudyRef = useRef<() => void>(() => {});
-  const goPrevStudyRef = useRef<() => void>(() => {});
-  const openStudyGuardedRef = useRef<(id: string | number) => void>((id) => {
-    openStudy(id);
-  });
-  const goNextStudy = useCallback(() => { goNextStudyRef.current(); }, []);
-  const goPrevStudy = useCallback(() => { goPrevStudyRef.current(); }, []);
-  const openStudyGuarded = useCallback((id: string | number) => {
-    openStudyGuardedRef.current(id);
-  }, []);
+  openStudyRef.current = openStudy;
 
   const persistQueueModality = useCallback((value: string) => {
     const next = isReadingQueueModality(value) ? value : "MR";
@@ -1974,135 +1996,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, openStudy]);
 
-  // Reset hydrate marker when studyId changes (must run before the hydrate effect).
-  useEffect(() => {
-    hydratedDraftForStudyRef.current = null;
-    setDraftHydratedStudyId(null);
-  }, [studyId]);
-
-  // ─── Hydrate editor when study changes ──────────────────────────────────────
-  useEffect(() => {
-    if (!studyId) return;
-    if (isLoadingExistingDraft) return;
-    if (hydratedDraftForStudyRef.current === studyId) return;
-
-    if (existingDraft) {
-      const rowPatientId = workflow.currentRow?.patientId ?? null;
-      // Wait for worklist patient before deciding — do not mark hydrated yet.
-      if (existingDraft.patientId != null && rowPatientId == null) return;
-      if (!canHydrateDraftForPatient(existingDraft.patientId, rowPatientId)) {
-        console.warn("[radiology-workspace] refusing to hydrate draft for a different patient");
-        hydratedDraftForStudyRef.current = studyId;
-        setDraftHydratedStudyId(studyId);
-        useWorkspace.setState({
-          findingsText: "",
-          impressionText: "",
-          recommendationText: "",
-          techniqueText: "",
-          clinicalHistoryText: "",
-          fieldProvenance: {},
-          isDirty: false,
-        });
-        return;
-      }
-      hydratedDraftForStudyRef.current = studyId;
-      setDraftHydratedStudyId(studyId);
-      restoredDraftForStudyRef.current = studyId;
-      const draft = existingDraft as RadiologyDraftRow & {
-        findings?: string | null;
-        technique?: string | null;
-      };
-      // Normalize: API may return impression/recommendation as string[] or string
-      const normStr = (v: unknown) => Array.isArray(v) ? v.join("\n") : (typeof v === "string" ? v : "");
-      useWorkspace.getState().setEditorContent({
-        findings: normStr(draft.findings ?? draft.rawFindings),
-        impression: normalizeImpressionLines(draft.impression).join("\n"),
-        recommendation: normStr(draft.recommendation),
-        technique: normStr(draft.technique),
-        clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
-      });
-      const restored = extractCareStructuredFormatState(draft.structuredJson);
-      if (restored?.values) {
-        structuredTouchedRef.current = true;
-        setStructuredValues(restored.values);
-      }
-      const ledger = extractCareObservationLedger(draft.structuredJson);
-      const hydrated = useWorkspace.getState().hydrateObservationLedger(ledger);
-      const restoredMs = extractCareViewerMeasurements(draft.structuredJson);
-      if (restoredMs) {
-        useWorkspace.getState().setStructuredViewerMeasurements(restoredMs);
-      }
-      const restoredCanal = extractCareCanalApProvenance(draft.structuredJson);
-      if (restoredCanal) {
-        useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
-      }
-      const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
-      setSelectedQuickIds(new Set(ids));
-      // Restore the persisted baseline format identity (banner / canvas state).
-      // Content-level restore above is authoritative; this only recovers the
-      // "applied format" label so save → close → reopen keeps its baseline.
-      const linkedRestored = extractLinkedStudyFromStructuredJson(draft.structuredJson);
-      if (linkedRestored && studyId) {
-        const row = workflow.currentRow;
-        useWorkspace.getState().setLinkedStudies(
-          findingsSectionFromStudy({
-            studyId,
-            modality: row?.modality,
-            studyDescription: row?.studyDescription,
-            region: (row as { bodyPart?: string | null } | null)?.bodyPart ?? null,
-            accessionNumber: row?.accessionNumber,
-            studyInstanceUID: row?.studyInstanceUID,
-          }),
-          linkedRestored,
-          { markDirty: false },
-        );
-      }
-      const formatIdentity = extractCareReportFormatIdentity(draft.structuredJson);
-      if (formatIdentity?.name) {
-        const format = useWorkspace.getState().reportFormats.find((f) => f.name === formatIdentity.name);
-        const canvas = reconstructStartingCanvasBaseline({
-          formatName: formatIdentity.name,
-          formatRevision: formatIdentity.formatRevision,
-          baselineManifestRevision: formatIdentity.baselineManifestRevision,
-          appliedAt: formatIdentity.appliedAt,
-          format,
-          reportFormatRevision,
-        });
-        useWorkspace.setState({
-          appliedFormatName: formatIdentity.name,
-          appliedFormatReportTitle: formatIdentity.reportTitle ?? null,
-          startingCanvasBaseline: canvas,
-        });
-      } else if (useWorkspace.getState().appliedFormatName) {
-        useWorkspace.setState({
-          appliedFormatName: null,
-          appliedFormatReportTitle: null,
-          startingCanvasBaseline: null,
-        });
-      }
-      if (hydrated.warning) {
-        toast({
-          title: "Opened as narrative-only",
-          description: hydrated.warning,
-        });
-      }
-      return;
-    }
-
-    // No server draft — mark hydrated so protocol/template auto-select can run.
-    // Do NOT auto-apply AI draft text into the editor (AI must never silent-fill).
-    // Radiologist can still open AI draft via explicit composer / AI panel actions.
-    hydratedDraftForStudyRef.current = studyId;
-    setDraftHydratedStudyId(studyId);
-    const row = workflow.currentRow;
-    if (row) {
-      const state = useWorkspace.getState();
-      if (!state.clinicalHistoryText.trim()) {
-        state.setField("clinicalHistory", (row as { clinicalHistory?: string }).clinicalHistory ?? "");
-      }
-    }
-  }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow]);
-
   // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new+empty only) ──
   //
   // OPEN STUDY → appropriate COMPLETE NORMAL REPORT already present.
@@ -2174,23 +2067,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     findingsMap, useStructured, toast, setUseStructured,
   ]);
 
-  // ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
-  useEffect(() => {
-    registerDraftRescueSaver(() => {
-      const live = readWorkspaceClinicalTexts();
-      writeRescueDraft({
-        at: Date.now(),
-        studyId: studyId ?? null,
-        clinicalHistory: live.clinicalHistoryText,
-        technique: live.techniqueText,
-        rawFindings: live.findingsText,
-        impression: [live.impressionText],
-        recommendation: live.recommendationText,
-      } as any);
-    });
-    return () => deregisterDraftRescueSaver();
-  }, [studyId]);
-
   // ─── Preload next study at 80% findings completion ──────────────────────────
   useEffect(() => {
     if (!preloadTriggered || !activeStudyId) return;
@@ -2214,220 +2090,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       ]).then(() => useWorkspace.getState().markNextStudyPreloaded());
     }
   }, [preloadTriggered, studies, activeStudyId]);
-
-  // ─── Save draft (server-side) — returns draft id so Report Images can auto-ensure ─
-  const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
-    if (!studyId) return null;
-    const capturedStudyId = studyId;
-    const capturedGeneration = saveGenerationRef.current;
-    const capturedPatientId = workflow.currentRow?.patientId ?? null;
-    const offlineMsg = offlineBlockMessage(isOnline, "save");
-    if (offlineMsg) {
-      setAutoSaveStatus("error");
-      toast({ title: "Offline", description: offlineMsg, variant: "destructive" });
-      return null;
-    }
-    setAutoSaveStatus("saving");
-    try {
-      // Always persist the live store — never the debounced shell mirror.
-      const live = readWorkspaceClinicalTexts();
-      const res = await retryWithBackoff(
-        () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
-          id: draftId ?? undefined,
-          studyId: capturedStudyId,
-          worklistId: capturedStudyId,
-          patientId: capturedPatientId,
-          clinicalHistory: live.clinicalHistoryText,
-          technique: live.techniqueText,
-          rawFindings: live.findingsText,
-          impression: [live.impressionText],
-          recommendation: live.recommendationText,
-          findingsSections: useStructured ? findingsMap : undefined,
-          structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
-            ? toDraftFormatState({
-              formatId: studySetup.selectedTemplate.id,
-              formatVersion: studySetup.selectedTemplate.formatVersion ?? 1,
-              values: structuredValues,
-            })
-            : undefined,
-          observationLedger: useWorkspace.getState().serializeObservationLedger(),
-          viewerMeasurements: (() => {
-            const s = useWorkspace.getState().structuredViewerMeasurements;
-            // Harden: bound payload size for draft structured_json.
-            if (!s?.items || s.items.length <= 400) return s;
-            return { ...s, items: s.items.slice(-400) };
-          })(),
-          canalApProvenance: useWorkspace.getState().canalApProvenance,
-          // Baseline format identity — survives save → close → reopen so the
-          // applied-format banner stays and the bootstrap never re-fires.
-          linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
-          reportFormatIdentity: (() => {
-            const ws = useWorkspace.getState();
-            if (!ws.appliedFormatName) return undefined;
-            const format = ws.reportFormats.find((f) => f.name === ws.appliedFormatName);
-            return buildCareReportFormatIdentity({
-              name: ws.appliedFormatName,
-              reportTitle: ws.appliedFormatReportTitle,
-              formatId: format?.id,
-              formatRevision:
-                ws.startingCanvasBaseline?.formatRevision
-                ?? (format ? reportFormatRevision(format) : undefined),
-              baselineManifestVersion: format?.baselineManifest?.version,
-              baselineManifestRevision:
-                format?.baselineManifest?.revision
-                ?? ws.startingCanvasBaseline?.formatRevision
-                ?? undefined,
-            });
-          })(),
-        } as any),
-        { shouldRetry: isTransientError },
-      );
-      if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
-        return null;
-      }
-      const id = res?.draft?.id ?? res?.id ?? null;
-      if (id) {
-        captureSavedDraftId(id);
-        useWorkspace.setState({ isDirty: false });
-      }
-      setLastSavedAt(new Date());
-      setAutoSaveStatus("saved");
-      if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
-      return id;
-    } catch (err) {
-      setAutoSaveStatus("error");
-      toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
-      return null;
-    }
-  }, [studyId, draftId, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
-  saveDraftRef.current = saveDraft;
-
-  // First-save mutex — stable across re-renders; recreate when saveDraft identity changes.
-  const ensureDraftOnce = useMemo(
-    () =>
-      createEnsureDraftOnce({
-        getDraftId: () => draftIdRef.current,
-        createDraft: () => saveDraft({ silent: true }),
-      }),
-    [saveDraft],
-  );
-
-  const promptDirtyLeave = useCallback((_reason: string): Promise<LeaveChoice> => {
-    leavePromptReasonRef.current = _reason || "This report has unsaved changes.";
-    return new Promise((resolve) => {
-      leaveResolverRef.current = resolve;
-      setLeaveDialogOpen(true);
-    });
-  }, []);
-
-  const resolveLeaveChoice = useCallback((choice: LeaveChoice) => {
-    setLeaveDialogOpen(false);
-    const resolver = leaveResolverRef.current;
-    leaveResolverRef.current = null;
-    resolver?.(choice);
-  }, []);
-
-  const discardLocalEditor = useCallback(() => {
-    if (existingDraft) {
-      const draft = existingDraft as RadiologyDraftRow & {
-        findings?: string | null;
-        technique?: string | null;
-      };
-      const normStr = (v: unknown) =>
-        Array.isArray(v) ? v.join("\n") : typeof v === "string" ? v : "";
-      useWorkspace.getState().setEditorContent({
-        findings: normStr(draft.findings ?? draft.rawFindings),
-        impression: normalizeImpressionLines(draft.impression).join("\n"),
-        recommendation: normStr(draft.recommendation),
-        technique: normStr(draft.technique),
-        clinicalHistory:
-          normStr(draft.clinicalHistory) ||
-          (workflow.currentRow as { clinicalHistory?: string } | null)?.clinicalHistory ||
-          "",
-      });
-    } else {
-      useWorkspace.getState().setEditorContent({
-        findings: "",
-        impression: "",
-        recommendation: "",
-        technique: "",
-        clinicalHistory: "",
-      });
-    }
-    useWorkspace.setState({ isDirty: false });
-  }, [existingDraft, workflow.currentRow]);
-
-  const saveAndConfirmLeave = useCallback(async () => {
-    await ensureDraftOnce();
-    const id = await saveDraft({ silent: true });
-    if (id == null) {
-      toast({
-        title: "Save failed",
-        description: "Could not save before leaving. Stay on this study.",
-        variant: "destructive",
-      });
-      return false;
-    }
-    return true;
-  }, [ensureDraftOnce, saveDraft, toast]);
-
-  const requestLeaveThen = useCallback(
-    async (navigateFn: () => void) => {
-      const result = await leaveDirtyStudy({
-        guards: {
-          dirty: useWorkspace.getState().isDirty,
-          saving: autoSaveStatus === "saving",
-          finalizing: useWorkspace.getState().isFinalizing,
-          viewerLaunching: false,
-          transitioning: workflow.transitioning,
-        },
-        promptDirty: promptDirtyLeave,
-        saveAndConfirm: saveAndConfirmLeave,
-        discardLocal: discardLocalEditor,
-        onBlocked: (reason) => toast({ title: reason }),
-      });
-      if (result.action === "navigate") navigateFn();
-    },
-    [
-      autoSaveStatus,
-      workflow.transitioning,
-      promptDirtyLeave,
-      saveAndConfirmLeave,
-      discardLocalEditor,
-      toast,
-    ],
-  );
-
-  goNextStudyRef.current = () => {
-    void requestLeaveThen(() => {
-      const next = workflow.peekNext();
-      if (!next) {
-        toast({ title: "End of queue" });
-        return;
-      }
-      workflow.beginTransition(studyId, next);
-      openStudy(next.id);
-    });
-  };
-
-  goPrevStudyRef.current = () => {
-    void requestLeaveThen(() => {
-      const prevId = workflow.beginPreviousTransition(studyId);
-      if (prevId == null) {
-        toast({ title: "No previous study in history" });
-        return;
-      }
-      openStudy(prevId);
-    });
-  };
-
-  openStudyGuardedRef.current = (id: string | number) => {
-    if (String(id) === String(studyId ?? "")) {
-      openStudy(id);
-      return;
-    }
-    void requestLeaveThen(() => openStudy(id));
-  };
 
   const stageAiProposal = useCallback(
     (proposal: { findingKey: string; text: string; draftId?: number | string | null }) => {
@@ -2456,281 +2118,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     setStagedAiProposals([]);
     await ensureDraftOnce();
   }, [stagedAiProposals, ensureDraftOnce]);
-
-  // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
-  const finalizeReport = useCallback(async () => {
-    if (!studyId || !workflow.currentRow) return;
-    const offlineMsg = offlineBlockMessage(isOnline, "finalize");
-    if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return; }
-
-    // 0. Session guard — never finalize without a valid user identity
-    if (!sessionFresh?.user?.name) {
-      toast({ title: "Session expired", description: "Reload the page to sign in before finalizing.", variant: "destructive" });
-      return;
-    }
-
-    // Guard 10: pending AI proposals must never silently finalize
-    const pendingAi = reportComposer.job?.trackedChanges?.filter((c) => c.reviewState === "PENDING") ?? [];
-    if (
-      !aiFinalizeBypassRef.current &&
-      pendingAi.length > 0 &&
-      reportComposer.job &&
-      ["READY", "STALE_READY"].includes(reportComposer.job.status)
-    ) {
-      setAiFinalizeGate("pending");
-      toast({
-        title: "AI suggestions remain unreviewed",
-        description: `${pendingAi.length} AI change(s) pending. Review, or Reject remaining and continue.`,
-        variant: "destructive",
-      });
-      reportComposer.setReviewOpen(true);
-      return;
-    }
-    aiFinalizeBypassRef.current = false;
-    setAiFinalizeGate("idle");
-
-    // 1. Save dirty state first (capture draft id for quality + validate-draft)
-    let effectiveDraftId = draftId;
-    if (useWorkspace.getState().isDirty) {
-      const savedId = await saveDraft();
-      if (savedId) effectiveDraftId = savedId;
-    }
-
-    // 1b. PCPNDT Form F gate (obstetric USG) — open in-flow Form F step when incomplete
-    if (pcpndtBlockedRef.current && !formFContinueFinalizeRef.current) {
-      setFormFFinalizeOpen(true);
-      return;
-    }
-    formFContinueFinalizeRef.current = false;
-
-    // 2. Validate (local + server validate-draft when available) — live store
-    const live = readWorkspaceClinicalTexts();
-    const validationIssues = validateReport({
-      findings: live.findingsText,
-      impression: [live.impressionText],
-      technique: live.techniqueText,
-    } as any);
-    if (effectiveDraftId) {
-      try {
-        const serverVal = await api.post<{
-          structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
-        }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
-        const errs = serverVal?.structured?.errors ?? [];
-        const warns = serverVal?.structured?.warnings ?? [];
-        const skips = serverVal?.structured?.skipReasons ?? [];
-        for (const e of errs) validationIssues.push(typeof e === "string" ? e : JSON.stringify(e));
-        for (const w of warns) validationIssues.push(w);
-        for (const s of skips) validationIssues.push(s);
-      } catch { /* non-fatal — local validation still applies */ }
-    }
-
-    // 3b. Canonical report-quality evaluation (persisted, drives finalize dialog)
-    let qualityGate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
-    try {
-      qualityGate = await runFinalizeQualityEvaluation({
-        draftId: effectiveDraftId,
-        modality: workflow.currentRow.modality,
-        studyDescription: workflow.currentRow.studyDescription,
-        clinicalHistory: live.clinicalHistoryText,
-        technique: live.techniqueText,
-        findings: live.findingsText,
-        impression: live.impressionText,
-        recommendation: live.recommendationText,
-        checklistPercent: studySetup.checklistPercent,
-      });
-    } catch (err) {
-      toast({
-        title: "Quality check skipped",
-        description: err instanceof Error ? err.message : "Could not run report quality evaluation — continuing.",
-      });
-    }
-
-    const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
-
-    // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
-    const criticalHits = detectCriticalFindings(live.findingsText, [live.impressionText]);
-    const criticalMarked = isCritical || criticalHits.length > 0;
-    const criticalCommunicated = checklistComm.phoned;
-    const safetyIssues = computeFinalizeSafety({
-      checklistActive: false,
-      checklistPercent: 100,
-      criticalHits: criticalHits.map(h => ({ label: h.label })),
-      criticalMarked,
-      criticalCommunicated,
-    });
-
-    // 5. Get signatures
-    // Prefer Dr. Sugandha when several signatures exist — she is the clinic radiologist.
-    const signaturesRaw = await api.get<{ id: number; name: string }[]>("/api/signatures");
-    const signatures = [...signaturesRaw].sort((a, b) => {
-      const as = /sugandha/i.test(a.name) ? 0 : 1;
-      const bs = /sugandha/i.test(b.name) ? 0 : 1;
-      return as - bs;
-    });
-
-    const latest = useWorkspace.getState();
-    const siblingHits = collectCompositionFinalizeGate({
-      impressionNeedsRefresh: latest.impressionNeedsRefresh,
-      findings: latest.findingsText,
-      patches: latest.appliedPathologyPatches.map((p) => ({
-        id: p.id,
-        observation: p.observation as never,
-        templates: p.templates,
-        lastRendered: p.lastRendered,
-        replacedBaseline: p.replacedBaseline ?? { findings: [], impression: [] },
-        source: p.source,
-        protected: Boolean(p.protected),
-        stale: p.stale,
-      })),
-    });
-
-    // 6. Prompt via finalize flow (quality gate + critical ack + signer + composition gate)
-    const result = await finalizeFlow.promptFinalize({
-      identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
-      validationSummary: (validationIssues.join("; ") + qualityAdvisory) as string,
-      warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
-      safetyBlock: formatFinalizeSafety(safetyIssues),
-      unbilledNote: "",
-      signatures: signatures,
-      qualityGate,
-      criticalRequiresAck: criticalFindingBlocksFinalize({
-        checklistActive: false,
-        checklistPercent: 100,
-        criticalHits: criticalHits.map(h => ({ label: h.label })),
-        criticalMarked,
-        criticalCommunicated,
-      }),
-      criticalSummary: [
-        ...criticalHits.map(h => h.label),
-        ...(isCritical && criticalNote ? [criticalNote] : []),
-      ].filter(Boolean).join(", "),
-      compositionImpressionNeedsRefresh: latest.impressionNeedsRefresh,
-      compositionSiblingWarnings: siblingHits.siblingWarnings,
-      compositionStalePatchCount: siblingHits.stalePatchCount,
-    });
-
-    if (!result.confirmed) return;
-
-    // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.
-    const signed = useWorkspace.getState();
-    const signedFindings = signed.findingsText;
-    const signedImpression = signed.impressionText;
-    const signedRecommendation = signed.recommendationText;
-    const linkedForFinalize = signed.linkedStudy;
-    const combinedTitle = linkedForFinalize
-      ? `${workflow.currentRow?.studyDescription ?? "Report"} + ${linkedForFinalize.title}`
-      : (workflow.currentRow?.studyDescription ?? "Report");
-    try {
-      const finalizeResult = await finalizeRadiologyReport(
-        ({
-          studyId,
-          worklistId: studyId,
-          patientId: workflow.currentRow.patientId,
-          accessionNumber: workflow.currentRow.accessionNumber ?? "",
-          studyInstanceUID: workflow.currentRow.studyInstanceUID ?? "",
-          studyDescription: workflow.currentRow?.studyDescription ?? "",
-          modality: workflow.currentRow.modality ?? "",
-          linkedStudyId: linkedForFinalize?.studyId ?? null,
-          linkedAccessionNumber: linkedForFinalize?.accessionNumber ?? null,
-          linkedStudyInstanceUID: linkedForFinalize?.studyInstanceUID ?? null,
-        } as any),
-        {
-          title: combinedTitle,
-          htmlBody: (() => {
-            const esc = (s: string) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
-            return `<h2>${esc(combinedTitle)}</h2><p><b>Findings:</b> ${esc(signedFindings).replace(/\n/g,"<br/>")}</p><p><b>Impression:</b> ${esc(signedImpression).replace(/\n/g,"<br/>")}</p><p><b>Recommendation:</b> ${esc(signedRecommendation).replace(/\n/g,"<br/>")}</p>`;
-          })(),
-          impression: [signedImpression],
-          isCritical: criticalMarked,
-          criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
-          createdBy: sessionFresh?.user?.name ?? undefined,
-          actor: sessionFresh?.user?.name ?? undefined,
-          signatureId: result.signatureId,
-          auditDetails: qualityGate
-            ? {
-                qualityEvaluationId: qualityGate.textEvaluationId,
-                structuredQualityEvaluationId: qualityGate.structuredEvaluationId,
-                qualityScore: qualityGate.score,
-                qualityBlockingCount: qualityGate.blockingCount,
-                qualityWarningCount: qualityGate.warningCount,
-                qualitySource: "workspace-finalize",
-              }
-            : undefined,
-        } as any,
-      );
-
-      // 7. Honest toast
-      if (finalizeResult.signed) {
-        toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
-      } else if (finalizeResult.reportCreationSkipped) {
-        toast({
-          title: "Worklist marked final",
-          description: finalizeResult.reportCreationSkipped.includes("no patient")
-            ? "Study finalized on the worklist. No billed patient report row (expected until billing is linked)."
-            : `No patient report row created: ${finalizeResult.reportCreationSkipped}`,
-        });
-      } else {
-        toast({ title: "Report saved but NOT signed", description: finalizeResult.signError ?? "Sign error", variant: "destructive" });
-      }
-      if (finalizeResult.linkedMarkError) {
-        toast({
-          title: "Linked study was not marked final",
-          description: finalizeResult.linkedMarkError,
-          variant: "destructive",
-        });
-      } else if (finalizeResult.linkedMarkedFinal) {
-        toast({
-          title: "Both studies marked final",
-          description: "Primary and linked worklist rows are REPORT_FINAL.",
-        });
-      }
-
-      // 7b. Auto-push to Hope when this study is linked to a Hope referral (best-effort).
-      if (finalizeResult.signed && (finalizeResult.reportId || studyId)) {
-        void api
-          .post<{ ok?: boolean; alreadySent?: boolean; error?: string }>("/api/internal/radiology/send-report-to-hope", {
-            reportId: finalizeResult.reportId ?? undefined,
-            worklistId: studyId,
-          })
-          .then((r) => {
-            if (r?.ok) {
-              toast({
-                title: r.alreadySent ? "Already on Hope" : "Sent to Hope",
-                description: "Report is available on Hope ERP investigations.",
-                duration: 2500,
-              });
-            }
-          })
-          .catch(() => { /* no Hope referral / integration off — silent */ });
-      }
-
-      // 8. Post-finalize cleanup
-      workflow.markCompleted(studyId);
-      if (linkedForFinalize?.studyId) {
-        const linkedId = Number(linkedForFinalize.studyId);
-        if (Number.isInteger(linkedId)) workflow.markCompleted(linkedId);
-      }
-      draftBackup.clear();
-      clearRescueDraft();
-      useWorkspace.getState().completeFinalize();
-      setReadingSession(prev => bumpSessionCompleted(prev));
-
-      // 9. Invalidate queries
-      qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
-      qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
-
-      // 10. RIS throughput — auto-advance to the next eligible study.
-      // goNextStudy handles the transition lock + wrong-patient arrival
-      // cross-check and toasts "End of queue" when nothing eligible remains.
-      // The just-finalized study is excluded by identity (currentId), so the
-      // not-yet-rendered completedIds update cannot cause a self-advance.
-      if (result.advanceToNext) {
-        goNextStudy();
-      }
-    } catch (err) {
-      toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
-    }
-  }, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy]);
 
   // ─── Command dispatcher (single choke point for keyboard/voice/palette) ────
   const commandDispatcher = useMemo(() => createCommandDispatcher({
@@ -2897,27 +2284,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     return () => useWorkspace.setState({ triggerAiImpression: undefined });
   }, [triggerAiImpression]);
 
-  // ─── Word/PDF export (legacy layout path + Classic/Premium) ────────────────
-  const { data: presentationTemplates } = useQuery<PresentationTemplatesPayload>({
-    queryKey: ["presentation-templates"],
-    queryFn: () => api.get("/api/radiology/presentation-templates"),
-    staleTime: 60_000,
-  });
-  const clinicReportLayout = quickSelectLayoutKey(presentationTemplates?.active?.standard);
-  const reportLayout = previewLayoutOverride ?? clinicReportLayout;
-
-  const { data: clinicSettings } = useQuery<PrintClinic>({
-    queryKey: ["clinic-settings"],
-    queryFn: () => api.get("/api/clinic-settings/branding"),
-    staleTime: 5 * 60_000,
-  });
-
-  const { data: imageRefs = [] } = useQuery<ReportImageRef[]>({
-    queryKey: ["report-image-references", draftId],
-    queryFn: () => api.get(`/api/radiology/report-generator/image-references?draftId=${draftId}`),
-    enabled: !!draftId,
-  });
-
   const frozenKeyImagesQ = useFrozenKeyImages(draftId);
   const frozenKeyImages = frozenKeyImagesQ.data?.items ?? [];
   const keyImageCounts = useMemo(() => {
@@ -2948,6 +2314,153 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
     return labels;
   }, [appliedPathologyPatches]);
+
+  const studyNameForExport = resolvePrintedReportTitle(
+    appliedFormatReportTitle,
+    studySetup.testName
+      ?? workflow.currentRow?.studyDescription
+      ?? "Radiology Report",
+  );
+
+  // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
+  // Heavy dicomMetadata is omitted from the polled list — fetch per-study detail.
+  const worklistDetailQ = useQuery<{
+    dicomMetadata?: string | Record<string, unknown> | null;
+    age?: string | null;
+  }>({
+    queryKey: ["pacs-worklist-detail", studyId],
+    queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
+    enabled: Number.isFinite(studyId) && (studyId as number) > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const patientMasterQ = useQuery<{
+    dateOfBirth?: string | null;
+    ageValue?: number | null;
+    ageUnit?: string | null;
+    gender?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  }>({
+    queryKey: ["patient-master", workflow.currentRow?.patientId],
+    queryFn: () => api.get(`/api/patients/${workflow.currentRow!.patientId}`),
+    enabled: !!workflow.currentRow?.patientId,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const doctorsCatalogQ = useQuery<{ name: string; degree?: string | null }[]>({
+    queryKey: ["doctors-list"],
+    queryFn: () => api.get<{ doctors: { name: string; degree?: string | null }[] }>("/api/doctors").then((d) => d.doctors ?? []),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
+  const signOffProfiles = useWorkspace((s: WorkspaceStore) => s.signOffProfiles);
+  const signerLine = useMemo(() => {
+    const modality = (workflow.currentRow?.modality ?? "CT") as import("@/lib/zai-workspace/types").Modality;
+    const profile = lookupProfile(signOffProfiles, modality);
+    return profile ? formatSignOff(profile) : "";
+  }, [signOffProfiles, workflow.currentRow?.modality]);
+
+  const canonicalDemography = useMemo(() => {
+    const row = workflow.currentRow as Record<string, unknown> | null | undefined;
+    const master = patientMasterQ.data ?? null;
+    const detailMeta = worklistDetailQ.data?.dicomMetadata;
+    let dicomMeta: Record<string, unknown> = {};
+    if (detailMeta && typeof detailMeta === "object") {
+      dicomMeta = detailMeta as Record<string, unknown>;
+    } else if (typeof detailMeta === "string" && detailMeta.trim()) {
+      try { dicomMeta = JSON.parse(detailMeta) as Record<string, unknown>; } catch { /* ignore */ }
+    } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
+      dicomMeta = row.dicomMetadata as Record<string, unknown>;
+    }
+    const erpAge = resolveDisplayAge(
+      { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
+      master,
+      dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
+    );
+    const merged = mergeReportDemography({
+      erp: {
+        patientName: row?.patientName,
+        age: erpAge,
+        sex: row?.sex ?? master?.gender,
+        patientId: row?.patientId,
+        uhid: row?.uhid,
+        accessionNumber: row?.accessionNumber,
+        studyDescription: row?.studyDescription,
+        studyDate: row?.studyDate,
+        referringDoctor: row?.referringDoctor,
+        dateOfBirth: master?.dateOfBirth,
+      },
+      dicom: dicomMeta,
+      overrides: demographyOverrides,
+      referringDoctorCatalog: doctorCatalogLabels(doctorsCatalogQ.data ?? []),
+    });
+    return merged;
+  }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
+
+  // ─── Export / share / verify (Phase 3) ─────────────────────────────────────
+  const {
+    exportingWord,
+    exportingPdf,
+    printingLikeFinal,
+    presentationTemplates,
+    clinicSettings,
+    imageRefs,
+    reportLayout,
+    livePrintBodyHtml,
+    previewHtml,
+    handleExportWord,
+    handleExportPdf,
+    handlePrintLikeFinal,
+    handleSaveTeachingCase,
+    handleShare,
+    linkedReportId,
+    verifyGate,
+    canShowVerify,
+    handleVerifyReport,
+    confirmedVerifyReport,
+    confirmVerify,
+    setConfirmVerify,
+    verifyBusy,
+  } = useWorkspaceExportShare({
+    studyId,
+    draftId,
+    previewLayoutOverride,
+    saveDraft,
+    ensureDraftOnce,
+    toast,
+    qc,
+    workflow,
+    existingDraft,
+    canonicalDemography,
+    studyNameForExport,
+    clinicalHistoryText,
+    techniqueText,
+    findingsText,
+    impressionText,
+    recommendationText,
+    useStructured,
+    findingsMap,
+    impressionStyle,
+    headingCase,
+    sectionSpacing,
+    showLetterpadHeader,
+    signerLine,
+    findingsProvenance,
+    impressionProvenance,
+    frozenKeyImages,
+    studySetup,
+    doctorsCatalog: doctorsCatalogQ.data ?? [],
+    session,
+    sessionFresh,
+    canVerifyRef,
+    verifyActionRef,
+    linkedReportIdRef,
+    setWhatsappShareOpen,
+  });
 
   // Detach frozen key images when an observation is removed (preserve evidence).
   useEffect(() => {
@@ -3341,458 +2854,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     qc,
   ]);
 
-  const studyNameForExport = resolvePrintedReportTitle(
-    appliedFormatReportTitle,
-    studySetup.testName
-      ?? workflow.currentRow?.studyDescription
-      ?? "Radiology Report",
-  );
-
-  // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
-  // Heavy dicomMetadata is omitted from the polled list — fetch per-study detail.
-  const worklistDetailQ = useQuery<{
-    dicomMetadata?: string | Record<string, unknown> | null;
-    age?: string | null;
-  }>({
-    queryKey: ["pacs-worklist-detail", studyId],
-    queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
-    enabled: Number.isFinite(studyId) && (studyId as number) > 0,
-    staleTime: 60_000,
-    retry: false,
-  });
-
-  const patientMasterQ = useQuery<{
-    dateOfBirth?: string | null;
-    ageValue?: number | null;
-    ageUnit?: string | null;
-    gender?: string | null;
-    firstName?: string | null;
-    lastName?: string | null;
-  }>({
-    queryKey: ["patient-master", workflow.currentRow?.patientId],
-    queryFn: () => api.get(`/api/patients/${workflow.currentRow!.patientId}`),
-    enabled: !!workflow.currentRow?.patientId,
-    staleTime: 60_000,
-    retry: false,
-  });
-
-  const doctorsCatalogQ = useQuery<{ name: string; degree?: string | null }[]>({
-    queryKey: ["doctors-list"],
-    queryFn: () => api.get<{ doctors: { name: string; degree?: string | null }[] }>("/api/doctors").then((d) => d.doctors ?? []),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
-
-  const signOffProfiles = useWorkspace((s: WorkspaceStore) => s.signOffProfiles);
-  const signerLine = useMemo(() => {
-    const modality = (workflow.currentRow?.modality ?? "CT") as import("@/lib/zai-workspace/types").Modality;
-    const profile = lookupProfile(signOffProfiles, modality);
-    return profile ? formatSignOff(profile) : "";
-  }, [signOffProfiles, workflow.currentRow?.modality]);
-
-  const canonicalDemography = useMemo(() => {
-    const row = workflow.currentRow as Record<string, unknown> | null | undefined;
-    const master = patientMasterQ.data ?? null;
-    const detailMeta = worklistDetailQ.data?.dicomMetadata;
-    let dicomMeta: Record<string, unknown> = {};
-    if (detailMeta && typeof detailMeta === "object") {
-      dicomMeta = detailMeta as Record<string, unknown>;
-    } else if (typeof detailMeta === "string" && detailMeta.trim()) {
-      try { dicomMeta = JSON.parse(detailMeta) as Record<string, unknown>; } catch { /* ignore */ }
-    } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
-      dicomMeta = row.dicomMetadata as Record<string, unknown>;
-    }
-    const erpAge = resolveDisplayAge(
-      { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
-      master,
-      dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
-    );
-    const merged = mergeReportDemography({
-      erp: {
-        patientName: row?.patientName,
-        age: erpAge,
-        sex: row?.sex ?? master?.gender,
-        patientId: row?.patientId,
-        uhid: row?.uhid,
-        accessionNumber: row?.accessionNumber,
-        studyDescription: row?.studyDescription,
-        studyDate: row?.studyDate,
-        referringDoctor: row?.referringDoctor,
-        dateOfBirth: master?.dateOfBirth,
-      },
-      dicom: dicomMeta,
-      overrides: demographyOverrides,
-      referringDoctorCatalog: doctorCatalogLabels(doctorsCatalogQ.data ?? []),
-    });
-    return merged;
-  }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
-
-  const livePrintBodyHtml = useMemo(
-    () =>
-      buildLivePrintBodyHtml({
-        clinicalHistory: clinicalHistoryText,
-        technique: techniqueText,
-        rawFindings: findingsText,
-        findingsMap: useStructured ? findingsMap : {},
-        useStructured,
-        impression: impressionText.split("\n").filter(Boolean),
-        recommendation: recommendationText,
-        impressionStyle,
-        headingCase,
-      }),
-    [
-      clinicalHistoryText, techniqueText, findingsText, findingsMap, useStructured,
-      impressionText, recommendationText, impressionStyle, headingCase,
-    ],
-  );
-
-  const previewHtml = useMemo(
-    () =>
-      buildPreviewHtml({
-        patientName: canonicalDemography.patientName,
-        age: canonicalDemography.age,
-        sex: canonicalDemography.sex,
-        accessionNumber: canonicalDemography.accessionNumber,
-        referringDoctor: canonicalDemography.referringDoctor,
-        studyDate: canonicalDemography.studyDate,
-        headerStyle: reportLayout === "care-classic" ? "classic" : "table",
-        studyName: studyNameForExport,
-        technique: techniqueText,
-        clinicalHistory: clinicalHistoryText,
-        findingsMap: useStructured ? findingsMap : {},
-        rawFindings: findingsText,
-        useStructured,
-        impression: impressionText.split("\n").filter(Boolean),
-        recommendation: recommendationText,
-        imageRefs,
-        headingCase,
-        sectionSpacing,
-        impressionStyle,
-        signerLine,
-        findingsProvenance,
-        impressionProvenance,
-      }),
-    [
-      canonicalDemography, studyNameForExport, techniqueText, clinicalHistoryText,
-      findingsText, impressionText, recommendationText, imageRefs,
-      headingCase, sectionSpacing, impressionStyle, signerLine, reportLayout,
-      useStructured, findingsMap, findingsProvenance, impressionProvenance,
-    ],
-  );
-
-  const handleExportWord = useCallback(async () => {
-    setExportingWord(true);
-    try {
-      let html = previewHtml;
-      // Prefer server-rendered letter-pad layout when a draft/report exists.
-      if ((reportLayout === "care-premium" || reportLayout === "care-classic") && (draftId || linkedReportIdRef.current)) {
-        try {
-          await saveDraft({ silent: true });
-          const templateQs = reportLayoutTemplateQuery(reportLayout);
-          const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
-          const reportId = linkedReportIdRef.current;
-          const url = reportId
-            ? `/api/patient-reports/${reportId}/print?preview=true&${templateQs}&${styleQs}`
-            : `/api/radiology/report-generator/drafts/${draftId}/print-preview?${templateQs}&${styleQs}`;
-          const serverHtml = await api.get<string>(url);
-          if (typeof serverHtml === "string" && serverHtml.trim()) {
-            const live = readWorkspaceClinicalTexts();
-            html = await finalizePrintPreviewHtml(serverHtml, {
-              livePrintBodyHtml,
-              findingsText: live.findingsText,
-              impressionText: live.impressionText,
-              dicomWebBase: BROWSER_DICOMWEB_BASE,
-              imageRefs,
-              includeProvenanceChrome: false,
-              demography: {
-                patientName: canonicalDemography.patientName,
-                age: canonicalDemography.age,
-                sex: canonicalDemography.sex,
-                referringDoctor: canonicalDemography.referringDoctor,
-                studyDate: canonicalDemography.studyDate,
-              },
-            });
-          }
-        } catch {
-          /* fall back to client previewHtml */
-        }
-      }
-      const fileName = `${safeFileNamePart(workflow.currentRow?.patientName ?? "patient")}_${safeFileNamePart(workflow.currentRow?.accessionNumber ?? "report")}`;
-      await exportRadiologyReportToWord(html, fileName, {
-        patientName: canonicalDemography.patientName,
-        age: canonicalDemography.age,
-        sex: canonicalDemography.sex,
-        referringDoctor: canonicalDemography.referringDoctor,
-        studyDate: canonicalDemography.studyDate,
-        chrome: activeStandardLetterhead(presentationTemplates),
-        // Word is finished on pre-printed letter-pad — always reserve top margin.
-        // (Header ON/OFF still controls the HTML/PDF letterhead chrome.)
-        physicalLetterpad: true,
-      });
-    } catch (err) {
-      toast({
-        title: "Export failed",
-        description: formatReportExportError(err, "Word"),
-        variant: "destructive",
-      });
-    } finally {
-      setExportingWord(false);
-    }
-  }, [
-    workflow.currentRow, previewHtml, toast, reportLayout, draftId, canonicalDemography,
-    presentationTemplates, saveDraft, impressionStyle, livePrintBodyHtml, findingsText,
-    impressionText, imageRefs,
-  ]);
-
-  const handleExportPdf = useCallback(async () => {
-    setExportingPdf(true);
-    try {
-      let measurements: Array<{ label: string; value: string }> = [];
-      const spinalKey = workflow.currentRow?.studyId ?? studyId;
-      if (spinalKey) {
-        try {
-          const rows = await api.get<Array<{ vertebraLevel: string; canalAP: string | null }>>(
-            `/api/radiology/report-generator/spinal-measurements?studyId=${spinalKey}`,
-          );
-          const values: Record<string, string> = {};
-          for (const r of rows) {
-            if (r.canalAP?.trim()) values[r.vertebraLevel] = r.canalAP.trim();
-          }
-          const hint = [
-            studySetup.matchedStudyRegion,
-            workflow.currentRow?.studyDescription,
-          ].filter(Boolean).join(" ");
-          const segment =
-            canalSegmentFromSpine(useWorkspace.getState().reportingContext.spineSegment)
-            ?? resolveCanalSegment(hint)
-            ?? (Object.keys(values).some((k) => k.startsWith("C")) ? "cervical" : "lumbar");
-          measurements = canalApToPdfRows(segment, values);
-        } catch { /* omit measurements section */ }
-      }
-      const frozenForPdf = frozenKeyImages
-        .filter((img) => img.includeInReport)
-        .sort((a, b) => a.sortOrder - b.sortOrder);
-      let frozenDataUrls: string[] = [];
-      if (frozenForPdf.length > 0) {
-        frozenDataUrls = (
-          await Promise.all(
-            frozenForPdf.map(async (img) => {
-              try {
-                const res = await fetch(img.imageUrl);
-                if (!res.ok) return null;
-                const blob = await res.blob();
-                return await new Promise<string | null>((resolve) => {
-                  const reader = new FileReader();
-                  reader.onload = () => resolve(String(reader.result || "") || null);
-                  reader.onerror = () => resolve(null);
-                  reader.readAsDataURL(blob);
-                });
-              } catch {
-                return null;
-              }
-            }),
-          )
-        ).filter((u): u is string => Boolean(u));
-      }
-      await exportRadiologyReportToPdf({
-        patientName: canonicalDemography.patientName,
-        age: canonicalDemography.age,
-        sex: canonicalDemography.sex,
-        accessionNumber: canonicalDemography.accessionNumber,
-        studyDate: canonicalDemography.studyDate,
-        referringDoctor: canonicalDemography.referringDoctor,
-        modality: workflow.currentRow?.modality ?? "",
-        bodyPart: workflow.currentRow?.studyDescription ?? "",
-        clinicalHistory: clinicalHistoryText,
-        technique: techniqueText,
-        useStructured,
-        findingsMap: useStructured ? findingsMap : {},
-        rawFindings: findingsText,
-        impression: impressionText.split("\n").filter(Boolean),
-        recommendation: recommendationText,
-        studyName: studyNameForExport,
-        headingCase,
-        dicomWebBase: BROWSER_DICOMWEB_BASE,
-        imageRefs,
-        frozenKeyImages: frozenDataUrls,
-        clinic: clinicSettings ?? null,
-        letterhead: activeStandardLetterhead(presentationTemplates),
-        showLetterpadHeader,
-        measurements,
-        doctorsCatalog: doctorsCatalogQ.data ?? [],
-      });
-    } catch (err) {
-      toast({
-        title: "Export failed",
-        description: formatReportExportError(err, "PDF"),
-        variant: "destructive",
-      });
-    } finally {
-      setExportingPdf(false);
-    }
-  }, [
-    canonicalDemography, clinicalHistoryText, techniqueText, findingsText,
-    impressionText, recommendationText, studyNameForExport, headingCase,
-    imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
-    useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-    studyId, studySetup.matchedStudyRegion, doctorsCatalogQ.data,
-  ]);
-
-  const handlePrintLikeFinal = useCallback(async () => {
-    let id = draftId;
-    if (!id) id = await ensureDraftOnce();
-    if (!id) {
-      toast({ title: "Could not save draft", description: "Print-like-final needs a saved draft.", variant: "destructive" });
-      return;
-    }
-    setPrintingLikeFinal(true);
-    const w = window.open("", "_blank");
-    if (!w) {
-      setPrintingLikeFinal(false);
-      toast({ title: "Popup blocked", description: "Allow popups for this site to print.", variant: "destructive" });
-      return;
-    }
-    try {
-      const templateQs = reportLayoutTemplateQuery(reportLayout);
-      const styleQs = `impressionStyle=${encodeURIComponent(impressionStyle)}`;
-      const url = `/api/radiology/report-generator/drafts/${id}/print-preview?autoPrint=true&likeFinal=true&${templateQs}&${styleQs}`;
-      let html = await api.get<string>(url);
-      if (typeof html !== "string" || !html.trim()) {
-        throw new Error("Empty print preview");
-      }
-      // Merge unsaved editor text into server layout; hydrate key images client-side.
-      html = await finalizePrintPreviewHtml(html, {
-        livePrintBodyHtml,
-        findingsText,
-        impressionText,
-        dicomWebBase: BROWSER_DICOMWEB_BASE,
-        imageRefs,
-        includeProvenanceChrome: false,
-        demography: {
-          patientName: canonicalDemography.patientName,
-          age: canonicalDemography.age,
-          sex: canonicalDemography.sex,
-          referringDoctor: canonicalDemography.referringDoctor,
-          studyDate: canonicalDemography.studyDate,
-        },
-      });
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
-      w.focus();
-    } catch (err) {
-      w.close();
-      toast({
-        title: "Print preview failed",
-        description: err instanceof Error ? err.message : "Could not open print layout.",
-        variant: "destructive",
-      });
-    } finally {
-      setPrintingLikeFinal(false);
-    }
-  }, [
-    draftId, reportLayout, ensureDraftOnce, toast, imageRefs, impressionStyle,
-    livePrintBodyHtml, findingsText, impressionText, canonicalDemography,
-  ]);
-
-  // ─── Teaching case save ─────────────────────────────────────────────────────
-  const handleSaveTeachingCase = useCallback(async () => {
-    if (!studyId) return;
-    try {
-      const live = readWorkspaceClinicalTexts();
-      await api.post("/api/teaching-cases/generate-from-report", {
-        studyId,
-        findings: live.findingsText,
-        impression: live.impressionText,
-        modality: workflow.currentRow?.modality,
-        studyDescription: workflow.currentRow?.studyDescription,
-        patientName: workflow.currentRow?.patientName,
-      });
-      toast({ title: "Saved as teaching case" });
-    } catch (err) { toast({ title: "Teaching case save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" }); }
-  }, [studyId, toast, workflow.currentRow]);
-
-  // ─── Verify / countersign (legacy D9) — additive; does not replace Finalize ─
-  const linkedReportId = useMemo(() => {
-    const row = workflow.currentRow as { reportId?: number | null } | null | undefined;
-    const draft = existingDraft as { finalReportId?: number | null } | null | undefined;
-    return draft?.finalReportId ?? row?.reportId ?? null;
-  }, [workflow.currentRow, existingDraft]);
-  linkedReportIdRef.current = linkedReportId;
-
-  // ─── Report share (WhatsApp) — dialog with phone + verify-then-send ─────────
-  const handleShare = useCallback(() => {
-    const reportId = linkedReportIdRef.current;
-    if (!reportId) {
-      toast({
-        title: "Finalize the report first",
-        description: "WhatsApp send needs a signed patient report. Use Finalize, then Share.",
-        variant: "destructive",
-      });
-      return;
-    }
-    setWhatsappShareOpen(true);
-  }, [toast]);
-
-  const { data: finalReport } = useQuery<{
-    id?: number;
-    signedByName?: string | null;
-    status?: string | null;
-    lifecycle?: { state?: string; superseded?: boolean };
-    version?: { superseded?: boolean };
-  }>({
-    queryKey: ["workspace-final-report", linkedReportId],
-    queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
-    enabled: !!linkedReportId,
-  });
-
-  const verifyGate = useMemo(
-    () => canVerifyReport(
-      {
-        subjectName: session?.user?.name ?? undefined,
-        role: session?.user?.role ?? undefined,
-        permissions: (session?.user as { permissions?: string[] } | undefined)?.permissions,
-      },
-      finalReport ?? null,
-    ),
-    [session, finalReport],
-  );
-  const reportSuperseded = Boolean(finalReport?.version?.superseded || finalReport?.lifecycle?.superseded);
-  const canShowVerify = Boolean(finalReport) && verifyGate.allowed && !reportSuperseded;
-  canVerifyRef.current = canShowVerify;
-
-  const handleVerifyReport = useCallback(async () => {
-    if (!finalReport || verifyBusy) return;
-    const targetId = finalReport.id ?? linkedReportId;
-    if (!targetId) return;
-    setConfirmVerify(true);
-  }, [finalReport, verifyBusy, linkedReportId]);
-
-  const confirmedVerifyReport = useCallback(async () => {
-    setConfirmVerify(false);
-    setVerifyBusy(true);
-    try {
-      const targetId = finalReport?.id ?? linkedReportId;
-      if (!targetId) return;
-      await api.post(`/api/patient-reports/${targetId}/verify`, {
-        verifiedByName: sessionFresh?.user?.name ?? undefined,
-      });
-      toast({ title: "Report verified" });
-      void qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
-    } catch (err) {
-      toast({
-        title: "Verify failed",
-        description: err instanceof Error ? err.message : "Error",
-        variant: "destructive",
-      });
-    } finally {
-      setVerifyBusy(false);
-    }
-  }, [finalReport, linkedReportId, sessionFresh, toast, qc]);
-
-  verifyActionRef.current = () => {
-    if (canShowVerify && !verifyBusy) void handleVerifyReport();
-  };
 
   const openReportingTools = useCallback((
     tab: ReportingToolsTab,
@@ -4126,47 +3187,6 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       reportPanelRef.current?.resize(pct.report);
     });
   }, [isMobile, showEmbeddedViewer, layoutMode, setLayoutMode]);
-
-  // ─── Debounced server auto-save (30 s after last keystroke) ─────────────────
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!isDirty || !isOnline || isFinalized || isMobile) {
-      if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
-      return;
-    }
-    const live = readWorkspaceClinicalTexts();
-    const meaningful = isMeaningfulReportEdit({
-      findings: live.findingsText,
-      impression: live.impressionText,
-      recommendation: live.recommendationText,
-      technique: live.techniqueText,
-    });
-    // First save: only create a server draft on meaningful report-body edits
-    // (not clinicalHistory-only, not open/look).
-    if (!draftId && !meaningful) {
-      if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
-      return;
-    }
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
-      const genAtSchedule = saveGenerationRef.current;
-      setAutoSaveStatus("saving");
-      const run = async () => {
-        if (!draftIdRef.current) {
-          return ensureDraftOnce();
-        }
-        return saveDraft({ silent: true });
-      };
-      run().then((id) => {
-        if (genAtSchedule !== saveGenerationRef.current) return;
-        setAutoSaveStatus(id != null ? "saved" : "error");
-      }).catch(() => {
-        if (genAtSchedule !== saveGenerationRef.current) return;
-        setAutoSaveStatus("error");
-      });
-    }, 30_000);
-    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [isDirty, isOnline, draftId, isFinalized, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
 
   return (
     <div className="flex h-screen flex-col bg-gradient-to-br from-emerald-50/40 via-background to-background overflow-hidden">
