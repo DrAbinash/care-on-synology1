@@ -18,8 +18,13 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
-import { FileImage, IndianRupee, Loader2, Ban, Wallet } from "lucide-react";
-import { AccountingStatusBadge, PaymentStatusBadge } from "./ExpenseStatusBadges";
+import { useQuery } from "@tanstack/react-query";
+import { FileImage, IndianRupee, Loader2, Ban, Wallet, Printer } from "lucide-react";
+import {
+  AccountingStatusBadge,
+  canShowAccountingRetryUi,
+  PaymentStatusBadge,
+} from "./ExpenseStatusBadges";
 import ExpenseAttachmentsPanel from "./ExpenseAttachmentsPanel";
 import {
   billOf,
@@ -30,6 +35,30 @@ import {
   type ExpensePaymentRow,
   type ExpenseV2,
 } from "./expenseTypes";
+import { printExpenseVoucher, type ExpenseVoucherClinic } from "@/lib/expenseVoucherPrint";
+
+function parseMeta(raw?: string | null): {
+  workType?: string | null;
+  labourBasis?: string | null;
+  days?: number | null;
+  ratePerDay?: number | null;
+  labourAmount?: number | null;
+  materialAmount?: number | null;
+} | null {
+  if (!raw?.trim()) return null;
+  try {
+    return JSON.parse(raw) as {
+      workType?: string | null;
+      labourBasis?: string | null;
+      days?: number | null;
+      ratePerDay?: number | null;
+      labourAmount?: number | null;
+      materialAmount?: number | null;
+    };
+  } catch {
+    return null;
+  }
+}
 
 const PAYMENT_MODES = ["cash", "bank-transfer", "cheque", "upi", "card"];
 
@@ -125,6 +154,20 @@ export default function ExpenseDetailDrawer({
     };
   }, [open, expense?.id, initialShowPay]);
 
+  const { data: printClinic } = useQuery<ExpenseVoucherClinic>({
+    queryKey: ["clinic-settings-branding-expense-voucher"],
+    queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
+  const { data: categoryRows = [] } = useQuery<Array<{ id: number; name: string; parentId?: number | null }>>({
+    queryKey: ["expense-categories"],
+    queryFn: () => api.get("/api/expenses/categories"),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
   const exp = detail || expense;
   if (!exp) return null;
 
@@ -196,6 +239,28 @@ export default function ExpenseDetailDrawer({
 
   const paidFromAccounts = accounts.filter((a) => a.isActive !== false && (a.type === "cash" || a.type === "bank"));
 
+  function handlePrintVoucher() {
+    // Nested closures do not retain the outer null narrow — re-resolve locally.
+    const current = detail || expense;
+    if (!current) return;
+    const subcategoryName = current.subcategoryId
+      ? categoryRows.find((c) => c.id === current.subcategoryId)?.name ?? null
+      : null;
+    const latestPay = payments.find((p) => !p.reversedAt);
+    const accountName =
+      latestPay?.paidFromAccountId != null
+        ? accounts.find((a) => a.id === latestPay.paidFromAccountId)?.name ?? null
+        : null;
+    // Print-only: uses already-loaded GET data + Billing Desk A5 writeAndPrint.
+    printExpenseVoucher({
+      expense: current,
+      payments,
+      clinic: printClinic ?? null,
+      accountName,
+      subcategoryName,
+    });
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
@@ -213,14 +278,61 @@ export default function ExpenseDetailDrawer({
         ) : (
           <div className="mt-4 space-y-5">
             <div className="flex flex-wrap items-center gap-2">
-              <PaymentStatusBadge status={exp.paymentStatus} />
-              <AccountingStatusBadge status={exp.accountingStatus} />
+              <PaymentStatusBadge status={exp.paymentStatus} labeled />
+              <AccountingStatusBadge status={exp.accountingStatus} labeled />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                data-testid="expense-print-voucher"
+                onClick={handlePrintVoucher}
+              >
+                <Printer size={12} className="mr-1" /> Print Expense Voucher
+              </Button>
               {exp.hasReceipt || exp.receiptImageUrl ? (
                 <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => onViewReceipt(exp)}>
                   <FileImage size={12} className="mr-1" /> Receipt
                 </Button>
               ) : null}
             </div>
+
+            {canShowAccountingRetryUi(exp) ? (
+              <div className="rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-xs text-red-900 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-semibold">Accounting posting failed</p>
+                  {exp.accountingError ? (
+                    <p className="text-red-800/80 mt-0.5 break-words">{exp.accountingError}</p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 shrink-0 text-xs"
+                  disabled={saving}
+                  data-testid="expense-accounting-retry"
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      await api.post(`/api/expenses/${exp.id}/accounting/retry`, {});
+                      toast({ title: "Accounting retry complete" });
+                      onChanged();
+                    } catch (err) {
+                      toast({
+                        title: "Retry failed",
+                        description: err instanceof Error ? err.message : undefined,
+                        variant: "destructive",
+                      });
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : null}
 
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded-lg border border-card-border bg-muted/20 p-3">
@@ -238,12 +350,34 @@ export default function ExpenseDetailDrawer({
             </div>
 
             <div className="text-sm space-y-1.5">
-              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Vendor</span><span className="font-medium text-right">{vendorLabel(exp)}</span></div>
-              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Date</span><span>{new Date(exp.expenseDate + "T00:00:00").toLocaleDateString("en-IN")}</span></div>
+              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Vendor / Paid to</span><span className="font-medium text-right">{vendorLabel(exp)}</span></div>
+              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Expense date</span><span>{new Date(exp.expenseDate + "T00:00:00").toLocaleDateString("en-IN")}</span></div>
               <div className="flex justify-between gap-2"><span className="text-muted-foreground">Category</span><span className="capitalize">{exp.category}</span></div>
+              {(() => {
+                const meta = parseMeta(exp.metaJson);
+                if (!meta?.workType && !meta?.labourBasis) return null;
+                return (
+                  <>
+                    {meta.workType ? (
+                      <div className="flex justify-between gap-2"><span className="text-muted-foreground">Work type</span><span>{meta.workType}</span></div>
+                    ) : null}
+                    {meta.labourBasis === "per_day" && meta.days != null && meta.ratePerDay != null ? (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-muted-foreground">Labour</span>
+                        <span>{meta.days} day(s) × ₹{meta.ratePerDay}{meta.labourAmount != null ? ` = ₹${meta.labourAmount}` : ""}</span>
+                      </div>
+                    ) : meta.labourBasis ? (
+                      <div className="flex justify-between gap-2"><span className="text-muted-foreground">Labour basis</span><span className="capitalize">{meta.labourBasis.replace("_", " ")}</span></div>
+                    ) : null}
+                    {meta.materialAmount != null ? (
+                      <div className="flex justify-between gap-2"><span className="text-muted-foreground">Materials</span><span>₹{meta.materialAmount}</span></div>
+                    ) : null}
+                  </>
+                );
+              })()}
               {exp.departmentId ? (
                 <div className="flex justify-between gap-2">
-                  <span className="text-muted-foreground">Department</span>
+                  <span className="text-muted-foreground">Department / area</span>
                   <span>{departments.find((d) => d.id === exp.departmentId)?.name || `#${exp.departmentId}`}</span>
                 </div>
               ) : null}
@@ -254,7 +388,10 @@ export default function ExpenseDetailDrawer({
                 <div className="flex justify-between gap-2"><span className="text-muted-foreground">Invoice date</span><span>{exp.invoiceDate}</span></div>
               ) : null}
               {exp.approvedBy ? (
-                <div className="flex justify-between gap-2"><span className="text-muted-foreground">Approved by</span><span>{exp.approvedBy}</span></div>
+                <div className="flex justify-between gap-2" title="Cash drawer attribution uses Approved By when set, otherwise the creator.">
+                  <span className="text-muted-foreground">Approved by / drawer</span>
+                  <span>{exp.approvedBy}</span>
+                </div>
               ) : null}
               <div className="flex justify-between gap-2 gap-y-1 flex-wrap">
                 <span className="text-muted-foreground">Linked vouchers</span>
@@ -264,6 +401,17 @@ export default function ExpenseDetailDrawer({
                   {exp.accrualVoucherId ? `accrual #${exp.accrualVoucherId}` : "accrual —"}
                 </span>
               </div>
+              {(exp.paymentStatus || "").toUpperCase() === "VOID" ? (
+                <div className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs mt-1">
+                  <p className="font-semibold">Voided</p>
+                  {exp.voidReason ? <p>{exp.voidReason}</p> : null}
+                  <p className="text-muted-foreground">
+                    {[exp.voidedBy, exp.voidedAt ? new Date(exp.voidedAt).toLocaleString("en-IN") : null]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </div>
+              ) : null}
               {exp.notes ? (
                 <div className="pt-1 text-xs text-muted-foreground">{exp.notes}</div>
               ) : null}

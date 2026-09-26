@@ -291,7 +291,9 @@ describe.skipIf(!hasDb)("expense V2 review fixes", () => {
     const src = await import("node:fs").then((fs) =>
       fs.readFileSync(new URL("../routes/expenses.ts", import.meta.url), "utf8"),
     );
-    expect(src).toMatch(/Cannot edit amount \/ payment mode \/ category on a posted expense/);
+    // Amount/mode always blocked after save; category only when vouchers linked.
+    expect(src).toMatch(/Cannot edit amount or payment mode after save/);
+    expect(src).toMatch(/Cannot change category after accounting vouchers are linked/);
     expect(src).toMatch(/Void and re-enter the bill/);
   });
 

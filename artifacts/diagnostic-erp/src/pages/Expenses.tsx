@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useListExpenses,
@@ -13,6 +13,7 @@ import DocumentScanCapture from "@/components/DocumentScanCapture";
 import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
 import ExpenseDetailDrawer from "@/components/expenses/ExpenseDetailDrawer";
 import ExpenseAttachmentsPanel, { type PendingExpenseAttachment } from "@/components/expenses/ExpenseAttachmentsPanel";
+import PayeeCombobox, { type PayeeUsualDto } from "@/components/expenses/PayeeCombobox";
 import { AccountingStatusBadge, OcrFieldBadge, PaymentStatusBadge } from "@/components/expenses/ExpenseStatusBadges";
 import {
   billOf,
@@ -85,7 +86,29 @@ const FALLBACK_CATEGORIES = [
   "miscellaneous",
 ];
 
+const WORK_TYPES = [
+  "Electrical",
+  "Plumbing",
+  "Civil / Masonry",
+  "Tiles",
+  "Carpentry",
+  "Painting",
+  "AC / Refrigeration",
+  "Equipment Repair",
+  "General Maintenance",
+  "Other",
+] as const;
+
 const PAYMENT_MODES = ["cash", "bank-transfer", "cheque", "upi", "card"];
+
+function isOpsMaintenanceCategory(category: string, categoryLabel?: string): boolean {
+  const c = `${category} ${categoryLabel || ""}`.toLowerCase();
+  return (
+    c.includes("maintenance") ||
+    c.includes("operations") ||
+    c.includes("repair")
+  );
+}
 
 type ScanBillResult = {
   vendor: string;
@@ -115,6 +138,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   miscellaneous: "bg-gray-100 text-gray-700",
 };
 
+type LabourBasis = "" | "per_day" | "per_job" | "contract";
+
 type ExpenseForm = {
   payKind: EntryPayKind;
   category: string;
@@ -136,6 +161,12 @@ type ExpenseForm = {
   referenceNumber: string;
   approvedBy: string;
   notes: string;
+  workType: string;
+  labourBasis: LabourBasis;
+  days: string;
+  ratePerDay: string;
+  labourAmount: string;
+  materialAmount: string;
 };
 
 function emptyExpenseForm(): ExpenseForm {
@@ -162,7 +193,36 @@ function emptyExpenseForm(): ExpenseForm {
     referenceNumber: "",
     approvedBy: name,
     notes: "",
+    workType: "",
+    labourBasis: "",
+    days: "",
+    ratePerDay: "",
+    labourAmount: "",
+    materialAmount: "",
   };
+}
+
+function buildExpenseMetaJson(form: ExpenseForm): string | null {
+  const meta: Record<string, unknown> = {};
+  if (form.workType.trim()) meta.workType = form.workType.trim();
+  if (form.labourBasis) meta.labourBasis = form.labourBasis;
+  if (form.days.trim()) {
+    const days = Number(form.days);
+    if (Number.isFinite(days)) meta.days = days;
+  }
+  if (form.ratePerDay.trim()) {
+    const rate = Number(form.ratePerDay);
+    if (Number.isFinite(rate)) meta.ratePerDay = rate;
+  }
+  if (form.labourAmount.trim()) {
+    const labour = Number(form.labourAmount);
+    if (Number.isFinite(labour)) meta.labourAmount = labour;
+  }
+  if (form.materialAmount.trim()) {
+    const material = Number(form.materialAmount);
+    if (Number.isFinite(material)) meta.materialAmount = material;
+  }
+  return Object.keys(meta).length ? JSON.stringify(meta) : null;
 }
 
 function round2(n: number) {
@@ -213,6 +273,14 @@ export default function Expenses() {
   const [quickVendorOpen, setQuickVendorOpen] = useState(false);
   const [quickVendorName, setQuickVendorName] = useState("");
   const [quickVendorSaving, setQuickVendorSaving] = useState(false);
+  const [payeeSuggestionsApplied, setPayeeSuggestionsApplied] = useState(false);
+  const usualApplySeq = useRef(0);
+  const labourSuggestedBill = (() => {
+    const labour = Number(form.labourAmount) || 0;
+    const material = Number(form.materialAmount) || 0;
+    const suggested = round2(labour + material);
+    return suggested > 0 ? suggested : null;
+  })();
 
   const listParams: ListExpensesParams & { paymentStatus?: string } = {
     category: categoryFilter !== "all" ? categoryFilter : undefined,
@@ -361,6 +429,7 @@ export default function Expenses() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (savingCreate) return;
     const billAmount = Number(form.billAmount);
     if (!Number.isFinite(billAmount) || billAmount <= 0) {
       toast({ title: "Enter a valid bill amount", description: "Bill must be greater than ₹0.", variant: "destructive" });
@@ -429,17 +498,22 @@ export default function Expenses() {
       payload.referenceNumber = form.referenceNumber.trim() || null;
     }
 
+    const metaJson = buildExpenseMetaJson(form);
+    if (metaJson) payload.metaJson = metaJson;
+
     setSavingCreate(true);
     try {
       const created = await api.post<ExpenseV2 & { duplicateWarnings?: DuplicateWarnings }>("/api/expenses", payload);
       invalidateExpenses();
       setShowForm(false);
       setForm(emptyExpenseForm());
+      setPayeeSuggestionsApplied(false);
       setReceiptImage("");
       setPendingAttachment(null);
       setOcrMeta(null);
       setOcrConfirmed(false);
       setFieldMeta({});
+      qc.invalidateQueries({ queryKey: ["expense-payees-recent"] });
       toast({
         title: "Supplier bill recorded",
         description: `Bill ${inr(billAmount)} · Paid ${inr(initialPaymentAmount)} · Due ${inr(Math.max(0, billAmount - initialPaymentAmount))}`,
@@ -498,6 +572,7 @@ export default function Expenses() {
   const showDepartments = !departmentsHidden && departments.length > 0;
 
   async function createQuickVendor() {
+    if (quickVendorSaving) return;
     const name = quickVendorName.trim();
     if (!name) {
       toast({ title: "Vendor name required", variant: "destructive" });
@@ -530,6 +605,95 @@ export default function Expenses() {
     }));
   }
 
+  function applyUsualPayeeDetails(details: PayeeUsualDto | null) {
+    if (!details) return;
+    setForm((f) => {
+      const next = { ...f };
+      // Convenience only — never overwrite operator-entered values; never copy money/invoice.
+      const canSuggestCategory =
+        !next.categoryId &&
+        (!next.category?.trim() || next.category === "miscellaneous");
+      if (canSuggestCategory && details.suggestedCategory) {
+        const match = categoryOptions.find(
+          (c) =>
+            c.label.toLowerCase() === details.suggestedCategory!.toLowerCase() ||
+            c.value.toLowerCase() === details.suggestedCategory!.toLowerCase(),
+        );
+        if (match) {
+          next.category = match.value;
+          next.categoryId = match.id;
+        } else {
+          next.category = details.suggestedCategory.toLowerCase();
+        }
+      }
+      if (next.categoryId && !next.subcategoryId) {
+        const repairs = categoryRows.find(
+          (c) =>
+            c.parentId === Number(next.categoryId) &&
+            c.name.toLowerCase().includes("repairs"),
+        );
+        if (repairs) next.subcategoryId = String(repairs.id);
+      }
+      if ((!next.paymentMode || next.paymentMode === "cash") && details.suggestedPaymentMode) {
+        next.paymentMode = details.suggestedPaymentMode;
+      }
+      const meta = details.meta;
+      if (meta) {
+        if (!next.workType && meta.workType) next.workType = meta.workType;
+        if (!next.labourBasis && meta.labourBasis) next.labourBasis = meta.labourBasis;
+        if (!next.days && meta.days != null) next.days = String(meta.days);
+        if (!next.ratePerDay && meta.ratePerDay != null) next.ratePerDay = String(meta.ratePerDay);
+        if (!next.labourAmount && meta.labourAmount != null) next.labourAmount = String(meta.labourAmount);
+        if (!next.materialAmount && meta.materialAmount != null) next.materialAmount = String(meta.materialAmount);
+      }
+      return next;
+    });
+    setPayeeSuggestionsApplied(true);
+  }
+
+  function viewPayeeHistory(opts: { vendorId: string; payeeName: string }) {
+    setShowForm(false);
+    setActiveTab("list");
+    if (opts.vendorId) {
+      setVendorFilter(opts.vendorId);
+      setSearch("");
+    } else {
+      setVendorFilter("all");
+      setSearch(opts.payeeName);
+    }
+  }
+
+  function updateLabourFields(patch: Partial<Pick<ExpenseForm, "labourBasis" | "days" | "ratePerDay" | "labourAmount" | "materialAmount">>) {
+    setForm((f) => {
+      const next = { ...f, ...patch };
+      if (next.labourBasis === "per_day") {
+        const days = Number(next.days);
+        const rate = Number(next.ratePerDay);
+        if (Number.isFinite(days) && Number.isFinite(rate) && days >= 0 && rate >= 0) {
+          next.labourAmount = String(round2(days * rate));
+        }
+      }
+      // Labour/material are metadata only — never silently rewrite Bill Amount.
+      return next;
+    });
+  }
+
+  function applyLabourSuggestedBill() {
+    if (labourSuggestedBill == null) return;
+    const billAmount = String(labourSuggestedBill);
+    setForm((f) => ({
+      ...f,
+      billAmount,
+      amountPaid: f.payKind === "PAID" ? billAmount : f.payKind === "DUE" ? "0" : f.amountPaid,
+    }));
+    markFieldUser("amount");
+  }
+
+  const showWorkMeta = isOpsMaintenanceCategory(
+    form.category,
+    categoryOptions.find((c) => c.value === form.category)?.label,
+  );
+
   return (
     <div className="w-full max-w-full min-w-0">
       <PageHeader
@@ -541,8 +705,9 @@ export default function Expenses() {
             onClick={() => {
               setShowForm(true);
               setForm(emptyExpenseForm());
+              setPayeeSuggestionsApplied(false);
               setReceiptImage("");
-      setPendingAttachment(null);
+              setPendingAttachment(null);
               setOcrMeta(null);
               setOcrConfirmed(false);
               setFieldMeta({});
@@ -583,10 +748,11 @@ export default function Expenses() {
             <div className="relative col-span-2 sm:col-span-1">
               <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Search description…"
+                placeholder="Search payee, description, invoice…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 h-8 text-xs w-full sm:w-52"
+                className="pl-9 h-8 text-xs w-full sm:w-64"
+                data-testid="expense-list-search"
               />
             </div>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
@@ -603,14 +769,14 @@ export default function Expenses() {
               </SelectContent>
             </Select>
             <Select value={paymentStatusFilter} onValueChange={setPaymentStatusFilter}>
-              <SelectTrigger className="h-8 w-full sm:w-36 text-xs">
-                <SelectValue placeholder="Payment status" />
+              <SelectTrigger className="h-8 w-full sm:w-40 text-xs">
+                <SelectValue placeholder="Payment" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="PAID">Paid</SelectItem>
-                <SelectItem value="PART_PAID">Part paid</SelectItem>
-                <SelectItem value="DUE">Due</SelectItem>
+                <SelectItem value="all">Payment: all</SelectItem>
+                <SelectItem value="PAID">Payment: Paid</SelectItem>
+                <SelectItem value="PART_PAID">Payment: Part paid</SelectItem>
+                <SelectItem value="DUE">Payment: Due</SelectItem>
               </SelectContent>
             </Select>
             <Select value={paymentFilter} onValueChange={setPaymentFilter}>
@@ -627,16 +793,16 @@ export default function Expenses() {
               </SelectContent>
             </Select>
             <Select value={accountingStatusFilter} onValueChange={setAccountingStatusFilter}>
-              <SelectTrigger className="h-8 w-full sm:w-36 text-xs">
+              <SelectTrigger className="h-8 w-full sm:w-44 text-xs">
                 <SelectValue placeholder="Accounting" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All accounting</SelectItem>
-                {(["POSTED", "PENDING", "FAILED", "PARTIAL", "REVERSED"] as const).map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
+                <SelectItem value="all">Accounting: all</SelectItem>
+                <SelectItem value="POSTED">Accounting: Posted</SelectItem>
+                <SelectItem value="PENDING">Accounting: Pending (not linked)</SelectItem>
+                <SelectItem value="FAILED">Accounting: Failed</SelectItem>
+                <SelectItem value="PARTIAL">Accounting: Partial</SelectItem>
+                <SelectItem value="REVERSED">Accounting: Reversed</SelectItem>
               </SelectContent>
             </Select>
             <Select value={vendorFilter} onValueChange={setVendorFilter}>
@@ -731,7 +897,7 @@ export default function Expenses() {
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Bill</th>
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Paid</th>
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Due</th>
-                        <th className="text-left px-3 py-3 font-medium text-muted-foreground">Status</th>
+                        <th className="text-left px-3 py-3 font-medium text-muted-foreground">Payment / Accounting</th>
                         <th className="px-3 py-3" />
                       </tr>
                     </thead>
@@ -760,8 +926,8 @@ export default function Expenses() {
                             <td className="px-3 py-3 text-right text-red-700 tabular-nums">{inr(dueOf(exp))}</td>
                             <td className="px-3 py-3">
                               <div className="flex flex-col gap-1 items-start">
-                                <PaymentStatusBadge status={exp.paymentStatus} />
-                                <AccountingStatusBadge status={exp.accountingStatus} />
+                                <PaymentStatusBadge status={exp.paymentStatus} labeled />
+                                <AccountingStatusBadge status={exp.accountingStatus} labeled />
                               </div>
                             </td>
                             <td className="px-3 py-3">
@@ -871,7 +1037,7 @@ export default function Expenses() {
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Bill</th>
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Paid</th>
                         <th className="text-right px-3 py-3 font-medium text-muted-foreground">Due</th>
-                        <th className="text-left px-3 py-3 font-medium text-muted-foreground">Status</th>
+                        <th className="text-left px-3 py-3 font-medium text-muted-foreground">Payment</th>
                         <th className="px-3 py-3" />
                       </tr>
                     </thead>
@@ -885,7 +1051,7 @@ export default function Expenses() {
                           <td className="px-3 py-3 text-right text-green-700">{inr(paidOf(exp))}</td>
                           <td className="px-3 py-3 text-right text-red-700 font-semibold">{inr(dueOf(exp))}</td>
                           <td className="px-3 py-3">
-                            <PaymentStatusBadge status={exp.paymentStatus} />
+                            <PaymentStatusBadge status={exp.paymentStatus} labeled />
                           </td>
                           <td className="px-3 py-3 text-right">
                             <Button
@@ -1115,17 +1281,25 @@ export default function Expenses() {
                 <Label className="inline-flex items-center">Category *<OcrFieldBadge meta={fieldMeta.category} /></Label>
                 <Select
                   value={form.category}
-                  onValueChange={(v) => {
-                    const match = categoryOptions.find((c) => c.value === v);
-                    setForm({
-                      ...form,
-                      category: v,
-                      categoryId: match?.id || "",
-                      subcategoryId: "",
-                    });
-                    markFieldUser("category");
-                  }}
-                >
+                    onValueChange={(v) => {
+                      const match = categoryOptions.find((c) => c.value === v);
+                      const parentId = match?.id ? Number(match.id) : null;
+                      const repairs = parentId
+                        ? categoryRows.find(
+                            (c) =>
+                              c.parentId === parentId &&
+                              c.name.toLowerCase().includes("repairs"),
+                          )
+                        : undefined;
+                      setForm({
+                        ...form,
+                        category: v,
+                        categoryId: match?.id || "",
+                        subcategoryId: repairs ? String(repairs.id) : "",
+                      });
+                      markFieldUser("category");
+                    }}
+                  >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -1184,62 +1358,166 @@ export default function Expenses() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label>Vendor master</Label>
-                <div className="flex gap-2">
-                  <Select
-                    value={form.vendorId || "none"}
-                    onValueChange={(v) => {
-                      if (v === "none") {
-                        setForm({ ...form, vendorId: "" });
-                        return;
-                      }
-                      const vend = vendors.find((x) => String(x.id) === v);
-                      setForm({
-                        ...form,
-                        vendorId: v,
-                        vendorName: vend?.name || form.vendorName,
-                      });
-                      markFieldUser("vendor");
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Pick vendor" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Free text / none</SelectItem>
-                      {vendors
-                        .filter((v) => v.isActive !== false)
-                        .map((v) => (
-                          <SelectItem key={v.id} value={String(v.id)}>
-                            {v.name}
+              <div className="col-span-2 space-y-1.5">
+                <Label className="inline-flex items-center">
+                  Vendor / Paid to
+                  <OcrFieldBadge meta={fieldMeta.vendor} />
+                </Label>
+                <PayeeCombobox
+                  value={form.vendorName}
+                  vendorId={form.vendorId}
+                  onChange={({ vendorName, vendorId }) => {
+                    setForm((f) => ({ ...f, vendorName, vendorId }));
+                    markFieldUser("vendor");
+                    setPayeeSuggestionsApplied(false);
+                  }}
+                  onSelectSuggestion={async (s) => {
+                    const seq = ++usualApplySeq.current;
+                    try {
+                      const params = new URLSearchParams();
+                      if (s.vendorId != null) params.set("vendorId", String(s.vendorId));
+                      if (s.name) params.set("name", s.name);
+                      const details = await api.get<PayeeUsualDto>(`/api/expenses/payees/usual?${params}`);
+                      if (seq !== usualApplySeq.current) return;
+                      applyUsualPayeeDetails(details);
+                    } catch {
+                      /* helper still shows via combobox; suggestions are optional */
+                    }
+                  }}
+                  onAddToVendorMaster={(name) => {
+                    setQuickVendorName(name);
+                    setQuickVendorOpen(true);
+                  }}
+                  onViewHistory={viewPayeeHistory}
+                />
+                {payeeSuggestionsApplied ? (
+                  <p className="text-[10px] text-emerald-800">
+                    Suggested category / work / payment mode from previous expenses — review and edit freely.
+                    Bill amounts are never copied automatically.
+                  </p>
+                ) : null}
+              </div>
+
+              {showWorkMeta ? (
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Work type</Label>
+                    <Select
+                      value={form.workType || "none"}
+                      onValueChange={(v) => setForm({ ...form, workType: v === "none" ? "" : v })}
+                    >
+                      <SelectTrigger data-testid="expense-work-type">
+                        <SelectValue placeholder="Optional" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">—</SelectItem>
+                        {WORK_TYPES.map((w) => (
+                          <SelectItem key={w} value={w}>
+                            {w}
                           </SelectItem>
                         ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setQuickVendorName(form.vendorName);
-                      setQuickVendorOpen(true);
-                    }}
-                  >
-                    Quick add
-                  </Button>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="inline-flex items-center">Vendor / Paid to<OcrFieldBadge meta={fieldMeta.vendor} /></Label>
-                <Input
-                  value={form.vendorName}
-                  onChange={(e) => {
-                    setForm({ ...form, vendorName: e.target.value });
-                    markFieldUser("vendor");
-                  }}
-                  placeholder="Name on the bill"
-                />
-              </div>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Labour basis</Label>
+                    <Select
+                      value={form.labourBasis || "none"}
+                      onValueChange={(v) =>
+                        updateLabourFields({
+                          labourBasis: v === "none" ? "" : (v as LabourBasis),
+                        })
+                      }
+                    >
+                      <SelectTrigger data-testid="expense-labour-basis">
+                        <SelectValue placeholder="Optional" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">—</SelectItem>
+                        <SelectItem value="per_day">Per Day</SelectItem>
+                        <SelectItem value="per_job">Per Job</SelectItem>
+                        <SelectItem value="contract">Contract</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.labourBasis === "per_day" ? (
+                    <>
+                      <div className="space-y-1.5">
+                        <Label>Days</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={form.days}
+                          onChange={(e) => updateLabourFields({ days: e.target.value })}
+                          data-testid="expense-labour-days"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Rate / day (₹)</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={form.ratePerDay}
+                          onChange={(e) => updateLabourFields({ ratePerDay: e.target.value })}
+                          data-testid="expense-labour-rate"
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                  <div className="space-y-1.5">
+                    <Label>Labour amount (₹)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.labourAmount}
+                      onChange={(e) => updateLabourFields({ labourAmount: e.target.value })}
+                      placeholder="Optional"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Material amount (₹)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.materialAmount}
+                      onChange={(e) => updateLabourFields({ materialAmount: e.target.value })}
+                      placeholder="Optional — not inventory"
+                    />
+                  </div>
+                  {labourSuggestedBill != null ? (
+                    <div className="col-span-2 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+                      <span>
+                        Suggested bill from labour
+                        {form.materialAmount ? " + material" : ""}:{" "}
+                        <strong className="text-foreground">{inr(labourSuggestedBill)}</strong>
+                        {form.labourBasis === "per_day" && form.days && form.ratePerDay
+                          ? ` (${form.days} × ₹${form.ratePerDay}`
+                          : ""}
+                        {form.labourBasis === "per_day" && form.days && form.ratePerDay && form.materialAmount
+                          ? ` + ₹${form.materialAmount})`
+                          : form.labourBasis === "per_day" && form.days && form.ratePerDay
+                            ? ")"
+                            : ""}
+                        . Does not change Bill Amount unless you apply it.
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-6 text-[10px]"
+                        data-testid="expense-apply-labour-bill"
+                        onClick={applyLabourSuggestedBill}
+                      >
+                        Use as bill amount
+                      </Button>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
 
               <div className="space-y-1.5">
                 <Label className="inline-flex items-center">Invoice number<OcrFieldBadge meta={fieldMeta.invoiceNumber} /></Label>
@@ -1263,13 +1541,13 @@ export default function Expenses() {
 
               {showDepartments && (
                 <div className="space-y-1.5 col-span-2">
-                  <Label>Department</Label>
+                  <Label>Department / area</Label>
                   <Select
                     value={form.departmentId || "none"}
                     onValueChange={(v) => setForm({ ...form, departmentId: v === "none" ? "" : v })}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Optional" />
+                      <SelectValue placeholder="Optional cost centre / location" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">—</SelectItem>
@@ -1280,6 +1558,9 @@ export default function Expenses() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    Optional attribution to an existing department (MRI, CT, Lab, etc.). Reuses the department master — not a second location list.
+                  </p>
                 </div>
               )}
 
@@ -1396,11 +1677,24 @@ export default function Expenses() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Reference number</Label>
+                    <Label>
+                      Reference number
+                      {isCashMode(form.paymentMode) ? (
+                        <span className="ml-1 font-normal text-muted-foreground">(optional)</span>
+                      ) : (
+                        <span className="ml-1 font-normal text-muted-foreground">(UTR / cheque / UPI ref)</span>
+                      )}
+                    </Label>
                     <Input
                       value={form.referenceNumber}
                       onChange={(e) => setForm({ ...form, referenceNumber: e.target.value })}
-                      placeholder="UTR / cheque no."
+                      placeholder={
+                        isCashMode(form.paymentMode)
+                          ? "Optional for cash"
+                          : form.paymentMode === "cheque"
+                            ? "Cheque number"
+                            : "UTR / reference"
+                      }
                     />
                   </div>
                 </>

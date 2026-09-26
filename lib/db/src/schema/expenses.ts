@@ -57,6 +57,11 @@ export const expensesTable = pgTable(
     receiptImageHash: text("receipt_image_hash"),
     /** JSON blob of last OCR extraction (confidence, raw fields). */
     ocrMetaJson: text("ocr_meta_json"),
+    /**
+     * Optional non-accounting work metadata (Operations labour basis, work type).
+     * Never drives vouchers / day-close.
+     */
+    metaJson: text("meta_json"),
 
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

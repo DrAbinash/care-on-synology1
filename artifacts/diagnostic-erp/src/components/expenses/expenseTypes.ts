@@ -14,6 +14,7 @@ export type ExpenseV2 = {
   paymentMode: string;
   paidTo?: string | null;
   approvedBy?: string | null;
+  createdBy?: string | null;
   notes?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -23,6 +24,7 @@ export type ExpenseV2 = {
   balanceDue?: number;
   paymentStatus?: PaymentStatus | string;
   accountingStatus?: AccountingStatus | string;
+  accountingError?: string | null;
   vendorId?: number | null;
   vendorNameSnapshot?: string | null;
   invoiceNumber?: string | null;
@@ -30,6 +32,10 @@ export type ExpenseV2 = {
   departmentId?: number | null;
   categoryId?: number | null;
   subcategoryId?: number | null;
+  metaJson?: string | null;
+  voidReason?: string | null;
+  voidedAt?: string | null;
+  voidedBy?: string | null;
   hasReceipt?: boolean;
   attachmentCount?: number;
   hasAttachments?: boolean;
