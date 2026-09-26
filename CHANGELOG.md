@@ -4,6 +4,23 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology — Workspace modularization Phase 3 (draft/finalize/export hooks) — 2026-09-26
+
+Behavior-preserving extraction from `RadiologyReportingWorkspace.tsx` into
+`hooks/radiology-workspace/`. Finalize gauntlet order, store shape, API contracts,
+and data-testids unchanged.
+
+**Changed**
+- **`useDraftPersistence`** — hydrate, saveDraft / ensureDraftOnce, leave guards,
+  30s autosave, goNext/goPrev/openStudyGuarded wiring.
+- **`useStudyFinalize`** — finalizeReport gauntlet (session → AI gate → save → PCPNDT →
+  validate → quality → critical → signatures → composition → prompt → finalize → …),
+  Form F + AI finalize gate state.
+- **`useWorkspaceExportShare`** — Word/PDF/print-like-final, teaching case, WhatsApp share,
+  verify/countersign, presentation/clinic/imageRefs queries, preview HTML.
+- Source-grep tests (`workspaceDemographyConsolidation` save/finalize slices) scan the
+  new hooks alongside the page.
+
 ### Radiology — Workspace modularization Phase 2 (hooks) — 2026-09-26
 
 Behavior-preserving extraction from `RadiologyReportingWorkspace.tsx` into
