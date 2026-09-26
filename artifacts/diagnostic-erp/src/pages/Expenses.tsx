@@ -605,7 +605,10 @@ export default function Expenses() {
     setForm((f) => {
       const next = { ...f };
       // Convenience only — never overwrite operator-entered values; never copy money/invoice.
-      if (!next.categoryId && !next.category?.trim() && details.suggestedCategory) {
+      const canSuggestCategory =
+        !next.categoryId &&
+        (!next.category?.trim() || next.category === "miscellaneous");
+      if (canSuggestCategory && details.suggestedCategory) {
         const match = categoryOptions.find(
           (c) =>
             c.label.toLowerCase() === details.suggestedCategory!.toLowerCase() ||
@@ -617,20 +620,14 @@ export default function Expenses() {
         } else {
           next.category = details.suggestedCategory.toLowerCase();
         }
-      } else if (
-        details.suggestedCategory &&
-        (next.category === "miscellaneous" || !next.category) &&
-        !next.categoryId
-      ) {
-        const match = categoryOptions.find(
+      }
+      if (next.categoryId && !next.subcategoryId) {
+        const repairs = categoryRows.find(
           (c) =>
-            c.label.toLowerCase() === details.suggestedCategory!.toLowerCase() ||
-            c.value.toLowerCase() === details.suggestedCategory!.toLowerCase(),
+            c.parentId === Number(next.categoryId) &&
+            c.name.toLowerCase().includes("repairs"),
         );
-        if (match) {
-          next.category = match.value;
-          next.categoryId = match.id;
-        }
+        if (repairs) next.subcategoryId = String(repairs.id);
       }
       if ((!next.paymentMode || next.paymentMode === "cash") && details.suggestedPaymentMode) {
         next.paymentMode = details.suggestedPaymentMode;
