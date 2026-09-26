@@ -18,12 +18,17 @@ import path from "path";
 
 const router = Router();
 
-// Read version.json (baked into the image at /app/version.json)
+// Read version.json (baked into the image at /app/version.json).
+// May also carry gitCommit/gitBranch/gitTag/buildDate stamped by deploy-synology.sh.
 function readVersionJson(): {
   version: string;
   buildNumber: number;
   releaseName?: string;
   notes?: string;
+  gitCommit?: string;
+  gitBranch?: string;
+  gitTag?: string;
+  buildDate?: string;
 } {
   try {
     const candidates = [
@@ -37,6 +42,13 @@ function readVersionJson(): {
     }
   } catch { /* ignore */ }
   return { version: "0.0.0", buildNumber: 0 };
+}
+
+/** Treat Dockerfile/compose placeholder defaults as unset (same idea as resolveVersionInfo). */
+function unsetPlaceholder(v: string | undefined | null, placeholders: string[]): string | undefined {
+  const t = (v ?? "").trim();
+  if (!t || placeholders.includes(t)) return undefined;
+  return t;
 }
 
 // Read schema_deploy_state from DB (non-fatal)
@@ -57,14 +69,35 @@ router.get("/api/system/version", async (_req, res) => {
     const ver     = readVersionJson();
     const state   = await readDeployState();
 
-    // Runtime env vars (baked into image by Dockerfile ARG → ENV)
-    const erpVersion  = process.env.ERP_VERSION   || ver.version     || "0.0.0";
-    const buildNumber = process.env.BUILD_NUMBER   || String(ver.buildNumber || 0);
-    const releaseName = process.env.RELEASE_NAME   || ver.releaseName || "";
-    const gitCommit   = process.env.GIT_COMMIT     || state.git_commit   || "unknown";
-    const gitBranch   = process.env.GIT_BRANCH     || state.git_branch   || "unknown";
-    const gitTag      = process.env.GIT_TAG        || state.git_tag      || "unknown";
-    const buildDate   = process.env.BUILD_DATE     || state.build_date   || "unknown";
+    // Runtime env (Dockerfile ARG→ENV) with version.json / deploy-state fallbacks.
+    // Placeholder defaults (unknown / 0.0.0 / 0 / dev) must not drown stamped values.
+    const erpVersion =
+      unsetPlaceholder(process.env.ERP_VERSION, ["0.0.0"]) || ver.version || "0.0.0";
+    const buildNumber =
+      unsetPlaceholder(process.env.BUILD_NUMBER, ["0"]) ||
+      String(ver.buildNumber ?? 0);
+    const releaseName =
+      unsetPlaceholder(process.env.RELEASE_NAME, ["dev"]) || ver.releaseName || "";
+    const gitCommit =
+      unsetPlaceholder(process.env.GIT_COMMIT, ["unknown"]) ||
+      unsetPlaceholder(ver.gitCommit, ["unknown"]) ||
+      unsetPlaceholder(state.git_commit, ["unknown"]) ||
+      "unknown";
+    const gitBranch =
+      unsetPlaceholder(process.env.GIT_BRANCH, ["unknown"]) ||
+      unsetPlaceholder(ver.gitBranch, ["unknown"]) ||
+      unsetPlaceholder(state.git_branch, ["unknown"]) ||
+      "unknown";
+    const gitTag =
+      unsetPlaceholder(process.env.GIT_TAG, ["unknown"]) ||
+      unsetPlaceholder(ver.gitTag, ["unknown"]) ||
+      unsetPlaceholder(state.git_tag, ["unknown"]) ||
+      "none";
+    const buildDate =
+      unsetPlaceholder(process.env.BUILD_DATE, ["unknown"]) ||
+      unsetPlaceholder(ver.buildDate, ["unknown"]) ||
+      unsetPlaceholder(state.build_date, ["unknown"]) ||
+      "unknown";
 
     // DB-level version info
     let pgVersion = "unknown";

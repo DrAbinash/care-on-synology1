@@ -6,7 +6,9 @@
 # and baked into the API image as environment variables.
 # =============================================================================
 
-# Build-time version metadata (set by docker-compose build args)
+# Build-time version metadata (set by docker-compose build args from
+# deploy-synology.sh / .env). Defaults below are placeholders only — a normal
+# Synology deploy always overrides them with live Git + version.json values.
 ARG ERP_VERSION=0.0.0
 ARG BUILD_NUMBER=0
 ARG RELEASE_NAME=dev
