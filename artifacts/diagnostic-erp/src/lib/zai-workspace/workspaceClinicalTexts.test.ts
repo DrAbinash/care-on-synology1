@@ -4,10 +4,14 @@ import { join } from "node:path";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "./workspaceClinicalTexts";
 
-const workspaceSrc = readFileSync(
-  join(__dirname, "../../pages/RadiologyReportingWorkspace.tsx"),
-  "utf8",
-);
+const workspaceSrc = [
+  readFileSync(join(__dirname, "../../pages/RadiologyReportingWorkspace.tsx"), "utf8"),
+  // Phase 3: saveDraft live-store read lives in useDraftPersistence.
+  readFileSync(
+    join(__dirname, "../../hooks/radiology-workspace/useDraftPersistence.ts"),
+    "utf8",
+  ),
+].join("\n");
 const hookSrc = readFileSync(join(__dirname, "workspaceClinicalTexts.ts"), "utf8");
 
 describe("workspaceClinicalTexts", () => {

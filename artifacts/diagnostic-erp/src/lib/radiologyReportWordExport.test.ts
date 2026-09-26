@@ -226,10 +226,14 @@ describe("Word export letterpad + body fonts (clinic sample contract)", () => {
     const { readFileSync } = require("node:fs") as typeof import("node:fs");
     const { resolve } = require("node:path") as typeof import("node:path");
     const wordSrc = readFileSync(resolve(__dirname, "./radiologyReportWordExport.ts"), "utf8");
-    const workspaceSrc = readFileSync(
-      resolve(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    // Phase 3: Word export lives in useWorkspaceExportShare.
+    const workspaceSrc = [
+      readFileSync(resolve(__dirname, "../pages/RadiologyReportingWorkspace.tsx"), "utf8"),
+      readFileSync(
+        resolve(__dirname, "../hooks/radiology-workspace/useWorkspaceExportShare.ts"),
+        "utf8",
+      ),
+    ].join("\n");
     // Body paragraphs / list items must set half-points explicitly (Word default
     // ~11pt looked tiny next to the clinic CT Brain .doc sample).
     expect(wordSrc).toMatch(/runsFor\(block\.segments,\s*24\)/);

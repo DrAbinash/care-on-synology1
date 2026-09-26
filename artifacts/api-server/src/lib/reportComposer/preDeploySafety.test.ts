@@ -105,11 +105,12 @@ describe("pre-deploy safety contracts — review gate (5–6, 12)", () => {
 
 describe("pre-deploy safety contracts — export / print plain text (7)", () => {
   it("7. previewHtml uses workspace plain fields only (not AI proposed/tracked markup)", () => {
-    const workspace = readErp("pages/RadiologyReportingWorkspace.tsx");
+    // Phase 3: previewHtml lives in useWorkspaceExportShare.
+    const exportHook = readErp("hooks/radiology-workspace/useWorkspaceExportShare.ts");
     const exportPanel = readErp("components/radiology/ReportExportPanel.tsx");
-    const previewBlock = workspace.slice(
-      workspace.indexOf("const previewHtml = useMemo"),
-      workspace.indexOf("const handleExportWord"),
+    const previewBlock = exportHook.slice(
+      exportHook.indexOf("const previewHtml = useMemo"),
+      exportHook.indexOf("const handleExportWord"),
     );
     expect(previewBlock).toContain("rawFindings: findingsText");
     expect(previewBlock).toContain("impression: impressionText.split");
@@ -133,11 +134,14 @@ describe("pre-deploy safety contracts — finalize + apply guards (10–11)", ()
   });
 
   it("11. finalize with pending AI changes shows explicit gate (no silent inclusion)", () => {
+    // Phase 3: Guard 10 body in useStudyFinalize; gate JSX stays on the page.
+    const finalizeHook = readErp("hooks/radiology-workspace/useStudyFinalize.ts");
     const workspace = readErp("pages/RadiologyReportingWorkspace.tsx");
-    expect(workspace).toContain("Guard 10: pending AI proposals must never silently finalize");
+    const tree = `${finalizeHook}\n${workspace}`;
+    expect(finalizeHook).toContain("Guard 10: pending AI proposals must never silently finalize");
     expect(workspace).toContain('data-testid="ai-finalize-gate"');
-    expect(workspace).toContain("AI suggestions remain unreviewed");
-    expect(workspace).toContain('reviewState === "PENDING"');
+    expect(tree).toContain("AI suggestions remain unreviewed");
+    expect(tree).toContain('reviewState === "PENDING"');
   });
 });
 
