@@ -1,11 +1,24 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "../..");
 
 function read(rel: string) {
   return readFileSync(resolve(root, rel), "utf8");
+}
+
+/** Phase 4: AI Draft wiring lives in shell components, not the composition root. */
+function readWorkspaceSrc(): string {
+  const chunks = [read("pages/RadiologyReportingWorkspace.tsx")];
+  for (const dir of ["hooks/radiology-workspace", "components/radiology/workspace"]) {
+    for (const name of readdirSync(join(root, dir))) {
+      if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+        chunks.push(readFileSync(join(root, dir, name), "utf8"));
+      }
+    }
+  }
+  return chunks.join("\n");
 }
 
 describe("AI Draft placement in reporting workspace", () => {
@@ -26,7 +39,7 @@ describe("AI Draft placement in reporting workspace", () => {
   });
 
   it("ReportingWorkspace wires AI Draft into Orient and does not float it bottom-right", () => {
-    const src = read("pages/RadiologyReportingWorkspace.tsx");
+    const src = readWorkspaceSrc();
     expect(src).toContain("aiDraftStudyInstanceUid=");
     expect(src).toContain("onStageAiProposal={stageAiProposal}");
     expect(src).not.toMatch(/<AiDraftPanel[\s\S]*?composerReviewOnly/);
@@ -34,7 +47,7 @@ describe("AI Draft placement in reporting workspace", () => {
   });
 
   it("Reporting Tools AI pane is isolated so a draft crash cannot blank the workspace", () => {
-    const src = read("pages/RadiologyReportingWorkspace.tsx");
+    const src = readWorkspaceSrc();
     expect(src).toMatch(/ai:\s*\(\s*<ModuleErrorBoundary[\s\S]*?<CopilotRail/);
   });
 });

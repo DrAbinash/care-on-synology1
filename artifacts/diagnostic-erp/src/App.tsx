@@ -143,7 +143,6 @@ const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator")
 const RadiologyReportBuilder = lazy(() => import("@/pages/RadiologyReportBuilder"));
 const RadiologyFindingsManager = lazy(() => import("@/pages/RadiologyFindingsManager"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
-const RadiologyReportingWorkspaceLegacy = lazy(() => import("@/pages/RadiologyReportingWorkspace.legacy"));
 const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
@@ -511,11 +510,12 @@ function Router() {
               <Route path="/radiology/reporting-workspace/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
+              {/* Former /radiology/legacy-workspace → modular workspace (snapshot remains in git history). */}
               <Route path="/radiology/legacy-workspace">
-                {() => <RadiologyReportingWorkspaceLegacy />}
+                {() => <RadiologyReportingWorkspace />}
               </Route>
               <Route path="/radiology/legacy-workspace/:studyId">
-                {(params) => <RadiologyReportingWorkspaceLegacy studyId={Number(params.studyId)} />}
+                {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
               <Route path="/radiology/unified-report/:worklistId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.worklistId)} />}

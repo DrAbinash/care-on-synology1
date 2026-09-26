@@ -4,12 +4,18 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology — Delete retired reporting-workspace monolith snapshot — 2026-09-26
+
+Removes the pre-modular page snapshot after Phase 4. Git history retains the
+file; `/radiology/legacy-workspace` bookmarks redirect to the modular workspace.
+Source-grep / grounding contracts retargeted to shell + CopilotRail.
+
 ### Radiology — Workspace modularization Phase 4 (commands, OHIF, JSX shell) — 2026-09-26
 
 FINAL modularization storey. Pure extraction — zero behavior change. Keyboard
 precedence consolidated (voiceKeyAction first). data-testids, store shape, API
-URLs/payloads, RQ keys, finalize order unchanged. `.legacy.tsx` kept for a
-follow-up delete PR.
+URLs/payloads, RQ keys, finalize order unchanged. Monolith snapshot delete is a
+follow-up PR (git history retains the file).
 
 **Changed**
 - **`useWorkspaceCommands`** — commandDispatcher + Save & Next + single keydown/keyup

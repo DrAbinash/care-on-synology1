@@ -192,7 +192,6 @@ const navItems: NavEntry[] = [
       { path: "/radiology/worklist",            icon: ScanSearch,     label: "Worklist" },
       { path: "/radiology/my-collection",        icon: ShieldAlert,    label: "DICOM Match" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
-      { path: "/radiology/legacy-workspace",   icon: FilePen,        label: "Legacy Workspace (old)", ownerOnly: true },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
       { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
       { path: "/pacs",                          icon: Monitor,        label: "PACS Viewer" },
