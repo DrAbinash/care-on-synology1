@@ -25,7 +25,7 @@ describe("reportingPaneFocus viewport policy", () => {
     expect(isConstrainedReportingViewport(1920)).toBe(false);
   });
 
-  it("enables exclusive + compact accordion on laptop and viewerFocus", () => {
+  it("enables exclusive + compact accordion on every clinic monitor", () => {
     expect(
       shouldUseExclusiveReportSections({ viewportWidthPx: 1366, layoutMode: "split" }),
     ).toBe(true);
@@ -35,9 +35,13 @@ describe("reportingPaneFocus viewport policy", () => {
     expect(
       shouldUseExclusiveReportSections({ viewportWidthPx: 1920, layoutMode: "viewerFocus" }),
     ).toBe(true);
+    // Ultrawide used to keep comfortable two-line rows and starve Findings.
     expect(
       shouldUseExclusiveReportSections({ viewportWidthPx: 1920, layoutMode: "split" }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      shouldUseCompactAccordion({ viewportWidthPx: 1920, layoutMode: "split" }),
+    ).toBe(true);
   });
 });
 
