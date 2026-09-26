@@ -7,6 +7,7 @@ import {
   pickQuickProtocol,
   protocolsForStudyTab,
 } from "./pickQuickProtocol";
+import { readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -67,7 +68,7 @@ describe("Study Tab ID — Technique / protocols", () => {
   });
 
   it("Section 3 TechniqueChoiceStrip is wired without competing region selector", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = readModularWorkspaceSrc(SRC);
     const strip = read("components/radiology/TechniqueChoiceStrip.tsx");
     expect(workspace).toContain("TechniqueChoiceStrip");
     expect(workspace).toContain("selectedStudyTabId={studySetup.selectedStudyTabId}");

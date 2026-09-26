@@ -43,7 +43,7 @@ describe("AI Draft placement in reporting workspace", () => {
     expect(src).toContain("aiDraftStudyInstanceUid=");
     expect(src).toContain("onStageAiProposal={stageAiProposal}");
     expect(src).not.toMatch(/<AiDraftPanel[\s\S]*?composerReviewOnly/);
-    expect(src).not.toContain('fixed bottom-4 right-4');
+    expect(src).not.toContain("fixed bottom-4 right-4");
   });
 
   it("Reporting Tools AI pane is isolated so a draft crash cannot blank the workspace", () => {

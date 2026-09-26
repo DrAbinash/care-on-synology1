@@ -11,6 +11,7 @@ import {
   resolveQuickStudyTabs,
   toggleQuickTabId,
 } from "@/lib/workspaceRegionPrefs";
+import { readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -111,7 +112,7 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
   });
 
   it("workspace mounts first-class Report Format before Technique; region strip has no format select", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = readModularWorkspaceSrc(SRC);
     const section = read("components/radiology/StudyRegionReportFormatSection.tsx");
     const formatControl = read("components/radiology/WholeReportFormatControl.tsx");
     expect(workspace).toContain("WholeReportFormatControl");
