@@ -240,8 +240,11 @@ export default function ExpenseDetailDrawer({
   const paidFromAccounts = accounts.filter((a) => a.isActive !== false && (a.type === "cash" || a.type === "bank"));
 
   function handlePrintVoucher() {
-    const subcategoryName = exp.subcategoryId
-      ? categoryRows.find((c) => c.id === exp.subcategoryId)?.name ?? null
+    // Nested closures do not retain the outer null narrow — re-resolve locally.
+    const current = detail || expense;
+    if (!current) return;
+    const subcategoryName = current.subcategoryId
+      ? categoryRows.find((c) => c.id === current.subcategoryId)?.name ?? null
       : null;
     const latestPay = payments.find((p) => !p.reversedAt);
     const accountName =
@@ -250,7 +253,7 @@ export default function ExpenseDetailDrawer({
         : null;
     // Print-only: uses already-loaded GET data + Billing Desk A5 writeAndPrint.
     printExpenseVoucher({
-      expense: exp,
+      expense: current,
       payments,
       clinic: printClinic ?? null,
       accountName,

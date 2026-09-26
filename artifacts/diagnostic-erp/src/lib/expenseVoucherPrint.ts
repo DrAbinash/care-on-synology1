@@ -13,7 +13,6 @@ import {
   resolveBillPrintPageOpts,
   type BillPrintSettings,
 } from "@/lib/billPrintSettings";
-import type { PrintClinic } from "@/lib/printBill";
 import {
   billOf,
   dueOf,
@@ -23,10 +22,18 @@ import {
   type ExpenseV2,
 } from "@/components/expenses/expenseTypes";
 
-export type ExpenseVoucherClinic = Pick<
-  PrintClinic,
-  "name" | "tagline" | "address" | "phone" | "email" | "gstin" | "logoDataUrl" | "footerNote" | "billPrintSettingsJson"
->;
+/** Clinic branding + bill-print settings blob (same fields Billing Desk branding returns). */
+export type ExpenseVoucherClinic = {
+  name?: string | null;
+  tagline?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  gstin?: string | null;
+  logoDataUrl?: string | null;
+  footerNote?: string | null;
+  billPrintSettingsJson?: string | null;
+};
 
 export type ExpenseWorkMetaPrint = {
   workType?: string | null;
@@ -143,7 +150,9 @@ export function resolveExpenseVoucherPaper(clinic: ExpenseVoucherClinic | null |
   pageOpts: ReturnType<typeof resolveBillPrintPageOpts>;
   settings: BillPrintSettings;
 } {
-  const settings = loadBillPrintSettings(parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson));
+  const settings = loadBillPrintSettings(
+    parseGlobalBillPrintSettings(clinic?.billPrintSettingsJson ?? null),
+  );
   // testCount=1 keeps A5 (same short-bill path as Billing Desk).
   const pageOpts = resolveBillPrintPageOpts(settings, 1);
   const paper = resolveBillPrintPaperFromOpts({
@@ -179,9 +188,14 @@ export function buildExpenseVoucherHtml(opts: {
   const ackAmount = ackPay ? Number(ackPay.amount) : paid;
   const payStatus = (exp.paymentStatus || "—").toUpperCase();
   const acctStatus = (exp.accountingStatus || "—").toUpperCase();
-  const orgName = (clinic?.name || "CARE Diagnostics").trim();
+  const orgName = String(clinic?.name || "CARE Diagnostics").trim();
   const printedOn = new Date().toLocaleString("en-IN");
   const isLandscape = paper === "A5-landscape" || paper === "half-a4";
+  const tagline = clinic?.tagline ? String(clinic.tagline) : "";
+  const address = clinic?.address ? String(clinic.address) : "";
+  const phone = clinic?.phone ? String(clinic.phone) : "";
+  const email = clinic?.email ? String(clinic.email) : "";
+  const footerNote = clinic?.footerNote ? String(clinic.footerNote) : "";
 
   const labourBasisLabel =
     meta?.labourBasis === "per_day"
@@ -248,9 +262,9 @@ export function buildExpenseVoucherHtml(opts: {
         ${logo}
         <div>
           <div class="org">${esc(orgName)}</div>
-          ${clinic?.tagline ? `<div class="tag">${esc(clinic.tagline)}</div>` : ""}
-          ${clinic?.address ? `<div class="addr">${esc(clinic.address)}</div>` : ""}
-          <div class="addr">${[clinic?.phone, clinic?.email].filter(Boolean).map(esc).join(" · ")}</div>
+          ${tagline ? `<div class="tag">${esc(tagline)}</div>` : ""}
+          ${address ? `<div class="addr">${esc(address)}</div>` : ""}
+          <div class="addr">${[phone, email].filter(Boolean).map(esc).join(" · ")}</div>
         </div>
       </div>
       <div class="hdr-right">
@@ -319,7 +333,7 @@ export function buildExpenseVoucherHtml(opts: {
     <footer class="ft">
       Computer-generated expense voucher. Reprinting does not create accounting entries.
       ${settings.showComputerGenerated !== false ? " Recipient signature required where used as payment acknowledgement." : ""}
-      ${clinic?.footerNote ? ` ${esc(clinic.footerNote)}` : ""}
+      ${footerNote ? ` ${esc(footerNote)}` : ""}
     </footer>
   `;
 
