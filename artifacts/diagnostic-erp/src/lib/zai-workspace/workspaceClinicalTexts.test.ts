@@ -5,6 +5,7 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "./workspaceClinicalTexts";
 import { readModularWorkspaceSrc } from "../readModularWorkspaceSrc";
 
+// Phase 4: debounced bridge + saveDraft live-read live across hooks/shell.
 const workspaceSrc = readModularWorkspaceSrc(join(__dirname, "../.."));
 const hookSrc = readFileSync(join(__dirname, "workspaceClinicalTexts.ts"), "utf8");
 

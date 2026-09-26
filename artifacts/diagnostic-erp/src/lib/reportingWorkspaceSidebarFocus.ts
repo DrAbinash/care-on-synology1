@@ -8,13 +8,14 @@
  * workspace restores that polluted value on Settings / other pages.
  */
 
-/** Paths that mount RadiologyReportingWorkspace (or legacy) and emit focus events. */
+/** Paths that mount RadiologyReportingWorkspace and emit focus events. */
 export function isReportingWorkspaceLocation(location: string): boolean {
   const path = (location.split("?")[0] ?? location).replace(/\/+$/, "") || "/";
   return (
     /^\/radiology\/report\/[^/]+$/.test(path) ||
     /^\/radiology\/reporting-workspace(?:\/[^/]+)?$/.test(path) ||
     /^\/radiology\/unified-report\/[^/]+$/.test(path) ||
+    // Bookmarks to the retired monolith still land on the modular workspace.
     /^\/radiology\/legacy-workspace(?:\/[^/]+)?$/.test(path)
   );
 }

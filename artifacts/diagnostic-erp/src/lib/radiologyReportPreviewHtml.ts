@@ -2,7 +2,7 @@
  * radiologyReportPreviewHtml — canonical client-side report HTML used by
  * Preview, Word export, and (as a plain-text mirror) PDF findings.
  *
- * Ported from RadiologyReportingWorkspace.legacy.tsx buildPreviewHtml so the
+ * Ported from the former RadiologyReportingWorkspace monolith buildPreviewHtml so the
  * new modular workspace and Word converter share one source of truth.
  */
 import type { ReportImageRef } from "./reportImageRefs";

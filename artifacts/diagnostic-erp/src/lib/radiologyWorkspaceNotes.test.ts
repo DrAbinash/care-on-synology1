@@ -8,6 +8,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 describe("Radiology Reporting Workspace handwritten notes", () => {
+  // Phase 4: scan full modular tree (ToolsRail / Worklist / Viewer hold these wires).
   const workspace = readModularWorkspaceSrc(SRC);
   const strip = read("components/radiology/zai-workspace/worklist-strip.tsx");
   const picker = read("components/radiology/ReportImagePicker.tsx");

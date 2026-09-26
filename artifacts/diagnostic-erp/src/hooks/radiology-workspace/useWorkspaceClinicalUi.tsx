@@ -6,7 +6,7 @@
 
 /**
  * RadiologyReportingWorkspace — the NEW modular workspace.
- * Replaces the old 7,886-line page (backed up as .legacy.tsx).
+ * Replaces the old 7,886-line page (snapshot retained in git history).
  *
  * This version wires ALL existing Care hooks and services:
  *   • useReportingWorkflow → queue, navigation, parked, history
