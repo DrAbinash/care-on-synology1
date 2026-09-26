@@ -2,17 +2,14 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 describe("Radiology Reporting Workspace handwritten notes", () => {
-  const workspace = [
-  read("pages/RadiologyReportingWorkspace.tsx"),
-  read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
-  read("components/radiology/workspace/ReportCanvas.tsx"),
-  read("components/radiology/workspace/WorkspaceOverlays.tsx"),
-].join("\n");
+  // Phase 4: scan full modular tree (ToolsRail / Worklist / Viewer hold these wires).
+  const workspace = readModularWorkspaceSrc(SRC);
   const strip = read("components/radiology/zai-workspace/worklist-strip.tsx");
   const picker = read("components/radiology/ReportImagePicker.tsx");
   const viewer = read("components/EmbeddedWadoViewer.tsx");
