@@ -112,6 +112,23 @@ describe("context gates (Phase 5)", () => {
     expect(evaluate("add recommendation follow up", structured).blocked).toBeNull();
   });
 
+  // A2 safety matrix — documents Phase-2 `structuredFindings: useStructured` contract.
+  it("A2 matrix: structured-on blocks free dictate; quick-select intents still allowed", () => {
+    const structured = ctx({ structuredFindings: true });
+    expect(evaluate("add finding fatty liver", structured).blocked).toMatch(/structured mode/i);
+    expect(evaluate("replace findings with normal", structured).blocked).toMatch(/structured mode/i);
+    expect(evaluate("select finding disc bulge", structured).blocked).toBeNull();
+    expect(evaluate("remove finding disc bulge", structured).blocked).toBeNull();
+    expect(evaluate("search finding disc", structured).blocked).toBeNull();
+  });
+
+  it("A2 matrix: structured-off leaves free dictate and quick-select unchanged", () => {
+    const off = ctx({ structuredFindings: false });
+    expect(evaluate("add finding fatty liver", off).blocked).toBeNull();
+    expect(evaluate("select finding disc bulge", off).blocked).toBeNull();
+    expect(evaluate("remove finding disc bulge", off).blocked).toBeNull();
+  });
+
   it("viewer ops blocked when the embedded viewer is not mounted; unsupported ops always blocked", () => {
     expect(evaluate("zoom in", ctx({ viewerAvailable: false })).blocked).toMatch(/not open/i);
     expect(evaluate("zoom in", ctx({ viewerAvailable: true })).blocked).toBeNull();
