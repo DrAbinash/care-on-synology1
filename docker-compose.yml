@@ -216,9 +216,10 @@ services:
       target: api
       args:
         # Version metadata baked into the image at build time.
-        # GIT_COMMIT and GIT_BRANCH are set by deploy-synology.sh before
-        # calling docker compose up --build. ERP_VERSION and BUILD_NUMBER
-        # come from version.json via bump-build.cjs (run during deployment).
+        # deploy-synology.sh exports these AND upserts them into .env so both
+        # `sudo VAR=… docker compose` and Container Manager rebuilds interpolate
+        # real values. ERP_VERSION / BUILD_NUMBER / RELEASE_NAME come from
+        # version.json via bump-build.cjs; GIT_* / BUILD_DATE from live Git.
         ERP_VERSION: ${ERP_VERSION:-2.0.0}
         BUILD_NUMBER: ${BUILD_NUMBER:-0}
         RELEASE_NAME: ${RELEASE_NAME:-dev}

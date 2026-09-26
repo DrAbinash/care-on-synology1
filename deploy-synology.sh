@@ -48,11 +48,19 @@ git reset --hard "origin/${DEPLOY_BRANCH}"
 ok "Code updated: $(git log -1 --format='%h — %s')"
 
 # ── Step 2: Set version metadata ─────────────────────────────────────────────
+# Populated live from Git / version.json — never hard-coded. Fail soft to
+# unknown/none/0 so a missing git binary or detached empty worktree cannot
+# abort a deploy. docker-compose.yml passes these as build.args → Dockerfile
+# ARG/ENV. Dockerfile ARG defaults (0.0.0 / unknown) are only placeholders;
+# the values below are what compose actually injects.
 export GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 export GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
-export GIT_TAG=$(git describe --tags --always 2>/dev/null || echo "untagged")
+# Exact tag on HEAD only; otherwise "none" (not an abbreviated SHA from --always).
+export GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "none")
 export BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# ERP_VERSION / BUILD_NUMBER / RELEASE_NAME come from version.json via
+# scripts/bump-build.cjs (monotonic buildNumber). No new versioning scheme.
 if [ -f "scripts/bump-build.cjs" ] && command -v node >/dev/null 2>&1; then
   BUMP=$(node scripts/bump-build.cjs 2>/dev/null || echo "")
   export ERP_VERSION=$(echo "${BUMP}" | grep "^ERP_VERSION=" | cut -d= -f2 || \
@@ -65,7 +73,8 @@ else
   export BUILD_NUMBER=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('buildNumber',0))" 2>/dev/null || echo "0")
   export RELEASE_NAME=""
 fi
-ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
+ok "Version: Care ERP v${ERP_VERSION} build ${BUILD_NUMBER} (${RELEASE_NAME:-unnamed})"
+ok "Git: ${GIT_COMMIT:0:12} branch=${GIT_BRANCH} tag=${GIT_TAG} date=${BUILD_DATE}"
 
 # Stamp git/build metadata into version.json so Container Manager rebuilds that
 # bake /app/version.json (but forget compose build-args) still expose a real SHA
@@ -76,6 +85,7 @@ if command -v node >/dev/null 2>&1 && [ -f version.json ]; then
     const v = JSON.parse(fs.readFileSync('version.json','utf8'));
     v.gitCommit = process.env.GIT_COMMIT || v.gitCommit || 'unknown';
     v.gitBranch = process.env.GIT_BRANCH || v.gitBranch || 'unknown';
+    v.gitTag = process.env.GIT_TAG || v.gitTag || 'none';
     v.buildDate = process.env.BUILD_DATE || v.buildDate || null;
     if (process.env.ERP_VERSION) v.version = process.env.ERP_VERSION;
     if (process.env.BUILD_NUMBER) v.buildNumber = Number(process.env.BUILD_NUMBER);
@@ -110,6 +120,31 @@ else
   ensure_env_key "HOPE_PARTNER_KEY" "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7"
   ok ".env present (Hope integration keys ensured)"
 fi
+
+# Upsert build identity into .env so `docker compose` / Container Manager
+# ${VAR:-fallback} interpolation works even when the shell env is empty
+# (Container Manager rebuilds do not inherit the exports above). .env is in
+# .dockerignore — these keys are for compose host-side substitution only.
+upsert_env_key() {
+  key="$1"
+  val="$2"
+  tmp=$(mktemp)
+  if [ -f .env ]; then
+    grep -vE "^${key}=" .env > "$tmp" || true
+  else
+    : > "$tmp"
+  fi
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" .env
+}
+upsert_env_key "GIT_COMMIT" "$GIT_COMMIT"
+upsert_env_key "GIT_BRANCH" "$GIT_BRANCH"
+upsert_env_key "GIT_TAG" "$GIT_TAG"
+upsert_env_key "BUILD_DATE" "$BUILD_DATE"
+upsert_env_key "ERP_VERSION" "$ERP_VERSION"
+upsert_env_key "BUILD_NUMBER" "$BUILD_NUMBER"
+upsert_env_key "RELEASE_NAME" "$RELEASE_NAME"
+ok "Wrote build metadata into .env for compose / Container Manager"
 
 # ── Step 2c: Reject weak machine-to-machine secrets ───────────────────────────
 info "Checking guarded secrets in .env..."
