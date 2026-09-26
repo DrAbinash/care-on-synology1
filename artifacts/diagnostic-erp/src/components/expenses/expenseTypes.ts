@@ -14,6 +14,7 @@ export type ExpenseV2 = {
   paymentMode: string;
   paidTo?: string | null;
   approvedBy?: string | null;
+  createdBy?: string | null;
   notes?: string | null;
   createdAt?: string;
   updatedAt?: string;

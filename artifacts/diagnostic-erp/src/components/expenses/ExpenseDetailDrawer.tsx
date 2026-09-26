@@ -18,7 +18,8 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
-import { FileImage, IndianRupee, Loader2, Ban, Wallet } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { FileImage, IndianRupee, Loader2, Ban, Wallet, Printer } from "lucide-react";
 import {
   AccountingStatusBadge,
   canShowAccountingRetryUi,
@@ -34,6 +35,7 @@ import {
   type ExpensePaymentRow,
   type ExpenseV2,
 } from "./expenseTypes";
+import { printExpenseVoucher, type ExpenseVoucherClinic } from "@/lib/expenseVoucherPrint";
 
 function parseMeta(raw?: string | null): {
   workType?: string | null;
@@ -152,6 +154,20 @@ export default function ExpenseDetailDrawer({
     };
   }, [open, expense?.id, initialShowPay]);
 
+  const { data: printClinic } = useQuery<ExpenseVoucherClinic>({
+    queryKey: ["clinic-settings-branding-expense-voucher"],
+    queryFn: () => api.get("/api/clinic-settings/branding"),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
+  const { data: categoryRows = [] } = useQuery<Array<{ id: number; name: string; parentId?: number | null }>>({
+    queryKey: ["expense-categories"],
+    queryFn: () => api.get("/api/expenses/categories"),
+    staleTime: 60_000,
+    enabled: open,
+  });
+
   const exp = detail || expense;
   if (!exp) return null;
 
@@ -223,6 +239,25 @@ export default function ExpenseDetailDrawer({
 
   const paidFromAccounts = accounts.filter((a) => a.isActive !== false && (a.type === "cash" || a.type === "bank"));
 
+  function handlePrintVoucher() {
+    const subcategoryName = exp.subcategoryId
+      ? categoryRows.find((c) => c.id === exp.subcategoryId)?.name ?? null
+      : null;
+    const latestPay = payments.find((p) => !p.reversedAt);
+    const accountName =
+      latestPay?.paidFromAccountId != null
+        ? accounts.find((a) => a.id === latestPay.paidFromAccountId)?.name ?? null
+        : null;
+    // Print-only: uses already-loaded GET data + Billing Desk A5 writeAndPrint.
+    printExpenseVoucher({
+      expense: exp,
+      payments,
+      clinic: printClinic ?? null,
+      accountName,
+      subcategoryName,
+    });
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
@@ -242,6 +277,16 @@ export default function ExpenseDetailDrawer({
             <div className="flex flex-wrap items-center gap-2">
               <PaymentStatusBadge status={exp.paymentStatus} labeled />
               <AccountingStatusBadge status={exp.accountingStatus} labeled />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                data-testid="expense-print-voucher"
+                onClick={handlePrintVoucher}
+              >
+                <Printer size={12} className="mr-1" /> Print Expense Voucher
+              </Button>
               {exp.hasReceipt || exp.receiptImageUrl ? (
                 <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => onViewReceipt(exp)}>
                   <FileImage size={12} className="mr-1" /> Receipt

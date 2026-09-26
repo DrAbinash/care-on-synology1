@@ -274,9 +274,13 @@ export default function Expenses() {
   const [quickVendorName, setQuickVendorName] = useState("");
   const [quickVendorSaving, setQuickVendorSaving] = useState(false);
   const [payeeSuggestionsApplied, setPayeeSuggestionsApplied] = useState(false);
-  const [billManuallyEdited, setBillManuallyEdited] = useState(false);
-  const billManuallyEditedRef = useRef(false);
-  billManuallyEditedRef.current = billManuallyEdited;
+  const usualApplySeq = useRef(0);
+  const labourSuggestedBill = (() => {
+    const labour = Number(form.labourAmount) || 0;
+    const material = Number(form.materialAmount) || 0;
+    const suggested = round2(labour + material);
+    return suggested > 0 ? suggested : null;
+  })();
 
   const listParams: ListExpensesParams & { paymentStatus?: string } = {
     category: categoryFilter !== "all" ? categoryFilter : undefined,
@@ -425,6 +429,7 @@ export default function Expenses() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (savingCreate) return;
     const billAmount = Number(form.billAmount);
     if (!Number.isFinite(billAmount) || billAmount <= 0) {
       toast({ title: "Enter a valid bill amount", description: "Bill must be greater than ₹0.", variant: "destructive" });
@@ -503,7 +508,6 @@ export default function Expenses() {
       setShowForm(false);
       setForm(emptyExpenseForm());
       setPayeeSuggestionsApplied(false);
-      setBillManuallyEdited(false);
       setReceiptImage("");
       setPendingAttachment(null);
       setOcrMeta(null);
@@ -568,6 +572,7 @@ export default function Expenses() {
   const showDepartments = !departmentsHidden && departments.length > 0;
 
   async function createQuickVendor() {
+    if (quickVendorSaving) return;
     const name = quickVendorName.trim();
     if (!name) {
       toast({ title: "Vendor name required", variant: "destructive" });
@@ -664,20 +669,24 @@ export default function Expenses() {
       if (next.labourBasis === "per_day") {
         const days = Number(next.days);
         const rate = Number(next.ratePerDay);
-        if (Number.isFinite(days) && Number.isFinite(rate) && days > 0 && rate >= 0) {
+        if (Number.isFinite(days) && Number.isFinite(rate) && days >= 0 && rate >= 0) {
           next.labourAmount = String(round2(days * rate));
         }
       }
-      const labour = Number(next.labourAmount) || 0;
-      const material = Number(next.materialAmount) || 0;
-      const suggested = round2(labour + material);
-      if (!billManuallyEditedRef.current && suggested > 0) {
-        next.billAmount = String(suggested);
-        if (next.payKind === "PAID") next.amountPaid = String(suggested);
-        if (next.payKind === "DUE") next.amountPaid = "0";
-      }
+      // Labour/material are metadata only — never silently rewrite Bill Amount.
       return next;
     });
+  }
+
+  function applyLabourSuggestedBill() {
+    if (labourSuggestedBill == null) return;
+    const billAmount = String(labourSuggestedBill);
+    setForm((f) => ({
+      ...f,
+      billAmount,
+      amountPaid: f.payKind === "PAID" ? billAmount : f.payKind === "DUE" ? "0" : f.amountPaid,
+    }));
+    markFieldUser("amount");
   }
 
   const showWorkMeta = isOpsMaintenanceCategory(
@@ -697,7 +706,6 @@ export default function Expenses() {
               setShowForm(true);
               setForm(emptyExpenseForm());
               setPayeeSuggestionsApplied(false);
-              setBillManuallyEdited(false);
               setReceiptImage("");
               setPendingAttachment(null);
               setOcrMeta(null);
@@ -1364,11 +1372,13 @@ export default function Expenses() {
                     setPayeeSuggestionsApplied(false);
                   }}
                   onSelectSuggestion={async (s) => {
+                    const seq = ++usualApplySeq.current;
                     try {
                       const params = new URLSearchParams();
                       if (s.vendorId != null) params.set("vendorId", String(s.vendorId));
                       if (s.name) params.set("name", s.name);
                       const details = await api.get<PayeeUsualDto>(`/api/expenses/payees/usual?${params}`);
+                      if (seq !== usualApplySeq.current) return;
                       applyUsualPayeeDetails(details);
                     } catch {
                       /* helper still shows via combobox; suggestions are optional */
@@ -1478,17 +1488,33 @@ export default function Expenses() {
                       placeholder="Optional — not inventory"
                     />
                   </div>
-                  {(form.labourAmount || form.materialAmount) && form.labourBasis === "per_day" ? (
-                    <p className="col-span-2 text-[10px] text-muted-foreground">
-                      Labour = Days × Rate
-                      {form.days && form.ratePerDay
-                        ? ` · ${form.days} × ₹${form.ratePerDay} = ₹${form.labourAmount || "0"}`
-                        : ""}
-                      {form.materialAmount
-                        ? ` · Materials ₹${form.materialAmount}`
-                        : ""}
-                      . Metadata only — does not create payroll or inventory purchases.
-                    </p>
+                  {labourSuggestedBill != null ? (
+                    <div className="col-span-2 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+                      <span>
+                        Suggested bill from labour
+                        {form.materialAmount ? " + material" : ""}:{" "}
+                        <strong className="text-foreground">{inr(labourSuggestedBill)}</strong>
+                        {form.labourBasis === "per_day" && form.days && form.ratePerDay
+                          ? ` (${form.days} × ₹${form.ratePerDay}`
+                          : ""}
+                        {form.labourBasis === "per_day" && form.days && form.ratePerDay && form.materialAmount
+                          ? ` + ₹${form.materialAmount})`
+                          : form.labourBasis === "per_day" && form.days && form.ratePerDay
+                            ? ")"
+                            : ""}
+                        . Does not change Bill Amount unless you apply it.
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-6 text-[10px]"
+                        data-testid="expense-apply-labour-bill"
+                        onClick={applyLabourSuggestedBill}
+                      >
+                        Use as bill amount
+                      </Button>
+                    </div>
                   ) : null}
                 </>
               ) : null}
@@ -1549,7 +1575,6 @@ export default function Expenses() {
                     value={form.billAmount}
                     onChange={(e) => {
                       const billAmount = e.target.value;
-                      setBillManuallyEdited(true);
                       setForm((f) => ({
                         ...f,
                         billAmount,

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   canShowAccountingRetry,
   dedupePayeeSuggestions,
+  isJunkHistoricalPayeeName,
   normalizePayeeName,
   parseExpenseMetaJson,
   scorePayeeMatch,
   serializeExpenseMetaJson,
+  validateExpenseMetaJsonInput,
   type PayeeSuggestion,
 } from "./expensePayeeSearch";
 
@@ -84,10 +86,41 @@ describe("dedupePayeeSuggestions", () => {
         rankScore: 640,
         useCount: 1,
       }),
+      sug({
+        name: "  GANESHAS   INFOTECH ",
+        kind: "previous_payee",
+        rankScore: 600,
+        useCount: 2,
+      }),
     ]);
     expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe("vendor");
     expect(out[0]!.vendorId).toBe(9);
+  });
+
+  it("does not merge genuinely different payee names", () => {
+    const out = dedupePayeeSuggestions([
+      sug({ name: "RAJU ELECTRICIAN", kind: "previous_payee", rankScore: 700 }),
+      sug({ name: "RAJU ELECTRICALS", kind: "previous_payee", rankScore: 690 }),
+      sug({ name: "GANESH INFOTECH", kind: "previous_payee", rankScore: 650 }),
+      sug({ name: "GANESHAS INFOTECH", kind: "vendor", vendorId: 1, rankScore: 700 }),
+    ]);
+    expect(out.map((r) => r.normalizedName).sort()).toEqual([
+      "GANESH INFOTECH",
+      "GANESHAS INFOTECH",
+      "RAJU ELECTRICALS",
+      "RAJU ELECTRICIAN",
+    ]);
+  });
+});
+
+describe("isJunkHistoricalPayeeName", () => {
+  it("filters blank/placeholder historical labels only", () => {
+    for (const junk of ["", "  ", "-", "NA", "N/A", "cash", "SELF", "unknown", "nil"]) {
+      expect(isJunkHistoricalPayeeName(junk), junk).toBe(true);
+    }
+    expect(isJunkHistoricalPayeeName("RAJU ELECTRICIAN")).toBe(false);
+    expect(isJunkHistoricalPayeeName("CASH MART SUPPLIES")).toBe(false);
   });
 });
 
@@ -119,5 +152,21 @@ describe("expense work meta JSON", () => {
       ratePerDay: 700,
       labourAmount: 700,
     });
+  });
+
+  it("drops negative numerics on parse and rejects them on validate", () => {
+    expect(parseExpenseMetaJson(JSON.stringify({ days: -1, ratePerDay: 700 }))).toMatchObject({
+      days: null,
+      ratePerDay: 700,
+    });
+    expect(validateExpenseMetaJsonInput(JSON.stringify({ days: -1 }))).toEqual({
+      ok: false,
+      error: "days must be a non-negative number",
+    });
+    expect(validateExpenseMetaJsonInput("{not json")).toMatchObject({ ok: false });
+    expect(validateExpenseMetaJsonInput("x".repeat(5000))).toMatchObject({ ok: false });
+    expect(validateExpenseMetaJsonInput(JSON.stringify({ days: 1.5, ratePerDay: 700, labourAmount: 1050 })).ok).toBe(
+      true,
+    );
   });
 });

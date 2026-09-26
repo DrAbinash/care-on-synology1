@@ -148,39 +148,114 @@ function daysSince(dateStr: string | null | undefined): number | null {
   return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
 }
 
+export const EXPENSE_META_JSON_MAX_CHARS = 4096;
+
+function nonNegFinite(n: unknown): number | null {
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 export function parseExpenseMetaJson(raw: string | null | undefined): ExpenseWorkMeta | null {
   if (!raw?.trim()) return null;
+  if (raw.length > EXPENSE_META_JSON_MAX_CHARS) return null;
   try {
     const o = JSON.parse(raw) as Record<string, unknown>;
-    if (!o || typeof o !== "object") return null;
+    if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+    const workType =
+      typeof o.workType === "string" ? o.workType.trim().slice(0, 80) || null : null;
     return {
-      workType: typeof o.workType === "string" ? o.workType : null,
+      workType,
       labourBasis:
         o.labourBasis === "per_day" || o.labourBasis === "per_job" || o.labourBasis === "contract"
           ? o.labourBasis
           : null,
-      days: typeof o.days === "number" && Number.isFinite(o.days) ? o.days : null,
-      ratePerDay: typeof o.ratePerDay === "number" && Number.isFinite(o.ratePerDay) ? o.ratePerDay : null,
-      labourAmount: typeof o.labourAmount === "number" && Number.isFinite(o.labourAmount) ? o.labourAmount : null,
-      materialAmount:
-        typeof o.materialAmount === "number" && Number.isFinite(o.materialAmount) ? o.materialAmount : null,
+      days: nonNegFinite(o.days),
+      ratePerDay: nonNegFinite(o.ratePerDay),
+      labourAmount: nonNegFinite(o.labourAmount),
+      materialAmount: nonNegFinite(o.materialAmount),
     };
   } catch {
     return null;
   }
 }
 
+/**
+ * Strict create-path validator. Rejects malformed JSON, oversized payloads,
+ * and negative numeric metadata. Unknown keys are dropped (never drive money).
+ */
+export function validateExpenseMetaJsonInput(raw: unknown):
+  | { ok: true; value: string | null }
+  | { ok: false; error: string } {
+  if (raw == null || raw === "") return { ok: true, value: null };
+  if (typeof raw !== "string") return { ok: false, error: "metaJson must be a JSON string" };
+  if (raw.length > EXPENSE_META_JSON_MAX_CHARS) {
+    return { ok: false, error: `metaJson exceeds ${EXPENSE_META_JSON_MAX_CHARS} characters` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "metaJson is not valid JSON" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: "metaJson must be a JSON object" };
+  }
+  const o = parsed as Record<string, unknown>;
+  for (const key of ["days", "ratePerDay", "labourAmount", "materialAmount"] as const) {
+    if (o[key] === undefined || o[key] === null) continue;
+    const n = Number(o[key]);
+    if (!Number.isFinite(n) || n < 0) {
+      return { ok: false, error: `${key} must be a non-negative number` };
+    }
+  }
+  if (o.labourBasis != null && o.labourBasis !== "per_day" && o.labourBasis !== "per_job" && o.labourBasis !== "contract") {
+    return { ok: false, error: "labourBasis must be per_day, per_job, or contract" };
+  }
+  const normalized = serializeExpenseMetaJson(parseExpenseMetaJson(JSON.stringify(o)));
+  return { ok: true, value: normalized };
+}
+
 export function serializeExpenseMetaJson(meta: ExpenseWorkMeta | null | undefined): string | null {
   if (!meta) return null;
   const clean: ExpenseWorkMeta = {};
-  if (meta.workType) clean.workType = meta.workType;
+  if (meta.workType) clean.workType = String(meta.workType).trim().slice(0, 80);
   if (meta.labourBasis) clean.labourBasis = meta.labourBasis;
-  if (meta.days != null && Number.isFinite(meta.days)) clean.days = meta.days;
-  if (meta.ratePerDay != null && Number.isFinite(meta.ratePerDay)) clean.ratePerDay = meta.ratePerDay;
-  if (meta.labourAmount != null && Number.isFinite(meta.labourAmount)) clean.labourAmount = meta.labourAmount;
-  if (meta.materialAmount != null && Number.isFinite(meta.materialAmount)) clean.materialAmount = meta.materialAmount;
+  if (meta.days != null && Number.isFinite(meta.days) && meta.days >= 0) clean.days = meta.days;
+  if (meta.ratePerDay != null && Number.isFinite(meta.ratePerDay) && meta.ratePerDay >= 0) {
+    clean.ratePerDay = meta.ratePerDay;
+  }
+  if (meta.labourAmount != null && Number.isFinite(meta.labourAmount) && meta.labourAmount >= 0) {
+    clean.labourAmount = meta.labourAmount;
+  }
+  if (meta.materialAmount != null && Number.isFinite(meta.materialAmount) && meta.materialAmount >= 0) {
+    clean.materialAmount = meta.materialAmount;
+  }
   if (Object.keys(clean).length === 0) return null;
   return JSON.stringify(clean);
+}
+
+/** Conservative junk filter for historical free-text payee suggestions only. */
+export function isJunkHistoricalPayeeName(raw: string | null | undefined): boolean {
+  const n = normalizePayeeName(raw);
+  if (!n) return true;
+  if (n.length === 1 && !/[A-Z0-9]/.test(n)) return true;
+  return (
+    n === "-" ||
+    n === "--" ||
+    n === "NA" ||
+    n === "N/A" ||
+    n === "N.A." ||
+    n === "N.A" ||
+    n === "NIL" ||
+    n === "NONE" ||
+    n === "NULL" ||
+    n === "CASH" ||
+    n === "SELF" ||
+    n === "UNKNOWN" ||
+    n === "TEST" ||
+    n === "." ||
+    n === "*"
+  );
 }
 
 /**
@@ -233,8 +308,9 @@ export async function suggestExpensePayees(opts: {
   query: string;
   limit?: number;
 }): Promise<PayeeSuggestion[]> {
-  const q = payeeSearchNeedle(opts.query);
-  const limit = Math.min(Math.max(opts.limit ?? 12, 1), 30);
+  const rawQ = (opts.query ?? "").trim().slice(0, 80);
+  const q = payeeSearchNeedle(rawQ);
+  const limit = Math.min(Math.max(Number(opts.limit) || 12, 1), 30);
   if (q.length < 1) return [];
 
   const like = `%${q}%`;
@@ -312,6 +388,8 @@ export async function suggestExpensePayees(opts: {
   for (const h of rowsOf<HistAggRow>(histResult)) {
     const name = (h.payee ?? "").trim();
     if (!name) continue;
+    // Keep Vendor Master rows even if the historical label was junk; filter free-text only.
+    if (!h.vendor_id && isJunkHistoricalPayeeName(name)) continue;
     const scoredMatch = scorePayeeMatch({
       name,
       query: q,
@@ -429,6 +507,7 @@ export async function recentExpensePayees(limit = 8): Promise<PayeeSuggestion[]>
   }>(result)) {
     const name = (h.payee ?? "").trim();
     if (!name) continue;
+    if (!h.vendor_id && isJunkHistoricalPayeeName(name)) continue;
     out.push({
       kind: h.vendor_id ? "vendor" : "previous_payee",
       name,
