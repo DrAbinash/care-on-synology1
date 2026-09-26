@@ -129,6 +129,16 @@ describe("context gates (Phase 5)", () => {
     expect(evaluate("remove finding disc bulge", off).blocked).toBeNull();
   });
 
+  it("V-04 A1: catalog-matching findings append requires confirm; select stays immediate", () => {
+    const withCatalog = ctx({
+      requiresCatalogConfirm: (text) => /fatty liver/i.test(text),
+    });
+    expect(evaluate("add finding fatty liver", withCatalog).requiresConfirmation).toBe(true);
+    expect(evaluate("add finding fatty liver", withCatalog).safetyClass).toBe("CONFIRM_REQUIRED");
+    expect(evaluate("select finding fatty liver", withCatalog).requiresConfirmation).toBe(false);
+    expect(evaluate("add finding ethmoid thickening", withCatalog).requiresConfirmation).toBe(false);
+  });
+
   it("viewer ops blocked when the embedded viewer is not mounted; unsupported ops always blocked", () => {
     expect(evaluate("zoom in", ctx({ viewerAvailable: false })).blocked).toMatch(/not open/i);
     expect(evaluate("zoom in", ctx({ viewerAvailable: true })).blocked).toBeNull();

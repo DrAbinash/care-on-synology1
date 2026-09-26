@@ -43,3 +43,26 @@ radiologyVoiceRouter.post("/voice-command-audit", async (req: StaffAuthRequest, 
   });
   res.json({ success: true });
 });
+
+/**
+ * Best-effort workspace UX telemetry (open→sign, abnormal strip, format apply).
+ * Accepts a small batch; never stores transcripts. 204 even on soft failure so
+ * the reporting loop is never blocked.
+ */
+radiologyVoiceRouter.post("/workspace-telemetry", async (req: StaffAuthRequest, res: Response) => {
+  const s = req.staffSession;
+  if (!s) { res.status(401).json({ success: false, error: "No session" }); return; }
+  const body = (req.body ?? {}) as { events?: unknown };
+  const events = Array.isArray(body.events) ? body.events.slice(0, 50) : [];
+  if (events.length === 0) {
+    res.status(204).end();
+    return;
+  }
+  try {
+    req.log?.info?.(
+      { count: events.length, sampleType: (events[0] as { type?: string })?.type ?? null },
+      "[workspace-telemetry] batch",
+    );
+  } catch { /* ignore */ }
+  res.status(204).end();
+});

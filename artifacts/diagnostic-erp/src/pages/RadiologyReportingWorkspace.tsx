@@ -297,6 +297,7 @@ import ReportDemographyCard from "@/components/radiology/ReportDemographyCard";
 import ReferringDoctorQuickSelect from "@/components/ReferringDoctorQuickSelect";
 import { StudyRegionReportFormatSection } from "@/components/radiology/StudyRegionReportFormatSection";
 import { WholeReportFormatControl } from "@/components/radiology/WholeReportFormatControl";
+import { MriAbnormalFormatStrip } from "@/components/radiology/MriAbnormalFormatStrip";
 import { setFormatApplyBridge } from "@/lib/zai-workspace/formatApplyBridge";
 import ClinicalHistoryChipStrip from "@/components/radiology/ClinicalHistoryChipStrip";
 import TechniqueChoiceStrip from "@/components/radiology/TechniqueChoiceStrip";
@@ -323,6 +324,11 @@ import {
   removeRecommendationChip,
 } from "@/lib/recommendationChips";
 import { findingsMapToText } from "@/lib/findingsMapText";
+import {
+  matchQuickFindingBySpokenTerm,
+  resolveQuickFindingFromSpeech,
+} from "@/lib/resolveQuickFindingFromSpeech";
+import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
@@ -955,6 +961,44 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       const mode = intent.mode;
       const voiceSource = "radiologist-voice" as const;
       if (intent.target === "findings") {
+        // V-04: catalog-matching prose (after pending-preview confirm) toggles
+        // Quick Findings → applyPathologyOverlay. Zero-match stays narrative.
+        if (mode === "append") {
+          const catalog = quickFindingTemplatesRef.current;
+          const resolved = resolveQuickFindingFromSpeech(text, catalog);
+          if (resolved.status === "ambiguous") {
+            return {
+              ok: false,
+              message: `Multiple findings match “${resolved.matchedVia}”: ${resolved.candidates.slice(0, 3).map((c) => c.label).join(" · ")} — say the full name`,
+            };
+          }
+          if (resolved.status === "matches") {
+            const applied: QuickFinding[] = [];
+            for (const hit of resolved.findings) {
+              const f = catalog.find((c) => c.id === hit.finding.id);
+              if (!f) continue;
+              if (!selectedQuickIdsRef.current.has(f.id)) {
+                handleQuickToggleRef.current(f, true);
+                applied.push(f);
+              }
+            }
+            if (applied.length > 0) {
+              trackWorkspaceEvent({
+                type: "voice_catalog_apply",
+                studyId: studyId ?? null,
+                meta: { count: applied.length, labels: applied.map((a) => a.label).join("|") },
+              });
+              return {
+                ok: true,
+                message: `Applied ${applied.map((a) => a.label).join(" · ")}`,
+                undo: () => {
+                  for (const f of applied) handleQuickToggleRef.current(f, false);
+                },
+                undoLabel: "voice catalog findings",
+              };
+            }
+          }
+        }
         const prev = state.findingsText;
         if (mode === "replace") {
           state.replaceField("findings", text, voiceSource);
@@ -1071,12 +1115,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       if (!templates.length) {
         return { ok: false, message: "Quick findings are not loaded yet — open Clinic Quick Select once" };
       }
-      const norm = intent.term.trim().toLowerCase();
       const selected = selectedQuickIdsRef.current;
       const pool = intent.action === "remove" ? templates.filter((f) => selected.has(f.id)) : templates;
-      let matches = pool.filter((f) => f.label.trim().toLowerCase() === norm);
-      if (matches.length === 0) matches = pool.filter((f) => f.label.toLowerCase().includes(norm));
-      if (matches.length === 0) {
+      const matched = matchQuickFindingBySpokenTerm(intent.term, templates, { pool });
+      if (matched.status === "zero-match") {
         return {
           ok: false,
           message: intent.action === "remove"
@@ -1084,13 +1126,14 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
             : `No quick finding matches “${intent.term}”`,
         };
       }
-      if (matches.length > 1) {
+      if (matched.status === "ambiguous") {
         return {
           ok: false,
-          message: `Multiple findings match “${intent.term}”: ${matches.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name`,
+          message: `Multiple findings match “${intent.term}”: ${matched.candidates.slice(0, 3).map((f) => f.label).join(" · ")} — say the full name`,
         };
       }
-      const f = matches[0];
+      const f = templates.find((t) => t.id === matched.finding.id);
+      if (!f) return { ok: false, message: `No quick finding matches “${intent.term}”` };
       const nowSelected = intent.action === "select";
       if (nowSelected && selected.has(f.id)) return { ok: true, message: `“${f.label}” is already selected` };
       handleQuickToggleRef.current(f, nowSelected);
@@ -1148,7 +1191,7 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
     }
 
     return { ok: false, message: "Unrecognized voice intent" };
-  }, [voiceSettings.autoPunctuation, focusReportField, allowEditSigned, studyLock.status]);
+  }, [voiceSettings.autoPunctuation, focusReportField, allowEditSigned, studyLock.status, studyId]);
 
   const voiceSession = useVoiceSession({
     studyId: studyId ?? undefined,
@@ -1163,7 +1206,11 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       lockedByOther: studyLock.status === "locked-by-other",
       lockLost: studyLock.status === "expired-lost" || studyLock.status === "connection-lost",
       canVerify: canVerifyRef.current,
-      structuredFindings: false,
+      structuredFindings: useStructured,
+      requiresCatalogConfirm: (text) => {
+        const r = resolveQuickFindingFromSpeech(text, quickFindingTemplatesRef.current);
+        return r.status === "matches" || r.status === "ambiguous";
+      },
       viewerAvailable: embeddedViewerRef.current != null,
       confirmationPolicy: voiceSettings.confirmationPolicy,
     }),
@@ -5559,8 +5606,33 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                             reportingContext={studySetup.studyContext}
                             modality={workflow.currentRow?.modality ?? null}
                             bodyPartFallback={studySetup.matchedStudyRegion}
-                            studyDescription={workflow.currentRow?.studyDescription ?? null}
+                            studyDescription={
+                              workflow.currentRow?.testName
+                              || workflow.currentRow?.billedTestName
+                              || workflow.currentRow?.studyDescription
+                              || null
+                            }
                             hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
+                            disabled={isLocked || isFinalized}
+                          />
+                          <MriAbnormalFormatStrip
+                            studyId={studyId ?? null}
+                            reportingContext={studySetup.studyContext}
+                            modality={workflow.currentRow?.modality ?? null}
+                            billedTestName={
+                              workflow.currentRow?.testName
+                              || workflow.currentRow?.billedTestName
+                              || null
+                            }
+                            studyDescription={workflow.currentRow?.studyDescription ?? null}
+                            referringDoctorId={workflow.currentRow?.referringDoctorId ?? null}
+                            referringDoctorName={
+                              workflow.currentRow?.referringDoctorMasterName
+                              || workflow.currentRow?.referringDoctor
+                              || null
+                            }
+                            referringDoctorDegree={workflow.currentRow?.referringDoctorDegree ?? null}
+                            doctorsCatalog={doctorsCatalogQ.data ?? []}
                             disabled={isLocked || isFinalized}
                           />
                         </div>

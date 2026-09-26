@@ -30,6 +30,18 @@ export interface QueueStudy {
   studyInstanceUID?: string | null;
   /** Referring / referral doctor — shown on Reading Queue cards. */
   referringDoctor?: string | null;
+  /** Billed catalog test FK → tests.id (from radiology_studies.test_id). */
+  testId?: number | null;
+  /** Billed test name (tests.name) — same as bill desk line. */
+  testName?: string | null;
+  /** Alias kept for older payloads — prefer testName. */
+  billedTestName?: string | null;
+  /** Referring doctor FK → doctors.id via orders.doctor_id when linked. */
+  referringDoctorId?: number | null;
+  /** Settings → Doctors → degree for the linked referring doctor. */
+  referringDoctorDegree?: string | null;
+  /** Settings → Doctors → name (master) when order is linked. */
+  referringDoctorMasterName?: string | null;
   // M1.6A — assignment + lock fields (absent on pre-lock payloads).
   assignedRadiologist?: string | null;
   lockUserId?: number | null;
