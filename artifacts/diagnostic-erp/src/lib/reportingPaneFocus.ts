@@ -108,26 +108,49 @@ export function viewerOverlayShellClass(opts: {
   return "fixed inset-4 z-50 flex flex-col rounded-lg border overflow-hidden min-h-0 bg-background shadow-2xl";
 }
 
-/** True when inactive accordion rows should use single-line compact chrome. */
-export function shouldUseCompactAccordion(opts: {
+/**
+ * Inactive accordion rows use single-line compact chrome.
+ *
+ * Always on: comfortable two-line summaries on ultrawide monitors were
+ * starving Findings/Impression of height (clinic feedback 2026-09-26).
+ * Viewport args remain for call-site compatibility / future tuning.
+ */
+export function shouldUseCompactAccordion(_opts: {
   viewportWidthPx: number;
   layoutMode: string;
 }): boolean {
-  if (opts.layoutMode === "viewerFocus") return true;
-  return isConstrainedReportingViewport(opts.viewportWidthPx);
+  return true;
 }
 
 /**
  * Exclusive one-active section (no continuous Findings+Impression).
- * Constrained viewports and viewer-biased layouts need the active editor
- * to own remaining height.
+ * Always on so the active clinical editor owns remaining height on every
+ * clinic monitor — not only laptops ≤1366px.
  */
-export function shouldUseExclusiveReportSections(opts: {
+export function shouldUseExclusiveReportSections(_opts: {
   viewportWidthPx: number;
   layoutMode: string;
 }): boolean {
-  if (opts.layoutMode === "viewerFocus") return true;
-  return isConstrainedReportingViewport(opts.viewportWidthPx);
+  return true;
+}
+
+/** Setup rows that live inside the Study details disclosure. */
+export function isStudyDetailsSection(
+  id: string | null | undefined,
+): boolean {
+  return id === "demography" || id === "refDoctor" || id === "region";
+}
+
+/**
+ * When Findings/Impression (or other clinical rows) are active, collapse
+ * Starting Canvas and Study details so the editor can grow.
+ */
+export function shouldCollapseSetupChrome(
+  activeSection: string | null | undefined,
+): boolean {
+  if (!activeSection) return false;
+  if (isStudyDetailsSection(activeSection)) return false;
+  return true;
 }
 
 /**

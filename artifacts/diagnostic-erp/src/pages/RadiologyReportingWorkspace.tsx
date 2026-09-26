@@ -343,9 +343,11 @@ import {
 } from "@/lib/workspaceLayoutPrefs";
 import {
   isNarrowReportingViewport,
+  isStudyDetailsSection,
   outerPanelPercents,
   isPhoneReportingViewport,
   shouldApplyAutomaticPaneFocus,
+  shouldCollapseSetupChrome,
   shouldIgnorePaneFocusTarget,
   shouldUseCompactAccordion,
   shouldUseExclusiveReportSections,
@@ -464,7 +466,7 @@ import "@/lib/copilotRecommendationModule";
 import "@/lib/copilotUsgCompanionModule";
 
 import {
-  Lock, AlertTriangle, ChevronLeft, ChevronRight, Pause, Clock, Sparkles, ShieldCheck,
+  Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
@@ -620,6 +622,10 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
   const [activeReportSection, setActiveReportSection] = useState<ReportSectionId | null>(
     () => sectionCollapsePrefs.preferredActive || "findings",
   );
+  /** Study details (Demography / Ref Doctor / Region) — closed while clinically reporting. */
+  const [studyDetailsOpen, setStudyDetailsOpen] = useState(false);
+  /** Starting Canvas body — thin header by default so Findings can own height. */
+  const [startingCanvasExpanded, setStartingCanvasExpanded] = useState(false);
 
   // Mouse-first personal macro templates (local workstation library).
   const [personalTemplates, setPersonalTemplates] = useState<PersonalReportTemplate[]>(() =>
@@ -664,6 +670,20 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
       return next;
     });
   }, [sectionCollapsePrefs]);
+
+  // Setup chrome (Starting Canvas body + Study details) collapses whenever a
+  // clinical section owns the accordion — including auto-reveal / focus helpers
+  // that set activeReportSection without going through activateReportSection.
+  useEffect(() => {
+    if (isStudyDetailsSection(activeReportSection)) {
+      setStudyDetailsOpen(true);
+      return;
+    }
+    if (shouldCollapseSetupChrome(activeReportSection)) {
+      setStudyDetailsOpen(false);
+      setStartingCanvasExpanded(false);
+    }
+  }, [activeReportSection]);
   const selectFindingsTool = useCallback((id: FindingsToolId) => {
     setActiveFindingsTool((cur) => nextFindingsTool(cur, id));
   }, []);
@@ -5470,12 +5490,17 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                         </span>
                         <button
                           type="button"
-                          onClick={() => setViewerFocus(false)}
+                          onClick={() => {
+                            setViewerFocus(false);
+                            setStudyDetailsOpen(true);
+                            setStartingCanvasExpanded(false);
+                            activateReportSection("demography");
+                          }}
                           className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0"
-                          title="Show app menu again"
+                          title="Restore app chrome and open demography"
                           data-testid="viewer-focus-restore"
                         >
-                          Show details
+                          Show patient details
                         </button>
                       </div>
                     )}
@@ -5501,69 +5526,115 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                       enterReportingFocusMode();
                     }}
                   >
-                    <AnchorRail anchor={activeAnchor} />
+                    {activeAnchor?.studyInstanceUID ? (
+                      <AnchorRail anchor={activeAnchor} />
+                    ) : null}
                     <div
-                      className="shrink-0 rounded-lg border border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-sky-50 p-2"
+                      className="shrink-0 rounded-lg border border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-sky-50"
                       data-testid="full-normal-starting-canvas"
+                      data-expanded={startingCanvasExpanded ? "true" : "false"}
                     >
-                      <div className="mb-1 flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">
+                      <div className="flex items-center gap-1.5 px-2 py-1">
+                        <button
+                          type="button"
+                          data-testid="starting-canvas-toggle"
+                          aria-expanded={startingCanvasExpanded}
+                          onClick={() => setStartingCanvasExpanded((v) => !v)}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-0.5 py-0.5 text-left hover:bg-emerald-100/60"
+                          title={startingCanvasExpanded ? "Collapse Starting Canvas" : "Expand Starting Canvas"}
+                        >
+                          {startingCanvasExpanded ? (
+                            <ChevronDown size={12} className="shrink-0 text-emerald-700" />
+                          ) : (
+                            <ChevronRight size={12} className="shrink-0 text-emerald-700" />
+                          )}
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 shrink-0">
                             Starting Canvas
-                          </p>
+                          </span>
+                          {appliedFormatName ? (
+                            <Badge variant="outline" className="border-emerald-300 bg-white text-[9px] text-emerald-800 truncate max-w-[14rem]">
+                              {appliedFormatName}
+                            </Badge>
+                          ) : (
+                            <span className="truncate text-[10px] text-muted-foreground">
+                              Format / Quick Normal
+                            </span>
+                          )}
+                        </button>
+                        {!isLocked && !isFinalized && appliedFormatName
+                          && appliedPathologyPatches.every((p) => p.stale || p.observation?.role === "baseline" || isSystemNormalPatch(p)) ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[9px] shrink-0"
+                            onClick={() => useWorkspace.getState().undoLastPatch()}
+                            data-testid="undo-full-report"
+                          >
+                            Undo
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+                          onClick={() => {
+                            const state = useWorkspace.getState();
+                            state.setField("technique", "Multiplanar multisequence MRI.", "quick-normal");
+                            state.setField("findings", "Normal study.", "quick-normal");
+                            state.setField("impression", "Normal study.", "quick-normal");
+                            state.setField("recommendation", "Clinical correlation is recommended.", "quick-normal");
+                          }}
+                          data-testid="quick-normal-fallback"
+                          disabled={isLocked || isFinalized}
+                        >
+                          Quick Normal
+                        </Button>
+                      </div>
+                      {startingCanvasExpanded ? (
+                        <div className="space-y-2 border-t border-emerald-200/70 px-2 pb-2 pt-1.5">
                           <p className="text-[10px] text-muted-foreground">
                             Apply a Full Normal Report, then record only deviations.
                           </p>
+                          <WholeReportFormatControl
+                            reportingContext={studySetup.studyContext}
+                            modality={workflow.currentRow?.modality ?? null}
+                            bodyPartFallback={studySetup.matchedStudyRegion}
+                            studyDescription={workflow.currentRow?.studyDescription ?? null}
+                            hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
+                            disabled={isLocked || isFinalized}
+                          />
                         </div>
-                        {appliedFormatName ? (
-                          <div className="flex items-center gap-1">
-                            <Badge variant="outline" className="border-emerald-300 bg-white text-[9px] text-emerald-800">
-                              {appliedFormatName}
-                            </Badge>
-                            {!isLocked && !isFinalized && appliedPathologyPatches.every((p) => p.stale || p.observation?.role === "baseline" || isSystemNormalPatch(p)) ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-6 px-1.5 text-[9px]"
-                                onClick={() => useWorkspace.getState().undoLastPatch()}
-                                data-testid="undo-full-report"
-                              >
-                                Undo
-                              </Button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                      <WholeReportFormatControl
-                        reportingContext={studySetup.studyContext}
-                        modality={workflow.currentRow?.modality ?? null}
-                        bodyPartFallback={studySetup.matchedStudyRegion}
-                        studyDescription={workflow.currentRow?.studyDescription ?? null}
-                        hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
-                        disabled={isLocked || isFinalized}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white mt-2"
-                        onClick={() => {
-                          const state = useWorkspace.getState();
-                          state.setField("technique", "Multiplanar multisequence MRI.", "quick-normal");
-                          state.setField("findings", "Normal study.", "quick-normal");
-                          state.setField("impression", "Normal study.", "quick-normal");
-                          state.setField("recommendation", "Clinical correlation is recommended.", "quick-normal");
-                        }}
-                        data-testid="quick-normal-fallback"
-                        disabled={isLocked || isFinalized}
-                      >
-                        Quick Normal (bypass format picker)
-                      </Button>
+                      ) : null}
                     </div>
-                    <details className="shrink-0 rounded-md border border-border/60 bg-muted/10" data-testid="study-details">
-                      <summary className="cursor-pointer px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <div
+                      className="shrink-0 rounded-md border border-border/60 bg-muted/10"
+                      data-testid="study-details"
+                      data-open={studyDetailsOpen ? "true" : "false"}
+                    >
+                      <button
+                        type="button"
+                        data-testid="study-details-toggle"
+                        aria-expanded={studyDetailsOpen}
+                        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:bg-muted/40"
+                        onClick={() => {
+                          const next = !studyDetailsOpen;
+                          setStudyDetailsOpen(next);
+                          if (next && !isStudyDetailsSection(activeReportSection)) {
+                            activateReportSection("demography");
+                          } else if (!next && isStudyDetailsSection(activeReportSection)) {
+                            activateReportSection("findings");
+                          }
+                        }}
+                      >
+                        {studyDetailsOpen ? (
+                          <ChevronDown size={12} className="shrink-0" />
+                        ) : (
+                          <ChevronRight size={12} className="shrink-0" />
+                        )}
                         Study details · patient, referring doctor, region/protocol
-                      </summary>
+                      </button>
+                      {studyDetailsOpen ? (
                       <div className="space-y-1 p-1.5">
                     {/* 1. DEMOGRAPHY — canonical, editable, feeds all outputs */}
                     <ReportAccordionSection {...accordionProps("demography")}>
@@ -5712,7 +5783,8 @@ export default function RadiologyReportingWorkspace({ studyId }: Props) {
                     </div>
                     </ReportAccordionSection>
                       </div>
-                    </details>
+                      ) : null}
+                    </div>
 
                     {/* 4. HISTORY — History Quick Select + editor + dictation together */}
                     <ReportAccordionSection {...accordionProps("history")}>
