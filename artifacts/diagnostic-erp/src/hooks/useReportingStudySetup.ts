@@ -1,10 +1,10 @@
 /**
- * useReportingStudySetup — DICOM-driven protocol / technique / test-name
- * auto-select for the new Radiology Reporting Workspace.
+ * useReportingStudySetup — study-open protocol / technique / test-name setup
+ * for the Radiology Reporting Workspace.
  *
- * Ports the legacy chain:
- *   modality+studyDescription → matchStudyRegion → ReportingStudyContext
- *   → pickQuickProtocol / pickStructuredTemplateForRegion / resolvedChocolateBoxSet
+ * Region resolution priority:
+ *   manual override → billed procedure (testName) → modality+StudyDescription
+ *   → ReportingStudyContext → pickQuickProtocol / templates / chocolate boxes
  *
  * Additive only: callers write into the Z.ai store via setters; nothing here
  * replaces FindingsEditor / CopilotRail.
@@ -12,7 +12,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { matchStudyRegion, filterRegionNamesForModality, nextStudyRegions } from "@/lib/studyRegion";
+import {
+  filterRegionNamesForModality,
+  nextStudyRegions,
+  resolveAutoStudyRegion,
+} from "@/lib/studyRegion";
 import { pickQuickProtocol, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
 import {
   recordTechniqueAutoOrigin,
@@ -120,6 +124,11 @@ export type UseReportingStudySetupArgs = {
   studyId: number | null | undefined;
   modality: string | null | undefined;
   studyDescription: string | null | undefined;
+  /**
+   * Billed / catalog procedure name from the worklist (`testName` preferred,
+   * else `billedTestName`). Primary auto-region hint when it matches a Study Tab.
+   */
+  billedTestName?: string | null;
   bodyPart?: string | null;
   isLoadingExistingDraft: boolean;
   /** True once draft content (or confirmed empty) has been written into the editor. */
@@ -137,6 +146,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     studyId,
     modality,
     studyDescription,
+    billedTestName,
     bodyPart: dicomBodyPart,
     isLoadingExistingDraft,
     draftHydrated,
@@ -169,10 +179,17 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   const sessionMemoryRef = useRef<Record<string, string>>({});
   const hydratedTemplateApplyRef = useRef<number | null>(null);
 
-  const studyHint = useMemo(
-    () => `${modality ?? ""} ${studyDescription ?? ""}`.trim(),
-    [modality, studyDescription],
-  );
+  const billedProcedureName = useMemo(() => {
+    const n = (billedTestName ?? "").trim();
+    return n || null;
+  }, [billedTestName]);
+
+  /** Prefer billed procedure for hints (Findings library / legacy); DICOM second. */
+  const studyHint = useMemo(() => {
+    const mod = (modality ?? "").trim();
+    const primary = billedProcedureName || (studyDescription ?? "").trim() || "";
+    return `${mod} ${primary}`.trim();
+  }, [modality, billedProcedureName, studyDescription]);
 
   const { data: quickSelectData } = useQuery<QuickSelectData>({
     queryKey: ["radiology-quick-select"],
@@ -203,10 +220,18 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     [availableStudyTabs],
   );
 
-  const autoStudyRegion = useMemo(
-    () => matchStudyRegion(studyHint, availableRegions),
-    [studyHint, availableRegions],
+  const autoRegionMatch = useMemo(
+    () =>
+      resolveAutoStudyRegion({
+        modality,
+        studyDescription,
+        billedTestName: billedProcedureName,
+        orderedRegionNames: availableRegions,
+      }),
+    [modality, studyDescription, billedProcedureName, availableRegions],
   );
+
+  const autoStudyRegion = autoRegionMatch.region;
 
   const studyRegions = useMemo(() => {
     if (regionOverrides && regionOverrides.length > 0) return regionOverrides;
@@ -216,16 +241,34 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   /** Primary region (first selected) — drives default template / protocol pick. */
   const matchedStudyRegion = studyRegions[0] ?? null;
 
-    const studyContext: ReportingStudyContext = useMemo(
-    () => buildReportingStudyContext({
+  const studyContext: ReportingStudyContext = useMemo(
+    () =>
+      buildReportingStudyContext({
+        modality,
+        studyDescription,
+        dicomBodyPart,
+        regions: studyRegions,
+        source: regionOverrides
+          ? "override"
+          : autoRegionMatch.source === "billed"
+            ? "billed"
+            : autoRegionMatch.source === "dicom"
+              ? "dicom"
+              : matchedStudyRegion
+                ? "auto"
+                : "unresolved",
+        protocolName: activeProtocol?.name ?? null,
+      }),
+    [
       modality,
       studyDescription,
       dicomBodyPart,
-      regions: studyRegions,
-      source: regionOverrides ? "override" : (matchedStudyRegion ? "auto" : "unresolved"),
-      protocolName: activeProtocol?.name ?? null,
-    }),
-    [modality, studyDescription, dicomBodyPart, studyRegions, regionOverrides, matchedStudyRegion, activeProtocol?.name],
+      studyRegions,
+      regionOverrides,
+      matchedStudyRegion,
+      activeProtocol?.name,
+      autoRegionMatch.source,
+    ],
   );
 
   /** Canonical Study Tab id for the primary selected region (Section 1). */
@@ -847,6 +890,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     studyHint,
     studyContext,
     autoStudyRegion,
+    autoRegionMatch,
     matchedStudyRegion,
     studyRegions,
     regionOverrides,

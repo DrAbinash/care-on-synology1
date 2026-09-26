@@ -40,6 +40,14 @@ export type StudyRegionReportFormatSectionProps = {
   modality?: string | null;
   disabled?: boolean;
   testName?: string | null;
+  /**
+   * How auto region was chosen at study-open (billed preferred over DICOM).
+   * null / undefined when unresolved; "override" when radiologist picked manually.
+   */
+  regionMatchSource?: "billed" | "dicom" | "override" | null;
+  /** DICOM-only match — shown when billed won with a different region. */
+  dicomMatchedRegion?: string | null;
+  billedMatchedRegion?: string | null;
   /** Protocol still applies internally when region changes — metadata only. */
   activeProtocolName?: string | null;
   onReapplyDefaults?: () => void;
@@ -56,6 +64,9 @@ export function StudyRegionReportFormatSection({
   modality,
   disabled,
   testName,
+  regionMatchSource = null,
+  dicomMatchedRegion = null,
+  billedMatchedRegion = null,
   activeProtocolName,
   onReapplyDefaults,
   canReapplyDefaults,
@@ -214,6 +225,32 @@ export function StudyRegionReportFormatSection({
         {testName ? (
           <span className="text-muted-foreground pb-1" title="Detected / applied study title">
             Test: <strong className="text-foreground">{testName}</strong>
+          </span>
+        ) : null}
+
+        {regionMatchSource === "billed" || regionMatchSource === "dicom" ? (
+          <span
+            className="pb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-800/80"
+            data-testid="region-match-source"
+            data-source={regionMatchSource}
+            title={
+              regionMatchSource === "billed"
+                ? dicomMatchedRegion && dicomMatchedRegion !== (billedMatchedRegion ?? selectedRegion)
+                  ? `Region from billed procedure (DICOM would have matched “${dicomMatchedRegion}”)`
+                  : "Region from billed procedure"
+                : "Region from DICOM / worklist StudyDescription"
+            }
+          >
+            {regionMatchSource === "billed" ? "From billed" : "From DICOM"}
+            {regionMatchSource === "billed"
+              && dicomMatchedRegion
+              && dicomMatchedRegion !== (billedMatchedRegion ?? selectedRegion)
+              ? (
+                <span className="ml-1 font-normal normal-case text-amber-800/90">
+                  · DICOM: {dicomMatchedRegion}
+                </span>
+              )
+              : null}
           </span>
         ) : null}
 

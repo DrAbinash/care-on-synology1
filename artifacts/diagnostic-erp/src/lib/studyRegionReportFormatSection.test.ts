@@ -109,6 +109,21 @@ describe("Section 1 — Study / Region + Report Format unification", () => {
     expect(section).not.toContain('data-testid="format-show-all-modality"');
     expect(section).toContain("writeLastStudyFamily");
     expect(section).toContain("regionSelectionAction");
+    expect(section).toContain('data-testid="region-match-source"');
+    expect(section).toContain("From billed");
+    expect(section).toContain("From DICOM");
+  });
+
+  it("study-open prefers billed procedure name for auto region resolution", () => {
+    const setup = read("hooks/useReportingStudySetup.ts");
+    const clinical = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+    const canvas = read("components/radiology/workspace/ReportCanvas.tsx");
+    expect(setup).toContain("resolveAutoStudyRegion");
+    expect(setup).toContain("billedTestName");
+    expect(clinical).toContain("billedTestName:");
+    expect(clinical).toContain("workflow.currentRow?.testName");
+    expect(canvas).toContain("regionMatchSource=");
+    expect(canvas).toContain("autoRegionMatch.source");
   });
 
   it("workspace mounts first-class Report Format before Technique; region strip has no format select", () => {

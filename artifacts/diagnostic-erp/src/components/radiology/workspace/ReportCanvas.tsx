@@ -871,6 +871,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       modality={workflow.currentRow?.modality ?? null}
                       disabled={isLocked || isFinalized}
                       testName={studyNameForExport || studySetup.testName}
+                      regionMatchSource={
+                        studySetup.regionOverrides != null
+                          ? "override"
+                          : studySetup.autoRegionMatch.source
+                      }
+                      dicomMatchedRegion={studySetup.autoRegionMatch.dicomRegion}
+                      billedMatchedRegion={studySetup.autoRegionMatch.billedRegion}
                       activeProtocolName={studySetup.activeProtocol?.name ?? null}
                       onReapplyDefaults={() => studySetup.reapplyDefaults()}
                       canReapplyDefaults={studySetup.studyRegions.length > 0}

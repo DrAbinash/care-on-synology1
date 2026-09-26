@@ -980,6 +980,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studyId,
     modality: workflow.currentRow?.modality,
     studyDescription: workflow.currentRow?.studyDescription,
+    billedTestName:
+      workflow.currentRow?.testName
+      || workflow.currentRow?.billedTestName
+      || null,
     bodyPart: (workflow.currentRow as { bodyPart?: string | null } | null)?.bodyPart,
     isLoadingExistingDraft,
     draftHydrated: !!studyId && draftHydratedStudyId === studyId,
