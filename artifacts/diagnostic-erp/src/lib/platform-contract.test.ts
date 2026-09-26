@@ -32,15 +32,17 @@ const ERP_SRC = resolve(HERE, ".."); // artifacts/diagnostic-erp/src
 const REPO = resolve(HERE, "../../../.."); // repo root
 const read = (p: string) => readFileSync(p, "utf8");
 const exists = (rel: string) => existsSync(resolve(REPO, rel));
-/** Page + Phase 2/3 hooks (teaching-cases / finalize / export may live in hooks). */
+/** Page + Phase 2–4 hooks + shell components. */
 const WORKSPACE_HOOKS_DIR = resolve(ERP_SRC, "hooks/radiology-workspace");
+const WORKSPACE_SHELL_DIR = resolve(ERP_SRC, "components/radiology/workspace");
+const readTree = (dir: string) =>
+  existsSync(dir)
+    ? readdirSync(dir).filter((n) => /\.tsx?$/.test(n)).map((n) => read(resolve(dir, n)))
+    : [];
 const WORKSPACE = [
   read(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx")),
-  ...(existsSync(WORKSPACE_HOOKS_DIR)
-    ? readdirSync(WORKSPACE_HOOKS_DIR)
-        .filter((n) => /\.tsx?$/.test(n))
-        .map((n) => read(resolve(WORKSPACE_HOOKS_DIR, n)))
-    : []),
+  ...readTree(WORKSPACE_HOOKS_DIR),
+  ...readTree(WORKSPACE_SHELL_DIR),
 ].join("\n");
 
 function walk(dir: string, out: string[] = []): string[] {

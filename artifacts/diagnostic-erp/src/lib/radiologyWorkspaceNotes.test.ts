@@ -7,7 +7,12 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 describe("Radiology Reporting Workspace handwritten notes", () => {
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+  const workspace = [
+  read("pages/RadiologyReportingWorkspace.tsx"),
+  read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
+  read("components/radiology/workspace/ReportCanvas.tsx"),
+  read("components/radiology/workspace/WorkspaceOverlays.tsx"),
+].join("\n");
   const strip = read("components/radiology/zai-workspace/worklist-strip.tsx");
   const picker = read("components/radiology/ReportImagePicker.tsx");
   const viewer = read("components/EmbeddedWadoViewer.tsx");

@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 
 const SRC = resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(resolve(SRC, rel), "utf8");
-const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+const workspace = [
+  read("pages/RadiologyReportingWorkspace.tsx"),
+  read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
+  read("components/radiology/workspace/ReportCanvas.tsx"),
+  read("components/radiology/workspace/WorkspaceOverlays.tsx"),
+].join("\n");
 const tools = read("components/radiology/ReportingToolsPanel.tsx");
 const quickSelect = read("components/radiology/zai-workspace/quick-select-strip.tsx");
 

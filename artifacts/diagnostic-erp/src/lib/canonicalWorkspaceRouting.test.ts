@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Ticket M1.1 — canonical radiology workspace consolidation guard.
@@ -19,8 +19,17 @@ const app = read("App.tsx");
 // Modular rewrite (Aug 2026): the canonical route serves the new Z.ai workspace;
 // the former 7,886-line monolith lives at .legacy.tsx and stays registered at
 // /radiology/legacy-workspace for parity until every contract is ported.
-const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+const workspacePage = read("pages/RadiologyReportingWorkspace.tsx");
 const legacy = read("pages/RadiologyReportingWorkspace.legacy.tsx");
+const workspaceHooksDir = "hooks/radiology-workspace";
+const workspaceShellDir = "components/radiology/workspace";
+/** Phase 4: page is composition-only — scan hooks + shell for contracts. */
+const workspace = [
+  workspacePage,
+  ...readdirSync(join(SRC, workspaceHooksDir)).filter((n) => /\.tsx?$/.test(n)).map((n) => read(`${workspaceHooksDir}/${n}`)),
+  ...readdirSync(join(SRC, workspaceShellDir)).filter((n) => /\.tsx?$/.test(n)).map((n) => read(`${workspaceShellDir}/${n}`)),
+].join("\n");
+const workspaceTree = workspace;
 
 describe("M1.1 — canonical routing", () => {
   it("the canonical page serves /radiology/report/:studyId and all its aliases", () => {
@@ -108,6 +117,9 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     // two-step finalize or the save-draft POST.
     for (const rel of [
       "pages/RadiologyReportingWorkspace.tsx",
+      "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
+      "hooks/radiology-workspace/useDraftPersistence.ts",
+      "hooks/radiology-workspace/useStudyFinalize.ts",
       "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
@@ -118,7 +130,9 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       );
     }
     for (const rel of [
-      "pages/RadiologyReportingWorkspace.tsx",
+      "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
+      "hooks/radiology-workspace/useDraftPersistence.ts",
+      "hooks/radiology-workspace/useStudyFinalize.ts",
       "pages/RadiologyReportingWorkspace.legacy.tsx",
       "pages/RadiologyCommandCenter.tsx",
     ]) {
@@ -128,6 +142,9 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       );
       expect(src).toContain('from "@/lib/radiologyReportLifecycle"');
     }
+    // Composition root must not reintroduce inline finalize transport.
+    expect(workspacePage).not.toContain('"/api/internal/radiology/report-status"');
+    expect(workspacePage).not.toContain('"/api/radiology/report-generator/save-draft"');
     const lifecycle = read("lib/radiologyReportLifecycle.ts");
     expect(lifecycle).toContain('"/api/radiology/report-generator/save-draft"');
     expect(lifecycle).toContain('"/api/internal/radiology/report-status"');
@@ -263,6 +280,7 @@ describe("M1.6A — study locking stays canonical", () => {
 describe("M1.6B2 — voice layer stays canonical", () => {
   // Phase 2: session prefs + execute live in useVoiceReporting; page mounts the bar.
   const voiceReporting = read("hooks/radiology-workspace/useVoiceReporting.ts");
+  const workspaceCommands = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
 
   it("the workspace mounts the ONE voice pipeline (hook + bar), rules in libs", () => {
     expect(workspace).toContain('from "@/hooks/radiology-workspace/useVoiceReporting"');
@@ -279,6 +297,7 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     // Legacy: adapter's workflow branch dispatches by command id.
     expect(legacy).toMatch(/case "workflow":[\s\S]{0,400}commandDispatcher\.dispatch\(intent\.command\)/);
     // Modular: voice execute (Phase 2 hook) routes through the same dispatcher.
+    expect(workspaceCommands).toContain("commandDispatcher.dispatch");
     expect(voiceReporting).toContain("commandDispatcherRef.current?.dispatch");
     expect(workspace).toContain("commandDispatcher.dispatch");
     for (const src of [workspace, legacy, voiceReporting]) {

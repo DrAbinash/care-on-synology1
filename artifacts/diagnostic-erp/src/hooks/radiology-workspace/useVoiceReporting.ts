@@ -10,7 +10,7 @@
  */
 
 import {
-  useCallback, useEffect, useMemo, useRef, useState,
+  useCallback, useMemo, useRef, useState,
   type Dispatch, type MutableRefObject, type RefObject, type SetStateAction,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,7 +20,6 @@ import {
   parseVoiceSettings, parseVoiceUserPrefs, mergeVoiceSettings,
   fetchTranscribeCapabilities, type TranscribeCapabilities, type VoiceSettings,
 } from "@/lib/voiceTranscription";
-import { voiceKeyAction } from "@/lib/voiceSessionState";
 import {
   normalizeDictationText, describeIntent,
   type ParsedVoiceCommand, type ViewerOp,
@@ -388,44 +387,9 @@ export function useVoiceReporting(opts: UseVoiceReportingOptions) {
     });
   }, []);
 
-  // Voice PTT / confirm-pending / cancel — owned here so the page does not
-  // double-mount voiceKeyAction listeners alongside this hook.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const action = voiceKeyAction(
-        {
-          key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey,
-          shiftKey: e.shiftKey, repeat: e.repeat,
-          target: e.target as { tagName?: string; isContentEditable?: boolean } | null,
-        },
-        {
-          enabled: voiceSession.enabled,
-          pttKey: voiceSettings.pttKey,
-          capturing: voiceSession.capturing,
-          hasPendingPreview: voiceSession.pending != null,
-          confirmViaEnterAllowed: voiceSession.pending?.verdict.confirmViaEnterAllowed ?? false,
-        },
-      );
-      if (!action) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (action === "toggle-listen") voiceSession.toggleListening();
-      else if (action === "ptt-start") voiceSession.startListening("ptt");
-      else if (action === "confirm-pending") voiceSession.confirmPending("enter");
-      else voiceSession.cancel();
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === " " && voiceSession.captureTrigger === "ptt") {
-        voiceSession.stopListening();
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("keyup", onKeyUp, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("keyup", onKeyUp, true);
-    };
-  }, [voiceSession, voiceSettings.pttKey]);
+  // Voice PTT / confirm-pending / cancel keys moved to useWorkspaceCommands
+  // (Phase 4) — single keydown chain, voiceKeyAction first. Do not re-add
+  // listeners here (double-mount).
 
   return {
     pacsSettingsRows,

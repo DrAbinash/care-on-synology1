@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   AI_ASSISTANT_MINIMIZED_KEY,
@@ -56,6 +56,24 @@ function memoryStorage(initial: Record<string, string> = {}): Storage {
     removeItem(k: string) { map.delete(k); },
     key() { return null; },
   };
+}
+
+
+function readWorkspaceTree(): string {
+  const page = readFileSync(join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"), "utf8");
+  const hooksDir = join(__dirname, "../hooks/radiology-workspace");
+  const shellDir = join(__dirname, "../components/radiology/workspace");
+  const chunks = [page];
+  for (const dir of [hooksDir, shellDir]) {
+    try {
+      for (const name of readdirSync(dir)) {
+        if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+          chunks.push(readFileSync(join(dir, name), "utf8"));
+        }
+      }
+    } catch { /* optional */ }
+  }
+  return chunks.join("\n");
 }
 
 describe("AI Assistant minimized preference", () => {
@@ -117,10 +135,7 @@ describe("AI Assistant multiline + minimize contracts", () => {
   });
 
   it("workspace defaults AI assistant preference via read helper and widens only when expanded", () => {
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceTree();
     expect(page).toMatch(/readAiAssistantMinimizedPreference/);
     expect(page).toMatch(/writeAiAssistantMinimizedPreference/);
     expect(page).toMatch(/w-\[min\(520px,calc\(100vw-2rem\)\)\]/);
@@ -412,10 +427,7 @@ describe("Collapsed-section preferences", () => {
 
   it("validation warnings remain discoverable when collapsed", () => {
     expect(sectionsRequiringReveal({ impressionNeedsRefresh: true })).toEqual(["impression"]);
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceTree();
     expect(page).toMatch(/ImpressionWarningStrip/);
     expect(page).not.toMatch(/accordionProps\("impression",\s*\{[^}]*collapsedWarning/);
     expect(page).not.toMatch(/<ImpressionStaleBanner/);
@@ -579,10 +591,7 @@ describe("Keyboard shortcut safety", () => {
     expect(saveAndNextFieldsReady({ findings: "  ", impression: "Normal study." })).toBe(false);
     expect(saveAndNextFieldsReady({ findings: "Normal study.", impression: "" })).toBe(false);
 
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceTree();
     expect(page).toMatch(/if \(e\.ctrlKey && e\.shiftKey && e\.key === "Enter"\)/);
     expect(page).toMatch(/void handleFrictionlessSaveAndNext\(\)/);
     expect(page).toMatch(/await saveDraft\(\{ silent: true \}\)/);
