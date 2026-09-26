@@ -1,8 +1,8 @@
 /**
- * Phase-1 baseline ↔ Phase-3 parity gate for RadiologyReportingWorkspace testids.
- * Scans the page plus Phase-2 hooks (querySelector templates may live in hooks).
+ * Phase-1 baseline ↔ Phase-4 parity gate for RadiologyReportingWorkspace testids.
+ * Scans the page plus radiology-workspace hooks and shell components.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fixturePath = join(here, "fixtures/radiologyReportingWorkspace.testids.json");
 const workspacePath = join(here, "../pages/RadiologyReportingWorkspace.tsx");
 const hooksDir = join(here, "../hooks/radiology-workspace");
+const shellDir = join(here, "../components/radiology/workspace");
 
 type TestIdFixture = {
   declaredInJsx: string[];
@@ -31,15 +32,23 @@ function scanSource(src: string): TestIdFixture {
   };
 }
 
-function scanWorkspaceTree(): TestIdFixture {
-  const chunks = [readFileSync(workspacePath, "utf8")];
-  try {
-    for (const name of readdirSync(hooksDir)) {
-      if (name.endsWith(".ts") || name.endsWith(".tsx")) {
-        chunks.push(readFileSync(join(hooksDir, name), "utf8"));
-      }
+function readTree(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const chunks: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+      chunks.push(readFileSync(join(dir, name), "utf8"));
     }
-  } catch { /* hooks dir optional on older baselines */ }
+  }
+  return chunks;
+}
+
+function scanWorkspaceTree(): TestIdFixture {
+  const chunks = [
+    readFileSync(workspacePath, "utf8"),
+    ...readTree(hooksDir),
+    ...readTree(shellDir),
+  ];
   return scanSource(chunks.join("\n"));
 }
 

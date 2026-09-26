@@ -3,7 +3,7 @@
  * Maps 1:1 to the FINAL COMPOSER PRE-DEPLOY CLOSURE checklist.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { detectClinicalSignificance } from "./clinicalSignificance";
@@ -20,6 +20,19 @@ function readApi(name: string): string {
 
 function readErp(rel: string): string {
   return readFileSync(join(ERP_SRC, rel), "utf8");
+}
+
+/** Phase 4: page is composition-only — scan hooks + shell. */
+function readErpWorkspace(): string {
+  const chunks = [readErp("pages/RadiologyReportingWorkspace.tsx")];
+  for (const dir of ["hooks/radiology-workspace", "components/radiology/workspace"]) {
+    for (const name of readdirSync(join(ERP_SRC, dir))) {
+      if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+        chunks.push(readErp(`${dir}/${name}`));
+      }
+    }
+  }
+  return chunks.join("\n");
 }
 
 describe("pre-deploy safety contracts — clinical significance (1–4)", () => {
@@ -134,9 +147,9 @@ describe("pre-deploy safety contracts — finalize + apply guards (10–11)", ()
   });
 
   it("11. finalize with pending AI changes shows explicit gate (no silent inclusion)", () => {
-    // Phase 3: Guard 10 body in useStudyFinalize; gate JSX stays on the page.
+    // Phase 3/4: Guard 10 body in useStudyFinalize; gate JSX in WorkspaceOverlays.
     const finalizeHook = readErp("hooks/radiology-workspace/useStudyFinalize.ts");
-    const workspace = readErp("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = readErpWorkspace();
     const tree = `${finalizeHook}\n${workspace}`;
     expect(finalizeHook).toContain("Guard 10: pending AI proposals must never silently finalize");
     expect(workspace).toContain('data-testid="ai-finalize-gate"');
@@ -325,7 +338,7 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
 
   it("13c4. ReportComposerAssistant exposes mode selector; workspace does not call legacy ai-reporting/draft for composer", async () => {
     const assistant = readFileSync(join(ERP_SRC, "components/radiology/ReportComposerAssistant.tsx"), "utf8");
-    const workspace = readFileSync(join(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+    const workspace = readErpWorkspace();
     expect(assistant).toMatch(/Draft from Observations/);
     expect(assistant).toMatch(/Draft with Selected Images/);
     expect(workspace).toMatch(/composerAiMode/);
@@ -335,7 +348,7 @@ describe("pre-deploy safety contracts — canonical study-context plumbing (P0-2
   });
 
   it("13d. RadiologyReportingWorkspace passes canonical protocol + reportTitle to useReportComposer (no `protocol: undefined`)", async () => {
-    const workspace = readFileSync(join(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+    const workspace = readErpWorkspace();
     // PR P0-2 explicit defect: `protocol: undefined` MUST be gone.
     expect(workspace).not.toMatch(/protocol:\s*undefined/);
     // Protocol MUST be wired to the resolved ReportingStudyContext.protocolName.

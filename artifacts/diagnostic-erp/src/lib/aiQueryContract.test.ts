@@ -122,7 +122,18 @@ describe("Prior-studies wiring", () => {
   });
 
   it("workspaces pass the current study for server-side self-exclusion", () => {
-    expect(read(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"))).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
+    // Phase 4: excludeStudyId lives in ReportCanvas / ReportingToolsRail (shell),
+    // not the composition-only page root — scan page + hooks + shell.
+    const workspaceChunks = [
+      read(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx")),
+      ...readdirSync(resolve(ERP_SRC, "hooks/radiology-workspace"))
+        .filter((n) => /\.tsx?$/.test(n))
+        .map((n) => read(resolve(ERP_SRC, "hooks/radiology-workspace", n))),
+      ...readdirSync(resolve(ERP_SRC, "components/radiology/workspace"))
+        .filter((n) => /\.tsx?$/.test(n))
+        .map((n) => read(resolve(ERP_SRC, "components/radiology/workspace", n))),
+    ].join("\n");
+    expect(workspaceChunks).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
     expect(read(resolve(ERP_SRC, "pages/UsgCompanionWorkspace.tsx"))).toMatch(/excludeStudyId=\{studyId/);
   });
 });

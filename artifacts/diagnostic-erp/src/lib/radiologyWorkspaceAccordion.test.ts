@@ -5,7 +5,15 @@ import { describe, expect, it } from "vitest";
 const ERP_SRC = resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(resolve(ERP_SRC, rel), "utf8");
 
-const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+const workspacePage = read("pages/RadiologyReportingWorkspace.tsx");
+const clinicalUi = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+const workspaceCommands = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
+const layoutHookMod = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
+const shellFiles = [
+  "WorkspaceShell", "WorkspaceTopBar", "WorklistPanel", "ViewerColumn",
+  "ReportCanvas", "ReportingToolsRail", "WorkspaceFooter", "WorkspaceOverlays",
+].map((n) => read(`components/radiology/workspace/${n}.tsx`));
+const workspace = [workspacePage, clinicalUi, workspaceCommands, layoutHookMod, ...shellFiles].join("\n");
 const section1 = read("components/radiology/StudyRegionReportFormatSection.tsx");
 const accordion = read("components/radiology/zai-workspace/report-section-accordion.tsx");
 const findingsEditor = read("components/radiology/zai-workspace/findings-editor.tsx");

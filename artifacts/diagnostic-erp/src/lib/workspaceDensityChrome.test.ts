@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   isStudyDetailsSection,
@@ -8,6 +8,19 @@ import {
   shouldUseExclusiveReportSections,
 } from "./reportingPaneFocus";
 
+
+function readWorkspaceSrc(): string {
+  const base = join(__dirname, "..");
+  const chunks = [readFileSync(join(base, "pages/RadiologyReportingWorkspace.tsx"), "utf8")];
+  for (const dir of ["hooks/radiology-workspace", "components/radiology/workspace"]) {
+    for (const name of readdirSync(join(base, dir))) {
+      if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+        chunks.push(readFileSync(join(base, dir, name), "utf8"));
+      }
+    }
+  }
+  return chunks.join("\n");
+}
 describe("workspace density chrome policy", () => {
   it("always uses compact + exclusive accordion (ultrawide included)", () => {
     expect(
@@ -38,20 +51,14 @@ describe("workspace density chrome policy", () => {
   });
 
   it("wires AnchorRail only when viewer context exists", () => {
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceSrc();
     expect(page).toMatch(
       /activeAnchor\?\.studyInstanceUID[\s\S]{0,80}<AnchorRail/,
     );
   });
 
   it("Starting Canvas collapses to a thin row with Quick Normal reachable", () => {
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceSrc();
     expect(page).toMatch(/data-testid="starting-canvas-toggle"/);
     expect(page).toMatch(/data-testid="full-normal-starting-canvas"/);
     expect(page).toMatch(/data-testid="quick-normal-fallback"/);
@@ -62,10 +69,7 @@ describe("workspace density chrome policy", () => {
   });
 
   it("viewer-focus strip opens patient details instead of a vanishing Show details", () => {
-    const page = readFileSync(
-      join(__dirname, "../pages/RadiologyReportingWorkspace.tsx"),
-      "utf8",
-    );
+    const page = readWorkspaceSrc();
     expect(page).toMatch(/data-testid="viewer-focus-strip"/);
     expect(page).toMatch(/Show patient details/);
     expect(page).not.toMatch(

@@ -4,6 +4,26 @@ Notable, reviewable changes to CARE ERP. Newest first.
 
 ## [Unreleased]
 
+### Radiology — Workspace modularization Phase 4 (commands, OHIF, JSX shell) — 2026-09-26
+
+FINAL modularization storey. Pure extraction — zero behavior change. Keyboard
+precedence consolidated (voiceKeyAction first). data-testids, store shape, API
+URLs/payloads, RQ keys, finalize order unchanged. `.legacy.tsx` kept for a
+follow-up delete PR.
+
+**Changed**
+- **`useWorkspaceCommands`** — commandDispatcher + Save & Next + single keydown/keyup
+  chain (voice PTT/confirm/cancel moved here from `useVoiceReporting`).
+- **`useOhifViewerBridge`** — viewer measurements ingest, canal AP, OHIF capture/
+  preflight, subscribeCareOhifBridge, caption refresh, key-image detach/reassign.
+- **`useWorkspaceClinicalUi`** — remaining page orchestration (domain hooks in order).
+- **`components/radiology/workspace/*`** — WorkspaceShell / TopBar / WorklistPanel /
+  ViewerColumn / ReportCanvas / ReportingToolsRail / Footer / Overlays / types.
+- Root `RadiologyReportingWorkspace.tsx` is composition-only (&lt;600 lines).
+- Source-grep / testid parity tests scan page + hooks + shell components.
+- Restored `BROWSER_DICOMWEB_BASE` imports on `ReportCanvas` / `ReportingToolsRail`
+  after the dead-import trim (runtime ReferenceError crash).
+
 ### Radiology — Workspace modularization Phase 3 (draft/finalize/export hooks) — 2026-09-26
 
 Behavior-preserving extraction from `RadiologyReportingWorkspace.tsx` into

@@ -8,7 +8,12 @@ const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
 describe("Section 2 — Clinical History chips", () => {
   it("workspace wires Study Tab–scoped ClinicalHistoryChipStrip + single Hx field", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = [
+  read("pages/RadiologyReportingWorkspace.tsx"),
+  read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
+  read("components/radiology/workspace/ReportCanvas.tsx"),
+  read("components/radiology/workspace/WorkspaceOverlays.tsx"),
+].join("\n");
     const strip = read("components/radiology/ClinicalHistoryChipStrip.tsx");
     expect(workspace).toContain("ClinicalHistoryChipStrip");
     expect(workspace).toContain("selectedStudyTabId={selectedClinicalHistoryTab?.id ?? null}");

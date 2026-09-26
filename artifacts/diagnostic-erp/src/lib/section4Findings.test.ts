@@ -12,10 +12,12 @@ import { resolveChocolateOwnership } from "./chocolateMacroOwnership";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
 import { useWorkspace } from "./zai-workspace/store";
+import { readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
+const modularWorkspace = () => readModularWorkspaceSrc(SRC);
 
 const FINDINGS = [
   { id: 1, studyType: "Brain", studyTabId: 4, label: "Basal ganglia hemorrhage", anatomicalSection: "basal ganglia", conflictGroup: "hemorrhage", isActive: true, sortOrder: 1 },
@@ -77,7 +79,7 @@ describe("Section 4 — anatomy grouping UI wiring", () => {
   });
 
   it("sticky anatomy chips sit above Quick Select tile wall", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = modularWorkspace();
     const chips = read("components/radiology/FindingsAnatomyChips.tsx");
     expect(workspace).toContain("FindingsAnatomyChips");
     expect(workspace).toContain("anatomyFilter={activeFindingsAnatomy}");
@@ -85,7 +87,7 @@ describe("Section 4 — anatomy grouping UI wiring", () => {
   });
 
   it("workspace wires anatomy strip above the Findings editor", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = modularWorkspace();
     expect(workspace).toContain("FindingsAnatomyStrip");
     expect(workspace).toContain("selectedStudyTabId={studySetup.selectedStudyTabId}");
     expect(workspace).toContain("onToggle={handleQuickToggle}");
@@ -287,7 +289,7 @@ describe("Section 4 — Quick Select + Chocolate converge on ownership path", ()
   });
 
   it("handleQuickToggle uses matchedStudyRegion for patch region metadata", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = modularWorkspace();
     expect(workspace).toContain("region: studySetup.matchedStudyRegion ?? finding.studyType");
     expect(workspace).toContain('source: "quick-findings"');
     expect(workspace).toContain("applyPathologyOverlay");
@@ -325,7 +327,7 @@ describe("Section 4 — undo + draft persistence wiring", () => {
   });
 
   it("draft save path includes findingsText from workspace store", () => {
-    const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+    const workspace = modularWorkspace();
     expect(workspace).toMatch(/findingsText|findings:/);
     expect(workspace).toContain("saveDraft");
   });

@@ -4,7 +4,25 @@ import { describe, expect, it } from "vitest";
 
 const ERP_SRC = resolve(__dirname, "..");
 
-const workspace = readFileSync(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+const workspacePage = readFileSync(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+/** Phase 4: clinical UI + shell hold demography + editor JSX. */
+const clinicalUi = readFileSync(
+  resolve(ERP_SRC, "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
+  "utf8",
+);
+const reportCanvas = readFileSync(
+  resolve(ERP_SRC, "components/radiology/workspace/ReportCanvas.tsx"),
+  "utf8",
+);
+const topBar = readFileSync(
+  resolve(ERP_SRC, "components/radiology/workspace/WorkspaceTopBar.tsx"),
+  "utf8",
+);
+const overlays = readFileSync(
+  resolve(ERP_SRC, "components/radiology/workspace/WorkspaceOverlays.tsx"),
+  "utf8",
+);
+const workspace = `${workspacePage}\n${clinicalUi}\n${reportCanvas}\n${topBar}\n${overlays}`;
 /** Phase 2: combination/protocol mergeField lives in useVoiceReporting. */
 const voiceReporting = readFileSync(
   resolve(ERP_SRC, "hooks/radiology-workspace/useVoiceReporting.ts"),

@@ -8,7 +8,12 @@ const read = (rel: string) => readFileSync(resolve(ERP_SRC, rel), "utf8");
 describe("FrozenKeyImagesRail capture camera", () => {
   const rail = read("components/radiology/FrozenKeyImagesRail.tsx");
   const viewer = read("components/EmbeddedWadoViewer.tsx");
-  const workspace = read("pages/RadiologyReportingWorkspace.tsx");
+  const workspace = [
+  read("pages/RadiologyReportingWorkspace.tsx"),
+  read("hooks/radiology-workspace/useOhifViewerBridge.ts"),
+  read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"),
+  read("components/radiology/workspace/ViewerColumn.tsx"),
+].join("\n");
 
   it("exposes a clickable capture control separate from the expand toggle", () => {
     expect(rail).toContain('data-testid="frozen-key-images-capture"');
