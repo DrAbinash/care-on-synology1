@@ -261,8 +261,12 @@ describe("M1.6A — study locking stays canonical", () => {
 });
 
 describe("M1.6B2 — voice layer stays canonical", () => {
+  // Phase 2: session prefs + execute live in useVoiceReporting; page mounts the bar.
+  const voiceReporting = read("hooks/radiology-workspace/useVoiceReporting.ts");
+
   it("the workspace mounts the ONE voice pipeline (hook + bar), rules in libs", () => {
-    expect(workspace).toContain('from "@/hooks/useVoiceSession"');
+    expect(workspace).toContain('from "@/hooks/radiology-workspace/useVoiceReporting"');
+    expect(voiceReporting).toContain('from "@/hooks/useVoiceSession"');
     expect(workspace).toContain('from "@/components/radiology/VoiceCommandBar"');
     expect(legacy).toContain('from "@/lib/voiceCommandGrammar"');
     expect(legacy).toContain('from "@/lib/voiceSessionState"');
@@ -274,16 +278,17 @@ describe("M1.6B2 — voice layer stays canonical", () => {
   it("voice workflow intents execute ONLY through the M1.5 dispatcher", () => {
     // Legacy: adapter's workflow branch dispatches by command id.
     expect(legacy).toMatch(/case "workflow":[\s\S]{0,400}commandDispatcher\.dispatch\(intent\.command\)/);
-    // Modular: voice execute routes through the same dispatcher.
+    // Modular: voice execute (Phase 2 hook) routes through the same dispatcher.
+    expect(voiceReporting).toContain("commandDispatcherRef.current?.dispatch");
     expect(workspace).toContain("commandDispatcher.dispatch");
-    for (const src of [workspace, legacy]) {
+    for (const src of [workspace, legacy, voiceReporting]) {
       expect(src).not.toContain("webkitSpeechRecognition");
       expect(src).not.toContain("new SpeechRecognition");
     }
   });
 
   it("voice never invents transport: audit + transcribe ride existing patterns", () => {
-    expect(workspace).toContain("/api/radiology/voice-command-audit");
+    expect(voiceReporting).toContain("/api/radiology/voice-command-audit");
     const provider = read("lib/voiceTranscription.ts");
     expect(provider).toContain("/api/ai/transcribe"); // the EXISTING server endpoint
     expect(provider).not.toMatch(/api[_-]key/i);      // no keys in the frontend
@@ -306,13 +311,15 @@ describe("M1.6B2 — voice layer stays canonical", () => {
     const panel = read("components/radiology/QuickFindingsPanel.tsx");
     expect(panel).toContain("externalSearch");
     expect(legacy).toContain("externalSearch={qsExternalSearch}");
+    expect(workspace).toContain("externalSearch={qsExternalSearch}");
+    expect(voiceReporting).toContain("setQsExternalSearch");
   });
 
   it("voice settings live in RadiologySettingsCenter (pacs_settings, category voice)", () => {
     const settings = read("pages/RadiologySettingsCenter.tsx");
     expect(settings).toContain('category: "voice"');
     expect(settings).toContain("VoiceSettingsPanel");
-    expect(workspace).toContain("parseVoiceSettings");
+    expect(voiceReporting).toContain("parseVoiceSettings");
   });
 });
 

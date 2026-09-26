@@ -151,10 +151,13 @@ describe("clicking the workspace collapses chrome, keeps OHIF", () => {
   });
 
   it("collapses queue/tools chrome and app sidebar without hiding OHIF", () => {
-    expect(workspace).toContain("leftPanelRef.current?.collapse()");
-    expect(workspace).toContain("rightPanelRef.current?.collapse()");
-    expect(workspace).toContain("setViewerFocus(true)");
-    expect(workspace).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
+    // Phase 2: collapse/focus logic lives in useWorkspaceLayout; page still owns chrome JSX.
+    const layoutHook = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
+    expect(layoutHook).toContain("leftPanelRef.current?.collapse()");
+    expect(layoutHook).toContain("rightPanelRef.current?.collapse()");
+    expect(layoutHook).toContain("setViewerFocus(true)");
+    expect(layoutHook).toContain('new CustomEvent("care:workspace-focus", { detail: true })');
+    expect(workspace).toContain("useWorkspaceLayout");
     expect(workspace).toContain("collapsible");
     expect(workspace).toContain('data-testid="right-panel-expand"');
     expect(workspace).toContain("ReportingToolsPanel");

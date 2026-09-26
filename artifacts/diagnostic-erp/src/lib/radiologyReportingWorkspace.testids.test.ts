@@ -1,8 +1,8 @@
 /**
  * Phase-1 baseline ↔ Phase-3 parity gate for RadiologyReportingWorkspace testids.
- * Fails if JSX gains/loses a data-testid without updating the fixture.
+ * Scans the page plus Phase-2 hooks (querySelector templates may live in hooks).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturePath = join(here, "fixtures/radiologyReportingWorkspace.testids.json");
 const workspacePath = join(here, "../pages/RadiologyReportingWorkspace.tsx");
+const hooksDir = join(here, "../hooks/radiology-workspace");
 
 type TestIdFixture = {
   declaredInJsx: string[];
@@ -17,7 +18,7 @@ type TestIdFixture = {
   querySelectorTemplates: string[];
 };
 
-function scanWorkspace(src: string): Omit<TestIdFixture, never> {
+function scanSource(src: string): TestIdFixture {
   const declaredInJsx = [...src.matchAll(/data-testid="([^"$]+)"/g)].map((m) => m[1]);
   const dynamicJsxPatterns = [...src.matchAll(/data-testid=\{`([^`]+)`\}/g)].map((m) => m[1]);
   const querySelectorTemplates = [
@@ -30,10 +31,22 @@ function scanWorkspace(src: string): Omit<TestIdFixture, never> {
   };
 }
 
+function scanWorkspaceTree(): TestIdFixture {
+  const chunks = [readFileSync(workspacePath, "utf8")];
+  try {
+    for (const name of readdirSync(hooksDir)) {
+      if (name.endsWith(".ts") || name.endsWith(".tsx")) {
+        chunks.push(readFileSync(join(hooksDir, name), "utf8"));
+      }
+    }
+  } catch { /* hooks dir optional on older baselines */ }
+  return scanSource(chunks.join("\n"));
+}
+
 describe("RadiologyReportingWorkspace data-testid inventory (Phase 1 fixture)", () => {
   it("matches the committed Phase-1 baseline fixture", () => {
     const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as TestIdFixture;
-    const live = scanWorkspace(readFileSync(workspacePath, "utf8"));
+    const live = scanWorkspaceTree();
     expect(live.declaredInJsx).toEqual(fixture.declaredInJsx);
     expect(live.dynamicJsxPatterns).toEqual(fixture.dynamicJsxPatterns);
     expect(live.querySelectorTemplates).toEqual(fixture.querySelectorTemplates);

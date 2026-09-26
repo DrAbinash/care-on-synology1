@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 const ERP_SRC = resolve(__dirname, "..");
 
 const workspace = readFileSync(resolve(ERP_SRC, "pages/RadiologyReportingWorkspace.tsx"), "utf8");
+/** Phase 2: combination/protocol mergeField lives in useVoiceReporting. */
+const voiceReporting = readFileSync(
+  resolve(ERP_SRC, "hooks/radiology-workspace/useVoiceReporting.ts"),
+  "utf8",
+);
+const workspaceTree = `${workspace}\n${voiceReporting}`;
 
 describe("RadiologyReportingWorkspace — consolidation contracts", () => {
   it("uses the canonical report demography model", () => {
@@ -38,15 +44,15 @@ describe("RadiologyReportingWorkspace — consolidation contracts", () => {
   });
 
   it("uses shared mergeField for Quick Findings / protocol / companion (provenance)", () => {
-    expect(workspace).toContain('mergeField("findings"');
-    expect(workspace).toContain('"quick-findings"');
-    expect(workspace).toContain('"protocol"');
-    expect(workspace).toContain('"companion"');
-    expect(workspace).toContain('"structured-template"');
+    expect(workspaceTree).toContain('mergeField("findings"');
+    expect(workspaceTree).toContain('"quick-findings"');
+    expect(workspaceTree).toContain('"protocol"');
+    expect(workspaceTree).toContain('"companion"');
+    expect(workspaceTree).toContain('"structured-template"');
     expect(workspace).toContain("StructuredFormatPanel");
-    expect(workspace).not.toContain("mergeReportFieldContent(");
-    expect(workspace).not.toContain("mergeBlock(");
-    expect(workspace).not.toContain("mergeImpression(");
+    expect(workspaceTree).not.toContain("mergeReportFieldContent(");
+    expect(workspaceTree).not.toContain("mergeBlock(");
+    expect(workspaceTree).not.toContain("mergeImpression(");
   });
 
   it("does not auto-merge structured impression candidates; Accept does", () => {
