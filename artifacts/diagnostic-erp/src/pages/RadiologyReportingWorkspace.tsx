@@ -316,7 +316,13 @@ import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { removeBlock } from "@/lib/quickFindingsMerge";
+import {
+  DEFAULT_RECOMMENDATION_CHIPS,
+  RECOMMENDATION_CHIP_ALIASES,
+  recommendationChipActive,
+  removeRecommendationChip,
+} from "@/lib/recommendationChips";
+import { findingsMapToText } from "@/lib/findingsMapText";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
@@ -474,55 +480,8 @@ import {
   Trash2, MonitorPlay, Plus, Undo2, Link2,
 } from "lucide-react";
 
-/** Default Recommendation chips when `report_recommendation_chips` is unset. */
-const DEFAULT_RECOMMENDATION_CHIPS: string[] = [
-  "Clinical correlation is recommended.",
-  "Correlation with previous imaging is advised.",
-  "Follow-up imaging is advised as clinically indicated.",
-  "Contrast-enhanced study is suggested for further characterisation.",
-  "MRI is advised for further evaluation.",
-  "Specialist / surgical consultation is recommended.",
-  "No further imaging is required at present.",
-];
-
 /** Stable empty catalog — avoid `?? []` props that retrigger anatomy effects every render. */
 const EMPTY_QUICK_FINDINGS: QuickFinding[] = [];
-
-const RECOMMENDATION_CHIP_ALIASES: Record<string, string[]> = {
-  "Clinical correlation is recommended.": [
-    "Please correlate with clinical and laboratory findings.",
-    "Please correlate with clinical findings.",
-    "Clinical correlation advised.",
-    "Clinical correlation is advised.",
-  ],
-  "Follow-up imaging is advised as clinically indicated.": [
-    "Follow-up imaging is recommended as clinically indicated.",
-    "Follow up imaging is advised as clinically indicated.",
-  ],
-};
-
-function removeRecommendationChip(existing: string, chip: string): string {
-  const trimmed = chip.trim();
-  if (!trimmed) return existing;
-  const aliases = RECOMMENDATION_CHIP_ALIASES[trimmed] ?? [];
-  let next = removeBlock(existing, trimmed);
-  for (const a of aliases) next = removeBlock(next, a);
-  return next;
-}
-
-function recommendationChipActive(existing: string, chip: string): boolean {
-  const trimmed = chip.trim();
-  if (!trimmed) return false;
-  if (existing.includes(trimmed)) return true;
-  return (RECOMMENDATION_CHIP_ALIASES[trimmed] ?? []).some((a) => existing.includes(a));
-}
-
-function findingsMapToText(map: Record<string, { normal: boolean; text: string }>): string {
-  return Object.entries(map)
-    .filter(([, v]) => v.text.trim())
-    .map(([label, v]) => `${label}: ${v.text}`)
-    .join("\n\n");
-}
 
 interface Props { studyId?: number; }
 
