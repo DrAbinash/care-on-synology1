@@ -71,6 +71,7 @@ import { PersonalTemplateRail } from "@/components/radiology/zai-workspace/perso
 import { ReportFormatPicker } from "@/components/radiology/zai-workspace/report-format-picker";
 import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
+import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,

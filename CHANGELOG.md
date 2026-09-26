@@ -21,6 +21,8 @@ follow-up delete PR.
   ViewerColumn / ReportCanvas / ReportingToolsRail / Footer / Overlays / types.
 - Root `RadiologyReportingWorkspace.tsx` is composition-only (&lt;600 lines).
 - Source-grep / testid parity tests scan page + hooks + shell components.
+- Restored `BROWSER_DICOMWEB_BASE` imports on `ReportCanvas` / `ReportingToolsRail`
+  after the dead-import trim (runtime ReferenceError crash).
 
 ### Radiology — Workspace modularization Phase 3 (draft/finalize/export hooks) — 2026-09-26
 
