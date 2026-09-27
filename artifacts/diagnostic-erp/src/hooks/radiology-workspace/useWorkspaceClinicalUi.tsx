@@ -296,6 +296,8 @@ import { useStudyFinalize } from "@/hooks/radiology-workspace/useStudyFinalize";
 import { useWorkspaceExportShare } from "@/hooks/radiology-workspace/useWorkspaceExportShare";
 import { useWorkspaceCommands } from "@/hooks/radiology-workspace/useWorkspaceCommands";
 import { useOhifViewerBridge } from "@/hooks/radiology-workspace/useOhifViewerBridge";
+import { useTriggerAiImpression } from "@/hooks/radiology-workspace/useTriggerAiImpression";
+import { useAccordionPropsBuilder } from "@/hooks/radiology-workspace/useAccordionPropsBuilder";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -2112,25 +2114,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     await ensureDraftOnce();
   }, [stagedAiProposals, ensureDraftOnce]);
 
-  // ─── AI auto-impression (Ctrl+I) — defined before commands so keyboard can close over it ─
-  const triggerAiImpression = useCallback(async () => {
-    const cur = useWorkspace.getState().findingsText;
-    if (!cur.trim()) return;
-    try {
-      const res = await api.post<{ impression: string }>("/api/ai-reporting/draft", {
-        studyInstanceUID: workflow.currentRow?.studyInstanceUID,
-        modality: workflow.currentRow?.modality,
-        field: "impression",
-        findings: cur,
-      });
-      if (res.impression) useWorkspace.getState().setGhostText(res.impression, "impression");
-    } catch (err) { console.warn("[Workspace] AI impression:", err); }
-  }, [workflow.currentRow]);
-
-  useEffect(() => {
-    useWorkspace.setState({ triggerAiImpression });
-    return () => useWorkspace.setState({ triggerAiImpression: undefined });
-  }, [triggerAiImpression]);
+  // ─── AI auto-impression (Ctrl+I) — before commands so keyboard can close over it ─
+  const { triggerAiImpression } = useTriggerAiImpression({
+    studyInstanceUID: workflow.currentRow?.studyInstanceUID,
+    modality: workflow.currentRow?.modality,
+  });
 
   // ─── Command dispatcher + keyboard (Phase 4 hook) ─────────────────────────
   const { commandDispatcher: _commandDispatcher, handleFrictionlessSaveAndNext: _handleFrictionlessSaveAndNext } = useWorkspaceCommands({
@@ -2526,105 +2514,42 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const showFatigue = sessionMin >= 90 && sessionMin % 90 < 2 && !fatigueCardDismissed;
   const findingsPct = study ? getFindingsCompletionPct(findingsText, study.modality) : 0;
 
-  // ─── Collapsed-section summaries (orientation, not another card) ────────────
-  // Always use catalog-enriched REF. BY (Settings → Doctors degree), not the raw
-  // worklist string which often lacks qualification.
-  const referringDoctorName = canonicalDemography.referringDoctor || null;
-  const findingsAssistedCount = useMemo(
-    () =>
-      countAssisted(
-        provenanceMapToSegments(findingsText, findingsProvenance ?? {}).map((seg) => ({
-          kind: provenanceVisualKind(seg.sources),
-          label: "",
-        })),
-      ),
-    [findingsText, findingsProvenance],
-  );
-  const findingsLintCount = useMemo(
-    () => (findingsText ? runLintRules(findingsText, { modality: study?.modality ?? "XR", sex: study?.patient?.sex }).length : 0),
-    [findingsText, study?.modality, study?.patient?.sex],
-  );
-  const reportLayoutLabel = REPORT_LAYOUT_OPTIONS.find((o) => o.key === reportLayout)?.label ?? "Classic";
-  const sectionSummaries: Record<ReportSectionId, string> = {
-    demography: summarizeDemography({
-      patientName: canonicalDemography.patientName,
-      age: canonicalDemography.age,
-      sex: canonicalDemography.sex,
-      patientCode: canonicalDemography.uhid || canonicalDemography.patientId || null,
-    }),
-    refDoctor: summarizeRefDoctor(referringDoctorName),
-    region: summarizeRegion({
-      regions: studySetup.studyRegions,
-      protocolName: studySetup.activeProtocol?.name ?? null,
-      testName: studySetup.testName,
-      templateMismatch: studySetup.templateMismatch,
-    }),
-    history: summarizeFieldText(clinicalHistoryText, "Not recorded"),
-    technique: summarizeTechnique({
-      techniqueText,
-      protocolName: studySetup.activeProtocol?.name ?? null,
-    }),
-    findings: summarizeFindings({
-      findingsText,
-      structured: useStructured,
-      structuredSectionCount: Object.keys(findingsMap).length,
-      assistedCount: findingsAssistedCount,
-      lintCount: findingsLintCount,
-    }),
-    impression: summarizeImpression(impressionText),
-    recommendation: summarizeRecommendation(recommendationText, isCritical),
-    report: summarizeReport({ layoutLabel: reportLayoutLabel, paper: "A4" }),
-  };
-  const sectionStatus = sectionStatuses({
-    hasPatient: !!workflow.currentRow,
-    refDoctor: referringDoctorName,
-    regions: studySetup.studyRegions,
+  // ─── Accordion header props (Phase 5a hook) ────────────────────────────────
+  const {
+    accordionProps,
+    sectionMeta,
+    sectionStatus,
+    referringDoctorName,
+    findingsAssistedCount,
+    findingsLintCount,
+    reportLayoutLabel,
+  } = useAccordionPropsBuilder({
+    canonicalDemography,
+    findingsText,
+    findingsProvenance,
+    findingsMap,
+    useStructured,
+    studyModality: study?.modality,
+    studySex: study?.patient?.sex,
+    reportLayout,
+    studyRegions: studySetup.studyRegions ?? [],
+    activeProtocolName: studySetup.activeProtocol?.name ?? null,
+    testName: studySetup.testName,
     templateMismatch: studySetup.templateMismatch,
     clinicalHistoryText,
     techniqueText,
-    findingsText,
-    structured: useStructured,
-    structuredSectionCount: Object.keys(findingsMap).length,
     impressionText,
     recommendationText,
-    critical: isCritical,
-    reportReady: !!draftId,
+    isCritical,
+    hasPatient: !!workflow.currentRow,
+    draftId,
+    activeReportSection,
+    activateReportSection,
+    enterClinicalEditorFocus,
+    enterReportingFocusMode,
+    exclusiveReportSections,
+    compactAccordion,
   });
-  const sectionMeta = (id: ReportSectionId) => {
-    const idx = REPORT_SECTIONS.findIndex((s) => s.id === id);
-    const meta = REPORT_SECTIONS[idx];
-    return { index: idx + 1, label: meta.label, accent: meta.accent };
-  };
-  /** Shared props for every accordion header — keeps the nine call sites terse. */
-  const accordionProps = (id: ReportSectionId, extra?: { collapsedWarning?: ReactNode }) => {
-    const meta = sectionMeta(id);
-    const clinicalEditor = id === "findings" || id === "impression";
-    return {
-      id,
-      index: meta.index,
-      label: meta.label,
-      accent: meta.accent,
-      summary: sectionSummaries[id],
-      status: sectionStatus[id],
-      active: activeReportSection === id,
-      onActivate: (sectionId: ReportSectionId) => {
-        activateReportSection(sectionId);
-        // Findings / Impression: grow the report column (~2/3) so the editor
-        // is not a 1–2 line slit beside OHIF. Other sections still collapse
-        // chrome on laptop exclusive mode.
-        if (sectionId === "findings" || sectionId === "impression") {
-          enterClinicalEditorFocus();
-        } else if (exclusiveReportSections) {
-          enterReportingFocusMode();
-        }
-      },
-      collapsedWarning: extra?.collapsedWarning,
-      density: (compactAccordion ? "compact" : "comfortable") as "compact" | "comfortable",
-      // Primary clinical sections already get emphasis via continuous/active
-      // height rules — mark Findings / Impression for the larger min-heights.
-      ...(clinicalEditor ? { emphasis: "primary" as const } : {}),
-    };
-  };
 
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),

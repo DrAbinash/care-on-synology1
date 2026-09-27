@@ -1,19 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ERP_SRC, readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
-const ERP_SRC = resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(resolve(ERP_SRC, rel), "utf8");
 
-const workspacePage = read("pages/RadiologyReportingWorkspace.tsx");
-const clinicalUi = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
-const workspaceCommands = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
-const layoutHookMod = read("hooks/radiology-workspace/useWorkspaceLayout.ts");
-const shellFiles = [
-  "WorkspaceShell", "WorkspaceTopBar", "WorklistPanel", "ViewerColumn",
-  "ReportCanvas", "ReportingToolsRail", "WorkspaceFooter", "WorkspaceOverlays",
-].map((n) => read(`components/radiology/workspace/${n}.tsx`));
-const workspace = [workspacePage, clinicalUi, workspaceCommands, layoutHookMod, ...shellFiles].join("\n");
+// Scan the full modular surface (page + all radiology-workspace hooks + shell).
+const workspace = readModularWorkspaceSrc();
 const section1 = read("components/radiology/StudyRegionReportFormatSection.tsx");
 const accordion = read("components/radiology/zai-workspace/report-section-accordion.tsx");
 const findingsEditor = read("components/radiology/zai-workspace/findings-editor.tsx");
