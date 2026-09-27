@@ -108,6 +108,7 @@ import {
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
+import { AbnormalPatternSuggestionStrip } from "@/components/radiology/workspace/AbnormalPatternSuggestionStrip";
 import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
 import {
   FindingsToolDrawer,
@@ -1263,6 +1264,15 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         Undo Last Abnormal
                       </Button>
                     </div>
+                    <AbnormalPatternSuggestionStrip
+                      suggestions={vm.patternSuggestions}
+                      appliedMarkers={vm.appliedPatternMarkers}
+                      suggestionsEnabled={vm.abnormalPatternSuggestionsEnabled}
+                      contentLocked={contentLocked}
+                      isFinalized={isFinalized}
+                      onApply={vm.applyPattern}
+                      onDismiss={vm.dismissPattern}
+                    />
                     <ObservationLedgerPanel
                       patches={appliedPathologyPatches}
                       findingsText={findingsText}

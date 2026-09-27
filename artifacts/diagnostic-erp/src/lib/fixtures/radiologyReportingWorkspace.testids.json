@@ -5,6 +5,10 @@
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
   "note": "Updated when MRI abnormal strip landed (mri-abnormal-*).",
   "declaredInJsx": [
+    "abnormal-pattern-apply",
+    "abnormal-pattern-dismiss",
+    "abnormal-pattern-more",
+    "abnormal-pattern-strip",
     "ai-finalize-gate",
     "btn-start-report",
     "btn-workspace-whatsapp-share",
@@ -72,6 +76,10 @@
     "canonical-${field}-editor"
   ],
   "referencedTestIds": [
+    "abnormal-pattern-apply",
+    "abnormal-pattern-dismiss",
+    "abnormal-pattern-more",
+    "abnormal-pattern-strip",
     "ai-finalize-gate",
     "btn-start-report",
     "btn-workspace-whatsapp-share",

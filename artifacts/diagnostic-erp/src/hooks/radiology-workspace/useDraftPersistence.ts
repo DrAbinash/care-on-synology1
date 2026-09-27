@@ -40,6 +40,7 @@ import {
   findingsSectionFromStudy,
   linkedStudyPayload,
 } from "@/lib/multiStudyReport";
+import { extractAppliedPatternsFromStructuredJson } from "@/lib/abnormalPatternDraft";
 import {
   buildCareReportFormatIdentity,
   extractCareReportFormatIdentity,
@@ -166,6 +167,11 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
       primaryFindingsSection: null,
       linkedStudy: null,
       activeFindingsSectionId: null,
+      appliedPatternMarkers: [],
+      abnormalPatternConfirm: null,
+      ...(useWorkspace.getState().abnormalPatternConfirm
+        ? { mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }
+        : {}),
     });
     // Draft identity resets inside useRadiologyDraftId on studyId change —
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).
@@ -262,6 +268,9 @@ useEffect(() => {
         { markDirty: false },
       );
     }
+    useWorkspace.setState({
+      appliedPatternMarkers: extractAppliedPatternsFromStructuredJson(draft.structuredJson),
+    });
     const formatIdentity = extractCareReportFormatIdentity(draft.structuredJson);
     if (formatIdentity?.name) {
       const format = useWorkspace.getState().reportFormats.find((f) => f.name === formatIdentity.name);
@@ -370,6 +379,9 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
+        appliedPatterns: draftHydratedStudyId === capturedStudyId
+          ? useWorkspace.getState().appliedPatternMarkers
+          : undefined,
         reportFormatIdentity: (() => {
           const ws = useWorkspace.getState();
           if (!ws.appliedFormatName) return undefined;
@@ -408,7 +420,7 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId]);
+}, [studyId, draftId, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, draftHydratedStudyId]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 

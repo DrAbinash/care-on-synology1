@@ -298,6 +298,7 @@ import { useWorkspaceCommands } from "@/hooks/radiology-workspace/useWorkspaceCo
 import { useOhifViewerBridge } from "@/hooks/radiology-workspace/useOhifViewerBridge";
 import { useTriggerAiImpression } from "@/hooks/radiology-workspace/useTriggerAiImpression";
 import { useAccordionPropsBuilder } from "@/hooks/radiology-workspace/useAccordionPropsBuilder";
+import { useAbnormalPatternSuggestions } from "@/hooks/radiology-workspace/useAbnormalPatternSuggestions";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -1637,6 +1638,26 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   const catalogQuickFindings = studySetup.quickSelectData?.findings ?? EMPTY_QUICK_FINDINGS;
 
+  const {
+    patternSuggestions,
+    applyPattern,
+    dismissPattern,
+    appliedPatternMarkers,
+    patternUsageCounts,
+    abnormalPatternSuggestionsEnabled,
+  } = useAbnormalPatternSuggestions({
+    region: studySetup.matchedStudyRegion ?? studySetup.studyRegions[0] ?? "",
+    modality: workflow.currentRow?.modality ?? "",
+    protocolName: studySetup.activeProtocol?.name ?? null,
+    selectedChipLabels: protectedQuickLabels,
+    clinicalHistory: clinicalHistoryText,
+    findingsText,
+    appliedPathologyPatches,
+    learnedIgnored: copilotLearning.learnedIgnored,
+    recordIgnored: copilotLearning.record,
+    studyId: studyId ?? null,
+  });
+
   const reportNeedsStart = useMemo(() => {
     const region = studySetup.matchedStudyRegion ?? studySetup.studyRegions[0];
     if (!region) return false;
@@ -1954,9 +1975,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [workflow.queue, workflow.currentRow, setStudies]);
 
   // Server-backed whole-report formats + chocolate macros (migrate localStorage once).
+  // Abnormal-pattern library hydrates in the same mount (seeds until pacs rows arrive).
   useEffect(() => {
     void useWorkspace.getState().hydrateContentLibraries();
+    useWorkspace.getState().hydrateAbnormalPatternLibrary(null);
   }, []);
+
+  useEffect(() => {
+    useWorkspace.getState().hydrateAbnormalPatternLibrary(pacsSettingsRows ?? null);
+  }, [pacsSettingsRows]);
 
   // Keep zustand activeStudyId aligned with the URL study.
   // Do NOT call selectStudy() here — it wipes editor text / reportingContext and
@@ -2633,6 +2660,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     _commandDispatcher,
     _handleFrictionlessSaveAndNext,
     abnormalHighlight,
+    abnormalPatternSuggestionsEnabled,
     acceptStructuredImpressionCandidate,
     accordionProps,
     activateReportSection,
@@ -2653,10 +2681,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     appliedFormatReportTitle,
     appliedNormalFormatName,
     appliedPathologyPatches,
+    appliedPatternMarkers,
     applyCatalogAfterConfirmRef,
     applyStagedAiProposals,
     applyStructuredGeneration,
     applyStudyLocalEdit,
+    applyPattern,
     applyVoiceComposerWithUndo,
     autoCollapseQueueOnStudyOpen,
     autoLinkNotifiedRef,
@@ -2711,6 +2741,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     dictateAddAsFinding,
     dictateAddAsNote,
     dictationTranscript,
+    dismissPattern,
     doctorsCatalogQ,
     draftBackup,
     draftHydratedStudyId,
@@ -2838,6 +2869,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     pacsSettingsRows,
     paletteFavourites,
     paletteRecent,
+    patternSuggestions,
+    patternUsageCounts,
     paneManualOverrideRef,
     patientJumpFilter,
     patientMasterQ,

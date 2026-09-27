@@ -14,6 +14,13 @@ import {
   hydrateReportFormatsLibrary,
 } from "./reportFormatsApi";
 import { hydrateChocolateMacrosFromServer } from "@/lib/chocolateMacrosApi";
+import type { AppliedPatternMarker } from "@/lib/abnormalPatternDraft";
+import {
+  cloneBuiltinAbnormalPatterns,
+  readPatternUsageCounts,
+  resolveAbnormalPatternSettings,
+  type AbnormalPattern,
+} from "@/lib/reporting/abnormalPatterns";
 import {
   analyzeFormatOverwrite,
   clinicalFieldsFromFormat,
@@ -223,6 +230,7 @@ type PatchSnapshot = {
   appliedFormatName?: string | null;
   appliedFormatReportTitle?: string | null;
   startingCanvasBaseline?: StartingCanvasBaseline | null;
+  appliedPatternMarkers?: AppliedPatternMarker[];
 };
 
 const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
@@ -241,6 +249,7 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     appliedFormatName: s.appliedFormatName,
     appliedFormatReportTitle: s.appliedFormatReportTitle,
     startingCanvasBaseline: s.startingCanvasBaseline ?? null,
+    appliedPatternMarkers: s.appliedPatternMarkers.map((m) => ({ ...m })),
   };
 }
 
@@ -439,6 +448,19 @@ interface S {
   linkedStudy: FindingsStudySection | null;
   /** Findings sub-section that receives chips when metadata does not pick a unique section. */
   activeFindingsSectionId: string | null;
+  /** Governed abnormal-pattern library (seeds until pacs-settings hydrates). */
+  abnormalPatternLibrary: AbnormalPattern[];
+  /** Clinic flag `abnormal_pattern_suggestions_enabled`. Default true. */
+  abnormalPatternSuggestionsEnabled: boolean;
+  /** Draft markers. Included in the clinical undo snapshot so undo restores them. */
+  appliedPatternMarkers: AppliedPatternMarker[];
+  /** Local usage-counter seam (not telemetry). */
+  patternUsageCounts: Record<string, number>;
+  /**
+   * When set, Merge Preview Apply runs this instead of the format-merge write.
+   * Pattern confirm calls applyMacroBundle from the suggestions hook.
+   */
+  abnormalPatternConfirm: (() => void) | null;
 }
 
 export type WorkspaceStore = S & {
@@ -576,6 +598,8 @@ export type WorkspaceStore = S & {
   openSaveAsFormatDialog: () => void; closeSaveAsFormatDialog: () => void; resetReportFormatsToDefaults: () => void;
   /** Hydrate formats (+ chocolate macros) from server; migrate localStorage once. */
   hydrateContentLibraries: () => Promise<void>;
+  /** Sibling of hydrateContentLibraries. Missing/invalid key → built-in seeds. */
+  hydrateAbnormalPatternLibrary: (rows?: ReadonlyArray<{ key: string; value: string | null }> | null) => void;
   openMacroEditor: (m: SnippetMacro | null) => void; closeMacroEditor: () => void; saveMacro: (i: Omit<SnippetMacro, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void;
   deleteMacro: (id: string) => void; setActiveMacroPrompt: (p: { macro: SnippetMacro; field: EditorField; startPos: number } | null) => void; applyMacroWithValues: (v: Record<string, string>) => void;
   updateSignOffProfile: (m: Modality, n: string, c: string) => void; triggerPreload: () => void; resetPreload: () => void;
@@ -628,6 +652,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   primaryFindingsSection: null,
   linkedStudy: null,
   activeFindingsSectionId: null,
+  abnormalPatternLibrary: cloneBuiltinAbnormalPatterns(),
+  abnormalPatternSuggestionsEnabled: true,
+  appliedPatternMarkers: [],
+  patternUsageCounts: readPatternUsageCounts(),
+  abnormalPatternConfirm: null,
 
   setStudies: (s) => {
     const next = normalizeWorkspaceStudies(s);
@@ -654,7 +683,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -1075,6 +1104,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastMergeResult: r,
       lastMergeFormats: { a: a!, b: b! },
       mergePreviewOpen: true,
+      abnormalPatternConfirm: null,
       confirmOverwriteOpen: false,
       pendingFormatIds: [],
       pendingFormatOverwrite: null,
@@ -2102,6 +2132,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...(snap.startingCanvasBaseline !== undefined
         ? { startingCanvasBaseline: snap.startingCanvasBaseline ?? null }
         : {}),
+      ...(snap.appliedPatternMarkers !== undefined
+        ? { appliedPatternMarkers: snap.appliedPatternMarkers }
+        : {}),
       patchUndoStack: remaining,
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),
       isDirty: true,
@@ -2313,6 +2346,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   applyMergedResult: () => {
+    const patternConfirm = get().abnormalPatternConfirm;
+    if (patternConfirm) {
+      set({
+        mergePreviewOpen: false,
+        lastMergeResult: null,
+        lastMergeFormats: null,
+        abnormalPatternConfirm: null,
+      });
+      patternConfirm();
+      return;
+    }
     const r = get().lastMergeResult;
     if (!r) return;
     // Build per-sentence provenance from the merge result so differential colors
@@ -2369,7 +2413,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     saveFormats(nf);
     set({ reportFormats: nf });
   },
-  cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }),
+  cancelMerge: () => set({ mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, abnormalPatternConfirm: null }),
   saveAsFormat: (i) => {
     const local = createFormat({
       ...i,
@@ -2406,6 +2450,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     try {
       await hydrateChocolateMacrosFromServer();
     } catch { /* keep local chocolate cache */ }
+  },
+  hydrateAbnormalPatternLibrary: (rows) => {
+    const resolved = resolveAbnormalPatternSettings(rows);
+    set({
+      abnormalPatternLibrary: resolved.patterns,
+      abnormalPatternSuggestionsEnabled: resolved.suggestionsEnabled,
+    });
   },
   openMacroEditor: (m) => set({ macroEditorOpen: true, editingMacro: m }), closeMacroEditor: () => set({ macroEditorOpen: false, editingMacro: null }),
   saveMacro: (input) => { const e = input.id ? get().snippetMacros.find((m: SnippetMacro) => m.id === input.id) : null; let ms: SnippetMacro[]; if (e) ms = get().snippetMacros.map((m: SnippetMacro) => m.id === e.id ? { ...m, ...input, updatedAt: new Date().toISOString() } : m); else ms = [...get().snippetMacros, createMacro(input)]; saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
