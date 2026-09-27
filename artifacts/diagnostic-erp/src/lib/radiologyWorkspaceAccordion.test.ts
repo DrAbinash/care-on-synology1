@@ -76,8 +76,10 @@ describe("main reporting pane — mouse-first clinical cockpit", () => {
     const retired = at('data-testid="report-format-primary-slot"');
     expect(button).toBeGreaterThan(canvas);
     expect(button).toBeLessThan(retired);
-    expect(workspace).toContain('setField("findings", "Normal study.", "quick-normal")');
-    expect(workspace).toContain('setField("recommendation", "Clinical correlation is recommended.", "quick-normal")');
+    expect(workspace).toContain("resolveNormalBootstrapFormat");
+    expect(workspace).toContain("billedStudyContextForNormal");
+    expect(workspace).toContain("state.applyFormatById(decision.format.id)");
+    expect(workspace).not.toContain('setField("findings", "Normal study.", "quick-normal")');
   });
 
   it("drives one-active-section state through the accordion helpers", () => {

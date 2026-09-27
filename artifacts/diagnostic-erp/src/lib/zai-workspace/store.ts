@@ -27,6 +27,7 @@ import {
   resolveReportingRegionForFormat,
   type FormatOverwriteAnalysis,
 } from "./fullReportFormat";
+import { alignRecommendationToObservations } from "@/lib/impressionRecommendationWiring";
 import { getFormatApplyBridge } from "./formatApplyBridge";
 import { appendClinicalPhrase } from "@/lib/clinicalHistoryText";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
@@ -1432,6 +1433,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       protected: false,
     };
     const nextPatches = [...patches.filter((p) => p.id !== stableId), nextPatch];
+    const alignedRecommendation = alignRecommendationToObservations({
+      current: result.narrative.recommendation,
+      provenance: result.provenance.recommendation,
+      patches: nextPatches,
+    });
+    if (alignedRecommendation.changed) {
+      result.narrative.recommendation = alignedRecommendation.text;
+      result.provenance.recommendation = alignedRecommendation.provenance;
+    }
     const siblingHits = detectUnownedSiblingConflictsForLedger({
       findings: result.narrative.findings,
       patches: nextPatches.map(toLedgerPatch),
@@ -2062,6 +2072,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           ...provenanceFromText(restoredImpression, suspendedBaseline.source),
         },
       };
+    }
+    const alignedRecommendation = alignRecommendationToObservations({
+      current: result.narrative.recommendation,
+      provenance: nextProvenance.recommendation,
+      patches: nextPatches,
+    });
+    if (alignedRecommendation.changed) {
+      result.narrative.recommendation = alignedRecommendation.text;
+      nextProvenance = { ...nextProvenance, recommendation: alignedRecommendation.provenance };
     }
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,

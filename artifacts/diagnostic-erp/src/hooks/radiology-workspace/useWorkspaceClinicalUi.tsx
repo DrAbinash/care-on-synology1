@@ -431,7 +431,7 @@ import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-p
 import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
-import { editorHasMeaningfulReportText, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
+import { reportBodyAllowsNormalBootstrap, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
 import {
   buildCareReportFormatIdentity,
   extractCareReportFormatIdentity,
@@ -656,6 +656,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const coverageMarks = useWorkspace((s: WorkspaceStore) => s.coverageMarks);
   const appliedFormatReportTitle = useWorkspace((s: WorkspaceStore) => s.appliedFormatReportTitle);
   const appliedFormatName = useWorkspace((s: WorkspaceStore) => s.appliedFormatName);
+  const reportFormatCount = useWorkspace((s: WorkspaceStore) => s.reportFormats.length);
   const isFinalized = useWorkspace((s: WorkspaceStore) => s.isFinalized);
   const linkedStudy = useWorkspace((s: WorkspaceStore) => s.linkedStudy);
   const primaryFindingsSection = useWorkspace((s: WorkspaceStore) => s.primaryFindingsSection);
@@ -2018,18 +2019,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, openStudy]);
 
-  // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new+empty only) ──
+  // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new report) ──
   //
   // OPEN STUDY → appropriate COMPLETE NORMAL REPORT already present.
   // Applies the single high-confidence complete-normal Full Report Format via
   // the ordinary applyFormatById path — byte-identical to a radiologist
   // clicking that format (same overwrite analysis, region bridge, autosave
-  // generation bump, usage counter). Never fires when a server draft exists,
-  // when any meaningful report content exists, when a local backup snapshot
-  // holds prior work, when the study is locked/finalized, or when identity is
-  // ambiguous — the manual Start Report / format picker path stays intact.
-  // Abnormal deviations afterwards flow through the canonical observation
-  // ledger exactly as with a manually applied format.
+  // generation bump, usage counter). Protocol / template autofill that landed
+  // first is replaced, so technique, findings, impression, and recommendation
+  // stay one document for the billed exam. Never fires when a server draft
+  // exists, when the radiologist (or a finding, or an AI draft) already owns
+  // text, when a local backup snapshot holds prior work, when the study is
+  // locked/finalized, or when identity is ambiguous.
   useEffect(() => {
     if (!studyId) return;
     if (draftHydratedStudyId !== studyId) return; // hydration settled for THIS study
@@ -2037,12 +2038,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (contentLocked) return; // locked-by-other / finalized / signed
     if (normalBootstrapDoneRef.current === studyId) return; // one decision per study
     const state = useWorkspace.getState();
-    if (editorHasMeaningfulReportText({
+    if (!reportBodyAllowsNormalBootstrap({
       technique: state.techniqueText,
       findings: state.findingsText,
       impression: state.impressionText,
       recommendation: state.recommendationText,
-    })) return; // genuinely NEW EMPTY report only (clinicalHistory is not report body)
+      fieldProvenance: state.fieldProvenance,
+    })) return; // a finding, dictated text, or an AI draft already owns the report
     const backup = draftBackup.peek();
     if (
       backup
@@ -2086,7 +2088,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [
     studyId, draftHydratedStudyId, existingDraft, contentLocked, draftBackup,
     studySetup.studyContext, studySetup.selectedTemplateId, studySetupSetters,
-    findingsMap, useStructured, toast, setUseStructured,
+    findingsMap, useStructured, toast, setUseStructured, reportFormatCount,
   ]);
 
   // ─── Preload next study at 80% findings completion ──────────────────────────
