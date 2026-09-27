@@ -134,6 +134,46 @@ export function editorHasMeaningfulReportText(fields: {
 }
 
 /**
+ * Sources written by open-study autofill (protocol, structured template,
+ * the old generic Quick Normal). A unique complete-normal format may replace
+ * them so the four report boxes stay one document. A finding, a dictated
+ * line, an AI draft, or text with no source blocks that replacement.
+ */
+const NORMAL_BOOTSTRAP_REPLACEABLE = new Set<InsertSource>([
+  "template",
+  "template-a",
+  "template-b",
+  "structured-template",
+  "structured-template-candidate",
+  "protocol",
+  "quick-normal",
+  "system",
+]);
+
+export function reportBodyAllowsNormalBootstrap(input: {
+  technique: string;
+  findings: string;
+  impression: string;
+  recommendation: string;
+  fieldProvenance?: {
+    technique?: FieldProvenanceMap;
+    findings?: FieldProvenanceMap;
+    impression?: FieldProvenanceMap;
+    recommendation?: FieldProvenanceMap;
+  };
+}): boolean {
+  for (const section of BODY_SECTIONS) {
+    if (!input[section].trim()) continue;
+    const sources = collectSources(input.fieldProvenance?.[section]);
+    if (sources.size === 0) return false;
+    for (const source of sources) {
+      if (!NORMAL_BOOTSTRAP_REPLACEABLE.has(source)) return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Map a whole-report format onto exactly one CARE reporting region.
  * Prefer explicit `format.bodyPart` (already canonicalized in the library).
  * Does not invent regions from free-text name guessing.

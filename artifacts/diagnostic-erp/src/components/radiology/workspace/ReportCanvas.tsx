@@ -106,6 +106,11 @@ import {
   type ReportingPaneBias,
 } from "@/lib/reportingPaneFocus";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import {
+  billedStudyContextForNormal,
+  quickNormalOutcomeMessage,
+  resolveNormalBootstrapFormat,
+} from "@/lib/zai-workspace/normalBootstrap";
 import type { Study, MeasurementRow, PriorStudy } from "@/lib/zai-workspace/types";
 import { FindingsEditor } from "@/components/radiology/zai-workspace/findings-editor";
 import { AbnormalPatternSuggestionStrip } from "@/components/radiology/workspace/AbnormalPatternSuggestionStrip";
@@ -652,10 +657,31 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
                           onClick={() => {
                             const state = useWorkspace.getState();
-                            state.setField("technique", "Multiplanar multisequence MRI.", "quick-normal");
-                            state.setField("findings", "Normal study.", "quick-normal");
-                            state.setField("impression", "Normal study.", "quick-normal");
-                            state.setField("recommendation", "Clinical correlation is recommended.", "quick-normal");
+                            if (state.reportFormats.length === 0) {
+                              toast({
+                                title: "Normal reports are still loading",
+                                description: "Try Quick Normal again in a moment.",
+                              });
+                              return;
+                            }
+                            const billed =
+                              workflow.currentRow?.testName
+                              || workflow.currentRow?.billedTestName
+                              || workflow.currentRow?.studyDescription
+                              || null;
+                            const decision = resolveNormalBootstrapFormat({
+                              ctx: billedStudyContextForNormal(studySetup.studyContext, billed),
+                              formats: state.reportFormats,
+                            });
+                            if (!decision || decision.status !== "apply") {
+                              const message = quickNormalOutcomeMessage(decision);
+                              toast({ title: message.title, description: message.description });
+                              return;
+                            }
+                            state.applyFormatById(decision.format.id);
+                            if (useWorkspace.getState().confirmOverwriteOpen) return;
+                            const message = quickNormalOutcomeMessage(decision);
+                            toast({ title: message.title, description: message.description });
                           }}
                           data-testid="quick-normal-fallback"
                           disabled={isLocked || isFinalized}

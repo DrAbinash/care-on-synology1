@@ -37,6 +37,7 @@ F9 Polling without tab-visibility pause (30s pcpndt, 30s mri-warm, 5min session)
 F10 OHIF capture capability not preflighted at viewer load — minor — DONE 2026-09-25
 F11 Study-open region was DICOM-primary; billed `testName` only ranked formats — DONE 2026-09-26 (billed-first `resolveAutoStudyRegion` + From billed/DICOM badge)
 V-03 Abnormal-template branching engine — suggestion-only pattern library — DONE 2026-09-27 (telemetry deferred; apply/dismiss counts use the local usage-counter seam only; never auto-applies)
+Stream — billed exam owns technique, findings, impression, and recommendation as one document — DONE 2026-09-27 (Quick Normal applies that exam's complete-normal format; protocol/template autofill no longer blocks it; a finding's own recommendation is written into the recommendation box)
 
 ## 4. USG studio state (2026-09-20)
 Fixed: sync ReferenceError (full param); PACS fallback via DICOM-Web; Form F master-switch gate; stampIST honest IST labels; composer grid conditional; PACS Viewer nav item (page pending); UsgPacsQueue loud errors.
@@ -50,6 +51,7 @@ Traps learned: /g sed injections hit early returns; guard `if "usgFormFEnabled ?
 - Fire-drill: docker stop care-api to exercise PACS fallback.
 
 ## 6. Changelog
+2026-09-27 — **Report boxes follow the billed exam as one document** on `cursor/report-stream-coherence-c2ab`. Quick Normal applies the exam's complete-normal format (technique, findings, impression, recommendation together) instead of four generic sentences. Opening a new study still does that when the only text present is protocol or template autofill. A finding that carries recommendation text writes it into the recommendation box and leaves the format recommendation in place when the finding is removed. No new boxes. V-03 stays suggestion-only.
 2026-09-27 — **V-03 abnormal-template branching engine implemented — suggestion-only; telemetry deferred; counts via local usage-counter seam** on `cursor/workspace-v03-abnormal-patterns`. Six verbatim catalog patterns hydrate from pacs-settings `abnormal_pattern_library` (seeds when missing). Matcher requires two independent signals and never auto-applies. Confirm reuses MergePreviewDialog store state, then `applyMacroBundle` source `abnormal-pattern`. Draft marker `careAppliedPatterns` keeps the applied version. 5b/5c remain deferred.
 2026-09-26 — **Billed-first study region at open** on `cursor/billed-first-study-region-e9d1`. Auto Study Tab / region now prefers worklist `testName`/`billedTestName` via `resolveAutoStudyRegion`, then falls back to modality+StudyDescription. Manual override unchanged. Quiet “From billed” / “From DICOM” badge (+ DICOM mismatch hint) on Study / Region strip. Does not change format ranking or finalize billing link.
 2026-09-26 — **Legacy monolith snapshot deleted** on `cursor/workspace-legacy-delete-2127` (stacked on Phase 4). Removed `RadiologyReportingWorkspace` pre-modular backup page; `/radiology/legacy-workspace` routes redirect to modular workspace; Layout nav entry removed; grounding + source-grep contracts retargeted. Git history retains the snapshot.

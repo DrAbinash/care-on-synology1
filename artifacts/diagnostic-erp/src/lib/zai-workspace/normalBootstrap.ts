@@ -140,6 +140,56 @@ function regionKeys(ctx: Pick<ReportingStudyContext, "region" | "regions">): str
  * `null` means "not decidable yet" (identity unresolved or library empty) —
  * callers may retry when the context / library resolves.
  */
+/**
+ * The billed exam name is what the radiologist means by "this study".
+ * Fold it into the description the normal-format resolver already reads
+ * (contrast, screening, epilepsy) without changing the resolved region.
+ */
+export function billedStudyContextForNormal<T extends { studyDescription?: string | null }>(
+  ctx: T,
+  billedTestName: string | null | undefined,
+): T {
+  const billed = (billedTestName ?? "").trim();
+  if (!billed) return ctx;
+  const desc = (ctx.studyDescription ?? "").trim();
+  if (desc.toLowerCase().includes(billed.toLowerCase())) return ctx;
+  return { ...ctx, studyDescription: desc ? `${billed}. ${desc}` : billed };
+}
+
+/** Doctor-facing result of pressing Quick Normal. `applied` means a format was chosen. */
+export function quickNormalOutcomeMessage(decision: NormalBootstrapDecision | null): {
+  applied: boolean;
+  title: string;
+  description: string;
+} {
+  if (decision == null) {
+    return {
+      applied: false,
+      title: "This exam is not identified yet",
+      description: "Set the study region, then press Quick Normal again.",
+    };
+  }
+  if (decision.status === "apply") {
+    return {
+      applied: true,
+      title: decision.format.name,
+      description: "Technique, findings, impression, and recommendation now match this exam.",
+    };
+  }
+  if (decision.status === "ambiguous") {
+    return {
+      applied: false,
+      title: "More than one normal report matches",
+      description: "Choose the format in Starting Canvas.",
+    };
+  }
+  return {
+    applied: false,
+    title: "No normal report for this exam",
+    description: "Choose a format in Starting Canvas.",
+  };
+}
+
 export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): NormalBootstrapDecision | null {
   const { ctx, formats } = input;
   if (formats.length === 0) return null; // library not loaded yet — caller may retry
