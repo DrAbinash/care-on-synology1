@@ -37,6 +37,15 @@ export type StructuredJsonEnvelope = {
   /** Second worklist row combined into this draft. */
   linkedStudyId?: number | string | null;
   careLinkedStudy?: CareLinkedStudy | null;
+  /** Abnormal-pattern apply markers (suggestion confirm). Version is frozen at apply time. */
+  careAppliedPatterns?: CareAppliedPattern[] | null;
+};
+
+export type CareAppliedPattern = {
+  patternId: string;
+  version: number;
+  bundleId: string;
+  appliedAt: string;
 };
 
 export type CareLinkedStudy = {
@@ -141,6 +150,21 @@ export function extractCareLinkedStudy(column: unknown): CareLinkedStudy | null 
   };
 }
 
+export function extractCareAppliedPatterns(column: unknown): CareAppliedPattern[] {
+  if (!isRecord(column) || !Array.isArray(column.careAppliedPatterns)) return [];
+  const out: CareAppliedPattern[] = [];
+  for (const item of column.careAppliedPatterns) {
+    if (!isRecord(item)) continue;
+    const patternId = typeof item.patternId === "string" ? item.patternId.trim() : "";
+    const bundleId = typeof item.bundleId === "string" ? item.bundleId.trim() : "";
+    const appliedAt = typeof item.appliedAt === "string" ? item.appliedAt.trim() : "";
+    const version = typeof item.version === "number" ? item.version : Number.NaN;
+    if (!patternId || !bundleId || !appliedAt || !Number.isInteger(version) || version < 1) continue;
+    out.push({ patternId, version, bundleId, appliedAt });
+  }
+  return out;
+}
+
 export function extractCareReportFormatIdentity(column: unknown): CareReportFormatIdentity | null {
   if (!isRecord(column)) return null;
   if (isCareReportFormatIdentity(column)) return column;
@@ -165,6 +189,8 @@ export function composeStructuredJsonColumn(opts: {
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
   linkedStudy?: CareLinkedStudy | null;
+  /** undefined keeps existing markers; [] clears them. */
+  appliedPatterns?: CareAppliedPattern[] | null;
 }): unknown {
   const a4 = opts.a4Cache !== undefined ? opts.a4Cache : extractA4Cache(opts.existing);
   const format = opts.formatState !== undefined ? opts.formatState : extractCareStructuredFormat(opts.existing);
@@ -183,7 +209,11 @@ export function composeStructuredJsonColumn(opts: {
   const linkedStudy = opts.linkedStudy !== undefined
     ? opts.linkedStudy
     : extractCareLinkedStudy(opts.existing);
-  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity && !linkedStudy) return a4 ?? null;
+  const appliedPatterns = opts.appliedPatterns !== undefined
+    ? (opts.appliedPatterns ?? [])
+    : extractCareAppliedPatterns(opts.existing);
+  const hasApplied = appliedPatterns.length > 0;
+  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity && !linkedStudy && !hasApplied) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -197,5 +227,6 @@ export function composeStructuredJsonColumn(opts: {
     env.linkedStudyId = linkedStudy.studyId;
     env.careLinkedStudy = linkedStudy;
   }
+  if (hasApplied) env.careAppliedPatterns = appliedPatterns;
   return env;
 }

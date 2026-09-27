@@ -23,6 +23,7 @@ export type InsertSource =
   | "structured-template"
   | "structured-template-candidate"
   | "macro"
+  | "abnormal-pattern"
   | "companion"
   | "ai-draft"
   | "radiologist-voice"
@@ -61,6 +62,7 @@ const SOURCE_ORDER: InsertSource[] = [
   "structured-template",
   "structured-template-candidate",
   "macro",
+  "abnormal-pattern",
   "companion",
   "ai-draft",
   "radiologist-voice",
@@ -79,6 +81,7 @@ const SOURCE_LABELS: Record<InsertSource, string> = {
   "structured-template": "Structured",
   "structured-template-candidate": "Structured (impression)",
   macro: "Macro",
+  "abnormal-pattern": "Abnormal pattern",
   companion: "Companion",
   "ai-draft": "AI Draft",
   "radiologist-voice": "Voice (radiologist)",

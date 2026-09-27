@@ -112,6 +112,7 @@ import {
   persistCareViewerMeasurements,
   persistCareReportFormatIdentity,
   persistCareLinkedStudy,
+  persistCareAppliedPatterns,
 } from "../lib/persistCareStructuredFormatState";
 import {
   CARE_STRUCTURED_FORMAT_STATE_KIND,
@@ -1636,6 +1637,13 @@ const SaveDraftBody = z.object({
     baselineManifestVersion: z.number().int().positive().optional(),
     baselineManifestRevision: z.string().optional(),
   }).nullish(),
+  /** Abnormal-pattern markers. Stored as structuredJson.careAppliedPatterns. */
+  appliedPatterns: z.array(z.object({
+    patternId: z.string().min(1),
+    version: z.number().int().positive(),
+    bundleId: z.string().min(1),
+    appliedAt: z.string().min(1),
+  })).nullish(),
   /** Combined-report second worklist row. Stored as structuredJson.linkedStudyId. */
   linkedStudy: z.object({
     studyId: z.union([z.number().int().positive(), z.string().min(1)]),
@@ -1923,6 +1931,17 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     } catch (err) {
       console.error(
         "[radiology-report-generator] viewer measurements persist failed (non-fatal):",
+        err,
+      );
+    }
+  }
+
+  if (draft?.id && rest.appliedPatterns !== undefined) {
+    try {
+      await persistCareAppliedPatterns(draft.id, rest.appliedPatterns ?? []);
+    } catch (err) {
+      console.error(
+        "[radiology-report-generator] applied patterns persist failed (non-fatal):",
         err,
       );
     }

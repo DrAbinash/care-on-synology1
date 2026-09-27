@@ -31,7 +31,8 @@ import {
   isWebSpeechSupported, fetchTranscribeCapabilities,
   type TranscriptionSession, type TranscribeCapabilities, type VoiceUserPrefs,
 } from "@/lib/voiceTranscription";
-import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole, isOwnerRole } from "@/lib/staffSession";
+import { AbnormalPatternLibraryPanel } from "@/components/radiology/AbnormalPatternLibraryPanel";
 import PacsViewerSetupWizard from "@/components/radiology/PacsViewerSetupWizard";
 
 // Sub-panels imported or reconstructed for unified look
@@ -204,6 +205,7 @@ export default function RadiologySettingsCenter() {
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   const isAdmin = FULL_ACCESS_ROLES.has(normalizeRole(readStaffSession()?.user.role ?? ""));
+  const isOwner = isOwnerRole(readStaffSession());
 
   const SETTINGS_TAB_ALIASES: Record<string, string> = {
     general: "overview",
@@ -529,6 +531,9 @@ export default function RadiologySettingsCenter() {
           <TabsTrigger value="sync"><RefreshCw size={14} className="mr-1.5" />Sync</TabsTrigger>
           <TabsTrigger value="usg-extraction"><Waves size={14} className="mr-1.5" />USG</TabsTrigger>
           <TabsTrigger value="quick-select"><Zap size={14} className="mr-1.5" />Quick Select</TabsTrigger>
+          {isOwner && (
+            <TabsTrigger value="patterns"><BookOpen size={14} className="mr-1.5" />Patterns</TabsTrigger>
+          )}
           <TabsTrigger value="content-catalog"><BookOpen size={14} className="mr-1.5" />Content Catalog</TabsTrigger>
           <TabsTrigger value="reporting"><BrainCircuit size={14} className="mr-1.5" />AI</TabsTrigger>
           <TabsTrigger value="diagnostics"><Activity size={14} className="mr-1.5" />Diagnostics</TabsTrigger>
@@ -1521,6 +1526,19 @@ export default function RadiologySettingsCenter() {
           </div>
           <RadiologyQuickSelectSettings />
         </TabsContent>
+
+        {isOwner && (
+          <TabsContent value="patterns" className="space-y-4">
+            <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
+              Owner-only abnormal pattern library. Suggestions never auto-apply. Stored in pacs-settings key <code className="font-mono">abnormal_pattern_library</code>.
+            </div>
+            <AbnormalPatternLibraryPanel
+              rows={settings.map((row) => ({ key: row.key, value: row.value }))}
+              disabled={!isOwner}
+              onUpsert={(body) => upsertSetting.mutate(body)}
+            />
+          </TabsContent>
+        )}
 
         {/* Canonical catalog API (findings, parameters, aliases) — ff_radiology_catalog */}
         <TabsContent value="content-catalog" className="space-y-4">
