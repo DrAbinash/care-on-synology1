@@ -102,4 +102,19 @@ describe("impression prioritization (spec §37)", () => {
   it("trims and drops empty lines", () => {
     expect(orderImpressionLines(["  ", "Severe canal stenosis.", ""])).toEqual(["Severe canal stenosis."]);
   });
+
+  it("ranks thoracic cord, ossification and deformity lines (dorsal spec §31)", () => {
+    const lines = [
+      "Preserved thoracic kyphosis with a focal gibbus at T9-T10.",
+      "Multilevel disc desiccation in the mid thoracic spine.",
+      "Severe T10-T11 central canal stenosis secondary to Ossification of the Ligamentum Flavum (OLF).",
+      "T8-T9 thoracic spinal cord compression with intrinsic cord signal abnormality.",
+    ];
+    const ordered = orderImpressionLines(lines);
+    expect(ordered[0]).toContain("cord compression");
+    expect(ordered[1]).toContain("OLF");
+    expect(ordered[ordered.length - 1]).toContain("desiccation");
+    expect(rankImpressionLine("Severe T10-T11 canal stenosis from OLF.").label).toContain("OLF");
+    expect(rankImpressionLine("Focal gibbus deformity at T12.").label).toContain("deformity");
+  });
 });
