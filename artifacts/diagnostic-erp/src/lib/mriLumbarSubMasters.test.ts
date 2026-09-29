@@ -13,6 +13,9 @@
  * - bundles are reversible through the existing ledger.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -33,10 +36,15 @@ import {
   type LumbarTileContext,
 } from "@/lib/mriLumbarSubMasters";
 import { LS_LIBRARY_PROSE, fillLsProse } from "@/lib/mriLumbarLibrary";
-import { defaultLumbarNumbering } from "@/lib/mriSpineNumbering";
+import { defaultLumbarNumbering, lumbarApCanalLevels, lumbarLevelKeyStrings, lumbarRootSuggestion, numberingCautionSentence, type LumbarNumberingState } from "@/lib/mriSpineNumbering";
 import { defaultSpineSequences } from "@/lib/mriSpineSequences";
+import { availableScreeningLevels } from "@/lib/mriSpineScreening";
+import { SCREENING_SCHEMAS } from "@/lib/mriSpineScreeningSchemas";
 import { spineBundleId } from "@/lib/mriSpineAtoms";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG_DIR = resolve(HERE, "../..");
 
 const ALL_TILES: Array<{ tile: LumbarTile; palette: string }> = MRI_LUMBAR_SUB_MASTERS.flatMap((sm) =>
   sm.tiles.map((tile) => ({ tile, palette: sm.id })),
@@ -373,6 +381,43 @@ describe("canonical macros and presets (spec §36)", () => {
     expect(first.bundleId.startsWith(lumbarPresetBundleId("preset-acute-compression-fracture", "").replace(/-$/, ""))).toBe(true);
     expect(second.bundleId.startsWith(lumbarPresetBundleId("preset-acute-compression-fracture", "").replace(/-$/, ""))).toBe(true);
     expect(first.bundleId).not.toBe(second.bundleId);
+  });
+});
+
+describe("architecture guards (spec §43 binding tests)", () => {
+  it("keeps hard-coded lumbar level arrays out of the UI layer", () => {
+    const uiFiles = [
+      "src/components/radiology/reporting-canvas/MriLumbarSubMasterPanel.tsx",
+      "src/components/radiology/reporting-canvas/SpineScreeningPanel.tsx",
+      "src/components/radiology/reporting-canvas/SpineApCanalMeasurements.tsx",
+      "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
+    ];
+    for (const rel of uiFiles) {
+      const src = readFileSync(resolve(PKG_DIR, rel), "utf8");
+      expect(src, `${rel} must read levels from the resolver`).not.toMatch(/"L1-L2"\s*,\s*"L2-L3"/);
+      expect(src, `${rel} must not enumerate lumbar levels`).not.toMatch(/"L5-S1"\s*[\])]$/m);
+    }
+  });
+
+  it("remaps every consumer at once when transitional anatomy is recorded", () => {
+    const lstv: LumbarNumberingState = {
+      ...defaultLumbarNumbering(),
+      mode: "lstv-sacralization",
+      castellvi: "IIIb",
+      side: "bilateral",
+    };
+    const keys = lumbarLevelKeyStrings(lstv);
+    expect(keys).toEqual(["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-T"]);
+    // Level rows, the AP table and LS screening all read the same array.
+    expect(lumbarApCanalLevels(lstv)).toEqual(keys);
+    const resolverOption = SCREENING_SCHEMAS.ls.sections
+      .flatMap((s) => s.options)
+      .find((o) => o.levelChoices === "lumbar-resolver");
+    expect(resolverOption).toBeDefined();
+    expect(availableScreeningLevels(resolverOption!, SCREENING_SCHEMAS.ls, lstv)).toEqual(keys);
+    // Root assistance follows the transitional key instead of assuming L5-S1.
+    expect(lumbarRootSuggestion("L5-T", lstv).uncertain).toBe(true);
+    expect(numberingCautionSentence(lstv)).toMatch(/lowest mobile segment/);
   });
 });
 
