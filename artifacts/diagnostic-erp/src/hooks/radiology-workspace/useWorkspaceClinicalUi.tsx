@@ -199,8 +199,10 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext } from "@/lib/reportingStudyContext";
+import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
+import { brainTextContradictions } from "@/lib/mriBrainContradictions";
+import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import {
@@ -2583,11 +2585,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
+    ...(isMriBrainReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? brainTextContradictions({
+          findingsText,
+          impressionText,
+          seq: parseBrainSequences(techniqueText),
+        })
+      : []),
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
     }).filter(isImpressionContradictionWarning),
-  ], [appliedPathologyPatches, impressionText, findingsText]);
+  ], [appliedPathologyPatches, impressionText, findingsText, techniqueText, studyRegion, studySetup.studyContext?.family, workflow.currentRow?.modality, workflow.currentRow?.studyDescription]);
 
   const impressionManuallyEdited = impressionProvenanceIsRadiologistManual(impressionProvenance);
   // Auto-derived impressions refresh themselves. The stale banner is only for

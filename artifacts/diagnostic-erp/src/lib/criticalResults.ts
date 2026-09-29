@@ -57,6 +57,7 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   { term: "acute hydrocephalus", label: "acute hydrocephalus" },
   { term: "ruptured aneurysm", label: "ruptured aneurysm" },
   { term: "aneurysm rupture", label: "ruptured aneurysm" },
+  { term: "brain abscess", label: "brain abscess" },
   // Spine / cord
   { term: "cord compression", label: "cord compression" },
   { term: "cauda equina", label: "cauda equina syndrome" },

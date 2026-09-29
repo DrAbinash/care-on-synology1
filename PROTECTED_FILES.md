@@ -229,6 +229,18 @@ TeleradiologyPortal.tsx
 UsgWorklist.tsx
 ```
 
+### Frontend MRI Brain reporting (`artifacts/diagnostic-erp/src/`)
+```
+lib/mriBrainSequences.ts          # technique → performed-sequence context + statement rules
+lib/mriBrainAtoms.ts              # BrainAtomSpec → ledger patch atoms (one bundle id per group)
+lib/mriBrainNormalAtoms.ts        # protocol-aware NORMAL baseline atoms
+lib/mriBrainLesion.ts             # shared lesion characterization + MRS atoms
+lib/mriBrainMeasures.ts           # ABC/2, Fazekas, herniation, Knosp, midline shift
+lib/mriBrainSubMasters.ts         # 13 clinical sub-master palettes (tiles / presets)
+lib/mriBrainContradictions.ts     # normal-vs-abnormal + sequence-aware warnings
+components/radiology/reporting-canvas/MriBrainCanvas.tsx
+```
+
 ---
 
 ## 🟢 Shared / Core — load-bearing for both zones, treat like billing

@@ -303,6 +303,100 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     impressionworthyAbnormal: false,
   },
 
+  // ─── MRI Brain clinical sub-masters — shared structured observation concepts
+  // (mriBrainSubMasters.ts). Ownership slots only; no thresholds here.
+  ...([
+    // Sequence-dependent shared concepts
+    ["susceptibility", "GRE/SWI Susceptibility", "Abnormal susceptibility blooming (microbleeds, DAI, siderosis).", true],
+    ["enhancement_normal", "Contrast Enhancement", "Abnormal enhancement assessment when contrast was administered.", false],
+    ["mrs_metabolites", "MR Spectroscopy", "Structured MRS metabolite entry — descriptive only.", true],
+    ["mra_arterial", "MRA Arterial", "Arterial occlusion / stenosis on MRA when adequately assessed.", true],
+    ["mrv_venous", "MR Venography", "Dural venous sinus patency on MRV.", true],
+    // Mass effect / hydrocephalus / herniation family
+    ["mass_effect", "Mass Effect", "Mass effect / sulcal or cisternal effacement / ventricular compression.", true],
+    ["cerebral_hydrocephalus", "Hydrocephalus", "Hydrocephalus — obstructive or communicating.", true],
+    ["brain_herniation", "Brain Herniation", "Subfalcine / uncal / tonsillar / transtentorial herniation.", true],
+    ["edema", "Cerebral Edema", "Vasogenic or cytotoxic oedema.", false],
+    ["lesion_differential", "Lesion Differential", "Radiologist-selected differential considerations — never auto-diagnosis.", false],
+    // Ischaemic / haemorrhagic family
+    ["lacunar", "Lacunes", "Old lacunar cavities (lacunar state).", true],
+    ["encephalomalacia", "Chronic Infarct", "Chronic infarct / encephalomalacia with gliosis.", true],
+    ["intraventricular_hemorrhage", "Intraventricular Hemorrhage", "Intraventricular blood.", true],
+    ["subarachnoid_hemorrhage", "Subarachnoid Hemorrhage", "Subarachnoid blood.", true],
+    ["contusion", "Cerebral Contusion", "Haemorrhagic or non-haemorrhagic traumatic contusion.", true],
+    ["epidural_hematoma", "Epidural Hematoma", "Epidural (extradural) hematoma.", true],
+    ["dai", "Diffuse Axonal Injury", "DAI at grey-white junction / corpus callosum / brainstem.", true],
+    ["cvst", "Cerebral Venous Sinus Thrombosis", "Suspected cerebral venous sinus thrombosis.", true],
+    ["venous_infarct", "Venous Infarction", "Non-arterial venous infarction.", true],
+    ["cavernoma", "Cavernous Malformation", "Cavernoma with hemosiderin rim.", true],
+    ["avm", "Arteriovenous Malformation", "Nidal AVM.", true],
+    ["wm_signal_pattern", "White-Matter Signal Pattern", "Descriptive subcortical/white-matter signal pattern (PRES-like, toxic, metabolic).", true],
+    ["hypoxic_injury", "Hypoxic-Ischemic Injury", "Diffuse hypoxic-ischaemic pattern in adults.", true],
+    // Demyelinating / inflammatory family
+    ["demyelinating_lesion", "Demyelinating Lesion", "Lesion distribution of demyelinating-appearing lesions (level carries location).", true],
+    ["demyelinating_morphology", "Demyelinating Morphology", "Dawson-finger / ovoid morphology descriptor.", false],
+    ["demyelinating_activity", "Demyelinating Activity", "Enhancing active vs non-enhancing lesion activity.", true],
+    ["demyelinating_pattern", "Demyelinating Pattern Consideration", "Radiologist-selected MS/ADEM/MOGAD/PML-style considerations — criteria NOT asserted.", true],
+    // Infection family
+    ["leptomeningeal", "Leptomeningeal Disease", "Leptomeningeal / dural enhancement or involvement.", true],
+    ["ependymitis", "Ventriculitis / Ependymitis", "Ependymal enhancement with intraventricular debris.", true],
+    ["encephalitis", "Encephalitis Pattern", "Temporal/limbic or other encephalitis signal pattern — aetiology clinical.", true],
+    ["vasculitis", "CNS Vasculitis Pattern", "Multifocal narrowing with infarcts in different territories.", true],
+    // Epilepsy family
+    ["hippocampus_volume", "Hippocampal Volume", "Hippocampal asymmetry / volume loss (laterality-bearing).", true],
+    ["hippocampus_signal", "Hippocampal Signal", "Hippocampal T2/FLAIR hyperintensity (laterality-bearing).", true],
+    ["hippocampus_architecture", "Hippocampal Architecture", "Loss of internal hippocampal architecture.", false],
+    ["hippocampus_pattern", "Mesial Temporal Sclerosis", "MTS pattern combining volume / signal / architecture.", true],
+    ["temporal_horn", "Temporal Horn Prominence", "Ipsilateral temporal horn prominence.", false],
+    ["cortical_dysplasia", "Focal Cortical Dysplasia", "Focal cortical thickening / gyral abnormality — suspected FCD.", true],
+    ["cortical_dysplasia_gw", "Grey-White Blurring", "Grey-white junction blurring suspicious for FCD.", false],
+    ["heterotopia", "Grey Matter Heterotopia", "Subependymal / subcortical heterotopia.", true],
+    ["polymicrogyria", "Polymicrogyria", "Polymicrogyria / cortical gyration malformation.", true],
+    ["epilepsy_negative", "Epilepsy Protocol Negative", "No definite structural epileptogenic focus on reviewed epilepsy protocol.", false],
+    // Sella / CPA
+    ["sellar", "Sellar Region", "Sellar / parasellar baseline.", false],
+    ["pituitary_apoplexy", "Pituitary Apoplexy", "Pituitary hemorrhage / apoplexy.", true],
+    ["pituitary_infundibulum", "Pituitary Stalk", "Infundibular deviation / thickening.", false],
+    ["pituitary_floor", "Sellar Floor Change", "Sellar floor remodeling / erosion.", false],
+    ["pituitary_empty", "Empty Sella", "Partially empty sella.", false],
+    ["pituitary_lesion", "Pituitary Lesion", "Pituitary lesion with dimensions / extension.", true],
+    ["cpa_lesion", "Cerebellopontine Angle Lesion", "CPA mass (laterality-bearing).", true],
+    ["iac_extension", "Internal Auditory Canal Extension", "Intracanalicular extension.", false],
+    ["cranial_nerve", "Cranial Nerve Relationship", "Cranial nerve displacement where assessable.", false],
+    // Pediatric / congenital
+    ["myelination", "Myelination", "Age-referenced myelination status.", true],
+    ["corpus_callosum", "Corpus Callosum", "Callosal hypogenesis / dysgenesis.", true],
+    ["pf_malformation", "Posterior Fossa Malformation", "Dandy-Walker / Chiari spectrum — radiologist-specified.", true],
+    ["ventriculomegaly", "Ventriculomegaly", "Ventricular enlargement, pediatric usage.", true],
+    ["perinatal_injury", "Perinatal Hypoxic-Ischemic Injury", "Perinatal HIE pattern.", true],
+    ["germinal_matrix_hemorrhage", "Germinal Matrix Hemorrhage", "GM / periventricular hemorrhage.", true],
+    ["congenital_infection", "Congenital Infection Pattern", "Calcification / migration anomaly pattern.", false],
+    ["neurocutaneous", "Neurocutaneous Markers", "Phakomatosis-associated cortical / subependymal findings.", false],
+    // Metabolic / toxic
+    ["metabolic_pattern", "Metabolic / Toxic Pattern", "Symmetric metabolic/toxic signal pattern (level carries region).", true],
+    // Post-operative / devices
+    ["craniotomy", "Craniotomy Defect", "Post-craniotomy / craniectomy change.", false],
+    ["postop_change", "Post-operative Change", "Expected post-operative resection cavity change.", true],
+    ["postop_recurrence", "Residual / Recurrent Lesion", "Radiologist-selected residual/recurrent enhancing lesion.", true],
+    ["postop_ischemia", "Post-operative Ischemia", "New restricted diffusion after intervention.", true],
+    ["postop_collection", "Post-operative Collection", "Operative-site collection.", true],
+    ["pneumocephalus", "Pneumocephalus", "Intracranial air.", true],
+    ["shunt_catheter", "Ventricular Catheter / Shunt", "Device position.", true],
+    // Extracranial / incidental
+    ["mastoid", "Mastoid Air Cells", "Mastoid effusion / mucosal thickening.", false],
+    ["scalp", "Scalp / Calvarium", "Scalp and calvarium findings.", false],
+    ["calvarial_fracture", "Calvarial Fracture (MRI)", "Suspected fracture with stated MRI limitation.", false],
+    ["craniocervical_junction", "Craniocervical Junction", "CC junction baseline.", false],
+  ] as Array<[string, string, string, boolean]>).map(([concept, label, description, impressionworthyAbnormal]) => ({
+    concept,
+    label,
+    description,
+    aliases: [concept.replace(/_/g, " "), concept],
+    regions: ["brain"] as ContentPackRegion[],
+    modalities: ["MR"] as ContentPackModality[],
+    impressionworthyAbnormal,
+  })),
+
   // ─── Spine — disc / contour / signal / height ─────────────────────────
   {
     concept: "disc_contour",
