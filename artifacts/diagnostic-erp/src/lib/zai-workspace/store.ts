@@ -62,6 +62,10 @@ import {
   type LumbarNumberingState,
 } from "@/lib/mriSpineNumbering";
 import {
+  defaultDorsalNumbering,
+  type DorsalNumberingState,
+} from "@/lib/mriDorsalNumbering";
+import {
   defaultSpineSequences,
   type SpineSequencesAvailable,
 } from "@/lib/mriSpineSequences";
@@ -451,6 +455,13 @@ interface S {
    */
   lumbarNumbering: LumbarNumberingState;
   /**
+   * MRI Dorsal V3: acquired coverage extent + numbering confidence. Level rows,
+   * AP canal table, cord/conus sentences, findings prose and dorsal screening all
+   * read this through `DorsalLevelResolver` (dorsal spec §4). The conus is never
+   * described when coverage does not reach it.
+   */
+  dorsalNumbering: DorsalNumberingState;
+  /**
    * MRI Lumbar V3: what this examination actually included. Defaults derived
    * from technique/protocol text, always manually overridable (spec §35).
    */
@@ -598,6 +609,7 @@ export type WorkspaceStore = S & {
   serializeCoverageMarks: () => CoverageMark[];
   /** MRI Lumbar V3 §5 — numbering mode / LSTV detail. */
   setLumbarNumbering: (patch: Partial<LumbarNumberingState>) => void;
+  setDorsalNumbering: (patch: Partial<DorsalNumberingState>) => void;
   /** MRI Lumbar V3 §35 — what the examination actually included. */
   setSequencesAvailable: (patch: Partial<SpineSequencesAvailable>) => void;
   replaceSequencesAvailable: (next: SpineSequencesAvailable) => void;
@@ -700,6 +712,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   dorsalCanalForced: false,
   canalApProvenance: {},
   lumbarNumbering: defaultLumbarNumbering(),
+  dorsalNumbering: defaultDorsalNumbering(),
   sequencesAvailable: defaultSpineSequences(),
   screening: defaultScreeningState(),
   impressionOrderFrozen: false,
@@ -744,7 +757,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -1947,6 +1960,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   serializeCoverageMarks: () => get().coverageMarks,
   setLumbarNumbering: (patch) => set((s) => ({ lumbarNumbering: { ...s.lumbarNumbering, ...patch } })),
+  setDorsalNumbering: (patch) => set((s) => ({ dorsalNumbering: { ...s.dorsalNumbering, ...patch } })),
   setSequencesAvailable: (patch) => set((s) => ({ sequencesAvailable: { ...s.sequencesAvailable, ...patch } })),
   replaceSequencesAvailable: (next) => set({ sequencesAvailable: next }),
   setScreeningRegion: (region, patch) => set((s) => {

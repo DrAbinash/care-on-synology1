@@ -119,6 +119,25 @@ function codeNormalize(value: string | null | undefined): string {
   return (value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/**
+ * "DL" is ambiguous in this catalog and must never be resolved silently.
+ * `MRI039 / MRI DORSOLUMBAR SPINE` and the `MRI DL SPINE` booking label name a
+ * dedicated dorso-lumbar study — its own composition, which will receive its own
+ * clinical sub-master — not a dedicated dorsal study and not
+ * "dorsal screening + LS screening" (dorsal spec §28).
+ */
+export const AMBIGUOUS_DORSOLUMBAR_CODES = ["MRI020", "MRI039", "MRIDLS", "MRIDORSLUMBAR"];
+
+const AMBIGUOUS_DORSOLUMBAR_RE = /\bDL\b|DORSO\s*LUMBAR|DORSOLUMBAR/;
+
+const AMBIGUOUS_DORSOLUMBAR_LABEL =
+  "dorso-lumbar booking label: \"DL\" is not an abbreviation for dorsal spine in this catalog. "
+  + "This is a dedicated dorso-lumbar composition, so no region role is assumed — set the roles in the header if the performed study differs.";
+
+function isExplicitlyDorsal(name: string): boolean {
+  return /\bDORSAL\b|\bTHORACIC\b/.test(name);
+}
+
 const ALL_REGIONS: SpineScreeningRegion[] = ["cervical", "dorsal", "ls"];
 
 function absentRoles(): Record<SpineScreeningRegion, RegionRole> {
@@ -147,6 +166,14 @@ export function resolveScreeningRoles(input: BilledStudyInput): ResolvedScreenin
   }
 
   const roles = absentRoles();
+  // A "DL" / dorso-lumbar booking label is its own composition and is reported
+  // as unresolved rather than guessed into a dorsal primary-dedicated role.
+  const ambiguousLabel = AMBIGUOUS_DORSOLUMBAR_RE.test(name)
+    || AMBIGUOUS_DORSOLUMBAR_CODES.some((c) => codeNormalize(c) === code && !isExplicitlyDorsal(name));
+  if (ambiguousLabel && !isExplicitlyDorsal(name)) {
+    return { roles: absentRoles(), matchedKey: "AMBIGUOUS_DORSOLUMBAR", matchedLabel: AMBIGUOUS_DORSOLUMBAR_LABEL };
+  }
+
   // The study is "of" the region named before "WITH … SCREENING"; a region
   // mentioned after those words ("whole spine screening of the cervical and
   // dorsal spine") is a screened region, not the primary.

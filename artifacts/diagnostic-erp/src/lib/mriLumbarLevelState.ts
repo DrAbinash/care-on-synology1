@@ -13,7 +13,7 @@ import {
   inferTraversingRoot,
   type LumbarLevelSelection,
 } from "@/lib/mriLumbarRegions";
-import { normalizeLevel } from "@/lib/observationSlot";
+import { displayLevel, normalizeLevel } from "@/lib/observationSlot";
 import { splitToSentences } from "@/lib/reportFieldMerge";
 import {
   buildSpineGradingAtoms,
@@ -614,7 +614,7 @@ export function ledgerSeverityContradiction(
           || (sentence.includes(other) && sentence.includes("stenosis"));
         if (hasOtherSev) {
           warnings.push(
-            `Structured mismatch: Findings ledger has ${sev} canal stenosis at ${level} but Impression mentions ${other}.`,
+            `Structured mismatch: Findings ledger has ${sev} canal stenosis at ${displayLevel(level)} but Impression mentions ${other}.`,
           );
         }
       }
@@ -638,7 +638,9 @@ export function structuredCanalApContradiction(patches: AppliedPathologyPatch[])
     const key = levelKey(level) || level.toUpperCase();
     const slot = byLevel.get(key) ?? { ap: null, canalSev: null, levelLabel: level };
     const concept = (p.observation?.concept || p.ownership.concept || "").toLowerCase();
-    if (concept === "canal_ap" || concept === "canal_ap_diameter") {
+    // The dorsal level form carries the AP diameter on the CSF-morphology row
+    // when a morphology was selected, so both concepts count as a measurement.
+    if (concept === "canal_ap" || concept === "canal_ap_diameter" || concept === "canal_morphology") {
       const raw = p.observation?.measurement || "";
       const n = Number(String(raw).replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0] ?? NaN);
       if (Number.isFinite(n)) slot.ap = n;
@@ -653,7 +655,7 @@ export function structuredCanalApContradiction(patches: AppliedPathologyPatch[])
     if (slot.ap == null || !(slot.ap < 10)) continue;
     if (slot.canalSev !== "none" && slot.canalSev !== "mild") continue;
     warnings.push(
-      `Structured mismatch: AP canal ${slot.ap} mm at ${slot.levelLabel} coexists with canal stenosis marked ${slot.canalSev}.`,
+      `Structured mismatch: AP canal ${slot.ap} mm at ${displayLevel(slot.levelLabel)} coexists with canal stenosis marked ${slot.canalSev}.`,
     );
   }
   return warnings;

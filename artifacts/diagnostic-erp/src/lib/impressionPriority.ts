@@ -40,6 +40,12 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     re: /\b(?:most pronounced|dominant|principal|worst) (?:at|level|l\d)|\bmost pronounced\b/i,
   },
   {
+    id: "cord-compromise",
+    label: "cord compression / intrinsic cord signal change",
+    rank: 3,
+    re: /\bcord compression\b|\bcompressive myelopathy\b|\bmyelomalacia\b|\bcord flattening\b|\bintrinsic cord signal\b|\bcord signal abnormality\b/i,
+  },
+  {
     id: "severe-canal-stenosis",
     label: "severe central canal stenosis",
     rank: 3,
@@ -56,6 +62,12 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     label: "significant foraminal / lateral recess stenosis",
     rank: 5,
     re: /\b(?:severe|moderate) [a-z ]*foraminal stenosis\b|\blateral recess stenosis\b|\bforaminal stenosis\b/i,
+  },
+  {
+    id: "ligamentous-ossification",
+    label: "OLF / OPLL canal compromise",
+    rank: 6,
+    re: /\b(?:olf|opll)\b|\bossification of the (?:ligamentum flavum|posterior longitudinal ligament)\b/i,
   },
   {
     id: "disc-extrusion",
@@ -116,6 +128,12 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     label: "transitional vertebra / numbering",
     rank: 15,
     re: /\blumbosacral transitional vertebra\b|\blstv\b|\bcastellvi\b|\bbertolotti\b/i,
+  },
+  {
+    id: "thoracic-deformity",
+    label: "thoracic deformity / junctional angulation",
+    rank: 16,
+    re: /\bgibbus\b|\bkyphosis\b|\bkyphotic\b|\bscoliosis\b|\bjunctional angulation\b/i,
   },
   {
     id: "minor-degenerative",
