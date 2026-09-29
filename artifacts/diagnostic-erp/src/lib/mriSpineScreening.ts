@@ -47,7 +47,8 @@ import {
 } from "./mriSpineScreeningSchema";
 import { SCREENING_LIMITATION_TEXT } from "./zai-workspace/baselines/screeningLimitation";
 import { splitToSentences } from "./reportFieldMerge";
-import type { SpineAtomSpec } from "./mriSpineAtoms";
+import { spineAtomsToPatches, type SpineAtomSpec } from "./mriSpineAtoms";
+import type { PendingPathologyPatch } from "@/lib/zai-workspace/store";
 
 export type ScreeningSide = "left" | "right" | "bilateral";
 
@@ -526,4 +527,51 @@ export function screeningPresetSelections(
     selections[sectionKey] = [{ optionId }];
   }
   return selections;
+}
+
+/** Every screening-owned bundle id shares this prefix, so the panel can clear
+ *  exactly the screening prose and nothing a radiologist typed. */
+export const SCREENING_BUNDLE_PREFIX = "spm-screen";
+
+export type ScreeningLedgerBundle = {
+  bundleId: string;
+  observations: PendingPathologyPatch[];
+};
+
+/**
+ * Ledger plan for a whole screening state: one bundle per performed region plus
+ * AT MOST one report-level limitation bundle (§29). This is the seam that makes
+ * the once-only limitation rule testable without React — `SpineScreeningPanel`
+ * clears `SCREENING_BUNDLE_PREFIX` bundles and applies exactly this plan.
+ */
+export function screeningLedgerBundles(opts: {
+  state: ScreeningState;
+  schemas: SchemaMap;
+  sequences: SpineSequencesAvailable;
+  numbering?: LumbarNumberingState | null;
+  /** Study Tab owning the ledger rows. */
+  ledgerRegion?: string;
+}): ScreeningLedgerBundle[] {
+  const ledgerRegion = opts.ledgerRegion ?? "LS Spine";
+  const out: ScreeningLedgerBundle[] = [];
+  let contributes = false;
+  for (const region of performedScreeningRegions(opts.state)) {
+    const built = buildScreeningRegionBundle({
+      region,
+      schema: opts.schemas[region],
+      state: opts.state[region],
+      sequences: opts.sequences,
+      numbering: opts.numbering ?? null,
+    });
+    const observations = spineAtomsToPatches(ledgerRegion, built.bundleId, built.atoms);
+    if (observations.length > 0) out.push({ bundleId: built.bundleId, observations });
+    if (built.lines.length > 0) contributes = true;
+  }
+  if (contributes) {
+    out.push({
+      bundleId: SCREENING_LIMITATION_BUNDLE_ID,
+      observations: spineAtomsToPatches(ledgerRegion, SCREENING_LIMITATION_BUNDLE_ID, [screeningLimitationAtom()]),
+    });
+  }
+  return out;
 }

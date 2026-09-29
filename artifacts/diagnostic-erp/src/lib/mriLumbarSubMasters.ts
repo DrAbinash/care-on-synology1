@@ -1139,14 +1139,22 @@ export function lumbarTileAvailability(tile: LumbarTile, ctx: LumbarTileContext)
   return { available: true, missing: [] };
 }
 
+/**
+ * Level-scoped tile bundle id. The same tile captured at another level is a
+ * different bundle, so deselecting one level never erases another.
+ */
+export function lumbarTileBundleId(tileId: string, level: string): string {
+  return spineBundleId("ls-tile", `${tileId}${level ? `-${level.replace(/\s+/g, "")}` : ""}`);
+}
+
 export function buildLumbarTileBundle(
   tileId: string,
   ctx: LumbarTileContext,
 ): { bundleId: string; observations: PendingPathologyPatch[] } {
   const found = lumbarTileById(tileId);
-  if (!found) return { bundleId: spineBundleId("ls-tile", tileId), observations: [] };
+  const bundleId = lumbarTileBundleId(tileId, ctx.level);
+  if (!found) return { bundleId, observations: [] };
   const atoms = found.tile.atoms(ctx);
-  const bundleId = spineBundleId("ls-tile", `${tileId}${ctx.level ? `-${ctx.level.replace(/\s+/g, "")}` : ""}`);
   return { bundleId, observations: spineAtomsToPatches(ctx.region ?? "LS Spine", bundleId, atoms) };
 }
 
@@ -1347,15 +1355,23 @@ export function lumbarPresetById(id: string): LumbarPreset | null {
   return LUMBAR_PRESETS.find((p) => p.id === id) ?? null;
 }
 
+/**
+ * Macro presets describe one whole pattern, so every application shares this
+ * id prefix — the UI removes prior instances before applying a new level.
+ */
+export function lumbarPresetBundleId(presetId: string, level: string): string {
+  return spineBundleId("ls-preset", `${presetId}${level ? `-${level.replace(/\s+/g, "")}` : ""}`);
+}
+
 export function buildLumbarPresetBundle(
   presetId: string,
   ctx: LumbarTileContext,
 ): { bundleId: string; observations: PendingPathologyPatch[]; critical: boolean } {
   const preset = lumbarPresetById(presetId);
+  const bundleId = lumbarPresetBundleId(presetId, ctx.level);
   if (!preset) {
-    return { bundleId: spineBundleId("ls-preset", presetId), observations: [], critical: false };
+    return { bundleId, observations: [], critical: false };
   }
-  const bundleId = spineBundleId("ls-preset", `${presetId}${ctx.level ? `-${ctx.level.replace(/\s+/g, "")}` : ""}`);
   const atoms = preset.atoms(ctx).filter((atom) => atom.findings.trim().length > 0);
   return {
     bundleId,

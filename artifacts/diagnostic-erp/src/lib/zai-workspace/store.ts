@@ -76,6 +76,7 @@ import {
   type RegionRole,
   type SpineScreeningRegion,
 } from "@/lib/mriSpineScreeningSchema";
+import { orderImpressionLines } from "@/lib/impressionPriority";
 import {
   ensureSectionedFindings,
   findingsSectionBlocks,
@@ -606,6 +607,12 @@ export type WorkspaceStore = S & {
   replaceScreeningRoles: (roles: Record<SpineScreeningRegion, RegionRole>) => void;
   /** MRI Lumbar V3 §37 — manual Impression edit / reorder freezes auto priority. */
   setImpressionOrderFrozen: (frozen: boolean) => void;
+  /**
+   * MRI Lumbar V3 §37 — re-sort the Impression by clinical priority. Sentences
+   * are never rewritten and provenance keys are content-based, so a manual
+   * contribution survives its new position. No-op once frozen.
+   */
+  orderImpressionByPriority: () => void;
   dismissOwnershipReview: () => void;
   dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
@@ -766,6 +773,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     if (f === "impression" && opts?.source && opts.source !== "manual") {
       p.impressionNeedsRefresh = false;
+    }
+    if (f === "impression" && (!opts?.source || opts.source === "manual") && v !== prevText) {
+      // §37: a hand-written or hand-reordered Impression belongs to the
+      // radiologist — automatic priority sorting must never reshuffle it again.
+      p.impressionOrderFrozen = true;
     }
     set(p);
     if (opts?.source === "manual" || !opts?.source) {
@@ -1952,6 +1964,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return { screening: next };
   }),
   setImpressionOrderFrozen: (frozen) => set({ impressionOrderFrozen: frozen }),
+  orderImpressionByPriority: () => {
+    if (get().impressionOrderFrozen) return;
+    const lines = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (lines.length < 2) return;
+    const next = orderImpressionLines(lines).join("\n");
+    if (next === lines.join("\n")) return;
+    set({ impressionText: next, isDirty: true });
+  },
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
   dismissLedgerHydrationWarning: () => set({ ledgerHydrationWarning: null }),
   applyComposerFinding: (opts) => {
