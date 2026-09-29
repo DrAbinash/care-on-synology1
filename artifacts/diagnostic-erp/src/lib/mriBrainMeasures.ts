@@ -307,3 +307,224 @@ export function buildBrainMeasureAtoms(opts: {
 export function brainMeasuresHasContent(opts: Parameters<typeof buildBrainMeasureAtoms>[0]): boolean {
   return buildBrainMeasureAtoms(opts).observations.length > 0;
 }
+
+// ─── Grading extensions (Fazekas / herniation / pituitary) ───────────────
+// Centralized clinical thresholds live here (tested module) — never in JSX.
+
+export type FazekasGrade = 0 | 1 | 2 | 3;
+
+export const FAZEKAS_GRADES: readonly FazekasGrade[] = [0, 1, 2, 3];
+
+export const FAZEKAS_LABELS: Record<FazekasGrade, string> = {
+  0: "No lesions",
+  1: "Focal / punctate lesions",
+  2: "Beginning confluent lesions",
+  3: "Large confluent areas",
+};
+
+/** Fazekas ≥2 is the reporting-significance cut-point used for flags. */
+export function severityForFazekas(grade: FazekasGrade): BrainMeasureSeverity {
+  if (!FAZEKAS_GRADES.includes(grade)) return "";
+  if (grade >= 3) return "significant";
+  if (grade === 2) return "significant";
+  return "";
+}
+
+export function composeFazekasSentence(periventricular: FazekasGrade, deep: FazekasGrade): string {
+  return (
+    `White-matter small-vessel changes: Fazekas grade ${periventricular} periventrically `
+    + `and ${deep} in the deep white matter.`
+  );
+}
+
+export function buildFazekasAtoms(opts: {
+  region?: string;
+  bundleId?: string;
+  periventricular: FazekasGrade;
+  deep: FazekasGrade;
+}): { bundleId: string; observations: BrainMeasureAtom[] } {
+  const region = opts.region || "Brain";
+  const bundleId = opts.bundleId || `r2-brain-fazekas-${Date.now().toString(36)}`;
+  const findings = composeFazekasSentence(opts.periventricular, opts.deep);
+  const severity = severityForFazekas(opts.periventricular)
+    || severityForFazekas(opts.deep)
+    || "";
+  return {
+    bundleId,
+    observations: [
+      {
+        id: "r2-brain-fazekas",
+        incoming: {
+          findings,
+          impression: `Fazekas grade ${opts.periventricular}/${opts.deep} white-matter changes.`,
+        },
+        templates: {
+          findings,
+          impression: `Fazekas grade ${opts.periventricular}/${opts.deep} white-matter changes.`,
+        },
+        ownership: {
+          anatomicalSection: "white matter",
+          conflictGroup: "fazekas",
+          concept: "fazekas",
+          baselineReplaces: "",
+        },
+        source: "structured-template",
+        region,
+        concept: "fazekas",
+        severity,
+        measurement: `${opts.periventricular}/${opts.deep}`,
+        label: "Fazekas grade",
+        findingsText: findings,
+        bundleId,
+      },
+    ],
+  };
+}
+
+export const HERNIATION_TYPES = [
+  "subfalcine",
+  "uncal",
+  "tonsillar",
+  "transcalvarial",
+  "central transtentorial",
+] as const;
+
+export type HerniationType = (typeof HERNIATION_TYPES)[number];
+
+/** Tonsillar herniation ≥5 mm descent is the reporting-critical cut-point. */
+export function severityForHerniation(type: HerniationType, displacementMm?: number): BrainMeasureSeverity {
+  if (type === "tonsillar") return "critical";
+  if (typeof displacementMm === "number" && displacementMm >= 5) return "critical";
+  return "critical"; // Any herniation is clinically critical on an MRI brain report.
+}
+
+export function buildHerniationAtoms(opts: {
+  region?: string;
+  bundleId?: string;
+  types: readonly HerniationType[];
+  displacementMm?: number | null;
+}): { bundleId: string; observations: BrainMeasureAtom[] } {
+  const region = opts.region || "Brain";
+  const bundleId = opts.bundleId || `r2-brain-herniation-${Date.now().toString(36)}`;
+  const types = opts.types.filter((t) => (HERNIATION_TYPES as readonly string[]).includes(t));
+  if (types.length === 0) return { bundleId, observations: [] };
+  const mm = Number(opts.displacementMm);
+  const measurePhrase = Number.isFinite(mm) && mm > 0 ? ` with ${mm} mm displacement` : "";
+  const findings = `Herniation is present: ${types.join(", ")}${measurePhrase}.`;
+  const severity = severityForHerniation(types[0], Number.isFinite(mm) ? mm : undefined);
+  const atom: BrainMeasureAtom = {
+    id: "r2-brain-herniation",
+    incoming: { findings, impression: `${types.map((t) => t[0].toUpperCase() + t.slice(1)).join(", ")} herniation.` },
+    templates: { findings, impression: `${types.join("/")} herniation.` },
+    ownership: {
+      anatomicalSection: "brain",
+      conflictGroup: "brain_herniation",
+      concept: "brain_herniation",
+      baselineReplaces: "",
+    },
+    source: "structured-template",
+    region,
+    concept: "brain_herniation",
+    severity,
+    measurement: Number.isFinite(mm) && mm > 0 ? String(mm) : undefined,
+    state: types.join(","),
+    label: "Herniation",
+    findingsText: findings,
+    bundleId,
+  };
+  return { bundleId, observations: [atom] };
+}
+
+export const KNOSP_GRADES = [0, 1, 2, 3] as const;
+export type KnospGrade = (typeof KNOSP_GRADES)[number];
+
+/** Knosp ≥3 = complete cavernous sinus encasement (unresectable corridor). */
+export function knospIsEncasement(grade: KnospGrade | number | "" | undefined): boolean {
+  const g = Number(grade);
+  return Number.isFinite(g) && g >= 3;
+}
+
+export type PituitaryMeasureInput = {
+  ap?: number | "";
+  tr?: number | "";
+  cc?: number | "";
+  unit?: "cm" | "mm";
+  suprasellarExtension?: "none" | "cistern" | "chiasm contact" | "chiasm compression" | "";
+  cavernousSinus?: "none" | "contact" | "encasement" | "";
+  knosp?: KnospGrade | "";
+  haemorrhage?: boolean;
+};
+
+/** Height ≥10 mm defines pituitary enlargement (macroadenoma threshold). */
+export function pituitaryIsEnlarged(ccMm: number): boolean {
+  return Number.isFinite(ccMm) && ccMm >= 10;
+}
+
+export function composePituitarySentence(p: PituitaryMeasureInput): string {
+  const unit = p.unit ?? "cm";
+  const dims = [p.ap, p.tr, p.cc]
+    .map((v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null))
+    .filter((v): v is number => v != null);
+  const dimPhrase = dims.length ? ` measuring ${dims.join(" x ")} ${unit}` : "";
+  const parts: string[] = [`Pituitary gland${dimPhrase}`];
+  const ext = (p.suprasellarExtension ?? "").trim();
+  if (ext && ext !== "none") parts.push(`with suprasellar extension showing ${ext}`);
+  const cs = (p.cavernousSinus ?? "").trim();
+  if (cs && cs !== "none") {
+    const knosp = p.knosp !== "" && p.knosp != null ? ` (Knosp grade ${p.knosp})` : "";
+    parts.push(`with cavernous sinus ${cs}${knosp}`);
+  }
+  if (p.haemorrhage) parts.push("with imaging features of haemorrhage/apoplexy");
+  return `${parts.join(", ")}.`;
+}
+
+export function buildPituitaryAtoms(opts: {
+  region?: string;
+  bundleId?: string;
+  pituitary: PituitaryMeasureInput;
+}): { bundleId: string; observations: BrainMeasureAtom[] } {
+  const region = opts.region || "Brain";
+  const bundleId = opts.bundleId || `r2-brain-pituitary-${Date.now().toString(36)}`;
+  const p = opts.pituitary;
+  const hasAny =
+    [p.ap, p.tr, p.cc].some((v) => typeof v === "number" && Number.isFinite(v) && v > 0)
+    || Boolean((p.suprasellarExtension ?? "").trim() && p.suprasellarExtension !== "none")
+    || Boolean((p.cavernousSinus ?? "").trim() && p.cavernousSinus !== "none")
+    || Boolean(p.haemorrhage);
+  if (!hasAny) return { bundleId, observations: [] };
+  const findings = composePituitarySentence(p);
+  const impression =
+    `Pituitary lesion${p.cc && pituitaryIsEnlarged(p.unit === "mm" ? p.cc : Number(p.cc) * 10) ? " (enlarged)" : ""}`
+    + (p.suprasellarExtension === "chiasm compression" ? " with optic chiasm compression." : ".");
+  const severity: BrainMeasureSeverity =
+    p.suprasellarExtension === "chiasm compression" || p.haemorrhage ? "urgent" : "";
+  return {
+    bundleId,
+    observations: [
+      {
+        id: "r2-brain-pituitary",
+        incoming: { findings, impression },
+        templates: { findings, impression },
+        ownership: {
+          anatomicalSection: "sellar region",
+          conflictGroup: "pituitary",
+          concept: "pituitary",
+          baselineReplaces: "The sellar and parasellar region is grossly unremarkable.",
+        },
+        source: "structured-template",
+        region,
+        concept: "pituitary",
+        severity,
+        measurement: typeof p.cc === "number" && p.cc > 0 ? String(p.cc) : undefined,
+        state: [
+          p.suprasellarExtension && p.suprasellarExtension !== "none" ? p.suprasellarExtension : "",
+          p.cavernousSinus && p.cavernousSinus !== "none" ? `cs:${p.cavernousSinus}` : "",
+          p.knosp !== "" && p.knosp != null ? `knosp:${p.knosp}` : "",
+        ].filter(Boolean).join("|"),
+        label: "Pituitary / sella",
+        findingsText: findings,
+        bundleId,
+      },
+    ],
+  };
+}
