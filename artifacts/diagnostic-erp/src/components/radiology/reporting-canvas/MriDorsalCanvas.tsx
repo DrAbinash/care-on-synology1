@@ -3,17 +3,21 @@
  *
  * Architectural reference: MriLumbarCanvas.tsx / MriCervicalCanvas.tsx
  *
- * Levels: T1-T2 through T12-L1 (12 disc levels)
+ * Levels: the disc levels inside the acquired coverage, taken from
+ * DorsalLevelResolver (mriDorsalNumbering) — the same list the sub-master panel
+ * and the AP canal table use, so no component keeps its own level array.
  * Global regions: Alignment, Vertebral bodies/marrow, Cord, Posterior
  * elements, Paraspinal soft tissues
  *
  * Uses applyMacroBundle (via parent onApplyLevel) — same canonical ledger.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MRI_DORSAL_ALL_REGIONS } from "@/lib/mriSpineCanvasRegions";
 import { MriDorsalLevelBlock } from "./MriDorsalLevelBlock";
+import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
+import { dorsalLevelKeyStrings } from "@/lib/mriDorsalNumbering";
 import type { DorsalLevelSelection } from "@/lib/mriDorsalLevelState";
 
 function isTextEditingTarget(el: EventTarget | null): boolean {
@@ -50,26 +54,34 @@ export function MriDorsalCanvas({
   const rootRef = useRef<HTMLDivElement>(null);
   const [navIndex, setNavIndex] = useState(0);
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const dorsalNumbering = useWorkspace((s) => s.dorsalNumbering);
+  // Acquired coverage is authoritative: the level rows come from the same
+  // DorsalLevelResolver the sub-master panel and the AP table use, so a study
+  // that never reached T12-L1 cannot offer a T12-L1 row (spec §4).
+  const regions = useMemo(() => {
+    const allowed = new Set(dorsalLevelKeyStrings(dorsalNumbering).map((k) => k.toUpperCase()));
+    return MRI_DORSAL_ALL_REGIONS.filter((r) => allowed.has(r.key.toUpperCase()));
+  }, [dorsalNumbering]);
 
   const focusIndex = useCallback(
     (idx: number) => {
-      const n = MRI_DORSAL_ALL_REGIONS.length;
+      const n = regions.length;
       if (n === 0) return;
       const next = ((idx % n) + n) % n;
       setNavIndex(next);
-      const region = MRI_DORSAL_ALL_REGIONS[next];
+      const region = regions[next];
       onFocusRegion(region.key);
       document.getElementById(`r2-dors-region-${region.key}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     },
-    [onFocusRegion],
+    [onFocusRegion, regions],
   );
 
   useEffect(() => {
     if (focusedRegionKey) {
-      const i = MRI_DORSAL_ALL_REGIONS.findIndex((r) => r.key === focusedRegionKey);
+      const i = regions.findIndex((r) => r.key === focusedRegionKey);
       if (i >= 0) setNavIndex(i);
     }
-  }, [focusedRegionKey]);
+  }, [focusedRegionKey, regions]);
 
   useEffect(() => {
     if (disabled) return;
@@ -93,7 +105,7 @@ export function MriDorsalCanvas({
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        const region = MRI_DORSAL_ALL_REGIONS[navIndex];
+        const region = regions[navIndex];
         if (!region) return;
         setOpenKey((prev) => (prev === region.key ? "" : region.key));
         onFocusRegion(region.key);
@@ -102,7 +114,7 @@ export function MriDorsalCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [disabled, focusIndex, navIndex, onFocusRegion]);
+  }, [disabled, focusIndex, navIndex, onFocusRegion, regions]);
 
   return (
     <div
@@ -117,12 +129,13 @@ export function MriDorsalCanvas({
         <h3 className="text-[10px] font-bold uppercase tracking-wider text-teal-900">
           MRI Dorsal Spine Canvas
         </h3>
-        <span className="text-[8px] text-muted-foreground">
-          T1-T2 → T12-L1 · ↑↓ navigate · Enter open
+        <span className="text-[8px] text-muted-foreground" data-testid="mri-dorsal-canvas-range">
+          {regions.length > 0 ? `${regions[0]?.key} → ${regions[regions.length - 1]?.key}` : "no levels in the acquired field"}
+          {" · ↑↓ navigate · Enter open"}
         </span>
       </div>
       <div className="grid gap-1.5 sm:grid-cols-1">
-        {MRI_DORSAL_ALL_REGIONS.map((region, idx) => (
+        {regions.map((region, idx) => (
           <div
             key={region.key}
             id={`r2-dors-region-${region.key}`}

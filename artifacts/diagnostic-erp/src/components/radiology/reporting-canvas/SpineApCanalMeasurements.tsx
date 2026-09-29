@@ -12,9 +12,10 @@
  *
  * Measurements do NOT become part of slotKey / concept / laterality identity.
  *
- * Supports cervical (C2-C3 → C6-C7) and lumbar (L1-L2 → L5-S1) routinely.
- * Dorsal measurements are NOT exposed unless the caller explicitly opts in
- * (current clinic workflow does not routinely use dorsal AP measurements).
+ * Supports cervical (C2-C3 → C6-C7), lumbar (L1-L2 → L5-S1 / transitional) and
+ * dorsal (T1-T2 → acquired top level) segments. Each segment's rows come from
+ * its own level resolver, so the table never offers a level the study did not
+ * acquire; measurements stay optional and radiologist-overridable.
  *
  * UX:
  *   - numeric mm fields
@@ -39,23 +40,31 @@ import {
   type SpineApMeasurementSet,
 } from "@/lib/mriSpineCanvasRegions";
 import { lumbarApCanalLevels } from "@/lib/mriSpineNumbering";
+import { dorsalApCanalLevels } from "@/lib/mriDorsalNumbering";
 
 export function SpineApCanalMeasurements({
   segment,
   disabled,
 }: {
-  segment: "cervical" | "lumbar";
+  segment: "cervical" | "lumbar" | "dorsal";
   disabled?: boolean;
 }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
   const setCanalApCellProvenance = useWorkspace((s) => s.setCanalApCellProvenance);
   const lumbarNumbering = useWorkspace((s) => s.lumbarNumbering);
+  const dorsalNumbering = useWorkspace((s) => s.dorsalNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
   // Lumbar rows come from the numbering resolver, so a transitional vertebra
   // cannot leave the AP table one segment out of step with the level rows
-  // (spec §5). Cervical keeps its routine list.
-  const levels = segment === "cervical" ? [...CERVICAL_AP_LEVELS] : lumbarApCanalLevels(lumbarNumbering);
+  // (spec §5). Dorsal rows come from the coverage resolver, so an AP value can
+  // never be offered for a level the study did not acquire (dorsal spec §10).
+  // Cervical keeps its routine list.
+  const levels = segment === "cervical"
+    ? [...CERVICAL_AP_LEVELS]
+    : segment === "dorsal"
+      ? dorsalApCanalLevels(dorsalNumbering)
+      : lumbarApCanalLevels(lumbarNumbering);
 
   const handleChange = useCallback(
     (level: string, rawValue: string) => {
@@ -83,11 +92,11 @@ export function SpineApCanalMeasurements({
   );
 
   const reportBlock = useMemo(() => {
-    // Built from the same `levels` array the input grid renders, so an LSTV
-    // row's measurement can never be dropped from the report block.
+    // Built from the same `levels` array the input grid renders, so a row's
+    // measurement can never be dropped from the report block.
     const set: SpineApMeasurementSet = segment === "cervical"
       ? createCervicalApSet()
-      : { segment: "lumbar", levels: levels.map((level) => ({ level, value: null })) };
+      : { segment, levels: levels.map((level) => ({ level, value: null })) };
     levels.forEach((level, idx) => {
       const prov = canalApProvenance[level];
       if (!prov?.value) return;
@@ -98,7 +107,7 @@ export function SpineApCanalMeasurements({
     return formatApMeasurements(set);
   }, [canalApProvenance, levels, segment]);
 
-  const label = segment === "cervical" ? "Cervical" : "Lumbar";
+  const label = segment === "cervical" ? "Cervical" : segment === "dorsal" ? "Dorsal" : "Lumbar";
 
   return (
     <div

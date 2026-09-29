@@ -21,9 +21,11 @@ import {
   isScreeningRole,
   type RegionRole,
   type ScreeningOption,
-  type ScreeningSelectionValue,
   type SpineScreeningRegion,
 } from "@/lib/mriSpineScreeningSchema";
+import {
+  type ScreeningSelectionValue,
+} from "@/lib/mriSpineScreening";
 import {
   SCREENING_BUNDLE_PREFIX,
   SCREENING_LIMITATION_BUNDLE_ID,

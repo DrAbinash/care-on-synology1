@@ -258,7 +258,7 @@ function recessAtoms(
 ): DetailAtom[] {
   if (!detail) return [];
   const out: DetailAtom[] = [];
-  if (detail.severity && detail.severity !== "none") {
+  if (detail.severity) {
     const label = RECESS_OPTIONS.find((o) => o.id === detail.severity)?.label ?? detail.severity;
     const sentence = detailSentence(null, { level, side }, "lateral_recess_stenosis", `${detail.severity} ${side} ${label.toLowerCase()}`);
     out.push(atom({
@@ -298,7 +298,7 @@ function foraminalAtoms(
       supportsLaterality: true,
       proseSource: sentence.proseSource,
     }));
-  } else if (detail.severity && detail.severity !== "none") {
+  } else if (detail.severity) {
     const template = detail.severity === "severe"
       ? (side === "left" ? LS_FORAMEN.severeLeftStenosis : null)
       : (detail.severity === "moderate" ? LS_FORAMEN.moderateBilateral : null);
