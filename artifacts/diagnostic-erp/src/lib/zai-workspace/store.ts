@@ -774,9 +774,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (f === "impression" && opts?.source && opts.source !== "manual") {
       p.impressionNeedsRefresh = false;
     }
-    if (f === "impression" && (!opts?.source || opts.source === "manual") && v !== prevText) {
+    if (f === "impression" && (!opts?.source || opts.source === "manual")) {
       // §37: a hand-written or hand-reordered Impression belongs to the
       // radiologist — automatic priority sorting must never reshuffle it again.
+      // (A true no-op write has already returned above, so this only fires when
+      // the radiologist actually changed the field or its ownership.)
       p.impressionOrderFrozen = true;
     }
     set(p);

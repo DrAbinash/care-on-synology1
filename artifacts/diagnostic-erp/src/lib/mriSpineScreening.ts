@@ -565,7 +565,9 @@ export function screeningLedgerBundles(opts: {
     });
     const observations = spineAtomsToPatches(ledgerRegion, built.bundleId, built.atoms);
     if (observations.length > 0) out.push({ bundleId: built.bundleId, observations });
-    if (built.lines.length > 0) contributes = true;
+    // Any screening prose at all counts as contributing — a region reduced to
+    // "cannot be assessed" notices still needs the report-level limitation.
+    if (built.atoms.length > 0) contributes = true;
   }
   if (contributes) {
     out.push({

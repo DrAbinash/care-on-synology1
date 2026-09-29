@@ -26,6 +26,8 @@ import {
   type SpineScreeningRegion,
 } from "@/lib/mriSpineScreeningSchema";
 import {
+  SCREENING_BUNDLE_PREFIX,
+  SCREENING_LIMITATION_BUNDLE_ID,
   availableScreeningLevels,
   buildScreeningRegionBundle,
   composeScreeningFindings,
@@ -34,7 +36,9 @@ import {
   defaultScreeningState,
   performedScreeningRegions,
   roleConflict,
+  screeningLedgerBundles,
   screeningOptionAvailability,
+  screeningPresetSelections,
   screeningRegionBundleId,
   screeningTextContradictions,
   wholeSpineScreeningLabel,
@@ -499,5 +503,128 @@ describe("screening ledger integration (spec §22, §34, §38)", () => {
     }
     // The dedicated primary is never also a screening module of itself.
     expect(build("ls", state).bundleId).toBe(screeningRegionBundleId("ls"));
+  });
+});
+
+describe("screening ledger plan (spec §29-§30)", () => {
+  beforeEach(() => resetLedger());
+
+  const planFor = (state: ScreeningState, sequences = axialSequences()) =>
+    screeningLedgerBundles({
+      state,
+      schemas: SCREENING_SCHEMAS,
+      sequences,
+      numbering: defaultLumbarNumbering(),
+      ledgerRegion: "LS Spine",
+    });
+
+  /** Mirrors what SpineScreeningPanel does: clear screening-owned rows, apply the plan. */
+  function applyPlan(state: ScreeningState, sequences = axialSequences()) {
+    const ws = useWorkspace.getState();
+    ws.appliedPathologyPatches
+      .map((p) => p.observation?.bundleId ?? "")
+      .filter((id) => id.startsWith(SCREENING_BUNDLE_PREFIX))
+      .forEach((id) => ws.removeMacroBundle(id));
+    const plan = planFor(state, sequences);
+    for (const bundle of plan) {
+      ws.applyMacroBundle({ bundleId: bundle.bundleId, observations: bundle.observations });
+    }
+    return plan;
+  }
+
+  function fullNormalState(): ScreeningState {
+    const state = defaultScreeningState({
+      cervical: "accompanying-screening",
+      dorsal: "accompanying-screening",
+      ls: "primary-screening",
+    });
+    for (const region of SPINE_SCREENING_REGIONS) {
+      state[region].selections = screeningPresetSelections(SCREENING_SCHEMAS[region]);
+    }
+    return state;
+  }
+
+  function countInFindings(text: string): number {
+    return useWorkspace.getState().findingsText.split(text).length - 1;
+  }
+
+  it("plans one region bundle plus exactly one limitation row", () => {
+    const state = stateWith("cervical", "accompanying-screening", { alignment: [{ optionId: "normal" }] });
+    expect(planFor(state).map((b) => b.bundleId)).toEqual([
+      screeningRegionBundleId("cervical"),
+      SCREENING_LIMITATION_BUNDLE_ID,
+    ]);
+  });
+
+  it("emits the limitation once even when all three modules contribute", () => {
+    const state = fullNormalState();
+    const plan = applyPlan(state);
+    expect(plan.filter((b) => b.bundleId === SCREENING_LIMITATION_BUNDLE_ID)).toHaveLength(1);
+    expect(performedScreeningRegions(state)).toEqual(["cervical", "dorsal", "ls"]);
+    expect(countInFindings(SCREENING_LIMITATION_TEXT)).toBe(1);
+    // Every region keeps its own heading and its own rows.
+    for (const region of SPINE_SCREENING_REGIONS) {
+      expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.observation?.bundleId === screeningRegionBundleId(region))).toBe(true);
+    }
+  });
+
+  it("withdraws the limitation when no screening module contributes prose", () => {
+    applyPlan(fullNormalState());
+    expect(countInFindings(SCREENING_LIMITATION_TEXT)).toBe(1);
+    const cleared = defaultScreeningState({ cervical: "accompanying-screening" });
+    applyPlan(cleared);
+    expect(countInFindings(SCREENING_LIMITATION_TEXT)).toBe(0);
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.some((p) => (p.observation?.bundleId ?? "").startsWith(SCREENING_BUNDLE_PREFIX)),
+    ).toBe(false);
+  });
+
+  it("still limits the report when a choice is gated, without asserting the detail", () => {
+    const axialOnly = SCREENING_SCHEMAS.ls.sections
+      .flatMap((s) => s.options.filter((o) => o.axialDependent).map((o) => ({ section: s.key, optionId: o.id })));
+    expect(axialOnly.length).toBeGreaterThan(0);
+    const state = stateWith("ls", "primary-screening", { [axialOnly[0].section]: [{ optionId: axialOnly[0].optionId }] });
+    const plan = planFor(state, defaultSpineSequences());
+    const built = buildScreeningRegionBundle({
+      region: "ls",
+      schema: SCREENING_SCHEMAS.ls,
+      state: state.ls,
+      sequences: defaultSpineSequences(),
+    });
+    expect(built.notices.length).toBeGreaterThan(0);
+    expect(built.lines).toHaveLength(0);
+    // A region reduced to "cannot be assessed" is still a contribution, so the
+    // report-level limitation must accompany it.
+    expect(plan.map((b) => b.bundleId)).toContain(SCREENING_LIMITATION_BUNDLE_ID);
+    const text = plan.flatMap((b) => b.observations.map((o) => o.findingsText)).join(" ");
+    expect(text).toMatch(/cannot be assessed/i);
+    expect(text).not.toMatch(/foraminal stenosis is present/i);
+  });
+
+  it("rebuilds one region without disturbing another region's rows", () => {
+    const state = fullNormalState();
+    applyPlan(state);
+    const cervicalBefore = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => p.observation?.bundleId === screeningRegionBundleId("cervical")).length;
+    const changed = { ...state, ls: { ...state.ls, selections: { canal: [{ optionId: "severe" }] } } };
+    applyPlan(changed);
+    const cervicalAfter = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => p.observation?.bundleId === screeningRegionBundleId("cervical")).length;
+    expect(cervicalAfter).toBe(cervicalBefore);
+    expect(countInFindings(SCREENING_LIMITATION_TEXT)).toBe(1);
+    expect(useWorkspace.getState().findingsText).toMatch(/severe/i);
+  });
+
+  it("promotes only significant abnormalities into the impression lines", () => {
+    const state = stateWith("ls", "primary-screening", {
+      canal: [{ optionId: "severe" }],
+      alignment: [{ optionId: "normal" }],
+    });
+    const built = build("ls", state);
+    expect(composeScreeningImpressionLines(state, SCREENING_SCHEMAS, { ls: built }).join(" ")).toMatch(/severe/i);
+    const overridden = stateWith("ls", "primary-screening", {
+      canal: [{ optionId: "severe" }],
+    }, { significance: { severe: false } });
+    expect(composeScreeningImpressionLines(overridden, SCREENING_SCHEMAS, { ls: build("ls", overridden) })).toEqual([]);
   });
 });

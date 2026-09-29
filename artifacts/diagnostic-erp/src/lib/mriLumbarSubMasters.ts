@@ -58,6 +58,7 @@ import {
   type LumbarNumberingState,
 } from "./mriSpineNumbering";
 import {
+  spineLimitationSentence,
   spineSequencesAllow,
   type SpineSequenceKey,
   type SpineSequencesAvailable,
@@ -111,6 +112,11 @@ export type LumbarTile = {
   requires?: SpineSequenceKey[];
   /** Never offered without whole-spine / localizer coverage. */
   requiresLocalizer?: boolean;
+  /**
+   * Context-dependent coverage requirement: the tile may name an absolute
+   * numbering basis that only a localizer can support (spec §35).
+   */
+  requiresLocalizerIf?: (ctx: LumbarTileContext) => boolean;
   /** Tile is only meaningful when numbering is non-standard. */
   requiresTransitional?: boolean;
   atoms: (ctx: LumbarTileContext) => SpineAtomSpec[];
@@ -1038,6 +1044,10 @@ const ADVANCED: LumbarSubMaster = {
       id: "ad-numbering-basis",
       label: "State the numbering basis",
       group: "Numbering",
+      // "Numbering is based on the whole-spine localizer" is only a true
+      // statement when such coverage exists; otherwise the caution sentence
+      // must not be offered, because it would assert an absent acquisition.
+      requiresLocalizerIf: (ctx) => ctx.numbering.mode === "localizer-based",
       atoms: (ctx) => (numberingAtom(ctx) ? [numberingAtom(ctx)!] : []),
     },
     {
@@ -1075,7 +1085,16 @@ const ADVANCED: LumbarSubMaster = {
       id: "ad-limited-sequence",
       label: "State a sequence limitation",
       group: "Limitations",
-      atoms: () => [a("screening_limitation", "This examination did not include the sequence required to assess the stated abnormality.", { anatomicalSection: "lumbar spine", conflictGroup: "sequence_limitation", role: "baseline" })],
+      // Names only the acquisitions this study actually lacks, produced by the
+      // sanctioned limitation helper rather than a hand-written caveat.
+      atoms: (ctx) => {
+        const absent = (["stir", "dwi", "contrast", "axial", "dynamic"] as SpineSequenceKey[])
+          .filter((key) => !ctx.sequences[key]);
+        const text = spineLimitationSentence(absent, "the stated abnormality");
+        return text
+          ? [a("screening_limitation", text, { anatomicalSection: "lumbar spine", conflictGroup: "sequence_limitation", role: "baseline" })]
+          : [];
+      },
     },
   ],
 };
@@ -1133,6 +1152,14 @@ export function lumbarTileAvailability(tile: LumbarTile, ctx: LumbarTileContext)
   if (tile.requiresLocalizer && !ctx.sequences.wholeSpineLocalizer) {
     return { available: false, missing: ["wholeSpineLocalizer"], reason: "localizer", notice: "Requires whole-spine / localizer coverage." };
   }
+  if (tile.requiresLocalizerIf?.(ctx) && !ctx.sequences.wholeSpineLocalizer) {
+    return {
+      available: false,
+      missing: ["wholeSpineLocalizer"],
+      reason: "localizer",
+      notice: "This statement names a whole-spine / localizer numbering basis that is not documented for this study.",
+    };
+  }
   if (tile.requiresTransitional && ctx.numbering.mode === "standard") {
     return { available: false, missing: [], reason: "numbering", notice: "Available only when transitional anatomy is recorded." };
   }
@@ -1181,10 +1208,14 @@ export const LUMBAR_PRESETS: LumbarPreset[] = [
     atoms: (ctx) => [
       presetAtom("alignment", lib(LS_ALIGN.normal, ctx), { anatomicalSection: "lumbar spine", role: "baseline" }),
       presetAtom("compression_fracture", lib(LS_BONE.normal, ctx), { anatomicalSection: "lumbar spine", role: "baseline" }),
-      presetAtom("disc_contour", lib(LS_DISC.normal, ctx), { anatomicalSection: "lumbar spine", role: "baseline", baselineReplaces: LS_LEVEL_DISC_BASELINE }),
-      presetAtom("canal_stenosis", lib(LS_CANAL.normal, ctx, { conusLevel: ctx.conusLevel }), { anatomicalSection: "lumbar spine", role: "baseline", baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
+      // The level-bound normals sit in the SAME slot as their abnormal
+      // counterparts (region + concept + level), so documenting an abnormality
+      // at that level replaces the normal sentence instead of leaving the
+      // report contradicting itself (spec §4/§15). Wording is unchanged.
+      presetAtom("disc_contour", lib(LS_DISC.normal, ctx), { anatomicalSection: ctx.level, level: ctx.level, role: "baseline", baselineReplaces: LS_LEVEL_DISC_BASELINE }),
+      presetAtom("canal_stenosis", lib(LS_CANAL.normal, ctx, { conusLevel: ctx.conusLevel }), { anatomicalSection: ctx.level, level: ctx.level, role: "baseline", baselineReplaces: LS_LEVEL_CANAL_BASELINE }),
       presetAtom("cauda_equina", lib(LS_CANAL.caudaNormal, ctx), { anatomicalSection: "lumbar spine", role: "baseline" }),
-      presetAtom("foraminal_stenosis", lib(LS_FORAMEN.normal, ctx), { anatomicalSection: "lumbar spine", role: "baseline", baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE }),
+      presetAtom("foraminal_stenosis", lib(LS_FORAMEN.normal, ctx), { anatomicalSection: ctx.level, level: ctx.level, role: "baseline", baselineReplaces: LS_LEVEL_FORAMINAL_BASELINE }),
       presetAtom("facet_joint", lib(LS_POSTERIOR.facetNormal, ctx), { anatomicalSection: "lumbar spine", role: "baseline" }),
       presetAtom("ligamentum_flavum", lib(LS_POSTERIOR.lfNormal, ctx), { anatomicalSection: "lumbar spine", role: "baseline" }),
       presetAtom("muscle_atrophy", lib(LS_SOFT_TISSUE.normal, ctx), { anatomicalSection: "lumbar spine", conflictGroup: "paraspinal", role: "baseline" }),
@@ -1424,7 +1455,11 @@ export type LumbarLesionInput = {
 
 const LESION_CONCEPT: Record<LumbarLesionCompartment, string> = {
   epidural: "epidural_collection",
-  intradural: "epidural_space",
+  // The CARE concept canon has no intradural-mass concept, and mapping this to
+  // `epidural_space` would state the wrong compartment. An intradural lesion is
+  // captured against the cauda equina, which is the structure involved and
+  // reconciles in the same level slot.
+  intradural: "cauda_equina",
   vertebral: "bone_lesion",
   paraspinal: "paravertebral_collection",
   psoas: "paravertebral_collection",
