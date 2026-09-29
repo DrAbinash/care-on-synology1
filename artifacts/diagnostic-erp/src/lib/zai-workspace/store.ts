@@ -58,6 +58,25 @@ import {
 } from "@/lib/pathologyPatch";
 import type { Side } from "@/lib/sideSwap";
 import {
+  defaultLumbarNumbering,
+  type LumbarNumberingState,
+} from "@/lib/mriSpineNumbering";
+import {
+  defaultSpineSequences,
+  type SpineSequencesAvailable,
+} from "@/lib/mriSpineSequences";
+import {
+  defaultScreeningRegionState,
+  defaultScreeningState,
+  type ScreeningRegionState,
+  type ScreeningState,
+} from "@/lib/mriSpineScreening";
+import {
+  roleImpliesPerformed,
+  type RegionRole,
+  type SpineScreeningRegion,
+} from "@/lib/mriSpineScreeningSchema";
+import {
   ensureSectionedFindings,
   findingsSectionBlocks,
   flattenSectionedFindings,
@@ -424,6 +443,25 @@ interface S {
   dorsalCanalForced: boolean;
   /** Canal AP cell provenance (manualOverride + DICOM UIDs) — draft-scoped. */
   canalApProvenance: CanalApProvenanceMap;
+  /**
+   * MRI Lumbar V3: vertebral numbering mode + LSTV detail. Level keys, AP rows,
+   * root mapping, findings prose and LS screening all read this through
+   * `LumbarNumberingResolver` — never a hard-coded level array (spec §5).
+   */
+  lumbarNumbering: LumbarNumberingState;
+  /**
+   * MRI Lumbar V3: what this examination actually included. Defaults derived
+   * from technique/protocol text, always manually overridable (spec §35).
+   */
+  sequencesAvailable: SpineSequencesAvailable;
+  /**
+   * MRI Lumbar V3: three-region spine screening state (cervical/dorsal/ls).
+   * Structured selections live here; their prose enters the ledger through
+   * `applyMacroBundle` with `screen-<region>-<section>` conflict groups (§22).
+   */
+  screening: ScreeningState;
+  /** Radiologist reordered / rewrote the Impression — auto-priority stays off (§37). */
+  impressionOrderFrozen: boolean;
   /** Expected study UID for activeAnchor rejection across study switches. */
   activeStudyInstanceUID: string | null;
   /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
@@ -557,6 +595,17 @@ export type WorkspaceStore = S & {
   touchCoverageViewed: (regionKey: string) => void;
   hydrateCoverageMarks: (raw: unknown) => void;
   serializeCoverageMarks: () => CoverageMark[];
+  /** MRI Lumbar V3 §5 — numbering mode / LSTV detail. */
+  setLumbarNumbering: (patch: Partial<LumbarNumberingState>) => void;
+  /** MRI Lumbar V3 §35 — what the examination actually included. */
+  setSequencesAvailable: (patch: Partial<SpineSequencesAvailable>) => void;
+  replaceSequencesAvailable: (next: SpineSequencesAvailable) => void;
+  /** MRI Lumbar V3 §22-§23 — one region's screening role and selections. */
+  setScreeningRegion: (region: SpineScreeningRegion, patch: Partial<ScreeningRegionState>) => void;
+  /** MRI Lumbar V3 §23 — billing/protocol derived default roles, overridable. */
+  replaceScreeningRoles: (roles: Record<SpineScreeningRegion, RegionRole>) => void;
+  /** MRI Lumbar V3 §37 — manual Impression edit / reorder freezes auto priority. */
+  setImpressionOrderFrozen: (frozen: boolean) => void;
   dismissOwnershipReview: () => void;
   dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
@@ -643,6 +692,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
   dorsalCanalForced: false,
   canalApProvenance: {},
+  lumbarNumbering: defaultLumbarNumbering(),
+  sequencesAvailable: defaultSpineSequences(),
+  screening: defaultScreeningState(),
+  impressionOrderFrozen: false,
   activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
   appliedFormatName: null,
   ownershipReviewWarnings: [], ledgerHydrationWarning: null,
@@ -684,7 +737,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -1879,6 +1932,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   serializeCoverageMarks: () => get().coverageMarks,
+  setLumbarNumbering: (patch) => set((s) => ({ lumbarNumbering: { ...s.lumbarNumbering, ...patch } })),
+  setSequencesAvailable: (patch) => set((s) => ({ sequencesAvailable: { ...s.sequencesAvailable, ...patch } })),
+  replaceSequencesAvailable: (next) => set({ sequencesAvailable: next }),
+  setScreeningRegion: (region, patch) => set((s) => {
+    const prev = s.screening[region] ?? defaultScreeningRegionState();
+    const next: ScreeningRegionState = { ...prev, ...patch };
+    // performed follows the role unless the caller states otherwise (spec §23).
+    if (patch.role && patch.performed === undefined) next.performed = roleImpliesPerformed(patch.role);
+    return { screening: { ...s.screening, [region]: next } };
+  }),
+  replaceScreeningRoles: (roles) => set((s) => {
+    const next = { ...s.screening };
+    for (const region of Object.keys(roles) as SpineScreeningRegion[]) {
+      const role = roles[region]!;
+      if (next[region]?.role === role) continue;
+      next[region] = defaultScreeningRegionState(role);
+    }
+    return { screening: next };
+  }),
+  setImpressionOrderFrozen: (frozen) => set({ impressionOrderFrozen: frozen }),
   dismissOwnershipReview: () => set({ ownershipReviewWarnings: [] }),
   dismissLedgerHydrationWarning: () => set({ ledgerHydrationWarning: null }),
   applyComposerFinding: (opts) => {
