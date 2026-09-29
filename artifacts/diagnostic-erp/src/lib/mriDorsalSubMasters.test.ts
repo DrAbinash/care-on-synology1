@@ -907,6 +907,21 @@ describe("whole-model binding (spec §45)", () => {
     }
   });
 
+  it("keeps every dorsal UI file reading levels from the resolver", () => {
+    const uiFiles = [
+      "src/components/radiology/reporting-canvas/MriDorsalCanvas.tsx",
+      "src/components/radiology/reporting-canvas/MriDorsalSubMasterPanel.tsx",
+      "src/components/radiology/reporting-canvas/SpineApCanalMeasurements.tsx",
+      "src/components/radiology/reporting-canvas/SpineScreeningPanel.tsx",
+      "src/components/radiology/workspace/ReportingToolsRail.tsx",
+      "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
+    ];
+    for (const rel of uiFiles) {
+      const src = readFileSync(resolve(PKG_DIR, rel), "utf8");
+      expect(src, `${rel} must not enumerate thoracic levels`).not.toMatch(/"T\d+(?:-[TL]\d+)?"\s*,\s*"T\d+/);
+    }
+  });
+
   it("re-scopes a captured observation instead of re-labelling it silently", () => {
     resetLedger();
     applyTile("jj-conus-compression", ctx({ numbering: dorsalState({ coverage: "thoracolumbar" }) }));
