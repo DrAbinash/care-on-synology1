@@ -4,10 +4,25 @@ WITH THREE-MODULE SPINE SCREENING
 Repository: DrAbinash/care-on-synology1
 
 SOURCE CONTENT:
-Use the supplied MRI Lumbar Spine clinical content library as the clinical
-content source for findings, terminology and starting presets.
-Seeded/preset prose MUST be verbatim from that library; the composer may
-template variables but never invent clinical sentences.
+The canonical clinical content library for this task is:
+docs/clinical-libraries/mri-lumbar-clinical-content-library.md
+
+Use that file as the authoritative clinical content source for findings,
+terminology and starting presets.
+Seeded/preset prose MUST be verbatim from that canonical library; the composer
+may template variables such as level, side, measurement, severity and direction,
+but must never invent clinical sentences.
+
+Existing in-code report prose and docs/mri-report-formats reference files are
+not canonical for this task unless their prose is identical to or explicitly
+incorporated into the canonical library. If existing production prose conflicts
+with the canonical library, do not silently choose or overwrite it: preserve
+safe production behaviour as needed and document the discrepancy in the
+completion/spec-compliance report.
+
+This V3 specification remains authoritative for architecture, workflow,
+validation and safety rules; the canonical clinical library is authoritative
+for seeded clinical prose.
 
 OBJECTIVE
 Enhance the EXISTING CARE MRI Lumbar Spine structured reporting canvas using
