@@ -241,6 +241,20 @@ lib/mriBrainContradictions.ts     # normal-vs-abnormal + sequence-aware warnings
 components/radiology/reporting-canvas/MriBrainCanvas.tsx
 ```
 
+### Frontend X-ray Chest reporting (`artifacts/diagnostic-erp/src/`)
+```
+lib/xrayChestViews.ts             # technique → performed view/adequacy + projection statement rules
+lib/xrayChestAtoms.ts             # ChestAtomSpec → ledger patch atoms (one bundle id per group)
+lib/xrayChestNormalAtoms.ts       # projection-aware NORMAL baseline atoms
+lib/xrayChestMeasures.ts          # CTR, pneumothorax / effusion size bands, tension signs
+lib/xrayChestLesions.ts           # descriptive nodule / mass characterisation
+lib/xrayChestDevices.ts           # lines, tubes and devices — position + complication
+lib/xrayChestComparison.ts        # dated-prior interval statements (reuses radiologyComparison)
+lib/xrayChestSubMasters.ts        # 16 clinical sub-master palettes (tiles / presets)
+lib/xrayChestContradictions.ts    # normal-vs-abnormal + projection-aware warnings
+components/radiology/reporting-canvas/XrayChestCanvas.tsx
+```
+
 ---
 
 ## 🟢 Shared / Core — load-bearing for both zones, treat like billing

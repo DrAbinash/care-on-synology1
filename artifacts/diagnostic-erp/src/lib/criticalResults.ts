@@ -71,12 +71,30 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   // Chest / vascular
   { term: "tension pneumothorax", label: "tension pneumothorax" },
   { term: "pneumothorax", label: "pneumothorax" },
+  { term: "tension physiology", label: "tension physiology" },
+  { term: "large pleural effusion", label: "large pleural effusion" },
+  // Plain-film prose puts the side between "large" and "pleural effusion"
+  // ("Large left pleural effusion…"), so the phrase above cannot match it.
+  // Mass effect is the emergency, and it is named explicitly here.
+  { term: "contralateral mediastinal shift", label: "contralateral mediastinal shift" },
+  { term: "haemothorax", label: "haemothorax" },
+  { term: "hemothorax", label: "haemothorax" },
+  { term: "marked pulmonary oedema", label: "marked pulmonary oedema" },
+  { term: "marked pulmonary edema", label: "marked pulmonary oedema" },
+  { term: "severe pulmonary oedema", label: "severe pulmonary oedema" },
+  { term: "severe pulmonary edema", label: "severe pulmonary oedema" },
   { term: "pulmonary embolism", label: "pulmonary embolism" },
   { term: "pulmonary embolus", label: "pulmonary embolism" },
   { term: "aortic dissection", label: "aortic dissection" },
   // Abdomen / pelvis / obstetric
   { term: "pneumoperitoneum", label: "pneumoperitoneum" },
   { term: "free air", label: "free intraperitoneal air" },
+  // Plain chest films describe this as "subdiaphragmatic free gas", which the
+  // terms above did not match — the chest sub-master's own wording must fire.
+  { term: "subdiaphragmatic free gas", label: "subdiaphragmatic free gas" },
+  { term: "free gas under the diaphragm", label: "subdiaphragmatic free gas" },
+  { term: "malpositioned", label: "device malposition" },
+  { term: "malposition", label: "device malposition" },
   { term: "bowel perforation", label: "bowel perforation" },
   { term: "ectopic pregnancy", label: "ectopic pregnancy" },
   { term: "testicular torsion", label: "testicular torsion" },

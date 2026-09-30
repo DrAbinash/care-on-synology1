@@ -252,3 +252,57 @@ export function isBrainMeasuresReportingContext(opts: {
 }): boolean {
   return isMriBrainReportingContext(opts) || isCtBrainReportingContext(opts);
 }
+
+/**
+ * DICOM modality codes a plain radiograph can arrive under. The billing
+ * department maps "X-Ray" → "CR" (api-server radiology.ts MODALITY_MAP), so a
+ * live chest film is CR — never the literal "X-RAY" that seed data uses.
+ */
+const XR_MODALITY_CODES = ["XR", "CR", "DX", "XA", "RF", "X-RAY", "XRAY", "X RAY"];
+
+function isXrModality(modality: string): boolean {
+  const m = modality.trim().toUpperCase();
+  if (!m) return false;
+  return XR_MODALITY_CODES.includes(m) || m.includes("X-RAY") || m.includes("XRAY");
+}
+
+const CHEST_TEXT = /\bchest\b|\bcxr\b|\bthorax\b|\bpneumoperitoneum\b/i;
+
+/**
+ * X-ray Chest reporting context — activates the chest clinical sub-master
+ * (views/adequacy, palettes, devices). Mirrors isMriBrainReportingContext.
+ *
+ * Two failure modes this deliberately avoids:
+ *  - CT Chest / USG Chest must NOT receive the plain-film canvas, so a
+ *    recognised non-XR modality rejects immediately;
+ *  - a study whose tab is a chest X-Ray tab must qualify even when the worklist
+ *    row arrives with an unexpected modality string, so the tab name is
+ *    accepted on its own.
+ */
+export function isXrayChestReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").trim();
+  const region = (opts.region ?? "").trim();
+  const desc = (opts.studyDescription ?? "").trim();
+
+  if (mod && !isXrModality(mod)) return false;
+
+  // Tab names are the canonical keys: "X-Ray Chest PA", "X-Ray Portable Chest".
+  if (region && /^X[- ]RAY\b/i.test(region) && CHEST_TEXT.test(region)) return true;
+
+  if (mod && isXrModality(mod)) {
+    if (opts.family === "chest") return true;
+    if (region && CHEST_TEXT.test(region)) return true;
+    if (desc && CHEST_TEXT.test(desc)) return true;
+    return false;
+  }
+
+  // No modality at all — require both plain-film and chest evidence.
+  const hay = `${region} ${desc}`;
+  return /x[- ]?ray|xray|\bcxr\b|\bcr\b|\bdx\b/i.test(hay) && CHEST_TEXT.test(hay);
+}
+

@@ -37,7 +37,11 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
+import {
+  isBrainMeasuresReportingContext,
+  isMriBrainReportingContext,
+  isXrayChestReportingContext,
+} from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
@@ -53,6 +57,7 @@ import {
   SpineApCanalMeasurements,
   BrainMeasuresStrip,
   MriBrainCanvas,
+  XrayChestCanvas,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
@@ -796,6 +801,21 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     findingsText: phrase,
                                   });
                                 }}
+                              />
+                            ) : null}
+                            {/* X-ray Chest clinical sub-master — views/adequacy
+                first, palettes, devices, measures and comparison, all writing
+                through the existing ledger. */}
+                            {isXrayChestReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <XrayChestCanvas
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "Chest"}
+                                patientAge={workflow.currentRow?.age ?? null}
                               />
                             ) : null}
                             <ObservationLedgerPanel

@@ -771,7 +771,9 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     description: "Solitary pulmonary nodule / mass.",
     aliases: ["pulmonary nodule", "lung nodule", "lung mass", "spiculated mass"],
     regions: ["chest"],
-    modalities: ["CT"],
+    // XR: the chest sub-master's nodule/mass palette needs structured slot
+    // ownership on plain films, where CT-only ownership silently degraded it.
+    modalities: ["CT", "XR"],
     impressionworthyAbnormal: true,
   },
   {
@@ -783,6 +785,147 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     modalities: ["CT", "XR"],
     impressionworthyAbnormal: true,
   },
+
+  // ─── Chest radiography (X-ray Chest Clinical Sub-Master V3) ────────────
+  //
+  // Concepts emitted by xrayChestSubMasters.ts / xrayChestNormalAtoms.ts /
+  // xrayChestDevices.ts / xrayChestLesions.ts / xrayChestMeasures.ts.
+  // Registration is functional, not cosmetic: an unregistered concept falls
+  // back to heuristic sentence ownership instead of structured slot identity.
+  //
+  // Baseline (normal) concepts carry impressionworthyAbnormal: false — they are
+  // the sentences an abnormality supersedes, never a reason to withdraw the
+  // system normal impression.
+
+  // Chest baselines
+  { concept: "trachea", label: "Trachea central", description: "Trachea is midline.", aliases: ["trachea is central", "trachea midline", "tracheal position"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "cardiac_silhouette", label: "Cardiac silhouette normal", description: "Heart size within normal limits for projection.", aliases: ["cardiomediastinal silhouette is within normal limits", "cardiac silhouette normal", "normal heart size"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "lung_fields", label: "Lungs clear", description: "No focal air-space opacity.", aliases: ["lung fields are clear", "lungs clear", "no focal opacity"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "lung_expansion", label: "Lungs expanded", description: "Adequate lung expansion.", aliases: ["adequately expanded", "lungs expanded", "well expanded"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "pulmonary_vasculature", label: "Pulmonary vasculature normal", description: "Vascular markings within normal limits.", aliases: ["pulmonary vascular markings", "vascular markings normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "hila", label: "Hila normal", description: "No hilar enlargement.", aliases: ["hila are not enlarged", "normal hila", "hilar contours normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "mediastinum", label: "Mediastinum normal", description: "No mediastinal widening.", aliases: ["mediastinum is not widened", "normal mediastinum", "mediastinal contour normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "costophrenic_angles", label: "Costophrenic angles clear", description: "Angles sharp and included.", aliases: ["costophrenic angles are clear", "angles are sharp", "costophrenic angle blunting"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "pleura", label: "Pleura normal", description: "No effusion or pneumothorax.", aliases: ["no pleural effusion or pneumothorax", "pleura normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "diaphragm", label: "Diaphragm normal", description: "Normal position and contour.", aliases: ["diaphragms are normal", "normal diaphragm"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "upper_abdomen", label: "Upper abdomen normal", description: "Visualised upper abdomen unremarkable.", aliases: ["visible upper abdomen is unremarkable", "upper abdomen normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "subdiaphragmatic_free_air", label: "No free gas", description: "No subdiaphragmatic free gas.", aliases: ["no subdiaphragmatic free gas", "no free air"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "osseous_structures", label: "Bones normal", description: "No acute bony abnormality.", aliases: ["no acute bony abnormality", "osseous structures normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "soft_tissues", label: "Soft tissues normal", description: "Visualised soft tissues unremarkable.", aliases: ["soft tissues are unremarkable", "soft tissues normal"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "lines_tubes_devices_absent", label: "No lines or tubes", description: "No support devices identified.", aliases: ["no lines, tubes or devices", "no lines or tubes", "no devices"], regions: ["chest"], modalities: ["XR", "CT"] },
+
+  // Air-space / infection pattern
+  { concept: "air_space_opacity", label: "Air-space opacity", description: "Focal air-space opacity.", aliases: ["air-space opacity", "airspace opacity", "focal opacity"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "consolidation", label: "Consolidation", description: "Lobar or segmental consolidation.", aliases: ["consolidation", "lobar consolidation", "segmental consolidation"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "air_bronchogram", label: "Air bronchograms", description: "Air bronchograms within consolidation.", aliases: ["air bronchogram", "air bronchograms"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "cavitation", label: "Cavitation", description: "Cavitary change in consolidation.", aliases: ["cavitation", "cavitary", "cavity"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "multifocal_opacity", label: "Multifocal opacity", description: "Multifocal air-space opacities.", aliases: ["multifocal opacity", "multifocal opacities"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "peribronchial_opacity", label: "Peribronchial opacities", description: "Patchy peribronchial air-space opacities.", aliases: ["peribronchial opacity", "peribronchial opacities"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+
+  // TB pattern (descriptive only — never asserts active tuberculosis)
+  { concept: "upper_zone_opacity", label: "Upper-zone opacity", description: "Upper-zone predominant heterogeneous opacity.", aliases: ["upper zone opacity", "upper-zone opacity"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "fibro_cavitary_change", label: "Fibro-cavitary change", description: "Fibrosis with cavitation, upper zone.", aliases: ["fibro-cavitary", "fibrocavitary"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+  { concept: "apical_pleural_thickening", label: "Apical cap", description: "Apical pleuroparenchymal thickening.", aliases: ["apical pleuroparenchymal thickening", "apical cap"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "calcified_granuloma", label: "Calcified granuloma", description: "Healed granulomatous calcific nodule.", aliases: ["calcified granuloma", "granuloma"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "miliary_nodules", label: "Miliary nodules", description: "Innumerable tiny nodular opacities.", aliases: ["miliary", "miliary-pattern", "micronodular"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "volume_loss_hilar_elevation", label: "Volume loss with hilar elevation", description: "Hilar elevation with volume loss.", aliases: ["hilar elevation", "volume loss with hilar elevation"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+  { concept: "mediastinal_lymphadenopathy", label: "Mediastinal lymphadenopathy", description: "Hilar / mediastinal nodal enlargement pattern.", aliases: ["lymph node enlargement", "lymphadenopathy", "nodal enlargement"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Edema / cardiac pattern
+  { concept: "pulmonary_vascular_redistribution", label: "Vascular redistribution", description: "Pulmonary vascular congestion / redistribution.", aliases: ["vascular redistribution", "pulmonary venous congestion", "cephalisation", "cephalization"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "interstitial_edema", label: "Interstitial oedema", description: "Perihilar interstitial opacities with septal lines.", aliases: ["interstitial edema", "interstitial oedema", "septal lines", "kerley lines"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "air_space_edema", label: "Air-space oedema", description: "Perihilar batwing air-space opacities.", aliases: ["alveolar edema", "batwing", "air-space oedema"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "peribronchial_cuffing", label: "Peribronchial cuffing", description: "Peribronchial cuffing.", aliases: ["peribronchial cuffing", "bronchial cuffing"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Pleural disease
+  { concept: "pleural_effusion", label: "Pleural effusion", description: "Pleural fluid collection.", aliases: ["pleural effusion", "effusion", "costophrenic blunting", "meniscus"], regions: ["chest"], modalities: ["XR", "CT", "US"], impressionworthyAbnormal: true },
+  { concept: "loculated_effusion", label: "Loculated effusion", description: "Loculated pleural collection.", aliases: ["loculated effusion", "loculated collection"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pleural_thickening", label: "Pleural thickening", description: "Pleural thickening.", aliases: ["pleural thickening"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pleural_calcification", label: "Pleural calcification", description: "Pleural calcification.", aliases: ["pleural calcification", "calcified pleura"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "hydropneumothorax", label: "Hydropneumothorax", description: "Air-fluid level with pneumothorax.", aliases: ["hydropneumothorax", "air-fluid level"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "tension_pattern_signs", label: "Tension-pattern signs", description: "Mediastinal shift and diaphragmatic depression. Signs only — tension is a radiologist/clinical determination.", aliases: ["tension physiology", "mediastinal shift away", "depressed hemidiaphragm"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Collapse / COPD / ILD
+  { concept: "atelectasis", label: "Atelectasis", description: "Linear or subsegmental atelectatic band.", aliases: ["atelectasis", "atelectatic band", "subsegmental atelectasis"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "lobar_collapse", label: "Lobar collapse", description: "Lobar or segmental volume loss.", aliases: ["collapse", "lobar collapse", "volume loss"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "fissural_displacement", label: "Fissural displacement", description: "Fissure displaced by volume loss.", aliases: ["fissural displacement", "fissure displacement"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "ipsilateral_shift", label: "Ipsilateral shift", description: "Hilar / mediastinal shift toward volume loss.", aliases: ["shift toward", "ipsilateral mediastinal shift"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "compensatory_hyperinflation", label: "Compensatory hyperinflation", description: "Hyperinflation adjacent to volume loss.", aliases: ["compensatory hyperinflation", "compensatory emphysema"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "hyperinflation", label: "Hyperinflation", description: "Hyperinflated lungs.", aliases: ["hyperinflated", "hyperinflation"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "flattened_diaphragms", label: "Flattened diaphragms", description: "Diaphragmatic flattening.", aliases: ["flattened diaphragms", "flat diaphragms"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "retrosternal_clear_space_increased", label: "Increased retrosternal space", description: "Lateral-view hyperinflation sign.", aliases: ["retrosternal clear space", "retrosternal space"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+  { concept: "attenuated_vascular_markings", label: "Attenuated peripheral markings", description: "Peripheral vascular pruning.", aliases: ["attenuated vascular markings", "pruned vessels", "oligaemic"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "bullae", label: "Bullae", description: "Bullous change.", aliases: ["bulla", "bullae", "bullous change"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "chronic_bronchitic_markings", label: "Chronic bronchitic markings", description: "Increased bronchovascular markings.", aliases: ["chronic bronchitic", "bronchovascular markings"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+  { concept: "interstitial_opacity", label: "Interstitial opacity", description: "Reticular / reticulonodular interstitial opacities.", aliases: ["reticular", "reticulonodular", "interstitial opacity", "interstitial pattern"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "interstitial_predominance", label: "Interstitial predominance", description: "Peripheral / lower-zone predominance.", aliases: ["peripheral predominance", "basal predominance", "lower zone predominance"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "reduced_lung_volumes", label: "Reduced lung volumes", description: "Low lung volumes.", aliases: ["reduced lung volumes", "low lung volumes"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "fibrosis", label: "Fibrotic change", description: "Coarse fibrotic change with volume loss.", aliases: ["fibrosis", "fibrotic change"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "honeycombing", label: "Honeycombing", description: "Honeycomb-pattern lucencies where evident.", aliases: ["honeycomb", "honeycombing"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "peribronchial_markings", label: "Peribronchial markings", description: "Perihilar / peribronchial marking prominence (common paediatric pattern).", aliases: ["peribronchial thickening", "perihilar markings"], regions: ["chest"], modalities: ["XR"], impressionworthyAbnormal: true },
+
+  // Nodule / mass
+  { concept: "pulmonary_nodules", label: "Multiple pulmonary nodules", description: "Multiple nodules of varying size.", aliases: ["multiple nodules", "pulmonary nodules"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "mass_like_opacity", label: "Mass-like opacity", description: "Rounded mass-like pulmonary opacity.", aliases: ["mass", "mass-like opacity", "pulmonary mass"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "lesion_calcification", label: "Lesion calcification", description: "Calcification visible within a lesion.", aliases: ["calcified lesion", "calcification within the lesion"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Cardiomediastinal / diaphragm
+  { concept: "cardiomegaly", label: "Cardiomegaly", description: "Cardiac silhouette enlarged for projection.", aliases: ["cardiomegaly", "heart enlarged", "enlarged cardiac silhouette"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "cardiac_size_not_assessed", label: "Cardiac size not assessable", description: "AP projection prevents cardiac-size assessment.", aliases: ["cannot be assessed on the ap projection", "cardiac size not assessed"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "aortic_calcification", label: "Aortic calcification", description: "Aortic unfolding / atherosclerotic calcification.", aliases: ["aortic unfolding", "atherosclerotic calcification", "calcified aorta"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "mediastinal_widening", label: "Mediastinal widening", description: "Widened mediastinum.", aliases: ["mediastinal widening", "widened mediastinum"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "hilar_prominence", label: "Hilar prominence", description: "Prominent hilar contour.", aliases: ["hilar prominence", "prominent hilum"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pulmonary_artery_prominence", label: "Pulmonary artery prominence", description: "Enlarged pulmonary arteries.", aliases: ["pulmonary artery prominence", "prominent pulmonary arteries"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "paratracheal_opacity", label: "Paratracheal opacity", description: "Paratracheal soft-tissue opacity.", aliases: ["paratracheal opacity", "right paratracheal"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "tracheal_deviation", label: "Tracheal deviation", description: "Trachea displaced from midline.", aliases: ["tracheal deviation", "deviated trachea"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "elevated_hemidiaphragm", label: "Elevated hemidiaphragm", description: "Hemidiaphragm elevated.", aliases: ["elevated hemidiaphragm", "raised diaphragm"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "eventration", label: "Eventration", description: "Diaphragmatic eventration pattern.", aliases: ["eventration"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "hiatus_hernia", label: "Hiatus hernia pattern", description: "Retrocardiac air-fluid level / hiatus hernia.", aliases: ["hiatus hernia", "retrocardiac air-fluid level"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pneumoperitoneum", label: "Subdiaphragmatic free gas", description: "Free intraperitoneal gas beneath the diaphragm.", aliases: ["subdiaphragmatic free gas", "pneumoperitoneum", "free gas under the diaphragm", "rigler"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Trauma
+  { concept: "rib_fracture", label: "Rib fracture", description: "Rib fracture where visible.", aliases: ["rib fracture", "fractured rib"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "clavicle_fracture", label: "Clavicular fracture", description: "Clavicle fracture.", aliases: ["clavicular fracture", "clavicle fracture"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "hemothorax", label: "Haemothorax pattern", description: "Pleural fluid-density collection in trauma.", aliases: ["hemothorax", "haemothorax"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pulmonary_contusion", label: "Pulmonary contusion", description: "Non-segmental opacity at the impact site.", aliases: ["pulmonary contusion", "contusion"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "subcutaneous_emphysema", label: "Subcutaneous emphysema", description: "Gas in the chest wall soft tissues.", aliases: ["subcutaneous emphysema", "surgical emphysema"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Lines, tubes and devices
+  { concept: "et_tube_position", label: "Endotracheal tube", description: "Endotracheal tube position.", aliases: ["endotracheal tube", "ET tube", "nasotracheal tube"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "enteric_tube_position", label: "Enteric tube", description: "Nasogastric / orogastric tube position.", aliases: ["enteric tube", "nasogastric tube", "NG tube", "ogastric tube", "Ryle's tube"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "cvc_position", label: "Central venous catheter", description: "Central line course and tip.", aliases: ["central venous catheter", "central line", "CVC", "internal jugular line", "subclavian line"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "picc_position", label: "PICC", description: "Peripherally inserted central catheter.", aliases: ["PICC", "peripherally inserted central catheter"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "chest_drain_position", label: "Intercostal drain", description: "Chest drain course and side-hole.", aliases: ["intercostal drain", "chest drain", "ICD tube"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "pacemaker_leads", label: "Pacemaker / leads", description: "Pacemaker generator and lead course.", aliases: ["pacemaker", "pace maker", "pacing lead", "dual chamber pacemaker"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "icd_device", label: "ICD", description: "Implantable cardioverter-defibrillator.", aliases: ["ICD", "defibrillator", "AICD"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "prosthetic_valve", label: "Prosthetic valve", description: "Prosthetic cardiac valve.", aliases: ["prosthetic valve", "valve replacement", "mechanical valve"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "sternotomy_wires", label: "Sternotomy wires", description: "Sternal wires and their integrity.", aliases: ["sternotomy wires", "sternal wires", "wire fracture"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "surgical_hardware_other", label: "Other hardware", description: "Other implanted hardware.", aliases: ["hardware", "implant", "anchor", "mesh"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "surgical_clips", label: "Surgical clips / staples", description: "Post-surgical clips or staple lines.", aliases: ["surgical clips", "staple line", "staples", "haemostatic clips"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "sternotomy_change", label: "Post-sternotomy change", description: "Expected post-sternotomy appearance.", aliases: ["post-sternotomy", "post sternotomy change"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+  { concept: "postop_volume_loss", label: "Post-operative volume loss", description: "Volume loss after thoracic surgery.", aliases: ["post-thoracic surgery volume loss", "post-operative volume loss", "pneumonectomy"], regions: ["chest"], modalities: ["XR", "CT"], impressionworthyAbnormal: true },
+
+  // Paediatric
+  { concept: "thymic_contour", label: "Thymic contour", description: "Age-appropriate thymus. Not a mediastinal mass.", aliases: ["thymus", "thymic shadow", "thymic contour", "sail sign"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "cardiomediastinal_age_appropriate", label: "Age-appropriate silhouette", description: "Cardiomediastinal contour appropriate for age and projection.", aliases: ["appropriate for age", "age appropriate silhouette"], regions: ["chest"], modalities: ["XR"] },
+
+  // Narrative support concepts
+  { concept: "ct_recommendation", label: "CT correlation (selected)", description: "Radiologist-selected CT recommendation.", aliases: ["CT correlation", "HRCT correlation", "CT recommended"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "chest_normal_impression", label: "Normal chest impression", description: "Clinic wording for a normal chest radiograph.", aliases: ["no active cardiopulmonary abnormality"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "technique_limitation", label: "Technique limitation", description: "Limitation that materially affects interpretation.", aliases: ["technical limitation", "limited study"], regions: ["chest"], modalities: ["XR", "CT"] },
+  { concept: "comparison_reference", label: "Comparison reference", description: "Dated prior-study comparison statement.", aliases: ["comparison made with", "compared with prior study", "previous study dated"], regions: ["chest"], modalities: ["XR", "CT"] },
+
+  // Descriptive-safety reminder lines (never assert a diagnosis). Aliases are
+  // fragments of the reminder prose itself so a hand-typed or voice-typed
+  // disclaimer is still owned by its concept instead of becoming loose prose.
+  { concept: "infection_disclaimer", label: "No microbiologic etiology", description: "Etiology cannot be assigned from radiography alone.", aliases: ["microbiologic etiology cannot be assigned from radiography", "etiology cannot be assigned from radiography alone", "no microbiologic etiology"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "tb_disclaimer", label: "Active TB not asserted", description: "Pattern described; active tuberculosis requires radiologist and clinical determination.", aliases: ["active tuberculosis is not asserted", "tuberculosis is not asserted by this report", "requires radiologist selection with clinical and microbiological correlation"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "edema_disclaimer", label: "Cardiac failure not inferred", description: "Oedema pattern without asserting cardiac failure.", aliases: ["cardiac failure is not inferred", "heart failure is not inferred", "oedema pattern without asserting cardiac failure"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "copd_disclaimer", label: "COPD not diagnosed", description: "Hyperinflation alone does not establish COPD.", aliases: ["chronic obstructive pulmonary disease is not diagnosed from hyperinflation alone", "copd is not diagnosed from hyperinflation alone", "hyperinflation alone does not establish copd"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "pneumothorax_disclaimer", label: "Tension not size-derived", description: "Tension requires signs plus clinical context.", aliases: ["tension pneumothorax is not labelled from size alone", "tension is not inferred from size", "requires radiographic signs and clinical context"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "trauma_disclaimer", label: "Occult injury not excluded", description: "A normal film does not exclude occult thoracic injury.", aliases: ["normal chest radiograph does not exclude occult thoracic injury", "does not exclude occult injury", "occult thoracic injury not excluded"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "thymic_disclaimer", label: "Thymus is not a mass", description: "Normal thymic contour is not read as a mass in this age group.", aliases: ["normal thymic contour is not interpreted as a mediastinal mass", "thymic contour is not a mass", "not interpreted as a mediastinal mass in this age group"], regions: ["chest"], modalities: ["XR"] },
+  { concept: "device_disclaimer", label: "No invented tip distance", description: "Device positions recorded descriptively only.", aliases: ["device positions are recorded descriptively", "tip distances are entered only when actually measured", "no invented tip distance"], regions: ["chest"], modalities: ["XR"] },
 
   // ─── Breast ──────────────────────────────────────────────────────────
   {

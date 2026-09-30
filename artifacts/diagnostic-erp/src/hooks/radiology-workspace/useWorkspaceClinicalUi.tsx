@@ -199,10 +199,16 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
+import {
+  isBrainMeasuresReportingContext,
+  isMriBrainReportingContext,
+  isXrayChestReportingContext,
+} from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
+import { chestTextContradictions } from "@/lib/xrayChestContradictions";
+import { parseXrayChestViews } from "@/lib/xrayChestViews";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import {
@@ -2595,6 +2601,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           findingsText,
           impressionText,
           seq: parseBrainSequences(techniqueText),
+        })
+      : []),
+    ...(isXrayChestReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? chestTextContradictions({
+          findingsText,
+          impressionText,
+          viewCtx: parseXrayChestViews(techniqueText),
         })
       : []),
     ...validateReport({
