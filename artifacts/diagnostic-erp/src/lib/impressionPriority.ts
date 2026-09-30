@@ -12,12 +12,22 @@
  * the store and this module stops touching that report.
  */
 
+import type { SpineSegment } from "@/lib/reportingStudyContext";
+
 export type ImpressionPriorityRule = {
   id: string;
   label: string;
   /** Lower sorts first. Mirrors the numbered order in spec §37. */
   rank: number;
   re: RegExp;
+  /**
+   * Segment scopes are OPTIONAL and additive. A rule with no `segments` is
+   * the shipped ranking and applies to every study. A rule that only makes
+   * clinical sense in one segment names it here, so extending one segment's
+   * vocabulary can never silently re-rank another segment's already-shipped
+   * impression — the same gating the spine prose engine uses for grammar.
+   */
+  segments?: readonly SpineSegment[];
 };
 
 /**
@@ -40,6 +50,13 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     re: /\b(?:most pronounced|dominant|principal|worst) (?:at|level|l\d)|\bmost pronounced\b/i,
   },
   {
+    id: "cord-compromise",
+    label: "cord compression / intrinsic cord signal change",
+    segments: ["dorsal"],
+    rank: 3,
+    re: /\bcord compression\b|\bcompressive myelopathy\b|\bmyelomalacia\b|\bcord flattening\b|\bintrinsic cord signal\b|\bcord signal abnormality\b/i,
+  },
+  {
     id: "severe-canal-stenosis",
     label: "severe central canal stenosis",
     rank: 3,
@@ -56,6 +73,13 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     label: "significant foraminal / lateral recess stenosis",
     rank: 5,
     re: /\b(?:severe|moderate) [a-z ]*foraminal stenosis\b|\blateral recess stenosis\b|\bforaminal stenosis\b/i,
+  },
+  {
+    id: "ligamentous-ossification",
+    label: "OLF / OPLL canal compromise",
+    segments: ["dorsal"],
+    rank: 6,
+    re: /\b(?:olf|opll)\b|\bossification of the (?:ligamentum flavum|posterior longitudinal ligament)\b/i,
   },
   {
     id: "disc-extrusion",
@@ -118,6 +142,13 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
     re: /\blumbosacral transitional vertebra\b|\blstv\b|\bcastellvi\b|\bbertolotti\b/i,
   },
   {
+    id: "thoracic-deformity",
+    label: "thoracic deformity / junctional angulation",
+    segments: ["dorsal"],
+    rank: 16,
+    re: /\bgibbus\b|\bkyphosis\b|\bkyphotic\b|\bscoliosis\b|\bjunctional angulation\b/i,
+  },
+  {
     id: "minor-degenerative",
     label: "minor degenerative change",
     rank: 90,
@@ -140,10 +171,15 @@ export type RankedImpressionLine = {
  * Classify one Impression line. The earliest matching rule wins, so the
  * sentence's own subject decides its category; ties break on rank.
  */
-export function rankImpressionLine(line: string, index = 0): RankedImpressionLine {
+export function rankImpressionLine(
+  line: string,
+  index = 0,
+  options: { spineSegment?: SpineSegment | null } = {},
+): RankedImpressionLine {
   const text = (line ?? "").trim();
   let best: { rule: ImpressionPriorityRule; at: number } | null = null;
   for (const rule of IMPRESSION_PRIORITY) {
+    if (rule.segments && !rule.segments.includes(options.spineSegment ?? "whole")) continue;
     const m = rule.re.exec(text);
     if (!m) continue;
     const at = m.index;
@@ -176,6 +212,12 @@ export function rankImpressionLine(line: string, index = 0): RankedImpressionLin
 export type ImpressionOrderOptions = {
   /** Set once the radiologist edits or reorders the Impression by hand. */
   frozen?: boolean;
+  /**
+   * The spine segment the report is about. Rules that are scoped to a
+   * segment are skipped for any other segment and when this is absent, so
+   * every existing caller keeps the shipped ranking exactly.
+   */
+  spineSegment?: SpineSegment | null;
 };
 
 /**
@@ -189,7 +231,7 @@ export function orderImpressionLines(
   const list = lines.map((line) => (line ?? "").trim()).filter(Boolean);
   if (options.frozen) return list;
   return list
-    .map((line, index) => rankImpressionLine(line, index))
+    .map((line, index) => rankImpressionLine(line, index, { spineSegment: options.spineSegment }))
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
     .map((r) => r.line);
 }
@@ -200,7 +242,9 @@ export function impressionPriorityPreview(
   options: ImpressionOrderOptions = {},
 ): Array<RankedImpressionLine & { moves: boolean }> {
   const list = lines.map((line) => (line ?? "").trim()).filter(Boolean);
-  const ranked = list.map((line, index) => rankImpressionLine(line, index));
+  const ranked = list.map((line, index) =>
+    rankImpressionLine(line, index, { spineSegment: options.spineSegment }),
+  );
   if (options.frozen) return ranked.map((r) => ({ ...r, moves: false }));
   const order = [...ranked]
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
