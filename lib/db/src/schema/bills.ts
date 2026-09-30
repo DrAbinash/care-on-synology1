@@ -9,7 +9,10 @@ export const billsTable = pgTable(
   "bills",
   {
   id: serial("id").primaryKey(),
-  billNumber: text("bill_number").notNull().unique(),
+  // Unique within its book, not across the installation — see
+  // migrations/zzzzzz_bill_numbering_per_ledger.sql. Two books may print the
+  // same number, so nothing may resolve a bill from bill_number alone.
+  billNumber: text("bill_number").notNull(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   patientId: integer("patient_id").notNull().references(() => patientsTable.id),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -21,7 +24,10 @@ export const billsTable = pgTable(
   paidAmount: numeric("paid_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   balanceAmount: numeric("balance_amount", { precision: 10, scale: 2 }).notNull().default("0"),
   status: text("status").notNull().default("pending"),
-  ledgerId: integer("ledger_id"),
+  // The book a bill belongs to — and the bucket its number is allocated from.
+  // 1 is the default book, which is also what legacy NULL rows meant
+  // (matchLedger() in routes/ledgers.ts has always matched id=1 to NULL).
+  ledgerId: integer("ledger_id").notNull().default(1),
   dueDate: text("due_date"),
   createdByName: text("created_by_name"),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -48,6 +54,9 @@ export const billsTable = pgTable(
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (t) => [
+    // Bill numbers are unique per book, not globally (see
+    // migrations/zzzzzz_bill_numbering_per_ledger.sql).
+    uniqueIndex("bills_ledger_bill_number_uidx").on(t.ledgerId, t.billNumber),
     // One active bill per order — cancelled rows excluded (see zzzzzzzzzzzz_billing_save_harden.sql).
     uniqueIndex("bills_order_id_active_uidx")
       .on(t.orderId)

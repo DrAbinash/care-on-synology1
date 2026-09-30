@@ -32,14 +32,28 @@ function readNextval(result: unknown): number {
   return n;
 }
 
-/** Next global bill sequence value (same connection / txn is fine). */
+/**
+ * Next bill number for ONE book.
+ *
+ * `bucket` is the ledger id. Each book has its own sequence
+ * (`bill_number_seq_l<ledger>`, created on demand and seeded forward from that
+ * book's highest already-printed number by next_bill_number_seq), so a book can
+ * genuinely start again at 0001 without reissuing a number another book is
+ * using. See migrations/zzzzzz_bill_numbering_per_ledger.sql.
+ */
 export async function nextDocumentCounter(
   dbHandle: DbOrTx,
   kind: "bill" | "order",
   bucket: string,
 ): Promise<number> {
   if (kind === "bill") {
-    const result = await dbHandle.execute(sql`SELECT nextval('bill_number_seq') AS nextval`);
+    const ledger = Number(bucket);
+    if (!Number.isInteger(ledger) || ledger < 1) {
+      throw new Error(`nextDocumentCounter: bill numbering needs a positive ledger id, got ${bucket}`);
+    }
+    const result = await dbHandle.execute(
+      sql`SELECT next_bill_number_seq(${ledger}) AS nextval`,
+    );
     return readNextval(result);
   }
   // bucket = YYYYMM — function creates the monthly sequence on demand
@@ -49,44 +63,36 @@ export async function nextDocumentCounter(
   return readNextval(result);
 }
 
-/** Bump bill_number_seq forward to at least MAX(existing bill suffix). Never rewinds. */
-export async function syncBillNumberSeqForward(dbHandle: DbOrTx): Promise<void> {
-  await dbHandle.execute(sql`CREATE SEQUENCE IF NOT EXISTS bill_number_seq`);
-  await dbHandle.execute(sql`
-    DO $$
-    DECLARE
-      max_existing bigint := 0;
-      seq_at bigint := 0;
-      target bigint := 0;
-    BEGIN
-      SELECT COALESCE(
-        MAX(
-          CASE
-            WHEN bill_number ~ '^[0-9]{6}[0-9]+$'
-              THEN substring(bill_number from 7)::bigint
-            WHEN bill_number ~ '^BILL-[0-9]{6}-[0-9]+$'
-              THEN split_part(bill_number, '-', 3)::bigint
-            ELSE NULL
-          END
-        ),
-        0
-      )
-      INTO max_existing
-      FROM bills;
+/**
+ * Bump ONE book's sequence forward to at least MAX(its own bill suffix).
+ * Never rewinds, so it can only ever move a book past numbers it has already
+ * printed. Called after a (ledger_id, bill_number) unique violation.
+ */
+export async function syncBillNumberSeqForward(
+  dbHandle: DbOrTx,
+  ledgerId: number,
+): Promise<void> {
+  if (!Number.isInteger(ledgerId) || ledgerId < 1) {
+    throw new Error(`syncBillNumberSeqForward: invalid ledger id ${ledgerId}`);
+  }
+  await dbHandle.execute(sql`SELECT sync_bill_number_seq(${ledgerId})`);
+}
 
-      SELECT CASE
-               WHEN is_called THEN last_value
-               ELSE GREATEST(last_value - 1, 0)
-             END
-        INTO seq_at
-        FROM bill_number_seq;
-
-      target := GREATEST(max_existing, seq_at);
-      IF target > 0 THEN
-        PERFORM setval('bill_number_seq', target, true);
-      END IF;
-    END $$;
-  `);
+/**
+ * Restart ONE book at 0001 (the next number it issues is exactly 1).
+ *
+ * The book has to be empty first — this rewinds, and rewinding past live rows
+ * would reissue numbers that are already on paper. `reset_bill_number_seq`
+ * enforces that in SQL rather than trusting the caller.
+ */
+export async function resetBillNumberSeq(
+  dbHandle: DbOrTx,
+  ledgerId: number,
+): Promise<void> {
+  if (!Number.isInteger(ledgerId) || ledgerId < 1) {
+    throw new Error(`resetBillNumberSeq: invalid ledger id ${ledgerId}`);
+  }
+  await dbHandle.execute(sql`SELECT reset_bill_number_seq(${ledgerId})`);
 }
 
 /**

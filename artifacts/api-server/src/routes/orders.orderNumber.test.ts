@@ -22,7 +22,9 @@ describe("order number allocation", () => {
     expect(src).toContain("nextDocumentCounter");
     expect(src).toContain('nextDocumentCounter(dbHandle, "order"');
     expect(counters).toContain("next_order_number_seq");
-    expect(counters).toContain("nextval('bill_number_seq')");
+    // Bill numbers allocate from the BOOK's own sequence, never a global one.
+    expect(counters).toContain("next_bill_number_seq");
+    expect(counters).not.toContain("nextval('bill_number_seq')");
     const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(codeOnly).not.toContain("care_erp_order_number");
     expect(codeOnly).not.toMatch(/pg_advisory_xact_lock/);

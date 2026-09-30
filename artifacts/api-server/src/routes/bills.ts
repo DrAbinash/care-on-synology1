@@ -34,6 +34,7 @@ import { sendBillWhatsapp } from "./whatsapp";
 import { autoVoucherForPayment } from "../lib/auto-voucher";
 import { getSlowThresholdMs } from "../lib/requestMetrics";
 import { nextDocumentCounter, syncBillNumberSeqForward } from "../lib/documentNumberCounters";
+import { findBillByNumber, ambiguousBillNumberMessage } from "../lib/billByNumber";
 import { enqueueBillingFanout } from "../lib/billingFanoutGate";
 import {
   cancelRadiologyMwlForBill,
@@ -210,16 +211,20 @@ async function resolveLedgerForOrder(order: typeof ordersTable.$inferSelect): Pr
  * Older rows in the DB may still carry the legacy `BILL-YYYYMM-####` prefix;
  * `parseBillNumberParts` handles both shapes so the renumber logic keeps
  * working across the migration.
+ *
+ * The suffix is allocated PER BOOK (`ledgerId`), which is what makes a register
+ * restartable at 0001. It is the same value the caller already resolved to
+ * attribute the bill — see zzzzzz_bill_numbering_per_ledger.sql.
  */
 // A pooled db handle OR an open transaction — pass `tx` so nextval runs on the
 // same connection as the bill insert (sequences are concurrent; no long lock).
 type DbOrTx = typeof db | Parameters<Parameters<(typeof db)["transaction"]>[0]>[0];
-export async function generateBillNumber(_ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
+export async function generateBillNumber(ledgerId: number, dbHandle: DbOrTx = db): Promise<string> {
   const date = new Date();
   const yyyymm = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}`;
-  // SEQUENCE nextval — concurrent desk saves no longer serialize on a global
-  // advisory lock for the whole bill insert transaction.
-  const seq = await nextDocumentCounter(dbHandle, "bill", "global");
+  // SEQUENCE nextval on this book's own sequence — concurrent desk saves no
+  // longer serialize on a global advisory lock for the whole bill insert.
+  const seq = await nextDocumentCounter(dbHandle, "bill", String(ledgerId));
   return `${yyyymm}${String(seq).padStart(4, "0")}`;
 }
 
@@ -812,7 +817,7 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       return true;
     }
     const msg = String(e?.message ?? err ?? "");
-    return /bills_bill_number_unique|Key \(bill_number\)=/i.test(msg);
+    return /bills_bill_number_unique|bills_ledger_bill_number_uidx|Key \(bill_number\)=/i.test(msg);
   }
 
   function isBillClientRefUniqueViolation(err: unknown): boolean {
@@ -980,7 +985,7 @@ export async function createBillHandler(req: StaffAuthRequest, res: Response): P
       if (!isBillNumberUniqueViolation(err)) throw err;
       lastUniqueErr = err;
       req.log?.warn?.({ attempt, err }, "bill_number unique violation — reseeding sequence and retrying");
-      await syncBillNumberSeqForward(db);
+      await syncBillNumberSeqForward(db, ledgerId);
     }
   }
   if (!bill) {
@@ -1217,16 +1222,16 @@ billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => 
       return;
     }
 
-    const [bill] = await db
-      .select()
-      .from(billsTable)
-      .where(eq(billsTable.billNumber, billNumber))
-      .limit(1);
-
-    if (!bill) {
+    const hit = await findBillByNumber(billNumber);
+    if (hit.status === "ambiguous") {
+      res.status(409).json({ error: ambiguousBillNumberMessage(billNumber) });
+      return;
+    }
+    if (hit.status === "not_found") {
       res.status(404).json({ error: "Bill not found" });
       return;
     }
+    const bill = hit.bill;
 
     if (bill.patientId) {
       if (address) {
@@ -1237,9 +1242,15 @@ billsRouter.patch("/form-f-patient-data", async (req: StaffAuthRequest, res) => 
         .select({ id: formFRecordsTable.id })
         .from(formFRecordsTable)
         .where(
-          or(
-            eq(formFRecordsTable.billId, bill.id),
-            eq(formFRecordsTable.billNumber, billNumber),
+          and(
+            // bill_number is only unique inside its own book, so the number
+            // fallback is confined to this bill's patient: it must not reach
+            // another patient's statutory record that happens to share a number.
+            eq(formFRecordsTable.patientId, bill.patientId),
+            or(
+              eq(formFRecordsTable.billId, bill.id),
+              eq(formFRecordsTable.billNumber, billNumber),
+            ),
           ),
         )
         .orderBy(desc(formFRecordsTable.createdAt))
@@ -2167,6 +2178,30 @@ billsRouter.post("/:id/change-doctor", async (req: StaffAuthRequest, res) => {
     ? await getWalkInLedgerId()
     : (newDoctor?.ledgerId ?? await getWalkInLedgerId());
 
+  // Bill numbers are unique per book, so moving a bill between books can land it
+  // on a number the destination register has already issued. The number on the
+  // patient's printed receipt cannot silently change, so refuse instead of
+  // renumbering or 500-ing on the constraint.
+  if (nextLedgerId !== bill.ledgerId) {
+    const [clash] = await db
+      .select({ id: billsTable.id })
+      .from(billsTable)
+      .where(
+        and(
+          eq(billsTable.ledgerId, nextLedgerId),
+          eq(billsTable.billNumber, bill.billNumber),
+          ne(billsTable.id, id),
+        ),
+      )
+      .limit(1);
+    if (clash) {
+      res.status(409).json({
+        error: `Bill ${bill.billNumber} cannot move to that book — it has already issued number ${bill.billNumber}. Cancel and rebill to renumber it under the new book.`,
+      });
+      return;
+    }
+  }
+
   await db.transaction(async (tx) => {
     // Update the order (doctor lives on the order, not the bill) + ledger routing
     await tx.update(ordersTable).set({
@@ -2386,15 +2421,23 @@ billsRouter.delete("/:id", async (req, res) => {
     if (billNumMatch) {
       const { monthPrefix, seq: deletedSeq } = billNumMatch;
 
-      // Match both legacy `BILL-YYYYMM-...` and numeric `YYYYMM...` rows for
-      // the same month so renumbering works during/after the format switch.
+      // Renumber THIS BOOK only. Numbers are unique per book, so another book's
+      // rows for the same month share the prefix but are a separate register:
+      // shifting them would both corrupt that book's sequence and collide with
+      // its own issued numbers.
+      //
+      // Match both legacy `BILL-YYYYMM-...` and numeric `YYYYMM...` rows for the
+      // same month so renumbering works during/after the format switch.
       const laterBills = await tx
         .select()
         .from(billsTable)
         .where(
-          or(
-            like(billsTable.billNumber, `BILL-${monthPrefix}-%`),
-            like(billsTable.billNumber, `${monthPrefix}%`),
+          and(
+            eq(billsTable.ledgerId, bill.ledgerId),
+            or(
+              like(billsTable.billNumber, `BILL-${monthPrefix}-%`),
+              like(billsTable.billNumber, `${monthPrefix}%`),
+            ),
           ),
         )
         .orderBy(billsTable.billNumber);
