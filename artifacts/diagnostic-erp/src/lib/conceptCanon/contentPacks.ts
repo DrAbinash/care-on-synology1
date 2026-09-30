@@ -1286,6 +1286,18 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     modalities: ["MR", "CT"],
   },
   {
+    concept: "intercostal_nerve",
+    label: "Intercostal Nerve",
+    description: "Descriptive suspected intercostal nerve involvement at a thoracic foramen. Radiologist-selected: thoracic foraminal narrowing never infers a root number.",
+    aliases: [
+      "intercostal nerve",
+      "intercostal nerve involvement",
+      "suspected intercostal nerve",
+    ],
+    regions: ["dorsal spine", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
     concept: "posterior_elements",
     label: "Posterior Elements",
     description: "Pedicles, laminae and spinous processes — intact, fractured or marrow-replaced.",

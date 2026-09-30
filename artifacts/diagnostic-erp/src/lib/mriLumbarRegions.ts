@@ -306,8 +306,9 @@ export function isMriLumbarReportingContext(opts: {
   if (/\bscreening\b/.test(protocol) && seg !== "lumbar") return false;
   if (canonical === "Whole Spine" || /^whole\s*spine$/i.test(regionRaw)) return false;
 
-  // Explicit non-lumbar spine segments
-  if (seg === "cervical" || seg === "dorsal") return false;
+  // Explicit non-lumbar spine segments. A Dorso-Lumbar examination is its own
+  // composition: it must not be served by the LS-only canvas either.
+  if (seg === "cervical" || seg === "dorsal" || seg === "dorsolumbar") return false;
   if (canonical === "Cervical Spine" || canonical === "Dorsal Spine") return false;
   if (canonical === "Brain" || (opts.family === "brain")) return false;
 

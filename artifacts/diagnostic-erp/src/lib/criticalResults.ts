@@ -68,6 +68,12 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   { term: "unstable fracture", label: "unstable fracture" },
   { term: "burst fracture", label: "burst fracture" },
   { term: "epidural abscess", label: "epidural abscess" },
+  // The conus is the neural structure at risk across the thoracolumbar
+  // junction, so it needs its own terms — "cord compression" never fires for a
+  // conus sentence (dorso-lumbar spec §28).
+  { term: "conus compression", label: "conus compression" },
+  { term: "conus syndrome", label: "conus syndrome" },
+  { term: "epidural hematoma", label: "extradural haematoma" },
   // Chest / vascular
   { term: "tension pneumothorax", label: "tension pneumothorax" },
   { term: "pneumothorax", label: "pneumothorax" },
