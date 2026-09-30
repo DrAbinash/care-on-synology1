@@ -45,11 +45,16 @@ export async function persistCareObservationLedger(
     .where(eq(radiologyReportDraftsTable.id, draftId));
 }
 
-/** Persist draft-scoped structured viewer measurements + optional canal provenance. */
+/**
+ * Persist draft-scoped structured viewer measurements + optional canal provenance
+ * + optional MRI Brain vascular acquisition state. One read-modify-write so an
+ * autosave that carries all three still issues one UPDATE.
+ */
 export async function persistCareViewerMeasurements(
   draftId: number,
   viewerMeasurements?: unknown,
   canalApProvenance?: unknown,
+  vascularTechnique?: unknown,
 ): Promise<void> {
   const [row] = await db
     .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
@@ -61,6 +66,7 @@ export async function persistCareViewerMeasurements(
     existing: row?.structuredJson ?? null,
     ...(viewerMeasurements !== undefined ? { viewerMeasurements } : {}),
     ...(canalApProvenance !== undefined ? { canalApProvenance } : {}),
+    ...(vascularTechnique !== undefined ? { vascularTechnique } : {}),
   });
 
   await db

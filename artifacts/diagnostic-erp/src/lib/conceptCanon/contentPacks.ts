@@ -33,6 +33,8 @@
  *      from canonical resolution.
  */
 
+import { vesselConceptEntries } from "@/lib/mriBrainVessels";
+import { screeningConceptEntries } from "@/lib/mriBrainVascularScreening";
 import type { ObservationRole } from "../observationSlot";
 
 export type CanonicalConceptId = string;
@@ -313,7 +315,26 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     ["enhancement_normal", "Contrast Enhancement", "Abnormal enhancement assessment when contrast was administered.", false],
     ["mrs_metabolites", "MR Spectroscopy", "Structured MRS metabolite entry — descriptive only.", true],
     ["mra_arterial", "MRA Arterial", "Arterial occlusion / stenosis on MRA when adequately assessed.", true],
+    ["mra_neck_arterial", "MRA Neck Arterial", "Extracranial carotid / vertebral arterial tree statement (§11). Kept off the intracranial slot so a combined study keeps both normals (§2).", true],
     ["mrv_venous", "MR Venography", "Dural venous sinus patency on MRV.", true],
+    // §10/§12 first-class non-pathologic variant slots. A separate concept, so a
+    // small-but-normal vessel never overwrites the pathology recorded on it (and the
+    // other way round) merely because both describe the same artery.
+    ["mra_variant", "Intracranial Arterial Variant", "Fetal PCA / A1 hypoplasia / vertebral dominance / PCom asymmetry — non-pathologic variant slot.", false],
+    ["mrv_variant", "Dural Sinus Developmental Variant", "Transverse sinus hypoplasia / aplasia — non-pathologic developmental variant slot.", false],
+    // Vascular statement slots that are not one vessel's status: a pattern, a rupture
+    // statement, a drainage claim. Each owns its own slot so it coexists with the
+    // vessel rows it refers to instead of overwriting them (mra/mrv spec §8, §9, §13).
+    ["aneurysm_rupture_status", "Aneurysm Rupture Status", "Radiologist-stated ruptured / unruptured status for an aneurysm (§6).", true],
+    ["aneurysm_pseudoaneurysm", "Pseudoaneurysm", "Post-dissection / arterial pseudoaneurysm statement (§11).", true],
+    ["mra_moyamoya_pattern", "Moyamoya-Pattern Vasculopathy", "Angiographic pattern of terminal ICA narrowing with basal collaterals — pattern only (§8).", true],
+    ["mra_moyamoya_disease", "Moyamoya Disease", "Radiologist disease classification, never generated from the pattern (§8).", true],
+    ["avm_venous_drainage", "AVM Venous Drainage", "Drainage pattern, temporal claims gated on a time-resolved acquisition (§9).", true],
+    ["willis_configuration", "Circle of Willis Configuration", "Configuration of the circle (complete / incomplete / variant anatomy) — §16's own macro line, and §17's first MRA subsection after technique.", false],
+    ["avm_associated_aneurysm", "AVM Associated Aneurysm", "Aneurysm associated with the malformation's arterial supply, stated without a §6 morphology record (§9).", true],
+    ["mra_neck_dissection", "Carotid / Vertebral Dissection", "Radiologist-selected dissection interpretation for an extracranial artery (§11).", true],
+    ["mrv_thrombosis", "Dural Sinus Thrombosis", "Radiologist-selected sinus thrombosis interpretation (§13).", true],
+    ["mrv_deep_venous_thrombosis", "Deep Cerebral Venous Thrombosis", "Internal cerebral veins / vein of Galen thrombosis (§13).", true],
     // Mass effect / hydrocephalus / herniation family
     ["mass_effect", "Mass Effect", "Mass effect / sulcal or cisternal effacement / ventricular compression.", true],
     ["cerebral_hydrocephalus", "Hydrocephalus", "Hydrocephalus — obstructive or communicating.", true],
@@ -399,7 +420,36 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     impressionworthyAbnormal,
   })),
 
-  // ─── Spine — disc / contour / signal / height ─────────────────────────
+  // ─── MRA / MRV per-vessel observation slots (mra/mrv sub-master V3) ─────
+  // GENERATED from the vessel registry (mriBrainVessels.ts), because a vessel row's
+  // ledger identity IS its concept: the slot's `level` field is a spine vocabulary
+  // and discards "MCA-M1". Deriving both from one registry means an artery cannot
+  // exist in the tree and be missing from the concept canon.
+  ...vesselConceptEntries().map((entry) => ({
+    concept: entry.concept,
+    label: entry.label,
+    description: entry.description,
+    aliases: [entry.concept, entry.concept.replace(/_/g, " ")],
+    regions: ["brain"] as ContentPackRegion[],
+    modalities: ["MR"] as ContentPackModality[],
+    impressionworthyAbnormal: entry.impressionworthyAbnormal,
+  })),
+
+  // ─── §14 Basic intracranial MRA screening slots (mriBrainVascularScreening.ts)
+  // GENERATED from the screening checklist, for the same reason the vessel slots are:
+  // a screening row's identity is its concept, and an artery in the checklist must not
+  // be able to go unregistered. Screening keeps its own concepts rather than writing
+  // on the dedicated per-segment slots so a screening pass can never overwrite a
+  // dedicated observation — or be silently promoted into one.
+  ...screeningConceptEntries().map((entry) => ({
+    concept: entry.concept,
+    label: entry.label,
+    description: entry.description,
+    aliases: [entry.concept, entry.concept.replace(/_/g, " ")],
+    regions: ["brain"] as ContentPackRegion[],
+    modalities: ["MR"] as ContentPackModality[],
+    impressionworthyAbnormal: entry.impressionworthyAbnormal,
+  })),
   {
     concept: "disc_contour",
     label: "Disc Contour (bulge / protrusion / extrusion)",

@@ -36,6 +36,56 @@ describe("clinicalSignificance — deterministic", () => {
     );
     expect(r.significant).toBe(false);
   });
+
+  // mra/mrv §21: AI may propose a vascular observation; it may not finalise a vascular
+  // diagnosis. Each pair below is the exact escalation the spec forbids, and each one has
+  // to arrive as a clinically-significant change the radiologist must accept by name.
+  it("flags an added vascular conclusion (§21)", () => {
+    const escalations: Array<[string, string]> = [
+      ["The intracranial arteries are normal.", "There is an aneurysm at the ACom region."],
+      ["Non-visualization of the right MCA M1.", "Occlusion of the right MCA M1."],
+      [
+        "Segmental flow gap in the right transverse sinus.",
+        "Occlusive dural venous sinus thrombosis of the right transverse sinus.",
+      ],
+      [
+        "Moyamoya pattern of the terminal ICAs.",
+        "Findings are diagnostic of Moyamoya disease.",
+      ],
+      ["Unruptured aneurysm of the ACom region.", "Ruptured aneurysm of the ACom region."],
+      [
+        "Eccentric crescentic T1 hyperintense signal in the left cervical ICA.",
+        "Acute dissection of the left cervical ICA.",
+      ],
+    ];
+    for (const [before, after] of escalations) {
+      const r = detectClinicalSignificance(before, after);
+      expect(r.significant, `${before} → ${after}`).toBe(true);
+      expect(
+        r.reasons.some((x) => /Vascular conclusion/i.test(x)),
+        `${before} → ${after}`,
+      ).toBe(true);
+    }
+  });
+
+  it("stays quiet when the vascular conclusion was already in the report", () => {
+    const r = detectClinicalSignificance(
+      "Occlusion of the left MCA M1.",
+      "There is occlusion of the left MCA M1.",
+    );
+    expect(r.reasons).toEqual([]);
+    expect(r.significant).toBe(false);
+  });
+
+  it("flags a stenosis percentage the report did not carry (§21)", () => {
+    const r = detectClinicalSignificance(
+      "Focal luminal narrowing of the left carotid bulb.",
+      "Severe (70%) stenosis of the left carotid bulb.",
+    );
+    expect(r.significant).toBe(true);
+    expect(r.reasons.some((x) => /added: 70/i.test(x))).toBe(true);
+    expect(r.reasons.some((x) => /Vascular conclusion/i.test(x))).toBe(false);
+  });
 });
 
 describe("snapshot immutability / hashing", () => {
@@ -102,6 +152,90 @@ describe("validateComposerOutput — no invented pathology", () => {
     const draft = deterministicComposeFromSnapshot(snap, "FULL_REPORT");
     const v = validateComposerOutput(snap, draft);
     expect(v.ok).toBe(true);
+  });
+
+  it("refuses a vascular diagnosis the observations never stated (§21)", () => {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
+      findings:
+        "Segmental flow gap in the right transverse sinus. The left MCA M1 is not visualized on the angiographic acquisition.",
+      impression: "",
+      recommendation: "",
+      observations: [
+        {
+          concept: "mrv_vessel_transverse_sinus",
+          findingsText: "Segmental flow gap in the right transverse sinus",
+          source: "structured",
+        },
+        {
+          concept: "mra_vessel_mca_m1",
+          findingsText: "The left MCA M1 is not visualized on the angiographic acquisition",
+          source: "structured",
+        },
+      ],
+    });
+    const v = validateComposerOutput(snap, {
+      findings: snap.findings,
+      impression:
+        "Occlusive dural venous sinus thrombosis of the right transverse sinus with venous infarction, and left MCA M1 occlusion.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    });
+    expect(v.ok).toBe(false);
+    // A flow gap is not a thrombosis and non-visualisation is not an occlusion (§12, §18).
+    expect(v.unsupportedMentions).toEqual(
+      expect.arrayContaining(["thrombosis", "occlusion", "dural venous sinus"]),
+    );
+  });
+
+  it("refuses moyamoya disease when only the pattern was recorded (§21)", () => {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
+      findings: "Moyamoya pattern of the bilateral terminal ICAs with lenticulostriate collaterals.",
+      impression: "",
+      recommendation: "",
+      observations: [
+        {
+          concept: "mra_moyamoya_pattern",
+          findingsText: "Moyamoya pattern of the bilateral terminal ICAs",
+          impressionText: "Moyamoya pattern of the bilateral terminal ICAs",
+          source: "structured",
+        },
+      ],
+    });
+    const v = validateComposerOutput(snap, {
+      findings: snap.findings,
+      impression: "Moyamoya disease.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    });
+    expect(v.unsupportedMentions).toContain("moyamoya disease");
+  });
+
+  it("accepts the vascular conclusion the radiologist already recorded", () => {
+    const snap: ComposerInputSnapshot = parseComposerSnapshot({
+      findings: "Occlusive thrombus within the superior sagittal sinus.",
+      impression: "",
+      recommendation: "",
+      observations: [
+        {
+          concept: "mrv_vessel_sss",
+          findingsText: "Occlusive thrombus within the superior sagittal sinus",
+          // The conclusion the radiologist selected, which is what makes the impression
+          // line a restatement rather than an invention.
+          impressionText: "Occlusive dural venous sinus thrombosis of the superior sagittal sinus",
+          source: "structured",
+        },
+      ],
+    });
+    const v = validateComposerOutput(snap, {
+      findings: snap.findings,
+      impression: "Occlusive dural venous sinus thrombosis of the superior sagittal sinus.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    });
+    expect(v.unsupportedMentions).toEqual([]);
   });
 });
 

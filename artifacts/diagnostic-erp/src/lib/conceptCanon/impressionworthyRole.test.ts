@@ -141,10 +141,13 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
   });
 
   it("pins the impression-worthy set so a silent flag flip fails loudly", () => {
-    // Ratchet, not a tautology: this number is measured against current main
-    // plus `posterior_elements`, which is the ONLY flag this PR changes.
+    // Ratchet, not a tautology: 435 registered concepts, 321 of them
+    // impression-worthy. `posterior_elements` is the ONLY flag this PR changes,
+    // so bumping this number has to mean somebody deliberately registered an
+    // abnormal concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
-    expect(impressionWorthy.length).toBe(228);
+    expect(CLINICAL_CONTENT_PACKS.length).toBe(435);
+    expect(impressionWorthy.length).toBe(321);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",
@@ -476,7 +479,9 @@ describe("the role rule is inert for every concept shipped today", () => {
     // Exactly the concepts that make the auto-return trigger above load-bearing:
     // they are registered impression-worthy, they are emitted as baseline, and
     // they behave as they did before this PR because the suppression decision is
-    // taken by the ledger, which already excluded baseline role.
+    // taken by the ledger, which already excluded baseline role. MRI Lumbar's
+    // routine normal palettes were here first; #777 added the MRA/MRV ones, and
+    // this list is the proof that the pattern is established rather than new.
     const shared = [...new Set(
       baselineAtoms()
         .filter((a) => isImpressionworthyAbnormal(a.concept))
@@ -491,6 +496,9 @@ describe("the role rule is inert for every concept shipped today", () => {
       "conus_medullaris",
       "disc_contour",
       "foraminal_stenosis",
+      "mra_arterial",
+      "mra_neck_arterial",
+      "mrv_venous",
       "posterior_elements",
     ]);
     for (const concept of shared) {

@@ -36,6 +36,10 @@ import {
 } from "@/lib/structuredViewerMeasurements";
 import type { CanalApProvenanceMap } from "@/lib/spineCanalAp";
 import {
+  extractCareVascularTechnique,
+  vascularTechniquePayload,
+} from "@/lib/mriBrainVascularDraftState";
+import {
   SPINE_REPORTING_DRAFT_KEY,
   extractSpineReportingState,
   spineReportingDraftPayload,
@@ -263,6 +267,12 @@ useEffect(() => {
         impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
       });
     }
+    // The radiologist's stated acquisition answers gate every strong vascular
+    // sentence, so they must survive save → close → reopen unchanged.
+    const restoredVascular = extractCareVascularTechnique(draft.structuredJson);
+    if (restoredVascular) {
+      useWorkspace.getState().setVascularTechnique(restoredVascular);
+    }
     const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
     setSelectedQuickIds(new Set(ids));
     // Restore the persisted baseline format identity (banner / canvas state).
@@ -400,6 +410,8 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
           screening: useWorkspace.getState().screening,
           impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
         }),
+        // Undefined while untouched, so existing reports gain no envelope key.
+        vascularTechnique: vascularTechniquePayload(useWorkspace.getState().vascularTechnique),
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),

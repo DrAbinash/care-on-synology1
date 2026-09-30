@@ -32,6 +32,12 @@ export type StructuredJsonEnvelope = {
   careViewerMeasurements?: unknown;
   /** Canal AP cell provenance map (manualOverride + DICOM UIDs). */
   careCanalApProvenance?: unknown;
+  /**
+   * MRI Brain vascular acquisition state (mra/mrv reporting): what the technique
+   * actually performed, as derived from the Technique field and manually overridden
+   * by the radiologist. Gates strong vascular wording, so it must round-trip.
+   */
+  careVascularTechnique?: unknown;
   /** Applied whole-report format identity (care.report_format_identity.v1). */
   careReportFormatIdentity?: unknown;
   /** Second worklist row combined into this draft. */
@@ -116,6 +122,13 @@ export function extractCareCanalApProvenance(column: unknown): unknown {
   return null;
 }
 
+export function extractCareVascularTechnique(column: unknown): unknown {
+  if (!isRecord(column)) return null;
+  if (isStructuredJsonEnvelope(column)) return column.careVascularTechnique ?? null;
+  if (column.careVascularTechnique) return column.careVascularTechnique;
+  return null;
+}
+
 export function isCareReportFormatIdentity(v: unknown): v is CareReportFormatIdentity {
   return isRecord(v) && v.kind === CARE_REPORT_FORMAT_IDENTITY_KIND && typeof v.name === "string" && v.name.trim() !== "";
 }
@@ -186,6 +199,7 @@ export function composeStructuredJsonColumn(opts: {
   observationLedger?: unknown;
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
+  vascularTechnique?: unknown;
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
   linkedStudy?: CareLinkedStudy | null;
@@ -203,6 +217,9 @@ export function composeStructuredJsonColumn(opts: {
   const canalProv = opts.canalApProvenance !== undefined
     ? opts.canalApProvenance
     : extractCareCanalApProvenance(opts.existing);
+  const vascularTech = opts.vascularTechnique !== undefined
+    ? opts.vascularTechnique
+    : extractCareVascularTechnique(opts.existing);
   const reportFormatIdentity = opts.reportFormatIdentity !== undefined
     ? opts.reportFormatIdentity
     : extractCareReportFormatIdentity(opts.existing);
@@ -213,7 +230,7 @@ export function composeStructuredJsonColumn(opts: {
     ? (opts.appliedPatterns ?? [])
     : extractCareAppliedPatterns(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !reportFormatIdentity && !linkedStudy && !hasApplied) return a4 ?? null;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !reportFormatIdentity && !linkedStudy && !hasApplied) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -222,6 +239,7 @@ export function composeStructuredJsonColumn(opts: {
   if (ledger) env.careObservationLedger = ledger;
   if (viewerMs) env.careViewerMeasurements = viewerMs;
   if (canalProv) env.careCanalApProvenance = canalProv;
+  if (vascularTech) env.careVascularTechnique = vascularTech;
   if (reportFormatIdentity) env.careReportFormatIdentity = reportFormatIdentity;
   if (linkedStudy && linkedStudy.studyId !== "" && linkedStudy.studyId != null) {
     env.linkedStudyId = linkedStudy.studyId;

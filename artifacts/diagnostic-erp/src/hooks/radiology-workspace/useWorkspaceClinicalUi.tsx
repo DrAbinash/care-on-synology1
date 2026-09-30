@@ -213,6 +213,11 @@ import {
 import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
+import {
+  brainVascularContradictions,
+  vascularIsScreeningOnly,
+} from "@/lib/mriBrainVascularValidation";
+import { orderBrainVascularImpressionLines } from "@/lib/mriBrainVascularImpression";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { chestTextContradictions } from "@/lib/xrayChestContradictions";
 import { parseXrayChestViews } from "@/lib/xrayChestViews";
@@ -345,7 +350,7 @@ import {
 } from "@/lib/resolveQuickFindingFromSpeech";
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
-import { selectedQuickFindingIds } from "@/lib/observationSlot";
+import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
@@ -680,6 +685,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
+  const vascularTechnique = useWorkspace((s: WorkspaceStore) => s.vascularTechnique);
   const lastPatchSnapshot = useWorkspace((s: WorkspaceStore) => s.lastPatchSnapshot);
   const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
   const selectedObservationId = useWorkspace((s: WorkspaceStore) => s.selectedObservationId);
@@ -2610,6 +2616,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     compactAccordion,
   });
 
+  const brainSequenceContext = useMemo(
+    () => parseBrainSequences(techniqueText),
+    [techniqueText],
+  );
+  const mriBrainReportingOpts = {
+    modality: workflow.currentRow?.modality,
+    region: studyRegion,
+    family: studySetup.studyContext?.family,
+    studyDescription: workflow.currentRow?.studyDescription,
+  };
   // MRI Lumbar V3 §40/§43 — the spine validators run for spine studies only, so
   // a brain/MSK report is never warned about lumbar level naming.
   const spineFamily = studySetup.studyContext?.family === "spine";
@@ -2645,17 +2661,25 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           state: spineScreening,
         })
       : []),
-    ...(isMriBrainReportingContext({
-      modality: workflow.currentRow?.modality,
-      region: studyRegion,
-      family: studySetup.studyContext?.family,
-      studyDescription: workflow.currentRow?.studyDescription,
-    })
-      ? brainTextContradictions({
-          findingsText,
-          impressionText,
-          seq: parseBrainSequences(techniqueText),
-        })
+    ...(isMriBrainReportingContext(mriBrainReportingOpts)
+      ? [
+          ...brainTextContradictions({
+            findingsText,
+            impressionText,
+            seq: brainSequenceContext,
+          }),
+          // §19's vascular bullets are about the SAME vessel, which a whole-report regex
+          // cannot express, and about wording the recorded acquisition never earned.
+          ...brainVascularContradictions({
+            findingsText,
+            impressionText,
+            technique: vascularTechnique,
+            brain: brainSequenceContext,
+            screeningOnly: vascularIsScreeningOnly(
+              appliedPathologyPatches.map((p) => p.observation?.concept),
+            ),
+          }),
+        ]
       : []),
     ...(isXrayChestReportingContext({
       modality: workflow.currentRow?.modality,
@@ -2695,7 +2719,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
     }).filter(isImpressionContradictionWarning),
-  ], [appliedPathologyPatches, impressionText, findingsText, techniqueText, studyRegion, studySetup.studyContext?.family, workflow.currentRow?.modality, workflow.currentRow?.studyDescription, spineLsLevelNamingActive, spineFamily, spineSequencesAvailable, lumbarNumbering, spineScreening]);
+  ], [
+    appliedPathologyPatches,
+    brainSequenceContext,
+    impressionText,
+    findingsText,
+    techniqueText,
+    studyRegion,
+    studySetup.studyContext?.family,
+    vascularTechnique,
+    workflow.currentRow?.modality,
+    workflow.currentRow?.studyDescription,
+    spineLsLevelNamingActive,
+    spineFamily,
+    spineSequencesAvailable,
+    lumbarNumbering,
+    spineScreening,
+  ]);
 
   const impressionManuallyEdited = impressionProvenanceIsRadiologistManual(impressionProvenance);
   // Auto-derived impressions refresh themselves. The stale banner is only for
@@ -2708,6 +2748,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // §37: spine impressions are re-sorted by clinical priority, but a hand
     // -built Impression (impressionOrderFrozen) is left exactly as written.
     if (spineFamily) useWorkspace.getState().orderImpressionByPriority();
+    // §18: a derived vascular impression leads with the abnormality that matters
+    // clinically, not with the order the tiles happened to be clicked.
+    if (!isMriBrainReportingContext(mriBrainReportingOpts)) return;
+    const state = useWorkspace.getState();
+    const derived = state.impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    // A line the radiologist wrote by hand keeps its position: a mixed impression is left
+    // exactly as they arranged it (§18, and the CARE provenance model).
+    state.orderImpressionByPriority(
+      orderBrainVascularImpressionLines(derived, {
+        protectedLine: (line) => contributionProtected(line, state.fieldProvenance.impression),
+      }),
+    );
   }, [impressionNeedsRefresh, spineFamily]);
 
   // §23: on study open (and when the billed exam / protocol changes) propose

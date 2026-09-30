@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { detectCriticalFindings, CRITICAL_TERMS } from "./criticalResults";
+import { ANEURYSM_MACRO_IMPRESSION, CVST_MACRO_IMPRESSIONS } from "./mriBrainVascularProse";
 
 describe("detectCriticalFindings (MRI PR 3 — Critical Results)", () => {
   it("detects a critical finding described in the Findings", () => {
@@ -53,5 +54,56 @@ describe("detectCriticalFindings (MRI PR 3 — Critical Results)", () => {
       expect(t.term.length).toBeGreaterThan(2);
       expect(t.label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("§20 — the vascular reminders a dedicated MRA/MRV study adds", () => {
+  /** The labels a report raises, deduplicated the way the dialog shows them. */
+  const labels = (findings: string, impression: string[] = []) =>
+    detectCriticalFindings(findings, impression).map((h) => h.label);
+
+  it("reminds on a radiologist-stated arterial occlusion", () => {
+    expect(labels("", ["Occlusion of the left MCA M1."])).toContain("vascular occlusion");
+    expect(labels("There is acute arterial occlusion of the basilar artery.")).toContain(
+      "vascular occlusion",
+    );
+  });
+
+  it("reminds once, not four times, however the sentence is spelled", () => {
+    const hits = detectCriticalFindings(
+      "Large vessel occlusion. There is also large-vessel occlusion and arterial occlusion.",
+      [],
+    ).filter((h) => h.label === "vascular occlusion");
+    expect(hits).toHaveLength(1);
+  });
+
+  it("reminds on the CVST macro's own impression lines", () => {
+    const impression = [...CVST_MACRO_IMPRESSIONS];
+    const found = labels("", impression);
+    expect(found).toContain("dural venous sinus thrombosis");
+    expect(found).toContain("venous infarction");
+  });
+
+  it("reminds on a ruptured aneurysm, and on a rupture that is only suspected", () => {
+    expect(labels("", ["Ruptured aneurysm of the ACom region with subarachnoid haemorrhage."]))
+      .toContain("ruptured aneurysm");
+    expect(labels("Aneurysm with suspected rupture of the right MCA bifurcation."))
+      .toContain("suspected aneurysm rupture");
+  });
+
+  it("reminds on the diagnosis, not on the moyamoya pattern alone (§18)", () => {
+    expect(labels("", ["Moyamoya pattern of the terminal ICAs, without a stated diagnosis."]))
+      .not.toContain("moyamoya disease");
+    expect(labels("", ["Findings are diagnostic of Moyamoya disease."])).toContain(
+      "moyamoya disease",
+    );
+  });
+
+  it("stays quiet on an unruptured aneurysm and on a negated occlusion", () => {
+    expect(labels("", [ANEURYSM_MACRO_IMPRESSION])).not.toContain("vascular occlusion");
+    expect(labels("No occlusion of the intracranial arteries is demonstrated.")).toEqual([]);
+    expect(
+      labels("The dural venous sinuses are patent without filling defect or thrombosis."),
+    ).toEqual([]);
   });
 });
