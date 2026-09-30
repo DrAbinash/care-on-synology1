@@ -68,6 +68,9 @@ export const billsTable = pgTable(
     // Referral reports join bills → orders.doctor_id (no referrer column on bills).
     index("idx_bills_order_id").on(t.orderId),
     index("idx_bills_order_created").on(t.orderId, t.createdAt),
+    // The number is no longer unique on its own, but it is still searched on
+    // its own (barcode scan, payment link, Form F).
+    index("idx_bills_bill_number").on(t.billNumber),
   ],
 );
 

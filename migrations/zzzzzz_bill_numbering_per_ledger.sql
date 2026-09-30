@@ -47,7 +47,7 @@ BEGIN
 
   BEGIN
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq_name);
-  EXCEPTION WHEN duplicate_table THEN
+  EXCEPTION WHEN duplicate_table OR unique_violation THEN
     NULL;  -- two backends allocating in the same instant for a brand-new book
   END;
 
@@ -99,7 +99,7 @@ BEGIN
 
   BEGIN
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq_name);
-  EXCEPTION WHEN duplicate_table THEN
+  EXCEPTION WHEN duplicate_table OR unique_violation THEN
     NULL;
   END;
 
@@ -159,7 +159,7 @@ BEGIN
 
   BEGIN
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq_name);
-  EXCEPTION WHEN duplicate_table THEN
+  EXCEPTION WHEN duplicate_table OR unique_violation THEN
     NULL;
   END;
 
@@ -180,10 +180,14 @@ BEGIN
 END $$;
 
 -- ── 5. uniqueness moves to (ledger_id, bill_number) ──────────────────────────
--- Drop the legacy unique index/constraint over bill_number alone. Its name is
--- whatever the live database happens to use (drizzle's
--- bills_bill_number_unique, or an index added by a feature migration), so it is
--- discovered rather than assumed.
+-- The known drizzle constraint first, by name: if this fell through to the
+-- discovery loop below and the loop missed, the old global unique would silently
+-- stay and a restarted book would keep failing.
+ALTER TABLE "bills" DROP CONSTRAINT IF EXISTS "bills_bill_number_unique";
+
+-- Then anything else that happens to be a unique index over bill_number alone —
+-- its name is whatever a feature migration happened to give it on this database,
+-- so it is discovered rather than assumed.
 DO $$
 DECLARE
   r record;
@@ -208,3 +212,8 @@ END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "bills_ledger_bill_number_uidx"
   ON "bills" ("ledger_id", "bill_number");
+
+-- The dropped unique index was also the only index on bill_number. Lookups that
+-- key on the printed number alone (barcode scan, payment link, Form F) still
+-- exist and must not turn into a sequential scan of the whole bill table.
+CREATE INDEX IF NOT EXISTS "idx_bills_bill_number" ON "bills" ("bill_number");

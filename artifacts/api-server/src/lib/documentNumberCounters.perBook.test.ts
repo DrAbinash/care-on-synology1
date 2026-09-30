@@ -131,4 +131,17 @@ describe("per-book numbering migration", () => {
     expect(migrationSrc).toContain('UPDATE "bills" SET "ledger_id" = 1 WHERE "ledger_id" IS NULL');
     expect(migrationSrc).toContain('ALTER TABLE "bills" ALTER COLUMN "ledger_id" SET NOT NULL');
   });
+
+  it("drops the old global unique by name, not only by discovery", () => {
+    // If the pg_indexes scan missed, the constraint that makes a restart
+    // impossible would silently survive and the reset would keep failing.
+    expect(migrationSrc).toContain('DROP CONSTRAINT IF EXISTS "bills_bill_number_unique"');
+  });
+
+  it("keeps a plain index on bill_number for number-only lookups", () => {
+    // The dropped unique index was the only one; barcode, payment-link and
+    // Form F searches key on the number alone.
+    expect(migrationSrc).toContain('CREATE INDEX IF NOT EXISTS "idx_bills_bill_number"');
+    expect(billsSchemaSrc).toContain('index("idx_bills_bill_number").on(t.billNumber)');
+  });
 });
