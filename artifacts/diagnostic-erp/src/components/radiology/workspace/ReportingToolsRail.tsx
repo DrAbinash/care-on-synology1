@@ -47,6 +47,7 @@ import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverity
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import { MriLumbarSubMasterPanel } from "@/components/radiology/reporting-canvas/MriLumbarSubMasterPanel";
+import { MriDorsalSubMasterPanel } from "@/components/radiology/reporting-canvas/MriDorsalSubMasterPanel";
 import { SpineScreeningPanel } from "@/components/radiology/reporting-canvas/SpineScreeningPanel";
 import {
   AnchorRail,
@@ -840,6 +841,26 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 region={studySetup.matchedStudyRegion ?? "Cervical Spine"}
                                 patientAge={workflow.currentRow?.age ?? null}
                               />
+                            ) : null}
+                            {/* MRI Dorsal Spine clinical sub-master — the fourteen V3 palettes,
+                                the level-detail form and the dorsal AP canal table, all on the
+                                same ledger as the spine level rows above. */}
+                            {isMriDorsalReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              spineSegment: studySetup.studyContext?.spineSegment,
+                              protocolName: studySetup.activeProtocol?.name ?? null,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <>
+                                {/* Dorsal V3 palettes sit on the same ledger as the level rows above. */}
+                                <MriDorsalSubMasterPanel
+                                  disabled={isLocked || isFinalized}
+                                  ledgerRegion={studySetup.matchedStudyRegion ?? "Dorsal Spine"}
+                                />
+                                <SpineApCanalMeasurements segment="dorsal" disabled={isLocked || isFinalized} />
+                              </>
                             ) : null}
                             {studySetup.studyContext?.family === "spine" ? (
                               <SpineScreeningPanel

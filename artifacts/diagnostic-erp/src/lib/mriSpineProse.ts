@@ -25,35 +25,41 @@ export type SpineProseDirection =
   | "superiorly"
   | "inferiorly"
   | "cranially"
-  | "caudally";
+  | "caudally"
+  | "superior"
+  | "inferior";
 
 export type SpineProseVars = {
-  /** Disc / vertebral level, e.g. "L4-L5". */
+  /** Disc / vertebral level, e.g. "L4-L5" or "T8-T9". */
   level?: string;
   /** Second level where a sentence spans two levels. */
   level2?: string;
   side?: SpineProseSide;
-  /** Root designation, e.g. "S1", "L5". */
+  /** Root designation, e.g. "S1", "T12". */
   root?: string;
   /** Millimetre measurement (the library's `[X] mm`). */
-  mm?: string | number;
+  mm?: string | number | null;
   /** Second millimetre measurement, e.g. "X mm (AP) x Y mm (transverse)". */
-  mm2?: string | number;
+  mm2?: string | number | null;
   /** Centimetre measurement. */
-  cm?: string | number;
+  cm?: string | number | null;
   /** Second centimetre measurement. */
-  cm2?: string | number;
+  cm2?: string | number | null;
+  /** Third centimetre measurement (a macro's `X x X x X cm` triple). */
+  cm3?: string | number | null;
   /** Percentage height loss (the library's `[X]%`). */
-  pct?: string | number;
+  pct?: string | number | null;
   direction?: SpineProseDirection;
   /** Castellvi grade, e.g. "IIa". */
   castellvi?: string;
   /** Conus termination level. */
   conusLevel?: string;
-  /** Vertebra name for body/pars sentences, e.g. "L5". */
+  /** Vertebra name for body/pars sentences, e.g. "L5", "T6". */
   vertebra?: string;
   /** "superior"/"inferior" endplate (Schmorl node). */
   endplateFace?: string;
+  /** Word the radiologist picked inside a `[with / without]`-style group. */
+  choice?: string;
 };
 
 export type SpineProseSlot = {
@@ -79,6 +85,19 @@ export type SpineProseDialect = {
   vertebraRe: RegExp;
   /** `[left L5]` — side and vertebra fused into one group. */
   sideVertebraRe: RegExp;
+  /**
+   * Lumbar prose is frozen. It shipped before this engine existed, and the
+   * extraction PR proved every sentence byte-for-byte, so the lumbar dialect
+   * keeps the original grammar and nothing else.
+   *
+   * A segment whose library uses the wider grammar — a craniocaudal extent
+   * (`[T4 through T7]`), a bare word choice (`[with / without]`), a slot mixing
+   * a two-vertebra level with a single vertebra (`[T12-L1 / L1]`), or a third
+   * centimetre — opts in here. The extra readings then apply only to that
+   * segment's sentences, so widening one segment's vocabulary can never silently
+   * re-classify another segment's already-shipped prose.
+   */
+  extendedGrammar?: boolean;
 };
 
 /** Exactly the vocabulary the lumbar library was written against. */
@@ -88,11 +107,25 @@ export const LUMBAR_PROSE_DIALECT: SpineProseDialect = {
   sideVertebraRe: /^(left|right)\s+(L\d|S1)$/i,
 };
 
+export const DORSAL_PROSE_DIALECT: SpineProseDialect = {
+  // Thoracic reporting reaches the thoracolumbar junction, so `T12-L1` and
+  // `T12 on L1` are ordinary slots here.
+  discLevelRe:
+    /^(?:T\d{1,2}\s*(?:-|on)\s*(?:T\d{1,2}|L\d{1,2})|T\d{1,2}-(?:T\d{1,2}|L\d{1,2})|L\d\s*(?:-|on)\s*L\d)$/i,
+  vertebraRe: /^(?:T[1-9]|T1[0-2]|L[1-5]|S1)$/i,
+  sideVertebraRe: /^(left|right)\s+(T\d{1,2}|L\d|S1)$/i,
+  extendedGrammar: true,
+};
+
 const CHOICE_GROUP = /\[[^\]]+\]/g;
 
 const SIDE_RE = /^(?:left|right|bilateral)$/i;
 const DIRECTION_RE = /^(?:superiorly|inferiorly|cranially|caudally|superior|inferior)$/i;
 const CASTELLVI_RE = /^(?:I|II|III|IV|IIa|IIb|IIIa|IIIb)$/i;
+/** `T4 through T7` / `T8 to T11` — the library's craniocaudal extent group. */
+const LEVEL_RANGE_RE = /^([A-Z]\d{1,2})\s+(through|to)\s+([A-Z]\d{1,2})$/i;
+/** A plain word choice such as `[with / without]`. */
+const WORD_RE = /^[A-Za-z][A-Za-z' -]{1,20}$/;
 
 type GroupKind =
   | "measurement"
@@ -101,7 +134,10 @@ type GroupKind =
   | "castellvi"
   | "discLevel"
   | "vertebra"
+  | "levelOrVertebra"
   | "levelPair"
+  | "levelRange"
+  | "wordChoice"
   | "mixed"
   | "unknown";
 
@@ -123,12 +159,19 @@ function andLevelPair(inner: string, dialect: SpineProseDialect): string[] | nul
 function classifyGroup(
   raw: string,
   dialect: SpineProseDialect,
-): { kind: GroupKind; alternatives: string[] } {
+): { kind: GroupKind; alternatives: string[]; joiner?: string } {
   const inner = innerOf(raw);
   if (/^X$/i.test(inner)) return { kind: "measurement", alternatives: ["X"] };
 
   const pair = andLevelPair(inner, dialect);
   if (pair) return { kind: "levelPair", alternatives: pair };
+
+  if (dialect.extendedGrammar) {
+    const range = inner.match(LEVEL_RANGE_RE);
+    if (range) {
+      return { kind: "levelRange", alternatives: [range[1]!, range[3]!], joiner: range[2]! };
+    }
+  }
 
   // `[left L5]` — side + vertebra in one group.
   const sideVertebra = inner.match(dialect.sideVertebraRe);
@@ -141,6 +184,18 @@ function classifyGroup(
   if (alts.every((a) => CASTELLVI_RE.test(a))) return { kind: "castellvi", alternatives: alts };
   if (alts.every((a) => dialect.discLevelRe.test(a))) return { kind: "discLevel", alternatives: alts };
   if (alts.every((a) => dialect.vertebraRe.test(a))) return { kind: "vertebra", alternatives: alts };
+  if (dialect.extendedGrammar) {
+    // `[T12-L1 / L1]` — a group mixing a two-vertebra slot with a single
+    // vertebra. The dorsal library writes it for the conus, whose site is the
+    // cord termination rather than the level a tile was captured at.
+    if (alts.every((a) => dialect.discLevelRe.test(a) || dialect.vertebraRe.test(a))) {
+      return { kind: "levelOrVertebra", alternatives: alts };
+    }
+    // A bare word group is selectable only when every alternative is a word;
+    // anything clinical (an abbreviation, a phrase with digits) stays unfilled
+    // rather than being silently substituted.
+    if (alts.every((a) => WORD_RE.test(a))) return { kind: "wordChoice", alternatives: alts };
+  }
   return { kind: "mixed", alternatives: alts };
 }
 
@@ -159,11 +214,18 @@ function resolveGroup(
   unit: "percent" | "cm" | "mm",
   dialect: SpineProseDialect,
 ): string {
-  const loose = (v?: string | number) => (v == null ? "" : String(v)).trim();
+  const loose = (v?: string | number | null) => (v == null ? "" : String(v)).trim();
 
   if (kind === "measurement") {
     if (unit === "percent") return loose(vars.pct);
-    if (unit === "cm") return loose(mmOccurrence === 0 ? vars.cm : vars.cm2) || (mmOccurrence === 0 ? "" : loose(vars.cm));
+    if (unit === "cm") {
+      if (!dialect.extendedGrammar) {
+        return loose(mmOccurrence === 0 ? vars.cm : vars.cm2) || (mmOccurrence === 0 ? "" : loose(vars.cm));
+      }
+      const primary = mmOccurrence === 0 ? vars.cm : mmOccurrence === 1 ? vars.cm2 : vars.cm3;
+      const fallback = mmOccurrence === 0 ? "" : mmOccurrence === 1 ? vars.cm : vars.cm2;
+      return loose(primary) || loose(fallback);
+    }
     return loose(mmOccurrence === 0 ? vars.mm : vars.mm2) || (mmOccurrence === 0 ? "" : loose(vars.mm));
   }
 
@@ -173,6 +235,10 @@ function resolveGroup(
   }
   if (kind === "direction") {
     const v = loose(vars.direction);
+    return v && alternatives.some((a) => a.toLowerCase() === v.toLowerCase()) ? v : "";
+  }
+  if (kind === "wordChoice") {
+    const v = loose(vars.choice);
     return v && alternatives.some((a) => a.toLowerCase() === v.toLowerCase()) ? v : "";
   }
   if (kind === "castellvi") {
@@ -197,6 +263,9 @@ function resolveGroup(
   }
   if (kind === "vertebra") {
     return loose(vars.vertebra) || loose(vars.conusLevel) || loose(vars.root);
+  }
+  if (kind === "levelOrVertebra") {
+    return loose(vars.conusLevel) || loose(vars.vertebra) || loose(vars.root);
   }
   if (kind === "levelPair") {
     const a = loose(vars.level);
@@ -225,7 +294,7 @@ function unitAfter(template: string, from: number): "percent" | "cm" | "mm" {
   return u === "%" ? "percent" : u === "cm" ? "cm" : "mm";
 }
 
-function scalar(v: string | number | undefined): string {
+function scalar(v: string | number | null | undefined): string {
   const s = (v == null ? "" : String(v)).trim();
   return s;
 }
@@ -233,20 +302,57 @@ function scalar(v: string | number | undefined): string {
 /**
  * Library macros write measurements as bare `X mm` / `X x X cm` / `X%`. Values
  * are consumed in order per unit so "AP x transverse" gets mm then mm2.
+ *
+ * Two readings, chosen by dialect. Lumbar keeps the original exactly: it is
+ * frozen, and a partial measurement there already renders as it always did.
+ * The extended reading serves a library that writes a three-part dimension
+ * (`X x X x X cm`) as one group, where the whole group must either fill or stay
+ * as the library wrote it — filling two of three would read as a real size.
  */
-function fillBareMeasurements(text: string, vars: SpineProseVars): string {
+function fillBareMeasurements(
+  text: string,
+  vars: SpineProseVars,
+  dialect: SpineProseDialect,
+): string {
+  if (!dialect.extendedGrammar) {
+    const queues: Record<"mm" | "cm" | "percent", string[]> = {
+      mm: [scalar(vars.mm), scalar(vars.mm2)].filter(Boolean),
+      cm: [scalar(vars.cm), scalar(vars.cm2)].filter(Boolean),
+      percent: [scalar(vars.pct)].filter(Boolean),
+    };
+    return text.replace(
+      /\bX\b(\s*)(%|cm|mm)/gi,
+      (whole, _gap: string, unitRaw: string) => {
+        const unit = unitRaw.toLowerCase();
+        const key: "percent" | "cm" | "mm" = unit === "%" ? "percent" : unit === "cm" ? "cm" : "mm";
+        const value = queues[key].shift();
+        return value == null ? whole : `${value}${unitRaw === "%" ? "" : " "}${unitRaw}`;
+      },
+    );
+  }
+
   const queues: Record<"mm" | "cm" | "percent", string[]> = {
     mm: [scalar(vars.mm), scalar(vars.mm2)].filter(Boolean),
-    cm: [scalar(vars.cm), scalar(vars.cm2)].filter(Boolean),
+    cm: [scalar(vars.cm), scalar(vars.cm2), scalar(vars.cm3)].filter(Boolean),
     percent: [scalar(vars.pct)].filter(Boolean),
   };
   return text.replace(
-    /\bX\b(\s*)(%|cm|mm)/gi,
-    (whole, _gap: string, unitRaw: string) => {
+    /\bX\b((?:\s+x\s+\bX\b)*)\s*(%|cm|mm)/gi,
+    (whole, chain: string, unitRaw: string) => {
       const unit = unitRaw.toLowerCase();
       const key: "percent" | "cm" | "mm" = unit === "%" ? "percent" : unit === "cm" ? "cm" : "mm";
-      const value = queues[key].shift();
-      return value == null ? whole : `${value}${unitRaw === "%" ? "" : " "}${unitRaw}`;
+      const count = 1 + ((chain.match(/\bX\b/g) ?? []).length);
+      const values: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const value = queues[key].shift();
+        if (value == null) return whole;
+        values.push(value);
+      }
+      let index = 0;
+      const filled = whole.replace(/\bX\b/g, () => values[index++] ?? "X");
+      return unit === "%"
+        ? filled.replace(/\s+%$/, "%")
+        : filled.replace(/\s+(?:cm|mm)$/i, ` ${unitRaw}`);
     },
   );
 }
@@ -272,12 +378,16 @@ export function fillSpineProse(
     text += template.slice(cursor, m.index);
     cursor = m.index + m[0].length;
     const group = m[0];
-    const { kind, alternatives } = classifyGroup(group, dialect);
+    const { kind, alternatives, joiner } = classifyGroup(group, dialect);
 
     let chosen = "";
     if (kind === "measurement") {
       const unit = unitAfter(template, cursor);
       chosen = resolveGroup(kind, alternatives, vars, occurrences[unit]++, unit, dialect);
+    } else if (kind === "levelRange") {
+      const upper = String(vars.level ?? "").trim();
+      const lower = String(vars.level2 ?? "").trim();
+      chosen = upper && lower ? `${upper} ${joiner ?? "to"} ${lower}` : "";
     } else {
       chosen = resolveGroup(kind, alternatives, vars, 0, "mm", dialect);
     }
@@ -298,7 +408,7 @@ export function fillSpineProse(
   }
 
   return {
-    text: fillBareMeasurements(out, vars).replace(/\s+/g, " ").trim(),
+    text: fillBareMeasurements(out, vars, dialect).replace(/\s+/g, " ").trim(),
     unfilled,
   };
 }

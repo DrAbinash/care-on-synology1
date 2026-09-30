@@ -39,6 +39,15 @@ export {
   normalizeLaterality,
 };
 
+/**
+ * Ledger levels are canonical (`D8-D9`), thoracic reports are read as `T8-T9`.
+ * Only a stored D-boundary token is relabelled, so lumbar and cervical keys
+ * pass through untouched.
+ */
+export function displayLevel(raw: string | null | undefined): string {
+  return (raw ?? "").trim().replace(/(^|[^A-Za-z])D(?=\d)/g, "$1T");
+}
+
 export type ConceptResolutionSource = "explicit" | "conflictGroup" | "legacy-fallback" | "none";
 
 export type ObservationRole = "finding" | "impression" | "recommendation" | "baseline" | "screening";

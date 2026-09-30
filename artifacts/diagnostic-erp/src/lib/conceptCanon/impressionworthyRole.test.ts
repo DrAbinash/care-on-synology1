@@ -141,13 +141,14 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
   });
 
   it("pins the impression-worthy set so a silent flag flip fails loudly", () => {
-    // Ratchet, not a tautology: 435 registered concepts, 321 of them
-    // impression-worthy. `posterior_elements` is the ONLY flag this PR changes,
-    // so bumping this number has to mean somebody deliberately registered an
-    // abnormal concept.
+    // Ratchet, not a tautology. Shipped by #778 at 435 concepts / 321
+    // impression-worthy; MRI Dorsal V4 registers 16 more concepts, 8 of them
+    // impression-worthy, so 321 -> 329.
+    // Bumping either number has to mean somebody deliberately registered a
+    // concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
-    expect(CLINICAL_CONTENT_PACKS.length).toBe(435);
-    expect(impressionWorthy.length).toBe(321);
+    expect(CLINICAL_CONTENT_PACKS.length).toBe(451);
+    expect(impressionWorthy.length).toBe(329);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",

@@ -13,7 +13,7 @@ import {
   inferTraversingRoot,
   type LumbarLevelSelection,
 } from "@/lib/mriLumbarRegions";
-import { normalizeLevel } from "@/lib/observationSlot";
+import { displayLevel, normalizeLevel } from "@/lib/observationSlot";
 import { splitToSentences } from "@/lib/reportFieldMerge";
 import {
   buildSpineGradingAtoms,
@@ -629,16 +629,32 @@ export function ledgerSeverityContradiction(
  */
 export function structuredCanalApContradiction(patches: AppliedPathologyPatch[]): string[] {
   const warnings: string[] = [];
-  const byLevel = new Map<string, { ap: number | null; canalSev: string | null; levelLabel: string }>();
+  const byLevel = new Map<
+    string,
+    { ap: number | null; canalSev: string | null; levelLabel: string; dorsalScoped: boolean }
+  >();
 
   for (const p of patches) {
     if (p.stale) continue;
     const level = (p.observation?.level || p.ownership.anatomicalSection || "").trim();
     if (!level) continue;
     const key = levelKey(level) || level.toUpperCase();
-    const slot = byLevel.get(key) ?? { ap: null, canalSev: null, levelLabel: level };
+    const slot =
+      byLevel.get(key) ?? { ap: null, canalSev: null, levelLabel: level, dorsalScoped: false };
     const concept = (p.observation?.concept || p.ownership.concept || "").toLowerCase();
-    if (concept === "canal_ap" || concept === "canal_ap_diameter") {
+    // Scoped to the dorsal ledger region. Lumbar keeps its shipped behaviour
+    // exactly: it measures on `canal_ap`, and its warning text keeps whatever
+    // level label the ledger holds.
+    const dorsalScoped = /dorsal|thoracic/.test((p.observation?.region ?? "").toLowerCase());
+    slot.dorsalScoped = slot.dorsalScoped || dorsalScoped;
+    // The dorsal level form records the AP diameter on the CSF-morphology row when
+    // a morphology was selected, so a dorsal morphology row counts as a
+    // measurement. A lumbar morphology row carries no diameter and is not.
+    if (
+      concept === "canal_ap"
+      || concept === "canal_ap_diameter"
+      || (concept === "canal_morphology" && dorsalScoped)
+    ) {
       const raw = p.observation?.measurement || "";
       const n = Number(String(raw).replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0] ?? NaN);
       if (Number.isFinite(n)) slot.ap = n;
@@ -652,8 +668,10 @@ export function structuredCanalApContradiction(patches: AppliedPathologyPatch[])
   for (const slot of byLevel.values()) {
     if (slot.ap == null || !(slot.ap < 10)) continue;
     if (slot.canalSev !== "none" && slot.canalSev !== "mild") continue;
+    // Ledger levels are canonical (`D8-D9`); a thoracic report reads `T8-T9`.
+    const label = slot.dorsalScoped ? displayLevel(slot.levelLabel) : slot.levelLabel;
     warnings.push(
-      `Structured mismatch: AP canal ${slot.ap} mm at ${slot.levelLabel} coexists with canal stenosis marked ${slot.canalSev}.`,
+      `Structured mismatch: AP canal ${slot.ap} mm at ${label} coexists with canal stenosis marked ${slot.canalSev}.`,
     );
   }
   return warnings;

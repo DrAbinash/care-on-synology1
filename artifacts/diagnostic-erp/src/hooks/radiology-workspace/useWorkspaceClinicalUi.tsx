@@ -223,7 +223,8 @@ import { chestTextContradictions } from "@/lib/xrayChestContradictions";
 import { parseXrayChestViews } from "@/lib/xrayChestViews";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
-import { lumbarTextContradictions } from "@/lib/mriSpineContradictions";
+import { lumbarTextContradictions, dorsalTextContradictions } from "@/lib/mriSpineContradictions";
+import { dorsalObservationReviewWarnings, isDefaultDorsalNumbering } from "@/lib/mriDorsalNumbering";
 import { screeningTextContradictions } from "@/lib/mriSpineScreening";
 import {
   SPINE_SEQUENCE_KEYS,
@@ -679,6 +680,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // MRI Lumbar V3: the spine platform's own store slices (single source — the
   // panels render these and the validators read the same values).
   const lumbarNumbering = useWorkspace((s: WorkspaceStore) => s.lumbarNumbering);
+  const dorsalNumbering = useWorkspace((s: WorkspaceStore) => s.dorsalNumbering);
   const spineSequencesAvailable = useWorkspace((s: WorkspaceStore) => s.sequencesAvailable);
   const spineScreening = useWorkspace((s: WorkspaceStore) => s.screening);
   const impressionOrderFrozen = useWorkspace((s: WorkspaceStore) => s.impressionOrderFrozen);
@@ -2643,6 +2645,22 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     || isNonStandardNumbering(lumbarNumbering)
     || spineScreening.ls.performed;
 
+  // MRI Dorsal V3 §33 — the thoracic validator adds the cord / conus / coverage
+  // rules, which are not the lumbar list with different letters: in thoracic
+  // reporting the safety question is acquired coverage, not a transitional
+  // vertebra, and the structure at risk is the cord.
+  const spineDorsalContext = isMriDorsalReportingContext({
+    modality: workflow.currentRow?.modality,
+    region: studyRegion,
+    family: studySetup.studyContext?.family,
+    spineSegment: studySetup.studyContext?.spineSegment,
+    protocolName: studySetup.activeProtocol?.name ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? null,
+  });
+  const spineDorsalValidationActive = spineDorsalContext
+    || spineScreening.dorsal.performed
+    || !isDefaultDorsalNumbering(dorsalNumbering);
+
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
@@ -2653,6 +2671,19 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           sequences: spineSequencesAvailable,
           numbering: lumbarNumbering,
         })
+      : []),
+    ...(spineDorsalValidationActive
+      ? dorsalTextContradictions({
+          findingsText,
+          impressionText,
+          sequences: spineSequencesAvailable,
+          numbering: dorsalNumbering,
+        })
+      : []),
+    // §4: a coverage change must surface the observations it strands, never
+    // renumber them quietly.
+    ...(spineDorsalValidationActive
+      ? dorsalObservationReviewWarnings(appliedPathologyPatches, dorsalNumbering)
       : []),
     ...(spineFamily
       ? screeningTextContradictions({
@@ -2727,13 +2758,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     techniqueText,
     studyRegion,
     studySetup.studyContext?.family,
+    studySetup.studyContext?.spineSegment,
+    studySetup.activeProtocol?.name,
     vascularTechnique,
     workflow.currentRow?.modality,
     workflow.currentRow?.studyDescription,
     spineLsLevelNamingActive,
+    spineDorsalValidationActive,
     spineFamily,
     spineSequencesAvailable,
     lumbarNumbering,
+    dorsalNumbering,
     spineScreening,
   ]);
 

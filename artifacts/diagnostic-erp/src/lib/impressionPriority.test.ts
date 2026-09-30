@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   IMPRESSION_PRIORITY,
+  UNCLASSIFIED_RANK,
   impressionPriorityPreview,
   isImpressionWorthyLine,
   orderImpressionLines,
@@ -101,5 +102,68 @@ describe("impression prioritization (spec §37)", () => {
 
   it("trims and drops empty lines", () => {
     expect(orderImpressionLines(["  ", "Severe canal stenosis.", ""])).toEqual(["Severe canal stenosis."]);
+  });
+
+  it("ranks thoracic cord, ossification and deformity lines in the dorsal segment (dorsal spec §31)", () => {
+    const lines = [
+      "Preserved thoracic kyphosis with a focal gibbus at T9-T10.",
+      "Multilevel disc desiccation in the mid thoracic spine.",
+      "Severe T10-T11 central canal stenosis secondary to Ossification of the Ligamentum Flavum (OLF).",
+      "T8-T9 thoracic spinal cord compression with intrinsic cord signal abnormality.",
+    ];
+    const ordered = orderImpressionLines(lines, { spineSegment: "dorsal" });
+    expect(ordered[0]).toContain("cord compression");
+    expect(ordered[1]).toContain("OLF");
+    expect(ordered[ordered.length - 1]).toContain("desiccation");
+    expect(rankImpressionLine("Severe T10-T11 canal stenosis from OLF.", 0, { spineSegment: "dorsal" }).label)
+      .toContain("OLF");
+    expect(rankImpressionLine("Focal gibbus deformity at T12.", 0, { spineSegment: "dorsal" }).label)
+      .toContain("deformity");
+  });
+
+  it("keeps the thoracic-only rules out of every other segment (spec §37 is frozen)", () => {
+    // The three dorsal rules are additive and segment-scoped. Without them being
+    // in play, a lumbar (or unspecified, or whole-spine) impression has to rank
+    // and order exactly as it did before Dorsal existed — including lines that
+    // use a word the dorsal vocabulary also claims.
+    const lumbarLines = [
+      "Loss of lumbar lordosis with a focal kyphosis at L1-L2.",
+      "Degenerative scoliosis at the thoracolumbar junction.",
+      "Severe central canal stenosis at L4-L5.",
+      "Ossification of the ligamentum flavum causing severe canal stenosis.",
+      "Moderate left foraminal stenosis at L5-S1.",
+    ];
+    for (const spineSegment of [undefined, "lumbar", "cervical", "whole", "generic"]) {
+      expect(
+        orderImpressionLines(lumbarLines, { spineSegment: spineSegment as never }),
+        String(spineSegment),
+      ).toEqual(orderImpressionLines(lumbarLines));
+    }
+    expect(rankImpressionLine("Focal kyphosis at L1-L2.").rank).toBe(UNCLASSIFIED_RANK);
+    expect(rankImpressionLine("Focal kyphosis at L1-L2.", 0, { spineSegment: "lumbar" }).rank)
+      .toBe(UNCLASSIFIED_RANK);
+    expect(rankImpressionLine("Focal kyphosis at L1-L2.", 0, { spineSegment: "dorsal" }).rank)
+      .toBe(16);
+    // An unscoped call is the shipped behaviour, so nothing may move unless the
+    // caller names the dorsal segment.
+    const mixed = [
+      "Moderate foraminal stenosis at T11-T12.",
+      "T8-T9 cord compression with intrinsic cord signal change.",
+    ];
+    expect(orderImpressionLines(mixed)).toEqual(mixed);
+    expect(orderImpressionLines(mixed, { spineSegment: "dorsal" })).toEqual([
+      "T8-T9 cord compression with intrinsic cord signal change.",
+      "Moderate foraminal stenosis at T11-T12.",
+    ]);
+    expect(impressionPriorityPreview(mixed).map((r) => r.moves)).toEqual([false, false]);
+    expect(impressionPriorityPreview(mixed, { spineSegment: "dorsal" }).map((r) => r.moves)).toEqual([true, true]);
+    // Every rule that is scoped must name a real segment, so no rule can
+    // silently apply everywhere.
+    for (const rule of IMPRESSION_PRIORITY) {
+      if (!rule.segments) continue;
+      expect(rule.segments.length, rule.id).toBeGreaterThan(0);
+      expect(["cervical", "dorsal", "lumbar", "whole", "generic"], rule.id)
+        .toEqual(expect.arrayContaining([...rule.segments!]));
+    }
   });
 });
