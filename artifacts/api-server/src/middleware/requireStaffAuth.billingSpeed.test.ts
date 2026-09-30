@@ -22,7 +22,7 @@ describe("billing pathway green — auth + counter allocation", () => {
     expect(billsSrc).toContain("patientPreload");
     expect(billsSrc).toContain("Patient was preloaded in the guard wave");
     expect(billsSrc).toContain("nextDocumentCounter");
-    expect(billsSrc).toContain('nextDocumentCounter(dbHandle, "bill", "global")');
+    expect(billsSrc).toContain('nextDocumentCounter(dbHandle, "bill", String(ledgerId))');
     const codeOnly = billsSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(codeOnly).not.toContain("care_erp_bill_number");
     expect(codeOnly).not.toMatch(/pg_advisory_xact_lock/);

@@ -298,7 +298,21 @@ export async function resolveBillDeskForWorklistRows(
         ),
       );
 
-    const billByNumber = new Map(byBillNumber.map((r) => [r.billNumber.trim(), r]));
+    // Bill numbers are unique per BOOK, so one accession string can match live
+    // rows in two registers. Picking either would attach a stranger's
+    // demographics to a study, so a colliding number is left unclaimed here and
+    // falls through to the study-keyed joins below, which are exact.
+    const billByNumber = new Map<string, (typeof byBillNumber)[number]>();
+    const seenNumbers = new Set<string>();
+    for (const r of byBillNumber) {
+      const key = r.billNumber.trim();
+      if (seenNumbers.has(key)) {
+        billByNumber.delete(key);
+        continue;
+      }
+      seenNumbers.add(key);
+      billByNumber.set(key, r);
+    }
     for (const input of inputs) {
       const acc = (input.accessionNumber ?? "").trim();
       if (!acc) continue;

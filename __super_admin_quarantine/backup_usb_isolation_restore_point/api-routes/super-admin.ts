@@ -46,10 +46,35 @@ import {
   backupJobsTable,
   backupJobLogsTable,
   paymentLogsTable,
+  // Dependants of a book's bills / orders / patients, for /books/:id/reset.
+  outsourceOrdersTable,
+  outsourceReportsTable,
+  outsourceVendorInvoiceItemsTable,
+  aiJobQueueTable,
+  studySnapshotsTable,
+  aiShadowDraftsTable,
+  canonicalStudyTable,
+  electronicFilmArtifactsTable,
+  fetalUsgStudiesTable,
+  fetalUsgMeasurementsTable,
+  fetalUsgChecklistsTable,
+  fetalUsgReportsTable,
+  fetalUsgAuditLogsTable,
+  fetalUsgCriticalAlertsTable,
+  mwlEntriesTable,
+  pregnancyEpisodesTable,
+  abhaLinksTable,
+  abdmCareContextsTable,
+  abdmConsentArtefactsTable,
+  externalPatientLinksTable,
+  diagnosticReferralsTable,
+  emergencyPatientResolutionsTable,
+  emergencyImportedTransactionsTable,
 } from "@workspace/db/schema";
-import { eq, and, asc, desc, isNull, or, sql, inArray, gt, gte, count } from "drizzle-orm";
+import { eq, and, asc, desc, isNull, notInArray, or, sql, inArray, gt, gte, count } from "drizzle-orm";
 import { runBooksSanity } from "./books-sanity";
 import { verifySuperAdmin } from "./ledgers";
+import { resetBillNumberSeq } from "../lib/documentNumberCounters";
 import {
   requireSuperAdminUsb,
   isValidUsbKey,
@@ -576,6 +601,29 @@ superAdminRouter.post("/books/:id/set-walk-in", requireSuperAdmin, async (req, r
 });
 
 // ── POST /api/super-admin/books/:id/reset ────────────────────────────────────
+// Empty one ledger book and put its numbering back to 0001.
+//
+// WHY IT WAS BROKEN: this route used to fire ~10 independent `db.delete` calls.
+// The first foreign key it met — a book with USG bills almost always has one,
+// `form_f_records.bill_id` — aborted the sequence mid-way. The operator saw
+// `{"error":"Internal server error"}` and the book was left half-deleted: some
+// bills gone, their orders and patients still on file. Everything below runs in
+// ONE transaction, so it is all-or-nothing, and a dependant this list has not
+// accounted for comes back naming the constraint that stopped it instead of a
+// bare 500.
+//
+// FORM F IS DELETED, NOT ORPHANED. zzzzzzz_bill_dependent_referential_integrity.
+// sql deliberately re-pointed form_f_records at ON DELETE SET NULL so a statutory
+// record outlives its invoice. Deleting a register physically is the opposite
+// instruction, and it is the operator's: PCPNDT retention is theirs to discharge
+// (the backup on the same pen drive is normally where the copy lives). The same
+// reasoning covers vouchers — accounting rows are usually superseded, never
+// deleted — so a wiped book's ledger entries go with it.
+//
+// Rows that belong to a DIFFERENT system and merely point into this book (HOPE
+// patient links, diagnostic referrals, emergency import batches) keep their own
+// record and only lose the pointer: nulling them preserves data the book does not
+// own, and deleting it would reach outside the register being emptied.
 superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmin, async (req, res): Promise<void> => {
   const paramsParsed = ResetLedgerParams.safeParse(req.params);
   const bodyParsed = ResetLedgerBody.safeParse(req.body);
@@ -606,41 +654,268 @@ superAdminRouter.post("/books/:id/reset", requireSuperAdminUsb, requireSuperAdmi
     return;
   }
   const isDefault = id === 1;
-  const billRows = await db.select({ id: billsTable.id }).from(billsTable).where(
-    isDefault ? or(eq(billsTable.ledgerId, 1), isNull(billsTable.ledgerId)) : eq(billsTable.ledgerId, id),
-  );
-  const billIds = billRows.map(r => r.id);
-  const orderRows = await db.select({ id: ordersTable.id }).from(ordersTable).where(
-    isDefault ? or(eq(ordersTable.ledgerId, 1), isNull(ordersTable.ledgerId)) : eq(ordersTable.ledgerId, id),
-  );
-  const orderIds = orderRows.map(r => r.id);
-  const patientRows = await db.select({ id: patientsTable.id }).from(patientsTable).where(
-    isDefault ? or(eq(patientsTable.ledgerId, 1), isNull(patientsTable.ledgerId)) : eq(patientsTable.ledgerId, id),
-  );
-  const patientIds = patientRows.map(r => r.id);
-  if (billIds.length) {
-    await db.delete(paymentsTable).where(inArray(paymentsTable.billId, billIds));
-    await db.delete(billAuditsTable).where(inArray(billAuditsTable.billId, billIds));
-    await db.delete(billsTable).where(inArray(billsTable.id, billIds));
+
+  try {
+    const wiped = await db.transaction(async (tx) => {
+      // Ledger id 1 also owns the pre-ledger rows whose ledger_id is NULL, which
+      // is the same convention matchLedger() uses across the app.
+      const inBook = (col: Parameters<typeof eq>[0]) =>
+        isDefault ? or(eq(col, 1), isNull(col)) : eq(col, id);
+
+      const billRows = await tx
+        .select({ id: billsTable.id, billNumber: billsTable.billNumber })
+        .from(billsTable)
+        .where(inBook(billsTable.ledgerId));
+      const billIds = billRows.map((r) => r.id);
+      const billNumbers = billRows.map((r) => r.billNumber);
+
+      const orderRows = await tx
+        .select({ id: ordersTable.id })
+        .from(ordersTable)
+        .where(inBook(ordersTable.ledgerId));
+      const orderIds = orderRows.map((r) => r.id);
+
+      const patientRows = await tx
+        .select({ id: patientsTable.id })
+        .from(patientsTable)
+        .where(inBook(patientsTable.ledgerId));
+      const patientIds = patientRows.map((r) => r.id);
+
+      // A patient registered in this book may also be billed from another one,
+      // and bills.patient_id / orders.patient_id are NOT NULL. Such a patient
+      // stays — and so does everything hanging off them, because wiping a
+      // surviving patient's ABDM links, pregnancy episodes or reports would
+      // reach outside the register being emptied. Computed before any delete so
+      // the rows still reference each other while the check runs.
+      const keptForOtherBooks = new Set<number>();
+      if (patientIds.length) {
+        const outsideBills = await tx
+          .select({ patientId: billsTable.patientId })
+          .from(billsTable)
+          .where(
+            and(
+              inArray(billsTable.patientId, patientIds),
+              billIds.length ? notInArray(billsTable.id, billIds) : sql`true`,
+            ),
+          );
+        const outsideOrders = await tx
+          .select({ patientId: ordersTable.patientId })
+          .from(ordersTable)
+          .where(
+            and(
+              inArray(ordersTable.patientId, patientIds),
+              orderIds.length ? notInArray(ordersTable.id, orderIds) : sql`true`,
+            ),
+          );
+        for (const r of [...outsideBills, ...outsideOrders]) keptForOtherBooks.add(r.patientId);
+      }
+      const wipePatientIds = patientIds.filter((p) => !keptForOtherBooks.has(p));
+
+      const ids = (list: Array<number | string>) =>
+        sql.join(list.map((n) => sql`${n}`), sql`, `);
+
+      // Studies the book's orders produced — the radiology/PACS rows hang off
+      // these, and radiology_studies is what the fetal Level-4 chain points at.
+      const studyRows = orderIds.length
+        ? await tx
+            .select({ id: radiologyStudiesTable.id })
+            .from(radiologyStudiesTable)
+            .where(inArray(radiologyStudiesTable.orderId, orderIds))
+        : [];
+      const studyIds = studyRows.map((r) => r.id);
+      const fetalStudyRows = studyIds.length
+        ? await tx
+            .select({ id: fetalUsgStudiesTable.id })
+            .from(fetalUsgStudiesTable)
+            .where(inArray(fetalUsgStudiesTable.studyId, studyIds))
+        : [];
+      const fetalStudyIds = fetalStudyRows.map((r) => r.id);
+      const reportRows = billIds.length
+        ? await tx
+            .select({ id: patientReportsTable.id })
+            .from(patientReportsTable)
+            .where(inArray(patientReportsTable.billId, billIds))
+        : [];
+      const reportIds = reportRows.map((r) => r.id);
+
+      // ── Statutory + billing children of the book's bills ──
+      // Every condition here can be empty for a book with no activity, and an
+      // empty where() deletes the WHOLE table — so each statement is guarded by
+      // the conditions it actually has.
+      const formFConds = [
+        billIds.length ? inArray(formFRecordsTable.billId, billIds) : undefined,
+        // Rows a single-bill DELETE /:id orphaned (bill_id set to NULL, number
+        // kept) are still this book's pages. Matching on the number alone is no
+        // longer safe now that two books can print the same one, so the patient
+        // has to agree too.
+        billIds.length && patientIds.length && billNumbers.length
+          ? and(
+              isNull(formFRecordsTable.billId),
+              inArray(formFRecordsTable.billNumber, billNumbers),
+              inArray(formFRecordsTable.patientId, patientIds),
+            )
+          : undefined,
+        // Pages belonging to a patient who is themselves going away.
+        wipePatientIds.length ? inArray(formFRecordsTable.patientId, wipePatientIds) : undefined,
+      ].filter((c): c is NonNullable<typeof c> => c !== undefined);
+      if (formFConds.length) {
+        await tx.delete(formFRecordsTable).where(or(...formFConds));
+      }
+
+      if (billIds.length) {
+        const voucherRows = await tx
+          .select({ id: vouchersTable.id })
+          .from(vouchersTable)
+          .where(inArray(vouchersTable.billId, billIds));
+        const voucherIds = voucherRows.map((v) => v.id);
+        if (voucherIds.length) {
+          await tx.delete(voucherAuditsTable).where(inArray(voucherAuditsTable.voucherId, voucherIds));
+        }
+        await tx.delete(vouchersTable).where(inArray(vouchersTable.billId, billIds));
+        await tx.delete(paymentsTable).where(inArray(paymentsTable.billId, billIds));
+        await tx.delete(billAuditsTable).where(inArray(billAuditsTable.billId, billIds));
+        await tx.delete(onlineBookingsTable).where(inArray(onlineBookingsTable.billId, billIds));
+        await tx.delete(tokensTable).where(inArray(tokensTable.billId, billIds));
+        await tx.delete(testTokensTable).where(inArray(testTokensTable.billId, billIds));
+        await tx.delete(patientReportsTable).where(inArray(patientReportsTable.billId, billIds));
+      }
+      if (reportIds.length) {
+        await tx.delete(reportSharesTable).where(inArray(reportSharesTable.reportId, reportIds));
+      }
+
+      // ── Outsourced-lab orders: bill_id AND patient_id are both NOT NULL ──
+      if (billIds.length) {
+        const osRows = await tx
+          .select({ id: outsourceOrdersTable.id })
+          .from(outsourceOrdersTable)
+          .where(inArray(outsourceOrdersTable.billId, billIds));
+        const osIds = osRows.map((r) => r.id);
+        if (osIds.length) {
+          await tx.delete(outsourceReportsTable).where(inArray(outsourceReportsTable.orderId, osIds));
+          await tx
+            .update(outsourceVendorInvoiceItemsTable)
+            .set({ linkedOrderId: null })
+            .where(inArray(outsourceVendorInvoiceItemsTable.linkedOrderId, osIds));
+        }
+        await tx.delete(outsourceOrdersTable).where(inArray(outsourceOrdersTable.billId, billIds));
+      }
+
+      // ── Imaging, AI and reporting rows for the book's studies ──
+      if (studyIds.length) {
+        await tx.delete(aiJobQueueTable).where(inArray(aiJobQueueTable.studyId, studyIds));
+        await tx.delete(studySnapshotsTable).where(inArray(studySnapshotsTable.radiologyStudyId, studyIds));
+        await tx.delete(aiShadowDraftsTable).where(inArray(aiShadowDraftsTable.radiologyStudyId, studyIds));
+        await tx.delete(canonicalStudyTable).where(inArray(canonicalStudyTable.radiologyStudyId, studyIds));
+        await tx.delete(electronicFilmArtifactsTable).where(inArray(electronicFilmArtifactsTable.studyId, studyIds));
+        if (fetalStudyIds.length) {
+          await tx.delete(fetalUsgMeasurementsTable).where(inArray(fetalUsgMeasurementsTable.studyId, fetalStudyIds));
+          await tx.delete(fetalUsgChecklistsTable).where(inArray(fetalUsgChecklistsTable.studyId, fetalStudyIds));
+          await tx.delete(fetalUsgReportsTable).where(inArray(fetalUsgReportsTable.studyId, fetalStudyIds));
+          await tx.delete(fetalUsgCriticalAlertsTable).where(inArray(fetalUsgCriticalAlertsTable.studyId, fetalStudyIds));
+          await tx.delete(fetalUsgAuditLogsTable).where(inArray(fetalUsgAuditLogsTable.studyId, fetalStudyIds));
+        }
+        await tx.delete(fetalUsgStudiesTable).where(inArray(fetalUsgStudiesTable.studyId, studyIds));
+      }
+      if (orderIds.length) {
+        // sample_test_assignments cascades on sample_id / order_test_id.
+        await tx.delete(samplesTable).where(inArray(samplesTable.orderId, orderIds));
+        await tx.delete(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds));
+        await tx.delete(radiologyStudiesTable).where(inArray(radiologyStudiesTable.orderId, orderIds));
+        await tx.execute(sql`
+          DELETE FROM radiology_scheduled_procedures
+          WHERE source_order_id::integer IN (${ids(orderIds)})
+        `);
+      }
+
+      // ── Patient-keyed clinical history ──
+      // Scoped to the patients actually going (wipePatientIds), never to every
+      // patient this book has ever registered.
+      if (wipePatientIds.length) {
+        await tx.delete(aiReportingDraftsTable).where(inArray(aiReportingDraftsTable.patientId, wipePatientIds));
+        await tx.delete(aiReportingAuditLogsTable).where(inArray(aiReportingAuditLogsTable.patientId, wipePatientIds));
+        await tx.delete(radiologyVoiceLogsTable).where(inArray(radiologyVoiceLogsTable.patientId, wipePatientIds));
+        await tx.delete(radiologyReportKeyImagesTable).where(inArray(radiologyReportKeyImagesTable.patientId, wipePatientIds));
+        await tx.delete(mwlEntriesTable).where(inArray(mwlEntriesTable.patientId, wipePatientIds));
+        await tx.delete(pregnancyEpisodesTable).where(inArray(pregnancyEpisodesTable.patientId, wipePatientIds));
+        await tx.delete(abdmConsentArtefactsTable).where(inArray(abdmConsentArtefactsTable.patientId, wipePatientIds));
+        await tx.delete(abdmCareContextsTable).where(inArray(abdmCareContextsTable.patientId, wipePatientIds));
+        await tx.delete(abhaLinksTable).where(inArray(abhaLinksTable.patientId, wipePatientIds));
+        // PACS/DICOM logs key the patient by their UHID text, not the row id.
+        await tx.execute(sql`DELETE FROM dicom_pulled_studies WHERE patient_id IN (${ids(wipePatientIds.map((p) => String(p)))})`);
+        await tx.execute(sql`DELETE FROM dicom_pull_agent_logs WHERE patient_id IN (${ids(wipePatientIds.map((p) => String(p)))})`);
+        await tx.execute(sql`DELETE FROM pacs_logs WHERE patient_id IN (${ids(wipePatientIds.map((p) => String(p)))})`);
+
+        // External systems keep their own record and lose the pointer.
+        await tx
+          .update(externalPatientLinksTable)
+          .set({ carePatientId: null })
+          .where(inArray(externalPatientLinksTable.carePatientId, wipePatientIds));
+        await tx
+          .update(diagnosticReferralsTable)
+          .set({ carePatientId: null })
+          .where(inArray(diagnosticReferralsTable.carePatientId, wipePatientIds));
+        await tx
+          .update(emergencyPatientResolutionsTable)
+          .set({ carePatientId: null })
+          .where(inArray(emergencyPatientResolutionsTable.carePatientId, wipePatientIds));
+      }
+      if (billIds.length) {
+        await tx
+          .update(emergencyImportedTransactionsTable)
+          .set({ careBillId: null })
+          .where(inArray(emergencyImportedTransactionsTable.careBillId, billIds));
+      }
+      if (orderIds.length) {
+        await tx
+          .update(diagnosticReferralsTable)
+          .set({ careOrderId: null })
+          .where(inArray(diagnosticReferralsTable.careOrderId, orderIds));
+      }
+
+      // ── Appointments, then the parents ──
+      await tx.delete(appointmentsTable).where(inBook(appointmentsTable.ledgerId));
+      if (wipePatientIds.length) {
+        // appointments.patient_id is NOT NULL, so every appointment of a patient
+        // about to go has to go with them, even one booked under another book.
+        await tx.delete(appointmentsTable).where(inArray(appointmentsTable.patientId, wipePatientIds));
+      }
+      if (billIds.length) await tx.delete(billsTable).where(inArray(billsTable.id, billIds));
+      if (orderIds.length) await tx.delete(ordersTable).where(inArray(ordersTable.id, orderIds));
+      if (wipePatientIds.length) {
+        await tx.delete(patientsTable).where(inArray(patientsTable.id, wipePatientIds));
+      }
+
+      // Bill numbers are allocated per book (zzzzzz_bill_numbering_per_ledger.
+      // sql), so an emptied book can genuinely restart at 0001 — the next
+      // number it issues is 1, not 2. The function refuses to rewind a book that
+      // still holds bills, which is the guard against this ever being called on
+      // a register that was not fully emptied.
+      await resetBillNumberSeq(tx, id);
+
+      return {
+        bills: billIds.length,
+        orders: orderIds.length,
+        patients: wipePatientIds.length,
+        patientsKept: patientIds.length - wipePatientIds.length,
+        studies: studyIds.length,
+        reports: reportIds.length,
+      };
+    });
+
+    logger.info(
+      { book: ledger.name, bookId: id, by: userName, reason, wiped },
+      "super-admin book reset",
+    );
+    res.json({ ok: true, book: ledger.name, by: userName, reason, nextBillNumber: 1, wiped });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Rolled back: the book is exactly as it was. Saying so matters, because the
+    // previous behaviour was a partial wipe behind a meaningless 500.
+    logger.error({ err, bookId: id, by: userName }, "super-admin book reset failed");
+    res.status(500).json({
+      error: `Book reset failed and was rolled back — nothing was deleted. ${message}`,
+    });
   }
-  if (orderIds.length) {
-    await db.delete(orderTestsTable).where(inArray(orderTestsTable.orderId, orderIds));
-    await db.delete(ordersTable).where(inArray(ordersTable.id, orderIds));
-  }
-  await db.delete(appointmentsTable).where(
-    isDefault ? or(eq(appointmentsTable.ledgerId, 1), isNull(appointmentsTable.ledgerId)) : eq(appointmentsTable.ledgerId, id),
-  );
-  if (patientIds.length) {
-    await db.delete(appointmentsTable).where(inArray(appointmentsTable.patientId, patientIds));
-    await db.delete(patientsTable).where(inArray(patientsTable.id, patientIds));
-  }
-  res.json({
-    ok: true,
-    book: ledger.name,
-    by: userName,
-    reason,
-    wiped: { bills: billIds.length, orders: orderIds.length, patients: patientIds.length },
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

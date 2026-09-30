@@ -10,6 +10,7 @@ import { resolveOcrProvider, maskEndpointUrl, getGeminiOcrApiKey, type OcrUnavai
 import { requireStaffPermission, requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { sendTextMessageRaw, resolveNumber, normalizePhone } from "./whatsapp";
 import { auditFromRequest } from "../lib/audit";
+import { findBillByNumber, ambiguousBillNumberMessage } from "../lib/billByNumber";
 import { ensureSelfReferralPrescriptions } from "../lib/selfReferralPrescriptions";
 import { selfReferralPrescriptionsTable } from "@workspace/db/schema";
 import {
@@ -349,14 +350,14 @@ formFRouter.post("/save", async (req, res) => {
     let patientId = d.patientId;
 
     if (!billId && d.billNumber) {
-      const [bill] = await db
-        .select()
-        .from(billsTable)
-        .where(ilike(billsTable.billNumber, d.billNumber.trim()))
-        .limit(1);
-      if (bill) {
-        billId = bill.id;
-        patientId = bill.patientId;
+      // Bill numbers are unique per book, so a typed number can match two
+      // registers. Linking this statutory record to the wrong patient is worse
+      // than leaving it unlinked, so an ambiguous number is treated exactly like
+      // a number with no match: the form still saves on its own data.
+      const hit = await findBillByNumber(d.billNumber, { caseInsensitive: true });
+      if (hit.status === "found") {
+        billId = hit.bill.id;
+        patientId = hit.bill.patientId;
       }
     }
 
@@ -896,16 +897,19 @@ formFRouter.patch("/update-patient-data", requireStaffPermission("/form-f"), asy
       return;
     }
 
-    const [bill] = await db
-      .select()
-      .from(billsTable)
-      .where(eq(billsTable.billNumber, billNumber))
-      .limit(1);
-
-    if (!bill) {
+    // This writes patient + guardian details, so the number has to identify one
+    // bill. Per-book numbering makes the same number valid in two registers;
+    // refusing beats editing a stranger's record.
+    const hit = await findBillByNumber(billNumber);
+    if (hit.status === "ambiguous") {
+      res.status(409).json({ error: ambiguousBillNumberMessage(billNumber) });
+      return;
+    }
+    if (hit.status === "not_found") {
       res.status(404).json({ error: "Bill not found" });
       return;
     }
+    const bill = hit.bill;
 
     if (bill.patientId) {
       const updates: Record<string, unknown> = {};

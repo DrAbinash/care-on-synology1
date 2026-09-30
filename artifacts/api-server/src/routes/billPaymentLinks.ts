@@ -16,6 +16,7 @@ import { db } from "@workspace/db";
 import { billPaymentLinksTable, billsTable, patientsTable, paymentLogsTable, clinicSettingsTable } from "@workspace/db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { auditFromRequest } from "../lib/audit";
+import { findBillByNumber, ambiguousBillNumberMessage } from "../lib/billByNumber";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { PaymentEngine } from "../lib/payments/PaymentEngine"; // import-only; not modified
@@ -58,8 +59,17 @@ async function deriveStatus(link: { txnRef: string; billId: number; status: stri
 
 // ── Bill lookup (read-only) for the UI ────────────────────────────────────────
 billPaymentLinksRouter.get("/bill/:billNumber", async (req, res) => {
-  const [bill] = await db.select().from(billsTable).where(eq(billsTable.billNumber, String(req.params.billNumber))).limit(1);
-  if (!bill) { res.status(404).json({ error: "Bill not found" }); return; }
+  // A bill number identifies a bill *within its book*, so the same number can
+  // match two registers. Taking an online payment against the wrong bill is not
+  // a mistake this endpoint gets to make: ask for the book instead.
+  const wanted = String(req.params.billNumber);
+  const hit = await findBillByNumber(wanted);
+  if (hit.status === "ambiguous") {
+    res.status(409).json({ error: ambiguousBillNumberMessage(wanted) });
+    return;
+  }
+  if (hit.status === "not_found") { res.status(404).json({ error: "Bill not found" }); return; }
+  const bill = hit.bill;
   const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId)).limit(1);
   res.json({
     id: bill.id, billNumber: bill.billNumber, status: bill.status,

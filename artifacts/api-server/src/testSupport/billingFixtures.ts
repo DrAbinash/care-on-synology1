@@ -17,8 +17,39 @@ import {
   billAuditsTable,
   vouchersTable,
 } from "@workspace/db/schema";
-import { eq, inArray, like } from "drizzle-orm";
+import { eq, inArray, like, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Bill numbers are allocated by `next_bill_number_seq(ledger)` (per book), which
+ * a SQL migration installs — `pnpm db:push` does not run migrations/*.sql, so a
+ * hand-built dev DB has no such function and every save through
+ * POST /api/billing/save would 500 on "function does not exist".
+ *
+ * Applies the real migration file rather than a copy of it, so a test can never
+ * pass against a helper that production does not have. The file is written to be
+ * re-runnable for exactly this reason.
+ */
+export async function ensureBillNumberingSchema(): Promise<void> {
+  // db.execute() hands back either an array or a { rows } envelope depending on
+  // the driver, so neither shape may be assumed here.
+  const result = await db.execute(sql`
+    SELECT to_regprocedure('public.next_bill_number_seq(integer)') IS NOT NULL AS present
+  `);
+  const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{
+    present?: boolean;
+  }>;
+  if (rows[0]?.present) return;
+
+  const migration = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../../migrations/zzzzzz_bill_numbering_per_ledger.sql",
+  );
+  await db.execute(sql.raw(readFileSync(migration, "utf8")));
+}
 
 export interface BillingFixture {
   marker: string;
@@ -37,6 +68,8 @@ export interface BillingFixture {
 export async function seedBillingFixture(): Promise<BillingFixture> {
   const marker = `vitest-${randomUUID().slice(0, 8)}`;
   const token = `vitest-token-${randomUUID()}`;
+
+  await ensureBillNumberingSchema();
 
   const [user] = await db
     .insert(usersTable)

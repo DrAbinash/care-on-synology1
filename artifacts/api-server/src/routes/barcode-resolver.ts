@@ -16,13 +16,14 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   samplesTable, ordersTable, orderTestsTable, testsTable,
-  patientsTable, doctorsTable, billsTable, patientReportsTable,
+  patientsTable, doctorsTable, patientReportsTable,
   reportDeliveryLogsTable, radiologyStudiesTable,
-  inventoryItemsTable,
+  inventoryItemsTable, ledgersTable,
 } from "@workspace/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import { requireStaffAuth } from "../middleware/requireStaffAuth";
 import { matchAllowsFinalize, resolveWorklistFromStudyRef } from "../lib/radiologyIdentity";
+import { findBillByNumber } from "../lib/billByNumber";
 
 const router: IRouter = Router();
 router.use(requireStaffAuth);
@@ -108,10 +109,29 @@ router.get("/:code", async (req, res) => {
   }
 
   // 3. Try bill number (numeric format or legacy BILL- prefix, or exact match).
-  const billMatch = /^\d{10,}$/.test(code) ? code : null;
-  const [bill] = billMatch
-    ? await db.select().from(billsTable).where(eq(billsTable.billNumber, billMatch))
-    : await db.select().from(billsTable).where(eq(billsTable.billNumber, code));
+  //
+  // Bill numbers are unique per BOOK, so the same printed number can exist in
+  // two registers. Which patient a scan belongs to is not guessable, so a
+  // collision is reported with its candidates instead of resolving one.
+  const billHit = await findBillByNumber(code);
+  if (billHit.status === "ambiguous") {
+    const books = await db
+      .select({ id: ledgersTable.id, name: ledgersTable.name })
+      .from(ledgersTable)
+      .where(inArray(ledgersTable.id, billHit.bills.map((b) => b.ledgerId)));
+    const bookName = new Map(books.map((l) => [l.id, l.name]));
+    res.status(409).json({
+      error: `Bill number ${code} was issued by more than one book. Find the patient by name instead.`,
+      candidates: billHit.bills.map((b) => ({
+        billId: b.id,
+        patientId: b.patientId,
+        book: bookName.get(b.ledgerId) ?? `Book #${b.ledgerId}`,
+      })),
+    });
+    return;
+  }
+
+  const bill = billHit.status === "found" ? billHit.bill : null;
   if (bill) {
     const [patient] = await db.select().from(patientsTable).where(eq(patientsTable.id, bill.patientId));
     let doctor = null;
