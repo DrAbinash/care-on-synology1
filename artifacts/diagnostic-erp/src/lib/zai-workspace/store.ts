@@ -138,6 +138,7 @@ import {
   defaultVascularTechnique,
   markVascularTechniqueManual,
 } from "@/lib/mriBrainVascularTechnique";
+import { isImpressionReorderOf } from "@/lib/mriBrainVascularImpression";
 import type { VascularTechniqueKey, VascularTechniqueState } from "@/lib/mriBrainVascularTechnique";
 import {
   coverageMarksEqual,
@@ -530,6 +531,13 @@ export type WorkspaceStore = S & {
    */
   setObservationImpressionParticipation: (id: string, include: boolean) => "applied" | "blocked" | "missing";
   refreshImpressionFromLedger: () => void;
+  /**
+   * §18 (mra/mrv): write the derived impression back in clinical order. Only a
+   * permutation of the lines already there is accepted, so a reorder can never add,
+   * drop or reword a clinical statement — and the per-line provenance keys survive
+   * untouched, because the lines themselves did not change.
+   */
+  orderImpressionByPriority: (lines: readonly string[]) => boolean;
   hydrateObservationLedger: (raw: unknown) => LedgerHydrationResult;
   serializeObservationLedger: () => SerializedObservationLedger;
   /**
@@ -1671,6 +1679,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       impressionNeedsRefresh: false,
       isDirty: true,
     });
+  },
+  orderImpressionByPriority: (lines) => {
+    const before = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    const next = lines.map((s) => s.trim()).filter(Boolean);
+    if (before.join("\n") === next.join("\n")) return false;
+    // A reorder may only ever permute. Anything else is a rewrite, and this action is
+    // never allowed to reword a clinical statement (§18).
+    if (!isImpressionReorderOf(before, next)) return false;
+    set({ impressionText: next.join("\n"), isDirty: true });
+    return true;
   },
   seedSystemNormalImpression: () => {
     // Safety: never seed when impression-worthy abnormal observations exist.

@@ -206,6 +206,7 @@ import {
   brainVascularContradictions,
   vascularIsScreeningOnly,
 } from "@/lib/mriBrainVascularValidation";
+import { orderBrainVascularImpressionLines } from "@/lib/mriBrainVascularImpression";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
@@ -327,7 +328,7 @@ import {
 } from "@/lib/resolveQuickFindingFromSpeech";
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
-import { selectedQuickFindingIds } from "@/lib/observationSlot";
+import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
@@ -2591,16 +2592,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     () => parseBrainSequences(techniqueText),
     [techniqueText],
   );
+  const mriBrainReportingOpts = {
+    modality: workflow.currentRow?.modality,
+    region: studyRegion,
+    family: studySetup.studyContext?.family,
+    studyDescription: workflow.currentRow?.studyDescription,
+  };
 
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
-    ...(isMriBrainReportingContext({
-      modality: workflow.currentRow?.modality,
-      region: studyRegion,
-      family: studySetup.studyContext?.family,
-      studyDescription: workflow.currentRow?.studyDescription,
-    })
+    ...(isMriBrainReportingContext(mriBrainReportingOpts)
       ? [
           ...brainTextContradictions({
             findingsText,
@@ -2644,6 +2646,18 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const live = useWorkspace.getState().fieldProvenance.impression;
     if (impressionProvenanceIsRadiologistManual(live)) return;
     useWorkspace.getState().refreshImpressionFromLedger();
+    // §18: a derived vascular impression leads with the abnormality that matters
+    // clinically, not with the order the tiles happened to be clicked.
+    if (!isMriBrainReportingContext(mriBrainReportingOpts)) return;
+    const state = useWorkspace.getState();
+    const derived = state.impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    // A line the radiologist wrote by hand keeps its position: a mixed impression is left
+    // exactly as they arranged it (§18, and the CARE provenance model).
+    state.orderImpressionByPriority(
+      orderBrainVascularImpressionLines(derived, {
+        protectedLine: (line) => contributionProtected(line, state.fieldProvenance.impression),
+      }),
+    );
   }, [impressionNeedsRefresh]);
 
   // Auto-reveal sections that carry NEW validation / stale warnings so collapse
