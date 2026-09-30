@@ -135,6 +135,11 @@ import {
 } from "@/lib/structuredViewerMeasurements";
 import type { CanalApProvenanceMap, CanalApCellProvenance } from "@/lib/spineCanalAp";
 import {
+  defaultVascularTechnique,
+  markVascularTechniqueManual,
+} from "@/lib/mriBrainVascularTechnique";
+import type { VascularTechniqueKey, VascularTechniqueState } from "@/lib/mriBrainVascularTechnique";
+import {
   coverageMarksEqual,
   defaultCoverageMarks,
   setCoverageStatus,
@@ -424,6 +429,12 @@ interface S {
   dorsalCanalForced: boolean;
   /** Canal AP cell provenance (manualOverride + DICOM UIDs) — draft-scoped. */
   canalApProvenance: CanalApProvenanceMap;
+  /**
+   * What the vascular acquisition actually performed (mra/mrv spec §4) — draft-scoped,
+   * derived from the Technique field and manually overridable. Gates every strong
+   * vascular sentence; separate from the parenchymal sequence model and from billing.
+   */
+  vascularTechnique: VascularTechniqueState;
   /** Expected study UID for activeAnchor rejection across study switches. */
   activeStudyInstanceUID: string | null;
   /** Advisory coverage marks for the active Study Tab scope. Never a finalize hard gate. */
@@ -552,6 +563,11 @@ export type WorkspaceStore = S & {
   setDorsalCanalForced: (v: boolean) => void;
   setCanalApProvenance: (m: CanalApProvenanceMap) => void;
   setCanalApCellProvenance: (level: string, p: CanalApCellProvenance | null) => void;
+  /** Wholesale write — used by draft hydration and by "revert to derived technique". */
+  setVascularTechnique: (s: VascularTechniqueState) => void;
+  /** A radiologist-stated acquisition answer. Wins over every later text derivation. */
+  setVascularTechniqueManual: (key: VascularTechniqueKey, on: boolean) => void;
+  setVascularTechniqueDesignation: (note: string | null) => void;
   setCoverageMark: (regionKey: string, status: CoverageMark["status"], reason?: string) => void;
   /** Focus / jump: promote unopened → viewed only; never downgrade or dirty. */
   touchCoverageViewed: (regionKey: string) => void;
@@ -643,6 +659,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
   dorsalCanalForced: false,
   canalApProvenance: {},
+  vascularTechnique: defaultVascularTechnique(),
   activeStudyInstanceUID: null, coverageMarks: [], coverageByScope: {},
   appliedFormatName: null,
   ownershipReviewWarnings: [], ledgerHydrationWarning: null,
@@ -684,7 +701,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, vascularTechnique: defaultVascularTechnique(), activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -1843,6 +1860,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!p) delete next[level];
     else next[level] = p;
     set({ canalApProvenance: next });
+  },
+  setVascularTechnique: (s) => set({ vascularTechnique: s }),
+  setVascularTechniqueManual: (key, on) => {
+    const prev = get().vascularTechnique;
+    if (prev.manual[key] === on) return;
+    // An explicit acquisition answer must reach the draft, not only the screen.
+    set({ vascularTechnique: markVascularTechniqueManual(prev, key, on), isDirty: true });
+  },
+  setVascularTechniqueDesignation: (note) => {
+    const prev = get().vascularTechnique;
+    const nextNote = note?.trim() ? note.trim() : null;
+    if (prev.designationNote === nextNote) return;
+    set({ vascularTechnique: { ...prev, designationNote: nextNote }, isDirty: true });
   },
   setCoverageMark: (regionKey, status, reason) => {
     const scope = coverageScopeKey(get().reportingContext.region);
