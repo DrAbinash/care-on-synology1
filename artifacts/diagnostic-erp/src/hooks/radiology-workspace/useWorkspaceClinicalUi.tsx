@@ -1390,6 +1390,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       if (segment === "cervical") return "MRI Cervical Spine";
       if (segment === "dorsal") return "MRI Dorsal Spine";
       if (segment === "lumbar") return "MRI Lumbosacral Spine";
+      // A Dorso-Lumbar booking is its own examination; naming it "MRI Spine"
+      // would hand the composer a region no study was billed for.
+      if (segment === "dorsolumbar") return "MRI Dorso-Lumbar Spine";
       return "MRI Spine";
     }
     return (

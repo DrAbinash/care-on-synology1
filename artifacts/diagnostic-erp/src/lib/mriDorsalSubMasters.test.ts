@@ -53,6 +53,7 @@ import { CANONICAL_CONCEPTS } from "@/lib/conceptCanon/contentPacks";
 import { defaultSpineSequences, type SpineSequencesAvailable } from "@/lib/mriSpineSequences";
 import { dorsalTextContradictions } from "@/lib/mriSpineContradictions";
 import { offeredScreeningRegions, resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
+import { DEDICATED_COMPONENT_ROLE } from "@/lib/mriDorsoLumbarCatalog";
 import {
   SCREENING_LIMITATION_BUNDLE_ID,
   defaultScreeningState,
@@ -756,13 +757,25 @@ describe("billed study resolver (spec §28)", () => {
     expect(resolveScreeningRoles({ code: "MRI021", name: "MRI DORSAL SPINE SCREENING" }).roles.dorsal).toBe("primary-screening");
   });
 
-  it("refuses to guess from the ambiguous DL label and says so", () => {
+  it("resolves the audited DL label as one dorso-lumbar composition, not dorsal", () => {
+    // The catalog export books `MRI020` as "MRI DL SPINE" while dorsal holds its
+    // own code `MRID`, so "DL" is the dorso-lumbar examination and never a
+    // dorsal booking (dorso-lumbar spec §24). An earlier revision of this test
+    // asserted the opposite because it had no catalog evidence.
     const dl = resolveScreeningRoles({ name: "MRI DL SPINE" });
-    expect(dl.matchedKey).toBe("AMBIGUOUS_DORSOLUMBAR");
-    expect(dl.roles.dorsal).toBe("absent");
-    expect(dl.matchedLabel).toMatch(/dorso-lumbar/i);
-    // An explicit dorsal name is not ambiguous even under the same code.
-    expect(resolveScreeningRoles({ code: "MRI020", name: "MRI DORSAL SPINE" }).roles.dorsal).toBe("primary-dedicated");
+    expect(dl.composition).toBe("dorsolumbar-dedicated");
+    expect(dl.roles.dorsal).toBe(DEDICATED_COMPONENT_ROLE);
+    expect(offeredScreeningRegions(dl.roles)).toEqual([]);
+
+    // A bare "DL" with no catalog row behind it still resolves to nothing.
+    const unresolved = resolveScreeningRoles({ code: "MRI777", name: "MRI DL SOMETHING" });
+    expect(unresolved.matchedKey).toBe("AMBIGUOUS_DORSOLUMBAR");
+    expect(unresolved.roles.dorsal).toBe("absent");
+
+    // Code evidence outranks a mismatched printed name (the clash itself is
+    // reported by the catalog resolver, asserted in mriDorsoLumbarCatalog).
+    const mismatch = resolveScreeningRoles({ code: "MRI020", name: "MRI DORSAL SPINE" });
+    expect(mismatch.roles.dorsal).toBe(DEDICATED_COMPONENT_ROLE);
   });
 });
 

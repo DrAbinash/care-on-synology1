@@ -65,6 +65,11 @@ import {
   defaultDorsalNumbering,
   type DorsalNumberingState,
 } from "@/lib/mriDorsalNumbering";
+import type {
+  CompositionProvenance,
+  StudyComposition,
+} from "@/lib/mriDorsoLumbarCatalog";
+import { canonicalizeDorsoLumbarOwnership } from "@/lib/mriDorsoLumbarJunction";
 import {
   defaultSpineSequences,
   type SpineSequencesAvailable,
@@ -327,6 +332,7 @@ function observationFromPending(
   opts: PendingPathologyPatch,
   reportingRegion: string | null,
   activeAnchor?: ObservationAnchor | null,
+  studyComposition?: StudyComposition | null,
 ): CanonicalObservation {
   const templates = opts.templates ?? opts.incoming;
   const metaMissing = !(opts.ownership.anatomicalSection || opts.ownership.conflictGroup || opts.ownership.baselineReplaces || opts.concept);
@@ -338,17 +344,30 @@ function observationFromPending(
   const stampAnchor = opts.anchor === null
     ? undefined
     : (opts.anchor ?? activeAnchor ?? undefined);
+  // Dorso-Lumbar junction rule, applied where every observation enters the
+  // ledger. Presets, macros, quick-select, AI proposals, imported observations
+  // and restored drafts all come through here, so no write path can give the
+  // thoracolumbar bridge a second identity (dorso-lumbar spec §6). Outside that
+  // composition nothing is touched.
+  const canonical = canonicalizeDorsoLumbarOwnership(
+    {
+      region: opts.region || reportingRegion || "",
+      level: opts.level ?? ownership.level,
+      anatomicalSection: ownership.anatomicalSection,
+    },
+    studyComposition,
+  );
   return buildCanonicalObservation({
     id: opts.id,
     catalogId: opts.catalogId,
-    region: opts.region || reportingRegion || "",
+    region: canonical.changed ? canonical.region : (opts.region || reportingRegion || ""),
     concept: opts.concept ?? ownership.concept,
     conflictGroup: ownership.conflictGroup,
-    anatomicalSection: ownership.anatomicalSection,
+    anatomicalSection: canonical.changed ? canonical.anatomicalSection : ownership.anatomicalSection,
     baselineReplaces: ownership.baselineReplaces,
     label: opts.label,
     findingsText: opts.findingsText ?? templates.findings,
-    level: opts.level ?? ownership.level,
+    level: canonical.changed ? canonical.level : (opts.level ?? ownership.level),
     laterality: opts.laterality ?? opts.side,
     supportsLaterality: opts.supportsLaterality,
     properties: opts.properties,
@@ -461,6 +480,19 @@ interface S {
    * described when coverage does not reach it.
    */
   dorsalNumbering: DorsalNumberingState;
+  /**
+   * MRI Dorso-Lumbar V3: what this examination *is*, as one composition rather
+   * than as a set of regions. `dorsolumbar-dedicated` means the thoracic,
+   * junction and lumbar domains are dedicated parts of a single study — not
+   * dorsal-plus-LS screening, not two concatenated reports (dorso-lumbar spec §0,
+   * §7). It is a composition discriminator only: observations keep the region
+   * ownership the composer, macro rules and anatomy context already understand.
+   */
+  studyComposition: StudyComposition;
+  /** How the composition was decided, so the header can show its evidence. */
+  studyCompositionProvenance: CompositionProvenance;
+  /** True once the radiologist states it, so billing cannot overwrite it. */
+  studyCompositionOverridden: boolean;
   /**
    * MRI Lumbar V3: what this examination actually included. Defaults derived
    * from technique/protocol text, always manually overridable (spec §35).
@@ -610,6 +642,16 @@ export type WorkspaceStore = S & {
   /** MRI Lumbar V3 §5 — numbering mode / LSTV detail. */
   setLumbarNumbering: (patch: Partial<LumbarNumberingState>) => void;
   setDorsalNumbering: (patch: Partial<DorsalNumberingState>) => void;
+  /**
+   * What this examination is. Initialised from billing evidence; a manual call
+   * marks it overridden so a later re-derivation from the catalog cannot walk
+   * back what the radiologist stated about the performed study.
+   */
+  setStudyComposition: (
+    composition: StudyComposition,
+    provenance?: CompositionProvenance,
+    manual?: boolean,
+  ) => void;
   /** MRI Lumbar V3 §35 — what the examination actually included. */
   setSequencesAvailable: (patch: Partial<SpineSequencesAvailable>) => void;
   replaceSequencesAvailable: (next: SpineSequencesAvailable) => void;
@@ -713,6 +755,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   canalApProvenance: {},
   lumbarNumbering: defaultLumbarNumbering(),
   dorsalNumbering: defaultDorsalNumbering(),
+  studyComposition: "unknown",
+  studyCompositionProvenance: "none",
+  studyCompositionOverridden: false,
   sequencesAvailable: defaultSpineSequences(),
   screening: defaultScreeningState(),
   impressionOrderFrozen: false,
@@ -757,7 +802,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), studyComposition: "unknown", studyCompositionProvenance: "none", studyCompositionOverridden: false, impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -1204,7 +1249,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         // Legacy QS ambiguous path: keep the chip selected but blocked from narrative.
         const restoredIncoming = get().appliedPathologyPatches.some((p) => p.id === patchId);
         if (!restoredIncoming) {
-          const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor);
+          const observation = observationFromPending(pendingPatch, get().reportingContext.region, get().activeAnchor, get().studyComposition);
           const templates = pendingPatch.templates ?? pendingPatch.incoming;
           set({
             appliedPathologyPatches: [
@@ -1285,6 +1330,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       { ...opts, id: draftId },
       get().reportingContext.region,
       get().activeAnchor,
+      get().studyComposition,
     );
     const incoming = applySideToIncoming(
       templates,
@@ -1601,6 +1647,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         { ...obs, id: fallbackId, bundleId },
         get().reportingContext.region,
         get().activeAnchor,
+        get().studyComposition,
       );
       const siblings = findSameSlotSiblings(
         get().appliedPathologyPatches.filter((p) => p.id !== fallbackId),
@@ -1961,6 +2008,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   serializeCoverageMarks: () => get().coverageMarks,
   setLumbarNumbering: (patch) => set((s) => ({ lumbarNumbering: { ...s.lumbarNumbering, ...patch } })),
   setDorsalNumbering: (patch) => set((s) => ({ dorsalNumbering: { ...s.dorsalNumbering, ...patch } })),
+  setStudyComposition: (composition, provenance = "none", manual = false) => set((s) => ({
+    studyComposition: composition,
+    studyCompositionProvenance: manual ? "none" : provenance,
+    studyCompositionOverridden: manual ? true : s.studyCompositionOverridden,
+  })),
   setSequencesAvailable: (patch) => set((s) => ({ sequencesAvailable: { ...s.sequencesAvailable, ...patch } })),
   replaceSequencesAvailable: (next) => set({ sequencesAvailable: next }),
   setScreeningRegion: (region, patch) => set((s) => {
@@ -2003,6 +2055,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       { ...opts, id: draftId },
       get().reportingContext.region,
       get().activeAnchor,
+      get().studyComposition,
     );
     const existingSlot = existing?.observation ? observationSlotKey(existing.observation) : "";
     const incomingSlot = observationSlotKey(incomingObs);

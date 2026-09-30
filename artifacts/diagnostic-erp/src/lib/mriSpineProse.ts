@@ -51,10 +51,21 @@ export type SpineProseVars = {
   conusLevel?: string;
   /** Vertebra name for body/pars sentences, e.g. "L5", "T6". */
   vertebra?: string;
+  /** Second vertebra, e.g. "[vertebra] over [vertebra]". */
+  vertebra2?: string;
   /** "superior"/"inferior" endplate (Schmorl node). */
   endplateFace?: string;
   /** Word the radiologist picked inside a `[with / without]`-style group. */
   choice?: string;
+  /** Stenosis / compromise wording, e.g. "severe", "moderate". */
+  degree?: string;
+  /**
+   * Values for one specific library group, keyed by its bracket text with the
+   * slashes kept, e.g. `"cord/conus"` or `"level"`. A macro that asks three
+   * different questions in one sentence cannot be filled from a single shared
+   * `choice`, and filling them positionally would silently swap two answers.
+   */
+  slotValues?: Record<string, string>;
 };
 
 export type SpineProseSlot = {
@@ -114,8 +125,17 @@ type GroupKind =
   | "levelPair"
   | "levelRange"
   | "wordChoice"
+  | "generic"
   | "mixed"
   | "unknown";
+
+/**
+ * The dorso-lumbar library names the question instead of giving an example
+ * value ("at [level]", "involving [levels]", "[degree] canal compromise"), so
+ * those groups are filled from the matching structured field rather than being
+ * treated as a word choice the radiologist has to spell out.
+ */
+const GENERIC_SLOT_RE = /^(levels?|vertebra|degree|side|root)$/i;
 
 function innerOf(raw: string): string {
   return raw.slice(1, -1).trim();
@@ -138,6 +158,7 @@ function classifyGroup(
 ): { kind: GroupKind; alternatives: string[]; joiner?: string } {
   const inner = innerOf(raw);
   if (/^X$/i.test(inner)) return { kind: "measurement", alternatives: ["X"] };
+  if (GENERIC_SLOT_RE.test(inner)) return { kind: "generic", alternatives: [inner.toLowerCase()] };
 
   const pair = andLevelPair(inner, dialect);
   if (pair) return { kind: "levelPair", alternatives: pair };
@@ -185,8 +206,37 @@ function resolveGroup(
   mmOccurrence: number,
   unit: "percent" | "cm" | "mm",
   dialect: SpineProseDialect,
+  genericOccurrence = 0,
 ): string {
   const loose = (v?: string | number | null) => (v == null ? "" : String(v)).trim();
+
+  // A value supplied for this exact group outranks every positional rule, so a
+  // sentence with three bracketed questions cannot have its answers shuffled by
+  // filling them in order.
+  const slotKey = alternatives.join("/").toLowerCase().replace(/\s+/g, "");
+  const suppliedSlot = loose(vars.slotValues?.[slotKey])
+    || loose(vars.slotValues?.[(alternatives[0] ?? "").toLowerCase().replace(/\s+/g, "")]);  if (suppliedSlot) return suppliedSlot;
+
+  if (kind === "generic") {
+    const name = alternatives[0] ?? "";
+    // A sentence that asks for two levels or two vertebrae ("extends from
+    // [level] to [level]", "[vertebra] over [vertebra]") takes the second value
+    // from the paired field, exactly as repeated measurements do.
+    if (name === "levels") {
+      const both = [loose(vars.level), loose(vars.level2)].filter(Boolean);
+      return both.join(" and ");
+    }
+    if (name === "level") {
+      return genericOccurrence === 0 ? loose(vars.level) : loose(vars.level2) || loose(vars.level);
+    }
+    if (name === "vertebra") {
+      return genericOccurrence === 0 ? loose(vars.vertebra) : loose(vars.vertebra2) || loose(vars.vertebra);
+    }
+    if (name === "degree") return loose(vars.degree);
+    if (name === "side") return loose(vars.side);
+    if (name === "root") return loose(vars.root);
+    return "";
+  }
 
   if (kind === "measurement") {
     if (unit === "percent") return loose(vars.pct);
@@ -307,11 +357,21 @@ function fillBareMeasurements(text: string, vars: SpineProseVars): string {
  */
 export function fillSpineProse(
   template: string,
-  vars: SpineProseVars = {},
+  varsIn: SpineProseVars = {},
   dialect: SpineProseDialect = LUMBAR_PROSE_DIALECT,
 ): SpineProseResult {
   const unfilled: SpineProseSlot[] = [];
   const occurrences: Record<string, number> = { mm: 0, cm: 0, percent: 0 };
+  // Slot keys are matched case- and whitespace-insensitively, so a caller can
+  // write `slotValues["cord/conus"]` without knowing how the library spaced it.
+  const vars: SpineProseVars = varsIn.slotValues
+    ? {
+        ...varsIn,
+        slotValues: Object.fromEntries(
+          Object.entries(varsIn.slotValues).map(([k, v]) => [k.toLowerCase().replace(/\s+/g, ""), v]),
+        ),
+      }
+    : varsIn;
   let text = "";
   let cursor = 0;
 
@@ -332,7 +392,10 @@ export function fillSpineProse(
       const lower = String(vars.level2 ?? "").trim();
       chosen = upper && lower ? `${upper} ${joiner ?? "to"} ${lower}` : "";
     } else {
-      chosen = resolveGroup(kind, alternatives, vars, 0, "mm", dialect);
+      const genericName = kind === "generic" ? alternatives[0] ?? "" : "";
+      const genericOccurrence = genericName ? occurrences[genericName] ?? 0 : 0;
+      if (genericName) occurrences[genericName] = genericOccurrence + 1;
+      chosen = resolveGroup(kind, alternatives, vars, 0, "mm", dialect, genericOccurrence);
     }
 
     if (chosen) {

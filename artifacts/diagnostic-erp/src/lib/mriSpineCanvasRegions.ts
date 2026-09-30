@@ -270,7 +270,7 @@ export function isMriDorsalReportingContext(opts: {
 
   if (seg === "whole") return false;
   if (canonical === "Whole Spine" || /^whole\s*spine$/i.test(regionRaw)) return false;
-  if (seg === "lumbar" || seg === "cervical") return false;
+  if (seg === "lumbar" || seg === "cervical" || seg === "dorsolumbar") return false;
   if (canonical === "LS Spine" || canonical === "Cervical Spine") return false;
   if (canonical === "Brain" || opts.family === "brain") return false;
 
@@ -283,12 +283,41 @@ export function isMriDorsalReportingContext(opts: {
     || region === "thoracic spine"
     || region === "d spine"
     || region === "t spine"
-    || region === "dorsolumbar spine"
-    || region === "dl spine"
   ) {
     return true;
   }
   return false;
+}
+
+/**
+ * The dedicated Dorso-Lumbar examination (`MRI020 / MRI DL SPINE`, and any
+ * spelling that names both halves of the spine).
+ *
+ * Until this existed the canvas gates answered "dorsal" for a DL booking, which
+ * opened a thoracic-only editor over a study that also covers the junction and
+ * the lumbar spine. A Dorso-Lumbar study is neither of the two single-region
+ * canvases, so it gets its own predicate (dorso-lumbar spec §0, §24).
+ */
+export function isMriDorsoLumbarReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  spineSegment?: string | null;
+  protocolName?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").toUpperCase();
+  if (mod && mod !== "MR" && mod !== "MRI") return false;
+  if (opts.family === "brain") return false;
+
+  const regionRaw = (opts.region ?? "").trim();
+  const canonical = canonicalContentRegion(regionRaw);
+  const seg: SpineSegment | null =
+    (opts.spineSegment as SpineSegment | null | undefined)
+    ?? spineSegmentFromRegion(canonical || regionRaw);
+
+  if (seg === "whole") return false;
+  return seg === "dorsolumbar";
 }
 
 // ─── AP Canal measurement levels ────────────────────────────────────────

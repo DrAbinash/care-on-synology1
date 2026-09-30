@@ -14,14 +14,65 @@
  *   region     = radiology_study_tabs.name  e.g. "Cervical Spine"
  *   bodyPart   = structured-template code   e.g. "SPINE_CERVICAL"
  *   family     = inheritance group          e.g. "spine"
- *   spineSegment = cervical | dorsal | lumbar | whole | generic
+ *   spineSegment = cervical | dorsal | dorsolumbar | lumbar | whole | generic
+ *                  (a routing discriminator only — see the `SpineSegment`
+ *                  docblock for what each consumer means by it)
  */
 
 import { studyRegionToBodyPart } from "./pickStructuredTemplate";
 import { templateCatalogModality } from "./radiologyTemplateModality";
 
 export type ReportingFamily = "brain" | "spine" | "chest" | "abdomen" | "unknown";
-export type SpineSegment = "cervical" | "dorsal" | "lumbar" | "whole" | "generic";
+
+/**
+ * A coarse routing discriminator derived from the primary region name. It is
+ * NOT an anatomical region, NOT a ledger region, NOT a screening region and NOT
+ * a study composition, and no consumer may treat it as one of those:
+ *
+ * - the ledger's own region key is `radiology_study_tabs.name` ("Dorsal Spine",
+ *   "LS Spine"), carried on `region` above and on every observation;
+ * - screening ownership is the three `SpineScreeningRegion` values plus a
+ *   `RegionRole`, resolved from the billed catalog row;
+ * - study composition (`StudyComposition`, e.g. `dorsolumbar-dedicated`) is
+ *   resolved in mriDorsoLumbarCatalog.ts from catalog evidence.
+ *
+ * `dorsolumbar` was added as a routing value only. Every consumer of this union
+ * and the meaning it gives the value:
+ *
+ * 1. `mriSpineCanvasRegions.ts` — ROUTING. Three gates pick which canvas opens.
+ *   Each bails explicitly on `dorsolumbar` so the thoracic-only or LS-only
+ *   canvas cannot claim a study that spans both, and
+ *   `isMriDorsoLumbarReportingContext` claims it instead.
+ * 2. `mriLumbarRegions.ts` — ROUTING / FEATURE GATE. `isMriLumbarReportingContext`
+ *   decides whether the LS level-naming and LS sub-master machinery applies.
+ *   It bails on `dorsolumbar`: the Dorso-Lumbar canvas reuses those builders
+ *   for its lumbar domain, but the study is not an LS study.
+ * 3. `findingsMacros.ts` `chocolateBoxSetFor` — MACRO CATALOG ROUTING. Which
+ *   built-in quick-macro tile set the Findings box offers. `dorsolumbar` falls
+ *   to `SPINE_GENERIC_SET`, deliberately not `DORSAL_SET`: a Dorso-Lumbar study
+ *   owns thoracic, junction and lumbar anatomy, so it must not inherit dorsal
+ *   macros (or lumbar ones) as if it were that examination. A dedicated tile
+ *   set belongs to the Dorso-Lumbar palette work, not to this fallback.
+ * 4. `spineCanalAp.ts` `canalSegmentFromSpine` — MEASUREMENT SCOPE. Which canal
+ *   AP table the context implies. It returns null for `dorsolumbar` because no
+ *   single cervical/dorsal/lumbar table describes a study crossing the junction;
+ *   the Dorso-Lumbar canvas supplies its levels explicitly from
+ *   `dorsolumbarApLevels` instead of letting the text heuristic answer.
+ * 5. `useWorkspaceClinicalUi.tsx` `composerPrimaryRegionLabel` — PRINTED LABEL.
+ *   The region string the AI composer is told it is reporting on.
+ *
+ * A related field, `bodyPart`, is derived from `region` (not from this union) by
+ * `studyRegionToBodyPart`, and it is a STRUCTURED-TEMPLATE KEY: a Dorso-Lumbar
+ * region resolves to the nearest saved template family (`SPINE_LS` for
+ * "Dorso-Lumbar Spine", null for "DL Spine"), never to `SPINE_DORSAL`. Like the
+ * segment, it says nothing about ledger ownership or composition.
+ *
+ * Nothing above changes what a `dorsolumbar` study writes into the ledger: those
+ * rows keep the region the composition assigns them (see
+ * `canonicalizeDorsoLumbarOwnership`), and the thoracic/lumbar anatomy domains
+ * are modelled in `mriDorsoLumbarCoverage.ts`, not by this union.
+ */
+export type SpineSegment = "cervical" | "dorsal" | "dorsolumbar" | "lumbar" | "whole" | "generic";
 /**
  * How the primary region was chosen.
  * - billed / dicom: auto match at study-open (billed procedure preferred)
@@ -71,11 +122,27 @@ export function familyFromRegion(region: string | null | undefined): ReportingFa
   return "unknown";
 }
 
+/**
+ * A Dorso-Lumbar examination names both halves of the spine, or carries the
+ * clinic's own "DL" abbreviation for it. "DORSAL" never matches: it does not
+ * contain "dorso", and a plain dorsal study has its own catalog code (`MRID`).
+ */
+export function isDorsoLumbarRegionName(region: string | null | undefined): boolean {
+  const r = (region ?? "").toLowerCase().replace(/[\s-]+/g, "");
+  if (!r) return false;
+  if (r.includes("thoracolumbar") || r.includes("dorsolumbar")) return true;
+  if (r.includes("dlspine") || r.includes("tlsspine")) return true;
+  return /dors.*lumbar|thoraco.*lumbar/.test(r);
+}
+
 export function spineSegmentFromRegion(region: string | null | undefined): SpineSegment | null {
   if (familyFromRegion(region) !== "spine") return null;
   const r = (region ?? "").toLowerCase();
   if (r.includes("whole spine")) return "whole";
   if (r.includes("cervical")) return "cervical";
+  // Before the dorsal / lumbar substring tests: "dorso lumbar" contains
+  // "lumbar", and the old code therefore read a Dorso-Lumbar booking as LS.
+  if (isDorsoLumbarRegionName(region)) return "dorsolumbar";
   if (r.includes("dorsal") || r.includes("thoracic")) return "dorsal";
   if (r.includes("ls spine") || r.includes("lumbar") || r.includes("lumbo")) return "lumbar";
   return "generic";
