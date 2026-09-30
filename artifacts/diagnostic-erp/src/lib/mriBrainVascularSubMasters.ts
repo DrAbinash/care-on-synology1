@@ -35,6 +35,11 @@ import {
   vascularSplitFor,
 } from "./mriBrainVascularProse";
 import type { VascularGateFeature } from "./mriBrainVascularTechnique";
+import {
+  ANEURYSM_UNRUPTURED_IMPRESSION,
+  MOYAMOYA_PATTERN_IMPRESSION,
+  moyamoyaDiseaseAtom,
+} from "./mriBrainVascularLesions";
 
 /** Tiles whose sentence is a status row from the vessel model, not library prose. */
 const statusTile = (
@@ -95,6 +100,8 @@ const proseTile = (
     requiresVascular?: VascularGateFeature;
     advanced?: boolean;
     baselineReplaces?: string;
+    /** Bind the tile to the vessel's §6 aneurysm slot rather than its lumen slot. */
+    aneurysm?: boolean;
     extra?: BrainAtomSpec[];
   },
 ): BrainTile => {
@@ -102,12 +109,19 @@ const proseTile = (
   if (entry.vessel && !vessel) {
     throw new Error(`mriBrainVascularSubMasters: unknown vessel ${entry.vessel} for tile ${id}`);
   }
-  const concept = vessel ? vesselConceptId(vessel, { variant: entry.variant }) : entry.concept;
+  const concept = vessel
+    ? vesselConceptId(vessel, {
+      variant: entry.variant,
+      lesion: entry.aneurysm ? "aneurysm" : undefined,
+    })
+    : entry.concept;
   if (!concept) throw new Error(`mriBrainVascularSubMasters: tile ${id} has no concept`);
   const site = entry.site ?? vessel?.key ?? concept;
   const atom: BrainAtomSpec = {
     concept,
-    conflictGroup: vessel ? `${vessel.key}${entry.variant ? "-variant" : ""}` : site.toLowerCase(),
+    conflictGroup: vessel
+      ? `${vessel.key}${entry.variant ? "-variant" : ""}${entry.aneurysm ? "-aneurysm" : ""}`
+      : site.toLowerCase(),
     anatomicalSection:
       entry.section ?? (vessel ? vesselFindingsSection(vessel) : VASCULAR_FINDINGS_SECTIONS.focalArterialAbnormality),
     findings: entry.findings,
@@ -182,13 +196,12 @@ export const VASCULAR_TREE_NORMALS = {
 
 export type VascularTreeModule = keyof typeof VASCULAR_TREE_NORMALS;
 
-/** Authored, not canonical: kept in one place so the verbatim guard never claims it. */
-const MOYAMOYA_PATTERN_IMPRESSION =
-  "Moyamoya-pattern vasculopathy — findings raising suspicion; disease classification is a radiologist diagnosis.";
-
-/** §6 — "unruptured" is only ever a radiologist statement about the whole study. */
-const ANEURYSM_UNRUPTURED_IMPRESSION =
-  "Unruptured saccular aneurysm (radiologist-stated, supported by the complete study and clinical context).";
+/**
+ * The conclusion wording for the pattern and the standalone rupture statement is the
+ * §6/§8 structured object's wording too — `mriBrainVascularLesions.ts` owns it, so a
+ * tile and a completed form can never disagree about what the same slot says.
+ */
+const MOYAMOYA_DISEASE = moyamoyaDiseaseAtom();
 
 const MRA_TILES: BrainTile[] = [
   treeNormalTile("mra-normal", "Normal dedicated intracranial MRA", "mra"),
@@ -226,12 +239,18 @@ const MRA_TILES: BrainTile[] = [
   }),
   proseTile("mra-aneurysm-acom", "ACom aneurysm (canonical)", "Aneurysm", {
     vessel: "acom",
+    // The same slot the §6 structured aneurysm record writes, so the canonical
+    // starting sentence is refined by the form rather than doubled by it.
+    aneurysm: true,
     findings: VASCULAR_LIBRARY_PROSE.acomAneurysm,
     section: VASCULAR_FINDINGS_SECTIONS.circleOfWillis,
+    requiresVascular: "aneurysmMorphology",
   }),
   proseTile("mra-aneurysm-mca", "MCA bifurcation aneurysm (canonical)", "Aneurysm", {
     vessel: "mca-bifurcation-right",
+    aneurysm: true,
     findings: VASCULAR_LIBRARY_PROSE.mcaBifurcationAneurysm,
+    requiresVascular: "aneurysmMorphology",
   }),
   proseTile("mra-aneurysm-unruptured", "Unruptured — radiologist statement", "Aneurysm", {
     concept: "aneurysm_rupture_status",
@@ -247,9 +266,9 @@ const MRA_TILES: BrainTile[] = [
     section: VASCULAR_FINDINGS_SECTIONS.anteriorCirculation,
   }),
   proseTile("mra-moyamoya-disease", "Moyamoya disease — radiologist diagnosis", "Moyamoya", {
-    concept: "mra_moyamoya_disease",
-    findings: "The angiographic pattern is classified by the reporting radiologist as Moyamoya disease.",
-    impression: "Moyamoya disease (radiologist classification).",
+    concept: MOYAMOYA_DISEASE.concept,
+    findings: MOYAMOYA_DISEASE.findings,
+    impression: MOYAMOYA_DISEASE.impression,
     advanced: true,
   }),
   proseTile("mra-avm-nidus", "AVM with nidus and feeder (canonical)", "AVM", {

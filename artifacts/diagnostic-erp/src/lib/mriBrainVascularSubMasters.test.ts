@@ -386,8 +386,11 @@ describe("mriBrainVascularSubMasters — the tiles move the ledger", () => {
   it("keeps two aneurysms as two observations on two slots", () => {
     const acom = buildTilePatch(tileOf("mra", "mra-aneurysm-acom"));
     const mca = buildTilePatch(tileOf("mra", "mra-aneurysm-mca"));
-    expect(acom.observations[0]!.concept).toBe("mra_vessel_acom");
-    expect(mca.observations[0]!.concept).toBe("mra_vessel_mca_bifurcation");
+    // Aneurysms live on the parent vessel's aneurysm concept, not its lumen concept,
+    // so an aneurysm never erases the stenosis recorded on the same artery — and the
+    // §6 structured record refines this exact slot rather than opening a third one.
+    expect(acom.observations[0]!.concept).toBe("mra_aneurysm_acom");
+    expect(mca.observations[0]!.concept).toBe("mra_aneurysm_mca_bifurcation");
     useWorkspace.getState().applyMacroBundle(acom);
     useWorkspace.getState().applyMacroBundle(mca);
     const findings = useWorkspace.getState().findingsText;
@@ -404,7 +407,7 @@ describe("mriBrainVascularSubMasters — the tiles move the ledger", () => {
         registered.add(atom.concept);
       }
     }
-    expect(registered).toContain("mra_vessel_acom");
+    expect(registered).toContain("mra_aneurysm_acom");
     expect(registered).toContain("mra_moyamoya_pattern");
     expect(registered).toContain("mra_moyamoya_disease");
     expect(registered).toContain("mrv_deep_venous_thrombosis");

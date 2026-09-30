@@ -364,10 +364,19 @@ export function vesselBaseKey(vessel: VesselDefinition): string {
  * Variants get a concept of their own: §10 says a vessel being small on one technique
  * must not cancel the pathology recorded on it, and sharing a slot would do exactly
  * that.
+ *
+ * Aneurysms get one too (§6). The generic `aneurysm` concept owns every sentence that
+ * mentions an aneurysm, so two aneurysms at different arteries would collapse into a
+ * single observation — "support one or multiple aneurysms" requires the parent vessel
+ * to be part of the slot identity. The lesion concept is a per-vessel statement slot:
+ * one aneurysm description per artery and side, additional aneurysms arriving on the
+ * arteries that carry them.
  */
+export type VesselLesionKind = "aneurysm";
+
 export function vesselConceptId(
   vessel: VesselDefinition,
-  opts: { variant?: boolean } = {},
+  opts: { variant?: boolean; lesion?: VesselLesionKind } = {},
 ): string {
   const family =
     vessel.territory === "venous"
@@ -376,7 +385,13 @@ export function vesselConceptId(
         ? "mra_neck"
         : "mra";
   const base = vesselBaseKey(vessel).replace(/-/g, "_");
+  if (opts.lesion) return `${family}_${opts.lesion}_${base}`;
   return `${family}_vessel_${base}${opts.variant ? "_variant" : ""}`;
+}
+
+/** Aneurysms are arterial lesions; no venous structure carries one. */
+export function isAneurysmCapableVessel(vessel: VesselDefinition): boolean {
+  return vessel.territory === "intracranialArterial" || vessel.territory === "neckArterial";
 }
 
 type VesselConceptEntry = {
@@ -410,6 +425,14 @@ export function vesselConceptEntries(): VesselConceptEntry[] {
         label: `Vascular variant: ${familyName}`,
         description: `Non-pathologic anatomic variant slot for ${familyName} (§10).`,
         impressionworthyAbnormal: false,
+      });
+    }
+    if (isAneurysmCapableVessel(vessel)) {
+      entries.push({
+        concept: vesselConceptId(vessel, { lesion: "aneurysm" }),
+        label: `Aneurysm of the ${familyName}`,
+        description: `Structured aneurysm record carried by ${familyName} (§6).`,
+        impressionworthyAbnormal: true,
       });
     }
     // Right and left share one concept, so the same entry arrives twice per paired

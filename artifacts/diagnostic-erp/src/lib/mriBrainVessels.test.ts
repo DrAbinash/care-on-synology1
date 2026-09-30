@@ -16,6 +16,7 @@ import { contentPackForConcept } from "@/lib/conceptCanon/contentPacks";
 import {
   VESSEL_DEFINITIONS,
   canonicalVesselSlot,
+  isAneurysmCapableVessel,
   resolveVessel,
   sideFromText,
   vesselBaseKey,
@@ -272,7 +273,7 @@ describe("mriBrainVessels — concept identity is the real slot key", () => {
     ).toBe("mrv_vessel_transverse_sinus_hypoplasia_variant");
   });
 
-  it("registers exactly one concept per vessel family, plus a variant concept per variant slot", () => {
+  it("registers exactly one concept per vessel family, plus a variant concept per variant slot and an aneurysm concept per artery", () => {
     const entries = vesselConceptEntries();
     const concepts = entries.map((e) => e.concept);
     expect(new Set(concepts).size).toBe(concepts.length);
@@ -280,7 +281,14 @@ describe("mriBrainVessels — concept identity is the real slot key", () => {
     const variantFamilies = new Set(
       VESSEL_DEFINITIONS.filter((d) => d.variantOnly).map((d) => vesselBaseKey(d)),
     );
-    expect(concepts.length).toBe(families.size + variantFamilies.size);
+    const arterialFamilies = new Set(
+      VESSEL_DEFINITIONS.filter(isAneurysmCapableVessel).map((d) => vesselBaseKey(d)),
+    );
+    expect(concepts.length).toBe(
+      families.size + variantFamilies.size + arterialFamilies.size,
+    );
+    // Aneurysms are arterial (§6).
+    expect(concepts.filter((c) => c.startsWith("mrv_aneurysm_"))).toEqual([]);
     for (const entry of entries) {
       expect(contentPackForConcept(entry.concept), entry.concept).toBeTruthy();
       // A side-free concept must not be labelled as one side.
