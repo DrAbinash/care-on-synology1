@@ -34,6 +34,7 @@
  */
 
 import { vesselConceptEntries } from "@/lib/mriBrainVessels";
+import { screeningConceptEntries } from "@/lib/mriBrainVascularScreening";
 
 export type CanonicalConceptId = string;
 
@@ -431,7 +432,21 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     impressionworthyAbnormal: entry.impressionworthyAbnormal,
   })),
 
-  // ─── Spine — disc / contour / signal / height ─────────────────────────
+  // ─── §14 Basic intracranial MRA screening slots (mriBrainVascularScreening.ts)
+  // GENERATED from the screening checklist, for the same reason the vessel slots are:
+  // a screening row's identity is its concept, and an artery in the checklist must not
+  // be able to go unregistered. Screening keeps its own concepts rather than writing
+  // on the dedicated per-segment slots so a screening pass can never overwrite a
+  // dedicated observation — or be silently promoted into one.
+  ...screeningConceptEntries().map((entry) => ({
+    concept: entry.concept,
+    label: entry.label,
+    description: entry.description,
+    aliases: [entry.concept, entry.concept.replace(/_/g, " ")],
+    regions: ["brain"] as ContentPackRegion[],
+    modalities: ["MR"] as ContentPackModality[],
+    impressionworthyAbnormal: entry.impressionworthyAbnormal,
+  })),
   {
     concept: "disc_contour",
     label: "Disc Contour (bulge / protrusion / extrusion)",
