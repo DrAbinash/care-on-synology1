@@ -466,3 +466,83 @@ export function canonicalVesselSlot(
     vessel: resolved,
   };
 }
+
+/**
+ * The plural spellings prose uses for structures the registry names in the singular.
+ * Both forms are scanned, because the registry itself registers some structures only
+ * in the plural ("cortical veins", "MCA major branches").
+ */
+const VESSEL_PLURAL_WORDS: Record<string, string> = {
+  SINUSES: "SINUS",
+  ARTERIES: "ARTERY",
+  VEINS: "VEIN",
+  BRANCHES: "BRANCH",
+};
+
+const ALIAS_MAX_WORDS = Math.max(
+  ...[...ALIAS_INDEX.keys()].map((alias) => alias.split(" ").length),
+);
+
+/**
+ * A bare segment code ("M1", "A1", "V4") is a registered name form, but on its own it is
+ * not trustworthy prose: annotation and reference ids print in the report too, and
+ * "SVM A1" would otherwise read as the left and right A1. Every sentence this app emits
+ * names a segment alongside its vessel ("right ACA A1"), which the scan matches as a
+ * phrase, so refusing the isolated code costs nothing and removes a whole class of
+ * invented subjects.
+ */
+const BARE_SEGMENT_CODE = /^[A-Z]{1,3}\d{1,2}$/;
+
+/**
+ * Every structure a free-text passage names, as registry definitions.
+ *
+ * A greedy longest-alias scan, so "the left MCA M1" yields the left MCA M1 and NOT
+ * also the bare "M1", which belongs to both sides. Without that consumption rule a
+ * right-sided statement would appear to contradict a left-sided one, which is the
+ * exact case §19 says must stay silent.
+ *
+ * A mention written without its side ("thrombus in the transverse sinus") yields both
+ * sides: the passage genuinely could mean either, and a validator that guesses would
+ * miss the contradiction it exists to catch.
+ */
+export function vesselsMentionedIn(raw: string | null | undefined): VesselDefinition[] {
+  const base = normalize(raw ?? "");
+  if (!base) return [];
+  const folded = base
+    .split(" ")
+    .map((word) => VESSEL_PLURAL_WORDS[word] ?? word)
+    .join(" ");
+  const out: VesselDefinition[] = [];
+  const seen = new Set<string>();
+  for (const text of folded === base ? [base] : [base, folded]) {
+    const words = text.split(" ").filter(Boolean);
+    for (let i = 0; i < words.length; ) {
+      let bucket: VesselDefinition[] | null = null;
+      let consumed = 1;
+      for (let len = Math.min(ALIAS_MAX_WORDS, words.length - i); len >= 1; len--) {
+        const phrase = words.slice(i, i + len).join(" ");
+        if (len === 1 && BARE_SEGMENT_CODE.test(phrase)) break;
+        // The same words in any order name the same vessel, which is also how
+        // `resolveVessel` reads a phrase ("M1 of the right middle cerebral artery").
+        const candidate =
+          ALIAS_INDEX.get(phrase) ?? ALIAS_SET_INDEX.get([...phrase.split(" ")].sort().join(" "));
+        if (candidate?.length) {
+          bucket = candidate;
+          consumed = len;
+          break;
+        }
+      }
+      if (bucket) {
+        for (const definition of bucket) {
+          if (seen.has(definition.key)) continue;
+          seen.add(definition.key);
+          out.push(definition);
+        }
+        i += consumed;
+      } else {
+        i += 1;
+      }
+    }
+  }
+  return out;
+}

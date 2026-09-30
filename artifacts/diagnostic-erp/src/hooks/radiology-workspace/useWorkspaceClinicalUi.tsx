@@ -202,6 +202,10 @@ import {
 import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
+import {
+  brainVascularContradictions,
+  vascularIsScreeningOnly,
+} from "@/lib/mriBrainVascularValidation";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
@@ -652,6 +656,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
+  const vascularTechnique = useWorkspace((s: WorkspaceStore) => s.vascularTechnique);
   const lastPatchSnapshot = useWorkspace((s: WorkspaceStore) => s.lastPatchSnapshot);
   const activeAnchor = useWorkspace((s: WorkspaceStore) => s.activeAnchor);
   const selectedObservationId = useWorkspace((s: WorkspaceStore) => s.selectedObservationId);
@@ -2582,6 +2587,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     compactAccordion,
   });
 
+  const brainSequenceContext = useMemo(
+    () => parseBrainSequences(techniqueText),
+    [techniqueText],
+  );
+
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
@@ -2591,17 +2601,40 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       family: studySetup.studyContext?.family,
       studyDescription: workflow.currentRow?.studyDescription,
     })
-      ? brainTextContradictions({
-          findingsText,
-          impressionText,
-          seq: parseBrainSequences(techniqueText),
-        })
+      ? [
+          ...brainTextContradictions({
+            findingsText,
+            impressionText,
+            seq: brainSequenceContext,
+          }),
+          // §19's vascular bullets are about the SAME vessel, which a whole-report regex
+          // cannot express, and about wording the recorded acquisition never earned.
+          ...brainVascularContradictions({
+            findingsText,
+            impressionText,
+            technique: vascularTechnique,
+            brain: brainSequenceContext,
+            screeningOnly: vascularIsScreeningOnly(
+              appliedPathologyPatches.map((p) => p.observation?.concept),
+            ),
+          }),
+        ]
       : []),
     ...validateReport({
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
     }).filter(isImpressionContradictionWarning),
-  ], [appliedPathologyPatches, impressionText, findingsText, techniqueText, studyRegion, studySetup.studyContext?.family, workflow.currentRow?.modality, workflow.currentRow?.studyDescription]);
+  ], [
+    appliedPathologyPatches,
+    brainSequenceContext,
+    impressionText,
+    findingsText,
+    studyRegion,
+    studySetup.studyContext?.family,
+    vascularTechnique,
+    workflow.currentRow?.modality,
+    workflow.currentRow?.studyDescription,
+  ]);
 
   const impressionManuallyEdited = impressionProvenanceIsRadiologistManual(impressionProvenance);
   // Auto-derived impressions refresh themselves. The stale banner is only for

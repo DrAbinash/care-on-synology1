@@ -25,6 +25,7 @@ import {
   vesselConceptId,
   vesselsForSystem,
   vesselsForTerritory,
+  vesselsMentionedIn,
 } from "@/lib/mriBrainVessels";
 
 describe("mriBrainVessels — the definition table", () => {
@@ -297,5 +298,62 @@ describe("mriBrainVessels — concept identity is the real slot key", () => {
     // Variants are non-pathologic, so they are registered but never impression-worthy
     // as an abnormality (§10).
     expect(entries.filter((e) => !e.impressionworthyAbnormal).length).toBeGreaterThan(5);
+  });
+});
+
+describe("vesselsMentionedIn — reading a sentence through the registry", () => {
+  const keys = (text: string) => vesselsMentionedIn(text).map((v) => v.key);
+
+  it("collapses every naming form of one vessel onto that vessel", () => {
+    expect(keys("The right MCA M1 is patent with normal course and caliber.")).toEqual([
+      "mca-m1-right",
+    ]);
+    expect(keys("Occlusion of the M1 segment of the right middle cerebral artery.")).toEqual([
+      "mca-m1-right",
+    ]);
+    expect(keys("R M1")).toEqual(["mca-m1-right"]);
+  });
+
+  it("consumes the longest name first, so a named segment does not also claim its siblings", () => {
+    // "M1" alone is a registered name form for both sides. If the scan stopped there,
+    // a right-sided sentence would appear to speak about the left MCA too.
+    expect(keys("Caliber asymmetry of the left MCA M1, without focal luminal narrowing.")).toEqual(
+      ["mca-m1-left"],
+    );
+  });
+
+  it("names an unpaired structure once", () => {
+    expect(keys("Occlusion of the basilar artery.")).toEqual(["basilar"]);
+    expect(keys("The superior sagittal sinus demonstrates preserved venous flow signal.")).toEqual([
+      "sss",
+    ]);
+  });
+
+  it("reads a written side onto both sides only when the text says both", () => {
+    expect(keys("Bilateral transverse sinuses are patent.")).toEqual([
+      "transverse-sinus-right",
+      "transverse-sinus-left",
+    ]);
+    // A paired structure named without its side genuinely could be either.
+    expect(keys("Filling defect within the transverse sinus.")).toEqual([
+      "transverse-sinus-right",
+      "transverse-sinus-left",
+    ]);
+  });
+
+  it("keeps a structure that exists in two territories ambiguous rather than guessing", () => {
+    expect(keys("Occlusion of the left vertebral artery.")).toEqual([
+      "vertebral-intracranial-left",
+      "vertebral-cervical-left",
+    ]);
+  });
+
+  it("refuses an isolated segment code, so a printed identifier is not a vessel", () => {
+    expect(keys("Measurement source: measured on the viewer; annotations svm_a1.")).toEqual([]);
+  });
+
+  it("says nothing about nothing", () => {
+    expect(keys("")).toEqual([]);
+    expect(keys("No acute intracranial haemorrhage is seen.")).toEqual([]);
   });
 });
