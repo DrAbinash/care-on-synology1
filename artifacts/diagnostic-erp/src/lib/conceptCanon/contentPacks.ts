@@ -33,6 +33,8 @@
  *      from canonical resolution.
  */
 
+import type { ObservationRole } from "../observationSlot";
+
 export type CanonicalConceptId = string;
 
 export type ContentPackRegion =
@@ -1125,12 +1127,32 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   },
   {
     concept: "posterior_elements",
-    label: "Posterior Elements Intact",
-    description: "Visualized cervical posterior elements intact.",
-    aliases: ["posterior_elements", "posterior elements intact", "neural arches intact"],
-    regions: ["cervical spine"],
-    modalities: ["XR"],
-    impressionworthyAbnormal: false,
+    label: "Posterior Elements",
+    description:
+      "Pedicles, laminae and spinous processes — intact, fractured, deficient or marrow-replaced.",
+    // Radiography and MR/CT describe the same anatomy, so this is ONE
+    // canonical concept for both; the alias list is the union of the wording
+    // each modality actually uses.
+    aliases: [
+      "posterior_elements",
+      "posterior elements",
+      "posterior elements intact",
+      "neural arches intact",
+      "pedicle",
+      "pedicles",
+      "pedicle destruction",
+      "lamina",
+      "laminae",
+      "spinous process",
+      "winking owl sign",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["XR", "MR", "CT"],
+    // The flag describes the ABNORMAL reading of the concept (fracture,
+    // pedicle destruction, posterior-element defect). The XR cervical normal
+    // set emits this same concept as a baseline observation, and the
+    // role-aware rule above keeps that from suppressing the system normal.
+    impressionworthyAbnormal: true,
   },
   {
     concept: "facet_joint_normal",
@@ -1962,11 +1984,34 @@ export function contentPackForConcept(concept: string): ClinicalContentPack | un
 }
 
 /**
- * Returns true if a concept is impression-worthy abnormal (suppresses
- * the system normal impression). Unknown concepts default to false.
+ * The context the impression-worthiness rule needs. Observations already
+ * carry a role, so callers pass it through rather than re-deriving it.
  */
-export function isImpressionworthyAbnormal(concept: string | null | undefined): boolean {
+export type ImpressionworthinessContext = {
+  role?: ObservationRole | null;
+};
+
+/**
+ * THE AUTHORITATIVE impression-worthiness rule. One implementation; every
+ * caller (ledger, store auto-yield, auto-return) delegates here.
+ *
+ *   - A concept MAY be registered with abnormal/impression-worthy pathology
+ *     (impressionworthyAbnormal: true) and still be used to emit a normal
+ *     baseline sentence. A baseline observation never suppresses the system
+ *     normal impression, whatever the pack flag says.
+ *   - Any other role (finding / impression / recommendation / screening, and
+ *     an unrecorded role) is impression-worthy exactly when the pack says so.
+ *   - Unknown concepts and empty input default to false (conservative: never
+ *     suppress the system normal on unstructured text).
+ *
+ * Callers must NOT re-implement the baseline exclusion on top of this.
+ */
+export function isImpressionworthyAbnormal(
+  concept: string | null | undefined,
+  context?: ImpressionworthinessContext,
+): boolean {
   if (!concept) return false;
+  if (context?.role === "baseline") return false;
   const pack = contentPackForConcept(concept);
   return Boolean(pack?.impressionworthyAbnormal);
 }

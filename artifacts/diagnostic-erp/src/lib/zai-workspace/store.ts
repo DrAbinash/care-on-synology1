@@ -1293,7 +1293,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // This decision is based on the incoming patch's CONCEPT (identity),
     // NOT on string matching of impressionText.
     if (
-      isImpressionworthyAbnormal(observation.concept)
+      isImpressionworthyAbnormal(observation.concept, { role: observation.role })
       && (incoming.impression ?? "").trim()
       && opts.source !== "system"
     ) {
@@ -2213,7 +2213,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Identity is decided by patch concept/source, NOT by string heuristics.
     if (
       !isSystemNormalPatch(patch)
-      && isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+      && isImpressionworthyAbnormal(patch.observation?.concept ?? null, { role: patch.observation?.role })
       && !get().isFinalized
     ) {
       const remainingPatches = get().appliedPathologyPatches;
