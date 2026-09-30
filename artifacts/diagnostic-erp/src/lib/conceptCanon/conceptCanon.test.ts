@@ -230,5 +230,63 @@ describe("conceptCanon — content-pack-driven resolver", () => {
       expect(baselines).toHaveLength(1);
       expect(baselines[0]?.concept).toBe("normal_study");
     });
+
+    it("declares every canonical concept exactly once", () => {
+      // contentPackForConcept() uses Array.find(), so a second declaration of the
+      // same concept id is NOT additive: the first entry silently wins for label,
+      // description, regions, modalities and impressionworthyAbnormal, while
+      // ALIAS_INDEX still resolves the later entry's aliases to the same id. A
+      // merge that appends another modality's copy of a shared concept therefore
+      // changes which feature's metadata governs a real report, purely by file
+      // order. Two features needing the same concept must UNION one entry.
+      //
+      // KNOWN EXCEPTIONS are a ratchet, not an approval: each entry is a collision
+      // that already ships on main and needs its own reconciliation PR. Adding a
+      // NEW duplicate still fails this test, and an exception whose collision has
+      // been fixed also fails, so the list can only shrink.
+      const KNOWN_PREEXISTING_COLLISIONS: Record<string, string> = {
+        // MRI Brain's shared-observation table and the spine screening pack both
+        // claim this id; find() returns the brain entry, so the spine pack's
+        // label/regions are already dead on main. Reconcile by giving the spine
+        // row its own id (e.g. ccj_screening) or merging aliases into one pack.
+        craniocervical_junction:
+          "pre-existing on main (MRI Brain table vs spine screening pack) — reconcile in its own PR",
+      };
+
+      const byConcept = new Map<string, number[]>();
+      CLINICAL_CONTENT_PACKS.forEach((pack, index) => {
+        byConcept.set(pack.concept, [...(byConcept.get(pack.concept) ?? []), index]);
+      });
+
+      const duplicates = [...byConcept].filter(([, indexes]) => indexes.length > 1);
+      const unexpected = duplicates.filter(([concept]) => !KNOWN_PREEXISTING_COLLISIONS[concept]);
+      const unresolvedExceptions = Object.keys(KNOWN_PREEXISTING_COLLISIONS).filter(
+        (concept) => !duplicates.some(([c]) => c === concept),
+      );
+
+      const describe = ([concept, indexes]: [string, number[]]) => {
+        const copies = indexes.map((i) => CLINICAL_CONTENT_PACKS[i]!);
+        const variants = (pick: (p: (typeof copies)[number]) => unknown) =>
+          new Set(copies.map((c) => JSON.stringify(pick(c)))).size;
+        return (
+          `${concept} declared ${indexes.length}x (packs ${indexes.join(", ")}) — ` +
+          `label ${variants((c) => c.label)} variant(s), aliases ${variants((c) => c.aliases)}, ` +
+          `regions ${variants((c) => c.regions)}, modalities ${variants((c) => c.modalities)}, ` +
+          `impressionworthyAbnormal ${variants((c) => c.impressionworthyAbnormal)}. ` +
+          "Merge into one entry with the union of aliases/regions/modalities."
+        );
+      };
+
+      expect(
+        unexpected.map(describe),
+        `duplicate canonical concept declarations (find() makes the first one authoritative):\n  ${unexpected
+          .map(describe)
+          .join("\n  ")}`,
+      ).toEqual([]);
+      expect(
+        unresolvedExceptions,
+        `these collisions no longer exist — remove them from KNOWN_PREEXISTING_COLLISIONS: ${unresolvedExceptions.join(", ")}`,
+      ).toEqual([]);
+    });
   });
 });
