@@ -21,6 +21,7 @@ export type SpineSequenceKey =
   | "t2"
   | "stir"
   | "dwi"
+  | "greSwi"
   | "contrast"
   | "axial"
   | "wholeSpineLocalizer"
@@ -36,6 +37,7 @@ export const SPINE_SEQUENCE_LABELS: Record<SpineSequenceKey, string> = {
   t2: "T2-weighted imaging",
   stir: "STIR / fat-suppressed fluid-sensitive sequence",
   dwi: "DWI",
+  greSwi: "GRE / SWI susceptibility sequence",
   contrast: "contrast (post-gadolinium T1)",
   axial: "axial sequences",
   wholeSpineLocalizer: "whole-spine / localizer coverage",
@@ -59,6 +61,7 @@ const PATTERNS: Record<SpineSequenceKey, RegExp> = {
   t2: /\bt2\b/i,
   stir: /\bstir\b|space[- ]?charging|t2[- ]?(?:fs|fat[- ]?sat)|fat[- ]?sat|short tau/i,
   dwi: /\bdwi\b|\bdw[i1]\b|diffusion[- ]weighted|apparent diffusion|\badc\b/i,
+  greSwi: /\bgre\b|\bswi\b|gradient[- ]?echo|susceptibility[- ]weighted/i,
   contrast: /contrast|gadolin|post[- ]?contrast|\bgd\b|\bc\+\+\b|enhancement study/i,
   axial: /\baxial\b/i,
   wholeSpineLocalizer: /whole[- ]?spine|whole spine|locali[sz]er|craniocaudal coverage|sagittal localizer/i,
@@ -157,6 +160,14 @@ export const SPINE_STATEMENT_RULES: Array<{
     keys: ["dwi"],
     re: /\brestricted diffusion\b|\bdwi\b|diffusion restriction/i,
     label: "a DWI-dependent statement",
+  },
+  {
+    // Narrow on purpose: only the wording that literally cannot exist without a
+    // susceptibility sequence, so a technique line that names GRE/SWI as absent
+    // is not reported as a contradiction (dorso-lumbar spec §27).
+    keys: ["greSwi"],
+    re: /\bbloom(?:s|ing|ed)?\b|susceptibility (?:artifact|effect)|micro-?bleeds?|hemosiderin|haemosiderin/i,
+    label: "a GRE/SWI susceptibility-dependent statement",
   },
   {
     keys: ["contrast"],

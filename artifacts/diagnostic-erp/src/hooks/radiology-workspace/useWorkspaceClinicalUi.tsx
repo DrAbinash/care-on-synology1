@@ -198,6 +198,7 @@ import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
+  isMriDorsoLumbarReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
 import {
   isBrainMeasuresReportingContext,
@@ -211,6 +212,8 @@ import {
   cervicalUnvisualizedLevelClaims,
 } from "@/lib/xrayCervicalContradictions";
 import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
+import { dorsoLumbarTextContradictions } from "@/lib/mriDorsoLumbarValidation";
+import { isDorsoLumbarDedicated } from "@/lib/mriDorsoLumbarCatalog";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
 import {
@@ -683,6 +686,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const dorsalNumbering = useWorkspace((s: WorkspaceStore) => s.dorsalNumbering);
   const spineSequencesAvailable = useWorkspace((s: WorkspaceStore) => s.sequencesAvailable);
   const spineScreening = useWorkspace((s: WorkspaceStore) => s.screening);
+  const dorsoLumbarNumbering = useWorkspace((s: WorkspaceStore) => s.dorsoLumbarNumbering);
+  const studyComposition = useWorkspace((s: WorkspaceStore) => s.studyComposition);
   const impressionOrderFrozen = useWorkspace((s: WorkspaceStore) => s.impressionOrderFrozen);
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
@@ -1409,6 +1414,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       if (segment === "cervical") return "MRI Cervical Spine";
       if (segment === "dorsal") return "MRI Dorsal Spine";
       if (segment === "lumbar") return "MRI Lumbosacral Spine";
+      // A Dorso-Lumbar booking is its own examination; naming it "MRI Spine"
+      // would hand the composer a region no study was billed for.
+      if (segment === "dorsolumbar") return "MRI Dorso-Lumbar Spine";
       return "MRI Spine";
     }
     return (
@@ -2661,6 +2669,22 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     || spineScreening.dorsal.performed
     || !isDefaultDorsalNumbering(dorsalNumbering);
 
+  // Dorso-Lumbar V3 §27 — a dedicated two-region study has its own safety
+  // questions: coverage that must support a conus or cauda sentence, one junction
+  // identity, and a composition that must not be worded as two screenings. It
+  // runs alongside the dorsal/lumbar validators rather than replacing them,
+  // because both halves of the spine are still being reported.
+  const spineDorsoLumbarContext = isMriDorsoLumbarReportingContext({
+    modality: workflow.currentRow?.modality,
+    region: studyRegion,
+    family: studySetup.studyContext?.family,
+    spineSegment: studySetup.studyContext?.spineSegment,
+    protocolName: studySetup.activeProtocol?.name ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? null,
+  });
+  const spineDorsoLumbarValidationActive = spineDorsoLumbarContext
+    || isDorsoLumbarDedicated(studyComposition);
+
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
@@ -2684,6 +2708,21 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // renumber them quietly.
     ...(spineDorsalValidationActive
       ? dorsalObservationReviewWarnings(appliedPathologyPatches, dorsalNumbering)
+      : []),
+    ...(spineDorsoLumbarValidationActive
+      ? dorsoLumbarTextContradictions({
+          findingsText,
+          impressionText,
+          state: dorsoLumbarNumbering,
+          sequences: spineSequencesAvailable,
+          composition: studyComposition,
+          roles: {
+            cervical: spineScreening.cervical.role,
+            dorsal: spineScreening.dorsal.role,
+            ls: spineScreening.ls.role,
+          },
+          patches: appliedPathologyPatches,
+        })
       : []),
     ...(spineFamily
       ? screeningTextContradictions({
@@ -2765,10 +2804,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow.currentRow?.studyDescription,
     spineLsLevelNamingActive,
     spineDorsalValidationActive,
+    spineDorsoLumbarValidationActive,
     spineFamily,
     spineSequencesAvailable,
+    studyComposition,
     lumbarNumbering,
     dorsalNumbering,
+    dorsoLumbarNumbering,
     spineScreening,
   ]);
 
@@ -2799,6 +2841,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   // §23: on study open (and when the billed exam / protocol changes) propose
   // each spine region's role from the catalog. Billing never asserts a sequence.
+  // Dorso-Lumbar spec §24: the same catalog answer also states what the
+  // examination *is*, so the composition is initialised beside the roles — and a
+  // radiologist's manual statement is never walked back.
   useEffect(() => {
     if (!spineFamily) return;
     const ws = useWorkspace.getState();
@@ -2809,6 +2854,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       reportTitle: ws.appliedFormatName ?? null,
     });
     ws.replaceScreeningRoles(resolved.roles);
+    if (!ws.studyCompositionOverridden && resolved.composition && resolved.provenance) {
+      ws.setStudyComposition(resolved.composition, resolved.provenance);
+    }
   }, [spineFamily, studySetup.testName, studySetup.activeProtocol?.name, workflow.currentRow?.studyDescription]);
 
   // §35: coverage is derived from the recorded technique/description, and a

@@ -29,6 +29,14 @@ export const SPINE_SCREENING_REGIONS: SpineScreeningRegion[] = ["cervical", "dor
  */
 export type RegionRole =
   | "primary-dedicated"
+  /**
+   * A dedicated anatomical domain of one multi-region examination. A Dorso-Lumbar
+   * study's thoracic and lumbar halves are dedicated coverage inside a single
+   * composition — never two independent screening modules — so they cannot reuse
+   * `primary-dedicated` (which names the study's one primary region) or any
+   * screening role.
+   */
+  | "dedicated-component"
   | "primary-screening"
   | "accompanying-screening"
   | "absent";

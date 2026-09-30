@@ -54,6 +54,7 @@ import {
 
 const ROLE_OPTIONS: Array<{ id: RegionRole; label: string }> = [
   { id: "primary-dedicated", label: "Dedicated primary study" },
+  { id: "dedicated-component", label: "Dedicated part of one multi-region study" },
   { id: "primary-screening", label: "Screening only (this region)" },
   { id: "accompanying-screening", label: "Accompanying screening" },
   { id: "absent", label: "Not performed" },
