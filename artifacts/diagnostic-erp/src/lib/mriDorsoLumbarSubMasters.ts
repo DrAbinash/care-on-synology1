@@ -617,6 +617,14 @@ const DEGENERATIVE: DorsoLumbarSubMaster = {
 
 // ─── 3. CANAL STENOSIS / NEURAL COMPRESSION (spec §12, §14) ──────────────
 
+/**
+ * Spec §14 allows a *descriptive* suspected intercostal nerve involvement at a
+ * thoracic foramen, but only when the radiologist selects it — the canonical
+ * library carries no such sentence, so this clause is authored here as an
+ * explicit selection and never infers a thoracic root number.
+ */
+const DL_INTERCOSTAL_CLAUSE = "Suspected intercostal nerve involvement is descriptive and selected by the reporting radiologist; no thoracic root number is inferred from foraminal narrowing.";
+
 const CANALNEURAL: DorsoLumbarSubMaster = {
   id: "canalNeural",
   label: "Canal Stenosis / Neural Compression",
@@ -757,6 +765,18 @@ const CANALNEURAL: DorsoLumbarSubMaster = {
         laterality: ctx.side,
         supportsLaterality: true,
         severity: "moderate",
+      })],
+    },
+    {
+      id: "dln-intercostal-selected",
+      label: "Suspected intercostal nerve involvement (thoracic, selected)",
+      group: "Foramina",
+      domains: ["thoracic"],
+      atoms: (ctx) => [a("intercostal_nerve", `${lib(sidePhrase(DL_FORAMEN.thoracic, ctx.side), ctx)} ${DL_INTERCOSTAL_CLAUSE}`, {
+        level: levelOf(ctx),
+        laterality: ctx.side,
+        supportsLaterality: true,
+        conflictGroup: "intercostal_nerve",
       })],
     },
     {

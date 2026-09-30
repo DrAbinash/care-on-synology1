@@ -133,6 +133,7 @@ const CONCEPT_SECTION: Record<string, DorsoLumbarFindingsSection> = {
   filum_terminale: "lumbarCanalCauda",
   arachnoiditis: "lumbarCanalCauda",
   foraminal_stenosis: "foramina",
+  intercostal_nerve: "foramina",
   root_traversing: "foramina",
   root_exiting: "foramina",
   root_contact: "foramina",

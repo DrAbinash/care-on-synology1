@@ -154,6 +154,19 @@ describe("domain gating (spec §11, §12, §14, §15)", () => {
     expect(dorsoLumbarTileAvailability(pars.tile, ctx({ level: "L4-L5" })).available).toBe(true);
   });
 
+  it("offers the intercostal nerve description only in thoracic anatomy, and only as a selection", () => {
+    const nerve = dorsoLumbarTileById("dln-intercostal-selected")!;
+    expect(nerve.tile.domains).toEqual(["thoracic"]);
+    expect(dorsoLumbarTileAvailability(nerve.tile, ctx({ level: "L3-L4" })).available).toBe(false);
+    const atom = nerve.tile.atoms(ctx({ level: "T8-T9", side: "right" }))[0]!;
+    expect(atom.concept).toBe("intercostal_nerve");
+    // library wording first, then the explicit selection clause — nothing invented
+    expect(atom.findings).toMatch(/^right foraminal narrowing or lesion at T8-T9\./);
+    expect(atom.findings).toMatch(/selected by the reporting radiologist/);
+    // §14: foraminal narrowing never infers a thoracic root number.
+    expect(atom.findings).toMatch(/no thoracic root number is inferred/);
+  });
+
   it("names the neural element from the level, not from the palette", () => {
     const compression = dorsoLumbarTileById("dln-neural-compression")!;
     const atCord = compression.tile.atoms(ctx({ level: "T8-T9" }))[0]!.findings;
