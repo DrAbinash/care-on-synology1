@@ -71,6 +71,7 @@ const BASE: BaseVessel[] = [
   { id: "acom", vessel: "ACom region", words: ["anterior communicating artery region", "anterior communicating artery", "ACom"], territory: "intracranialArterial", system: "anteriorCirculation", paired: false },
   { id: "mca-m1", vessel: "MCA", segment: "M1", words: ["M1 segment of the middle cerebral artery", "middle cerebral artery M1", "MCA M1", "M1"], territory: "intracranialArterial", system: "anteriorCirculation", paired: true },
   { id: "mca-m2", vessel: "MCA", segment: "M2", words: ["M2 segment of the middle cerebral artery", "middle cerebral artery M2", "MCA M2", "M2"], territory: "intracranialArterial", system: "anteriorCirculation", paired: true },
+  { id: "mca-bifurcation", vessel: "MCA bifurcation", words: ["bifurcation of the middle cerebral artery", "middle cerebral artery bifurcation", "MCA bifurcation"], territory: "intracranialArterial", system: "anteriorCirculation", paired: true },
   { id: "mca-branches", vessel: "MCA major branches", words: ["middle cerebral artery major branches", "MCA branches", "MCA major branches"], territory: "intracranialArterial", system: "anteriorCirculation", paired: true },
   // ── §5 posterior circulation ───────────────────────────────────────────
   { id: "vertebral-intracranial", vessel: "vertebral artery (intracranial)", words: ["intracranial vertebral artery", "V4 segment of the vertebral artery", "vertebral artery"], short: ["V4"], territory: "intracranialArterial", system: "posteriorCirculation", paired: true },
@@ -345,11 +346,86 @@ export function vesselsForSystem(system: VesselSystem): VesselDefinition[] {
   return VESSEL_DEFINITIONS.filter((d) => d.system === system);
 }
 
+/** The unsided registry id: `mca-m1-right` → `mca-m1`. */
+export function vesselBaseKey(vessel: VesselDefinition): string {
+  return vessel.side === "unpaired" ? vessel.key : vessel.key.replace(/-(right|left)$/, "");
+}
+
 /**
- * The ledger slot identity a vessel row owns: `level` is the canonical vessel key
- * and `laterality` the side, so two spellings of one vessel collide in one slot.
- * Unpaired structures carry an empty laterality, exactly like the unpaired spine
- * levels do, so the ledger never grows a phantom side.
+ * The ledger concept for one vessel.
+ *
+ * A CARE slot is region + concept + level + laterality, and `level` is a SPINE-level
+ * vocabulary: `normalizeLevel("MCA-M1")` returns empty, so a vessel name placed there
+ * is dropped and every artery would collapse onto one slot. The vessel therefore lives
+ * in the concept and the side stays in laterality — which also keeps the ledger's own
+ * rule that the opposite side is a different clinical identity rather than an owned
+ * sibling.
+ *
+ * Variants get a concept of their own: §10 says a vessel being small on one technique
+ * must not cancel the pathology recorded on it, and sharing a slot would do exactly
+ * that.
+ */
+export function vesselConceptId(
+  vessel: VesselDefinition,
+  opts: { variant?: boolean } = {},
+): string {
+  const family =
+    vessel.territory === "venous"
+      ? "mrv"
+      : vessel.territory === "neckArterial"
+        ? "mra_neck"
+        : "mra";
+  const base = vesselBaseKey(vessel).replace(/-/g, "_");
+  return `${family}_vessel_${base}${opts.variant ? "_variant" : ""}`;
+}
+
+type VesselConceptEntry = {
+  concept: string;
+  label: string;
+  description: string;
+  impressionworthyAbnormal: boolean;
+};
+
+/**
+ * Every concept this registry can produce, so the concept canon cannot drift from it.
+ * One entry per vessel FAMILY (side lives in the slot's laterality, not the concept),
+ * plus a variant entry for the variant-only structures.
+ */
+export function vesselConceptEntries(): VesselConceptEntry[] {
+  const byConcept = new Map<string, VesselConceptEntry>();
+  for (const vessel of VESSEL_DEFINITIONS) {
+    // The concept is side-free, so its label must be too.
+    const familyName = vesselDisplayName({ ...vessel, side: "unpaired" });
+    const entries: VesselConceptEntry[] = [
+      {
+        concept: vesselConceptId(vessel),
+        label: `MRA/MRV vessel: ${familyName}`,
+        description: `Per-vessel vascular observation slot for ${familyName}.`,
+        impressionworthyAbnormal: true,
+      },
+    ];
+    if (vessel.variantOnly) {
+      entries.push({
+        concept: vesselConceptId(vessel, { variant: true }),
+        label: `Vascular variant: ${familyName}`,
+        description: `Non-pathologic anatomic variant slot for ${familyName} (§10).`,
+        impressionworthyAbnormal: false,
+      });
+    }
+    // Right and left share one concept, so the same entry arrives twice per paired
+    // vessel; the canon must hold exactly one pack per concept.
+    for (const entry of entries) {
+      if (!byConcept.has(entry.concept)) byConcept.set(entry.concept, entry);
+    }
+  }
+  return [...byConcept.values()];
+}
+
+/**
+ * The ledger slot a vessel row owns: `laterality` is the side and `level` carries the
+ * canonical vessel key, but the identity that survives the ledger's spine-level
+ * normalisation is the concept from `vesselConceptId`. Unpaired structures carry an
+ * empty laterality, so the ledger never grows a phantom side.
  */
 export function canonicalVesselSlot(
   raw: string | null | undefined,

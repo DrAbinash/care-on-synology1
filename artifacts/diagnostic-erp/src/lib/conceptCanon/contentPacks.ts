@@ -33,6 +33,8 @@
  *      from canonical resolution.
  */
 
+import { vesselConceptEntries } from "@/lib/mriBrainVessels";
+
 export type CanonicalConceptId = string;
 
 export type ContentPackRegion =
@@ -317,6 +319,17 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     // other way round) merely because both describe the same artery.
     ["mra_variant", "Intracranial Arterial Variant", "Fetal PCA / A1 hypoplasia / vertebral dominance / PCom asymmetry — non-pathologic variant slot.", false],
     ["mrv_variant", "Dural Sinus Developmental Variant", "Transverse sinus hypoplasia / aplasia — non-pathologic developmental variant slot.", false],
+    // Vascular statement slots that are not one vessel's status: a pattern, a rupture
+    // statement, a drainage claim. Each owns its own slot so it coexists with the
+    // vessel rows it refers to instead of overwriting them (mra/mrv spec §8, §9, §13).
+    ["aneurysm_rupture_status", "Aneurysm Rupture Status", "Radiologist-stated ruptured / unruptured status for an aneurysm (§6).", true],
+    ["aneurysm_pseudoaneurysm", "Pseudoaneurysm", "Post-dissection / arterial pseudoaneurysm statement (§11).", true],
+    ["mra_moyamoya_pattern", "Moyamoya-Pattern Vasculopathy", "Angiographic pattern of terminal ICA narrowing with basal collaterals — pattern only (§8).", true],
+    ["mra_moyamoya_disease", "Moyamoya Disease", "Radiologist disease classification, never generated from the pattern (§8).", true],
+    ["avm_venous_drainage", "AVM Venous Drainage", "Drainage pattern, temporal claims gated on a time-resolved acquisition (§9).", true],
+    ["mra_neck_dissection", "Carotid / Vertebral Dissection", "Radiologist-selected dissection interpretation for an extracranial artery (§11).", true],
+    ["mrv_thrombosis", "Dural Sinus Thrombosis", "Radiologist-selected sinus thrombosis interpretation (§13).", true],
+    ["mrv_deep_venous_thrombosis", "Deep Cerebral Venous Thrombosis", "Internal cerebral veins / vein of Galen thrombosis (§13).", true],
     // Mass effect / hydrocephalus / herniation family
     ["mass_effect", "Mass Effect", "Mass effect / sulcal or cisternal effacement / ventricular compression.", true],
     ["cerebral_hydrocephalus", "Hydrocephalus", "Hydrocephalus — obstructive or communicating.", true],
@@ -400,6 +413,21 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     regions: ["brain"] as ContentPackRegion[],
     modalities: ["MR"] as ContentPackModality[],
     impressionworthyAbnormal,
+  })),
+
+  // ─── MRA / MRV per-vessel observation slots (mra/mrv sub-master V3) ─────
+  // GENERATED from the vessel registry (mriBrainVessels.ts), because a vessel row's
+  // ledger identity IS its concept: the slot's `level` field is a spine vocabulary
+  // and discards "MCA-M1". Deriving both from one registry means an artery cannot
+  // exist in the tree and be missing from the concept canon.
+  ...vesselConceptEntries().map((entry) => ({
+    concept: entry.concept,
+    label: entry.label,
+    description: entry.description,
+    aliases: [entry.concept, entry.concept.replace(/_/g, " ")],
+    regions: ["brain"] as ContentPackRegion[],
+    modalities: ["MR"] as ContentPackModality[],
+    impressionworthyAbnormal: entry.impressionworthyAbnormal,
   })),
 
   // ─── Spine — disc / contour / signal / height ─────────────────────────

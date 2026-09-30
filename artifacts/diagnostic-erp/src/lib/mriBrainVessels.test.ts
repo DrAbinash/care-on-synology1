@@ -11,12 +11,17 @@
 
 import { describe, expect, it } from "vitest";
 
+import { contentPackForConcept } from "@/lib/conceptCanon/contentPacks";
+
 import {
   VESSEL_DEFINITIONS,
   canonicalVesselSlot,
   resolveVessel,
   sideFromText,
+  vesselBaseKey,
   vesselByKey,
+  vesselConceptEntries,
+  vesselConceptId,
   vesselsForSystem,
   vesselsForTerritory,
 } from "@/lib/mriBrainVessels";
@@ -250,5 +255,39 @@ describe("mriBrainVessels — grouping used by the panels", () => {
     expect(deep).toContain("vein-of-galen");
     expect(deep).toContain("internal-cerebral-vein-left");
     expect(deep).not.toContain("sss");
+  });
+});
+
+describe("mriBrainVessels — concept identity is the real slot key", () => {
+  it("gives each vessel one concept, shared by its sides and distinct across segments", () => {
+    // The ledger discards a non-spine `level`, so identity lives here: same vessel
+    // spellings collide, different segments and territories never do.
+    expect(vesselConceptId(vesselByKey("mca-m1-right")!)).toBe("mra_vessel_mca_m1");
+    expect(vesselConceptId(vesselByKey("mca-m1-left")!)).toBe("mra_vessel_mca_m1");
+    expect(vesselConceptId(vesselByKey("mca-m2-right")!)).toBe("mra_vessel_mca_m2");
+    expect(vesselConceptId(vesselByKey("ica-cervical-right")!)).toBe("mra_neck_vessel_ica_cervical");
+    expect(vesselConceptId(vesselByKey("sss")!)).toBe("mrv_vessel_sss");
+    expect(
+      vesselConceptId(vesselByKey("transverse-sinus-hypoplasia-left")!, { variant: true }),
+    ).toBe("mrv_vessel_transverse_sinus_hypoplasia_variant");
+  });
+
+  it("registers exactly one concept per vessel family, plus a variant concept per variant slot", () => {
+    const entries = vesselConceptEntries();
+    const concepts = entries.map((e) => e.concept);
+    expect(new Set(concepts).size).toBe(concepts.length);
+    const families = new Set(VESSEL_DEFINITIONS.map((d) => vesselBaseKey(d)));
+    const variantFamilies = new Set(
+      VESSEL_DEFINITIONS.filter((d) => d.variantOnly).map((d) => vesselBaseKey(d)),
+    );
+    expect(concepts.length).toBe(families.size + variantFamilies.size);
+    for (const entry of entries) {
+      expect(contentPackForConcept(entry.concept), entry.concept).toBeTruthy();
+      // A side-free concept must not be labelled as one side.
+      expect(entry.label).not.toMatch(/\b(right|left)\b/);
+    }
+    // Variants are non-pathologic, so they are registered but never impression-worthy
+    // as an abnormality (§10).
+    expect(entries.filter((e) => !e.impressionworthyAbnormal).length).toBeGreaterThan(5);
   });
 });

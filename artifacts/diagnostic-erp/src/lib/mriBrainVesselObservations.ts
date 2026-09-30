@@ -27,6 +27,7 @@
 import { brainBundleId, type BrainAtomSpec } from "./mriBrainAtoms";
 import {
   canonicalVesselSlot,
+  vesselConceptId,
   vesselDisplayName,
   vesselsForTerritory,
   type VascularTerritory,
@@ -77,8 +78,13 @@ export type VesselStatusDef = {
   key: VesselStatusKey;
   system: VesselSystem;
   label: string;
-  /** Ledger concept. Slots stay distinct by vessel, so one concept spans the tree. */
-  concept: string;
+  /**
+   * The study-wide concept family this row belongs to (arterial tree, venous system,
+   * aneurysm, thrombosis). Identity of an individual vessel row is the per-vessel
+   * concept from `vesselConceptId`; this field is what the tree normal and the
+   * remainder-normal baseline are filed under, and what validation reads.
+   */
+  familyConcept: string;
   /** Variants get their own conflict group so they never cancel pathology (§10). */
   variant?: boolean;
   /**
@@ -97,21 +103,21 @@ export type VesselStatusDef = {
 
 const A = (
   key: ArterialStatusKey,
-  def: Omit<VesselStatusDef, "key" | "system" | "concept"> & Partial<Pick<VesselStatusDef, "concept">>,
+  def: Omit<VesselStatusDef, "key" | "system" | "familyConcept"> & Partial<Pick<VesselStatusDef, "familyConcept">>,
 ): VesselStatusDef => ({
   key: `a:${key}`,
   system: "arterial",
-  concept: "mra_arterial",
+  familyConcept: "mra_arterial",
   ...def,
 });
 
 const V = (
   key: VenousStatusKey,
-  def: Omit<VesselStatusDef, "key" | "system" | "concept"> & Partial<Pick<VesselStatusDef, "concept">>,
+  def: Omit<VesselStatusDef, "key" | "system" | "familyConcept"> & Partial<Pick<VesselStatusDef, "familyConcept">>,
 ): VesselStatusDef => ({
   key: `v:${key}`,
   system: "venous",
-  concept: "mrv_venous",
+  familyConcept: "mrv_venous",
   ...def,
 });
 
@@ -173,14 +179,14 @@ export const ARTERIAL_VESSEL_STATUSES: readonly VesselStatusDef[] = [
   }),
   A("aneurysmalOutpouching", {
     label: "Aneurysmal outpouching",
-    concept: "aneurysm",
+    familyConcept: "aneurysm",
     gate: "aneurysmMorphology",
     finding:
       "Outpouching arising from the {vessel}; morphology and dimensions are recorded in the aneurysm fields.",
   }),
   A("variant", {
     label: "Anatomic variant",
-    concept: "mra_variant",
+    familyConcept: "mra_variant",
     gate: "arterialAssessment",
     variant: true,
     finding: "Normal anatomic variant of the {vessel}.",
@@ -221,12 +227,12 @@ export const VENOUS_VESSEL_STATUSES: readonly VesselStatusDef[] = [
   V("thrombusSignal", {
     label: "Thrombus signal",
     gate: "thrombusSignal",
-    concept: "cvst",
+    familyConcept: "cvst",
     finding: "T1 hyperintense / T2 hypointense clot signal within the {vessel}.",
   }),
   V("partialThrombosis", {
     label: "Partial / non-occlusive thrombosis",
-    concept: "cvst",
+    familyConcept: "cvst",
     gate: "venousAssessment",
     interpretation: true,
     finding: "Non-occlusive thrombus within the {vessel}.",
@@ -234,7 +240,7 @@ export const VENOUS_VESSEL_STATUSES: readonly VesselStatusDef[] = [
   }),
   V("occlusiveThrombosis", {
     label: "Occlusive thrombosis",
-    concept: "cvst",
+    familyConcept: "cvst",
     gate: "venousAssessment",
     acuityGate: "thrombusSignal",
     interpretation: true,
@@ -244,7 +250,7 @@ export const VENOUS_VESSEL_STATUSES: readonly VesselStatusDef[] = [
   }),
   V("recanalization", {
     label: "Recanalization",
-    concept: "cvst",
+    familyConcept: "cvst",
     gate: "venousAssessment",
     finding: "Recanalization of the {vessel}, indicating organised thrombus.",
   }),
@@ -255,7 +261,7 @@ export const VENOUS_VESSEL_STATUSES: readonly VesselStatusDef[] = [
   }),
   V("developmentalHypoplasia", {
     label: "Developmental hypoplasia / aplasia",
-    concept: "mrv_variant",
+    familyConcept: "mrv_variant",
     gate: "venousAssessment",
     variant: true,
     finding: "Hypoplasia / aplasia of the {vessel}.",
@@ -360,6 +366,15 @@ export function vesselObservationAtoms(input: {
   acute?: boolean;
   technique?: VascularTechniqueState | null;
   brain: BrainSequenceContext;
+  /**
+   * The tree-wide normal sentence currently in the report (the dedicated-MRA normal
+   * preset). When supplied, this row supersedes it and a "remaining vessels normal"
+   * baseline is emitted in its place, so one abnormal vessel never leaves the report
+   * claiming all of them are normal.
+   */
+  replaceTreeNormal?: string;
+  /** Sentence kept for the rest of the tree once `replaceTreeNormal` is superseded. */
+  remainderNormal?: string;
 }): VesselObservationResult {
   const status = vesselStatusByKey(input.status);
   if (!status) return { atoms: [], bundleId: "", error: `unknown vessel status ${input.status}` };
@@ -396,29 +411,63 @@ export function vesselObservationAtoms(input: {
     return { atoms: [], bundleId: "", blocked: { notice: acuityGate.notice, missing: acuityGate.missing } };
   }
 
-  const text = vesselStatusText(status, vessel, { acute: acuity });
-  const isPatent = status.key === "a:patent" || status.key === "v:patent";
   const bundleId = brainBundleId("vessel", `${vessel.key}-${status.key}`);
+  const atoms: BrainAtomSpec[] = [
+    vesselStatusAtom(vessel, status, {
+      acute: acuity,
+      replaceTreeNormal: input.replaceTreeNormal,
+    }),
+  ];
+  if (!status.variant && input.replaceTreeNormal?.trim() && input.remainderNormal?.trim()) {
+    atoms.push(remainderNormalAtom(status.familyConcept, vessel.territory, input.remainderNormal));
+  }
+  return { atoms, bundleId };
+}
+
+/**
+ * The atom for one vessel status, without any gate decision. `vesselObservationAtoms`
+ * is the gate-checked caller a panel uses; a palette tile uses this directly, because
+ * whether a tile is offered at all is decided by tile availability, not per keystroke.
+ */
+export function vesselStatusAtom(
+  vessel: VesselDefinition,
+  status: VesselStatusDef,
+  opts: { acute?: boolean; impression?: boolean; replaceTreeNormal?: string } = {},
+): BrainAtomSpec {
+  const text = vesselStatusText(status, vessel, { acute: Boolean(opts.acute) });
+  const isPatent = status.key === "a:patent" || status.key === "v:patent";
   return {
-    bundleId,
-    atoms: [
-      {
-        concept: status.concept,
-        conflictGroup: status.variant ? `${vessel.key}-variant` : vessel.key,
-        anatomicalSection: vesselFindingsSection(vessel),
-        findings: text.findings,
-        impression: text.impression,
-        // The patent row is that vessel's baseline, so an abnormal status on the same
-        // vessel supersedes it instead of printing both. Variants replace it too —
-        // "patent with normal caliber" and "hypoplastic" cannot both stand.
-        baselineReplaces: isPatent ? undefined : patentSentenceFor(vessel),
-        level: vessel.key.toUpperCase(),
-        laterality: vessel.side === "unpaired" ? undefined : vessel.side,
-        supportsLaterality: vessel.side !== "unpaired",
-        severity: status.severity,
-        role: isPatent ? "baseline" : "finding",
-      },
-    ],
+    concept: vesselConceptId(vessel, { variant: Boolean(status.variant) }),
+    conflictGroup: status.variant ? `${vessel.key}-variant` : vessel.key,
+    anatomicalSection: vesselFindingsSection(vessel),
+    findings: text.findings,
+    impression: opts.impression === false ? undefined : text.impression,
+    // A patent row is that vessel's baseline. An abnormal row supersedes either the
+    // vessel's own normal sentence, or — when the caller says the tree-wide normal is
+    // what the report currently carries — that sentence instead.
+    baselineReplaces: isPatent
+      ? undefined
+      : opts.replaceTreeNormal?.trim() || patentSentenceFor(vessel),
+    level: vessel.key.toUpperCase(),
+    laterality: vessel.side === "unpaired" ? undefined : vessel.side,
+    supportsLaterality: vessel.side !== "unpaired",
+    severity: status.severity,
+    role: isPatent ? "baseline" : "finding",
+  };
+}
+
+/** What is left of the tree once its all-normal sentence has been superseded. */
+export function remainderNormalAtom(
+  concept: string,
+  territory: VascularTerritory,
+  sentence: string,
+): BrainAtomSpec {
+  return {
+    concept,
+    conflictGroup: `${territory}-remainder-normal`,
+    anatomicalSection: VASCULAR_FINDINGS_SECTIONS.focalArterialAbnormality,
+    findings: sentence.trim(),
+    role: "baseline",
   };
 }
 

@@ -82,7 +82,7 @@ describe("mriBrainVesselObservations — the status lists are the specification'
     expect(statusesForSystem("venous")).toBe(VENOUS_VESSEL_STATUSES);
     expect(systemForTerritory("venous")).toBe("venous");
     expect(systemForTerritory("neckArterial")).toBe("arterial");
-    expect(vesselStatusByKey("a:patent")?.concept).not.toBe(vesselStatusByKey("v:patent")?.concept);
+    expect(vesselStatusByKey("a:patent")?.familyConcept).not.toBe(vesselStatusByKey("v:patent")?.familyConcept);
   });
 
   it("never puts a numeric grade in a status sentence", () => {
@@ -109,8 +109,8 @@ describe("mriBrainVesselObservations — flow findings are not conclusions", () 
       const status = vesselStatusByKey(key)!;
       expect(status.finding.toLowerCase(), key).not.toContain("thromb");
     }
-    expect(vesselStatusByKey("v:flowGap")?.concept).toBe("mrv_venous");
-    expect(vesselStatusByKey("v:occlusiveThrombosis")?.concept).toBe("cvst");
+    expect(vesselStatusByKey("v:flowGap")?.familyConcept).toBe("mrv_venous");
+    expect(vesselStatusByKey("v:occlusiveThrombosis")?.familyConcept).toBe("cvst");
   });
 
   it("marks only the conclusion rows as interpretations", () => {
@@ -276,7 +276,7 @@ describe("mriBrainVesselObservations — acuity is a separate gated claim", () =
 });
 
 describe("mriBrainVesselObservations — one vessel, one status, one slot", () => {
-  it("gives every status on a vessel the same ledger slot", () => {
+  it("puts every status of one vessel in one slot, and never two vessels in one slot", () => {
     const patent = vesselObservationAtoms({
       vessel: "right MCA M1",
       status: "a:patent",
@@ -291,10 +291,30 @@ describe("mriBrainVesselObservations — one vessel, one status, one slot", () =
       technique: LUMEN_BEARING,
       brain: BRAIN,
     });
-    expect(occluded.atoms[0]!.level).toBe(patent.atoms[0]!.level);
-    expect(occluded.atoms[0]!.laterality).toBe(patent.atoms[0]!.laterality);
+    const leftM1 = vesselObservationAtoms({
+      vessel: "left MCA M1",
+      status: "a:patent",
+      territory: "intracranialArterial",
+      technique: TOF_ONLY,
+      brain: BRAIN,
+    });
+    const m2 = vesselObservationAtoms({
+      vessel: "right MCA M2",
+      status: "a:patent",
+      territory: "intracranialArterial",
+      technique: TOF_ONLY,
+      brain: BRAIN,
+    });
     expect(occluded.atoms[0]!.concept).toBe(patent.atoms[0]!.concept);
+    expect(occluded.atoms[0]!.laterality).toBe(patent.atoms[0]!.laterality);
     expect(occluded.atoms[0]!.conflictGroup).toBe(patent.atoms[0]!.conflictGroup);
+    // The identity that survives the ledger is the concept: `level` is a spine
+    // vocabulary and is discarded for vessels, so two arteries must not share one.
+    expect(patent.atoms[0]!.concept).toBe("mra_vessel_mca_m1");
+    expect(leftM1.atoms[0]!.concept).toBe("mra_vessel_mca_m1");
+    expect(leftM1.atoms[0]!.laterality).toBe("left");
+    expect(m2.atoms[0]!.concept).toBe("mra_vessel_mca_m2");
+    expect(m2.atoms[0]!.concept).not.toBe(patent.atoms[0]!.concept);
   });
 
   it("supersedes the vessel's own normal sentence, not the study-wide MRA normal", () => {
@@ -360,8 +380,8 @@ describe("mriBrainVesselObservations — one vessel, one status, one slot", () =
       technique: TOF_ONLY,
       brain: BRAIN,
     });
-    expect(variant.atoms[0]!.concept).toBe("mra_variant");
-    expect(stenosed.atoms[0]!.concept).toBe("mra_arterial");
+    expect(variant.atoms[0]!.concept).toBe("mra_vessel_aca_a1_variant");
+    expect(stenosed.atoms[0]!.concept).toBe("mra_vessel_aca_a1");
     expect(variant.atoms[0]!.conflictGroup).toBe("aca-a1-right-variant");
     // Variants are non-pathologic: they must not be pushed into the Impression as an
     // abnormality by the system-normal guard.

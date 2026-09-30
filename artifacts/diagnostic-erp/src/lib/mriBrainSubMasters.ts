@@ -34,6 +34,9 @@ import {
 } from "@/lib/mriBrainMeasures";
 import type { BrainSequenceKey, BrainSequenceContext } from "@/lib/mriBrainSequences";
 import { BRAIN_SEQUENCE_LABELS } from "@/lib/mriBrainSequences";
+import type { VascularGateFeature, VascularTechniqueState } from "./mriBrainVascularTechnique";
+import { VASCULAR_GATES, vascularGate } from "./mriBrainVascularTechnique";
+import { VASCULAR_SUB_MASTERS } from "./mriBrainVascularSubMasters";
 
 export type BrainTile = {
   id: string;
@@ -43,6 +46,12 @@ export type BrainTile = {
   advanced?: boolean;
   /** Sequences that must be performed for this tile to be usable. */
   requires?: BrainSequenceKey[];
+  /**
+   * Vascular acquisition a tile's wording depends on (mra/mrv spec §4). Checked
+   * against the technique state, which is derived from the Technique field and
+   * manually overridable — never against the billing label.
+   */
+  requiresVascular?: VascularGateFeature;
   /** Never offered on pediatric studies (adult involution wording). */
   adultOnly?: boolean;
   atoms: BrainAtomSpec[];
@@ -69,6 +78,12 @@ export const BRAIN_SUBMASTER_IDS = [
   "metabolic",
   "postop",
   "advanced",
+  // Dedicated vascular palettes (mra/mrv V3). They are palettes over the same
+  // ledger, not separate editors, and they are only mounted when the study's
+  // vascular module role is dedicated — routine MRI Brain keeps its own surface.
+  "mra",
+  "mraNeck",
+  "mrv",
 ] as const;
 
 export type BrainSubMasterId = (typeof BRAIN_SUBMASTER_IDS)[number];
@@ -1010,6 +1025,7 @@ export const MRI_BRAIN_SUB_MASTERS: readonly BrainSubMaster[] = [
   METABOLIC,
   POSTOP,
   ADVANCED,
+  ...VASCULAR_SUB_MASTERS,
 ];
 
 export function brainSubMasterById(id: string): BrainSubMaster | undefined {
@@ -1021,12 +1037,20 @@ export function brainSubMasterById(id: string): BrainSubMaster | undefined {
 export function tileAvailable(
   tile: BrainTile,
   seq: BrainSequenceContext,
-): { ok: boolean; missing: string[] } {
+  vascular?: { technique: VascularTechniqueState | null; brain: BrainSequenceContext },
+): { ok: boolean; missing: string[]; notice?: string } {
   const missing = (tile.requires ?? [])
     .filter((k) => !seq.performed[k])
     .map((k) => BRAIN_SEQUENCE_LABELS[k]);
   if (tile.adultOnly && seq.performed.pediatric) {
     return { ok: false, missing: [] };
+  }
+  if (tile.requiresVascular) {
+    // Without a technique state to test there is nothing to allow the wording, so
+    // a vascular tile is simply not offered (mra/mrv spec §4: never assume).
+    if (!vascular) return { ok: false, missing: [], notice: VASCULAR_GATES[tile.requiresVascular].notice };
+    const gate = vascularGate(tile.requiresVascular, vascular.technique, vascular.brain);
+    if (!gate.allowed) return { ok: false, missing: gate.missing, notice: gate.notice };
   }
   return { ok: missing.length === 0, missing };
 }
