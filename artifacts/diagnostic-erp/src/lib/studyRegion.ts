@@ -117,6 +117,32 @@ function studyRegionTokens(value: string): string[] {
 }
 
 /**
+ * Abbreviations the billing catalogue uses for an anatomy a Study Tab spells
+ * out. The keys are TAB tokens; the values are hint tokens that mean the same
+ * thing.
+ *
+ * Live evidence (test-catalog export 2026-09-28): the lumbar films are billed as
+ * `XRAYLSPINE` "X-RAY LS SPINE LAT" and `XR028` "XRAY LS SPINE AP/LAT", while the
+ * Study Tab is "X-Ray Lumbar Spine". "ls" is not "lumbar", so the token fallback
+ * still resolved nothing and these two studies opened with no protocol, no quick
+ * findings and no content pack.
+ *
+ * `dl` ("XRAY DL SPINE AP/LAT", `XR022`) is deliberately NOT mapped to the dorsal
+ * tab: a dorsolumbar study covers the thoracolumbar junction, and quietly filing
+ * it under the dorsal-spine protocol would apply the wrong protocol to a patient
+ * rather than leaving the radiologist to choose. It stays unresolved.
+ */
+const ANATOMY_HINT_SYNONYMS: Record<string, readonly string[]> = {
+  lumbar: ["ls", "lumbosacral", "lumbo"],
+  lumbosacral: ["ls", "lumbar"],
+};
+
+function coreTokenInHint(token: string, hintTokens: Set<string>): boolean {
+  if (hintTokens.has(token)) return true;
+  return (ANATOMY_HINT_SYNONYMS[token] ?? []).some((synonym) => hintTokens.has(synonym));
+}
+
+/**
  * Token-aware fallback for the real naming gap between the billing catalogue
  * and the Study Tabs.
  *
@@ -128,10 +154,10 @@ function studyRegionTokens(value: string): string[] {
  * nothing and opened with no protocol, no quick findings and no content pack.
  *
  * A tab is a candidate when every one of its CORE ANATOMY tokens (modality
- * prefix and projection words removed) appears in the hint. Among candidates,
- * the one sharing the most projection words with the hint wins; a bare
- * "CHEST X-RAY" therefore lands on the first (lowest sortOrder) chest tab —
- * the reference PA tab — rather than on nothing.
+ * prefix and projection words removed) appears in the hint, directly or through
+ * `ANATOMY_HINT_SYNONYMS`. Among candidates, the one sharing the most projection
+ * words with the hint wins; a bare "CHEST X-RAY" therefore lands on the first
+ * (lowest sortOrder) chest tab — the reference PA tab — rather than on nothing.
  *
  * This never overrides a substring match, and it never matches on a partial
  * word, so the billed > dicom > unresolved precedence and the longest-wins
@@ -154,7 +180,7 @@ export function matchStudyRegionByCoreAnatomy(
     const tokens = studyRegionTokens(stripStudyTabModalityPrefix(name));
     const core = tokens.filter((t) => !STUDY_TAB_VIEW_TOKENS.has(t));
     if (!core.length) continue;
-    if (!core.every((t) => hintTokens.has(t))) continue;
+    if (!core.every((t) => coreTokenInHint(t, hintTokens))) continue;
 
     const viewOverlap = tokens.filter((t) => STUDY_TAB_VIEW_TOKENS.has(t) && hintTokens.has(t)).length;
     // More core anatomy matched = more specific. Ties prefer more shared

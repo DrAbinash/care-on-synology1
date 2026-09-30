@@ -204,6 +204,7 @@ import {
   isMriBrainReportingContext,
   isXrayCervicalReportingContext,
   isXrayChestReportingContext,
+  isXrayLsReportingContext,
 } from "@/lib/reportingStudyContext";
 import {
   cervicalImpressionOrderWarnings,
@@ -211,6 +212,12 @@ import {
   cervicalUnvisualizedLevelClaims,
 } from "@/lib/xrayCervicalContradictions";
 import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
+import {
+  lsImpressionOrderWarnings,
+  lsTextContradictions,
+} from "@/lib/xrayLsContradictions";
+import { parseXrayLsViews } from "@/lib/xrayLsViews";
+import { parseLsNumberingFromText } from "@/lib/xrayLsNumbering";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
@@ -2639,6 +2646,31 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
             }),
             ...cervicalUnvisualizedLevelClaims(body, cervicalCtx),
             ...cervicalImpressionOrderWarnings(
+              impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+            ),
+          ];
+        })()
+      : []),
+    ...(isXrayLsReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? (() => {
+          // Numbering is read back out of the report itself: the basis is the
+          // licence to name a level, and a reopened study must be validated
+          // against the basis it was written with (spec §4, §18).
+          const lsCtx = parseXrayLsViews(techniqueText);
+          const lsNumbering = parseLsNumberingFromText(`${findingsText}\n${impressionText}`);
+          return [
+            ...lsTextContradictions({
+              findingsText,
+              impressionText,
+              viewCtx: lsCtx,
+              numbering: lsNumbering,
+            }),
+            ...lsImpressionOrderWarnings(
               impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
             ),
           ];

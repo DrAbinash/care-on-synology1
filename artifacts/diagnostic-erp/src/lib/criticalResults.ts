@@ -74,7 +74,7 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   // the exact prose the cervical sub-master produces. There is no X-ray master
   // template, so radiographic critical detection runs on this table
   // (radiologyMasterTemplates supplies criticalWatchList for MR/CT/US only).
-  { term: "fracture-dislocation", label: "cervical fracture-dislocation" },
+  { term: "fracture-dislocation", label: "fracture-dislocation" },
   { term: "facet dislocation", label: "cervical facet dislocation" },
   { term: "perched facet", label: "perched cervical facet" },
   { term: "odontoid fracture", label: "odontoid fracture" },
@@ -84,10 +84,12 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   // The seeded xr.cervical_spine knowledge pack names "Cervical spine
   // instability / listhesis" as a critical finding, so a listhesis described on
   // plain films raises the reminder. The baseline denial ("no acute fracture or
-  // listhesis is identified") stays excluded by the negation check.
-  { term: "anterolisthesis", label: "cervical anterolisthesis" },
-  { term: "retrolisthesis", label: "cervical retrolisthesis" },
-  { term: "dynamic instability", label: "dynamic cervical instability" },
+  // listhesis is identified") stays excluded by the negation check. These three
+  // are shared spinal radiography terms, so their labels name no segment — the
+  // lumbosacral sub-master produces the same prose.
+  { term: "anterolisthesis", label: "anterolisthesis" },
+  { term: "retrolisthesis", label: "retrolisthesis" },
+  { term: "dynamic instability", label: "dynamic instability" },
   { term: "prevertebral soft-tissue swelling", label: "prevertebral soft-tissue swelling" },
   { term: "prevertebral soft tissue swelling", label: "prevertebral soft-tissue swelling" },
   { term: "prevertebral swelling", label: "prevertebral soft-tissue swelling" },
@@ -96,6 +98,21 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   { term: "hardware breakage", label: "hardware breakage" },
   { term: "hardware migration", label: "hardware migration" },
   { term: "concerning for loosening", label: "implant loosening" },
+  // Lumbosacral radiography. The seeded xr.lumbar_spine knowledge pack names
+  // "unstable spondylolisthesis / instability on flexion-extension" and "burst
+  // fracture"; these entries are the remaining critical patterns the
+  // lumbosacral sub-master emits, matched against its own wording so a clicked
+  // tile always raises the reminder (spec §19).
+  { term: "burst-pattern fracture", label: "burst-pattern fracture" },
+  { term: "retropulsed fragment", label: "retropulsed fragment" },
+  { term: "spondyloptosis", label: "spondyloptosis" },
+  { term: "destructive disc", label: "destructive disc/endplate pattern" },
+  { term: "endplate destruction", label: "destructive disc/endplate pattern" },
+  { term: "adjacent-segment destructive", label: "adjacent-segment destructive pattern" },
+  { term: "multifocal osseous lesions", label: "multifocal osseous lesions" },
+  { term: "pathological fracture", label: "pathological fracture" },
+  { term: "pathologic fracture", label: "pathological fracture" },
+  { term: "cement extrusion", label: "cement extrusion" },
   // Chest / vascular
   { term: "tension pneumothorax", label: "tension pneumothorax" },
   { term: "pneumothorax", label: "pneumothorax" },

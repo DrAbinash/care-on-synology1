@@ -117,6 +117,27 @@ export const MEYERDING_GRADES = [
 
 export type MeyerdingGradeId = (typeof MEYERDING_GRADES)[number]["id"];
 
+/**
+ * Meyerding grade from a measured slip percentage of the vertebral body width.
+ *
+ * The bands are a geometric classification of displacement, not an MRI
+ * conclusion, so MRI, CT and plain-film reporting share this one derivation
+ * instead of each restating the cut-offs. Returns null for a missing or
+ * impossible percentage, and null at 0% — "no listhesis" is a different
+ * statement from a graded listhesis, and a grade must never be invented from an
+ * unmeasured film.
+ */
+export function meyerdingFromSlipPercent(
+  slipPercent: number | null | undefined,
+): MeyerdingGradeId | null {
+  if (slipPercent === null || slipPercent === undefined || !Number.isFinite(slipPercent)) return null;
+  if (slipPercent <= 0 || slipPercent > 100) return null;
+  if (slipPercent < 25) return "I";
+  if (slipPercent < 50) return "II";
+  if (slipPercent < 75) return "III";
+  return "IV";
+}
+
 /** Cord T2 signal — 0 normal, 1 faint, 2 bright. */
 export const CORD_SIGNAL_GRADES = [
   {

@@ -316,6 +316,61 @@ const CERVICAL_TEXT = /\bcervical\b|\bc[- ]?spine\b|\bcspine\b|\bneck\b/i;
 const NON_CERVICAL_SPINE_TEXT = /\b(?:dorsal|thoracic|lumbar|lumbo|sacral|whole)\b/i;
 
 /**
+ * Radiographic lumbosacral text. The centre bills these films as "LS SPINE"
+ * (`XRAYLSPINE`, `XR028`) while the Study Tab spells them "X-Ray Lumbar Spine",
+ * so both vocabularies are first-class here. `dl` ("XRAY DL SPINE AP/LAT")
+ * matches neither: a dorsolumbar film covers the thoracolumbar junction and must
+ * not inherit the lumbosacral protocol silently.
+ */
+const LS_TEXT = /\blumbar\b|\blumbosacral\b|\blumbo\b|\bls\b|\bl[- ]s\b/i;
+/**
+ * "lumbosacral" is one word, so `\bsacral\b` cannot match inside it — the
+ * exclusion catches a sacral film without excluding the LS study itself.
+ */
+const NON_LS_SPINE_TEXT =
+  /\b(?:cervical|c[- ]?spine|cspine|neck|dorsal|thoracic|sacral|sacrum|coccyx|whole)\b/i;
+
+/**
+ * X-ray Lumbosacral Spine reporting context — activates the lumbosacral clinical
+ * sub-master (numbering basis / LSTV handling, views and adequacy with pars,
+ * oblique, flexion-extension and L5-S1 coverage gating, palettes, measurements,
+ * dynamic and hardware panels).
+ *
+ * Mirrors isXrayCervicalReportingContext and its two failure modes: an MRI / CT /
+ * US lumbar study must not receive the plain-film canvas, because the radiography
+ * sub-master carries different conclusions (spec §1) — no canal, root or disc
+ * signal assessment; and a lumbar X-Ray tab still qualifies when the worklist row
+ * arrives with an unexpected modality string.
+ */
+export function isXrayLsReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").trim();
+  const region = (opts.region ?? "").trim();
+  const desc = (opts.studyDescription ?? "").trim();
+
+  if (mod && !isXrModality(mod)) return false;
+
+  // Canonical tab key: "X-Ray Lumbar Spine".
+  if (region && /^X[- ]RAY\b/i.test(region) && LS_TEXT.test(region) && !NON_LS_SPINE_TEXT.test(region)) {
+    return true;
+  }
+
+  if (mod && isXrModality(mod)) {
+    if (region && LS_TEXT.test(region) && !NON_LS_SPINE_TEXT.test(region)) return true;
+    if (desc && LS_TEXT.test(desc) && !NON_LS_SPINE_TEXT.test(desc)) return true;
+    return false;
+  }
+
+  // No modality at all — require both plain-film and lumbosacral evidence.
+  const hay = `${region} ${desc}`;
+  return /x[- ]?ray|xray/i.test(hay) && LS_TEXT.test(hay) && !NON_LS_SPINE_TEXT.test(hay);
+}
+
+/**
  * X-ray Cervical Spine reporting context — activates the cervical clinical
  * sub-master (views/adequacy with odontoid / oblique / flexion-extension
  * gating, palettes, measurements, dynamic and hardware panels).
