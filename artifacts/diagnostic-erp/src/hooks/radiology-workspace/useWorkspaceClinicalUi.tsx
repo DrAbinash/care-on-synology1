@@ -199,10 +199,23 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
+import {
+  isBrainMeasuresReportingContext,
+  isMriBrainReportingContext,
+  isXrayCervicalReportingContext,
+  isXrayChestReportingContext,
+} from "@/lib/reportingStudyContext";
+import {
+  cervicalImpressionOrderWarnings,
+  cervicalTextContradictions,
+  cervicalUnvisualizedLevelClaims,
+} from "@/lib/xrayCervicalContradictions";
+import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
+import { chestTextContradictions } from "@/lib/xrayChestContradictions";
+import { parseXrayChestViews } from "@/lib/xrayChestViews";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import { lumbarTextContradictions } from "@/lib/mriSpineContradictions";
@@ -2643,6 +2656,40 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           impressionText,
           seq: parseBrainSequences(techniqueText),
         })
+      : []),
+    ...(isXrayChestReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? chestTextContradictions({
+          findingsText,
+          impressionText,
+          viewCtx: parseXrayChestViews(techniqueText),
+        })
+      : []),
+    ...(isXrayCervicalReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? (() => {
+          const cervicalCtx = parseXrayCervicalViews(techniqueText);
+          const body = `${findingsText}\n${impressionText}`;
+          return [
+            ...cervicalTextContradictions({
+              findingsText,
+              impressionText,
+              viewCtx: cervicalCtx,
+            }),
+            ...cervicalUnvisualizedLevelClaims(body, cervicalCtx),
+            ...cervicalImpressionOrderWarnings(
+              impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+            ),
+          ];
+        })()
       : []),
     ...validateReport({
       findings: findingsText,

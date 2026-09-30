@@ -78,6 +78,96 @@ export function matchStudyRegion(
   return best;
 }
 
+/**
+ * Projection / plan / scope words that X-ray (and CT) Study Tabs carry in
+ * their names but a billed procedure name usually does not. They are excluded
+ * from the core-anatomy comparison, and used afterwards only to prefer the
+ * most specific tab the hint actually names.
+ */
+const STUDY_TAB_VIEW_TOKENS = new Set([
+  "pa",
+  "ap",
+  "lat",
+  "lateral",
+  "erect",
+  "supine",
+  "portable",
+  "lordotic",
+  "oblique",
+  "obliq",
+  "view",
+  "views",
+  "plain",
+  "screening",
+  "contrast",
+  "11x14",
+  "bl",
+  "ul",
+  "b",
+  "l",
+  "r",
+]);
+
+function studyRegionTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter(Boolean);
+}
+
+/**
+ * Token-aware fallback for the real naming gap between the billing catalogue
+ * and the Study Tabs.
+ *
+ * Live evidence (test-catalog export): the only chest radiograph the centre
+ * bills is code `XRAY-CHEST`, name `CHEST X-RAY`. The chest tabs are
+ * "X-Ray Chest PA" / "X-Ray Chest AP" / "X-Ray Portable Chest" / "X-Ray Chest
+ * Lateral". `matchStudyRegion` is a substring test, and "x-ray chest pa" is not
+ * inside "cr chest x-ray" — word order differs — so the study resolved to
+ * nothing and opened with no protocol, no quick findings and no content pack.
+ *
+ * A tab is a candidate when every one of its CORE ANATOMY tokens (modality
+ * prefix and projection words removed) appears in the hint. Among candidates,
+ * the one sharing the most projection words with the hint wins; a bare
+ * "CHEST X-RAY" therefore lands on the first (lowest sortOrder) chest tab —
+ * the reference PA tab — rather than on nothing.
+ *
+ * This never overrides a substring match, and it never matches on a partial
+ * word, so the billed > dicom > unresolved precedence and the longest-wins
+ * contract are unchanged.
+ */
+export function matchStudyRegionByCoreAnatomy(
+  hint: string | null | undefined,
+  orderedRegionNames: string[],
+): string | null {
+  if (!hint) return null;
+  const hintTokens = new Set(studyRegionTokens(hint));
+  if (!hintTokens.size) return null;
+
+  let best: string | null = null;
+  let bestCoreSize = 0;
+  let bestViewOverlap = -1;
+
+  for (const name of orderedRegionNames) {
+    if (!name) continue;
+    const tokens = studyRegionTokens(stripStudyTabModalityPrefix(name));
+    const core = tokens.filter((t) => !STUDY_TAB_VIEW_TOKENS.has(t));
+    if (!core.length) continue;
+    if (!core.every((t) => hintTokens.has(t))) continue;
+
+    const viewOverlap = tokens.filter((t) => STUDY_TAB_VIEW_TOKENS.has(t) && hintTokens.has(t)).length;
+    // More core anatomy matched = more specific. Ties prefer more shared
+    // projection words, then the earlier (lower sortOrder) tab.
+    if (core.length > bestCoreSize || (core.length === bestCoreSize && viewOverlap > bestViewOverlap)) {
+      best = name;
+      bestCoreSize = core.length;
+      bestViewOverlap = viewOverlap;
+    }
+  }
+  return best;
+}
+
 export type AutoStudyRegionMatch = {
   region: string | null;
   /** Which hint produced `region`. null when unresolved. */
@@ -122,6 +212,19 @@ export function resolveAutoStudyRegion(opts: {
   if (dicomRegion) {
     return { region: dicomRegion, source: "dicom", billedRegion: null, dicomRegion };
   }
+
+  // Nothing is a literal substring of the hint — try the token-aware core
+  // anatomy match before declaring the study unresolved. Billed name still
+  // wins over DICOM.
+  const billedCore = billedHint ? matchStudyRegionByCoreAnatomy(billedHint, regions) : null;
+  const dicomCore = dicomHint ? matchStudyRegionByCoreAnatomy(dicomHint, regions) : null;
+  if (billedCore) {
+    return { region: billedCore, source: "billed", billedRegion: billedCore, dicomRegion: dicomCore };
+  }
+  if (dicomCore) {
+    return { region: dicomCore, source: "dicom", billedRegion: null, dicomRegion: dicomCore };
+  }
+
   return { region: null, source: null, billedRegion: null, dicomRegion: null };
 }
 
