@@ -326,14 +326,25 @@ export function vascularNormalPresetIdForTile(tileId: string): string | null {
   );
 }
 
-/** The normal preset whose baseline sentence the report currently carries, in §17 order. */
+/**
+ * The normal preset whose baseline sentence the report currently carries, in §17 order.
+ *
+ * The SENTENCE decides, not the concept: once an abnormality supersedes a baseline, the
+ * remainder normal occupies that same family slot, and matching by concept alone would let
+ * a later baseline composition resurrect the all-normal sentence the report has already
+ * disowned (§5, §15, §17).
+ */
 export function vascularNormalPresetIdsInReport(
-  concepts: Iterable<string | null | undefined>,
+  carried: Iterable<{ concept?: string | null; findings?: string }>,
 ): string[] {
-  const written = new Set([...concepts].map((concept) => concept ?? ""));
-  return VASCULAR_PRESET_SPECS.filter(
-    (spec) => spec.normalBaseline && written.has(VASCULAR_TREE_NORMALS[spec.module].concept),
-  ).map((spec) => spec.id);
+  const rows = [...carried];
+  return VASCULAR_PRESET_SPECS.filter((spec) => {
+    if (!spec.normalBaseline) return false;
+    const normal = VASCULAR_TREE_NORMALS[spec.module];
+    return rows.some(
+      (row) => row.concept === normal.concept && row.findings?.trim() === normal.sentence.trim(),
+    );
+  }).map((spec) => spec.id);
 }
 
 /**

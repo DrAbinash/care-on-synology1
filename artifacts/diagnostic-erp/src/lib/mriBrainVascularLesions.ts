@@ -354,7 +354,6 @@ export function aneurysmAtoms(
     }
     seen.set(slotKey, `${vesselBaseKey(slot.vessel)}${slot.laterality ? `-${slot.laterality}` : ""}`);
     territory = slot.vessel.territory;
-    if (!territory) territory = slot.vessel.territory;
 
     const dome = vascularMeasure(record.domeHeightMm);
     const ratio = aneurysmDomeNeckRatio(record);

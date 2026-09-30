@@ -43,7 +43,9 @@ import {
 } from "@/lib/mriBrainVascularProse";
 import {
   ALL_VASCULAR_TILES,
+  VASCULAR_TREE_NORMALS,
 } from "@/lib/mriBrainVascularSubMasters";
+import { aneurysmAtoms } from "@/lib/mriBrainVascularLesions";
 import { defaultVascularTechnique, type VascularTechniqueState } from "@/lib/mriBrainVascularTechnique";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -360,8 +362,12 @@ describe("§15 the module normals are one baseline block", () => {
   });
 
   it("reads the carried baselines back from the ledger, so a toggle subtracts", () => {
+    const row = (id: string) => {
+      const atom = vascularPresetAtomsFor(id, FULL_CTX).atoms[0]!;
+      return { concept: atom.concept, findings: atom.findings };
+    };
     expect(vascularNormalPresetIdsInReport([])).toEqual([]);
-    expect(vascularNormalPresetIdsInReport(["mrv_venous", "mra_arterial"])).toEqual([
+    expect(vascularNormalPresetIdsInReport([row(MRV_NORMAL), row(MRA_NORMAL)])).toEqual([
       MRA_NORMAL,
       MRV_NORMAL,
     ]);
@@ -371,5 +377,55 @@ describe("§15 the module normals are one baseline block", () => {
     expect(isVascularNormalPreset("aneurysm-macro")).toBe(false);
     expect(vascularNormalBundle([], FULL_CTX).bundleId).toBe(VASCULAR_NORMAL_BUNDLE_ID);
     expect(vascularNormalBundle([], FULL_CTX).observations).toHaveLength(0);
+  });
+
+  it("stops counting a baseline the report has already disowned", () => {
+    // The remainder normal sits on the same family concept after an abnormality supersedes
+    // the all-normal sentence; it must not be read as the normal still being carried.
+    const superseded = {
+      concept: VASCULAR_TREE_NORMALS.mra.concept,
+      findings: VASCULAR_TREE_NORMALS.mra.remainder,
+    };
+    expect(vascularNormalPresetIdsInReport([superseded])).toEqual([]);
+  });
+
+  it("keeps a superseded normal out of a later composed baseline", () => {
+    useWorkspace.getState().applyMacroBundle(vascularNormalBundle([MRA_NORMAL], FULL_CTX));
+    const aneurysm = aneurysmAtoms(
+      [
+        {
+          parentVessel: "right ICA terminus",
+          side: "right",
+          territory: "intracranialArterial",
+          domeHeightMm: 7,
+          neckWidthMm: 3,
+        },
+      ],
+      {
+        ...FULL_CTX.vascular,
+        replaceTreeNormal: VASCULAR_TREE_NORMALS.mra.sentence,
+        remainderNormal: VASCULAR_TREE_NORMALS.mra.remainder,
+      },
+    );
+    useWorkspace.getState().applyMacroBundle({
+      bundleId: aneurysm.bundleId,
+      observations: brainAtomsToPatches("Brain", aneurysm.bundleId, aneurysm.atoms),
+    });
+    const carried = () =>
+      vascularNormalPresetIdsInReport(
+        useWorkspace
+          .getState()
+          .appliedPathologyPatches.filter((p) => p.observation && !p.stale)
+          .map((p) => ({
+            concept: p.observation?.concept,
+            findings: p.lastRendered.findings ?? p.templates.findings,
+          })),
+      );
+    expect(carried()).toEqual([]);
+    useWorkspace.getState().applyMacroBundle(vascularNormalBundle([NECK_NORMAL], FULL_CTX));
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("intact luminal flow voids");
+    expect(findings).not.toContain("uniform high-velocity signal without focal stenosis");
+    expect(findings).toContain("The remaining visualised intracranial arteries");
   });
 });

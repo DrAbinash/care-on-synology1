@@ -85,11 +85,16 @@ function useVascularNormalSupersession() {
   const patches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
   return useMemo(() => {
     const carried = new Set(
-      patches.filter((p) => p.observation && !p.stale).map((p) => p.observation?.concept ?? ""),
+      patches
+        .filter((p) => p.observation && !p.stale)
+        .map((p) => `${p.observation?.concept}\u0000${(p.lastRendered.findings ?? "").trim()}`),
     );
     return (module: VascularTreeModule) => {
       const spec = VASCULAR_TREE_NORMALS[module];
-      return carried.has(spec.concept)
+      // The sentence, not just the slot: once an abnormality has superseded the baseline,
+      // the remainder normal occupies the same family concept and must not be superseded
+      // a second time.
+      return carried.has(`${spec.concept}\u0000${spec.sentence.trim()}`)
         ? { replaceTreeNormal: spec.sentence, remainderNormal: spec.remainder }
         : {};
     };

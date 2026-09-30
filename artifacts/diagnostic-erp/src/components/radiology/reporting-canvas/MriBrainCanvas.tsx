@@ -147,7 +147,15 @@ export function MriBrainCanvas({
 
   /** Which §15 module baselines the report carries; they share one composed bundle. */
   const vascularNormals = useMemo(
-    () => vascularNormalPresetIdsInReport(patches.map((p) => p.observation?.concept)),
+    () =>
+      vascularNormalPresetIdsInReport(
+        patches
+          .filter((p) => p.observation && !p.stale)
+          .map((p) => ({
+            concept: p.observation?.concept,
+            findings: p.lastRendered.findings ?? p.templates.findings,
+          })),
+      ),
     [patches],
   );
 
@@ -159,12 +167,9 @@ export function MriBrainCanvas({
    */
   const toggleVascularNormal = (presetId: string) => {
     if (disabled) return;
-    const carried = vascularNormalPresetIdsInReport(
-      patches.map((p) => p.observation?.concept),
-    );
-    const next = carried.includes(presetId)
-      ? carried.filter((id) => id !== presetId)
-      : [...carried, presetId];
+    const next = vascularNormals.includes(presetId)
+      ? vascularNormals.filter((id) => id !== presetId)
+      : [...vascularNormals, presetId];
     if (!next.length) {
       useWorkspace.getState().removeMacroBundle(VASCULAR_NORMAL_BUNDLE_ID);
       return;
