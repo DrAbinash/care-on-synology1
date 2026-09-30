@@ -2699,6 +2699,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   // §23: on study open (and when the billed exam / protocol changes) propose
   // each spine region's role from the catalog. Billing never asserts a sequence.
+  // Dorso-Lumbar spec §24: the same catalog answer also states what the
+  // examination *is*, so the composition is initialised beside the roles — and a
+  // radiologist's manual statement is never walked back.
   useEffect(() => {
     if (!spineFamily) return;
     const ws = useWorkspace.getState();
@@ -2709,6 +2712,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       reportTitle: ws.appliedFormatName ?? null,
     });
     ws.replaceScreeningRoles(resolved.roles);
+    if (!ws.studyCompositionOverridden && resolved.composition && resolved.provenance) {
+      ws.setStudyComposition(resolved.composition, resolved.provenance);
+    }
   }, [spineFamily, studySetup.testName, studySetup.activeProtocol?.name, workflow.currentRow?.studyDescription]);
 
   // §35: coverage is derived from the recorded technique/description, and a

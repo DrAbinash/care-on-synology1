@@ -539,9 +539,8 @@ const DEGENERATIVE: DorsoLumbarSubMaster = {
       label: "Disc migration (when demonstrated)",
       group: "Disc",
       requiresExtent: true,
-      atoms: (ctx) => [a("disc_migration", `${choice("discs", DL_DISC.migration, ctx)} Extent ${ctx.level2 ? `from ${ctx.level} to ${ctx.level2}` : ""}`.trim(), {
+      atoms: (ctx) => [a("disc_migration", `${choice("discs", DL_DISC.migration, ctx)}${ctx.direction ? ` ${ctx.direction}` : ""}${ctx.level2 ? ` Extent from ${ctx.level} to ${ctx.level2}.` : ""}`.trim(), {
         level: levelOf(ctx),
-        direction: ctx.direction,
       })],
     },
     {
@@ -778,10 +777,11 @@ const CANALNEURAL: DorsoLumbarSubMaster = {
       label: "Traversing-root contact (lumbar model, overridable)",
       group: "Foramina",
       domains: ["lumbar"],
-      atoms: (ctx) => [a("root_traversing", choice("foramina", DL_LUMBAR.traversingRoot, ctx), {
+      atoms: (ctx) => [a("root_traversing", choice("foramina", ctx.root
+        ? `${DL_LUMBAR.traversingRoot} — suggested ${ctx.root} root`
+        : DL_LUMBAR.traversingRoot, ctx), {
         level: levelOf(ctx),
         laterality: ctx.side,
-        root: ctx.root,
         supportsLaterality: true,
         conflictGroup: "root_traversing",
       })],
@@ -791,10 +791,11 @@ const CANALNEURAL: DorsoLumbarSubMaster = {
       label: "Exiting-root contact (lumbar model, overridable)",
       group: "Foramina",
       domains: ["lumbar"],
-      atoms: (ctx) => [a("root_exiting", choice("foramina", DL_LUMBAR.exitingRoot, ctx), {
+      atoms: (ctx) => [a("root_exiting", choice("foramina", ctx.root
+        ? `${DL_LUMBAR.exitingRoot} — suggested ${ctx.root} root`
+        : DL_LUMBAR.exitingRoot, ctx), {
         level: levelOf(ctx),
         laterality: ctx.side,
-        root: ctx.root,
         supportsLaterality: true,
         conflictGroup: "root_exiting",
       })],

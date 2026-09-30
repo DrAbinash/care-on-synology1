@@ -69,6 +69,10 @@ import type {
   CompositionProvenance,
   StudyComposition,
 } from "@/lib/mriDorsoLumbarCatalog";
+import {
+  defaultDorsoLumbarState,
+  type DorsoLumbarState,
+} from "@/lib/mriDorsoLumbarCoverage";
 import { canonicalizeDorsoLumbarOwnership } from "@/lib/mriDorsoLumbarJunction";
 import {
   defaultSpineSequences,
@@ -481,6 +485,14 @@ interface S {
    */
   dorsalNumbering: DorsalNumberingState;
   /**
+   * MRI Dorso-Lumbar V3: the acquired coverage, numbering basis and lumbar
+   * transitional anatomy of one dedicated Dorso-Lumbar examination. The canvas,
+   * the level dispatcher, the AP table, findings order and validation all read
+   * the level list through `dorsoLumbarLevelEntryOptions` / `dorsolumbarLevelKeys`;
+   * no component keeps its own level array (dorso-lumbar spec §4, §5).
+   */
+  dorsoLumbarNumbering: DorsoLumbarState;
+  /**
    * MRI Dorso-Lumbar V3: what this examination *is*, as one composition rather
    * than as a set of regions. `dorsolumbar-dedicated` means the thoracic,
    * junction and lumbar domains are dedicated parts of a single study — not
@@ -643,6 +655,12 @@ export type WorkspaceStore = S & {
   setLumbarNumbering: (patch: Partial<LumbarNumberingState>) => void;
   setDorsalNumbering: (patch: Partial<DorsalNumberingState>) => void;
   /**
+   * Dorso-Lumbar coverage / numbering. Changing it never renumbers an existing
+   * observation: levels that fall outside the new coverage are reported as
+   * stranded by `dorsolumbarStrandedLevels` (dorso-lumbar spec §5).
+   */
+  setDorsoLumbarNumbering: (patch: Partial<DorsoLumbarState>) => void;
+  /**
    * What this examination is. Initialised from billing evidence; a manual call
    * marks it overridden so a later re-derivation from the catalog cannot walk
    * back what the radiologist stated about the performed study.
@@ -755,6 +773,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   canalApProvenance: {},
   lumbarNumbering: defaultLumbarNumbering(),
   dorsalNumbering: defaultDorsalNumbering(),
+  dorsoLumbarNumbering: defaultDorsoLumbarState(),
   studyComposition: "unknown",
   studyCompositionProvenance: "none",
   studyCompositionOverridden: false,
@@ -802,7 +821,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), studyComposition: "unknown", studyCompositionProvenance: "none", studyCompositionOverridden: false, impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), dorsoLumbarNumbering: defaultDorsoLumbarState(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), studyComposition: "unknown", studyCompositionProvenance: "none", studyCompositionOverridden: false, impressionOrderFrozen: false, activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -2008,6 +2027,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   serializeCoverageMarks: () => get().coverageMarks,
   setLumbarNumbering: (patch) => set((s) => ({ lumbarNumbering: { ...s.lumbarNumbering, ...patch } })),
   setDorsalNumbering: (patch) => set((s) => ({ dorsalNumbering: { ...s.dorsalNumbering, ...patch } })),
+  setDorsoLumbarNumbering: (patch) => set((s) => ({ dorsoLumbarNumbering: { ...s.dorsoLumbarNumbering, ...patch } })),
   setStudyComposition: (composition, provenance = "none", manual = false) => set((s) => ({
     studyComposition: composition,
     studyCompositionProvenance: manual ? "none" : provenance,

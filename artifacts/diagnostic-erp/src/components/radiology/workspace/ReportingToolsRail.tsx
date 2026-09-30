@@ -36,6 +36,7 @@ import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
+  isMriDorsoLumbarReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
 import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -43,6 +44,9 @@ import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
 import { MriLumbarSubMasterPanel } from "@/components/radiology/reporting-canvas/MriLumbarSubMasterPanel";
 import { MriDorsalSubMasterPanel } from "@/components/radiology/reporting-canvas/MriDorsalSubMasterPanel";
+import { MriDorsoLumbarCanvas } from "@/components/radiology/reporting-canvas/MriDorsoLumbarCanvas";
+import { MriDorsoLumbarSubMasterPanel } from "@/components/radiology/reporting-canvas/MriDorsoLumbarSubMasterPanel";
+import { DorsoLumbarApCanalMeasurements } from "@/components/radiology/reporting-canvas/DorsoLumbarApCanalMeasurements";
 import { SpineScreeningPanel } from "@/components/radiology/reporting-canvas/SpineScreeningPanel";
 import {
   AnchorRail,
@@ -820,6 +824,33 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "Dorsal Spine"}
                                 />
                                 <SpineApCanalMeasurements segment="dorsal" disabled={isLocked || isFinalized} />
+                              </>
+                            ) : null}
+                            {isMriDorsoLumbarReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              spineSegment: studySetup.studyContext?.spineSegment,
+                              protocolName: studySetup.activeProtocol?.name ?? null,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <>
+                                {/*
+                                  One dedicated Dorso-Lumbar examination: the canvas lists the
+                                  acquired levels, the panel holds the fourteen palettes, and the
+                                  AP table measures each level once. All three read the same
+                                  coverage resolver, and every write goes to the one ledger.
+                                */}
+                                <MriDorsoLumbarCanvas
+                                  patches={appliedPathologyPatches}
+                                  disabled={isLocked || isFinalized}
+                                  onSelectLevel={(level) => useWorkspace.getState().touchCoverageViewed(level)}
+                                />
+                                <MriDorsoLumbarSubMasterPanel
+                                  disabled={isLocked || isFinalized}
+                                  ledgerRegion={studySetup.matchedStudyRegion ?? undefined}
+                                />
+                                <DorsoLumbarApCanalMeasurements disabled={isLocked || isFinalized} />
                               </>
                             ) : null}
                             {studySetup.studyContext?.family === "spine" ? (

@@ -926,6 +926,11 @@ describe("whole-model binding (spec §45)", () => {
       "src/components/radiology/reporting-canvas/MriDorsalSubMasterPanel.tsx",
       "src/components/radiology/reporting-canvas/SpineApCanalMeasurements.tsx",
       "src/components/radiology/reporting-canvas/SpineScreeningPanel.tsx",
+      // The Dorso-Lumbar canvas, panel and AP table read the composed coverage
+      // resolver too, so a thoracic enumeration cannot reappear there.
+      "src/components/radiology/reporting-canvas/MriDorsoLumbarCanvas.tsx",
+      "src/components/radiology/reporting-canvas/MriDorsoLumbarSubMasterPanel.tsx",
+      "src/components/radiology/reporting-canvas/DorsoLumbarApCanalMeasurements.tsx",
       "src/components/radiology/workspace/ReportingToolsRail.tsx",
       "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
     ];
