@@ -1071,6 +1071,12 @@ export type BrainPresetContext = {
   region?: string;
   seq: BrainSequenceContext;
   laterality?: "right" | "left";
+  /**
+   * The vascular acquisition state, so a vascular preset is filtered by the same
+   * technique gate the palette uses. A preset is one click, which makes it a louder
+   * route to an unsupported conclusion than a tile is, and §16 forbids exactly that.
+   */
+  vascular?: { technique: VascularTechniqueState | null; brain: BrainSequenceContext };
 };
 
 export type BrainPreset = {

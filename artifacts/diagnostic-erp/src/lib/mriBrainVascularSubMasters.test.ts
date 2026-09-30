@@ -109,6 +109,17 @@ describe("mriBrainVascularSubMasters — the palette surface", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("asks for an acquisition before offering any vascular sentence", () => {
+    // §4: sequence-gated prose. A tile with no `requiresVascular` can be clicked on a
+    // study that never had an angiogram, which is the class of error this phase exists
+    // to prevent — so the gate is a structural requirement of the palette, not a
+    // per-tile judgement call.
+    const unguarded = ALL_VASCULAR_TILES
+      .filter((tile) => !tile.requiresVascular)
+      .map((tile) => tile.id);
+    expect(unguarded).toEqual([]);
+  });
+
   it("gives every tile atoms that compile through the existing bundle machinery", () => {
     for (const tile of ALL_VASCULAR_TILES) {
       const built = buildTilePatch(tile);

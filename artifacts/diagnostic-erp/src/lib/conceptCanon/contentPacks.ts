@@ -328,6 +328,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     ["mra_moyamoya_pattern", "Moyamoya-Pattern Vasculopathy", "Angiographic pattern of terminal ICA narrowing with basal collaterals — pattern only (§8).", true],
     ["mra_moyamoya_disease", "Moyamoya Disease", "Radiologist disease classification, never generated from the pattern (§8).", true],
     ["avm_venous_drainage", "AVM Venous Drainage", "Drainage pattern, temporal claims gated on a time-resolved acquisition (§9).", true],
+    ["willis_configuration", "Circle of Willis Configuration", "Configuration of the circle (complete / incomplete / variant anatomy) — §16's own macro line, and §17's first MRA subsection after technique.", false],
     ["avm_associated_aneurysm", "AVM Associated Aneurysm", "Aneurysm associated with the malformation's arterial supply, stated without a §6 morphology record (§9).", true],
     ["mra_neck_dissection", "Carotid / Vertebral Dissection", "Radiologist-selected dissection interpretation for an extracranial artery (§11).", true],
     ["mrv_thrombosis", "Dural Sinus Thrombosis", "Radiologist-selected sinus thrombosis interpretation (§13).", true],

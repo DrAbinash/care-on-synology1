@@ -264,17 +264,20 @@ const MRA_TILES: BrainTile[] = [
     findings: vascularSplitFor("moyamoyaPattern").observation,
     impression: MOYAMOYA_PATTERN_IMPRESSION,
     section: VASCULAR_FINDINGS_SECTIONS.anteriorCirculation,
+    requiresVascular: "arterialAssessment",
   }),
   proseTile("mra-moyamoya-disease", "Moyamoya disease — radiologist diagnosis", "Moyamoya", {
     concept: MOYAMOYA_DISEASE.concept,
     findings: MOYAMOYA_DISEASE.findings,
     impression: MOYAMOYA_DISEASE.impression,
+    requiresVascular: "arterialAssessment",
     advanced: true,
   }),
   proseTile("mra-avm-nidus", "AVM with nidus and feeder (canonical)", "AVM", {
     concept: "avm",
     site: "AVM-PARIETAL",
     findings: vascularSplitFor("avmPattern").observation,
+    requiresVascular: "arterialAssessment",
   }),
   proseTile("mra-avm-early-drainage", "Early draining veins (time-resolved only)", "AVM", {
     concept: "avm_venous_drainage",
@@ -303,6 +306,7 @@ const MRA_NECK_TILES: BrainTile[] = [
     vessel: "carotid-bulb-left",
     findings: vascularSplitFor("carotidBulbStenosis").observation,
     section: VASCULAR_FINDINGS_SECTIONS.leftCarotid,
+    requiresVascular: "arterialAssessment",
   }),
   proseTile("neck-stenosis-nascet", "NASCET-graded stenosis (numeric, gated)", "Stenosis — numeric, gated", {
     vessel: "carotid-bulb-left",
@@ -345,6 +349,7 @@ const MRA_NECK_TILES: BrainTile[] = [
     findings: vascularSplitFor("vertebralPicaVariant").observation,
     impression: vascularSplitFor("vertebralPicaVariant").interpretation,
     section: VASCULAR_FINDINGS_SECTIONS.variants,
+    requiresVascular: "arterialAssessment",
   }),
   statusTile("neck-ectasia", "Tortuosity / ectasia", "Carotid system",
     "cca-right", "a:ectasia", { requiresVascular: "arterialAssessment" }),
@@ -360,6 +365,7 @@ const MRV_TILES: BrainTile[] = [
     vessel: "sss",
     findings: vascularSplitFor("cvstSagittal").observation,
     section: VASCULAR_FINDINGS_SECTIONS.duralSinuses,
+    requiresVascular: "thrombusSignal",
     requires: ["t1", "t2"],
   }),
   proseTile("mrv-thrombosis-diagnosis", "Dural venous sinus thrombosis (selected)", "Thrombosis — conclusion", {
@@ -388,6 +394,7 @@ const MRV_TILES: BrainTile[] = [
     section: VASCULAR_FINDINGS_SECTIONS.deepVenousSystem,
     severity: "critical",
     requires: ["flair"],
+    requiresVascular: "venousAssessment",
   }),
   statusTile("mrv-recanalization", "Recanalization", "Thrombosis — description",
     "sss", "v:recanalization", { requiresVascular: "venousAssessment", advanced: true }),
