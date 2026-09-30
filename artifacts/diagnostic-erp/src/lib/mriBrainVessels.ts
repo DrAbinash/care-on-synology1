@@ -151,10 +151,25 @@ function sidesOf(base: BaseVessel): VesselSide[] {
   return base.paired ? ["right", "left"] : ["unpaired"];
 }
 
+/**
+ * The one side-aware display name: "right MCA M1", "basilar artery". Segment is only
+ * appended when the vessel name does not already carry it, so "ICA terminus" never
+ * prints as "ICA terminus terminus".
+ */
+export function vesselDisplayName(
+  vessel: { vessel: string; segment?: string; side: VesselSide },
+): string {
+  const base =
+    vessel.segment && !vessel.vessel.includes(vessel.segment)
+      ? `${vessel.vessel} ${vessel.segment}`
+      : vessel.vessel;
+  return vessel.side === "unpaired" ? base : `${vessel.side} ${base}`;
+}
+
 function makeDefinition(base: BaseVessel, side: VesselSide): VesselDefinition {
   return {
     key: side === "unpaired" ? base.id : `${base.id}-${side}`,
-    label: side === "unpaired" ? base.vessel : `${side} ${base.vessel}`,
+    label: vesselDisplayName({ vessel: base.vessel, segment: base.segment, side }),
     territory: base.territory,
     system: base.system,
     side,

@@ -312,6 +312,11 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     ["mrs_metabolites", "MR Spectroscopy", "Structured MRS metabolite entry — descriptive only.", true],
     ["mra_arterial", "MRA Arterial", "Arterial occlusion / stenosis on MRA when adequately assessed.", true],
     ["mrv_venous", "MR Venography", "Dural venous sinus patency on MRV.", true],
+    // §10/§12 first-class non-pathologic variant slots. A separate concept, so a
+    // small-but-normal vessel never overwrites the pathology recorded on it (and the
+    // other way round) merely because both describe the same artery.
+    ["mra_variant", "Intracranial Arterial Variant", "Fetal PCA / A1 hypoplasia / vertebral dominance / PCom asymmetry — non-pathologic variant slot.", false],
+    ["mrv_variant", "Dural Sinus Developmental Variant", "Transverse sinus hypoplasia / aplasia — non-pathologic developmental variant slot.", false],
     // Mass effect / hydrocephalus / herniation family
     ["mass_effect", "Mass Effect", "Mass effect / sulcal or cisternal effacement / ventricular compression.", true],
     ["cerebral_hydrocephalus", "Hydrocephalus", "Hydrocephalus — obstructive or communicating.", true],
