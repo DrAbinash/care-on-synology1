@@ -37,10 +37,17 @@ import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
-import { isBrainMeasuresReportingContext, isMriBrainReportingContext } from "@/lib/reportingStudyContext";
+import {
+  isBrainMeasuresReportingContext,
+  isMriBrainReportingContext,
+  isXrayCervicalReportingContext,
+  isXrayChestReportingContext,
+} from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
+import { MriLumbarSubMasterPanel } from "@/components/radiology/reporting-canvas/MriLumbarSubMasterPanel";
+import { SpineScreeningPanel } from "@/components/radiology/reporting-canvas/SpineScreeningPanel";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -53,6 +60,8 @@ import {
   SpineApCanalMeasurements,
   BrainMeasuresStrip,
   MriBrainCanvas,
+  XrayChestCanvas,
+  XrayCervicalCanvas,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
@@ -713,6 +722,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     });
                                   }}
                                 />
+                                <MriLumbarSubMasterPanel
+                                  disabled={isLocked || isFinalized}
+                                  ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
+                                />
                                 <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} />
                               </>
                             ) : null}
@@ -795,6 +808,48 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     label: `${regionKey} ${concept}`,
                                     findingsText: phrase,
                                   });
+                                }}
+                              />
+                            ) : null}
+                            {/* X-ray Chest clinical sub-master — views/adequacy
+                first, palettes, devices, measures and comparison, all writing
+                through the existing ledger. */}
+                            {isXrayChestReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <XrayChestCanvas
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "Chest"}
+                                patientAge={workflow.currentRow?.age ?? null}
+                              />
+                            ) : null}
+                            {/* X-ray Cervical Spine clinical sub-master — the same
+                ledger path as the chest canvas, with odontoid / oblique /
+                flexion-extension gating and the cervical measurement panels. */}
+                            {isXrayCervicalReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <XrayCervicalCanvas
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "Cervical Spine"}
+                                patientAge={workflow.currentRow?.age ?? null}
+                              />
+                            ) : null}
+                            {studySetup.studyContext?.family === "spine" ? (
+                              <SpineScreeningPanel
+                                disabled={isLocked || isFinalized}
+                                ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
+                                billed={{
+                                  name: studySetup.testName ?? null,
+                                  studyDescription: workflow.currentRow?.studyDescription ?? null,
+                                  protocolName: studySetup.activeProtocol?.name ?? null,
+                                  reportTitle: studySetup.selectedTemplate?.name ?? null,
                                 }}
                               />
                             ) : null}

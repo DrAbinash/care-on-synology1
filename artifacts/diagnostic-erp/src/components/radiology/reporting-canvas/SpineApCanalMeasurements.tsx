@@ -34,12 +34,11 @@ import {
 } from "@/lib/spineCanalAp";
 import {
   CERVICAL_AP_LEVELS,
-  LUMBAR_AP_LEVELS,
   formatApMeasurements,
   createCervicalApSet,
-  createLumbarApSet,
   type SpineApMeasurementSet,
 } from "@/lib/mriSpineCanvasRegions";
+import { lumbarApCanalLevels } from "@/lib/mriSpineNumbering";
 
 export function SpineApCanalMeasurements({
   segment,
@@ -50,9 +49,13 @@ export function SpineApCanalMeasurements({
 }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
   const setCanalApCellProvenance = useWorkspace((s) => s.setCanalApCellProvenance);
+  const lumbarNumbering = useWorkspace((s) => s.lumbarNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
-  const levels = segment === "cervical" ? [...CERVICAL_AP_LEVELS] : [...LUMBAR_AP_LEVELS];
+  // Lumbar rows come from the numbering resolver, so a transitional vertebra
+  // cannot leave the AP table one segment out of step with the level rows
+  // (spec §5). Cervical keeps its routine list.
+  const levels = segment === "cervical" ? [...CERVICAL_AP_LEVELS] : lumbarApCanalLevels(lumbarNumbering);
 
   const handleChange = useCallback(
     (level: string, rawValue: string) => {
@@ -80,18 +83,18 @@ export function SpineApCanalMeasurements({
   );
 
   const reportBlock = useMemo(() => {
-    const set: SpineApMeasurementSet =
-      segment === "cervical" ? createCervicalApSet() : createLumbarApSet();
-    for (const level of levels) {
+    // Built from the same `levels` array the input grid renders, so an LSTV
+    // row's measurement can never be dropped from the report block.
+    const set: SpineApMeasurementSet = segment === "cervical"
+      ? createCervicalApSet()
+      : { segment: "lumbar", levels: levels.map((level) => ({ level, value: null })) };
+    levels.forEach((level, idx) => {
       const prov = canalApProvenance[level];
-      if (prov?.value) {
-        const idx = set.levels.findIndex((l) => l.level === level);
-        if (idx >= 0) {
-          const n = Number(prov.value);
-          set.levels[idx]!.value = Number.isFinite(n) ? n : null;
-        }
-      }
-    }
+      if (!prov?.value) return;
+      const n = Number(prov.value);
+      const row = set.levels[idx];
+      if (row) row.value = Number.isFinite(n) ? n : null;
+    });
     return formatApMeasurements(set);
   }, [canalApProvenance, levels, segment]);
 

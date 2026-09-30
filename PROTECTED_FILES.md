@@ -241,6 +241,34 @@ lib/mriBrainContradictions.ts     # normal-vs-abnormal + sequence-aware warnings
 components/radiology/reporting-canvas/MriBrainCanvas.tsx
 ```
 
+### Frontend X-ray Chest reporting (`artifacts/diagnostic-erp/src/`)
+```
+lib/xrayChestViews.ts             # technique → performed view/adequacy + projection statement rules
+lib/xrayChestAtoms.ts             # ChestAtomSpec → ledger patch atoms (one bundle id per group)
+lib/xrayChestNormalAtoms.ts       # projection-aware NORMAL baseline atoms
+lib/xrayChestMeasures.ts          # CTR, pneumothorax / effusion size bands, tension signs
+lib/xrayChestLesions.ts           # descriptive nodule / mass characterisation
+lib/xrayChestDevices.ts           # lines, tubes and devices — position + complication
+lib/xrayChestComparison.ts        # dated-prior interval statements (reuses radiologyComparison)
+lib/xrayChestSubMasters.ts        # 16 clinical sub-master palettes (tiles / presets)
+lib/xrayChestContradictions.ts    # normal-vs-abnormal + projection-aware warnings
+components/radiology/reporting-canvas/XrayChestCanvas.tsx
+```
+
+### Frontend X-ray Cervical Spine reporting (`artifacts/diagnostic-erp/src/`)
+```
+lib/xrayCervicalViews.ts          # technique → performed views, adequacy, inferior limit + the odontoid / foraminal / dynamic gates
+lib/xrayCervicalLevels.ts         # cervical level vocabulary (C1-T1, C2-3…C7-T1), T↔D tolerance, numbering consistency
+lib/xrayCervicalAtoms.ts          # CervicalAtomSpec → ledger patch atoms, normalized level in the slot key
+lib/xrayCervicalNormalAtoms.ts    # coverage-aware NORMAL baseline (never certifies unseen anatomy)
+lib/xrayCervicalMeasures.ts       # prevertebral / ADI / translation / angulation / Cobb with level + view + provenance
+lib/xrayCervicalDynamic.ts        # flexion-extension entries, derived change, radiologist-selected instability
+lib/xrayCervicalHardware.ts       # ACDF / posterior construct, continuity, lucency graded, never overstated
+lib/xrayCervicalSubMasters.ts     # 10 clinical sub-master palettes (tiles / presets) + capability gates
+lib/xrayCervicalContradictions.ts # normal-vs-abnormal, view-gated and level-consistency warnings
+components/radiology/reporting-canvas/XrayCervicalCanvas.tsx
+```
+
 ---
 
 ## 🟢 Shared / Core — load-bearing for both zones, treat like billing

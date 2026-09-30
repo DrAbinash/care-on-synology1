@@ -40,6 +40,11 @@ import {
   vascularTechniquePayload,
 } from "@/lib/mriBrainVascularDraftState";
 import {
+  SPINE_REPORTING_DRAFT_KEY,
+  extractSpineReportingState,
+  spineReportingDraftPayload,
+} from "@/lib/mriSpineDraftState";
+import {
   extractLinkedStudyFromStructuredJson,
   findingsSectionFromStudy,
   linkedStudyPayload,
@@ -251,6 +256,17 @@ useEffect(() => {
     if (restoredCanal) {
       useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
     }
+    // Spine V3: numbering / sequences / screening selections are restored so
+    // the canvas rebuilds the same structured state (prose stays ledger-owned).
+    const restoredSpine = extractSpineReportingState(draft.structuredJson);
+    if (restoredSpine) {
+      useWorkspace.setState({
+        lumbarNumbering: restoredSpine.lumbarNumbering,
+        sequencesAvailable: restoredSpine.sequencesAvailable,
+        screening: restoredSpine.screening,
+        impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
+      });
+    }
     // The radiologist's stated acquisition answers gate every strong vascular
     // sentence, so they must survive save → close → reopen unchanged.
     const restoredVascular = extractCareVascularTechnique(draft.structuredJson);
@@ -386,6 +402,14 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
           return { ...s, items: s.items.slice(-400) };
         })(),
         canalApProvenance: useWorkspace.getState().canalApProvenance,
+        // Spine V3 structured capture state (numbering / sequences / screening)
+        // — survives save → close → reopen like the AP provenance does.
+        [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload({
+          lumbarNumbering: useWorkspace.getState().lumbarNumbering,
+          sequencesAvailable: useWorkspace.getState().sequencesAvailable,
+          screening: useWorkspace.getState().screening,
+          impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
+        }),
         // Undefined while untouched, so existing reports gain no envelope key.
         vascularTechnique: vascularTechniquePayload(useWorkspace.getState().vascularTechnique),
         // Baseline format identity — survives save → close → reopen so the

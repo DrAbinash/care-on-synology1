@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   filterRegionNamesForModality,
   matchStudyRegion,
+  matchStudyRegionByCoreAnatomy,
   nextStudyRegions,
   resolveAutoStudyRegion,
 } from "./studyRegion";
@@ -145,5 +146,137 @@ describe("resolveAutoStudyRegion — billed procedure primary, DICOM fallback", 
     });
     expect(match.region).toBeNull();
     expect(match.source).toBeNull();
+  });
+});
+
+/**
+ * Live billed-catalog evidence (test-catalog export, 2026-09-28): the centre
+ * bills exactly one chest radiograph — code `XRAY-CHEST`, name `CHEST X-RAY`,
+ * and the worklist delivers the modality as `CR`. The Study Tabs seeded by
+ * migrations/zzzz_xr_gold_standard_content.sql are the four below. The billed
+ * name is NOT a substring of any tab name ("x-ray chest pa" ∉ "cr chest x-ray",
+ * word order differs), so before the token fallback this study resolved to
+ * nothing and opened with no protocol, no quick findings and no content pack.
+ */
+describe("billed chest radiograph → Study Tab (live catalog shape)", () => {
+  const LIVE_TABS = [
+    "Brain",
+    "Cervical Spine",
+    "LS Spine",
+    "CT Brain Plain",
+    "CT Chest Plain",
+    "X-Ray Chest PA",
+    "X-Ray Chest AP",
+    "X-Ray Portable Chest",
+    "X-Ray Chest Lateral",
+    "USG Abdomen",
+  ];
+  const xrTabs = filterRegionNamesForModality(LIVE_TABS, "CR");
+
+  it("keeps only the X-Ray tabs for a CR study", () => {
+    expect(xrTabs).toEqual([
+      "X-Ray Chest PA",
+      "X-Ray Chest AP",
+      "X-Ray Portable Chest",
+      "X-Ray Chest Lateral",
+    ]);
+  });
+
+  it("resolves the billed CHEST X-RAY to the reference PA tab", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "CR",
+      billedTestName: "CHEST X-RAY",
+      studyDescription: "",
+      orderedRegionNames: xrTabs,
+    });
+    expect(match).toEqual({
+      region: "X-Ray Chest PA",
+      source: "billed",
+      billedRegion: "X-Ray Chest PA",
+      dicomRegion: null,
+    });
+  });
+
+  it("honours the projection when the billed name or DICOM states one", () => {
+    const cases: Array<[string, string]> = [
+      ["X-RAY CHEST AP", "X-Ray Chest AP"],
+      ["X-RAY PORTABLE CHEST", "X-Ray Portable Chest"],
+      ["X-RAY CHEST LATERAL", "X-Ray Chest Lateral"],
+    ];
+    for (const [billed, expected] of cases) {
+      const match = resolveAutoStudyRegion({
+        modality: "CR",
+        billedTestName: billed,
+        studyDescription: "",
+        orderedRegionNames: xrTabs,
+      });
+      expect(match.region).toBe(expected);
+      expect(match.source).toBe("billed");
+    }
+  });
+
+  it("still uses the DICOM StudyDescription when the billed name is generic", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "CR",
+      billedTestName: "RADIOLOGY PROCEDURE — SUNDAY PACKAGE",
+      studyDescription: "PORTABLE CHEST",
+      orderedRegionNames: xrTabs,
+    });
+    expect(match.source).toBe("dicom");
+    expect(match.region).toBe("X-Ray Portable Chest");
+  });
+
+  it("does not hijack a CT or USG chest onto the plain-film tabs", () => {
+    const ctTabs = filterRegionNamesForModality(LIVE_TABS, "CT");
+    expect(
+      resolveAutoStudyRegion({
+        modality: "CT",
+        billedTestName: "CT CHEST",
+        studyDescription: "",
+        orderedRegionNames: ctTabs,
+      }).region,
+    ).toBe("CT Chest Plain");
+    expect(
+      resolveAutoStudyRegion({
+        modality: "US",
+        billedTestName: "USG CHEST",
+        studyDescription: "",
+        orderedRegionNames: filterRegionNamesForModality(LIVE_TABS, "US"),
+      }).region,
+    ).toBeNull();
+  });
+
+  it("leaves an unrelated plain study unresolved instead of guessing", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "CR",
+      billedTestName: "X-RAY KUB",
+      studyDescription: "",
+      orderedRegionNames: xrTabs,
+    });
+    expect(match.region).toBeNull();
+    expect(match.source).toBeNull();
+  });
+});
+
+describe("matchStudyRegionByCoreAnatomy — token fallback", () => {
+  const TABS = ["X-Ray Chest PA", "X-Ray Chest AP", "X-Ray Portable Chest", "X-Ray Chest Lateral"];
+
+  it("matches on whole core-anatomy tokens only", () => {
+    expect(matchStudyRegionByCoreAnatomy("cr chest x-ray", TABS)).toBe("X-Ray Chest PA");
+    expect(matchStudyRegionByCoreAnatomy("CHEST", TABS)).toBe("X-Ray Chest PA");
+    // "cat" contains no chest token; a partial word must never match.
+    expect(matchStudyRegionByCoreAnatomy("x-ray lumbar spine", TABS)).toBeNull();
+    expect(matchStudyRegionByCoreAnatomy("", TABS)).toBeNull();
+    expect(matchStudyRegionByCoreAnatomy(null, TABS)).toBeNull();
+  });
+
+  it("prefers the tab sharing a projection word with the hint", () => {
+    expect(matchStudyRegionByCoreAnatomy("x-ray chest ap view", TABS)).toBe("X-Ray Chest AP");
+    expect(matchStudyRegionByCoreAnatomy("portable chest radiograph", TABS)).toBe("X-Ray Portable Chest");
+    expect(matchStudyRegionByCoreAnatomy("chest lateral view", TABS)).toBe("X-Ray Chest Lateral");
+  });
+
+  it("never overrides a substring match (precedence unchanged)", () => {
+    expect(matchStudyRegion("CR X-Ray Chest AP", TABS)).toBe("X-Ray Chest AP");
   });
 });
