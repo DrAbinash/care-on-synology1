@@ -6,6 +6,7 @@
 import type { RadiologyWorkspaceVm } from "./types";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/fetchApi";
+import { getClinicDateIst } from "@/lib/careTime";
 import {
   shouldOfferBackupRestore, normalizeImpressionLines,
   canVerifyReport,
@@ -780,7 +781,10 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
                 registrationNo: (clinicSettings as { pcpndtRegistrationNo?: string } | undefined)?.pcpndtRegistrationNo,
                 doctorName: sessionFresh?.user?.name ?? session?.user?.name ?? "",
                 procedure: workflow.currentRow.studyDescription ?? "Obstetric Ultrasound",
-                procedureDate: new Date().toISOString().slice(0, 10),
+                // Stage 1A: prefill default only — the CARE business date, never
+                // the workstation clock. A date already carried by the study
+                // arrives through `prefill` above and wins over this.
+                procedureDate: getClinicDateIst() ?? "",
                 referredBy: canonicalDemography.referringDoctor || (workflow.currentRow as { referringDoctor?: string }).referringDoctor || "Self",
                 fetalUsgStudyId: Number(workflow.currentRow.id),
               }}

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { getClinicDateIst } from "@/lib/careTime";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -194,13 +195,22 @@ export default function BillReceiptScannerPanel() {
 
   const saveExpense = async () => {
     if (!draft) return;
+    // Stage 1A: the scanned bill's own date wins. Its fallback is the CARE
+    // business date from the server, not the workstation clock. When neither
+    // exists, the expense is not created with an invented or empty business
+    // date — the operator opens the expense form and enters one deliberately.
+    const expenseDate = draft.date || getClinicDateIst();
+    if (!expenseDate) {
+      setError("CARE clinic date is unavailable right now — save from the expense form and enter the date manually.");
+      return;
+    }
     setSaving(true); setError("");
     try {
       await api.post("/api/expenses", {
         category: mapExpenseCategory(draft.category),
         description: draft.description || draft.vendor || "Scanned bill",
         amount: draft.amount,
-        expenseDate: draft.date || new Date().toISOString().slice(0, 10),
+        expenseDate,
         paymentMode: mapExpensePaymentModeOptional(draft.paymentMode) || "cash",
         paidTo: draft.vendor || undefined,
         notes: draft.gstAmount > 0 ? `GST: ₹${draft.gstAmount}` : undefined,
