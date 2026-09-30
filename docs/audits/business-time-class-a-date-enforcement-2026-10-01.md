@@ -227,7 +227,7 @@ Guards, copied from the pattern already trusted on `study_snapshots` / `ai_shado
 | singleton | `CHECK (id = 1)` | `violates check constraint "care_time_integrity_policy_singleton"` |
 | evidence is append-only | `BEFORE UPDATE OR DELETE` + `BEFORE TRUNCATE` triggers | UPDATE → `refused`, DELETE → `refused`, TRUNCATE → `refused` |
 
-`check-migration-order.cjs` passes, and the migration path re-runs clean: **181/181 feature migrations OK**.
+`check-migration-order.cjs` passes, and the migration path re-runs clean: **181/181 feature migrations OK** at the first head (`8f754a6f`) and **182/182 OK** at the rebased head (`ce6db2df`), after #790 added `zzzzzz_bill_numbering_per_ledger.sql` to the sequence ahead of nothing and behind everything. Both runs are re-verified per §11.7.
 
 ### 11.2 Activation, and failing closed
 
@@ -274,3 +274,15 @@ Step 6 is the one only real data can settle: this repo's synthetic rows cannot r
 ### 11.6 PR 3a limits
 
 The cutover is set once, by migration; there is no endpoint to raise it later (that is a super-admin action needing the PR 3b authorization design, and it is deliberately absent rather than half-present). `describeBusinessDateRejection` from PR 1 is now dead code superseded by `recordBusinessDateRejection` — kept as the shape contract, deleted in PR 3b once nothing references it. No `time_received`/`time_processed` pair and no server-clock probe: both need a schema decision about writing to every money table, which is outside PR 3a's "add two tables" scope.
+
+### 11.7 Re-verification after the base moved (#789 merged, #790 landed)
+
+PR 2 (#789) was squash-merged as `740ee52d` and #790 (`d986685d`, per-book bill numbering) landed on `main` while PR 3a was still open, so PR 3a was rebased from `2c5bc973` onto the new `main` and **every live number in §11 was re-measured at the rebased head `ce6db2df` rather than carried over**. Re-run on a brand-new scratch database (`care_timegate3`) inside the same throwaway Postgres 16.15 container, with the api-server bundle rebuilt from this head and driven over real HTTP by an ordinary-staff session:
+
+- **182/182** feature migrations applied clean on the fresh database, including #790's `zzzzzz_bill_numbering_per_ledger.sql` and this PR's cutover migration.
+- **39/39** financial assertions, **4/4** clinical pass-through assertions — identical case list to §10.3/§10.4 and §11.4, re-passed at this head.
+- **153** unit tests across the **5** files that reference this control (`businessTime.stage0.characterization`, `careBusinessDatePolicy.final`, both `careTime.stage1a` files, `timeIntegrity.stage3.sourceContract`). A figure of 167 across 6 files appeared in the working notes for the pre-rebase head and was a miscount — a `careDateFieldRegistry.test.ts` does not exist; the registry is asserted inside `careBusinessDatePolicy.final.test.ts`. Corrected here rather than quietly.
+- Three §11.4 counts differ on the fresh database because the earlier ones were **cumulative across repeated runs on one database**, not per matrix pass. On a clean run: **10** rejection events (not 11), actor `subject_id = 2` (not 8 — the seeded staff user in a fresh database), `voucher_audits` **0 → 2** (not 0 → 12). The qualitative findings are unchanged: session-keyed actor, attempted date recorded beside the trusted date, evidence UPDATE/DELETE refused.
+- Run at `serverNow 2026-09-30T20:48Z` = **02:18 IST on 2026-10-01**, again inside the divergence window, so the §7 attack case was exercised by the real clock difference, not a faked one.
+
+On #790 specifically: it edits `routes/bills.ts`, `routes/form-f.ts`, `documentNumberCounters.ts` and adds a migration that `UPDATE`s `bills.ledger_id` for NULL rows. None of it introduces a client-supplied business date on a path this control polices, and the source-contract test's assertions that `bills.ts` and `form-f.ts` remain free of the guard still hold at this head. #790's own "Super Admin" route file lives under `__super_admin_quarantine/backup_usb_isolation_restore_point/`, which is not a mounted route, so nothing there reaches the API — recorded as an observation, not as a verified claim about its behaviour.
