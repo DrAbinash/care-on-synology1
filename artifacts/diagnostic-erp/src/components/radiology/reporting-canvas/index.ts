@@ -11,6 +11,7 @@ export { SpineApCanalMeasurements } from "./SpineApCanalMeasurements";
 export { BrainMeasuresStrip } from "./BrainMeasuresStrip";
 export { MriBrainCanvas } from "./MriBrainCanvas";
 export { XrayChestCanvas } from "./XrayChestCanvas";
+export { XrayCervicalCanvas } from "./XrayCervicalCanvas";
 export { ObservationLedgerPanel, CanvasViewModeToggle } from "./ObservationLedgerPanel";
 export { default as FindingComposer, useFindingComposerDraft } from "./FindingComposer";
 export { ContradictionBanner, ImpressionStaleBanner } from "./ContradictionBanner";

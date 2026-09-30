@@ -202,8 +202,15 @@ import {
 import {
   isBrainMeasuresReportingContext,
   isMriBrainReportingContext,
+  isXrayCervicalReportingContext,
   isXrayChestReportingContext,
 } from "@/lib/reportingStudyContext";
+import {
+  cervicalImpressionOrderWarnings,
+  cervicalTextContradictions,
+  cervicalUnvisualizedLevelClaims,
+} from "@/lib/xrayCervicalContradictions";
+import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { brainTextContradictions } from "@/lib/mriBrainContradictions";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
@@ -2614,6 +2621,28 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           impressionText,
           viewCtx: parseXrayChestViews(techniqueText),
         })
+      : []),
+    ...(isXrayCervicalReportingContext({
+      modality: workflow.currentRow?.modality,
+      region: studyRegion,
+      family: studySetup.studyContext?.family,
+      studyDescription: workflow.currentRow?.studyDescription,
+    })
+      ? (() => {
+          const cervicalCtx = parseXrayCervicalViews(techniqueText);
+          const body = `${findingsText}\n${impressionText}`;
+          return [
+            ...cervicalTextContradictions({
+              findingsText,
+              impressionText,
+              viewCtx: cervicalCtx,
+            }),
+            ...cervicalUnvisualizedLevelClaims(body, cervicalCtx),
+            ...cervicalImpressionOrderWarnings(
+              impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
+            ),
+          ];
+        })()
       : []),
     ...validateReport({
       findings: findingsText,

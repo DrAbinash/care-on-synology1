@@ -40,6 +40,7 @@ import {
 import {
   isBrainMeasuresReportingContext,
   isMriBrainReportingContext,
+  isXrayCervicalReportingContext,
   isXrayChestReportingContext,
 } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
@@ -58,6 +59,7 @@ import {
   BrainMeasuresStrip,
   MriBrainCanvas,
   XrayChestCanvas,
+  XrayCervicalCanvas,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
@@ -815,6 +817,21 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <XrayChestCanvas
                                 disabled={isLocked || isFinalized}
                                 region={studySetup.matchedStudyRegion ?? "Chest"}
+                                patientAge={workflow.currentRow?.age ?? null}
+                              />
+                            ) : null}
+                            {/* X-ray Cervical Spine clinical sub-master — the same
+                ledger path as the chest canvas, with odontoid / oblique /
+                flexion-extension gating and the cervical measurement panels. */}
+                            {isXrayCervicalReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <XrayCervicalCanvas
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "Cervical Spine"}
                                 patientAge={workflow.currentRow?.age ?? null}
                               />
                             ) : null}
