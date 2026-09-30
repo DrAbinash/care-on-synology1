@@ -34,10 +34,15 @@ import { fileURLToPath } from "node:url";
  * re-runnable for exactly this reason.
  */
 export async function ensureBillNumberingSchema(): Promise<void> {
-  const [{ present }] = await db.execute(sql`
+  // db.execute() hands back either an array or a { rows } envelope depending on
+  // the driver, so neither shape may be assumed here.
+  const result = await db.execute(sql`
     SELECT to_regprocedure('public.next_bill_number_seq(integer)') IS NOT NULL AS present
-  `) as unknown as [{ present: boolean }];
-  if (present) return;
+  `);
+  const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<{
+    present?: boolean;
+  }>;
+  if (rows[0]?.present) return;
 
   const migration = join(
     dirname(fileURLToPath(import.meta.url)),
