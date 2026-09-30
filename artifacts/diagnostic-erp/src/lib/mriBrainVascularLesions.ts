@@ -29,7 +29,10 @@
 import { brainBundleId, type BrainAtomSpec } from "./mriBrainAtoms";
 import { aneurysmAspectRatio, severityForAneurysm } from "./mriBrainMeasures";
 import type { BrainSequenceContext } from "./mriBrainSequences";
-import { vesselFindingsSection } from "./mriBrainVesselObservations";
+import {
+  remainderNormalAtom,
+  vesselFindingsSection,
+} from "./mriBrainVesselObservations";
 import {
   canonicalVesselSlot,
   isAneurysmCapableVessel,
@@ -61,6 +64,9 @@ export type VascularLesionResult = {
   /** The object is not recordable as entered — an unresolvable vessel, two rows on
    * one slot. Reported per row so a typo never writes onto another artery. */
   errors?: string[];
+  /** §19: the record is written, and the report should say why it looks odd. A
+   * warning never blocks a radiologist-controlled statement. */
+  warnings?: string[];
 };
 
 /** §6/§8/§9: a clause is only written when the radiologist chose one of these. */
@@ -102,7 +108,7 @@ export const ANEURYSM_UNRUPTURED_IMPRESSION =
 // ─── Measurement helpers ─────────────────────────────────────────────────
 
 /** A form field is a positive number or empty — and `Number("")` is 0, not empty. */
-function measure(raw: number | string | null | undefined): number | null {
+export function vascularMeasure(raw: number | string | null | undefined): number | null {
   if (raw === "" || raw == null) return null;
   const n = typeof raw === "number" ? raw : Number(raw);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -116,8 +122,8 @@ function measure(raw: number | string | null | undefined): number | null {
 export function aneurysmDomeNeckRatio(
   a: Pick<AneurysmRecord, "domeHeightMm" | "neckWidthMm">,
 ): number | null {
-  const dome = measure(a.domeHeightMm);
-  const neck = measure(a.neckWidthMm);
+  const dome = vascularMeasure(a.domeHeightMm);
+  const neck = vascularMeasure(a.neckWidthMm);
   if (dome == null || neck == null) return null;
   return aneurysmAspectRatio(dome, neck);
 }
@@ -151,9 +157,9 @@ export type AneurysmRecord = {
 export function aneurysmHasMorphologyInput(a: AneurysmRecord): boolean {
   return (
     Boolean(a.morphology)
-    || measure(a.domeHeightMm) != null
-    || measure(a.maxWidthMm) != null
-    || measure(a.neckWidthMm) != null
+    || vascularMeasure(a.domeHeightMm) != null
+    || vascularMeasure(a.maxWidthMm) != null
+    || vascularMeasure(a.neckWidthMm) != null
     || Boolean(a.orientation?.trim())
     || Boolean(a.branchIncorporation)
     || Boolean(a.daughterSac)
@@ -166,9 +172,9 @@ export function aneurysmHasMorphologyInput(a: AneurysmRecord): boolean {
 }
 
 function aneurysmDimensionsClause(a: AneurysmRecord): string {
-  const dome = measure(a.domeHeightMm);
-  const width = measure(a.maxWidthMm);
-  const neck = measure(a.neckWidthMm);
+  const dome = vascularMeasure(a.domeHeightMm);
+  const width = vascularMeasure(a.maxWidthMm);
+  const neck = vascularMeasure(a.neckWidthMm);
   const parts: string[] = [];
   if (dome != null) parts.push(`maximum dome height ${dome} mm`);
   if (width != null) parts.push(`maximum width ${width} mm`);
@@ -190,7 +196,7 @@ function morphologyWord(morphology: AneurysmMorphology | "" | undefined): string
 }
 
 /** The head clause is assembled from optional words, so its first letter is not known. */
-function sentenceCase(text: string): string {
+export function vascularSentenceCase(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -204,7 +210,7 @@ export function aneurysmFindingsSentence(a: AneurysmRecord, vesselLabel: string)
     a.segment?.trim() ? `at the ${a.segment.trim()}` : "",
     dims,
   ].filter(Boolean).join(" ");
-  const clauses: string[] = [`${sentenceCase(head)}.`];
+  const clauses: string[] = [`${vascularSentenceCase(head)}.`];
   if (a.orientation?.trim()) {
     clauses.push(`The aneurysm is oriented ${a.orientation.trim()}.`);
   }
@@ -236,8 +242,8 @@ export function aneurysmFindingsSentence(a: AneurysmRecord, vesselLabel: string)
 }
 
 export function aneurysmImpressionSentence(a: AneurysmRecord, vesselLabel: string): string {
-  const dome = measure(a.domeHeightMm);
-  const neck = measure(a.neckWidthMm);
+  const dome = vascularMeasure(a.domeHeightMm);
+  const neck = vascularMeasure(a.neckWidthMm);
   const size = dome != null && neck != null
     ? ` measuring ${dome} mm with a ${neck} mm neck`
     : dome != null
@@ -248,7 +254,7 @@ export function aneurysmImpressionSentence(a: AneurysmRecord, vesselLabel: strin
     morphologyWord(a.morphology),
     "aneurysm",
   ].filter(Boolean).join(" ");
-  return `${sentenceCase(`${head} of the ${vesselLabel}${size}`)}.`;
+  return `${vascularSentenceCase(`${head} of the ${vesselLabel}${size}`)}.`;
 }
 
 /** Every gate an aneurysm record can need, in the order the record is read. */
@@ -340,7 +346,7 @@ export function aneurysmAtoms(
     }
     seen.set(slotKey, `${vesselBaseKey(slot.vessel)}${slot.laterality ? `-${slot.laterality}` : ""}`);
 
-    const dome = measure(record.domeHeightMm);
+    const dome = vascularMeasure(record.domeHeightMm);
     const ratio = aneurysmDomeNeckRatio(record);
     atoms.push({
       concept: slot.concept,
@@ -367,13 +373,13 @@ export function aneurysmAtoms(
     return { atoms: [], bundleId: "", errors: errors.length ? errors : ["no aneurysm record entered"] };
   }
   if (ctx.remainderNormal?.trim()) {
-    atoms.push({
-      concept: "mra_arterial",
-      conflictGroup: "mra-arterial-remainder-normal",
-      anatomicalSection: VASCULAR_FINDINGS_SECTIONS.focalArterialAbnormality,
-      findings: ctx.remainderNormal.trim(),
-      role: "baseline",
-    });
+    // The same "the rest of the tree is normal" row the vessel status builder emits,
+    // so an aneurysm and an abnormal vessel row reconcile the normal identically.
+    atoms.push(remainderNormalAtom(
+      "mra_arterial",
+      "intracranialArterial",
+      ctx.remainderNormal,
+    ));
   }
   const key = [...seen.values()].join("+");
   return {
@@ -524,9 +530,9 @@ export type AvmRecord = {
 
 function nidusSizeClause(r: AvmRecord): string {
   const dims = [
-    measure(r.nidusApCm) != null ? `${r.nidusApCm} cm AP` : "",
-    measure(r.nidusTransverseCm) != null ? `${r.nidusTransverseCm} cm transverse` : "",
-    measure(r.nidusCcCm) != null ? `${r.nidusCcCm} cm craniocaudal` : "",
+    vascularMeasure(r.nidusApCm) != null ? `${r.nidusApCm} cm AP` : "",
+    vascularMeasure(r.nidusTransverseCm) != null ? `${r.nidusTransverseCm} cm transverse` : "",
+    vascularMeasure(r.nidusCcCm) != null ? `${r.nidusCcCm} cm craniocaudal` : "",
   ].filter(Boolean);
   return dims.length ? ` measuring ${dims.join(" × ")}` : "";
 }
