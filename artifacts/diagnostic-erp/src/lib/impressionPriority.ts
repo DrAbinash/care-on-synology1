@@ -194,6 +194,12 @@ export function rankImpressionLine(line: string, index = 0): RankedImpressionLin
 export type ImpressionOrderOptions = {
   /** Set once the radiologist edits or reorders the Impression by hand. */
   frozen?: boolean;
+  /**
+   * Composition-specific classifier (the Dorso-Lumbar §26 order). Only the
+   * categories change — this file stays the single place that sorts lines, so
+   * the freeze rule cannot be missed by a second sorter.
+   */
+  rankLine?: (line: string, index: number) => RankedImpressionLine;
 };
 
 /**
@@ -206,8 +212,9 @@ export function orderImpressionLines(
 ): string[] {
   const list = lines.map((line) => (line ?? "").trim()).filter(Boolean);
   if (options.frozen) return list;
+  const rank = options.rankLine ?? rankImpressionLine;
   return list
-    .map((line, index) => rankImpressionLine(line, index))
+    .map((line, index) => rank(line, index))
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
     .map((r) => r.line);
 }

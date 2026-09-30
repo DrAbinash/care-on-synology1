@@ -318,6 +318,17 @@ export function dorsolumbarCordCovered(state: DorsoLumbarState | null | undefine
   return dorsolumbarLevelKeys(state).some((entry) => entry.domain === "thoracic");
 }
 
+/**
+ * Is the bridge itself inside the acquired field of view?
+ *
+ * Stricter than `dorsolumbarConusCovered`: the conus may sit at L1-L2 and be
+ * assessable when the junction disc was not acquired, but a junction statement
+ * needs the T12-L1 level in the coverage.
+ */
+export function dorsolumbarJunctionCovered(state: DorsoLumbarState | null | undefined): boolean {
+  return dorsolumbarDomains(state).junction.length > 0;
+}
+
 /** Header banner: naming the counting basis and the coverage is a safety line. */
 export function dorsolumbarNumberingBanner(state: DorsoLumbarState | null | undefined): string {
   const s = state ?? defaultDorsoLumbarState();
@@ -381,7 +392,10 @@ export function dorsolumbarNeedsConsistencyCheck(state: DorsoLumbarState | null 
  * stranded levels are surfaced for the radiologist to review (spec §5).
  */
 export function dorsolumbarStrandedLevels(
-  rows: Array<{ observation?: { level?: string }; ownership?: { anatomicalSection?: string | null } }>,
+  rows: readonly {
+    observation?: { level?: string | null } | null;
+    ownership?: { anatomicalSection?: string | null } | null;
+  }[],
   state: DorsoLumbarState | null | undefined,
 ): string[] {
   const allowed = new Set(dorsolumbarLevelKeys(state).map((entry) => levelKey(entry.key)));

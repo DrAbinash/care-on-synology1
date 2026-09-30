@@ -69,6 +69,8 @@ import type {
   CompositionProvenance,
   StudyComposition,
 } from "@/lib/mriDorsoLumbarCatalog";
+import { isDorsoLumbarDedicated } from "@/lib/mriDorsoLumbarCatalog";
+import { rankDorsoLumbarImpressionLine } from "@/lib/mriDorsoLumbarImpression";
 import {
   defaultDorsoLumbarState,
   type DorsoLumbarState,
@@ -2056,7 +2058,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (get().impressionOrderFrozen) return;
     const lines = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
     if (lines.length < 2) return;
-    const next = orderImpressionLines(lines).join("\n");
+    // One sorter, one freeze rule; only the clinical category table changes when
+    // the study is a dedicated Dorso-Lumbar examination (spec §26).
+    const ordered = orderImpressionLines(lines, isDorsoLumbarDedicated(get().studyComposition)
+      ? { rankLine: rankDorsoLumbarImpressionLine }
+      : {});
+    const next = ordered.join("\n");
     if (next === lines.join("\n")) return;
     set({ impressionText: next, isDirty: true });
   },

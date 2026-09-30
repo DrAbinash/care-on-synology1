@@ -32,8 +32,8 @@ import {
   type DorsoLumbarNeuralStructure,
 } from "@/lib/mriDorsoLumbarCoverage";
 import { dorsoLumbarLevelEntryOptions } from "@/lib/mriDorsoLumbarLevelEntry";
+import { dorsoLumbarFindingsOrder } from "@/lib/mriDorsoLumbarValidation";
 import { isDorsoLumbarDedicated } from "@/lib/mriDorsoLumbarCatalog";
-import { dorsolumbarJunctionWarnings } from "@/lib/mriDorsoLumbarJunction";
 
 const DOMAIN_LABEL: Record<DorsoLumbarDomain, string> = {
   thoracic: "Thoracic",
@@ -100,10 +100,18 @@ export function MriDorsoLumbarCanvas({
     return map;
   }, [rows]);
 
-  const warnings = useMemo(() => [
-    ...dorsolumbarStrandedLevels(rows, state),
-    ...dorsolumbarJunctionWarnings(rows, composition),
-  ], [rows, state, composition]);
+  // Coverage stranding is shown where the level cards are, because that is the
+  // surface the radiologist is reading. The duplicate-junction rule is not
+  // repeated here: the sub-master panel raises it next to the tile that caused
+  // it and the report-level warning strip owns the full list.
+  const warnings = useMemo(
+    () => dorsolumbarStrandedLevels(rows, state),
+    [rows, state],
+  );
+
+  // §25: the applied rows grouped in the recommended report order. Prose stays
+  // the composer's; this only shows the shape the ledger currently produces.
+  const shape = useMemo(() => dorsoLumbarFindingsOrder(rows, state), [rows, state]);
 
   const focusIndex = useCallback((idx: number) => {
     const n = levels.length;
@@ -174,6 +182,22 @@ export function MriDorsoLumbarCanvas({
         >
           {dorsolumbarNumberingCaution(state)}
         </p>
+      ) : null}
+
+      {shape.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1" data-testid="mri-dorsolumbar-report-shape">
+          <span className="text-[8px] font-bold uppercase text-teal-800">Report shape</span>
+          {shape.map((group) => (
+            <span
+              key={group.section}
+              title={`${group.rows.length} applied row(s) · ${group.label}`}
+              className="rounded border border-teal-200 bg-white px-1 py-px text-[8px] text-teal-900"
+              data-testid={`mri-dorsolumbar-report-section-${group.section}`}
+            >
+              {group.label} · {group.rows.length}
+            </span>
+          ))}
+        </div>
       ) : null}
 
       {warnings.length > 0 ? (
