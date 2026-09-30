@@ -47,6 +47,8 @@ import {
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
+import { MriLumbarSubMasterPanel } from "@/components/radiology/reporting-canvas/MriLumbarSubMasterPanel";
+import { SpineScreeningPanel } from "@/components/radiology/reporting-canvas/SpineScreeningPanel";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -722,6 +724,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     });
                                   }}
                                 />
+                                <MriLumbarSubMasterPanel
+                                  disabled={isLocked || isFinalized}
+                                  ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
+                                />
                                 <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} />
                               </>
                             ) : null}
@@ -850,6 +856,18 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <XrayLsSpineCanvas
                                 disabled={isLocked || isFinalized}
                                 region={studySetup.matchedStudyRegion ?? "LS Spine"}
+                              />
+                            ) : null}
+                            {studySetup.studyContext?.family === "spine" ? (
+                              <SpineScreeningPanel
+                                disabled={isLocked || isFinalized}
+                                ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
+                                billed={{
+                                  name: studySetup.testName ?? null,
+                                  studyDescription: workflow.currentRow?.studyDescription ?? null,
+                                  protocolName: studySetup.activeProtocol?.name ?? null,
+                                  reportTitle: studySetup.selectedTemplate?.name ?? null,
+                                }}
                               />
                             ) : null}
                             <ObservationLedgerPanel

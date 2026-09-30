@@ -225,6 +225,15 @@ import { chestTextContradictions } from "@/lib/xrayChestContradictions";
 import { parseXrayChestViews } from "@/lib/xrayChestViews";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
 import { buildDorsalLevelApplyBundle } from "@/lib/mriDorsalLevelState";
+import { lumbarTextContradictions } from "@/lib/mriSpineContradictions";
+import { screeningTextContradictions } from "@/lib/mriSpineScreening";
+import {
+  SPINE_SEQUENCE_KEYS,
+  deriveSpineSequencesAvailable,
+  type SpineSequencesAvailable,
+} from "@/lib/mriSpineSequences";
+import { isNonStandardNumbering } from "@/lib/mriSpineNumbering";
+import { resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
 import {
   AnchorRail,
   CoverageCockpit,
@@ -669,6 +678,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     techniqueProvenance,
   } = useDebouncedWorkspaceClinicalTexts(300);
   const impressionNeedsRefresh = useWorkspace((s: WorkspaceStore) => s.impressionNeedsRefresh);
+  // MRI Lumbar V3: the spine platform's own store slices (single source — the
+  // panels render these and the validators read the same values).
+  const lumbarNumbering = useWorkspace((s: WorkspaceStore) => s.lumbarNumbering);
+  const spineSequencesAvailable = useWorkspace((s: WorkspaceStore) => s.sequencesAvailable);
+  const spineScreening = useWorkspace((s: WorkspaceStore) => s.screening);
+  const impressionOrderFrozen = useWorkspace((s: WorkspaceStore) => s.impressionOrderFrozen);
   const ownershipReviewWarnings = useWorkspace((s: WorkspaceStore) => s.ownershipReviewWarnings);
   const ledgerHydrationWarning = useWorkspace((s: WorkspaceStore) => s.ledgerHydrationWarning);
   const appliedPathologyPatches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
@@ -2602,9 +2617,41 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     compactAccordion,
   });
 
+  // MRI Lumbar V3 §40/§43 — the spine validators run for spine studies only, so
+  // a brain/MSK report is never warned about lumbar level naming.
+  const spineFamily = studySetup.studyContext?.family === "spine";
+  const spineLumbarContext = isMriLumbarReportingContext({
+    modality: workflow.currentRow?.modality,
+    region: studyRegion,
+    family: studySetup.studyContext?.family,
+    spineSegment: studySetup.studyContext?.spineSegment,
+    protocolName: studySetup.activeProtocol?.name ?? null,
+    studyDescription: workflow.currentRow?.studyDescription ?? null,
+  });
+  // Level naming matters whenever LS detail is in play: the LS canvas, a
+  // transitional-numbering scheme, or LS screening contributing prose.
+  const spineLsLevelNamingActive = spineLumbarContext
+    || isNonStandardNumbering(lumbarNumbering)
+    || spineScreening.ls.performed;
+
   const impressionContradictionWarnings = useMemo(() => [
     ...structuredCanalApContradiction(appliedPathologyPatches),
     ...ledgerSeverityContradiction(appliedPathologyPatches, impressionText),
+    ...(spineLsLevelNamingActive
+      ? lumbarTextContradictions({
+          findingsText,
+          impressionText,
+          sequences: spineSequencesAvailable,
+          numbering: lumbarNumbering,
+        })
+      : []),
+    ...(spineFamily
+      ? screeningTextContradictions({
+          findingsText,
+          impressionText,
+          state: spineScreening,
+        })
+      : []),
     ...(isMriBrainReportingContext({
       modality: workflow.currentRow?.modality,
       region: studyRegion,
@@ -2680,7 +2727,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       findings: findingsText,
       impression: impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean),
     }).filter(isImpressionContradictionWarning),
-  ], [appliedPathologyPatches, impressionText, findingsText, techniqueText, studyRegion, studySetup.studyContext?.family, workflow.currentRow?.modality, workflow.currentRow?.studyDescription]);
+  ], [appliedPathologyPatches, impressionText, findingsText, techniqueText, studyRegion, studySetup.studyContext?.family, workflow.currentRow?.modality, workflow.currentRow?.studyDescription, spineLsLevelNamingActive, spineFamily, spineSequencesAvailable, lumbarNumbering, spineScreening]);
 
   const impressionManuallyEdited = impressionProvenanceIsRadiologistManual(impressionProvenance);
   // Auto-derived impressions refresh themselves. The stale banner is only for
@@ -2690,7 +2737,49 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const live = useWorkspace.getState().fieldProvenance.impression;
     if (impressionProvenanceIsRadiologistManual(live)) return;
     useWorkspace.getState().refreshImpressionFromLedger();
-  }, [impressionNeedsRefresh]);
+    // §37: spine impressions are re-sorted by clinical priority, but a hand
+    // -built Impression (impressionOrderFrozen) is left exactly as written.
+    if (spineFamily) useWorkspace.getState().orderImpressionByPriority();
+  }, [impressionNeedsRefresh, spineFamily]);
+
+  // §23: on study open (and when the billed exam / protocol changes) propose
+  // each spine region's role from the catalog. Billing never asserts a sequence.
+  useEffect(() => {
+    if (!spineFamily) return;
+    const ws = useWorkspace.getState();
+    const resolved = resolveScreeningRoles({
+      name: studySetup.testName ?? null,
+      studyDescription: workflow.currentRow?.studyDescription ?? null,
+      protocolName: studySetup.activeProtocol?.name ?? null,
+      reportTitle: ws.appliedFormatName ?? null,
+    });
+    ws.replaceScreeningRoles(resolved.roles);
+  }, [spineFamily, studySetup.testName, studySetup.activeProtocol?.name, workflow.currentRow?.studyDescription]);
+
+  // §35: coverage is derived from the recorded technique/description, and a
+  // radiologist override in the canvas is never re-derived away.
+  const spineCoverageKey = `${activeStudyId ?? ""}|${techniqueText}|${workflow.currentRow?.studyDescription ?? ""}`;
+  const spineDeriveRef = useRef<{ key: string; seq: SpineSequencesAvailable | null }>({ key: "", seq: null });
+  useEffect(() => {
+    if (!spineFamily) return;
+    const ws = useWorkspace.getState();
+    const derived = deriveSpineSequencesAvailable({
+      techniqueText,
+      studyDescription: workflow.currentRow?.studyDescription ?? null,
+      protocolName: studySetup.activeProtocol?.name ?? null,
+      reportTitle: ws.appliedFormatName ?? null,
+    });
+    const prev = spineDeriveRef.current;
+    const studyChanged = prev.key.split("|")[0] !== spineCoverageKey.split("|")[0];
+    const untouched = studyChanged
+      || !prev.seq
+      || SPINE_SEQUENCE_KEYS.every((k) => ws.sequencesAvailable[k] === (prev.seq as SpineSequencesAvailable)[k]);
+    if (untouched) ws.replaceSequencesAvailable(derived);
+    spineDeriveRef.current = {
+      key: spineCoverageKey,
+      seq: untouched ? derived : prev.seq,
+    };
+  }, [spineFamily, spineCoverageKey, techniqueText, workflow.currentRow?.studyDescription, studySetup.activeProtocol?.name]);
 
   // Auto-reveal sections that carry NEW validation / stale warnings so collapse
   // never hides a blocker on first appearance. Edge-triggered: once a need set

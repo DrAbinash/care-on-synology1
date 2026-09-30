@@ -1540,10 +1540,20 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "transitional_vertebra",
     label: "Transitional Vertebra",
     description:
-      "Vertebra with hybrid segmentation between spine regions. Modality-safe numbering concept used by cervical and lumbosacral radiography.",
-    aliases: ["transitional_vertebra", "transitional anatomy", "lumbarized vertebra"],
+      "Vertebra with hybrid segmentation between spine regions. LSTV / Castellvi anatomy is what drives vertebral numbering, and the concept is shared by MRI, CT and radiography rather than declared once per modality.",
+    aliases: [
+      "transitional_vertebra",
+      "transitional anatomy",
+      "lumbarized vertebra",
+      "lstv",
+      "transitional vertebra",
+      "lumbosacral transitional vertebra",
+      "sacralization",
+      "lumbarization",
+      "castellvi",
+    ],
     regions: ["cervical spine", "ls spine", "whole spine"],
-    modalities: ["XR", "CT"],
+    modalities: ["XR", "CT", "MR"],
     impressionworthyAbnormal: true,
   },
   {
@@ -1660,10 +1670,17 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "adjacent_segment_degeneration",
     label: "Adjacent-Segment Degeneration",
-    description: "Degenerative change at the levels adjacent to a cervical fusion construct.",
-    aliases: ["adjacent_segment_degeneration", "adjacent segment disease on imaging", "next-segment degeneration"],
-    regions: ["cervical spine", "ls spine"],
-    modalities: ["XR"],
+    description:
+      "Degenerative change at the levels adjacent to a fusion construct — one concept for MRI, CT and radiography so a post-operative report cannot split by modality.",
+    aliases: [
+      "adjacent_segment_degeneration",
+      "adjacent segment disease on imaging",
+      "next-segment degeneration",
+      "adjacent segment disease",
+      "adjacent segment degeneration",
+    ],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["XR", "MR"],
     impressionworthyAbnormal: true,
   },
 
@@ -1699,7 +1716,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_acute_malalignment",
     label: "Acute malalignment without fracture",
-    description: "Malalignment at the without demonstrable fracture.",
+    description: "Malalignment without demonstrable fracture.",
     aliases: ["ls_acute_malalignment", "acute malalignment without fracture"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1717,7 +1734,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_anterolisthesis",
     label: "Anterolisthesis",
-    description: "the of the over the.",
+    description: "Anterolisthesis.",
     aliases: ["ls_anterolisthesis", "anterolisthesis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1726,7 +1743,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_broad_transverse_process",
     label: "Broad / sacralized transverse process",
-    description: "Broad transverse process at the.",
+    description: "Broad / sacralized transverse process.",
     aliases: ["ls_broad_transverse_process", "broad / sacralized transverse process"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1744,7 +1761,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_canal_gas",
     label: "Gas within the spinal canal / foramen",
-    description: "Gas projected over the canal at the.",
+    description: "Gas within the spinal canal / foramen.",
     aliases: ["ls_canal_gas", "gas within the spinal canal / foramen"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1753,7 +1770,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_castellvi",
     label: "Castellvi type (radiologist-selected)",
-    description: "Transitional lumbosacral vertebra, Castellvi type the.",
+    description: "Castellvi type (radiologist-selected).",
     aliases: ["ls_castellvi", "castellvi type (radiologist-selected)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1771,7 +1788,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_cobb_deformity",
     label: "Cobb angle (measured)",
-    description: "Lumbar scoliosis, Cobb angle the degrees between the and the.",
+    description: "Cobb angle (measured).",
     aliases: ["ls_cobb_deformity", "cobb angle (measured)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1798,7 +1815,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_cortical_disruption",
     label: "Cortical disruption, level indeterminate",
-    description: "Cortical disruption at the.",
+    description: "Cortical disruption, level indeterminate.",
     aliases: ["ls_cortical_disruption", "cortical disruption, level indeterminate"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1807,7 +1824,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_coverage_bowel",
     label: "Obscured by bowel gas / stool",
-    description: "The lower lumbar and lumbosacral segments are partially obscured by bowel gas and stool, limiting assessment of the.",
+    description: "Obscured by bowel gas / stool.",
     aliases: ["ls_coverage_bowel", "obscured by bowel gas / stool"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1852,7 +1869,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_degenerative_listhesis",
     label: "Degenerative listhesis",
-    description: "Degenerative the at the.",
+    description: "Degenerative listhesis.",
     aliases: ["ls_degenerative_listhesis", "degenerative listhesis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1861,7 +1878,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_degenerative_scoliosis",
     label: "Degenerative scoliosis with spondylosis",
-    description: "Degenerative lumbar scoliosis, most marked at the.",
+    description: "Degenerative scoliosis with spondylosis.",
     aliases: ["ls_degenerative_scoliosis", "degenerative scoliosis with spondylosis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1870,7 +1887,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_dextroconvex",
     label: "Dextroconvex curvature",
-    description: "Dextroconvex lumbar scoliosis, apex the.",
+    description: "Dextroconvex curvature.",
     aliases: ["ls_dextroconvex", "dextroconvex curvature"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1897,7 +1914,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_disc_narrowing",
     label: "Disc-space narrowing",
-    description: "Disc-space narrowing at the.",
+    description: "Disc-space narrowing.",
     aliases: ["ls_disc_narrowing", "disc-space narrowing"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1933,7 +1950,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_dynamic_instability",
     label: "Instability (radiologist-selected)",
-    description: "Dynamic instability at the.",
+    description: "Instability (radiologist-selected).",
     aliases: ["ls_dynamic_instability", "instability (radiologist-selected)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1942,7 +1959,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_dynamic_motion_limitation",
     label: "Limited segmental motion (selected)",
-    description: "Limited motion at the.",
+    description: "Limited segmental motion (selected).",
     aliases: ["ls_dynamic_motion_limitation", "limited segmental motion (selected)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1960,7 +1977,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_dynamic_reassuring",
     label: "No significant change between positions",
-    description: "No dynamic instability at the.",
+    description: "No significant change between positions.",
     aliases: ["ls_dynamic_reassuring", "no significant change between positions"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1978,7 +1995,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_dysraphism_marker",
     label: "Spinal dysraphism-associated marker",
-    description: "Posterior arch defect at the with a soft-tissue marker.",
+    description: "Posterior arch defect with a soft-tissue marker.",
     aliases: ["ls_dysraphism_marker", "spinal dysraphism-associated marker"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1987,7 +2004,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_endplate_change_pattern",
     label: "Endplate change (radiographic pattern)",
-    description: "Degenerative endplate change at the.",
+    description: "Endplate change (radiographic pattern).",
     aliases: ["ls_endplate_change_pattern", "endplate change (radiographic pattern)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -1996,7 +2013,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_endplate_irregularity",
     label: "Endplate irregularity",
-    description: "Irregularity of the endplates at the.",
+    description: "Endplate irregularity.",
     aliases: ["ls_endplate_irregularity", "endplate irregularity"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2005,7 +2022,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_endplate_sclerosis",
     label: "Endplate sclerosis",
-    description: "Endplate sclerosis at the.",
+    description: "Endplate sclerosis.",
     aliases: ["ls_endplate_sclerosis", "endplate sclerosis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2032,7 +2049,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_facet_arthropathy",
     label: "Facet arthropathy",
-    description: "Facet arthropathy at the, the.",
+    description: "Facet arthropathy.",
     aliases: ["ls_facet_arthropathy", "facet arthropathy"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2050,7 +2067,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_foraminal_narrowing",
     label: "Foraminal narrowing (oblique)",
-    description: "Foraminal narrowing at the, the.",
+    description: "Foraminal narrowing (oblique).",
     aliases: ["ls_foraminal_narrowing", "foraminal narrowing (oblique)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2068,7 +2085,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_haemangioma_pattern",
     label: "Vertebral haemangioma-like pattern",
-    description: "Benign-appearing vertebral lesion at the with coarse vertical striations.",
+    description: "Benign-appearing vertebral lesion with coarse vertical striations.",
     aliases: ["ls_haemangioma_pattern", "vertebral haemangioma-like pattern"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2086,7 +2103,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_high_grade_listhesis",
     label: "High-grade slip / spondyloptosis",
-    description: "High-grade the at the.",
+    description: "High-grade slip / spondyloptosis.",
     aliases: ["ls_high_grade_listhesis", "high-grade slip / spondyloptosis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2095,7 +2112,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_isthmic_listhesis",
     label: "Isthmic spondylolisthesis (pars + slip)",
-    description: "Isthmic the at the.",
+    description: "Isthmic spondylolisthesis (pars + slip).",
     aliases: ["ls_isthmic_listhesis", "isthmic spondylolisthesis (pars + slip)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2113,7 +2130,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_lateral_listhesis",
     label: "Lateral translation / scoliotic listhesis",
-    description: "Lateral listhesis at the.",
+    description: "Lateral translation / scoliotic listhesis.",
     aliases: ["ls_lateral_listhesis", "lateral translation / scoliotic listhesis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2122,7 +2139,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_levoconvex",
     label: "Levoconvex curvature",
-    description: "Levoconvex lumbar scoliosis, apex the.",
+    description: "Levoconvex curvature.",
     aliases: ["ls_levoconvex", "levoconvex curvature"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2131,7 +2148,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_ligament_ossification",
     label: "Ligamentous ossification",
-    description: "Posterior ligamentous ossification at the.",
+    description: "Ligamentous ossification.",
     aliases: ["ls_ligament_ossification", "ligamentous ossification"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2140,7 +2157,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_listhesis_measured",
     label: "Slip with measured translation",
-    description: "the at the, the (Meyerding, derived from the measured slip).",
+    description: "Slip with measured translation.",
     aliases: ["ls_listhesis_measured", "slip with measured translation"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2194,7 +2211,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_mixed_lesion",
     label: "Mixed lytic-sclerotic lesion",
-    description: "Mixed density osseous lesion at the.",
+    description: "Mixed lytic-sclerotic lesion.",
     aliases: ["ls_mixed_lesion", "mixed lytic-sclerotic lesion"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2212,7 +2229,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_multilevel_degeneration",
     label: "Multilevel spondylotic change",
-    description: "Multilevel lumbar spondylotic/degenerative changes, most pronounced at the.",
+    description: "Multilevel spondylotic change.",
     aliases: ["ls_multilevel_degeneration", "multilevel spondylotic change"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2221,7 +2238,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_multilevel_destruction",
     label: "Multilevel destruction",
-    description: "Adjacent-segment destructive pattern at the.",
+    description: "Multilevel destruction.",
     aliases: ["ls_multilevel_destruction", "multilevel destruction"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2275,7 +2292,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_osteophytes",
     label: "Marginal osteophytes",
-    description: "Marginal osteophytes at the.",
+    description: "Marginal osteophytes.",
     aliases: ["ls_osteophytes", "marginal osteophytes"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2293,7 +2310,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_paravertebral_soft_tissue",
     label: "Paravertebral soft-tissue abnormality",
-    description: "Paravertebral soft-tissue abnormality at the.",
+    description: "Paravertebral soft-tissue abnormality.",
     aliases: ["ls_paravertebral_soft_tissue", "paravertebral soft-tissue abnormality"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2302,7 +2319,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pars_defect",
     label: "Pars defect (bilateral)",
-    description: "Bilateral pars defect at the.",
+    description: "Pars defect (bilateral).",
     aliases: ["ls_pars_defect", "pars defect (bilateral)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2311,7 +2328,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pars_defect_unilateral",
     label: "Pars defect (unilateral, oblique)",
-    description: "the pars defect at the.",
+    description: "Pars defect (unilateral, oblique).",
     aliases: ["ls_pars_defect_unilateral", "pars defect (unilateral, oblique)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2320,7 +2337,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pars_equivocal",
     label: "Equivocal pars lucency",
-    description: "Equivocal pars lucency at the.",
+    description: "Equivocal pars lucency.",
     aliases: ["ls_pars_equivocal", "equivocal pars lucency"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2329,7 +2346,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pathologic_collapse",
     label: "Vertebral collapse with endplate loss",
-    description: "Vertebral collapse with endplate destruction at the.",
+    description: "Vertebral collapse with endplate loss.",
     aliases: ["ls_pathologic_collapse", "vertebral collapse with endplate loss"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2338,7 +2355,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pathologic_fracture",
     label: "Pathological fracture pattern",
-    description: "Pathological fracture of the.",
+    description: "Pathological fracture pattern.",
     aliases: ["ls_pathologic_fracture", "pathological fracture pattern"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2347,7 +2364,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_pedicle_lesion",
     label: "Absent / involved pedicle (winking owl)",
-    description: "Absent the pedicle at the.",
+    description: "Absent / involved pedicle (winking owl).",
     aliases: ["ls_pedicle_lesion", "absent / involved pedicle (winking owl)"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2365,7 +2382,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_post_radiation",
     label: "Post-radiation change",
-    description: "Post-radiation osseous change at the.",
+    description: "Post-radiation change.",
     aliases: ["ls_post_radiation", "post-radiation change"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2374,7 +2391,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_posterior_element_fracture",
     label: "Posterior element fracture",
-    description: "Posterior element fracture at the.",
+    description: "Posterior element fracture.",
     aliases: ["ls_posterior_element_fracture", "posterior element fracture"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2392,7 +2409,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_postop_alignment",
     label: "Post-operative alignment maintained",
-    description: "Alignment is maintained across the instrumented segments at the.",
+    description: "Post-operative alignment maintained.",
     aliases: ["ls_postop_alignment", "post-operative alignment maintained"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2401,7 +2418,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_postop_hardware",
     label: "Laminectomy",
-    description: "Post-operative laminectomy at the.",
+    description: "Laminectomy.",
     aliases: ["ls_postop_hardware", "laminectomy"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2410,7 +2427,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_retrolisthesis",
     label: "Retrolisthesis",
-    description: "Retrolisthesis of the over the.",
+    description: "Retrolisthesis.",
     aliases: ["ls_retrolisthesis", "retrolisthesis"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2455,7 +2472,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_schmorl_node",
     label: "Schmorl-node appearance",
-    description: "Central endplate herniation (Schmorl-node appearance) of the.",
+    description: "Schmorl-node appearance.",
     aliases: ["ls_schmorl_node", "schmorl-node appearance"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2464,7 +2481,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_sclerotic_lesion",
     label: "Focal sclerotic lesion",
-    description: "Focal sclerotic lesion at the.",
+    description: "Focal sclerotic lesion.",
     aliases: ["ls_sclerotic_lesion", "focal sclerotic lesion"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2482,7 +2499,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_si_ankylosis",
     label: "SI ankylosis / fusion",
-    description: "the sacroiliac ankylosis.",
+    description: "SI ankylosis / fusion.",
     aliases: ["ls_si_ankylosis", "si ankylosis / fusion"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2509,7 +2526,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_si_irregularity",
     label: "SI joint irregularity",
-    description: "the sacroiliac joint irregularity.",
+    description: "SI joint irregularity.",
     aliases: ["ls_si_irregularity", "si joint irregularity"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2527,7 +2544,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_si_narrowing",
     label: "SI joint-space narrowing",
-    description: "the sacroiliac joint narrowing.",
+    description: "SI joint-space narrowing.",
     aliases: ["ls_si_narrowing", "si joint-space narrowing"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2545,7 +2562,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_spina_bifida",
     label: "Spina bifida occulta of L5/S1",
-    description: "Spina bifida occulta at the.",
+    description: "Spina bifida occulta of L5/S1.",
     aliases: ["ls_spina_bifida", "spina bifida occulta of l5/s1"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2554,7 +2571,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_transitional_fusion",
     label: "Fusion with the sacrum",
-    description: "Transitional lumbosacral anatomy with partial sacral fusion, the.",
+    description: "Fusion with the sacrum.",
     aliases: ["ls_transitional_fusion", "fusion with the sacrum"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2563,7 +2580,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_transitional_pseudoarticulation",
     label: "Pseudoarticulation with the sacrum",
-    description: "Transitional vertebra with pseudoarticulation, the.",
+    description: "Pseudoarticulation with the sacrum.",
     aliases: ["ls_transitional_pseudoarticulation", "pseudoarticulation with the sacrum"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2572,7 +2589,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_transverse_process_enlarged",
     label: "Enlarged transverse process",
-    description: "Enlarged the transverse process of the.",
+    description: "Enlarged transverse process.",
     aliases: ["ls_transverse_process_enlarged", "enlarged transverse process"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2581,7 +2598,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_transverse_process_fracture",
     label: "Transverse process fracture",
-    description: "Transverse process fracture at the.",
+    description: "Transverse process fracture.",
     aliases: ["ls_transverse_process_fracture", "transverse process fracture"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2608,7 +2625,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_vertebral_rotation",
     label: "Vertebral rotation described",
-    description: "Apical vertebral rotation at the.",
+    description: "Vertebral rotation described.",
     aliases: ["ls_vertebral_rotation", "vertebral rotation described"],
     regions: ["ls spine"],
     modalities: ["XR"],
@@ -2617,13 +2634,253 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
   {
     concept: "ls_wedge_deformity",
     label: "Anterior wedge deformity",
-    description: "Anterior wedging of the.",
+    description: "Anterior wedge deformity.",
     aliases: ["ls_wedge_deformity", "anterior wedge deformity"],
     regions: ["ls spine"],
     modalities: ["XR"],
     impressionworthyAbnormal: true,
   },
 
+  // ─── MRI Spine sub-master V3: lumbar detail, screening, numbering ───────
+  // Region hints are advisory. Aliases already claimed above keep resolving
+  // to their original owner (first declaration wins), so nothing here can
+  // re-route an existing spine concept.
+  {
+    concept: "lateral_recess_stenosis",
+    label: "Lateral Recess Stenosis",
+    description: "Lateral recess narrowing/stenosis. Left and right coexist.",
+    aliases: ["lateral recess stenosis", "lateral recess narrowing", "subarticular recess narrowing"],
+    regions: ["ls spine", "cervical spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "canal_morphology",
+    label: "Canal Morphology",
+    description: "CSF/thecal-sac configuration: effacement, crowding, trefoil.",
+    aliases: ["canal morphology", "csf effacement", "thecal sac configuration", "trefoil configuration"],
+    regions: ["ls spine", "cervical spine", "dorsal spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "disc_migration",
+    label: "Disc Fragment Migration",
+    description: "Cranial/caudal migration of disc material, with distance.",
+    aliases: ["disc migration", "migrated disc fragment", "sequestered fragment migration"],
+    regions: ["ls spine", "cervical spine", "dorsal spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  // NOTE: facet detail intentionally does NOT get new concepts here — the
+  // existing `facet_joint` pack already owns "facet arthropathy" /
+  // "facet hypertrophy" aliases, and re-declaring them would silently move
+  // ownership away from every existing facet row. Facet subtype is carried in
+  // the observation's `state` instead.
+  {
+    concept: "synovial_cyst",
+    label: "Synovial Cyst",
+    description: "Juxtafacet synovial cyst with canal/recess effect.",
+    aliases: ["synovial cyst", "juxtafacet cyst", "facet cyst"],
+    regions: ["ls spine", "cervical spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "pars_defect",
+    label: "Pars Interarticularis Defect",
+    description: "Spondylolysis/pars defect; right, left or bilateral.",
+    aliases: ["pars defect", "spondylolysis", "pars interarticularis defect", "isthmic defect"],
+    regions: ["ls spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "epidural_space",
+    label: "Epidural Space",
+    description: "Epidural fat, mass or thecal-sac effect (non-infective).",
+    aliases: ["epidural space", "epidural fat", "epidural mass"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "epidural_lipomatosis",
+    label: "Spinal Epidural Lipomatosis",
+    description: "Prominent epidural fat contributing to canal stenosis.",
+    aliases: ["epidural lipomatosis", "spinal epidural lipomatosis"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "root_traversing",
+    label: "Traversing Nerve Root",
+    description: "The traversing (descending) root at a lumbar level.",
+    aliases: ["traversing root", "descending root", "descending nerve root"],
+    regions: ["ls spine", "cervical spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "root_exiting",
+    label: "Exiting Nerve Root",
+    description: "The exiting root at a lumbar level, within the foramen.",
+    aliases: ["exiting root", "exiting nerve root"],
+    regions: ["ls spine", "cervical spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "conus_medullaris",
+    label: "Conus Medullaris",
+    description: "Conus level, morphology and signal.",
+    aliases: ["conus medullaris", "low-lying conus", "conus level"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "cauda_equina",
+    label: "Cauda Equina",
+    description: "Cauda equina distribution, crowding, clumping, compression.",
+    aliases: ["cauda equina", "cauda equina nerve roots"],
+    regions: ["ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "filum_terminale",
+    label: "Filum Terminale",
+    description: "Filum thickness/fatty filum/intrafilar lipoma.",
+    aliases: ["filum", "filum terminale", "fatty filum", "intrafilar lipoma", "thickened filum"],
+    regions: ["ls spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "tethered_cord",
+    label: "Tethered Cord",
+    description: "Low conus with thickened or fatty filum.",
+    aliases: ["tethered cord", "cord tethering", "low conus syndrome"],
+    regions: ["ls spine", "dorsal spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "arachnoiditis",
+    label: "Adhesive Arachnoiditis",
+    description: "Root clumping/peripheral adherence pattern (descriptive).",
+    aliases: ["arachnoiditis", "root clumping", "empty thecal sac sign"],
+    regions: ["ls spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "craniocervical_junction",
+    label: "Craniocervical Junction",
+    description: "Tonsillar position and craniocervical junction screening.",
+    aliases: ["craniocervical junction", "ccj", "tonsillar descent", "foramen magnum"],
+    regions: ["cervical spine", "brain", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "syrinx",
+    label: "Syrinx",
+    description: "Cord cavity/syrinx, when evident.",
+    aliases: ["syrinx", "syringomyelia", "cord cavity"],
+    regions: ["cervical spine", "dorsal spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "sacroiliac_joints",
+    label: "Sacroiliac Joints",
+    description: "Visualised SI joints: oedema, erosion, sclerosis, fusion.",
+    aliases: ["sacroiliac joints", "si joints", "sacroiliitis"],
+    regions: ["ls spine", "pelvis"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "bertolotti_syndrome",
+    label: "Bertolotti Syndrome",
+    description: "Radiologist-selected interpretation linking LSTV to symptoms.",
+    aliases: ["bertolotti syndrome"],
+    regions: ["ls spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "hardware_postop",
+    label: "Spinal Hardware / Post-operative Change",
+    description: "Instrumentation, fusion and expected post-surgical change.",
+    aliases: ["pedicle screw", "interbody cage", "plif", "tlif", "hemilaminectomy", "laminectomy", "discectomy", "epidural fibrosis", "pseudomeningocele"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "schmorl_node",
+    label: "Schmorl Node",
+    description: "Intraspongy disc herniation with or without reactive change.",
+    aliases: ["schmorl node", "schmorl's node", "intraspongy disc"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "listhesis_dynamic",
+    label: "Dynamic Instability",
+    description: "Interval translation demonstrated on dynamic imaging only.",
+    aliases: ["dynamic instability", "functional spondylolisthesis", "interval translation"],
+    regions: ["ls spine", "cervical spine", "whole spine"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "annular_fissure",
+    label: "Annular Fissure / HIZ",
+    description: "Annular tear with or without high-intensity zone.",
+    aliases: ["annular fissure", "annular tear", "high intensity zone"],
+    regions: ["ls spine", "cervical spine", "dorsal spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "disc_uncapping",
+    label: "Disc Uncapping / Pseudobulge",
+    description: "Apparent disc bulge from listhesis rather than disc material.",
+    aliases: ["disc uncapping", "uncapping of the disc", "pseudo-disc bulge"],
+    regions: ["ls spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "bone_lesion",
+    label: "Focal Bone Lesion",
+    description: "Focal osseous lesion, screening-level detection only.",
+    aliases: ["focal osseous lesion", "focal bone lesion", "suspicious vertebral lesion"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR", "CT"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    concept: "muscle_atrophy",
+    label: "Paraspinal Muscle Atrophy",
+    description: "Multifidus/erector spinae atrophy or fatty infiltration.",
+    aliases: ["paraspinal atrophy", "multifidus atrophy"],
+    regions: ["ls spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "screening_limitation",
+    label: "Screening Limitation",
+    description: "Planar/sequence limitation of a screening region.",
+    aliases: ["screening limitation", "limited planar", "limited sequence"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+  },
+  {
+    concept: "screening_recommendation",
+    label: "Screening Recommendation",
+    description: "Dedicated regional MRI suggested by the radiologist.",
+    aliases: ["dedicated mri suggested", "screening recommendation"],
+    regions: ["cervical spine", "dorsal spine", "ls spine", "whole spine"],
+    modalities: ["MR"],
+  },
 ] as const;
 
 /**
