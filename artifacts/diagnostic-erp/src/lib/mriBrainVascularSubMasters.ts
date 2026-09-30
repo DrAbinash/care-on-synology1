@@ -177,9 +177,12 @@ export const VASCULAR_TREE_NORMALS = {
       "The remaining visualised intracranial arteries demonstrate normal course, caliber and uniform flow-related signal.",
   },
   mraNeck: {
-    concept: "mra_arterial",
+    // Not `mra_arterial`: the neck tree is a second acquisition with its own all-normal
+    // sentence, and sharing one slot would let a neck normal erase the intracranial one
+    // in the combined study §2 expects (mra/mrv spec §2, §15).
+    concept: "mra_neck_arterial",
     gate: "arterialAssessment" as VascularGateFeature,
-    section: VASCULAR_FINDINGS_SECTIONS.neckVertebrals,
+    section: VASCULAR_FINDINGS_SECTIONS.neckArterialTree,
     sentence: VASCULAR_LIBRARY_PROSE.mraNeckNormal,
     remainder:
       "The remaining extracranial arteries demonstrate symmetric caliber and intact luminal flow voids.",

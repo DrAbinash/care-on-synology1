@@ -44,6 +44,7 @@ import {
   VASCULAR_LIBRARY_PROSE,
 } from "./mriBrainVascularProse";
 import type { VascularTreeModule } from "./mriBrainVascularSubMasters";
+import { VASCULAR_TREE_NORMALS } from "./mriBrainVascularSubMasters";
 import { vascularGate, type VascularGateFeature } from "./mriBrainVascularTechnique";
 
 /** §17 order per module, as data: each module's Findings sections in report order. */
@@ -195,13 +196,19 @@ type VascularPresetSpec = {
   /** A canonical macro is gated only on its own domain having been acquired. */
   macroGate?: VascularGateFeature;
   macro?: () => BrainAtomSpec[];
+  /**
+   * §15: this preset writes one module's all-normal baseline. Those compose into a single
+   * bundle (see `vascularNormalBundle`), because the ledger lets a later baseline block
+   * supersede an earlier one's sentence.
+   */
+  normalBaseline?: boolean;
 };
 
 export const VASCULAR_PRESET_SPECS: readonly VascularPresetSpec[] = [
   // §15 — one normal baseline per vascular module, plus the screening baseline.
-  { id: "vascular-normal-mra", label: "Normal dedicated intracranial MRA", module: "mra", tiles: [["mra", "mra-normal"]] },
-  { id: "vascular-normal-mra-neck", label: "Normal dedicated MRA neck", module: "mraNeck", tiles: [["mraNeck", "neck-normal"]] },
-  { id: "vascular-normal-mrv", label: "Normal dedicated MRV", module: "mrv", tiles: [["mrv", "mrv-normal"]] },
+  { id: "vascular-normal-mra", label: "Normal dedicated intracranial MRA", module: "mra", tiles: [["mra", "mra-normal"]], normalBaseline: true },
+  { id: "vascular-normal-mra-neck", label: "Normal dedicated MRA neck", module: "mraNeck", tiles: [["mraNeck", "neck-normal"]], normalBaseline: true },
+  { id: "vascular-normal-mrv", label: "Normal dedicated MRV", module: "mrv", tiles: [["mrv", "mrv-normal"]], normalBaseline: true },
   {
     id: "vascular-normal-mra-screening",
     label: "Normal basic intracranial MRA screening",
@@ -291,4 +298,59 @@ export const VASCULAR_BRAIN_PRESETS: readonly BrainPreset[] = VASCULAR_PRESET_SP
 
 export function vascularBrainPresetById(id: string): BrainPreset | undefined {
   return VASCULAR_BRAIN_PRESETS.find((preset) => preset.id === id);
+}
+
+/**
+ * §15 module baselines share ONE bundle id on purpose. The ledger treats a baseline block
+ * as the report's normal prose, so a second baseline applied as its own bundle supersedes
+ * the first one's sentence even when both rows stay in the ledger — which would leave a
+ * combined MRA + MRA-neck + MRV report silently missing a normal statement (§2, §15).
+ */
+export const VASCULAR_NORMAL_BUNDLE_ID = brainBundleId("preset", "vascular-normal-baseline");
+
+export function isVascularNormalPreset(id: string): boolean {
+  return VASCULAR_PRESET_SPECS.some((spec) => spec.id === id && spec.normalBaseline);
+}
+
+/**
+ * The baseline preset a tree-normal tile stands for, so the tile and the preset take the
+ * same composed path — two bundles carrying module normals would leave the report with one
+ * normal sentence and several normal rows.
+ */
+export function vascularNormalPresetIdForTile(tileId: string): string | null {
+  return (
+    VASCULAR_PRESET_SPECS.find(
+      (spec) =>
+        spec.normalBaseline && spec.tiles.some(([, id]) => id === tileId),
+    )?.id ?? null
+  );
+}
+
+/** The normal preset whose baseline sentence the report currently carries, in §17 order. */
+export function vascularNormalPresetIdsInReport(
+  concepts: Iterable<string | null | undefined>,
+): string[] {
+  const written = new Set([...concepts].map((concept) => concept ?? ""));
+  return VASCULAR_PRESET_SPECS.filter(
+    (spec) => spec.normalBaseline && written.has(VASCULAR_TREE_NORMALS[spec.module].concept),
+  ).map((spec) => spec.id);
+}
+
+/**
+ * Compose the module baselines the report should carry into one bundle. `presetIds` is the
+ * set the radiologist has chosen, not what was chosen before, so removing one normal is a
+ * plain subtraction rather than a second engine.
+ */
+export function vascularNormalBundle(
+  presetIds: readonly string[],
+  ctx: BrainPresetContext,
+): { bundleId: string; observations: ReturnType<typeof brainAtomsToPatches> } {
+  const region = ctx.region ?? "Brain";
+  const atoms = VASCULAR_PRESET_SPECS.filter(
+    (spec) => spec.normalBaseline && presetIds.includes(spec.id),
+  ).flatMap((spec) => vascularPresetAtomsFor(spec.id, ctx).atoms);
+  return {
+    bundleId: VASCULAR_NORMAL_BUNDLE_ID,
+    observations: brainAtomsToPatches(region, VASCULAR_NORMAL_BUNDLE_ID, atoms),
+  };
 }

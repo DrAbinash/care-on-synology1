@@ -375,3 +375,62 @@ describe("§11 dissection — a T1 crescent is not a stage or a diagnosis", () =
     expect(useWorkspace.getState().findingsText).not.toContain("intramural hematoma");
   });
 });
+
+describe("§15 a measurement supersedes the normal the report carries", () => {
+  const TREE = "The extracranial arteries demonstrate symmetric caliber.";
+  const REMAINDER = "The remaining extracranial arteries are normal.";
+
+  const measured = (vessel: string, territory: "intracranialArterial" | "neckArterial") =>
+    measuredStenosisAtoms(
+      {
+        vessel,
+        territory,
+        formula: "entered",
+        percent: 70,
+        provenance: { source: "manual", detail: "measured on the acquired source images" },
+      },
+      { ...CTX, replaceTreeNormal: TREE, remainderNormal: REMAINDER },
+    );
+
+  it("supersedes the baseline the caller says the report carries", () => {
+    const row = measured("right MCA M1", "intracranialArterial");
+    expect(row.atoms[0]!.baselineReplaces).toBe(TREE);
+  });
+
+  it("keeps the rest of the tree normal on its own territory's slot", () => {
+    expect(measured("right MCA M1", "intracranialArterial").atoms[1]!.concept).toBe("mra_arterial");
+    expect(measured("right cervical ICA", "neckArterial").atoms[1]!.concept).toBe(
+      "mra_neck_arterial",
+    );
+  });
+
+  it("says nothing about a normal the report never carried", () => {
+    const row = measuredStenosisAtoms(
+      {
+        vessel: "right MCA M1",
+        territory: "intracranialArterial",
+        formula: "entered",
+        percent: 70,
+        provenance: { source: "manual", detail: "measured on the acquired source images" },
+      },
+      CTX,
+    );
+    expect(row.atoms[0]!.baselineReplaces).not.toBe(TREE);
+    expect(row.atoms).toHaveLength(1);
+  });
+
+  it("prefers the baseline the record states itself over the context's", () => {
+    const row = measuredStenosisAtoms(
+      {
+        vessel: "right MCA M1",
+        territory: "intracranialArterial",
+        formula: "entered",
+        percent: 70,
+        replaceTreeNormal: "The sentence this record was entered against.",
+        provenance: { source: "manual", detail: "measured on the acquired source images" },
+      },
+      { ...CTX, replaceTreeNormal: TREE },
+    );
+    expect(row.atoms[0]!.baselineReplaces).toBe("The sentence this record was entered against.");
+  });
+});

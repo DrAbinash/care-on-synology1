@@ -173,4 +173,14 @@ describe("mriBrainVascularDraftState — the store slice", () => {
 
     useWorkspace.setState({ vascularTechnique: defaultVascularTechnique(), isDirty: false });
   });
+
+  it("holds technique state only — never a second copy of the vascular observations (§3, §25)", () => {
+    // §25 forbids parallel vascular state that can contradict the ledger. The store may
+    // know what was ACQUIRED; what was FOUND lives only in appliedPathologyPatches, and
+    // the panels write it through applyMacroBundle like every other brain input.
+    const keys = Object.keys(useWorkspace.getState());
+    const vascular = keys.filter((k) => /vascular|aneurysm|stenosis|thromb|moyamoya|nidus|sinus|mra|mrv/i.test(k));
+    expect(vascular.sort()).toEqual(["setVascularTechnique", "setVascularTechniqueDesignation", "setVascularTechniqueManual", "vascularTechnique"].sort());
+    expect(new Set(vascular).size).toBe(vascular.length);
+  });
 });

@@ -32,8 +32,10 @@ import {
   type VesselSide,
 } from "./mriBrainVessels";
 import {
+  applyTreeNormalSupersession,
   patentSentenceFor,
   remainderNormalAtom,
+  treeFamilyConcept,
   vesselFindingsSection,
 } from "./mriBrainVesselObservations";
 import { VASCULAR_FINDINGS_SECTIONS, vascularSplitFor } from "./mriBrainVascularProse";
@@ -308,7 +310,8 @@ export function measuredStenosisAtoms(
     anatomicalSection: vesselFindingsSection(slot.vessel),
     findings: stenosisFindingsSentence(record, label),
     impression: stenosisImpressionSentence(record, label),
-    baselineReplaces: record.replaceTreeNormal?.trim() || patentSentenceFor(slot.vessel),
+    baselineReplaces:
+      (record.replaceTreeNormal ?? ctx.replaceTreeNormal)?.trim() || patentSentenceFor(slot.vessel),
     level: slot.level,
     laterality: slot.laterality || undefined,
     supportsLaterality: slot.vessel.side !== "unpaired",
@@ -317,8 +320,15 @@ export function measuredStenosisAtoms(
       ? `${record.formula}${record.manualOverride ? " (radiologist override)" : ""}: ${stenosisProvenanceLabel(record.provenance)}`
       : undefined,
   }];
-  if (record.remainderNormal?.trim()) {
-    atoms.push(remainderNormalAtom("mra_arterial", slot.vessel.territory, record.remainderNormal));
+  const remainderNormal = record.remainderNormal ?? ctx.remainderNormal;
+  if (remainderNormal?.trim()) {
+    atoms.push(
+      remainderNormalAtom(
+        treeFamilyConcept("mra_arterial", slot.vessel.territory),
+        slot.vessel.territory,
+        remainderNormal,
+      ),
+    );
   }
   return {
     atoms,
@@ -465,7 +475,7 @@ export function carotidDissectionAtoms(
     });
   }
   return {
-    atoms,
+    atoms: applyTreeNormalSupersession(atoms, ctx, slot.vessel.territory),
     bundleId: brainBundleId("dissection", slot.vessel.key),
   };
 }

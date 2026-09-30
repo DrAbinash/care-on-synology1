@@ -54,6 +54,24 @@ describe("derivation and override (spec §2, §4)", () => {
     expect(tricks.timeResolved).toBe(true);
   });
 
+  it("reads the way the source data is described, not just the word source", () => {
+    const reformats = deriveVascularTechniqueAcquired({
+      techniqueText: "2D TOF intracranial MRA with source reformats.",
+    });
+    expect(reformats.sourceImages).toBe(true);
+    expect(reformats.mipReformatted).toBe(true);
+    const mip = deriveVascularTechniqueAcquired({
+      techniqueText: "MIP reconstructions were reviewed.",
+    });
+    expect(mip.mipReformatted).toBe(true);
+    // A loose "maximum" in prose is not a reconstruction claim (§4 assumes nothing).
+    const quiet = deriveVascularTechniqueAcquired({
+      techniqueText: "Maximum diameter of the lesion is 9 mm.",
+    });
+    expect(quiet.sourceImages).toBe(false);
+    expect(quiet.mipReformatted).toBe(false);
+  });
+
   it("treats a non-contrast study as no contrast-enhanced angiography", () => {
     const derived = deriveVascularTechniqueAcquired({
       techniqueText: "Non-contrast MRI brain with 3D TOF MRA and MRV.",

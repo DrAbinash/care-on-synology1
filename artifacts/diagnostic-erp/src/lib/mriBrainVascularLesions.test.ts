@@ -500,3 +500,42 @@ describe("§9 AVM — the malformation is described, not graded", () => {
     expect(s).toContain("Adjacent mass effect is present.");
   });
 });
+
+describe("§15 a pattern record supersedes the normal the report carries", () => {
+  const pattern = {
+    terminalIcaNarrowing: "bilateral" as const,
+    basalCollateralNetwork: true,
+  };
+  const TREE = "Major intracranial arteries are normal.";
+  const REMAINDER = "The remaining intracranial arteries are normal.";
+
+  it("supersedes the intracranial baseline named on the context", () => {
+    const row = moyamoyaAtoms(pattern, { ...CTX_FULL, replaceTreeNormal: TREE, remainderNormal: REMAINDER });
+    expect(row.atoms[0]!.baselineReplaces).toBe(TREE);
+    const remainder = row.atoms.find((a) => a.findings === REMAINDER);
+    expect(remainder?.concept).toBe("mra_arterial");
+    expect(remainder?.role).toBe("baseline");
+  });
+
+  it("does not invent a baseline the report never carried", () => {
+    const row = moyamoyaAtoms(pattern, CTX_FULL);
+    expect(row.atoms[0]!.baselineReplaces).toBeUndefined();
+    expect(row.atoms.some((a) => a.findings === REMAINDER)).toBe(false);
+  });
+
+  it("routes the rest of the tree normal through the neck when the aneurysm is a neck aneurysm", () => {
+    const record = aneurysm({ parentVessel: "right cervical ICA", territory: "neckArterial", side: "right" });
+    const neck = aneurysmAtoms([record], {
+      ...CTX_FULL,
+      replaceTreeNormal: TREE,
+      remainderNormal: REMAINDER,
+    });
+    expect(neck.atoms[1]!.concept).toBe("mra_neck_arterial");
+    const head = aneurysmAtoms([aneurysm()], {
+      ...CTX_FULL,
+      replaceTreeNormal: TREE,
+      remainderNormal: REMAINDER,
+    });
+    expect(head.atoms[1]!.concept).toBe("mra_arterial");
+  });
+});

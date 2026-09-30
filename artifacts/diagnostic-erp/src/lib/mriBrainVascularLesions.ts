@@ -30,7 +30,9 @@ import { brainBundleId, type BrainAtomSpec } from "./mriBrainAtoms";
 import { aneurysmAspectRatio, severityForAneurysm } from "./mriBrainMeasures";
 import type { BrainSequenceContext } from "./mriBrainSequences";
 import {
+  applyTreeNormalSupersession,
   remainderNormalAtom,
+  treeFamilyConcept,
   vesselFindingsSection,
 } from "./mriBrainVesselObservations";
 import {
@@ -39,6 +41,7 @@ import {
   vesselBaseKey,
   vesselConceptId,
   vesselDisplayName,
+  type VascularTerritory,
   type VesselDefinition,
   type VesselSide,
 } from "./mriBrainVessels";
@@ -54,6 +57,15 @@ import {
 export type VascularLesionContext = {
   technique?: VascularTechniqueState | null;
   brain: BrainSequenceContext;
+  /**
+   * The tree-wide all-normal sentence the report currently carries, if any. A named
+   * abnormality cannot live below a sentence that denies one, so the caller that knows
+   * the report holds that sentence hands it here and the builder supersedes it
+   * (mra/mrv spec §5, §15, §17).
+   */
+  replaceTreeNormal?: string;
+  /** What is left of the tree once that normal has been superseded. */
+  remainderNormal?: string;
 };
 
 export type VascularLesionResult = {
@@ -309,16 +321,12 @@ export function aneurysmSlotFor(
  */
 export function aneurysmAtoms(
   records: readonly AneurysmRecord[],
-  ctx: VascularLesionContext & {
-    /** The tree-wide normal sentence the report currently carries. */
-    replaceTreeNormal?: string;
-    /** What is left of the tree once that normal is superseded. */
-    remainderNormal?: string;
-  },
+  ctx: VascularLesionContext,
 ): VascularLesionResult {
   const atoms: BrainAtomSpec[] = [];
   const errors: string[] = [];
   const seen = new Map<string, string>();
+  let territory: VascularTerritory = "intracranialArterial";
 
   for (const record of records) {
     const slot = aneurysmSlotFor(record.parentVessel, {
@@ -345,6 +353,8 @@ export function aneurysmAtoms(
       continue;
     }
     seen.set(slotKey, `${vesselBaseKey(slot.vessel)}${slot.laterality ? `-${slot.laterality}` : ""}`);
+    territory = slot.vessel.territory;
+    if (!territory) territory = slot.vessel.territory;
 
     const dome = vascularMeasure(record.domeHeightMm);
     const ratio = aneurysmDomeNeckRatio(record);
@@ -374,10 +384,11 @@ export function aneurysmAtoms(
   }
   if (ctx.remainderNormal?.trim()) {
     // The same "the rest of the tree is normal" row the vessel status builder emits,
-    // so an aneurysm and an abnormal vessel row reconcile the normal identically.
+    // so an aneurysm and an abnormal vessel row reconcile the normal identically — and
+    // on the neck's own slot when the aneurysm is a neck aneurysm (§2).
     atoms.push(remainderNormalAtom(
-      "mra_arterial",
-      "intracranialArterial",
+      treeFamilyConcept("mra_arterial", territory),
+      territory,
       ctx.remainderNormal,
     ));
   }
@@ -491,7 +502,10 @@ export function moyamoyaAtoms(
   ];
   // Selecting the pattern rows above does not reach this line (§8).
   if (record.diseaseClassification) atoms.push(moyamoyaDiseaseAtom());
-  return { atoms, bundleId };
+  return {
+    atoms: applyTreeNormalSupersession(atoms, ctx, "intracranialArterial"),
+    bundleId,
+  };
 }
 
 // ─── §9 AVM ──────────────────────────────────────────────────────────────
@@ -640,5 +654,8 @@ export function avmAtoms(
       state: "association stated; no morphology recorded",
     });
   }
-  return { atoms, bundleId };
+  return {
+    atoms: applyTreeNormalSupersession(atoms, ctx, "intracranialArterial"),
+    bundleId,
+  };
 }

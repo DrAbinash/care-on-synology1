@@ -419,9 +419,56 @@ export function vesselObservationAtoms(input: {
     }),
   ];
   if (!status.variant && input.replaceTreeNormal?.trim() && input.remainderNormal?.trim()) {
-    atoms.push(remainderNormalAtom(status.familyConcept, vessel.territory, input.remainderNormal));
+    atoms.push(remainderNormalAtom(
+      treeFamilyConcept(status.familyConcept, vessel.territory),
+      vessel.territory,
+      input.remainderNormal,
+    ));
   }
   return { atoms, bundleId };
+}
+
+/**
+ * The family slot that owns a territory's all-normal sentence. The intracranial tree and
+ * the extracranial (neck) tree are different acquisitions with different normal prose, so
+ * they must not share one ledger slot — a combined MRA + MRA-neck report is expected to
+ * keep both statements (mra/mrv spec §2, §15).
+ */
+export function treeFamilyConcept(
+  familyConcept: string,
+  territory: VascularTerritory,
+): string {
+  if (familyConcept !== "mra_arterial") return familyConcept;
+  return territory === "neckArterial" ? "mra_neck_arterial" : "mra_arterial";
+}
+
+/**
+ * §5/§17: a named abnormality cannot sit under a sentence that denies one. When the report
+ * carries the territory's all-normal baseline, the builder supersedes that sentence and keeps
+ * the rest of the tree normal on the territory's own family slot. Called by the builders that
+ * describe an abnormality the tree sentence excludes; the caller decides because only it
+ * knows whether the report actually carries that sentence.
+ */
+export function applyTreeNormalSupersession(
+  atoms: BrainAtomSpec[],
+  ctx: { replaceTreeNormal?: string; remainderNormal?: string },
+  territory: VascularTerritory,
+): BrainAtomSpec[] {
+  const sentence = ctx.replaceTreeNormal?.trim();
+  if (!atoms.length || !sentence) return atoms;
+  const out = atoms.map((atom, index) =>
+    index === 0 ? { ...atom, baselineReplaces: sentence } : atom,
+  );
+  if (ctx.remainderNormal?.trim()) {
+    out.push(
+      remainderNormalAtom(
+        treeFamilyConcept("mra_arterial", territory),
+        territory,
+        ctx.remainderNormal,
+      ),
+    );
+  }
+  return out;
 }
 
 /**

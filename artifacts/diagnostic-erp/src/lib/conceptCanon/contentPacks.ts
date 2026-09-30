@@ -314,6 +314,7 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     ["enhancement_normal", "Contrast Enhancement", "Abnormal enhancement assessment when contrast was administered.", false],
     ["mrs_metabolites", "MR Spectroscopy", "Structured MRS metabolite entry — descriptive only.", true],
     ["mra_arterial", "MRA Arterial", "Arterial occlusion / stenosis on MRA when adequately assessed.", true],
+    ["mra_neck_arterial", "MRA Neck Arterial", "Extracranial carotid / vertebral arterial tree statement (§11). Kept off the intracranial slot so a combined study keeps both normals (§2).", true],
     ["mrv_venous", "MR Venography", "Dural venous sinus patency on MRV.", true],
     // §10/§12 first-class non-pathologic variant slots. A separate concept, so a
     // small-but-normal vessel never overwrites the pathology recorded on it (and the

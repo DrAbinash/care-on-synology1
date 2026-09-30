@@ -20,11 +20,16 @@ import { brainSubMasterById, type BrainPresetContext } from "@/lib/mriBrainSubMa
 import {
   VASCULAR_BRAIN_PRESETS,
   VASCULAR_FINDINGS_ORDERS,
+  VASCULAR_NORMAL_BUNDLE_ID,
   VASCULAR_PRESET_SPECS,
   aneurysmMacroAtoms,
   cvstMacroAtoms,
+  isVascularNormalPreset,
   orderVascularAtoms,
   vascularBrainPresetById,
+  vascularNormalBundle,
+  vascularNormalPresetIdForTile,
+  vascularNormalPresetIdsInReport,
   vascularPresetAtomsFor,
 } from "@/lib/mriBrainVascularPresets";
 import {
@@ -315,3 +320,56 @@ describe("§16 presets stay reversible bundles", () => {
   });
 });
 
+
+describe("§15 the module normals are one baseline block", () => {
+  const MRA_NORMAL = "vascular-normal-mra";
+  const NECK_NORMAL = "vascular-normal-mra-neck";
+  const MRV_NORMAL = "vascular-normal-mrv";
+
+  it("gives each module's all-normal sentence its own slot", () => {
+    const atoms = [MRA_NORMAL, NECK_NORMAL, MRV_NORMAL].flatMap(
+      (id) => vascularPresetAtomsFor(id, FULL_CTX).atoms,
+    );
+    expect(atoms.map((a) => a.concept)).toEqual([
+      "mra_arterial",
+      "mra_neck_arterial",
+      "mrv_venous",
+    ]);
+  });
+
+  it("registers the neck tree statement as a concept of its own", () => {
+    const entry = contentPackForConcept("mra_neck_arterial");
+    expect(entry?.label).toBe("MRA Neck Arterial");
+    expect(entry?.regions).toContain("brain");
+  });
+
+  it("composes the chosen normals into one bundle so none supersedes another", () => {
+    useWorkspace.getState().applyMacroBundle(vascularNormalBundle([MRA_NORMAL], FULL_CTX));
+    expect(useWorkspace.getState().findingsText).toContain("uniform high-velocity signal");
+
+    useWorkspace.getState().applyMacroBundle(
+      vascularNormalBundle([MRA_NORMAL, NECK_NORMAL, MRV_NORMAL], FULL_CTX),
+    );
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("uniform high-velocity signal");
+    expect(findings).toContain("intact luminal flow voids");
+    expect(findings).toContain("normal venous flow signal");
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.filter((p) => p.observation && !p.stale),
+    ).toHaveLength(3);
+  });
+
+  it("reads the carried baselines back from the ledger, so a toggle subtracts", () => {
+    expect(vascularNormalPresetIdsInReport([])).toEqual([]);
+    expect(vascularNormalPresetIdsInReport(["mrv_venous", "mra_arterial"])).toEqual([
+      MRA_NORMAL,
+      MRV_NORMAL,
+    ]);
+    expect(vascularNormalPresetIdForTile("neck-normal")).toBe(NECK_NORMAL);
+    expect(vascularNormalPresetIdForTile("mra-focal-narrowing")).toBeNull();
+    expect(isVascularNormalPreset(MRA_NORMAL)).toBe(true);
+    expect(isVascularNormalPreset("aneurysm-macro")).toBe(false);
+    expect(vascularNormalBundle([], FULL_CTX).bundleId).toBe(VASCULAR_NORMAL_BUNDLE_ID);
+    expect(vascularNormalBundle([], FULL_CTX).observations).toHaveLength(0);
+  });
+});

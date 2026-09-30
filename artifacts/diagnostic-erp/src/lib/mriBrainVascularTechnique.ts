@@ -88,8 +88,8 @@ const PATTERNS: Record<VascularTechniqueKey, RegExp> = {
   mrvTof: /\btof\s*mrv\b|mr\s*venograph[^.]{0,30}\btof\b/i,
   mrvPhaseContrast: /phase[- ]?contrast|pc[- ]?mrv|\bpc\s*mrv\b/i,
   mrvCe: /\bce[- ]?mrv\b|contrast[- ]enhanced[^.]{0,25}\b(?:mrv|mr\s+venograph\w*|venograph\w*)|post[- ]contrast[^.]{0,25}\b(?:mrv|venograph\w*)/i,
-  sourceImages: /source\s+images?|\braw\s+data\b|maximum\s|intensity\s+projection/i,
-  mipReformatted: /\bmip\b|reformatt|max(?:imum)?[- ]intensity[- ]projection/i,
+  sourceImages: /source\s+images?|source[- ]reformat|\braw\s+data\b|maximum[\s-]intensity[\s-]projection/i,
+  mipReformatted: /\bmip\b|reformat|maximum[\s-]intensity[\s-]projection/i,
   timeResolved: /time[- ]?resolved|\btricks\b|\b4d\b[- ]?(?:mra|flow|nc)|dynamic\s+mra/i,
   otherManual: /\b(other|alternative)\s+(?:angiographic|vascular)\s+technique/i,
 };

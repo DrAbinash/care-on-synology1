@@ -308,8 +308,11 @@ export function venousThrombosisAtoms(
       conflictGroup: slot.vessel.key,
       anatomicalSection: vesselFindingsSection(slot.vessel),
       findings: descriptive,
-      // A thrombus statement supersedes this sinus's own normal flow sentence.
-      baselineReplaces: record.replaceTreeNormal?.trim() || patentSentenceFor(slot.vessel),
+      // A thrombus statement supersedes this sinus's own normal flow sentence, or the
+      // tree-wide MRV normal when the report carries one.
+      baselineReplaces:
+        (record.replaceTreeNormal ?? ctx.replaceTreeNormal)?.trim()
+        || patentSentenceFor(slot.vessel),
       level: slot.level,
       laterality: slot.laterality || undefined,
       supportsLaterality: slot.vessel.side !== "unpaired",
@@ -371,12 +374,13 @@ export function venousThrombosisAtoms(
   }
   atoms.push(...brainFindingAtoms(findings));
   if (errors.length) return { atoms: [], bundleId: "", errors };
-  if (record.remainderNormal?.trim()) {
+  const remainderNormal = record.remainderNormal ?? ctx.remainderNormal;
+  if (remainderNormal?.trim()) {
     atoms.push({
       concept: "mrv_venous",
       conflictGroup: "mrv_venous-remainder-normal",
       anatomicalSection: VASCULAR_FINDINGS_SECTIONS.duralSinuses,
-      findings: record.remainderNormal.trim(),
+      findings: remainderNormal.trim(),
       role: "baseline",
     });
   }

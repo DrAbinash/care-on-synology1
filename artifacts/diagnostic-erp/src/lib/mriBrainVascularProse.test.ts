@@ -189,6 +189,26 @@ describe("mriBrainVascularProse — Findings order comes from the specification"
     });
   }
 
+  /**
+   * The same check for a module whose order list carries one heading the specification does
+   * not list — §17's neck list has no home for the whole-neck normal baseline, and naming it
+   * after the vertebral arteries would let the baseline supersede the intracranial normal's
+   * sentence. The spec's own items must still appear, in the spec's order.
+   */
+  function expectSpecOrderInOrder(labels: string[], items: string[], heading: string): void {
+    const lower = labels.map((l) => l.toLowerCase());
+    let cursor = 0;
+    items.forEach((item) => {
+      const spec = item.toLowerCase();
+      const found = lower.findIndex(
+        (label, index) => index >= cursor && (spec.includes(label) || label.includes(spec)),
+      );
+      expect(found, `${heading}: "${item}" is missing or out of order in ${labels.join(" | ")}`);
+      expect(found! >= cursor, `${heading}: "${item}" appears out of order`).toBe(true);
+      cursor = found! + 1;
+    });
+  }
+
   it("orders the dedicated intracranial MRA report as §17 states", () => {
     const items = specOrder("Dedicated intracranial MRA order:");
     expect(items.length).toBeGreaterThan(4);
@@ -198,7 +218,13 @@ describe("mriBrainVascularProse — Findings order comes from the specification"
   it("orders the MRA neck report as §17 states", () => {
     const items = specOrder("MRA neck order:");
     expect(items.length).toBeGreaterThan(4);
-    expectSameOrder(resolve(MRA_NECK_FINDINGS_ORDER), items, "MRA neck");
+    const labels = resolve(MRA_NECK_FINDINGS_ORDER);
+    expectSpecOrderInOrder(labels, items, "MRA neck");
+    // The one heading beyond §17's list, and why it is allowed to be there.
+    expect(labels).toHaveLength(items.length + 1);
+    expect(labels).toContain(VASCULAR_FINDINGS_SECTIONS.neckArterialTree);
+    expect(labels.indexOf(VASCULAR_FINDINGS_SECTIONS.neckArterialTree))
+      .toBeLessThan(labels.indexOf(VASCULAR_FINDINGS_SECTIONS.neckVertebrals));
   });
 
   it("orders the MRV report as §17 states", () => {

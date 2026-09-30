@@ -208,6 +208,15 @@ export const VASCULAR_FINDINGS_SECTIONS = {
   rightCarotid: "Right carotid system",
   leftCarotid: "Left carotid system",
   neckVertebrals: "Vertebral arteries",
+  /**
+   * The neck module's whole-tree normal. §17's neck list has no heading for a statement
+   * that covers both carotid systems and the vertebrals, and reusing "Vertebral arteries"
+   * here would be a real defect: the ledger matches a patch's section against the sentences
+   * it may supersede, and the intracranial normal enumerates the vertebral arteries — so the
+   * neck baseline would silently take the intracranial normal's line out of Findings
+   * (mra/mrv spec §2, §15, §17; documented canonical discrepancy).
+   */
+  neckArterialTree: "Extracranial arterial tree",
   neckMeasurements: "Focal abnormality / measurements",
   duralSinuses: "Dural venous sinuses",
   deepVenousSystem: "Deep venous system",
@@ -230,6 +239,7 @@ export const INTRACRANIAL_MRA_FINDINGS_ORDER: readonly VascularFindingsSectionKe
 
 export const MRA_NECK_FINDINGS_ORDER: readonly VascularFindingsSectionKey[] = [
   "technique",
+  "neckArterialTree",
   "rightCarotid",
   "leftCarotid",
   "neckVertebrals",

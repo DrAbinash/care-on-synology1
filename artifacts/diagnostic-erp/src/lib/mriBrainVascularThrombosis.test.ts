@@ -385,3 +385,27 @@ describe("§13 the record lands on the ledger", () => {
     expect(VASCULAR_LIBRARY_PROSE.mrvNormal).toContain("without filling defect");
   });
 });
+
+describe("§15 the caller can state the carried baseline on the context", () => {
+  it("supersedes it and keeps the remaining sinuses normal", () => {
+    const row = venousThrombosisAtoms(cvst(), {
+      ...CTX,
+      replaceTreeNormal: VASCULAR_TREE_NORMALS.mrv.sentence,
+      remainderNormal: VASCULAR_TREE_NORMALS.mrv.remainder,
+    });
+    expect(row.atoms.some((a) => a.baselineReplaces === VASCULAR_TREE_NORMALS.mrv.sentence))
+      .toBe(true);
+    const remainder = row.atoms.find((a) => a.concept === "mrv_venous");
+    expect(remainder?.findings).toBe(VASCULAR_TREE_NORMALS.mrv.remainder);
+    expect(remainder?.role).toBe("baseline");
+  });
+
+  it("still prefers a baseline stated on the record itself", () => {
+    const row = venousThrombosisAtoms(
+      cvst({ replaceTreeNormal: "The sentence this record was entered against." }),
+      { ...CTX, replaceTreeNormal: VASCULAR_TREE_NORMALS.mrv.sentence },
+    );
+    expect(row.atoms.some((a) => a.baselineReplaces === "The sentence this record was entered against."))
+      .toBe(true);
+  });
+});
