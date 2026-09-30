@@ -643,20 +643,23 @@ describe("impression, staleness and manual protection (spec §16)", () => {
 });
 
 describe("critical results (spec §18)", () => {
-  // Detection is asserted against the sub-master's OWN generated prose, not
-  // hand-written text: if the catalog wording and the term table ever drift
-  // apart, this fails.
-  const criticalTiles: { palette: ChestSubMasterId; tile: string; note: string }[] = [
-    { palette: "pneumothorax", tile: "pt-tension-signs", note: "tension-pattern signs" },
-    { palette: "pleural", tile: "pl-large", note: "large effusion with mass effect" },
-    { palette: "advanced", tile: "ad-free-air", note: "subdiaphragmatic free gas" },
-    { palette: "trauma", tile: "tr-pneumothorax", note: "post-traumatic pneumothorax" },
+  // Detection is asserted against the sub-master's OWN prose: if the catalog
+  // wording and the shared critical term table ever drift apart, this fails —
+  // a hand-written sample string would hide exactly that.
+  const criticalTiles: Array<{ palette: ChestSubMasterId; tile: string; laterality?: "right" | "left" }> = [
+    { palette: "pneumothorax", tile: "pt-large" },
+    { palette: "pneumothorax", tile: "pt-tension-signs" },
+    { palette: "pleural", tile: "pl-large" },
+    { palette: "pleural", tile: "pl-hydropneumothorax" },
+    { palette: "advanced", tile: "ad-free-air" },
+    { palette: "trauma", tile: "tr-hemothorax" },
+    { palette: "trauma", tile: "tr-pneumothorax" },
   ];
 
-  for (const { palette, tile, note } of criticalTiles) {
-    it(`raises a critical for ${palette}/${tile} (${note})`, () => {
+  for (const { palette, tile, laterality } of criticalTiles) {
+    it(`raises a critical for ${palette}/${tile}`, () => {
       resetWorkspace();
-      applyTile(palette, tile, { laterality: "left" });
+      applyTile(palette, tile, { laterality: laterality ?? "left" });
       expect(detectCriticalFindings(findings(), [impression()]).length).toBeGreaterThan(0);
     });
   }

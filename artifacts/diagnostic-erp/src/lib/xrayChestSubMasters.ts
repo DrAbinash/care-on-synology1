@@ -179,8 +179,35 @@ export const XRAY_CHEST_SUB_MASTERS: readonly ChestSubMaster[] = [
         id: "rt-hila",
         label: "Hila normal",
         group: "Core",
+        requiresAdequate: ["rotation"],
         atoms: [
           chestAtom("hila", N.hila, { role: "baseline", anatomicalSection: "hila" }),
+        ],
+      },
+      {
+        id: "rt-cardiac",
+        label: "Cardiac silhouette normal for projection",
+        group: "Core",
+        // Only a PA frontal film supports a normal-size statement; on AP the
+        // normal preset writes the limitation line instead.
+        requires: ["pa"],
+        atoms: [
+          chestAtom("cardiac_silhouette", N.cardiacNormal, {
+            role: "baseline",
+            anatomicalSection: "cardiac silhouette",
+          }),
+        ],
+      },
+      {
+        id: "rt-mediastinum",
+        label: "Mediastinum / aorta normal",
+        group: "Core",
+        requiresAdequate: ["rotation"],
+        atoms: [
+          chestAtom("mediastinum", N.mediastinum, {
+            role: "baseline",
+            anatomicalSection: "mediastinum",
+          }),
         ],
       },
       {
@@ -194,6 +221,27 @@ export const XRAY_CHEST_SUB_MASTERS: readonly ChestSubMaster[] = [
             anatomicalSection: "pleura",
             baselineReplaces: "",
           }),
+        ],
+      },
+      {
+        id: "rt-expansion",
+        label: "Lungs expanded",
+        group: "Core",
+        requiresAdequate: ["inspiration"],
+        atoms: [
+          chestAtom("lung_expansion", N.expansion, {
+            role: "baseline",
+            anatomicalSection: "lung",
+            baselineReplaces: "",
+          }),
+        ],
+      },
+      {
+        id: "rt-diaphragm",
+        label: "Diaphragms normal",
+        group: "Core",
+        atoms: [
+          chestAtom("diaphragm", N.diaphragm, { role: "baseline", anatomicalSection: "diaphragm" }),
         ],
       },
       {
@@ -1898,8 +1946,8 @@ export const XRAY_CHEST_PRESETS: readonly ChestPreset[] = [
     subMasterId: "pneumothorax",
     criticalPattern: true,
     build: presetFromTiles("tension-pattern-pneumothorax", [
-      ["pneumothorax", "pt-large"],
       ["pneumothorax", "pt-tension-signs"],
+      ["pneumothorax", "pt-large"],
     ]),
   },
   {
