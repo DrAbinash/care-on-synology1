@@ -610,12 +610,22 @@ describe("Stage 0 · U-7 — audit immutability is real on exactly two tables", 
     );
   });
 
-  it("CHARACTERIZATION: no audit, money or clinical-record table is DB-guarded", () => {
+  it("TRANSITION (PR 3a): DB append-only guards now cover the time-integrity tables too — and still no money or clinical table", () => {
     const triggers = [...all.matchAll(/CREATE TRIGGER\s+([A-Za-z_0-9]+)[\s\S]{0,240}?\bON\s+([A-Za-z_0-9"]+)[\s\S]{0,240}?EXECUTE (?:FUNCTION|PROCEDURE)\s+([a-z_0-9.]+)/gi)];
     expect(triggers.length).toBeGreaterThan(0);
     const guards = triggers.filter((m) => /reject|prevent|immutable|append|guard/i.test(m[1] + m[3]));
     const guardTables = guards.map((m) => m[2].replace(/"/g, "").toLowerCase());
-    expect([...new Set(guardTables)].sort()).toEqual(["ai_shadow_drafts", "study_snapshots"]);
+    // BEFORE (Stage 0, 2026-09-30): exactly ["ai_shadow_drafts", "study_snapshots"].
+    // AFTER (PR 3a): the two new time-integrity tables joined that set, by
+    // copying the existing pattern rather than inventing a new one. What has NOT
+    // changed is the finding itself: no money or clinical-record table is
+    // DB-guarded, which is still Stage 2/D-8 work and is asserted below.
+    expect([...new Set(guardTables)].sort()).toEqual([
+      "ai_shadow_drafts",
+      "care_time_integrity_events",
+      "care_time_integrity_policy",
+      "study_snapshots",
+    ]);
     for (const t of PROTECTED_TABLES) {
       expect(guardTables, `no append-only DB guard on ${t}`).not.toContain(t);
     }

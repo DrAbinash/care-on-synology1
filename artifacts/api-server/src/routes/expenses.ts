@@ -17,6 +17,7 @@ import {
   resolveCreateBusinessDate,
   resolveUpdateBusinessDate,
 } from "../lib/careBusinessDatePolicy";
+import { businessDateEnforcementActive, recordBusinessDateRejection } from "../lib/timeIntegrity";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   createExpenseV2,
@@ -354,18 +355,31 @@ router.post("/", async (req, res) => {
   // CARE business-time policy: an ordinary expense is posted on the current
   // trusted CARE clinic date. A date from a workstation clock that disagrees
   // with CARE is rejected, not quietly rewritten, and the row gets the server's
-  // answer when the body carried none.
+  // answer when the body carried none. Forward-only: pre-cutover the submitted
+  // value behaves exactly as it did before this control existed.
   const expenseDateAuthority = clinicDateAuthority();
-  const expenseDateDecision = resolveCreateBusinessDate({
-    table: "expenses",
-    column: "expense_date",
-    submitted: expenseDate,
-    authority: expenseDateAuthority,
-  });
-  if (!expenseDateDecision.ok) {
-    return res.status(400).json(careBusinessDateErrorBody(expenseDateDecision));
+  let postedExpenseDate = expenseDate || expenseDateAuthority.clinicDate;
+  if (await businessDateEnforcementActive()) {
+    const expenseDateDecision = resolveCreateBusinessDate({
+      table: "expenses",
+      column: "expense_date",
+      submitted: expenseDate,
+      authority: expenseDateAuthority,
+    });
+    if (!expenseDateDecision.ok) {
+      await recordBusinessDateRejection({
+        rejection: expenseDateDecision,
+        authority: expenseDateAuthority,
+        actor: (req as StaffAuthRequest).staffSession ?? null,
+        endpoint: "/api/expenses",
+        method: "POST",
+        module: "accounting",
+        entityType: "expense",
+      });
+      return res.status(400).json(careBusinessDateErrorBody(expenseDateDecision));
+    }
+    postedExpenseDate = expenseDateDecision.businessDate ?? expenseDateAuthority.clinicDate;
   }
-  const postedExpenseDate = expenseDateDecision.businessDate ?? expenseDateAuthority.clinicDate;
 
   const createdBy = (req as StaffAuthRequest).staffSession?.subjectName?.trim() || null;
   const approvedByInput = typeof approvedBy === "string" ? approvedBy.trim() || null : null;
@@ -530,15 +544,27 @@ router.patch("/:id", async (req, res) => {
   // The column is now removed from the writable set entirely, so an identical
   // resend is a no-op and any other value is refused. Correcting a posted date
   // is PR 3b's privileged workflow, not this endpoint.
-  if (bodyParsed.data.expenseDate !== undefined) {
+  if (bodyParsed.data.expenseDate !== undefined && (await businessDateEnforcementActive())) {
+    const updateAuthority = clinicDateAuthority();
     const expenseDateDecision = resolveUpdateBusinessDate({
       table: "expenses",
       column: "expense_date",
       stored: before.expenseDate,
       submitted: bodyParsed.data.expenseDate,
-      authority: clinicDateAuthority(),
+      authority: updateAuthority,
     });
     if (!expenseDateDecision.ok) {
+      await recordBusinessDateRejection({
+        rejection: expenseDateDecision,
+        authority: updateAuthority,
+        actor: (req as StaffAuthRequest).staffSession ?? null,
+        endpoint: `/api/expenses/${paramsParsed.data.id}`,
+        method: "PATCH",
+        module: "accounting",
+        entityType: "expense",
+        entityId: before.expenseId,
+        reason: (req.body as { reason?: unknown })?.reason,
+      });
       return res.status(400).json(careBusinessDateErrorBody(expenseDateDecision));
     }
     delete updates.expenseDate;
