@@ -1314,7 +1314,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // This decision is based on the incoming patch's CONCEPT (identity),
     // NOT on string matching of impressionText.
     if (
-      isImpressionworthyAbnormal(observation.concept)
+      isImpressionworthyAbnormal(observation.concept, { role: observation.role })
       && (incoming.impression ?? "").trim()
       && opts.source !== "system"
     ) {
@@ -2251,6 +2251,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // and re-checks every safety predicate before applying.
     //
     // Identity is decided by patch concept/source, NOT by string heuristics.
+    //
+    // This first test asks the CONCEPT-ONLY question ("was the thing I removed
+    // an abnormal-typed concept?") and keeps its current-main answer, because a
+    // shipped MRI Lumbar normal tile carries `canal_stenosis` / `conus_medullaris`
+    // as baseline atoms and deselecting one has always restored the normal.
+    // Whether the normal may actually come back is still decided by the single
+    // authoritative rule, one call below in hasImpressionworthyAbnormal.
     if (
       !isSystemNormalPatch(patch)
       && isImpressionworthyAbnormal(patch.observation?.concept ?? null)

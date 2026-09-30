@@ -120,7 +120,10 @@ export function findSystemNormalPatch(
  * Returns true if any patch in the list is an impression-worthy abnormal
  * observation (suppresses the system normal impression).
  *
- * The system normal patch itself is NEVER impression-worthy abnormal.
+ * The system normal patch itself is NEVER impression-worthy abnormal, and
+ * neither is a baseline-role observation — that exclusion lives in the
+ * registry rule (isImpressionworthyAbnormal), not here, so the ledger can
+ * never disagree with the content packs about what suppresses the normal.
  * Patches without a resolved concept default to false (conservative —
  * we do NOT suppress the system normal based on unstructured text).
  */
@@ -129,9 +132,10 @@ export function hasImpressionworthyAbnormal(
 ): boolean {
   return patches.some((p) => {
     if (isSystemNormalPatch(p)) return false;
-    if (p.stale || p.observation?.role === "baseline") return false;
-    const concept = p.observation?.concept ?? null;
-    return isImpressionworthyAbnormal(concept);
+    if (p.stale) return false;
+    return isImpressionworthyAbnormal(p.observation?.concept ?? null, {
+      role: p.observation?.role,
+    });
   });
 }
 

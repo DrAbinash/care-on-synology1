@@ -442,11 +442,24 @@ describe("normal baseline and normal→abnormal reconciliation (spec §5)", () =
     expect(built.observations.length).toBeGreaterThan(5);
     expect(built.observations.every((o) => o.role === "baseline")).toBe(true);
     expect(built.observations.every((o) => o.source === CERVICAL_ATOM_SOURCE)).toBe(true);
-    // A baseline concept must never be impression-worthy, or the normal study
-    // would suppress its own system normal impression.
+    // A baseline observation must never be impression-worthy, or the normal
+    // study would suppress its own system normal impression. The pack flag
+    // describes the ABNORMAL reading of a concept, so impression-worthiness
+    // is a property of (concept, role) — not of the concept id alone.
     for (const o of built.observations) {
-      expect(isImpressionworthyAbnormal(o.concept ?? ""), o.concept ?? "").toBe(false);
+      expect(
+        isImpressionworthyAbnormal(o.concept ?? "", { role: o.role }),
+        o.concept ?? "",
+      ).toBe(false);
     }
+    // posterior_elements is exactly the case that needs the role: its pack is
+    // impression-worthy for an abnormal posterior-element finding, while the
+    // normal set below still emits it as a baseline that must not suppress
+    // "Normal study.".
+    const pe = built.observations.find((o) => o.concept === "posterior_elements");
+    expect(pe?.role).toBe("baseline");
+    expect(isImpressionworthyAbnormal("posterior_elements", { role: "baseline" })).toBe(false);
+    expect(isImpressionworthyAbnormal("posterior_elements")).toBe(true);
   });
 
   it("replaces the normal disc line when a level is called narrowed", () => {
