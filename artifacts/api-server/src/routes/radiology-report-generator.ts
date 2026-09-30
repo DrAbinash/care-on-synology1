@@ -1624,6 +1624,10 @@ const SaveDraftBody = z.object({
   observationLedger: z.unknown().optional(),
   viewerMeasurements: z.unknown().optional(),
   canalApProvenance: z.unknown().optional(),
+  // MRI Brain vascular acquisition state (mra/mrv) — additive envelope key
+  // (careVascularTechnique). Absent while untouched, so existing drafts are
+  // written exactly as before.
+  vascularTechnique: z.unknown().optional(),
   // Applied whole-report format identity — additive structured_json envelope
   // key (careReportFormatIdentity) so save → reopen keeps the baseline format
   // banner and the workspace never re-bootstraps a saved report.
@@ -1921,12 +1925,16 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
-  if (draft?.id && (rest.viewerMeasurements != null || rest.canalApProvenance != null)) {
+  if (
+    draft?.id
+    && (rest.viewerMeasurements != null || rest.canalApProvenance != null || rest.vascularTechnique != null)
+  ) {
     try {
       await persistCareViewerMeasurements(
         draft.id,
         rest.viewerMeasurements ?? undefined,
         rest.canalApProvenance ?? undefined,
+        rest.vascularTechnique ?? undefined,
       );
     } catch (err) {
       console.error(

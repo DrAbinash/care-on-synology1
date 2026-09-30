@@ -8,6 +8,7 @@ import {
   extractCareLinkedStudy,
   extractCareReportFormatIdentity,
   extractCareStructuredFormat,
+  extractCareVascularTechnique,
 } from "./structuredJsonColumn";
 
 const FORMAT = {
@@ -80,6 +81,32 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect(extractA4Cache(col)).toEqual(CACHE);
     expect((col as { careViewerMeasurements?: unknown }).careViewerMeasurements).toEqual(ms);
     expect((col as { careCanalApProvenance?: unknown }).careCanalApProvenance).toEqual(canal);
+  });
+
+  it("preserves MRI brain vascular technique across a cache regeneration", () => {
+    const vascular = {
+      acquired: { mraTof: true, mraCe: false },
+      manual: { mraCe: false },
+      designationNote: null,
+    };
+    const col = composeStructuredJsonColumn({
+      existing: CACHE,
+      formatState: FORMAT,
+      vascularTechnique: vascular,
+    });
+    expect(extractA4Cache(col)).toEqual(CACHE);
+    expect(extractCareVascularTechnique(col)).toEqual(vascular);
+
+    // The A4 cache regeneration on a finding-instance change must not drop it:
+    // losing this state reverts the radiologist's acquisition answers.
+    const regen = composeStructuredJsonColumn({ existing: col, a4Cache: [{ findingId: 4 }] });
+    expect(extractCareVascularTechnique(regen)).toEqual(vascular);
+    expect(extractA4Cache(regen)).toEqual([{ findingId: 4 }]);
+  });
+
+  it("adds no vascular envelope key to a report that never stated acquisition", () => {
+    const col = composeStructuredJsonColumn({ existing: CACHE, formatState: FORMAT });
+    expect((col as { careVascularTechnique?: unknown }).careVascularTechnique).toBeUndefined();
   });
 
   it("bounds oversized viewer measurement payloads to the newest items", () => {

@@ -30,6 +30,20 @@ import {
   type BrainTile,
   type BrainSubMasterId,
 } from "@/lib/mriBrainSubMasters";
+import { VASCULAR_BRAIN_PRESETS } from "@/lib/mriBrainVascularPresets";
+import {
+  VASCULAR_NORMAL_BUNDLE_ID,
+  isVascularNormalPreset,
+  vascularNormalBundle,
+  vascularNormalPresetIdForTile,
+  vascularNormalPresetIdsInReport,
+} from "@/lib/mriBrainVascularPresets";
+import {
+  useVascularTechniqueFold,
+  MriBrainVascularScreening,
+  MriBrainVascularTechniquePanel,
+} from "./MriBrainVascularControls";
+import { MriBrainVascularForms } from "./MriBrainVascularForms";
 import {
   buildBrainLesionAtoms,
   buildBrainMrsAtoms,
@@ -69,6 +83,9 @@ function toggleIn<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
 
+/** The three dedicated vascular palettes — the only surfaces that carry the advanced forms. */
+const VASCULAR_PALETTE_IDS: BrainSubMasterId[] = ["mra", "mraNeck", "mrv"];
+
 export function MriBrainCanvas({
   disabled,
   region = "Brain",
@@ -78,16 +95,46 @@ export function MriBrainCanvas({
 }) {
   const techniqueText = useWorkspace((s) => s.techniqueText);
   const patches = useWorkspace((s) => s.appliedPathologyPatches);
+  const vascularTechnique = useWorkspace((s) => s.vascularTechnique);
+  const reportingContext = useWorkspace((s) => s.reportingContext);
 
   const seq = useMemo(
     () => parseBrainSequences(techniqueText),
     [techniqueText],
   );
 
+  // The acquisition state is derived from the Technique field once, here, because it is what
+  // every vascular tile and form below is gated against — not only when a panel happens to
+  // be open (mra/mrv spec §4).
+  const foldSlice = useMemo(
+    () => ({
+      reportingContext,
+      vascularTechnique,
+      setVascularTechnique: useWorkspace.getState().setVascularTechnique,
+    }),
+    [reportingContext, vascularTechnique],
+  );
+  useVascularTechniqueFold(techniqueText, foldSlice);
+
+  // The dedicated vascular tiles are gated against what was ACQUIRED, which is the
+  // radiologist's technique state — derived from the Technique field and manually
+  // overridable, never inferred from the booking (mra/mrv spec §2, §4).
+  const vascular = useMemo(
+    () => ({ technique: vascularTechnique, brain: seq }),
+    [vascularTechnique, seq],
+  );
+
   const [activePalettes, setActivePalettes] = useState<BrainSubMasterId[]>(["routine"]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [lesionOpen, setLesionOpen] = useState<LesionCompartment | null>(null);
   const [mrsOpen, setMrsOpen] = useState(false);
+  const [screeningOpen, setScreeningOpen] = useState(false);
+  const [vascularForms, setVascularForms] = useState<Record<string, boolean>>({});
+
+  // §22: the acquisition state and the dedicated structured forms belong to the dedicated
+  // palettes. Routine MRI Brain carries only the compact screening module, so it is never
+  // loaded out with the whole MRA/MRV editor.
+  const vascularPaletteActive = activePalettes.some((id) => VASCULAR_PALETTE_IDS.includes(id));
 
   const activeBundles = useMemo(() => {
     const out = new Set<string>();
@@ -98,29 +145,81 @@ export function MriBrainCanvas({
     return out;
   }, [patches]);
 
+  /** Which §15 module baselines the report carries; they share one composed bundle. */
+  const vascularNormals = useMemo(
+    () =>
+      vascularNormalPresetIdsInReport(
+        patches
+          .filter((p) => p.observation && !p.stale)
+          .map((p) => ({
+            concept: p.observation?.concept,
+            findings: p.lastRendered.findings ?? p.templates.findings,
+          })),
+      ),
+    [patches],
+  );
+
+  /**
+   * Add or remove one module's all-normal baseline. The module normals share a single
+   * bundle because the ledger treats a baseline block as the report's normal prose: applied
+   * as separate bundles, the neck normal would supersede the intracranial normal's sentence
+   * while both rows stayed in the ledger (mra/mrv spec §2, §15).
+   */
+  const toggleVascularNormal = (presetId: string) => {
+    if (disabled) return;
+    const next = vascularNormals.includes(presetId)
+      ? vascularNormals.filter((id) => id !== presetId)
+      : [...vascularNormals, presetId];
+    if (!next.length) {
+      useWorkspace.getState().removeMacroBundle(VASCULAR_NORMAL_BUNDLE_ID);
+      return;
+    }
+    useWorkspace.getState().applyMacroBundle(
+      vascularNormalBundle(next, { region, seq, vascular }),
+    );
+  };
+
   const onTile = (tile: BrainTile) => {
     if (disabled) return;
+    // A tree-normal tile is a §15 baseline, not an ordinary tile: it composes with the
+    // other module normals into one bundle so no normal statement replaces another.
+    const normalPreset = vascularNormalPresetIdForTile(tile.id);
+    if (normalPreset) {
+      // Removing a baseline never needs a gate; adding one does (§4).
+      if (!vascularNormals.includes(normalPreset) && !tileAvailable(tile, seq, vascular).ok) return;
+      toggleVascularNormal(normalPreset);
+      return;
+    }
     const bundleId = brainBundleId("tile", tile.id);
     if (activeBundles.has(bundleId)) {
       useWorkspace.getState().removeMacroBundle(bundleId);
       return;
     }
-    const gate = tileAvailable(tile, seq);
+    const gate = tileAvailable(tile, seq, vascular);
     if (!gate.ok) return;
     const built = buildTilePatch(tile, region);
     useWorkspace.getState().applyMacroBundle(built);
   };
 
+  const ALL_BRAIN_PRESETS = useMemo(
+    () => [...MRI_BRAIN_PRESETS, ...VASCULAR_BRAIN_PRESETS],
+    [],
+  );
+
   const onPreset = (presetId: string) => {
     if (disabled) return;
-    const preset = MRI_BRAIN_PRESETS.find((p) => p.id === presetId);
+    if (isVascularNormalPreset(presetId)) {
+      toggleVascularNormal(presetId);
+      return;
+    }
+    const preset = ALL_BRAIN_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     const bundleId = brainBundleId("preset", preset.id);
     if (activeBundles.has(bundleId)) {
       useWorkspace.getState().removeMacroBundle(bundleId);
       return;
     }
-    const built = preset.build({ region, seq });
+    const built = preset.build({ region, seq, vascular });
     useWorkspace.getState().applyMacroBundle(built);
     if (preset.id === "normal-mri-brain") {
       useWorkspace.getState().seedSystemNormalImpression();
@@ -196,11 +295,27 @@ export function MriBrainCanvas({
         </p>
       ) : null}
 
+      {/* Visible acquisition state — the authority every vascular tile is gated against. */}
+      <MriBrainVascularTechniquePanel
+        disabled={disabled}
+        edit={vascularPaletteActive || screeningOpen}
+      />
+
       {/* Active palettes */}
       {activePalettes.map((paletteId) => {
         const sm = MRI_BRAIN_SUB_MASTERS.find((s) => s.id === paletteId);
         if (!sm) return null;
-        const presets = MRI_BRAIN_PRESETS.filter((p) => p.subMasterId === sm.id);
+        const presets = ALL_BRAIN_PRESETS.filter((p) => p.subMasterId === sm.id);
+        const vascularModule =
+          paletteId === "mra" || paletteId === "mraNeck" || paletteId === "mrv"
+            ? paletteId
+            : null;
+        // Each module keeps its own expansion state, so opening the aneurysm form for the
+        // intracranial study does not open the neck panel's form of the same name.
+        const vascularOpen: Record<string, boolean> = {};
+        for (const [key, value] of Object.entries(vascularForms)) {
+          if (key.startsWith(`${sm.id}-`)) vascularOpen[key.slice(sm.id.length + 1)] = value;
+        }
         const groups = new Map<string, BrainTile[]>();
         sm.tiles.forEach((t) => {
           if (t.advanced && !showAdvanced) return;
@@ -225,7 +340,9 @@ export function MriBrainCanvas({
               <div className="flex flex-wrap gap-1" data-testid={`brain-presets-${sm.id}`}>
                 {presets.map((p) => {
                   const bundleId = brainBundleId("preset", p.id);
-                  const on = activeBundles.has(bundleId);
+                  const on = isVascularNormalPreset(p.id)
+                    ? vascularNormals.includes(p.id)
+                    : activeBundles.has(bundleId);
                   const gated =
                     p.id === "pyogenic-abscess"
                       ? missingChip(["dwi", "adc", "contrast"])
@@ -261,10 +378,18 @@ export function MriBrainCanvas({
                 <div className="text-[8px] font-bold uppercase tracking-wide text-slate-500">{groupName}</div>
                 <div className="flex flex-wrap gap-1">
                   {tiles.map((tile) => {
+                    const normalPreset = vascularNormalPresetIdForTile(tile.id);
                     const bundleId = brainBundleId("tile", tile.id);
-                    const on = activeBundles.has(bundleId);
-                    const gate = tileAvailable(tile, seq);
+                    const on = normalPreset
+                      ? vascularNormals.includes(normalPreset)
+                      : activeBundles.has(bundleId);
+                    const gate = tileAvailable(tile, seq, vascular);
                     const missing = gate.missing.join(" + ");
+                    // A vascular tile can also be gated by what was acquired rather than by a
+                    // sequence in the Technique field; the reason has to be visible either way.
+                    const reason = missing
+                      ? `Requires ${missing} — not documented in technique`
+                      : gate.notice ?? "";
                     return (
                       <button
                         key={tile.id}
@@ -272,12 +397,12 @@ export function MriBrainCanvas({
                         disabled={disabled || (!on && !gate.ok)}
                         onClick={() => onTile(tile)}
                         data-testid={`brain-tile-${tile.id}`}
-                        title={missing ? `Requires ${missing} — not documented in technique` : tile.atoms[0]?.findings.slice(0, 120)}
+                        title={reason || tile.atoms[0]?.findings.slice(0, 120)}
                         className={[
                           "rounded border px-1.5 py-0.5 text-[9px]",
                           on
                             ? "border-indigo-600 bg-indigo-600 text-white"
-                            : missing
+                            : reason
                               ? "border-slate-200 bg-slate-50 text-slate-400"
                               : "border-slate-300 bg-white text-slate-800 hover:border-indigo-400",
                         ].join(" ")}
@@ -324,6 +449,33 @@ export function MriBrainCanvas({
             {paletteId === "sella" ? <BrainPituitaryControl disabled={disabled} region={region} /> : null}
             {paletteId === "epilepsy" ? <BrainHippocampusControl disabled={disabled} region={region} seq={seq} /> : null}
 
+            {vascularModule ? (
+              <MriBrainVascularForms
+                region={region}
+                ctx={vascular}
+                module={vascularModule}
+                open={vascularOpen}
+                onToggle={(id) =>
+                  setVascularForms((prev) => {
+                    const key = `${sm.id}-${id}`;
+                    return { ...prev, [key]: !prev[key] };
+                  })
+                }
+                disabled={disabled}
+              />
+            ) : null}
+
+            {paletteId === "routine" ? (
+              <button
+                type="button"
+                onClick={() => setScreeningOpen((v) => !v)}
+                data-testid="mra-screening-toggle"
+                className="rounded border border-sky-400 bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold text-sky-900"
+              >
+                {screeningOpen ? "▾" : "▸"} Basic MRA screening
+              </button>
+            ) : null}
+
             {hasHidden ? (
               <button
                 type="button"
@@ -350,6 +502,10 @@ export function MriBrainCanvas({
 
       {mrsOpen && seq.performed.mrs ? (
         <BrainMrsPanel region={region} seq={seq} onClose={() => setMrsOpen(false)} disabled={disabled} />
+      ) : null}
+
+      {screeningOpen ? (
+        <MriBrainVascularScreening region={region} disabled={disabled} />
       ) : null}
     </div>
   );

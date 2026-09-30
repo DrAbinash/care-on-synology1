@@ -86,11 +86,14 @@ const tile = (subMasterId: string, tileId: string) => {
 };
 
 describe("sub-master data integrity", () => {
-  it("has the 13 clinical sub-masters with unique ids and tiles", () => {
+  it("has the 16 clinical sub-masters with unique ids and tiles", () => {
     const ids = MRI_BRAIN_SUB_MASTERS.map((s) => s.id);
     expect(ids).toEqual([
       "routine", "vascular", "trauma", "tumor", "infection", "demyelinating",
       "epilepsy", "sella", "cpa", "pediatric", "metabolic", "postop", "advanced",
+      // Dedicated vascular palettes (mra/mrv V3) mount only for a dedicated module
+      // role; the routine brain palettes above are unchanged.
+      "mra", "mraNeck", "mrv",
     ]);
     const tileIds = new Set<string>();
     MRI_BRAIN_SUB_MASTERS.forEach((sm) =>
@@ -112,7 +115,12 @@ describe("sub-master data integrity", () => {
       expect(pack, `concept ${concept} missing from content packs`).toBeTruthy();
       expect(
         pack?.impressionworthyAbnormal ||
-          ["senile_atrophy"].includes(concept),
+          // Non-abnormalities may still carry a benign statement when a tile is a
+          // deliberate radiologist selection: age-related involution wording, and the
+          // first-class variant slots that say "this small vessel is a normal variant"
+          // (§10) rather than hiding it.
+          concept.endsWith("_variant") ||
+          ["senile_atrophy", "mra_variant", "mrv_variant"].includes(concept),
         `concept ${concept} must be impression-worthy (system-normal yield)`,
       ).toBe(true);
     };
