@@ -36,6 +36,11 @@ import {
 } from "@/lib/structuredViewerMeasurements";
 import type { CanalApProvenanceMap } from "@/lib/spineCanalAp";
 import {
+  SPINE_REPORTING_DRAFT_KEY,
+  extractSpineReportingState,
+  spineReportingDraftPayload,
+} from "@/lib/mriSpineDraftState";
+import {
   extractLinkedStudyFromStructuredJson,
   findingsSectionFromStudy,
   linkedStudyPayload,
@@ -247,6 +252,17 @@ useEffect(() => {
     if (restoredCanal) {
       useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
     }
+    // Spine V3: numbering / sequences / screening selections are restored so
+    // the canvas rebuilds the same structured state (prose stays ledger-owned).
+    const restoredSpine = extractSpineReportingState(draft.structuredJson);
+    if (restoredSpine) {
+      useWorkspace.setState({
+        lumbarNumbering: restoredSpine.lumbarNumbering,
+        sequencesAvailable: restoredSpine.sequencesAvailable,
+        screening: restoredSpine.screening,
+        impressionOrderFrozen: restoredSpine.impressionOrderFrozen,
+      });
+    }
     const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
     setSelectedQuickIds(new Set(ids));
     // Restore the persisted baseline format identity (banner / canvas state).
@@ -376,6 +392,14 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
           return { ...s, items: s.items.slice(-400) };
         })(),
         canalApProvenance: useWorkspace.getState().canalApProvenance,
+        // Spine V3 structured capture state (numbering / sequences / screening)
+        // — survives save → close → reopen like the AP provenance does.
+        [SPINE_REPORTING_DRAFT_KEY]: spineReportingDraftPayload({
+          lumbarNumbering: useWorkspace.getState().lumbarNumbering,
+          sequencesAvailable: useWorkspace.getState().sequencesAvailable,
+          screening: useWorkspace.getState().screening,
+          impressionOrderFrozen: useWorkspace.getState().impressionOrderFrozen,
+        }),
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
