@@ -11,6 +11,12 @@ import { correctExpenseVoucher } from "../lib/auto-voucher";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
 import { ocrBill } from "../lib/ocr/localDocumentOcr";
 import { auditFromRequest } from "../lib/audit";
+import {
+  careBusinessDateErrorBody,
+  clinicDateAuthority,
+  resolveCreateBusinessDate,
+  resolveUpdateBusinessDate,
+} from "../lib/careBusinessDatePolicy";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
   createExpenseV2,
@@ -345,6 +351,22 @@ router.post("/", async (req, res) => {
   }
   const { category, description, amount, expenseDate, paymentMode, paidTo, approvedBy, notes } = parsed.data;
 
+  // CARE business-time policy: an ordinary expense is posted on the current
+  // trusted CARE clinic date. A date from a workstation clock that disagrees
+  // with CARE is rejected, not quietly rewritten, and the row gets the server's
+  // answer when the body carried none.
+  const expenseDateAuthority = clinicDateAuthority();
+  const expenseDateDecision = resolveCreateBusinessDate({
+    table: "expenses",
+    column: "expense_date",
+    submitted: expenseDate,
+    authority: expenseDateAuthority,
+  });
+  if (!expenseDateDecision.ok) {
+    return res.status(400).json(careBusinessDateErrorBody(expenseDateDecision));
+  }
+  const postedExpenseDate = expenseDateDecision.businessDate ?? expenseDateAuthority.clinicDate;
+
   const createdBy = (req as StaffAuthRequest).staffSession?.subjectName?.trim() || null;
   const approvedByInput = typeof approvedBy === "string" ? approvedBy.trim() || null : null;
   const allowSelf = await isSelfApprovalAllowed();
@@ -396,7 +418,7 @@ router.post("/", async (req, res) => {
       billAmount: billAmount ?? undefined,
       taxAmount: taxAmount ?? null,
       initialPaymentAmount: initialPaymentAmount ?? undefined,
-      expenseDate,
+      expenseDate: postedExpenseDate,
       paymentMode: paymentMode || "cash",
       paidTo: paidTo ?? null,
       approvedBy: resolvedApprovedBy,
@@ -494,13 +516,35 @@ router.patch("/:id", async (req, res) => {
         "Cannot change category after accounting vouchers are linked. Void and re-enter if correction is required.",
     });
   }
-  const touchingPayeeOrDate =
-    bodyParsed.data.paidTo !== undefined || bodyParsed.data.expenseDate !== undefined;
-  if (hasLedger && touchingPayeeOrDate) {
+  if (bodyParsed.data.paidTo !== undefined && hasLedger) {
     return res.status(400).json({
       error:
-        "Cannot change vendor/payee or expense date after accounting vouchers are linked. Void and re-enter if correction is required.",
+        "Cannot change vendor/payee after accounting vouchers are linked. Void and re-enter if correction is required.",
     });
+  }
+
+  // Policy §3: the expense date is a Class-A business date and is not editable
+  // once the row exists. This used to be blocked only when a voucher was
+  // already linked, which left a PENDING or FAILED expense freely re-datable by
+  // anyone who could reach this route — including by direct HTTP with no UI.
+  // The column is now removed from the writable set entirely, so an identical
+  // resend is a no-op and any other value is refused. Correcting a posted date
+  // is PR 3b's privileged workflow, not this endpoint.
+  if (bodyParsed.data.expenseDate !== undefined) {
+    const expenseDateDecision = resolveUpdateBusinessDate({
+      table: "expenses",
+      column: "expense_date",
+      stored: before.expenseDate,
+      submitted: bodyParsed.data.expenseDate,
+      authority: clinicDateAuthority(),
+    });
+    if (!expenseDateDecision.ok) {
+      return res.status(400).json(careBusinessDateErrorBody(expenseDateDecision));
+    }
+    delete updates.expenseDate;
+    if (Object.keys(updates).length === 0) {
+      return res.json(before);
+    }
   }
 
   if (

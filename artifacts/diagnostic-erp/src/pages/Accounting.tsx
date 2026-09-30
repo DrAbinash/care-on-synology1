@@ -1333,7 +1333,7 @@ export default function Accounting() {
                   through the separate edit dialog, whose date comes from the
                   stored row and is untouched here. The field stays freely
                   editable: a trusted default is not a permission. */}
-              <div><Label>Date *</Label><Input type="date" {...regV("date", { required: true })} className="mt-1" defaultValue={getClinicDateIst() ?? ""} /></div>
+              <div><Label>Date *</Label><Input type="date" {...regV("date", { required: true })} className="mt-1 bg-muted/40" readOnly title="CARE stamps the current clinic date. The server rejects any other voucher date." defaultValue={getClinicDateIst() ?? ""} /><p className="text-[11px] text-muted-foreground mt-1">Current CARE clinic date — a voucher for another day needs the authorized correction workflow.</p></div>
               <div><Label>Amount (₹) *</Label><Input type="number" step="0.01" {...regV("amount", { required: true })} className="mt-1" /></div>
             </div>
             <div>
@@ -1392,13 +1392,12 @@ export default function Accounting() {
                 performedBy: d.performedBy,
                 reference: d.reference,
                 narration: d.narration,
-                editedBy: d.editedBy,
                 reason: d.reason,
               },
             });
           })} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Date</Label><Input type="date" {...regEV("date")} className="mt-1" /></div>
+              <div><Label>Date</Label><Input type="date" {...regEV("date")} className="mt-1 bg-muted/40" readOnly title="The voucher's business date is fixed once posted." /></div>
               <div><Label>Amount (₹)</Label><Input type="number" step="0.01" {...regEV("amount")} className="mt-1" /></div>
             </div>
             <div><Label>Particular</Label><Input {...regEV("particular")} className="mt-1" /></div>
@@ -1410,7 +1409,7 @@ export default function Accounting() {
             <div><Label>Remark</Label><Input {...regEV("remark")} className="mt-1" /></div>
             <div className="border-t border-border pt-3 space-y-3">
               <p className="text-xs font-semibold uppercase text-muted-foreground">Audit Information (Required)</p>
-              <div><Label>Your Name *</Label><Input {...regEV("editedBy", { required: true })} className="mt-1" placeholder="Who is making this edit?" /></div>
+              <p className="text-xs text-muted-foreground">Recorded as you: the signed-in staff account. The name typed into a request is no longer accepted as the editor.</p>
               <div><Label>Reason for Edit *</Label><Input {...regEV("reason", { required: true })} className="mt-1" placeholder="e.g., Corrected wrong amount entry" /></div>
             </div>
             <div className="flex justify-end gap-2 pt-2">

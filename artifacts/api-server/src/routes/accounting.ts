@@ -5,6 +5,12 @@ import { eq, desc, and, or, gte, lte, like, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { todayIST, dateToISTString } from "../lib/istDate";
+import {
+  careBusinessDateErrorBody,
+  clinicDateAuthority,
+  resolveCreateBusinessDate,
+  resolveUpdateBusinessDate,
+} from "../lib/careBusinessDatePolicy";
 import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment, resolveMethodAccount, ensureAccount } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -42,7 +48,10 @@ const AccountBody = z.object({
 
 const VoucherBody = z.object({
   type: z.enum(["payment", "receipt", "contra", "journal", "bank_transfer", "sales", "purchase"]),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  // Optional now that CARE is the authority for a voucher's posting date: an
+  // absent date is derived from the trusted server clock, and an explicit one
+  // is validated against it instead of being stored verbatim.
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").optional(),
   creditAccountId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]),
   debitAccountId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]),
   amount: z.union([z.number().positive(), z.string().regex(/^-?\d+(\.\d+)?$/)]),
@@ -252,6 +261,27 @@ router.post("/vouchers", async (req, res) => {
   if (!parsed.success) { apiErrorFromZod(res, 400, "Invalid body", parsed.error); return; }
   const { type, date, creditAccountId, debitAccountId, amount, particular, remark, performedBy, reference, narration, billId } = parsed.data;
 
+  // CARE business-time policy: an ordinary voucher's posting date is the
+  // current trusted CARE clinic date and nothing else. The submitted value is
+  // judged against the server's clock, never the workstation's; a mismatch is
+  // rejected rather than corrected, because silently moving a GL entry the
+  // operator did not ask for is its own integrity problem.
+  const authority = clinicDateAuthority();
+  const businessDateDecision = resolveCreateBusinessDate({
+    table: "vouchers",
+    column: "date",
+    submitted: date,
+    authority,
+  });
+  if (!businessDateDecision.ok) {
+    res.status(400).json(careBusinessDateErrorBody(businessDateDecision));
+    return;
+  }
+  // A policed decision always carries the CARE date. The fallback is reachable
+  // only if `vouchers.date` stops being Class A in the registry, in which case
+  // the submitted value stands exactly as it did before this control existed.
+  const postingDate = businessDateDecision.businessDate ?? authority.clinicDate;
+
   // Race-safe insert: count-based numbering can collide under concurrency, but
   // the DB has a unique index on voucher_number. On unique-violation we bump
   // the sequence by the attempt count and retry. 3 attempts ≈ tolerates a
@@ -265,7 +295,7 @@ router.post("/vouchers", async (req, res) => {
         .values({
           voucherNumber,
           type,
-          date,
+          date: postingDate,
           creditAccountId: creditAccountId.toString(),
           debitAccountId: debitAccountId.toString(),
           amount: amount.toString(),
@@ -292,12 +322,18 @@ router.post("/vouchers", async (req, res) => {
 router.patch("/vouchers/:id", async (req, res) => {
   const id = parseId(req.params.id, res);
   if (id === null) return;
-  const { editedBy, reason, date, amount, particular, remark, performedBy, reference, narration, creditAccountId, debitAccountId } = req.body;
+  const { reason, date, amount, particular, remark, performedBy, reference, narration, creditAccountId, debitAccountId } = req.body;
 
-  if (!editedBy || !reason) {
-    res.status(400).json({ error: "editedBy and reason are required" });
+  if (!reason) {
+    res.status(400).json({ error: "A reason is required to edit a voucher" });
     return;
   }
+
+  // Policy §6: the actor is whoever the authenticated session says. `editedBy`
+  // is deliberately not read from the body any more, so a voucher audit row can
+  // no longer be told to name somebody else.
+  const session = (req as StaffAuthRequest).staffSession;
+  const actorName = session?.subjectName ?? "admin";
 
   const [existing] = await db.select().from(vouchersTable).where(eq(vouchersTable.id, id));
   if (!existing) {
@@ -305,44 +341,59 @@ router.patch("/vouchers/:id", async (req, res) => {
     return;
   }
 
+  // Policy §3: the posting date of an existing voucher is not editable by
+  // ordinary staff — not into the past, not into the future, and not onto
+  // today's CARE date either. The verdict is taken against the row's own stored
+  // value, which is what keeps this forward-only: a 2024 voucher resent with
+  // its own 2024 date is a no-op, not a violation.
+  if (date !== undefined) {
+    const dateDecision = resolveUpdateBusinessDate({
+      table: "vouchers",
+      column: "date",
+      stored: existing.date,
+      submitted: date,
+      authority: clinicDateAuthority(),
+    });
+    if (!dateDecision.ok) {
+      res.status(400).json(careBusinessDateErrorBody(dateDecision));
+      return;
+    }
+  }
+
   const updates: Record<string, unknown> = {};
   const auditRows: { voucherId: number; voucherNumber: string; editedBy: string; reason: string; changeType: string; oldValue: string | null; newValue: string | null }[] = [];
 
-  if (date !== undefined && date !== existing.date) {
-    updates.date = date;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "date", oldValue: existing.date, newValue: date });
-  }
   if (amount !== undefined && String(amount) !== existing.amount) {
     updates.amount = String(amount);
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "amount", oldValue: existing.amount, newValue: String(amount) });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "amount", oldValue: existing.amount, newValue: String(amount) });
   }
   if (particular !== undefined && particular !== existing.particular) {
     updates.particular = particular;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "particular", oldValue: existing.particular, newValue: particular });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "particular", oldValue: existing.particular, newValue: particular });
   }
   if (remark !== undefined && remark !== existing.remark) {
     updates.remark = remark;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "remark", oldValue: existing.remark, newValue: remark });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "remark", oldValue: existing.remark, newValue: remark });
   }
   if (performedBy !== undefined && performedBy !== existing.performedBy) {
     updates.performedBy = performedBy;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "performedBy", oldValue: existing.performedBy, newValue: performedBy });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "performedBy", oldValue: existing.performedBy, newValue: performedBy });
   }
   if (reference !== undefined && reference !== existing.reference) {
     updates.reference = reference;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "reference", oldValue: existing.reference, newValue: reference });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "reference", oldValue: existing.reference, newValue: reference });
   }
   if (narration !== undefined && narration !== existing.narration) {
     updates.narration = narration;
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "narration", oldValue: existing.narration, newValue: narration });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "narration", oldValue: existing.narration, newValue: narration });
   }
   if (creditAccountId !== undefined && String(creditAccountId) !== existing.creditAccountId) {
     updates.creditAccountId = String(creditAccountId);
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "creditAccount", oldValue: existing.creditAccountId, newValue: String(creditAccountId) });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "creditAccount", oldValue: existing.creditAccountId, newValue: String(creditAccountId) });
   }
   if (debitAccountId !== undefined && String(debitAccountId) !== existing.debitAccountId) {
     updates.debitAccountId = String(debitAccountId);
-    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy, reason, changeType: "debitAccount", oldValue: existing.debitAccountId, newValue: String(debitAccountId) });
+    auditRows.push({ voucherId: id, voucherNumber: existing.voucherNumber, editedBy: actorName, reason, changeType: "debitAccount", oldValue: existing.debitAccountId, newValue: String(debitAccountId) });
   }
 
   if (Object.keys(updates).length === 0) {
@@ -1448,7 +1499,31 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
   const dupKey = (date: string, amount: number, reference: string, description: string) =>
     `${date}|${amount.toFixed(2)}|${(reference || description || "").trim().toLowerCase()}`;
 
-  const dates = toImport.map(t => t.date || todayIST());
+  // CARE business-time policy: an import posts GL vouchers, so each row's date
+  // is judged exactly like a hand-made voucher. A statement covering earlier
+  // days is therefore a batch of backdated entries, and because a bulk endpoint
+  // must not write half a batch, the whole request is refused before anything is
+  // inserted. Management decision recorded in the PR 2 design doc — this closes
+  // a bypass proven live, not theorised.
+  const importAuthority = clinicDateAuthority();
+  for (const txn of toImport) {
+    const rowDecision = resolveCreateBusinessDate({
+      table: "vouchers",
+      column: "date",
+      submitted: txn.date,
+      authority: importAuthority,
+    });
+    if (!rowDecision.ok) {
+      res.status(400).json({
+        ...careBusinessDateErrorBody(rowDecision),
+        message: `${rowDecision.attempted ?? "an"} is not the current CARE business date. A bank-statement import posts vouchers, so every row must carry ${importAuthority.clinicDate}. Nothing was written from this batch of ${toImport.length} row(s).`,
+        totalRows: toImport.length,
+      });
+      return;
+    }
+  }
+
+  const dates = toImport.map(t => t.date || importAuthority.clinicDate);
   const minDate = dates.reduce((a, b) => (a < b ? a : b));
   const maxDate = dates.reduce((a, b) => (a > b ? a : b));
   const existingForAccount = await db.select({
@@ -1466,7 +1541,7 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
   for (const txn of toImport) {
     const isDebit = txn.debit > 0;
     const amount = isDebit ? txn.debit : txn.credit;
-    const date = txn.date || todayIST();
+    const date = txn.date || importAuthority.clinicDate;
 
     const key = dupKey(date, amount, txn.reference, txn.description);
     if (seenKeys.has(key)) { skippedDuplicates++; continue; }

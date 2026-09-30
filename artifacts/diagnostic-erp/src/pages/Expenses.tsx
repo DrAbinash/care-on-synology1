@@ -1201,7 +1201,7 @@ export default function Expenses() {
                       billAmount: bill,
                       amountPaid: prev.payKind === "PAID" ? bill : prev.payKind === "DUE" ? "0" : prev.amountPaid,
                       taxAmount: result.gstAmount > 0 ? String(result.gstAmount) : prev.taxAmount,
-                      expenseDate: result.date || prev.expenseDate,
+                      invoiceDate: result.date || prev.invoiceDate,
                       paymentMode: mappedMode || prev.paymentMode,
                       vendorName: prev.vendorName || result.vendor || prev.vendorName,
                       invoiceNumber: prev.invoiceNumber || result.invoiceNumber || prev.invoiceNumber,
@@ -1357,12 +1357,15 @@ export default function Expenses() {
                 <Input
                   type="date"
                   value={form.expenseDate}
-                  onChange={(e) => {
-                    setForm({ ...form, expenseDate: e.target.value });
-                    markFieldUser("date");
-                  }}
-                  required
+                  readOnly
+                  className="bg-muted/40"
+                  title="CARE stamps the current clinic date. The server rejects any other expense date."
                 />
+                <p className="text-[11px] text-muted-foreground">
+                  {form.expenseDate
+                    ? "Fixed by CARE to the current clinic date. A bill dated earlier belongs in Invoice date."
+                    : "CARE will stamp the current clinic date when you save."}
+                </p>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label className="inline-flex items-center">Description *<OcrFieldBadge meta={fieldMeta.description} /></Label>

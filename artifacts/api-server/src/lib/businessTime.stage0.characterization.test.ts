@@ -10,6 +10,11 @@ import { patientReportsTable } from "@workspace/db/schema";
 import { studyTatMetricsTable } from "@workspace/db/schema";
 import { echoValveAssessmentTable } from "@workspace/db/schema";
 import { clinicDateOf, istHourMinute, todayIST } from "./istDate";
+import {
+  clinicDateAuthority,
+  resolveCreateBusinessDate,
+  resolveUpdateBusinessDate,
+} from "./careBusinessDatePolicy";
 
 /**
  * STAGE 0 — BUSINESS-TIME CHARACTERIZATION.
@@ -128,10 +133,29 @@ describe("Stage 0 · U-10 — CARE business-day derivation at the IST/UTC bounda
 describe("Stage 0 · U-4/U-5 — request-schema characterization (no DB touched)", () => {
   const base = { category: "utilities", description: "x", amount: 1 };
 
-  it("CHARACTERIZATION: expenseDate is a bare string — a non-date, a far-past and a far-future date all parse", () => {
+  it("TRANSITION (PR 2): expenseDate is still a bare string at the schema — the control moved to the business-date guard", () => {
+    // BEFORE (Stage 0, 2026-09-30): "not-a-date", "1900-01-01", "2035-01-01",
+    // "2026-02-31", "30/09/2026" and "" parsed, and nothing downstream stopped
+    // them reaching the row. AFTER: the schema fact is unchanged — zod is not
+    // where the control lives — but every one of those values is now refused by
+    // `resolveCreateBusinessDate`, and an empty value becomes the trusted CARE
+    // clinic date instead of an empty business date.
+    const authority = clinicDateAuthority(at("2026-09-30T10:00:00+05:30"));
     for (const expenseDate of ["not-a-date", "1900-01-01", "2035-01-01", "2026-02-31", "30/09/2026", ""]) {
       const parsed = CreateExpenseBody.safeParse({ ...base, expenseDate });
       expect(parsed.success, `expenseDate=${JSON.stringify(expenseDate)}`).toBe(true);
+      const decision = resolveCreateBusinessDate({
+        table: "expenses",
+        column: "expense_date",
+        submitted: expenseDate,
+        authority,
+      });
+      if (expenseDate === "") {
+        expect(decision.ok).toBe(true);
+        if (decision.ok) expect(decision.businessDate).toBe("2026-09-30");
+      } else {
+        expect(decision.ok, `guard must refuse ${JSON.stringify(expenseDate)}`).toBe(false);
+      }
     }
   });
 
@@ -141,11 +165,32 @@ describe("Stage 0 · U-4/U-5 — request-schema characterization (no DB touched)
     if (parsed.success) expect(parsed.data.approvedBy).toBe("whoever-i-say");
   });
 
-  it("CHARACTERIZATION: an update body may move an expense to any date, and carries no reason field at all", () => {
+  it("TRANSITION (PR 2): an update body still accepts any date — and the route now refuses to act on it", () => {
+    // BEFORE: "an update body may move an expense to any date, and carries no
+    // reason field at all", and `PATCH /expenses/:id` wrote it whenever the
+    // expense had no linked voucher. AFTER: the schema is untouched (it is a
+    // wire contract, not a policy), but `expense_date` is removed from the
+    // writable set and any differing value is rejected.
     const keys = Object.keys((UpdateExpenseBody as unknown as { shape: Record<string, unknown> }).shape);
     expect(keys).toContain("expenseDate");
     expect(keys).not.toContain("reason");
     expect(UpdateExpenseBody.safeParse({ expenseDate: "1900-01-01" }).success).toBe(true);
+
+    const authority = clinicDateAuthority(at("2026-09-30T10:00:00+05:30"));
+    for (const submitted of ["1900-01-01", "2026-09-29", "2026-09-30", "2026-10-01"]) {
+      expect(
+        resolveUpdateBusinessDate({ table: "expenses", column: "expense_date", stored: "2026-08-14", submitted, authority }).ok,
+        `re-dating to ${submitted} must be refused`,
+      ).toBe(false);
+    }
+    // Forward-only: the row's own date is a no-op, not a violation.
+    expect(
+      resolveUpdateBusinessDate({ table: "expenses", column: "expense_date", stored: "2026-08-14", submitted: "2026-08-14", authority }).ok,
+    ).toBe(true);
+
+    const route = src("../routes/expenses.ts");
+    expect(route).toContain("delete updates.expenseDate;");
+    expect(route).not.toMatch(/if \(date !== undefined && date !== existing\.date\)\s*\{\s*updates\.date/);
   });
 });
 
@@ -227,12 +272,22 @@ describe("Stage 0 · U-8 — actor authority characterization (source contracts)
     expect(fn).not.toMatch(/staffSession|subjectId|session\./);
   });
 
-  it("CHARACTERIZATION: the GL voucher PATCH has no request schema and takes both date and actor from the body", () => {
+  it("TRANSITION (PR 2): the GL voucher PATCH still has no request schema — but date and actor are no longer caller-supplied truth", () => {
+    // BEFORE: "the GL voucher PATCH has no request schema and takes both date
+    // and actor from the body." AFTER: still schema-less (that debt is recorded
+    // and unrepaired), while the posting date is judged against the stored row
+    // and the editor is read from the authenticated session.
     const s = src("../routes/accounting.ts");
     const patch = s.slice(s.indexOf('router.patch("/vouchers/:id"'));
-    const body = patch.slice(0, patch.indexOf("if (!editedBy"));
+    const body = patch.slice(0, patch.indexOf("if (!reason"));
     expect(body).toContain("req.body");
     expect(body).not.toMatch(/safeParse|\.parse\(/);
+    expect(patch).toContain("resolveUpdateBusinessDate");
+    expect(patch.slice(0, 2000)).not.toMatch(/updates\.date\s*=/);
+    expect(patch).toContain('const session = (req as StaffAuthRequest).staffSession;');
+    expect(patch).toContain("editedBy: actorName");
+    // `editedBy` is destructured off the body nowhere in this handler any more.
+    expect(patch.slice(0, patch.indexOf("const [updated]"))).not.toMatch(/const \{[^}]*\beditedBy\b/);
   });
 
   it("CHARACTERIZATION: a bill discount-override audit row prefers the body's editedBy over the session", () => {
@@ -480,12 +535,16 @@ describe("Stage 0 · §18(9) — the ordinary current-day workflow still works",
     expect(/^\d{4}-\d{2}-\d{2}$/.test(today)).toBe(true);
   });
 
-  it("CHARACTERIZATION: the client's date string is stored verbatim — no server-side re-derivation today", () => {
+  it("TRANSITION (PR 2): the client's date string is no longer what gets stored", () => {
+    // BEFORE: "`expenseDate,` as an object shorthand inside the service call:
+    // the parsed client string is the value persisted, with no server-side
+    // normalization." AFTER: the service receives the guard's answer. The
+    // shorthand is gone, so this assertion is inverted rather than deleted.
     const s = src("../routes/expenses.ts");
     expect(s).toContain("const { category, description, amount, expenseDate, paymentMode, paidTo, approvedBy, notes } = parsed.data;");
-    expect(s).toMatch(/createExpenseV2\(\{[\s\S]{0,400}?expenseDate,/);
-    // `expenseDate,` as an object shorthand inside the service call: the parsed
-    // client string is the value persisted, with no server-side normalization.
+    expect(s).toMatch(/createExpenseV2\(\{[\s\S]{0,600}?expenseDate: postedExpenseDate,/);
+    expect(s).not.toMatch(/createExpenseV2\(\{[\s\S]{0,400}?expenseDate,/);
+    expect(s).toContain("resolveCreateBusinessDate");
   });
 
   it("CHARACTERIZATION: a staff member closes their own drawer from their session alone — the boundary never blocks the day", () => {

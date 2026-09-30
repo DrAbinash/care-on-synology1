@@ -12,6 +12,7 @@ import {
   todayIST,
 } from "./istDate";
 import { careTimeResponse } from "./careTimeContract";
+import { clinicDateAuthority, resolveCreateBusinessDate } from "./careBusinessDatePolicy";
 
 /**
  * STAGE 1A — TIME-AUTHORITY CONTRACT TESTS.
@@ -222,10 +223,12 @@ describe("Stage 1A · §2/§3 — forward-only, and a default is not a control",
     expect(added).toEqual([]);
   });
 
-  it("NO POLICY: a historical business date is still accepted verbatim by the money path", () => {
-    // Stage 1A changed a default, not a permission. If any of these start
-    // failing, someone turned the trusted default into a floor — D-2 is not
-    // decided and Stage 1A has no authority to decide it.
+  it("TRANSITION (PR 2): the wire schema still accepts any date — the refusal now happens in the guard", () => {
+    // Stage 1A recorded "NO POLICY: a historical business date is still accepted
+    // verbatim by the money path". The zod part is still literally true and is
+    // kept: the schema is the transport contract, not the policy. What changed
+    // is that the same values are now refused before they can be stored, so a
+    // future PR that quietly re-allows backdating has to fail this assertion.
     for (const expenseDate of ["2024-01-31", "2026-09-29", "2035-01-01", ""]) {
       expect(
         CreateExpenseBody.safeParse({ category: "utilities", description: "x", amount: 1, expenseDate }).success,
@@ -233,14 +236,31 @@ describe("Stage 1A · §2/§3 — forward-only, and a default is not a control",
       ).toBe(true);
     }
     expect(UpdateExpenseBody.safeParse({ expenseDate: "1900-01-01" }).success).toBe(true);
+
+    const authority = clinicDateAuthority(at("2026-09-30T10:00:00+05:30"));
+    for (const expenseDate of ["2024-01-31", "2026-09-29", "2035-01-01"]) {
+      expect(
+        resolveCreateBusinessDate({ table: "expenses", column: "expense_date", submitted: expenseDate, authority }).ok,
+        `${expenseDate} must be refused`,
+      ).toBe(false);
+    }
   });
 
-  it("NO POLICY: no route gained a same-day / window / reason / approval check", () => {
-    for (const rel of ["../routes/expenses.ts", "../routes/accounting.ts", "../routes/form-f.ts"]) {
+  it("TRANSITION (PR 2): the money routes now consult the trusted date — and still implement no window", () => {
+    // Stage 1A asserted the routes named no clinic-date helper at all. PR 2
+    // wires the guard in, so the assertion is inverted. The part that must stay
+    // true is the absence of a *policy*: no grace window, no range, no reason
+    // requirement, no approval tier, no cutover column.
+    for (const rel of ["../routes/expenses.ts", "../routes/accounting.ts"]) {
       const s = src(rel);
-      expect(s, rel).not.toMatch(/clinicDateOf|careTimeResponse|businessDayStartUtcIso/);
-      expect(s, rel).not.toMatch(/time_integrity_cutover_at|backdateWindow|reasonRequired/);
+      expect(s, rel).toMatch(/careBusinessDatePolicy/);
+      expect(s, rel).not.toMatch(/time_integrity_cutover_at|backdateWindow|reasonRequired|graceDays|allowedPastDates/);
     }
+    // Equality with the clinic date is the only comparison the guard makes; a
+    // window would need two dates, and there are none.
+    const policy = codeOnly(src("./careBusinessDatePolicy.ts"));
+    expect(policy).not.toMatch(/- *24 \* 60|86400000|windowDays|grace/);
+    expect(codeOnly(src("../routes/form-f.ts"))).not.toMatch(/resolveCreateBusinessDate/);
   });
 
   it("TRUSTED INSTANTS: DB-generated created_at is untouched by Stage 1A", () => {
