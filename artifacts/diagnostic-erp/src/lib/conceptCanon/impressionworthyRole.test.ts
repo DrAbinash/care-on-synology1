@@ -314,6 +314,36 @@ describe("system normal impression — baseline vs finding", () => {
     expect(useWorkspace.getState().impressionText).toBe("Pedicle destruction at T8.");
   });
 
+  it("a lamina defect stated with bare posterior-element wording behaves the same", () => {
+    useWorkspace.getState().seedSystemNormalImpression();
+    applyPosteriorElements("pe-defect", "finding", {
+      findings: "Lamina defect at T8.",
+      impression: "Posterior element defect at T8.",
+      concept: "lamina",
+    });
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === "pe-defect")
+        ?.observation?.concept,
+    ).toBe("posterior_elements");
+    expect(useWorkspace.getState().impressionText).toBe("Posterior element defect at T8.");
+  });
+
+  it("a spinous-process fracture keeps its own concept and stays impression-worthy", () => {
+    useWorkspace.getState().seedSystemNormalImpression();
+    applyPosteriorElements("pe-fracture", "finding", {
+      findings: "Spinous process fracture at T8.",
+      impression: "Spinous process fracture at T8.",
+      concept: "spinous process fracture",
+    });
+    // The neighbouring dedicated concept must NOT be swallowed by the unioned
+    // alias list; it suppresses the normal on its own account, as it did before.
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === "pe-fracture")
+        ?.observation?.concept,
+    ).toBe("posterior_element_fracture");
+    expect(useWorkspace.getState().impressionText).toBe("Spinous process fracture at T8.");
+  });
+
   it("keeps every shipped cervical normal tile from suppressing the system normal", () => {
     // Every baseline atom in the cervical catalog is re-checked against the
     // registry rule, including the tiles that share a concept with an abnormal
