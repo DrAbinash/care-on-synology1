@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { saAuthHeaders } from "@/lib/saApi";
 import { classifyModality, type ReferralModality } from "@/lib/referralModality";
+import { DoctorSearchSelect } from "@/components/DoctorSearchSelect";
 import { saveAs } from "file-saver";
 
 type SaDoctor = { id: number; name: string; phone?: string | null; email?: string | null };
@@ -583,18 +584,15 @@ ${view !== "compare" ? `<tfoot><tr><td colspan="3">Total — ${totals.testsN} te
             </div>
             <div>
               <Label className="text-xs">Referring doctor</Label>
-              <Select
-                value={doctorId == null ? "all" : String(doctorId)}
-                onValueChange={(v) => setDoctorId(v === "all" ? null : Number(v))}
-              >
-                <SelectTrigger><SelectValue placeholder="All doctors" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All doctors</SelectItem>
-                  {doctors.map((d) => (
-                    <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <DoctorSearchSelect
+                className="w-full"
+                doctors={doctors}
+                value={doctorId}
+                onChange={setDoctorId}
+                allowAll
+                allLabel="All doctors"
+                placeholder="Search doctors (e.g. neha, priya)…"
+              />
             </div>
             <div>
               <Label className="text-xs">Category / modality</Label>
