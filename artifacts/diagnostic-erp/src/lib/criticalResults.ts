@@ -58,6 +58,29 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   { term: "ruptured aneurysm", label: "ruptured aneurysm" },
   { term: "aneurysm rupture", label: "ruptured aneurysm" },
   { term: "brain abscess", label: "brain abscess" },
+  // Vascular / dedicated MRA-MRV (mra/mrv spec §20). Detection only, exactly like the
+  // rest of this table: a reminder to flag and communicate, never an automatic flag,
+  // never a documented communication. The phrases are the ones the vascular modules
+  // actually print, so a report built from a tile is recognised without being re-read.
+  { term: "occlusion of the", label: "vascular occlusion" },
+  { term: "arterial occlusion", label: "vascular occlusion" },
+  { term: "large vessel occlusion", label: "vascular occlusion" },
+  { term: "large-vessel occlusion", label: "vascular occlusion" },
+  { term: "venous sinus thrombosis", label: "dural venous sinus thrombosis" },
+  { term: "dural venous thrombosis", label: "dural venous sinus thrombosis" },
+  { term: "cvst", label: "dural venous sinus thrombosis" },
+  { term: "venous thrombosis", label: "cerebral venous thrombosis" },
+  { term: "venous infarct", label: "venous infarction" },
+  { term: "venous hemorrhagic infarction", label: "venous infarction" },
+  { term: "venous haemorrhagic infarction", label: "venous infarction" },
+  { term: "suspected rupture", label: "suspected aneurysm rupture" },
+  { term: "suspected ruptured", label: "suspected aneurysm rupture" },
+  { term: "aneurysmal rupture", label: "ruptured aneurysm" },
+  { term: "artery dissection", label: "arterial dissection" },
+  { term: "dissection of the", label: "arterial dissection" },
+  // §18: a moyamoya PATTERN is not the disease, so only the diagnosis the radiologist
+  // selected can raise this reminder.
+  { term: "moyamoya disease", label: "moyamoya disease" },
   // Spine / cord
   { term: "cord compression", label: "cord compression" },
   { term: "cauda equina", label: "cauda equina syndrome" },

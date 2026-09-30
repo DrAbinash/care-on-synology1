@@ -48,6 +48,27 @@ const ABNORMALITY_HINTS = [
   "gliosis",
   "ventriculomegaly",
   "modic",
+  // mra/mrv §21: the vascular conclusions an AI proposal is not allowed to introduce on
+  // its own. Each of these is a diagnosis a radiologist must select, so a composed report
+  // that mentions one without support in the input is flagged rather than signed.
+  "aneurysm",
+  "aneurysmal",
+  "rupture",
+  "ruptured",
+  "occlusion",
+  "occlusive",
+  "thrombus",
+  "cvst",
+  "dural venous sinus",
+  "moyamoya",
+  // §18/§21: the pattern is not the diagnosis, so a report that says "disease" when the
+  // observations only described a pattern is treated as ungrounded.
+  "moyamoya disease",
+  "avm",
+  "arteriovenous malformation",
+  "nidus",
+  "draining vein",
+  "vasospasm",
 ];
 
 // PR #657: laterality tokens. We check whether a laterality that appears in

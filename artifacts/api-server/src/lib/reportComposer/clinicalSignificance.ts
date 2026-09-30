@@ -19,6 +19,14 @@ const POLARITY =
   /\b(?:present|absent|positive|negative|with|without|no\s+significant|no\s+evidence)\b/gi;
 const CONTRAST = /\b(?:contrast|plain|non[-\s]?contrast|post[-\s]?contrast)\b/gi;
 const STENOSIS = /\b(?:stenosis|no\s+stenosis|compression|no\s+compression)\b/gi;
+/**
+ * mra/mrv §21: a vascular conclusion is never a stylistic edit. Adding or removing one of
+ * these words is what the spec forbids the AI from doing silently — an aneurysm, a
+ * rupture, an occlusion, a thrombosis, moyamoya, an AVM, a dissection — so the change is
+ * marked clinically significant and cannot be accepted as an automatic apply.
+ */
+const VASCULAR =
+  /\b(?:moyamoya\s+disease|moyamoya|dural\s+venous\s+sinus|arteriovenous\s+malformation|aneurysm(?:al)?|ruptur\w*|occlusi\w*|thromb(?:us|osis)|cvst|avm|nidus|draining vein|dissection|vasospasm|large[- ]vessel)\b/gi;
 
 function normalize(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -75,6 +83,7 @@ export function detectClinicalSignificance(
   pushDiff(reasons, "Polarity", collect(POLARITY, o), collect(POLARITY, p));
   pushDiff(reasons, "Contrast", collect(CONTRAST, o), collect(CONTRAST, p));
   pushDiff(reasons, "Stenosis/compression", collect(STENOSIS, o), collect(STENOSIS, p));
+  pushDiff(reasons, "Vascular conclusion", collect(VASCULAR, o), collect(VASCULAR, p));
 
   // Bare numbers only when measurements didn't already capture them and counts differ meaningfully
   const numsO = collect(NUMBER, o).filter((n) => !collect(MEASUREMENT, o).some((m) => m.includes(n)));
