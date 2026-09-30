@@ -217,11 +217,16 @@ describe("Stage 1A · §8 — the blank-form defaults that were browser-derived 
     expect(s).toMatch(/f\.expenseDate \|\| f\.paymentDate \? f : \{ \.\.\.f, expenseDate: clinicDateIst, paymentDate: clinicDateIst \}/);
   });
 
-  it("Expenses: the OCR-derived invoice date still wins over the default", () => {
-    // §8 — an explicit value, here read off a scanned bill, must never be
-    // overwritten by the trusted default.
+  it("TRANSITION (PR 2): a scanned bill's date is now invoice data — it no longer sets CARE's posting date", () => {
+    // BEFORE (Stage 1A, §8): "the OCR-derived invoice date still wins over the
+    // default" — `expenseDate: result.date || prev.expenseDate`, so a bill
+    // printed last month created an expense posted last month. AFTER: the same
+    // scanned date is still preserved, but in `invoiceDate` (Class B). The
+    // expense's business date comes only from the trusted CARE clinic date: a
+    // vendor document is evidence of what it says, not of when CARE recorded it.
     const s = page("Expenses.tsx");
-    expect(s).toContain("expenseDate: result.date || prev.expenseDate");
+    expect(s).toContain("invoiceDate: result.date || prev.invoiceDate");
+    expect(s).not.toMatch(/expenseDate: result\.date/);
   });
 
   it("Accounting: a new voucher seeds its GL date from the server value", () => {
@@ -251,13 +256,18 @@ describe("Stage 1A · §8 — the blank-form defaults that were browser-derived 
     expect(s).not.toMatch(/paymentDate: new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/);
   });
 
-  it("Scanned bill: the bill's own date wins, the CARE date is the fallback, and neither exists means no save", () => {
+  it("TRANSITION (PR 2): the scanned bill no longer chooses the expense date; the refusal path is unchanged", () => {
+    // BEFORE: the bill's own date won, with the CARE date as fallback. AFTER:
+    // the CARE clinic date is the only source for `expenseDate`, and the bill's
+    // printed date is sent as `invoiceDate`. §15 still holds — with no
+    // authority the panel refuses rather than inventing or posting an empty day.
     const s = codeOnly(component("BillReceiptScannerPanel.tsx"));
-    expect(s).toContain("const expenseDate = draft.date || getClinicDateIst();");
-    // §15 — with no authority it refuses rather than inventing or posting "".
-    expect(s).toMatch(/if \(!expenseDate\) \{/);
+    expect(s).toContain("const careClinicDate = getClinicDateIst();");
+    expect(s).toMatch(/if \(!careClinicDate\) \{/);
     expect(s).toMatch(/setError\("CARE clinic date is unavailable/);
-    expect(s).toContain("expenseDate,");
+    expect(s).toContain("expenseDate: careClinicDate,");
+    expect(s).toContain("invoiceDate: draft.date || undefined,");
+    expect(s).not.toMatch(/const expenseDate = draft\.date \|\| getClinicDateIst\(\);/);
   });
 
   it("PCPNDT finalize step and workspace prefill: same authority, stored dates still win", () => {
@@ -291,9 +301,22 @@ describe("Stage 1A · §2 — forward-only: nothing that is already stored gets 
     expect(added).toEqual([]);
   });
 
-  it("the trusted default is not a forced value — no date field gained a min/max/reject", () => {
-    const s = page("Expenses.tsx") + page("Accounting.tsx") + page("FormF.tsx");
-    expect(s).not.toMatch(/<Input type="date"[^>]*\bmin=|<Input type="date"[^>]*\bmax=/);
-    expect(s).not.toMatch(/clinicDateIst !==|date !== clinicDateIst/);
+  it("TRANSITION (PR 2): the Class-A money dates are now fixed in the UI too — clinical dates keep their freedom", () => {
+    // BEFORE (Stage 1A): "the trusted default is not a forced value", because
+    // nothing stopped whatever the body submitted from being stored. The control
+    // now lives on the server, so the two Class-A surfaces also render the
+    // CARE date read-only. That is UX, not the control: the guard refuses the
+    // request either way, which is what the policy's §3 requirement for
+    // server-side enforcement means.
+    const money = page("Expenses.tsx") + page("Accounting.tsx");
+    expect(money).toMatch(/type="date"[\s\S]{0,200}readOnly/);
+    expect(money).not.toMatch(/<Input type="date"[^>]*\bmin=|<Input type="date"[^>]*\bmax=/);
+    expect(money).not.toMatch(/clinicDateIst !==|date !== clinicDateIst/);
+    // Form F is a statutory record of events that already happened. It is
+    // deliberately untouched by a business-date control.
+    const formF = page("FormF.tsx");
+    expect(formF).not.toMatch(/readOnly/);
+    expect(formF).not.toMatch(/careBusinessDatePolicy|getClinicDateIst\(\) !==/);
   });
+
 });

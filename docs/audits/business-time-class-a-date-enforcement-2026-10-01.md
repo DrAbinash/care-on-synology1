@@ -128,7 +128,7 @@ Nothing changes in PR 1. Relevant for PR 2/3a: day-close rows already derive `cl
 
 Each of these is a §30 stop condition ("a field's business meaning is unclear"). None blocks PR 1; each blocks the specific PR named.
 
-1. **`expenses.invoice_date` vs `expenses.expense_date`** — are both posting dates, or is one the vendor's document date? Blocks PR 2 scope on `POST /api/expenses` (`routes/expenses.ts:409` writes it from an unvalidated `raw` body at `:360`).
+1. **`expenses.invoice_date` vs `expenses.expense_date`** — RESOLVED IN PR 2 by keeping both, with different classes: the scanned bill's printed date is stored as `invoice_date` (Class B, historical vendor fact) and `expense_date` is now only ever the trusted CARE clinic date (Class A). Live evidence in §10.4 shows a past Form F procedure date and a 1980 DOB still saving byte-exact, so the information is not lost. Still open: whether `invoice_date` should ever drive accounting (it currently does not — it is display-only, `routes/expenses.ts:409`).
 2. **`expense_payments.payment_date`** — the schema comment calls it "business/reference only" while day-close keys on `created_at` (`lib/db/src/schema/expensePayments.ts:11-12`). If it is a business date it becomes Class A and is enforced; if decorative, it should arguably stop being accepted from clients. Blocks PR 2 item 6.
 3. **`vouchers.performed_by`** — free text from the body vs hard-coded `"System (Sync)"`. Is it an attestation (then it is an actor-identity bug to fix) or a label? Blocks PR 2 item 1/2.
 4. **Three day identities on one row** — `closure_date` (Node IST label), `covered_to_ts` (Node instant), `created_at` (DB clock), with the first two overwriting DB defaults (`routes/day-close.ts:488,501,505-506`). PR 3a's cutover must key on exactly one.
@@ -138,3 +138,71 @@ Each of these is a §30 stop condition ("a field's business meaning is unclear")
 8. **Commission / payout / receipts / credit-note / adjustment write routes do not exist in this repo** (`routes/commission.ts` is a 1-line stub; no mount). Policy §10 lists commissions and credit notes — they appear to live outside this codebase, so no control here can claim to cover them.
 9. **`reconciliation`** has no write handler (`routes/reconciliation.ts:123` is `.get`), so its five `::date` sites are read-only → PR 4.
 10. **Payroll/`routes/staff.ts` remains out of scope** per management's silence on the D-11 question. It is still 9 write routes, **0** audit calls, **5** hard deletes, and 4 browser-defaulted dates in `pages/Staff.tsx:171,306,405,562`. Stated so nobody mistakes its absence for coverage.
+
+## 10. PR 2 — what was wired, and the live evidence
+
+### 10.1 Enforcement attached
+
+| Endpoint | Change |
+|---|---|
+| `POST /api/accounting/vouchers` | date judged by `resolveCreateBusinessDate`; `VoucherBody.date` is now **optional** (absent → the trusted CARE date) and the insert writes the guard's answer, not the body's |
+| `PATCH /api/accounting/vouchers/:id` | `updates.date` removed from the writable set; any different date → 400 `CARE_BUSINESS_DATE_IMMUTABLE`; the editor is read from `req.staffSession` and `editedBy` is **no longer taken from the body**; `reason` still mandatory |
+| `POST /api/accounting/bank-statement/import` | every row's date judged before anything is inserted; one off-policy row refuses the whole batch atomically and the response says nothing was written (§10.3) |
+| `POST /api/expenses` | `expenseDate` judged; the service receives `postedExpenseDate` |
+| `PATCH /api/expenses/:id` | `expense_date` deleted from the writable set — the old rule blocked re-dating **only** when `hasLedger`, leaving PENDING/FAILED expenses freely re-datable |
+| `pages/Expenses.tsx`, `pages/Accounting.tsx` | Class-A date inputs render read-only with the reason stated on screen (UX only — the server is the control) |
+| `components/BillReceiptScannerPanel.tsx`, `pages/Expenses.tsx` OCR mapping | a scanned bill's printed date goes to `invoice_date` (Class B) instead of `expense_date`, so the vendor fact is preserved without letting it set CARE's posting date |
+
+Not wired, deliberately: `POST /api/expenses/:id/payments` (open item 2), Form F (`/api/form-f`, Class B statutory), bills/payments (their business date is the DB-generated `created_at`), day-close (already server-derived), and every Class-B/C/D field in §3.
+
+### 10.2 How the evidence was produced
+
+A throwaway Postgres 16.15 container on `127.0.0.1:5411` (`care-timegate-db`), the authentic migration path via `DATABASE_URL=… node scripts/apply-all-migrations.mjs` (15 drizzle + **180/180** feature migrations, 452 tables), one seeded **ordinary staff** user (`role='staff'`, permissions `["/accounting","/form-f","/radiology","/patients"]`, no admin role) and a `portal_sessions` token, plus two seeded **pre-cutover rows**: a voucher dated `2024-03-15` and an expense dated `2024-06-01`. The api-server bundle was run against that database on port 8899 and driven over real HTTP. Nothing in this run touched the clinic NAS database. Session `TimeZone` on the fresh instance measured **UTC**, independently re-confirming Stage 0 U-1.
+
+```
+docker run -d --name care-timegate-db -e POSTGRES_PASSWORD=*** -e POSTGRES_DB=care_timegate -p 127.0.0.1:5411:5432 postgres:16-alpine
+DATABASE_URL=postgresql://postgres:***@127.0.0.1:5411/care_timegate node scripts/apply-all-migrations.mjs
+DATABASE_URL=… PORT=8899 NODE_ENV=development node artifacts/api-server/dist/index.mjs
+DATABASE_URL=… node scripts/__timegate-harness.mjs        # 30 assertions — financial matrix
+DATABASE_URL=… node scripts/__timegate-clinical.mjs       #  4 assertions — clinical pass-through
+```
+
+The two harness files are scratch and are **not** committed with PR 2; they are reproduced here so a reviewer can rebuild them verbatim. Recommended follow-up: promote them into `scripts/` as a gated security check in PR 3a, where the cutover needs the same fixture.
+
+### 10.3 Financial matrix — 30/30 passed
+
+Run at `serverNow = 2026-09-30T19:50:42Z`, i.e. **01:20 IST on 2026-10-01**: the live divergence case. `/api/time/now` said `clinicDateIst = 2026-10-01` while the UTC slice of the same instant said `2026-09-30` — the exact window Stage 0 measured.
+
+| Case | Result |
+|---|---|
+| voucher POST date = CARE clinic date | **201** |
+| voucher POST with **no** date | **201**, stored date = `2026-10-01` (server-derived) |
+| voucher POST date = yesterday / tomorrow | **400** `CARE_BUSINESS_DATE_NOT_CURRENT`, direction `past` / `future` |
+| voucher POST date = UTC-sliced now (`2026-09-30`) | **400** — the §7 PC-clock attack, refused at the wire |
+| voucher PATCH `2024-03-15` → yesterday / today / tomorrow | **400** `CARE_BUSINESS_DATE_IMMUTABLE` (all three, including onto today) |
+| voucher PATCH resending its **own** `2024-03-15` | **200**, row unchanged — the forward-only case |
+| voucher PATCH with spoofed `userId`/`userName`/`role`/`editedBy` | **200**, and `voucher_audits.edited_by` = **`Gate Tester`** (the session), not the claimed `Someone Else Entirely` |
+| expense POST today / yesterday | **201** / **400** |
+| expense PATCH `2024-06-01` → yesterday / today | **400** / **400** |
+| expense PATCH resending its own date | **200** |
+| bank-statement import with a past-dated row | **400**, and **zero** vouchers written for that date (atomic refusal) |
+| bank-statement import dated today | **200** — the workflow still works |
+| no probe voucher exists for any rejected date | **0 rows** |
+| seeded historical voucher/expense `date`, `expense_date`, `created_at` | **byte-identical** before and after the whole matrix |
+| `voucher_audits` | **appended only** — 0 → 8 rows; the hash of every pre-existing audit row is unchanged |
+
+### 10.4 Clinical pass-through — 4/4 passed, executed as real writes
+
+* `POST /api/patients` with `dateOfBirth: 1980-05-05` → **201**, stored `date_of_birth = 1980-05-05`.
+* `POST /api/form-f/save` with `procedureDate: 2026-07-02`, `consentDate: ""`, `mtpDate: ""` → **200**; stored exactly as entered, and `created_at = 2026-09-30T19:53:29Z` — the statutory clinical fact and CARE's own action instant kept in separate columns, which is the §1/§12 distinction demonstrated rather than asserted.
+* A future-dated clinical task is not rejected as a business date.
+
+### 10.5 One decision I made that management should re-examine
+
+**Bank-statement import is now refused when any row is dated outside the current CARE clinic date.** Before PR 2 I recorded it in §4 as an *unguarded* path and intended to leave it for a decision; the live harness then proved an ordinary staff account (`/accounting` only) could post a GL voucher dated **yesterday** through it — status 200, one real row written. Leaving a proven bypass of the primary invariant while claiming the invariant was met would have made the acceptance statement false, so I closed it.
+
+The consequence is deliberate and needs your confirmation: **importing a statement that covers past days is no longer possible for ordinary staff.** Accounting-wise that is exactly what policy §0 describes as backdated creation, and the guard refuses atomically so nothing half-writes. But if the clinic reconciles bank statements by importing a week at a time, this will surface as a blocked workflow, and the correct fix is the PR 3b correction/period-posting path rather than a window. Say so before PR 3a if bank feeds should instead be treated as an external-source accounting path with its own rule.
+
+### 10.6 What PR 2 does not claim
+
+No cutover gate yet (PR 3a), so this control is active from deploy — which is forward-only in effect because only write handlers changed, but it is not yet tied to a trusted activation instant or recorded as such. No rejection evidence is persisted: the 400s are real and the `describeBusinessDateRejection` shape exists, but nothing writes it to a table until PR 3a. `expense_payments.payment_date`, Form F statutory dates, payroll, the 14 `::date` reads, and the Class-D client-authoritative instants (`internal-reporting-studio.ts:725,813-816` `finalizedAt`, `smartRadiology.ts:587-604` TAT metrics, `patient-reports.ts:2449-2460` `acknowledgedBy`) are all still open.

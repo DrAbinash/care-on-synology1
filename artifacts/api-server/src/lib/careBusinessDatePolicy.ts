@@ -84,13 +84,13 @@ export type BusinessDateRejection = {
 };
 
 export type CreateBusinessDateDecision =
-  | { readonly ok: true; readonly origin: "server-derived" | "client-matches-trusted"; readonly businessDate: string }
-  | { readonly ok: true; readonly origin: "not-policed"; readonly businessDate: string | null; readonly reason: string }
+  | { readonly ok: true; readonly policed: true; readonly origin: "server-derived" | "client-matches-trusted"; readonly businessDate: string }
+  | { readonly ok: true; readonly policed: false; readonly origin: "not-policed"; readonly businessDate: string | null; readonly reason: string }
   | BusinessDateRejection;
 
 export type UpdateBusinessDateDecision =
-  | { readonly ok: true; readonly changed: false; readonly origin: "absent" | "identical"; readonly businessDate: string }
-  | { readonly ok: true; readonly origin: "not-policed"; readonly businessDate: string | null; readonly reason: string }
+  | { readonly ok: true; readonly policed: true; readonly changed: false; readonly origin: "absent" | "identical"; readonly businessDate: string }
+  | { readonly ok: true; readonly policed: false; readonly origin: "not-policed"; readonly businessDate: string | null; readonly reason: string }
   | BusinessDateRejection;
 
 function reject(
@@ -121,7 +121,7 @@ function directionOf(attempted: string, trusted: string): "past" | "future" {
 }
 
 function notPoliced(field: string, submitted: string | null, reason: string) {
-  return { ok: true, origin: "not-policed", businessDate: submitted, reason } as const;
+  return { ok: true, policed: false, origin: "not-policed", businessDate: submitted, reason } as const;
 }
 
 /**
@@ -153,7 +153,7 @@ export function resolveCreateBusinessDate(input: {
 
   const submitted = raw === "" ? null : raw;
   if (submitted === null) {
-    return { ok: true, origin: "server-derived", businessDate: authority.clinicDate };
+    return { ok: true, policed: true, origin: "server-derived", businessDate: authority.clinicDate };
   }
   if (!CARE_DATE_PATTERN.test(submitted)) {
     return reject(
@@ -166,7 +166,7 @@ export function resolveCreateBusinessDate(input: {
     );
   }
   if (submitted === authority.clinicDate) {
-    return { ok: true, origin: "client-matches-trusted", businessDate: authority.clinicDate };
+    return { ok: true, policed: true, origin: "client-matches-trusted", businessDate: authority.clinicDate };
   }
   return reject(
     authority,
@@ -205,14 +205,14 @@ export function resolveUpdateBusinessDate(input: {
   // Field not mentioned: nothing to decide. The caller must not write the
   // column, and the stored value stands.
   if (submitted === undefined || submitted === null) {
-    return { ok: true, changed: false, origin: "absent", businessDate: stored ?? "" };
+    return { ok: true, policed: true, changed: false, origin: "absent", businessDate: stored ?? "" };
   }
 
   // Identical value, including a pre-cutover date: a no-op, and the row keeps
   // its own history. This branch is why enforcement is forward-only — an old
   // row resent with its own date is never treated as a violation.
   if (submitted === stored) {
-    return { ok: true, changed: false, origin: "identical", businessDate: stored ?? "" };
+    return { ok: true, policed: true, changed: false, origin: "identical", businessDate: stored ?? "" };
   }
 
   if (!CARE_DATE_PATTERN.test(submitted)) {

@@ -377,12 +377,33 @@ describe("§6/§19/§24 — actor identity, rejection evidence, and no client-au
   });
 });
 
-describe("§2/§3 — PR 1 is inert: the guard is not wired into any route yet", () => {
-  it("no route or service imports the policy in this PR", () => {
-    const files = ["../routes/accounting.ts", "../routes/expenses.ts", "../routes/bills.ts", "../routes/day-close.ts", "../lib/expenseV2Service.ts"];
-    for (const rel of files) {
+describe("TRANSITION (PR 2): the guard is now wired into the money routes", () => {
+  it("PR 1 shipped inert; PR 2 attached it to exactly the Class-A write paths", () => {
+    // BEFORE (PR 1): no route or service imported the policy, so nothing in CARE
+    // behaved differently. AFTER: the two proven Class-A surfaces consult it,
+    // and every surface whose field meaning is still unresolved does not.
+    for (const rel of ["../routes/accounting.ts", "../routes/expenses.ts"]) {
+      expect(src(rel), rel).toMatch('../lib/careBusinessDatePolicy"');
+    }
+    for (const rel of ["../routes/bills.ts", "../routes/day-close.ts", "../lib/expenseV2Service.ts", "../routes/form-f.ts"]) {
       expect(src(rel), rel).not.toMatch(/careBusinessDatePolicy|resolveCreateBusinessDate|resolveUpdateBusinessDate/);
     }
+  });
+
+  it("the create paths write the guard's answer, not the body's", () => {
+    const accounting = codeOnly(src("../routes/accounting.ts"));
+    expect(accounting).toMatch(/date: postingDate,/);
+    const expenses = codeOnly(src("../routes/expenses.ts"));
+    expect(expenses).toMatch(/expenseDate: postedExpenseDate,/);
+    expect(expenses).toMatch(/delete updates\.expenseDate;/);
+  });
+
+  it("the voucher PATCH editor comes from the session, never from the body", () => {
+    const accounting = codeOnly(src("../routes/accounting.ts"));
+    const patch = accounting.slice(accounting.indexOf('router.patch("/vouchers/:id"'));
+    expect(patch).toMatch(/const session = \(req as StaffAuthRequest\)\.staffSession;/);
+    expect(patch).toContain("editedBy: actorName");
+    expect(patch).not.toMatch(/const \{[^}]*\beditedBy\b[^}]*\} = req\.body/);
   });
 
   it("the money path still parses the dates the guard will later reject — a BEFORE record for Phase D", () => {
