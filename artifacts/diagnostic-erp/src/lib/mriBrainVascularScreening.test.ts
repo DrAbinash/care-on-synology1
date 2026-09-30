@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { contentPackForConcept } from "@/lib/conceptCanon/contentPacks";
+import { BRAIN_NORMAL_SENTENCES } from "@/lib/mriBrainNormalAtoms";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { brainAtomsToPatches } from "@/lib/mriBrainAtoms";
@@ -278,6 +279,25 @@ describe("§14/§15 the screening baseline reconciles with the rest of the repor
     const findings = useWorkspace.getState().findingsText;
     expect(findings).toContain(MRA_SCREENING_PROSE.normal);
     expect(findings).not.toContain("uniform high-velocity signal");
+  });
+
+  it("supersedes the routine brain protocol normal when that is the arterial normal carried", () => {
+    // A routine MRI Brain with an angiographic sequence carries production's own
+    // one-line arterial normal, not the dedicated §5 sentence. Screening replaces
+    // whichever of the two the report actually says, so it never leaves two
+    // arterial normals stacked in one Findings block (§15).
+    useWorkspace.getState().setField("findings", BRAIN_NORMAL_SENTENCES.mra, "quick-normal");
+    const row = screeningAtoms(
+      { performed: true, normalSeedSelected: true },
+      { ...CTX, replaceTreeNormal: BRAIN_NORMAL_SENTENCES.mra },
+    );
+    expect(row.atoms.find((a) => a.concept === "mra_screening")!.baselineReplaces).toBe(
+      BRAIN_NORMAL_SENTENCES.mra,
+    );
+    applyRow(row);
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain(MRA_SCREENING_PROSE.normal);
+    expect(findings).not.toContain("No arterial occlusion");
   });
 
   it("warns when the normal seed is recorded beside an abnormal row", () => {

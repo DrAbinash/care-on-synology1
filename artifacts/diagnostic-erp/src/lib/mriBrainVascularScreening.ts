@@ -309,8 +309,11 @@ export function screeningAtoms(
       anatomicalSection: MRA_SCREENING_PROSE.sectionLabel,
       findings: MRA_SCREENING_PROSE.normal,
       // The seed is the screening module's normal; a dedicated all-normal MRA sentence
-      // is a different claim, and both in one report would contradict each other.
-      baselineReplaces: VASCULAR_LIBRARY_PROSE.mraIntracranialNormal,
+      // is a different claim, and both in one report would contradict each other. The
+      // routine MRI Brain protocol normal is a third wording of the same claim, so the
+      // caller names whichever arterial normal the report actually carries (§15).
+      baselineReplaces:
+        ctx.replaceTreeNormal?.trim() || VASCULAR_LIBRARY_PROSE.mraIntracranialNormal,
       role: "baseline",
     });
     if ((record.rows ?? []).some((r) => r.observation !== "grosslyPatent")) {

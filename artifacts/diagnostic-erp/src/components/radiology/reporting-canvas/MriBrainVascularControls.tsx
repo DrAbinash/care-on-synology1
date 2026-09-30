@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useWorkspace, type WorkspaceStore } from "@/lib/zai-workspace/store";
+import { BRAIN_NORMAL_SENTENCES } from "@/lib/mriBrainNormalAtoms";
 import { parseBrainSequences } from "@/lib/mriBrainSequences";
 import { brainAtomsToPatches, brainBundleId } from "@/lib/mriBrainAtoms";
 import {
@@ -190,6 +191,7 @@ export function MriBrainVascularScreening({
   disabled?: boolean;
 }) {
   const techniqueText = useWorkspace((s: WorkspaceStore) => s.techniqueText);
+  const findingsText = useWorkspace((s: WorkspaceStore) => s.findingsText);
   const vascularTechnique = useWorkspace((s: WorkspaceStore) => s.vascularTechnique);
   const patches = useWorkspace((s: WorkspaceStore) => s.appliedPathologyPatches);
 
@@ -221,9 +223,22 @@ export function MriBrainVascularScreening({
     [performed, normalSeed, selected, otherNote, recommend, recommendationDetail, manualNote],
   );
 
+  // §15: whichever arterial normal the report carries is the one the seed replaces. The
+  // routine MRI Brain protocol normal and the dedicated §5 normal share the arterial
+  // family slot, so a report carries one of the two wordings, never both.
+  const carriedArterialNormal = useMemo(
+    () => (findingsText.includes(BRAIN_NORMAL_SENTENCES.mra) ? BRAIN_NORMAL_SENTENCES.mra : undefined),
+    [findingsText],
+  );
+
   const built = useMemo(
-    () => screeningAtoms(record, { technique: vascularTechnique, brain: seq }),
-    [record, vascularTechnique, seq],
+    () =>
+      screeningAtoms(record, {
+        technique: vascularTechnique,
+        brain: seq,
+        replaceTreeNormal: carriedArterialNormal,
+      }),
+    [record, vascularTechnique, seq, carriedArterialNormal],
   );
 
   const choose = (rowKey: string, observation: ScreeningObservation | typeof NO_OBSERVATION) => {
