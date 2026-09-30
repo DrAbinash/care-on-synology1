@@ -11,6 +11,10 @@ import {
   resolveCreateBusinessDate,
   resolveUpdateBusinessDate,
 } from "../lib/careBusinessDatePolicy";
+import {
+  businessDateEnforcementActive,
+  recordBusinessDateRejection,
+} from "../lib/timeIntegrity";
 import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment, resolveMethodAccount, ensureAccount } from "../lib/auto-voucher";
 import { requireAdminRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
@@ -266,21 +270,33 @@ router.post("/vouchers", async (req, res) => {
   // judged against the server's clock, never the workstation's; a mismatch is
   // rejected rather than corrected, because silently moving a GL entry the
   // operator did not ask for is its own integrity problem.
+  // Forward-only: before the Postgres-stamped cutover, the submitted date stands
+  // exactly as it did before this control existed.
   const authority = clinicDateAuthority();
-  const businessDateDecision = resolveCreateBusinessDate({
-    table: "vouchers",
-    column: "date",
-    submitted: date,
-    authority,
-  });
-  if (!businessDateDecision.ok) {
-    res.status(400).json(careBusinessDateErrorBody(businessDateDecision));
-    return;
+  let postingDate = date ?? authority.clinicDate;
+  if (await businessDateEnforcementActive()) {
+    const businessDateDecision = resolveCreateBusinessDate({
+      table: "vouchers",
+      column: "date",
+      submitted: date,
+      authority,
+    });
+    if (!businessDateDecision.ok) {
+      await recordBusinessDateRejection({
+        rejection: businessDateDecision,
+        authority,
+        actor: (req as StaffAuthRequest).staffSession ?? null,
+        endpoint: "/api/accounting/vouchers",
+        method: "POST",
+        module: "accounting",
+        entityType: "voucher",
+        reason: (req.body as { reason?: unknown })?.reason,
+      });
+      res.status(400).json(careBusinessDateErrorBody(businessDateDecision));
+      return;
+    }
+    postingDate = businessDateDecision.businessDate ?? authority.clinicDate;
   }
-  // A policed decision always carries the CARE date. The fallback is reachable
-  // only if `vouchers.date` stops being Class A in the registry, in which case
-  // the submitted value stands exactly as it did before this control existed.
-  const postingDate = businessDateDecision.businessDate ?? authority.clinicDate;
 
   // Race-safe insert: count-based numbering can collide under concurrency, but
   // the DB has a unique index on voucher_number. On unique-violation we bump
@@ -346,15 +362,27 @@ router.patch("/vouchers/:id", async (req, res) => {
   // today's CARE date either. The verdict is taken against the row's own stored
   // value, which is what keeps this forward-only: a 2024 voucher resent with
   // its own 2024 date is a no-op, not a violation.
-  if (date !== undefined) {
+  if (date !== undefined && (await businessDateEnforcementActive())) {
+    const updateAuthority = clinicDateAuthority();
     const dateDecision = resolveUpdateBusinessDate({
       table: "vouchers",
       column: "date",
       stored: existing.date,
       submitted: date,
-      authority: clinicDateAuthority(),
+      authority: updateAuthority,
     });
     if (!dateDecision.ok) {
+      await recordBusinessDateRejection({
+        rejection: dateDecision,
+        authority: updateAuthority,
+        actor: session ?? null,
+        endpoint: `/api/accounting/vouchers/${id}`,
+        method: "PATCH",
+        module: "accounting",
+        entityType: "voucher",
+        entityId: existing.voucherNumber,
+        reason,
+      });
       res.status(400).json(careBusinessDateErrorBody(dateDecision));
       return;
     }
@@ -1506,20 +1534,32 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
   // inserted. Management decision recorded in the PR 2 design doc — this closes
   // a bypass proven live, not theorised.
   const importAuthority = clinicDateAuthority();
-  for (const txn of toImport) {
-    const rowDecision = resolveCreateBusinessDate({
-      table: "vouchers",
-      column: "date",
-      submitted: txn.date,
-      authority: importAuthority,
-    });
-    if (!rowDecision.ok) {
-      res.status(400).json({
-        ...careBusinessDateErrorBody(rowDecision),
-        message: `${rowDecision.attempted ?? "an"} is not the current CARE business date. A bank-statement import posts vouchers, so every row must carry ${importAuthority.clinicDate}. Nothing was written from this batch of ${toImport.length} row(s).`,
-        totalRows: toImport.length,
+  if (await businessDateEnforcementActive()) {
+    for (const txn of toImport) {
+      const rowDecision = resolveCreateBusinessDate({
+        table: "vouchers",
+        column: "date",
+        submitted: txn.date,
+        authority: importAuthority,
       });
-      return;
+      if (!rowDecision.ok) {
+        await recordBusinessDateRejection({
+          rejection: rowDecision,
+          authority: importAuthority,
+          actor: (req as StaffAuthRequest).staffSession ?? null,
+          endpoint: "/api/accounting/bank-statement/import",
+          method: "POST",
+          module: "accounting",
+          entityType: "bank-statement-import",
+          meta: { rowsInBatch: toImport.length },
+        });
+        res.status(400).json({
+          ...careBusinessDateErrorBody(rowDecision),
+          message: `${rowDecision.attempted ?? "an"} is not the current CARE business date. A bank-statement import posts vouchers, so every row must carry ${importAuthority.clinicDate}. Nothing was written from this batch of ${toImport.length} row(s).`,
+          totalRows: toImport.length,
+        });
+        return;
+      }
     }
   }
 

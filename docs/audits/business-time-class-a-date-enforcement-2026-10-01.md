@@ -206,3 +206,71 @@ The consequence is deliberate and needs your confirmation: **importing a stateme
 ### 10.6 What PR 2 does not claim
 
 No cutover gate yet (PR 3a), so this control is active from deploy — which is forward-only in effect because only write handlers changed, but it is not yet tied to a trusted activation instant or recorded as such. No rejection evidence is persisted: the 400s are real and the `describeBusinessDateRejection` shape exists, but nothing writes it to a table until PR 3a. `expense_payments.payment_date`, Form F statutory dates, payroll, the 14 `::date` reads, and the Class-D client-authoritative instants (`internal-reporting-studio.ts:725,813-816` `finalizedAt`, `smartRadiology.ts:587-604` TAT metrics, `patient-reports.ts:2449-2460` `acknowledgedBy`) are all still open.
+
+## 11. PR 3a — forward-only cutover and append-only evidence
+
+### 11.1 Schema, and why it cannot touch history
+
+One new migration, `migrations/add_time_integrity_cutover_and_events_20261001.sql`, creating two **new** tables:
+
+- `care_time_integrity_policy` — a singleton (`CHECK (id = 1)`) holding `enforcement_cutover_at timestamptz NOT NULL DEFAULT now()` and `cutover_source`. The row is stamped by Postgres when the migration runs (`INSERT … VALUES (1, now(), 'postgres-migration-now') ON CONFLICT (id) DO NOTHING`), so the boundary is a database instant, not a value a client, a form, or an app-server clock can supply.
+- `care_time_integrity_events` — append-only evidence: `occurred_at` (DB clock, Class D), `trusted_clinic_date`, `event`, `outcome`, `code`, `attempted_business_date`, `endpoint`, `method`, `module`, `entity_type`, `entity_id`, `actor_subject_id`, `actor_role`, `actor_display_name`, `identity_source`, `reason`, `approver_subject_id`, `request_id`, `meta_json`.
+
+Every column is nullable except the four the guard always knows. That is deliberate: a constraint that can fail is a way for evidence capture to break a save, and it also means nothing here can invalidate an existing row — there are no existing rows. The Stage-0 §1.5 leak path (NOT NULL/CHECK added to an *existing* table validating retroactively) is structurally impossible because no `ALTER TABLE` appears in the file; a test asserts exactly that, along with no `DROP`, no data `UPDATE`/`DELETE`, and no standalone `TRUNCATE`.
+
+Guards, copied from the pattern already trusted on `study_snapshots` / `ai_shadow_drafts` (`migrations/add_ai_shadow_uniqueness_hardening.sql:82-97`) rather than invented:
+
+| Rule | Where | Verified live |
+|---|---|---|
+| cutover may never move backwards | `BEFORE UPDATE` trigger raising on `NEW < OLD` | `ERROR: … is forward-only: it may not be moved backwards (current 2026-09-30 20:35:13+00, attempted 2026-08-31 …)` |
+| cutover row may not be deleted (deleting it would silently disable enforcement) | `BEFORE DELETE` trigger | `ERROR: … cannot be deleted` |
+| singleton | `CHECK (id = 1)` | `violates check constraint "care_time_integrity_policy_singleton"` |
+| evidence is append-only | `BEFORE UPDATE OR DELETE` + `BEFORE TRUNCATE` triggers | UPDATE → `refused`, DELETE → `refused`, TRUNCATE → `refused` |
+
+`check-migration-order.cjs` passes, and the migration path re-runs clean: **181/181 feature migrations OK**.
+
+### 11.2 Activation, and failing closed
+
+`artifacts/api-server/src/lib/timeIntegrity.ts` reads the cutover once a minute (the repo's existing TTL cache) and every Class-A write path asks `businessDateEnforcementActive()` before judging a date — three sites in `routes/accounting.ts` (voucher POST, voucher PATCH, bank import) and two in `routes/expenses.ts` (POST, PATCH). Pre-cutover, the submitted date behaves exactly as it did before this control existed; that is the meaning of forward-only, and the routes fall back to `date ?? authority.clinicDate` rather than pretending to be gated.
+
+If the policy row is missing or unreadable, the reader returns `active: true` with `reason: "policy-row-missing-fail-closed"` / `"policy-unreadable-fail-closed"`. A deployment problem must not become a licence to post backdated entries. The reason string is carried through so the Admin view can tell the truth instead of showing a reassuring "active".
+
+### 11.3 What the evidence holds, and what it must never hold
+
+Each rejection writes: the session actor's `subjectId`/`role`, `identity_source = 'authenticated-session'`, endpoint + method, module, entity type/id, the attempted date, the trusted clinic date, the trusted instant, the code, the direction, and the operator's typed `reason` trimmed to 500 characters. `meta_json` holds only guard-computed facts (field, direction, zone, batch size for imports).
+
+No request body is ever captured, and the schema has no column that could hold a credential or a patient identifier — asserted by a test that inspects **column names**, not prose, since the file is allowed to *say* it stores no token. The live matrix confirms it independently: aggregating every `meta_json` in the table finds no `token|password|bearer|authorization|phone|email`.
+
+Rejections only, for now. Every successful Class-A create is not written as an event: that would double the row count of the busiest financial tables to record something the row itself and its DB-generated `created_at` already prove. Correction and override events will land in this table from PR 3b's workflow, which is why `approver_subject_id` and `event`/`outcome` are open text today.
+
+### 11.4 Live evidence
+
+Rebuilt bundle, same scratch database, ordinary-staff session: **39/39 assertions passed**, up from 30/30 in PR 2. New in this run:
+
+- cutover row exists, `cutover_source = postgres-migration-now`, `enforcement_cutover_at` already past → enforcement active.
+- **11 rejection events** written by the app for the 11 refused attempts; the newest names the **session actor id (8)**, not the spoofed body value; `attempted_business_date = 2026-09-30` recorded beside `trusted_clinic_date = 2026-10-01`; endpoint `/api/accounting/bank-statement/import` captured with `entity_type = bank-statement-import` and the batch size.
+- evidence UPDATE and DELETE both **refused** at the database level; `voucher_audits` likewise appended-only (0 → 12, pre-existing rows hash-identical).
+- all PR 2 financial and clinical cases still pass unchanged, including the byte-identical 2024 rows.
+
+Clinical pass-through re-run: **4/4**, DOB `1980-05-05` and Form F `procedureDate = 2026-07-02` still save exactly.
+
+### 11.5 Historical-integrity proof (§24) — what is done and what is not
+
+Done, on synthetic data: before/after row-level hashes of `vouchers.date` + `created_at`, `expenses.expense_date` + `created_at` + `invoice_date`, and the `voucher_audits` content hash for pre-existing rows, taken before the matrix and re-taken after all 11 rejections and 3 accepted edits — unchanged. Plus the structural argument in §11.1: no `ALTER TABLE`, so no existing column gained a constraint that could retroactively invalidate a row.
+
+**Not done, and it needs your infrastructure:** the brief asks for a copy of a *production-like* database. Only the clinic's NAS holds that, and it is unreachable from this workstation (the same reason the api-server suite is never green here). To close §24 properly, run against a copy of the real ERP database:
+
+```
+1. pg_dump the clinic DB (or restore last night's backup) into a scratch instance
+2. capture hashes/counts:  select count(*), md5(string_agg(date,',' order by id)) from vouchers;  … expenses, bills, payments, voucher_audits, audit_logs, day_closures
+3. apply migrations (scripts/apply-all-migrations.mjs) — expect 181/181 OK
+4. re-capture and diff — expect byte-identical
+5. run scripts/__timegate-harness.mjs against it read-mostly, then re-diff
+6. confirm no historical row became unreadable: every pre-cutover voucher/expense
+   still loads, still edits its non-date fields, and resending its own date is a no-op
+```
+Step 6 is the one only real data can settle: this repo's synthetic rows cannot reproduce odd legacy shapes (`''` dates, `30/09/2026`, far-past GL entries) that the Stage-0 §S0-1 measurement says exist. The expected behaviour for those rows is "readable and editable apart from the date"; if any of them currently *fails to load*, that would be a genuine finding to report rather than migrate around.
+
+### 11.6 PR 3a limits
+
+The cutover is set once, by migration; there is no endpoint to raise it later (that is a super-admin action needing the PR 3b authorization design, and it is deliberately absent rather than half-present). `describeBusinessDateRejection` from PR 1 is now dead code superseded by `recordBusinessDateRejection` — kept as the shape contract, deleted in PR 3b once nothing references it. No `time_received`/`time_processed` pair and no server-clock probe: both need a schema decision about writing to every money table, which is outside PR 3a's "add two tables" scope.

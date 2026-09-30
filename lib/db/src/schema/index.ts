@@ -186,3 +186,5 @@ export * from "./abdm";
 // ── PCPNDT self-referral OPD auto-prescriptions ─────────────────────────────
 export * from "./selfReferralPrescriptions";
 export * from "./emergencyBilling";
+// ── CARE business-time integrity: forward-only cutover + append-only evidence ─
+export * from "./timeIntegrity";
