@@ -218,7 +218,23 @@ export type ImpressionOrderOptions = {
    * every existing caller keeps the shipped ranking exactly.
    */
   spineSegment?: SpineSegment | null;
+  /**
+   * Composition-specific classifier (the Dorso-Lumbar §26 order). Only the
+   * category TABLE changes: this file stays the single place that sorts
+   * lines, so the freeze rule cannot be missed by a second sorter.
+   */
+  rankLine?: (line: string, index: number) => RankedImpressionLine;
 };
+
+/**
+ * The shipped §37 classifier, scoped to the calling study's segment. A
+ * composition with its own category table hands `rankLine` to the sorters
+ * instead, so the choice of classifier happens in exactly one expression.
+ */
+function rankFor(spineSegment?: SpineSegment | null) {
+  return (line: string, index: number): RankedImpressionLine =>
+    rankImpressionLine(line, index, { spineSegment });
+}
 
 /**
  * Order Impression lines by clinical priority. Stable for equal ranks; a no-op
@@ -230,8 +246,11 @@ export function orderImpressionLines(
 ): string[] {
   const list = lines.map((line) => (line ?? "").trim()).filter(Boolean);
   if (options.frozen) return list;
+  // A composition supplies its own category table; every other study uses the
+  // shipped table, scoped to its segment. One sorter, one classifier choice.
+  const rank = options.rankLine ?? rankFor(options.spineSegment);
   return list
-    .map((line, index) => rankImpressionLine(line, index, { spineSegment: options.spineSegment }))
+    .map((line, index) => rank(line, index))
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))
     .map((r) => r.line);
 }
@@ -242,9 +261,8 @@ export function impressionPriorityPreview(
   options: ImpressionOrderOptions = {},
 ): Array<RankedImpressionLine & { moves: boolean }> {
   const list = lines.map((line) => (line ?? "").trim()).filter(Boolean);
-  const ranked = list.map((line, index) =>
-    rankImpressionLine(line, index, { spineSegment: options.spineSegment }),
-  );
+  const rank = options.rankLine ?? rankFor(options.spineSegment);
+  const ranked = list.map((line, index) => rank(line, index));
   if (options.frozen) return ranked.map((r) => ({ ...r, moves: false }));
   const order = [...ranked]
     .sort((a, b) => (a.rank - b.rank) || (a.index - b.index))

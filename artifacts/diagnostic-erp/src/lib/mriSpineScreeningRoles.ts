@@ -18,6 +18,12 @@ import {
   type RegionRole,
   type SpineScreeningRegion,
 } from "./mriSpineScreeningSchema";
+import {
+  DEDICATED_COMPONENT_ROLE,
+  resolveStudyComposition,
+  type CompositionProvenance,
+  type StudyComposition,
+} from "./mriDorsoLumbarCatalog";
 
 export type BilledStudyInput = {
   /** Catalog code from `diagnostic_tests.code`, e.g. "MRI038". */
@@ -34,6 +40,13 @@ export type ResolvedScreeningRoles = {
   /** The dictionary entry that matched, so the UI can show its work. */
   matchedKey: string | null;
   matchedLabel: string | null;
+  /**
+   * Present when a catalog row or an explicit alias decided the answer. A
+   * dedicated Dorso-Lumbar examination is a composition, not a role pair, so the
+   * canvas needs it to stop offering its own domains as screening modules.
+   */
+  composition?: StudyComposition;
+  provenance?: CompositionProvenance;
 };
 
 type RoleSet = Partial<Record<SpineScreeningRegion, RegionRole>>;
@@ -67,7 +80,10 @@ export const SCREENING_ROLE_DICTIONARY: Array<{
   {
     key: "MRIDWSS",
     label: "MRI DORSAL SPINE WITH WHOLE SPINE SCREENING",
-    codes: ["MRIDWSS"],
+    // No such code exists in the catalog export — see RETIRED_CATALOG_ASSERTIONS.
+    // The name rule stays, because a study can be booked under that wording
+    // without the code; only the invented code is not claimed as evidence.
+    codes: [],
     nameAll: ["DORSAL", "WHOLE", "SCREENING"],
     roles: { dorsal: "primary-dedicated", cervical: "accompanying-screening", ls: "accompanying-screening" },
   },
@@ -119,6 +135,27 @@ function codeNormalize(value: string | null | undefined): string {
   return (value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/**
+ * A bare "DL" in an examination name is not evidence of anything on its own.
+ *
+ * In this clinic's catalog `MRI020 / MRI DL SPINE` is the dedicated
+ * dorso-lumbar study: it is its own booked row, priced like the other
+ * dedicated spine exams and separate from "MRI DORSAL SPINE SCREENING", so it resolves
+ * through `CONFIRMED_CATALOG_ROWS`, not through this fallback. What remains here
+ * is the case where a name says "DL" with no recognizable code: nothing is
+ * assumed, because guessing here would silently route a dorso-lumbar examination
+ * into a dorsal-only report (dorsal spec §28, dorso-lumbar spec §24).
+ */
+const AMBIGUOUS_DORSOLUMBAR_RE = /\bDL\b|DORSO\s*LUMBAR|DORSOLUMBAR/;
+
+const AMBIGUOUS_DORSOLUMBAR_LABEL =
+  "unresolved dorso-lumbar booking label: \"DL\" is not an abbreviation for dorsal spine in this catalog. "
+  + "No region role is assumed — set the roles in the header if the performed study differs.";
+
+function isExplicitlyDorsal(name: string): boolean {
+  return /\bDORSAL\b|\bTHORACIC\b/.test(name);
+}
+
 const ALL_REGIONS: SpineScreeningRegion[] = ["cervical", "dorsal", "ls"];
 
 function absentRoles(): Record<SpineScreeningRegion, RegionRole> {
@@ -128,8 +165,24 @@ function absentRoles(): Record<SpineScreeningRegion, RegionRole> {
 /**
  * Resolve which screening modules exist and in what role. Falls back to "no
  * screening" so a plain dedicated study never grows screening prose by accident.
+ *
+ * Catalog evidence is consulted first, so a confirmed code such as `MRI020`
+ * resolves through the clinic's own catalog rather than through a name
+ * heuristic, and a dedicated Dorso-Lumbar examination is expressed as dedicated
+ * components of one study instead of two screening regions (spec §7, §24).
  */
 export function resolveScreeningRoles(input: BilledStudyInput): ResolvedScreeningRoles {
+  const composition = resolveStudyComposition(input);
+  if (composition.composition !== "unknown") {
+    return {
+      roles: composition.roles,
+      matchedKey: composition.matchedKey,
+      matchedLabel: composition.matchedLabel,
+      composition: composition.composition,
+      provenance: composition.provenance,
+    };
+  }
+
   const code = codeNormalize(input.code);
   const name = normalize(input.name);
   const blob = [name, normalize(input.studyDescription), normalize(input.reportTitle)]
@@ -147,6 +200,11 @@ export function resolveScreeningRoles(input: BilledStudyInput): ResolvedScreenin
   }
 
   const roles = absentRoles();
+  // A bare "DL" with no catalog row behind it names nothing this code may assume.
+  if (AMBIGUOUS_DORSOLUMBAR_RE.test(name) && !isExplicitlyDorsal(name)) {
+    return { roles: absentRoles(), matchedKey: "AMBIGUOUS_DORSOLUMBAR", matchedLabel: AMBIGUOUS_DORSOLUMBAR_LABEL };
+  }
+
   // The study is "of" the region named before "WITH … SCREENING"; a region
   // mentioned after those words ("whole spine screening of the cervical and
   // dorsal spine") is a screened region, not the primary.
@@ -193,8 +251,13 @@ export function resolveScreeningRoles(input: BilledStudyInput): ResolvedScreenin
 export function offeredScreeningRegions(roles: Record<SpineScreeningRegion, RegionRole>): SpineScreeningRegion[] {
   // A region reported as the dedicated primary is never also its own screening
   // module (spec §23 invariant), and roles are single-valued by construction.
+  // A dedicated component of one examination (thoracic and lumbar domains of a
+  // Dorso-Lumbar study) is dedicated anatomy, not screening (dorso-lumbar §7).
   return ALL_REGIONS.filter(
-    (region) => roleImpliesPerformed(roles[region]) && roles[region] !== "primary-dedicated",
+    (region) =>
+      roleImpliesPerformed(roles[region])
+      && roles[region] !== "primary-dedicated"
+      && roles[region] !== DEDICATED_COMPONENT_ROLE,
   );
 }
 

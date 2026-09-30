@@ -1,0 +1,202 @@
+/**
+ * mriDorsoLumbarCanvas.test.ts — the Dorso-Lumbar canvas, panel and AP table are
+ * mounted as one composition and keep their promises (dorso-lumbar spec §2, §4,
+ * §6, §13, §24, §31).
+ *
+ * There is no DOM render in this repo's test suite, so the UI contract is
+ * enforced the same way the dorsal phase enforces it: the behavioural store
+ * checks prove the state slice, and the source checks prove the wiring that a
+ * later edit would otherwise quietly break — a component keeping its own level
+ * array, a second way to apply a tile, a duplicated junction measurement, or
+ * billing overwriting what the radiologist stated about the performed study.
+ */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { useWorkspace } from "@/lib/zai-workspace/store";
+import {
+  JUNCTION_LEDGER_REGION,
+  JUNCTION_LEVEL,
+  defaultDorsoLumbarState,
+  dorsolumbarApLevels,
+  dorsolumbarLevelKeyStrings,
+} from "@/lib/mriDorsoLumbarCoverage";
+import { dorsoLumbarLevelEntryOptions } from "@/lib/mriDorsoLumbarLevelEntry";
+import { buildDorsoLumbarTileBundle } from "@/lib/mriDorsoLumbarSubMasters";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG_DIR = resolve(HERE, "../..");
+const read = (rel: string) => readFileSync(resolve(PKG_DIR, rel), "utf8");
+
+const CANVAS = "src/components/radiology/reporting-canvas/MriDorsoLumbarCanvas.tsx";
+const PANEL = "src/components/radiology/reporting-canvas/MriDorsoLumbarSubMasterPanel.tsx";
+const AP_TABLE = "src/components/radiology/reporting-canvas/DorsoLumbarApCanalMeasurements.tsx";
+const RAIL = "src/components/radiology/workspace/ReportingToolsRail.tsx";
+const HOOK = "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
+
+describe("the coverage state slice", () => {
+  beforeEach(() => {
+    useWorkspace.setState({ dorsoLumbarNumbering: defaultDorsoLumbarState() });
+  });
+
+  it("is one store slice that every consumer reads", () => {
+    expect(useWorkspace.getState().dorsoLumbarNumbering.superior).toBe(defaultDorsoLumbarState().superior);
+    useWorkspace.getState().setDorsoLumbarNumbering({ superior: "T11-T12" });
+    const after = useWorkspace.getState().dorsoLumbarNumbering;
+    expect(after.superior).toBe("T11-T12");
+    // a patch never replaces the whole state
+    expect(after.inferior).toBe(defaultDorsoLumbarState().inferior);
+    expect(dorsolumbarLevelKeyStrings(after).length).toBeLessThan(
+      dorsolumbarLevelKeyStrings(defaultDorsoLumbarState()).length,
+    );
+  });
+
+  it("resets with the study, so coverage cannot leak between patients", () => {
+    const selectStudy = read("src/lib/zai-workspace/store.ts");
+    const line = selectStudy.split(/\r?\n/).find((l) => l.includes("selectStudy: (id) =>"));
+    expect(line).toBeTruthy();
+    expect(line).toContain("dorsoLumbarNumbering: defaultDorsoLumbarState()");
+  });
+});
+
+describe("the canvas and panel read the resolver, never their own list", () => {
+  it.each([[CANVAS], [PANEL], [AP_TABLE]])("%s derives its levels from the coverage resolver", (rel) => {
+    const src = read(rel);
+    expect(src).toMatch(/dorsoLumbarNumbering|dorsolumbarApLevels|dorsolumbarLevelKeys|dorsoLumbarLevelEntryOptions/);
+    expect(src).not.toMatch(/"T\d+(?:-[TL]\d+)?"\s*,\s*"T\d+/);
+    expect(src).not.toMatch(/"L\d-[LS]\d"\s*,\s*"L\d/);
+  });
+
+  it("the panel reads the composed level list through the entry resolver", () => {
+    const src = read(PANEL);
+    expect(src).toMatch(/dorsoLumbarLevelEntryOptions\(state\)/);
+    // the lumbar half stays the shared slice — composition, not a copy
+    expect(src).toMatch(/lumbar: lumbarNumbering/);
+    expect(src).toMatch(/setLumbarNumbering/);
+  });
+
+  it("the panel applies through the ledger and refuses gated tiles first", () => {
+    const src = read(PANEL);
+    expect(src).toMatch(/dorsoLumbarTileAvailability\(tile, ctx\)/);
+    expect(src).toMatch(/buildDorsoLumbarTileBundle\(tile\.id, ctx\)/);
+    expect(src).toMatch(/applyMacroBundle/);
+    expect(src).toMatch(/removeMacroBundle/);
+    // no direct prose writes: palettes never overwrite the radiologist's text
+    expect(src).not.toMatch(/setFindingsText|setImpressionText/);
+    // level entry goes only through the single dispatcher
+    expect(src).toMatch(/buildDorsoLumbarLevelEntry\(/);
+  });
+
+  it("the level entry form cannot be reached for an unacquired level", () => {
+    const src = read(PANEL);
+    expect(src).toMatch(/disabled=\{disabled \|\| !ctx\.level\}/);
+    expect(src).toMatch(/entry\.refused/);
+  });
+});
+
+describe("the AP table (spec §13)", () => {
+  it("offers exactly one cell per acquired level, and one for the bridge", () => {
+    const state = defaultDorsoLumbarState({ superior: "T11-T12", inferior: "L2-L3" });
+    const levels = dorsolumbarApLevels(state);
+    expect(levels).toEqual(["T11-T12", JUNCTION_LEVEL, "L1-L2", "L2-L3"]);
+    expect(levels.filter((l) => l === JUNCTION_LEVEL)).toHaveLength(1);
+    expect(new Set(levels).size).toBe(levels.length);
+  });
+
+  it("provenance is the existing canal AP mechanism, tagged per row", () => {
+    const src = read(AP_TABLE);
+    expect(src).toMatch(/markCanalApManualOverride/);
+    expect(src).toMatch(/setCanalApCellProvenance/);
+    expect(src).toMatch(/formatApMeasurements/);
+    // the bridge is grouped with the dorsal lettering, never measured twice
+    expect(src).toMatch(/domain === "lumbar" \? "lumbar" : "dorsal"/);
+    // no measurement is compared against a hard-coded stenosis cut-off
+    expect(src).not.toMatch(/[<>]=?\s*\d+(\.\d+)?\s*mm/);
+    expect(src).toMatch(/no threshold converts a number into a severity/);
+  });
+});
+
+describe("rail mount and billing initialization (spec §24, §31)", () => {
+  it("mounts the Dorso-Lumbar trio behind its own predicate only", () => {
+    const src = read(RAIL);
+    const gate = src.indexOf("isMriDorsoLumbarReportingContext({");
+    expect(gate, "the rail must gate the trio on the Dorso-Lumbar predicate").toBeGreaterThan(-1);
+    const block = src.slice(gate, gate + 2000);
+    const order = [
+      "<MriDorsoLumbarCanvas",
+      "<MriDorsoLumbarSubMasterPanel",
+      "<DorsoLumbarApCanalMeasurements",
+    ].map((needle) => block.indexOf(needle));
+    for (const [i, needle] of order.entries()) {
+      expect(needle, `${needle} must be rendered by the Dorso-Lumbar gate`).toBeGreaterThanOrEqual(0);
+      if (i > 0) expect(needle, "and in canvas → panel → measurement order").toBeGreaterThan(order[i - 1]);
+    }
+    // the dorsal trio stays gated on the dorsal predicate
+    expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,900}?<MriDorsalSubMasterPanel/);
+    expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,1400}?segment="dorsal"/);
+  });
+
+  it("initialises the composition from billing without overriding the radiologist", () => {
+    const src = read(HOOK);
+    expect(src).toMatch(/if \(!ws\.studyCompositionOverridden && resolved\.composition && resolved\.provenance\) \{\s*ws\.setStudyComposition\(resolved\.composition, resolved\.provenance\);/);
+    // the same effect still proposes the region roles
+    expect(src).toMatch(/ws\.replaceScreeningRoles\(resolved\.roles\);/);
+  });
+
+  it("keeps MRI020 out of a wrapper that just stacks the two older canvases", () => {
+    // Spec §0: a dedicated Dorso-Lumbar study is not the dorsal canvas plus the
+    // lumbar canvas. The DL block must render its own components.
+    const src = read(RAIL);
+    const dlBlock = src.slice(
+      src.indexOf("isMriDorsoLumbarReportingContext({"),
+      src.indexOf("isMriDorsoLumbarReportingContext({") + 1800,
+    );
+    expect(dlBlock).not.toMatch(/<MriDorsalCanvas|<MriLumbarCanvas|<MriCervicalCanvas/);
+  });
+});
+
+describe("tile application through the ledger", () => {
+  beforeEach(() => {
+    useWorkspace.setState({
+      appliedPathologyPatches: [],
+      patchUndoStack: [],
+      lastPatchSnapshot: null,
+      findingsText: "",
+      impressionText: "",
+      fieldProvenance: {},
+      studyComposition: "dorsolumbar-dedicated",
+      dorsoLumbarNumbering: defaultDorsoLumbarState({ superior: "T10-T11", inferior: "L3-L4" }),
+    });
+  });
+
+  it("writes a junction tile into the canonical region and replaces itself", () => {
+    const state = useWorkspace.getState().dorsoLumbarNumbering;
+    const ctx = {
+      level: "L1-T12",
+      state,
+      sequences: useWorkspace.getState().sequencesAvailable,
+      domain: "junction" as const,
+    };
+    const built = buildDorsoLumbarTileBundle("dlj-epidural", ctx as never);
+    expect(built.notice).toBeNull();
+    useWorkspace.getState().applyMacroBundle({ bundleId: built.bundleId, observations: built.observations });
+    const rows = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => p.id !== "system-normal-study")
+      .filter((p) => dorsoLumbarLevelEntryOptions(state).some((l) => l.junction && l.level === "T12-L1")
+        && p.observation?.level === "D12-L1");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.observation?.region).toBe(JUNCTION_LEDGER_REGION);
+
+    // the same tile at the same bridge in another spelling replaces, never adds
+    const again = buildDorsoLumbarTileBundle("dlj-epidural", { ...ctx, level: JUNCTION_LEVEL } as never);
+    expect(again.bundleId).toBe(built.bundleId);
+    useWorkspace.getState().applyMacroBundle({ bundleId: again.bundleId, observations: again.observations });
+    const after = useWorkspace.getState().appliedPathologyPatches.filter(
+      (p) => p.observation?.bundleId === again.bundleId,
+    );
+    expect(after).toHaveLength(rows.length);
+  });
+});
