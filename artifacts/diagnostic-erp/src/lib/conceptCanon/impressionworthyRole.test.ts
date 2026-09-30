@@ -40,6 +40,19 @@ import {
   buildCervicalTilePatch,
 } from "@/lib/xrayCervicalSubMasters";
 import { parseXrayCervicalViews } from "@/lib/xrayCervicalViews";
+import {
+  XRAY_CHEST_SUB_MASTERS,
+} from "@/lib/xrayChestSubMasters";
+import { parseXrayChestViews } from "@/lib/xrayChestViews";
+import { buildChestNormalAtoms } from "@/lib/xrayChestNormalAtoms";
+import { buildCervicalNormalAtoms } from "@/lib/xrayCervicalNormalAtoms";
+import {
+  MRI_LUMBAR_SUB_MASTERS,
+  buildLumbarTileBundle,
+} from "@/lib/mriLumbarSubMasters";
+import { MRI_BRAIN_SUB_MASTERS } from "@/lib/mriBrainSubMasters";
+import { defaultLumbarNumbering } from "@/lib/mriSpineNumbering";
+import { defaultSpineSequences } from "@/lib/mriSpineSequences";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -228,11 +241,25 @@ describe("one impression-worthiness implementation", () => {
     expect(ledger).toMatch(/isImpressionworthyAbnormal\(\s*p\.observation\?\.concept \?\? null,\s*\{\s*role: p\.observation\?\.role,/);
   });
 
-  it("both store guards pass the observation role to the registry", () => {
+  it("the auto-yield guard asks the role-aware question", () => {
     const store = src("../zai-workspace/store.ts");
     expect(store).toContain("isImpressionworthyAbnormal(observation.concept, { role: observation.role })");
-    expect(store).toContain(
-      "isImpressionworthyAbnormal(patch.observation?.concept ?? null, { role: patch.observation?.role })",
+  });
+
+  it("the auto-return trigger keeps its concept-only reading, exactly as main", () => {
+    // Deliberate, measured: MRI Lumbar's routine normal tiles emit baseline atoms
+    // whose concepts (`canal_stenosis`, `conus_medullaris`, `bone_lesion`,
+    // `disc_contour`, `compression_fracture`, `foraminal_stenosis`,
+    // `cauda_equina`) are impression-worthy, and deselecting such a tile has
+    // always brought the system normal back. The trigger below stays on the
+    // concept-only reading so that shipped behaviour is untouched; what may
+    // actually suppress the normal is still decided by the one rule.
+    const store = src("../zai-workspace/store.ts");
+    expect(store).toMatch(
+      /isImpressionworthyAbnormal\(patch\.observation\?\.concept \?\? null\)\s*&& !get\(\)\.isFinalized/,
+    );
+    expect(store).not.toMatch(
+      /isImpressionworthyAbnormal\(patch\.observation\?\.concept \?\? null, \{ role:/,
     );
   });
 });
@@ -362,5 +389,128 @@ describe("system normal impression — baseline vs finding", () => {
       }
     }
     expect(ctx.performed.lateral).toBe(true);
+  });
+});
+
+// ─── 5. the role rule cannot reach any other shipped concept ─────────────
+
+type AtomLike = { concept?: string; role?: string; impression?: string };
+
+const lumbarCtx = {
+  level: "L4-L5",
+  numbering: defaultLumbarNumbering(),
+  sequences: defaultSpineSequences(),
+  region: "LS Spine",
+  conusLevel: "L1",
+};
+
+function baselineAtoms(): Array<{ where: string; concept: string; hasImpression: boolean }> {
+  const out: Array<{ where: string; concept: string; hasImpression: boolean }> = [];
+  const catalogs = [
+    ["cervical", XRAY_CERVICAL_SUB_MASTERS],
+    ["chest", XRAY_CHEST_SUB_MASTERS],
+    ["lumbar", MRI_LUMBAR_SUB_MASTERS],
+    ["brain", MRI_BRAIN_SUB_MASTERS],
+  ] as const;
+  for (const [name, subs] of catalogs) {
+    for (const sm of subs as readonly Array<{ id: string; tiles: Array<{ id: string; atoms: unknown }> }>) {
+      for (const tile of sm.tiles) {
+        const atoms = (
+          typeof tile.atoms === "function"
+            ? (tile.atoms as (c: unknown) => AtomLike[])(lumbarCtx)
+            : (tile.atoms as AtomLike[])
+        ) ?? [];
+        for (const atom of atoms) {
+          if (atom?.role === "baseline") {
+            out.push({
+              where: `${name}/${sm.id}/${tile.id}`,
+              concept: atom.concept ?? "",
+              hasImpression: Boolean(atom.impression && atom.impression.trim()),
+            });
+          }
+        }
+      }
+    }
+  }
+  for (const o of buildCervicalNormalAtoms({ ctx: parseXrayCervicalViews("X-ray cervical AP and lateral.") }).observations) {
+    if (o.role === "baseline") {
+      out.push({
+        where: "cervicalNormalAtoms",
+        concept: o.concept ?? "",
+        hasImpression: Boolean(o.incoming.impression && o.incoming.impression.trim()),
+      });
+    }
+  }
+  for (const o of buildChestNormalAtoms({ ctx: parseXrayChestViews("X-ray chest PA erect.") }).observations) {
+    if (o.role === "baseline") {
+      out.push({
+        where: "chestNormalAtoms",
+        concept: o.concept ?? "",
+        hasImpression: Boolean(o.incoming.impression && o.incoming.impression.trim()),
+      });
+    }
+  }
+  return out;
+}
+
+describe("the role rule is inert for every concept shipped today", () => {
+  it("no baseline atom that contributes an impression uses an impression-worthy concept", () => {
+    // The auto-yield guard only fires for an incoming observation WITH impression
+    // text, so a baseline atom can only be affected by the new role parameter if
+    // it both contributes an impression and sits on an impression-worthy concept.
+    // None does — measured over all four catalogs plus the materialised cervical
+    // and chest normal atom sets. That is the enumeration behind the "0 composed
+    // diffs for shipped concepts" claim.
+    const withImpression = baselineAtoms().filter((a) => a.hasImpression);
+    // Exactly one baseline atom dictates an impression line today, and its own
+    // concept is registered as non-impression-worthy.
+    expect(withImpression).toEqual([
+      { where: "chest/routine/rt-clinic-normal-line", concept: "chest_normal_impression", hasImpression: true },
+    ]);
+    const offenders = withImpression.filter((a) => isImpressionworthyAbnormal(a.concept));
+    expect(offenders).toEqual([]);
+    expect(baselineAtoms().length).toBeGreaterThan(60);
+  });
+
+  it("keeps every shipped baseline atom on an impression-worthy concept working as before", () => {
+    // Exactly the concepts that make the auto-return trigger above load-bearing:
+    // they are registered impression-worthy, they are emitted as baseline, and
+    // they behave as they did before this PR because the suppression decision is
+    // taken by the ledger, which already excluded baseline role.
+    const shared = [...new Set(
+      baselineAtoms()
+        .filter((a) => isImpressionworthyAbnormal(a.concept))
+        .map((a) => a.concept),
+    )].sort();
+    expect(shared).toEqual([
+      "bone_lesion",
+      "canal_stenosis",
+      "cauda_equina",
+      "cervical_lordosis",
+      "compression_fracture",
+      "conus_medullaris",
+      "disc_contour",
+      "foraminal_stenosis",
+      "posterior_elements",
+    ]);
+    for (const concept of shared) {
+      expect(isImpressionworthyAbnormal(concept, { role: "baseline" }), concept).toBe(false);
+    }
+  });
+
+  it("deselecting an MRI Lumbar normal tile still restores the system normal", () => {
+    // Pinned against current main: `rt-canal-normal` emits baseline atoms on the
+    // impression-worthy concepts canal_stenosis + conus_medullaris, and removing
+    // the last one has always re-seeded "Normal study.". Behaviour preserved,
+    // with the reason recorded in the store comment.
+    resetWorkspace("LS Spine", "MR", "MRI lumbar spine");
+    const bundle = buildLumbarTileBundle("rt-canal-normal", lumbarCtx as never);
+    expect(bundle.observations.length).toBeGreaterThan(0);
+    useWorkspace.getState().applyMacroBundle(bundle);
+    expect(useWorkspace.getState().impressionText).toBe("");
+    for (const id of useWorkspace.getState().appliedPathologyPatches.map((p) => p.id)) {
+      useWorkspace.getState().removeObservation(id);
+    }
+    expect(useWorkspace.getState().impressionText).toBe(SYSTEM_NORMAL_IMPRESSION_TEXT);
   });
 });
