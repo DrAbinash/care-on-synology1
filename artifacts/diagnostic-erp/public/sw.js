@@ -69,6 +69,13 @@ const NETWORK_ONLY_PREFIXES = [
   // Bill payment links — paid/unpaid status is derived live from the gateway
   // logs + bill balance, so it must never be served stale from cache.
   "/api/bill-payment-links/",
+  // CARE business date (Stage 1A). This is the authority blank forms default
+  // to, so a cached answer is worse than no answer: `erp-api-v2` keeps GET
+  // responses for up to 24h, which would let yesterday's clinic day seed
+  // today's money and Form F registers — the exact defect this endpoint
+  // exists to remove. Network-only; when offline the client deliberately
+  // shows a blank date instead of a stale or browser-derived one.
+  "/api/time/now",
   // ABDM/ABHA consent + enrolment status changes with gateway callbacks — always fresh.
   "/api/abdm/",
   "/api/abha/",

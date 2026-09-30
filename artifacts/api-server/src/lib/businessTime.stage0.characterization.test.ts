@@ -9,7 +9,7 @@ import { vouchersTable, voucherAuditsTable } from "@workspace/db/schema";
 import { patientReportsTable } from "@workspace/db/schema";
 import { studyTatMetricsTable } from "@workspace/db/schema";
 import { echoValveAssessmentTable } from "@workspace/db/schema";
-import { istHourMinute, todayIST } from "./istDate";
+import { clinicDateOf, istHourMinute, todayIST } from "./istDate";
 
 /**
  * STAGE 0 — BUSINESS-TIME CHARACTERIZATION.
@@ -100,30 +100,28 @@ describe("Stage 0 · U-10 — CARE business-day derivation at the IST/UTC bounda
     expect(istHourMinute(at("2026-09-29T18:29:00Z"))).toEqual({ hour: 23, minute: 59 });
   });
 
-  it("CHARACTERIZATION (dead code): nowIST() returns Invalid Date, and nothing calls it", () => {
+  /**
+   * ── TRANSITION LOG · Stage 1A ────────────────────────────────────────────
+   * BEFORE Stage 0/1A: `nowIST()` round-tripped an `en-CA` locale string
+   * through `new Date(...)` and returned Invalid Date; it had zero callers, so
+   * Stage 0 characterized it as broken-and-dead rather than repairing it.
+   * AFTER Stage 1A: it is deleted, not repaired. "The current instant in IST"
+   * is a category error — an instant has no timezone — and the primitive people
+   * actually need is `clinicDateOf(instant)` plus `clinicDayBoundsIST(instant)`.
+   * Leaving a plausible-looking wrong helper in `lib/` would invite it back.
+   * ──────────────────────────────────────────────────────────────────────────
+   */
+  it("TRANSITION (Stage 1A): the broken `nowIST()` helper is gone, replaced by explicit primitives", () => {
     const source = src("./istDate.ts");
-    const body = source.slice(source.indexOf("export function nowIST"));
-    // The helper round-trips a locale string back through `new Date(...)`, and
-    // en-CA produces "2026-09-30, 12:00:00 a.m." — unparseable with the ":00+05:30"
-    // suffix appended. Recorded, not repaired: Stage 0 does not fix behaviour.
-    expect(body).toContain("toLocaleString(");
-    expect(body).toContain('replace(",", "T")');
-
-    const exported = Object.getOwnPropertyNames(istHourMinute) // guard: module loaded
-      .length;
-    expect(exported).toBeGreaterThan(-1);
-
-    // Zero production callers: only the definition itself mentions nowIST.
-    const hits = ["../routes", "../lib", "../cron.ts", "../worker.ts"]
-      .map((dir) => {
-        try {
-          return src(resolve(dir, "istDate.ts"));
-        } catch {
-          return "";
-        }
-      })
-      .join("");
-    expect(hits).not.toContain("nowIST");
+    // BEFORE: `export function nowIST(): Date { … toLocaleString( … replace(",", "T")`
+    expect(source).not.toContain("export function nowIST");
+    expect(source).not.toContain('replace(",", "T")');
+    expect(source).toContain("was removed in Stage 1A"); // the reason stays in the file
+    // AFTER: the two primitives Stage 1A actually exposes.
+    expect(source).toContain("export function clinicDateOf(");
+    expect(source).toContain("export function clinicDayBoundsIST(");
+    // And the replacement answers correctly where the old helper returned garbage.
+    expect(clinicDateOf(at("2026-09-29T18:30:00Z"))).toBe("2026-09-30");    expect(istHourMinute(at("2026-09-29T18:30:00Z"))).toEqual({ hour: 0, minute: 0 });
   });
 });
 

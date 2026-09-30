@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { getClinicDateIst } from "@/lib/careTime";
 import { api } from "@/lib/fetchApi";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Save, TrendingUp, TrendingDown, Minus, Target, Clock } from "lucide-react";
@@ -78,7 +79,10 @@ export default function TumorFollowupPanel({ patientId, orderId, studyId, modali
     sizeMmAxis1: "", sizeMmAxis2: "", sizeMmAxis3: "",
     volumeCc: "", changeStatus: "stable", responseStatus: "NE",
     enhancementStatus: "none", treatmentPhase: "surveillance",
-    studyDate: new Date().toISOString().split("T")[0],
+    // Stage 1A: a new follow-up entry defaults to the CARE business date from
+    // the server, not the workstation clock. Blank when the authority has not
+    // answered; the operator's own selection is always respected.
+    studyDate: getClinicDateIst() ?? "",
     isBaseline: false, notes: "",
   });
 

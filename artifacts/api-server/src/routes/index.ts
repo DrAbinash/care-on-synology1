@@ -20,6 +20,7 @@ import usersRouter from "./users";
 import emailSettingsRouter from "./email-settings";
 import auditTrailRouter from "./audit-trail";
 import featureFlagsRouter from "./featureFlags";
+import careTimeRouter from "./careTime";
 import discountsRouter from "./discounts";
 import aiRouter from "./ai";
 import pacsRouter from "./pacs";
@@ -695,6 +696,13 @@ router.use("/audit-trail", requireStaffAuth, requireStaffSubPermission("/setting
 // requireAdminRole INSIDE the router (see featureFlags.ts), not here, so no
 // extra permission wrapper is added at the mount point.
 router.use("/feature-flags", requireStaffAuth, featureFlagsRouter);
+// CARE business time (Stage 1A): GET /api/time/now returns the trusted CARE
+// server instant and the Asia/Kolkata business date derived from it, so blank
+// ERP forms stop defaulting from the workstation clock. Authenticated,
+// read-only, the handler itself reads no database and accepts no input — a
+// client cannot ask the server to confirm a date it invented. The router
+// applies requireStaffAuth itself, exactly like featureFlags.ts.
+router.use("/time", careTimeRouter);
 // Test categories: anyone with staff auth can READ the list (Test Catalog,
 // Billing Desk, Reports filter all need it). Mutations stay admin-only via
 // the /settings permission.

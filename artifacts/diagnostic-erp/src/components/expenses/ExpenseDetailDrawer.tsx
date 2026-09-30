@@ -18,6 +18,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import { getClinicDateIst } from "@/lib/careTime";
 import { useQuery } from "@tanstack/react-query";
 import { FileImage, IndianRupee, Loader2, Ban, Wallet, Printer } from "lucide-react";
 import {
@@ -97,7 +98,10 @@ export default function ExpenseDetailDrawer({
   const [voidReason, setVoidReason] = useState("");
   const [payForm, setPayForm] = useState({
     amount: "",
-    paymentDate: new Date().toISOString().slice(0, 10),
+    // New-payment default = CARE business date from the server (Stage 1A).
+    // `null` (authority not loaded) leaves it blank; the browser clock is never
+    // substituted. An existing payment's own date is never touched by this.
+    paymentDate: getClinicDateIst() ?? "",
     paymentMode: "cash",
     paidFromAccountId: "",
     referenceNumber: "",
@@ -130,7 +134,7 @@ export default function ExpenseDetailDrawer({
         const due = dueOf(full);
         setPayForm({
           amount: due > 0 ? String(due) : "",
-          paymentDate: new Date().toISOString().slice(0, 10),
+          paymentDate: getClinicDateIst() ?? "",
           paymentMode: full.paymentMode || "cash",
           paidFromAccountId: "",
           referenceNumber: "",

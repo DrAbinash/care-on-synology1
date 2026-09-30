@@ -22,6 +22,7 @@ import { persistDocumentScanFromBlob } from "@/lib/documentScanApi";
 import { buildFormFPrintHtml } from "@/lib/formFPrintHtml";
 import { openBlankPrintWindow, writeAndPrint } from "@/lib/documentLayout/printDelivery";
 import { readStaffSession, normalizeRole, FULL_ACCESS_ROLES } from "@/lib/staffSession";
+import { getClinicDateIst } from "@/lib/careTime";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
@@ -155,8 +156,22 @@ function BookmarkletLink({ billNumber }: { billNumber: string }) {
   );
 }
 
+/**
+ * Default date for a BLANK new Form F entry only (Stage 1A).
+ *
+ * Was `new Date().toISOString().slice(0, 10)` — the workstation clock through a
+ * UTC lens, which on a register page means a form opened before 05:30 IST
+ * defaulted to yesterday's statutory date. Now the CARE business date comes
+ * from the server, and `null` (authority unavailable) leaves the field blank
+ * for the operator rather than inventing a PCPNDT-relevant date.
+ *
+ * Scope guard, §16 of Stage 1A: this changes the *default source* only. No
+ * saved Form F value is reinterpreted, no previously recorded statutory date is
+ * rewritten, and `consentDate`/`mtpDate` keep their existing empty defaults
+ * because those are transcribed from paper, not inferred from "today".
+ */
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return getClinicDateIst() ?? "";
 }
 
 function formatDate(d: string) {

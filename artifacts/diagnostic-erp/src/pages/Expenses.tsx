@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useListExpenses,
@@ -14,6 +14,7 @@ import BillReceiptScannerPanel from "@/components/BillReceiptScannerPanel";
 import ExpenseDetailDrawer from "@/components/expenses/ExpenseDetailDrawer";
 import ExpenseAttachmentsPanel, { type PendingExpenseAttachment } from "@/components/expenses/ExpenseAttachmentsPanel";
 import PayeeCombobox, { type PayeeUsualDto } from "@/components/expenses/PayeeCombobox";
+import { useClinicDateIst } from "@/hooks/useCareTime";
 import { AccountingStatusBadge, OcrFieldBadge, PaymentStatusBadge } from "@/components/expenses/ExpenseStatusBadges";
 import {
   billOf,
@@ -169,9 +170,16 @@ type ExpenseForm = {
   materialAmount: string;
 };
 
-function emptyExpenseForm(): ExpenseForm {
+function emptyExpenseForm(clinicDateIst: string | null): ExpenseForm {
   const name = readStaffSession()?.user?.name?.trim() || "";
-  const today = new Date().toISOString().slice(0, 10);
+  // CARE business date from the server (Stage 1A), NOT the workstation clock.
+  // `new Date().toISOString().slice(0, 10)` used to sit here: it read the
+  // browser's clock through a UTC lens, so any expense opened between 00:00 and
+  // 05:29:59 IST defaulted to *yesterday*. `null` means the authority has not
+  // answered yet — leave the field blank rather than invent a clinic day.
+  // This is a default, not a limit: the operator can still enter any date
+  // (Stage 2/3 govern whether that requires a reason — D-2 is not decided).
+  const today = clinicDateIst ?? "";
   return {
     payKind: "PAID",
     category: "miscellaneous",
@@ -253,7 +261,18 @@ export default function Expenses() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState(() => emptyExpenseForm());
+  const clinicDateIst = useClinicDateIst();
+  const [form, setForm] = useState(() => emptyExpenseForm(clinicDateIst));
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // A dialog opened in the first moments after login, before /api/time/now
+    // answered, gets the CARE business date as soon as it arrives — and only if
+    // both date fields are still empty, so a typed or scanned date is never
+    // overwritten.
+    if (!showForm || !clinicDateIst) return;
+    setForm((f) => (f.expenseDate || f.paymentDate ? f : { ...f, expenseDate: clinicDateIst, paymentDate: clinicDateIst }));
+  }, [clinicDateIst, showForm]);
+
   const [receiptImage, setReceiptImage] = useState("");
   const [pendingAttachment, setPendingAttachment] = useState<PendingExpenseAttachment | null>(null);
   const [ocrMeta, setOcrMeta] = useState<{
@@ -506,7 +525,7 @@ export default function Expenses() {
       const created = await api.post<ExpenseV2 & { duplicateWarnings?: DuplicateWarnings }>("/api/expenses", payload);
       invalidateExpenses();
       setShowForm(false);
-      setForm(emptyExpenseForm());
+      setForm(emptyExpenseForm(clinicDateIst));
       setPayeeSuggestionsApplied(false);
       setReceiptImage("");
       setPendingAttachment(null);
@@ -704,7 +723,7 @@ export default function Expenses() {
             className="w-full sm:w-auto"
             onClick={() => {
               setShowForm(true);
-              setForm(emptyExpenseForm());
+              setForm(emptyExpenseForm(clinicDateIst));
               setPayeeSuggestionsApplied(false);
               setReceiptImage("");
               setPendingAttachment(null);

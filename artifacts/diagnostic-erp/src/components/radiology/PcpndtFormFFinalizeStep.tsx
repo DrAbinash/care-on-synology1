@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { api } from "@/lib/fetchApi";
+import { getClinicDateIst } from "@/lib/careTime";
 
 export type PcpndtFormFFinalizePrefill = {
   patientId: number;
@@ -34,8 +35,19 @@ type Props = {
   onCancel: () => void;
 };
 
+/**
+ * Stage 1A default for a Form F entry being finalized with no procedure date
+ * on the study: the CARE business date from the server. Was
+ * `new Date().toISOString().slice(0, 10)` — the workstation clock read through
+ * a UTC lens, which for a PCPNDT register means a finalize step opened before
+ * 05:30 IST would default to yesterday's statutory date.
+ *
+ * `?? ""` is deliberate: an empty required field the operator must fill is
+ * honest, a browser-invented statutory date is not. Nothing stored is
+ * reinterpreted — `prefill.procedureDate` still wins (§16).
+ */
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return getClinicDateIst() ?? "";
 }
 
 export function PcpndtFormFFinalizeStep({ prefill, missing, onSaved, onCancel }: Props) {

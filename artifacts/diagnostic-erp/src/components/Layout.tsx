@@ -94,6 +94,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVersionCheck } from "@/hooks/useVersionCheck";
 import { useServerFeatureFlags } from "@/hooks/useServerFeatureFlags";
+import { useCareTime } from "@/hooks/useCareTime";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useGlobalScanner } from "@/hooks/useGlobalScanner";
@@ -496,6 +497,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const { updateAvailable, dismiss: dismissUpdate } = useVersionCheck();
   useServerFeatureFlags(); // hydrates ff_radiology_* flags from /api/feature-flags (Ticket T0.1)
+  useCareTime(); // hydrates the CARE business date from /api/time/now (Stage 1A) so blank forms never default from the workstation clock
   const isOnline = useOnlineStatus();
   const { isActive: scannerActive } = useGlobalScanner();
 

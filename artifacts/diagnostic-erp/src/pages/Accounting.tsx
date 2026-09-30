@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { useToast } from "@/hooks/use-toast";
+import { getClinicDateIst } from "@/lib/careTime";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -504,7 +505,7 @@ export default function Accounting() {
               </div>
               <div className="flex flex-wrap gap-2">
                 {VOUCHER_TYPES.map(t => (
-                  <Button key={t.value} size="sm" variant="outline" onClick={() => { setVoucherType(t.value); resetV({ type: t.value, date: new Date().toISOString().split("T")[0] }); setVoucherOpen(true); }}>
+                  <Button key={t.value} size="sm" variant="outline" onClick={() => { setVoucherType(t.value); resetV({ type: t.value, date: getClinicDateIst() ?? "" }); setVoucherOpen(true); }}>
                     <t.icon size={13} className="mr-1" /> {t.label.split(" ")[0]}
                   </Button>
                 ))}
@@ -1325,7 +1326,14 @@ export default function Accounting() {
           )}
           <form onSubmit={subV((d) => createVoucher.mutate({ ...d, type: voucherType, amount: Number(d.amount), billId: d.billId ? Number(d.billId) : undefined }))} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Date *</Label><Input type="date" {...regV("date", { required: true })} className="mt-1" defaultValue={new Date().toISOString().split("T")[0]} /></div>
+              {/* GL effective date of a NEW voucher defaults to the CARE business
+                  date from the server (Stage 1A) — never the workstation clock,
+                  which named yesterday between 00:00 and 05:29:59 IST. This
+                  seeds the create dialog only; editing an existing voucher goes
+                  through the separate edit dialog, whose date comes from the
+                  stored row and is untouched here. The field stays freely
+                  editable: a trusted default is not a permission. */}
+              <div><Label>Date *</Label><Input type="date" {...regV("date", { required: true })} className="mt-1" defaultValue={getClinicDateIst() ?? ""} /></div>
               <div><Label>Amount (₹) *</Label><Input type="number" step="0.01" {...regV("amount", { required: true })} className="mt-1" /></div>
             </div>
             <div>
