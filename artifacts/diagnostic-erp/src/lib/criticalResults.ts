@@ -68,6 +68,34 @@ export const CRITICAL_TERMS: { term: string; label: string }[] = [
   { term: "unstable fracture", label: "unstable fracture" },
   { term: "burst fracture", label: "burst fracture" },
   { term: "epidural abscess", label: "epidural abscess" },
+  // Cervical radiography. These are the critical patterns the seeded
+  // xr.cervical_spine knowledge pack names — unstable fracture, instability /
+  // listhesis, prevertebral swelling as a marker of occult injury — written in
+  // the exact prose the cervical sub-master produces. There is no X-ray master
+  // template, so radiographic critical detection runs on this table
+  // (radiologyMasterTemplates supplies criticalWatchList for MR/CT/US only).
+  { term: "fracture-dislocation", label: "cervical fracture-dislocation" },
+  { term: "facet dislocation", label: "cervical facet dislocation" },
+  { term: "perched facet", label: "perched cervical facet" },
+  { term: "odontoid fracture", label: "odontoid fracture" },
+  { term: "unstable craniocervical", label: "unstable craniocervical injury" },
+  { term: "widened atlanto-dental interval", label: "widened atlanto-dental interval" },
+  { term: "atlanto-axial instability", label: "atlanto-axial instability" },
+  // The seeded xr.cervical_spine knowledge pack names "Cervical spine
+  // instability / listhesis" as a critical finding, so a listhesis described on
+  // plain films raises the reminder. The baseline denial ("no acute fracture or
+  // listhesis is identified") stays excluded by the negation check.
+  { term: "anterolisthesis", label: "cervical anterolisthesis" },
+  { term: "retrolisthesis", label: "cervical retrolisthesis" },
+  { term: "dynamic instability", label: "dynamic cervical instability" },
+  { term: "prevertebral soft-tissue swelling", label: "prevertebral soft-tissue swelling" },
+  { term: "prevertebral soft tissue swelling", label: "prevertebral soft-tissue swelling" },
+  { term: "prevertebral swelling", label: "prevertebral soft-tissue swelling" },
+  { term: "prevertebral gas", label: "prevertebral gas" },
+  { term: "burst-type fracture", label: "burst-type fracture" },
+  { term: "hardware breakage", label: "hardware breakage" },
+  { term: "hardware migration", label: "hardware migration" },
+  { term: "concerning for loosening", label: "implant loosening" },
   // Chest / vascular
   { term: "tension pneumothorax", label: "tension pneumothorax" },
   { term: "pneumothorax", label: "pneumothorax" },

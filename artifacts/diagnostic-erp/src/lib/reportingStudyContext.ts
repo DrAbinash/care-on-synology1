@@ -306,3 +306,53 @@ export function isXrayChestReportingContext(opts: {
   return /x[- ]?ray|xray|\bcxr\b|\bcr\b|\bdx\b/i.test(hay) && CHEST_TEXT.test(hay);
 }
 
+/**
+ * Radiographic cervical text. "C-spine" and "C spine" are the live billed/format
+ * spellings, and the seeded cervical knowledge pack titles its chip "Neck trauma
+ * — query cervical spine injury", so `neck` is included. A dorsal or lumbar film
+ * never matches: those words are excluded explicitly rather than by ordering.
+ */
+const CERVICAL_TEXT = /\bcervical\b|\bc[- ]?spine\b|\bcspine\b|\bneck\b/i;
+const NON_CERVICAL_SPINE_TEXT = /\b(?:dorsal|thoracic|lumbar|lumbo|sacral|whole)\b/i;
+
+/**
+ * X-ray Cervical Spine reporting context — activates the cervical clinical
+ * sub-master (views/adequacy with odontoid / oblique / flexion-extension
+ * gating, palettes, measurements, dynamic and hardware panels).
+ *
+ * Mirrors isXrayChestReportingContext, including the two failure modes it
+ * avoids: an MRI / CT / US cervical study must not receive the plain-film
+ * canvas (spec §1 — the radiography sub-master carries different conclusions),
+ * and a cervical X-Ray tab still qualifies when the worklist row arrives with an
+ * unexpected modality string.
+ */
+export function isXrayCervicalReportingContext(opts: {
+  modality?: string | null;
+  region?: string | null;
+  family?: string | null;
+  studyDescription?: string | null;
+}): boolean {
+  const mod = (opts.modality ?? "").trim();
+  const region = (opts.region ?? "").trim();
+  const desc = (opts.studyDescription ?? "").trim();
+
+  if (mod && !isXrModality(mod)) return false;
+
+  // Canonical tab key: "X-Ray Cervical Spine" (seeded radiology_study_tabs 976).
+  if (region && /^X[- ]RAY\b/i.test(region) && CERVICAL_TEXT.test(region)) return true;
+
+  if (mod && isXrModality(mod)) {
+    if (region && CERVICAL_TEXT.test(region) && !NON_CERVICAL_SPINE_TEXT.test(region)) return true;
+    if (desc && CERVICAL_TEXT.test(desc) && !NON_CERVICAL_SPINE_TEXT.test(desc)) return true;
+    return false;
+  }
+
+  // No modality at all — require both plain-film and cervical evidence.
+  const hay = `${region} ${desc}`;
+  return (
+    /x[- ]?ray|xray/i.test(hay) &&
+    CERVICAL_TEXT.test(hay) &&
+    !NON_CERVICAL_SPINE_TEXT.test(hay)
+  );
+}
+
