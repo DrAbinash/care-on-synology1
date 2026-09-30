@@ -286,7 +286,7 @@ export const XRAY_LS_SUB_MASTERS: readonly LsSubMaster[] = [
         group: "Posterior elements",
         parsGate: "any",
         atoms: [
-          POST("ls_posterior_elements", N.posteriorElements, {
+          POST("posterior_elements", N.posteriorElements, {
             role: "baseline",
             baselineReplaces: "",
           }),

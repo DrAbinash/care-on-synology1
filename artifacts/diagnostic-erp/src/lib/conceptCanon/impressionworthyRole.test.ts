@@ -145,10 +145,13 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
     // MRI Dorsal V4 (#780) registered 16 more, 8 of them impression-worthy (321 -> 329);
     // Dorso-Lumbar adds one descriptive pack (intercostal nerve) that is not
     // impression-worthy, so 451 -> 452.
+    // X-ray Lumbosacral V3 registers 102 radiography concepts (452 -> 554), 72 of
+    // them impression-worthy (329 -> 401); its posterior-element baseline reuses
+    // #778's canonical concept instead of adding a 103rd.
     // Bumping either number has to mean somebody deliberately registered a concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
-    expect(CLINICAL_CONTENT_PACKS.length).toBe(452);
-    expect(impressionWorthy.length).toBe(329);
+    expect(CLINICAL_CONTENT_PACKS.length).toBe(554);
+    expect(impressionWorthy.length).toBe(401);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",

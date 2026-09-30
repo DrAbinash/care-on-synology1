@@ -2904,15 +2904,6 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     impressionworthyAbnormal: true,
   },
   {
-    concept: "ls_posterior_elements",
-    label: "Posterior elements intact",
-    description: "Visualized posterior elements are intact.",
-    aliases: ["ls_posterior_elements", "posterior elements intact"],
-    regions: ["ls spine"],
-    modalities: ["XR"],
-    impressionworthyAbnormal: false,
-  },
-  {
     concept: "ls_postop_alignment",
     label: "Post-operative alignment maintained",
     description: "Alignment is maintained across the instrumented segments at the.",

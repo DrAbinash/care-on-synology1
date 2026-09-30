@@ -67,7 +67,7 @@ describe("one sentence per state — the supersession contract", () => {
       "ls_vertebral_body_height",
       "ls_no_acute_fracture",
       "ls_disc_space",
-      "ls_posterior_elements",
+      "posterior_elements",
       "ls_l5s1_junction",
       "ls_si_joints",
       "ls_no_hardware",
@@ -79,7 +79,7 @@ describe("one sentence per state — the supersession contract", () => {
     expect(byConcept.get("ls_alignment")).toBe(LS_BASELINE_CONTRACTS.alignment);
     expect(byConcept.get("ls_vertebral_body_height")).toBe(LS_BASELINE_CONTRACTS.vertebrae);
     expect(byConcept.get("ls_disc_space")).toBe(LS_BASELINE_CONTRACTS.discs);
-    expect(byConcept.get("ls_posterior_elements")).toBe(LS_BASELINE_CONTRACTS.posteriorElements);
+    expect(byConcept.get("posterior_elements")).toBe(LS_BASELINE_CONTRACTS.posteriorElements);
     expect(byConcept.get("ls_no_acute_fracture")).toBe(LS_BASELINE_CONTRACTS.noFracture);
     expect(byConcept.get("ls_no_hardware")).toBe(LS_BASELINE_CONTRACTS.noHardware);
     expect(byConcept.get("ls_si_joints")).toBe(LS_BASELINE_CONTRACTS.siPreserved);
@@ -118,10 +118,10 @@ describe("coverage limits what may be certified (spec §2, §6)", () => {
   });
 
   it("refuses to certify the pars when the posterior elements were never seen", () => {
-    expect(findingsOf(LIVE_PROTOCOL, STANDARD_5, "ls_posterior_elements")).toBe(
+    expect(findingsOf(LIVE_PROTOCOL, STANDARD_5, "posterior_elements")).toBe(
       LS_NORMAL_SENTENCES.parsNotAssessed,
     );
-    expect(findingsOf(FULL_SERIES, STANDARD_5, "ls_posterior_elements")).toBe(
+    expect(findingsOf(FULL_SERIES, STANDARD_5, "posterior_elements")).toBe(
       LS_NORMAL_SENTENCES.posteriorElements,
     );
   });
@@ -138,7 +138,7 @@ describe("coverage limits what may be certified (spec §2, §6)", () => {
     expect(findingsOf("AP lumbar radiograph.", STANDARD_5, "ls_alignment")).toBe(
       LS_NORMAL_SENTENCES.alignmentNotAssessed,
     );
-    expect(findingsOf("AP lumbar radiograph.", STANDARD_5, "ls_posterior_elements")).toBe(
+    expect(findingsOf("AP lumbar radiograph.", STANDARD_5, "posterior_elements")).toBe(
       LS_NORMAL_SENTENCES.parsNotAssessed,
     );
   });

@@ -34,7 +34,7 @@ const MODEL_CONCEPTS = [
   "ls_alignment",
   "ls_vertebral_body_height",
   "ls_disc_space",
-  "ls_posterior_elements",
+  "posterior_elements",
   "ls_l5s1_junction",
   "ls_si_joints",
   "ls_no_acute_fracture",
@@ -46,12 +46,17 @@ const BASELINE_CONCEPTS = [
   "ls_alignment",
   "ls_vertebral_body_height",
   "ls_disc_space",
-  "ls_posterior_elements",
+  "posterior_elements",
   "ls_l5s1_junction",
   "ls_si_joints",
   "ls_no_acute_fracture",
   "ls_no_hardware",
 ];
+
+// Baseline atoms that reuse an existing shared concept instead of declaring an
+// ls_ twin. Their pack flag describes the abnormal reading, so only the role
+// says "this line is the normal".
+const SHARED_BASELINE_CONCEPTS = ["posterior_elements"];
 
 const CATALOG_CONCEPTS = XRAY_LS_SUB_MASTERS.flatMap((sm) => sm.tiles.flatMap((t) => t.atoms.map((a) => a.concept)));
 const ALL_LS_CONCEPTS = [...new Set([...CATALOG_CONCEPTS, ...MODEL_CONCEPTS])].sort();
@@ -81,6 +86,14 @@ describe("every lumbosacral radiography concept is registered", () => {
     // The system normal impression is suppressed per concept, so a baseline that
     // registers as abnormal would delete the normal line it belongs to.
     for (const concept of BASELINE_CONCEPTS) {
+      if (SHARED_BASELINE_CONCEPTS.includes(concept)) {
+        // posterior_elements is #778's single canonical concept for radiography
+        // and MR, so its pack flag describes the ABNORMAL reading. The role is
+        // what keeps the lumbosacral baseline out of the impression — the same
+        // way the cervical baseline uses it.
+        expect(isImpressionworthyAbnormal(concept, { role: "baseline" }), concept).toBe(false);
+        continue;
+      }
       expect(isImpressionworthyAbnormal(concept), concept).toBe(false);
     }
   });

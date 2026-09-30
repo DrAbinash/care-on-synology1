@@ -82,7 +82,10 @@ export type LsNormalConcept =
   | "ls_alignment"
   | "ls_vertebral_body_height"
   | "ls_disc_space"
-  | "ls_posterior_elements"
+  // Not ls_-prefixed: #778 made posterior_elements one canonical concept for
+  // radiography and MR alike, so the lumbosacral baseline emits that id and the
+  // role ("baseline") keeps it out of the impression.
+  | "posterior_elements"
   | "ls_l5s1_junction"
   | "ls_si_joints"
   | "ls_no_acute_fracture"
@@ -93,7 +96,7 @@ const SECTION: Record<LsNormalConcept, string> = {
   ls_alignment: "alignment",
   ls_vertebral_body_height: "vertebral bodies",
   ls_disc_space: "disc spaces",
-  ls_posterior_elements: "posterior elements",
+  posterior_elements: "posterior elements",
   ls_l5s1_junction: "alignment",
   ls_si_joints: "sacroiliac joints",
   ls_no_acute_fracture: "vertebral bodies",
@@ -144,7 +147,7 @@ export function buildLsNormalAtomSpecs(
 
   // Posterior elements / pars: gated by the projection that can see them.
   push(
-    "ls_posterior_elements",
+    "posterior_elements",
     assessPars(ctx).allowed ? S.posteriorElements : S.parsNotAssessed,
     assessPars(ctx).allowed && ctx.performed.lateral ? { view: "lateral" } : {},
   );

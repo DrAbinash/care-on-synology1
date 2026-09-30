@@ -121,8 +121,13 @@ describe("catalog shape (spec §3)", () => {
         expect(atom.findings.trim().length).toBeGreaterThan(10);
         // LS owns its concept ids, except where an existing shared spine concept
         // already declares ls spine + XR and is reused instead of duplicated.
+        // posterior_elements is #778's one canonical posterior-element concept for
+        // radiography and MR, so the lumbosacral baseline emits that id rather than
+        // registering an ls_ twin that would claim the same alias twice.
         expect(
-          /^ls_/.test(atom.concept) || atom.concept === "adjacent_segment_degeneration",
+          /^ls_/.test(atom.concept) ||
+            atom.concept === "adjacent_segment_degeneration" ||
+            atom.concept === "posterior_elements",
           `${tile.id}/${atom.concept}`,
         ).toBe(true);
       }
