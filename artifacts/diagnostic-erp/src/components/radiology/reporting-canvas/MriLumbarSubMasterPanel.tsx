@@ -231,7 +231,7 @@ export function MriLumbarSubMasterPanel({
         <input className={`${FIELD} w-14`} type="number" step="0.1" min="0" placeholder="cm" value={cm} disabled={disabled} data-testid="lumbar-var-cm" onChange={(e) => setCm(e.target.value)} />
         <input className={`${FIELD} w-20`} placeholder="conus level" value={conusLevel} disabled={disabled} data-testid="lumbar-var-conus" onChange={(e) => setConusLevel(e.target.value)} />
         <input className={`${FIELD} w-20`} placeholder="vertebra" value={vertebra} disabled={disabled} data-testid="lumbar-var-vertebra" onChange={(e) => setVertebra(e.target.value)} />
-        <select className={FIELD} value={direction} disabled={disabled} data-testid="lumbar-var-direction" onChange={(e) => setDirection(e.target.value as LumbarTileContext["direction"])}>
+        <select className={FIELD} value={direction} disabled={disabled} data-testid="lumbar-var-direction" onChange={(e) => setDirection(e.target.value === "" ? "" : (e.target.value as "superiorly" | "inferiorly"))}>
           <option value="">direction…</option>
           <option value="superiorly">superiorly</option>
           <option value="inferiorly">inferiorly</option>
