@@ -199,14 +199,19 @@ export default function DocumentScanCapture<TResult = unknown>({
         mimeType,
       });
       const needsTess = Boolean(result && typeof result === "object" && result.tesseractFallbackSuggested);
+      let tesseractError: string | null = null;
       if (needsTess && tesseractFallback) {
-        const tess = await tesseractFallback(base64, mimeType);
-        if (tess) {
-          onResult(tess);
-          toast({ title: "Scanned with Tesseract", description: "Ollama was unavailable. Review every field before saving." });
-          setOpen(false);
-          setPreview("");
-          return;
+        try {
+          const tess = await tesseractFallback(base64, mimeType);
+          if (tess) {
+            onResult(tess);
+            toast({ title: "Scanned with Tesseract", description: "Ollama was unavailable. Review every field before saving." });
+            setOpen(false);
+            setPreview("");
+            return;
+          }
+        } catch (err) {
+          tesseractError = err instanceof Error ? err.message : String(err);
         }
       }
       const tryGemini = needsTess && Boolean(result && typeof result === "object" && result.geminiFallbackAvailable);
@@ -224,7 +229,11 @@ export default function DocumentScanCapture<TResult = unknown>({
           return;
         } catch { /* fall through */ }
       }
-      onResult(result);
+      onResult(
+        tesseractError
+          ? Object.assign({}, result, { failureReason: `Tesseract fallback failed: ${tesseractError}` })
+          : result,
+      );
       toast({ title: "Scan complete", description: "Review the auto-filled fields before saving." });
       setOpen(false);
       setPreview("");
@@ -242,16 +251,21 @@ export default function DocumentScanCapture<TResult = unknown>({
         } catch { /* fall through */ }
       }
       try {
-        const gem = await api.post<TResult>(endpoint, {
+        const gem = await api.post<TResult & { ocrProvider?: string }>(endpoint, {
           imageBase64: base64,
           mimeType,
           useGeminiFallback: true,
         });
-        onResult(gem);
-        toast({ title: "Scanned with Gemini", description: "Review every field before saving." });
-        setOpen(false);
-        setPreview("");
-        return;
+        // The endpoint answers 200 with an all-zero body when no Gemini key is
+        // configured. Accepting that as a scan reported "Scanned with Gemini"
+        // over the top of the real failure.
+        if (gem && typeof gem === "object" && gem.ocrProvider === "gemini") {
+          onResult(gem);
+          toast({ title: "Scanned with Gemini", description: "Review every field before saving." });
+          setOpen(false);
+          setPreview("");
+          return;
+        }
       } catch { /* fall through */ }
       const msg = err instanceof Error ? err.message : "AI scan failed";
       onError?.(msg);

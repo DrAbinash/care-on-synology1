@@ -3,7 +3,7 @@
  *
  * Used as an automatic fallback when the AI path (Ollama → Gemini via
  * POST /api/form-f/upload-id) fails or returns empty fields. Assets are
- * served same-origin from /tesseract/ (see scripts/copy-tesseract-assets.mjs)
+ * served same-origin under the app's base path (see tesseractAssets.ts)
  * — identical setup to PurchaseInvoiceScannerPanel's offline scan.
  *
  * Preprocesses the image (grayscale + contrast stretch + mild upscale) and
@@ -12,19 +12,14 @@
  */
 
 import { parseIdCardText, type ParsedIdCardText } from "./idCardTextParser";
+import { TESSERACT_ASSET_OPTS } from "./tesseractAssets";
 
 export type IdCardTesseractResult = ParsedIdCardText & {
   ocrProvider: "tesseract";
   rawText: string;
 };
 
-const TESSERACT_OPTS = {
-  workerPath: "/tesseract/worker.min.js",
-  corePath: "/tesseract/tesseract-core.wasm.js",
-  langPath: "/tesseract",
-  cachePath: "/tesseract",
-  gzip: true as const,
-};
+const TESSERACT_OPTS = TESSERACT_ASSET_OPTS;
 
 /** Prefer SINGLE_BLOCK for card bodies, then SINGLE_COLUMN, then AUTO. */
 const PSM_CANDIDATES = ["SINGLE_BLOCK", "SINGLE_COLUMN", "AUTO"] as const;

@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import DocumentScanCapture from "@/components/DocumentScanCapture";
 import { CheckCircle2, AlertTriangle, Trash2, WifiOff } from "lucide-react";
 import { parseInvoiceText } from "@/lib/invoiceTextParser";
+import { TESSERACT_ASSET_OPTS } from "@/lib/tesseractAssets";
 import { recognizeDocumentText } from "@/lib/tesseractDocumentOcr";
 
 type Vendor = { id: number; name: string; code: string; isActive: boolean };
@@ -182,11 +183,7 @@ export default function PurchaseInvoiceScannerPanel() {
     try {
       const { createWorker } = await import("tesseract.js");
       worker = await createWorker("eng", 1, {
-        workerPath: "/tesseract/worker.min.js",
-        corePath: "/tesseract/tesseract-core.wasm.js",
-        langPath: "/tesseract",
-        cachePath: "/tesseract",
-        gzip: true,
+        ...TESSERACT_ASSET_OPTS,
         logger: (m: { status: string; progress: number }) => {
           if (m.status === "recognizing text") setOfflineProgress(`Reading text… ${Math.round(m.progress * 100)}%`);
         },
