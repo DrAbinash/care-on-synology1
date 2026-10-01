@@ -47,8 +47,9 @@ jobs:
     name: Tests + migration smoke (real Postgres)
     runs-on: ubuntu-latest
     # Healthy run is ~12 min with Vitest + browser smoke. PR #548 sat >10 min
-    # on unbounded apt-get because the job inherited the 6h default.
-    timeout-minutes: 18
+    # on unbounded apt-get because the job inherited the 6h default. Sized to
+    # leave room for the apt step's slow-mirror budget below.
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16-alpine
@@ -82,7 +83,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install CI apt packages (poppler + Playwright system deps)
-        timeout-minutes: 8
+        # Must exceed ci-apt-install.sh's own budgets (120s update + 480s
+        # install), or the step timeout preempts the retry logic that exists
+        # because a slow mirror, not a hung one, is what kills this today.
+        timeout-minutes: 12
         run: |
           mapfile -t PW_DEPS < <(grep -v '^[[:space:]]*$' scripts/ci-playwright-apt-packages.txt)
           sudo bash scripts/ci-apt-install.sh poppler-utils "${PW_DEPS[@]}"
