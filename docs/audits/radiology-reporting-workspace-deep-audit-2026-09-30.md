@@ -3,6 +3,17 @@
 **Repository:** `DrAbinash/care-on-synology1` (Care Diagnostics radiology ERP)
 **Audited tree:** commit `b112c22e`, branch `fix/erp-time-integrity-cutover-and-evidence`
 **Equivalent published state:** `origin/main` = `8bb80a88`. The audited tree differs from `origin/main` only by the already-merged forward-only time-integrity work (`lib/db/src/schema/timeIntegrity.ts`, `migrations/add_time_integrity_cutover_and_events_20261001.sql`, `artifacts/api-server/src/lib/timeIntegrity.ts`) and audit markdown. None of that touches the reporting path, so **every finding below applies to `main` as it stands.**
+
+**Re-checked at audit close:** `origin/main` had meanwhile advanced to `43398af1` (`Feat/per book bill numbering (#793)`), and `git diff --stat 8bb80a88..origin/main` is **empty** — the new tip changes no file content relative to the audited base, so nothing below needed re-verification.
+
+**Claims that will need revision as open PRs merge** (this audit reads `main`; it does not read unmerged branches):
+
+| Open PR | Which statement it supersedes |
+|---|---|
+| #794 `feat(erp): CARE X-ray Lumbosacral Spine Clinical Sub-Master V3 (re-landed on main)` | §3.4 / RR-52 — "the LS-spine library doc exists, no `xrayLsSpine*` sub-master module does, and X-ray LS Spine is bookable with no sub-master." Verified absent on both the audited tree and current `main` (`git ls-tree -r origin/main \| grep -i xrayLsSpine` → only the library doc, the task doc, and `structuredFormat/lsSpineFormat.ts`). Merging #794 closes that half of RR-52 but not the chest/cervical guard-test gap. |
+| any PR adding a DB trigger on `patient_reports` | RR-01 / RR-02 and §3.10's immutability ledger ("the only protection in the product is an `if`"). |
+| enabling `ff_radiology_structured_final` / `_core` in production | RR-17, RR-63, D-5/D-13 and most of U-3 — several findings flip from latent to live, or live to latent, purely on that flag. |
+
 **Audit performed:** 2026-10-01. Filename carries `2026-09-30` because that was the requested deliverable name; the audit date is this line, not the filename.
 **Mode:** READ-ONLY. No file in the application tree was created, edited, moved or deleted. No migration was run. No database was connected to. No branch was checked out, switched, stashed or pushed from the audited working tree. No production command was executed.
 **This is a documentation-only PR.** It implements nothing, fixes nothing, and proposes no schema change. Remediation is deliberately not started; §12 stages it as management decisions and one-PR-per-stage work only.
