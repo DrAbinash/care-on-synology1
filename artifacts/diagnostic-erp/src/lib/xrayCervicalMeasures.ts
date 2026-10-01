@@ -24,7 +24,11 @@
  *
  * Pure functions only — no store, no React.
  */
-import { MEYERDING_GRADES, type MeyerdingGradeId } from "./mriSpineGrading";
+import {
+  MEYERDING_GRADES,
+  meyerdingFromSlipPercent,
+  type MeyerdingGradeId,
+} from "./mriSpineGrading";
 import { normalizeCervicalLevel, vertebraIndex } from "./xrayCervicalLevels";
 import {
   assessDynamic,
@@ -122,21 +126,13 @@ export function adiUpperNormalMm(ageYears?: number | null): number {
 /**
  * Meyerding grade derived from a measured slip percentage.
  *
- * Reuses MEYERDING_GRADES from mriSpineGrading.ts — the grade bands are a
- * geometric classification of displacement, not an MRI conclusion. Returns null
- * for a missing or impossible percentage rather than guessing grade I, and null
- * at 0% because "no listhesis" is a different statement from a graded listhesis.
+ * The derivation now lives beside MEYERDING_GRADES in mriSpineGrading.ts, because
+ * the grade bands are a geometric classification of displacement shared by the
+ * MRI, CT and radiography reporters; it is re-exported here so the cervical
+ * reporting surface is unchanged. Returns null for a missing or impossible
+ * percentage rather than guessing grade I (spec §13).
  */
-export function meyerdingFromSlipPercent(
-  slipPercent: number | null | undefined,
-): MeyerdingGradeId | null {
-  if (slipPercent === null || slipPercent === undefined || !Number.isFinite(slipPercent)) return null;
-  if (slipPercent <= 0 || slipPercent > 100) return null;
-  if (slipPercent < 25) return "I";
-  if (slipPercent < 50) return "II";
-  if (slipPercent < 75) return "III";
-  return "IV";
-}
+export { meyerdingFromSlipPercent };
 
 export function meyerdingLabel(grade: MeyerdingGradeId | null | undefined): string | null {
   if (!grade) return null;

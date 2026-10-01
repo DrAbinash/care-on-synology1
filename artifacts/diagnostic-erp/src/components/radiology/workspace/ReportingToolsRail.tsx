@@ -43,6 +43,7 @@ import {
   isMriBrainReportingContext,
   isXrayCervicalReportingContext,
   isXrayChestReportingContext,
+  isXrayLsReportingContext,
 } from "@/lib/reportingStudyContext";
 import { buildLumbarLevelApplyBundle, deriveCanvasNarrativeState, ledgerSeverityContradiction, structuredCanalApContradiction } from "@/lib/mriLumbarLevelState";
 import { buildCervicalLevelApplyBundle } from "@/lib/mriCervicalLevelState";
@@ -67,6 +68,7 @@ import {
   MriBrainCanvas,
   XrayChestCanvas,
   XrayCervicalCanvas,
+  XrayLsSpineCanvas,
   useFindingComposerDraft,
 } from "@/components/radiology/reporting-canvas";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
@@ -903,6 +905,21 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   protocolName: studySetup.activeProtocol?.name ?? null,
                                   reportTitle: studySetup.selectedTemplate?.name ?? null,
                                 }}
+                              />
+                            ) : null}
+                            {/* X-ray Lumbosacral Spine clinical sub-master — the same
+                ledger path, with the numbering basis / LSTV resolver in front of
+                every level claim, plus pars, coverage, flexion-extension, Cobb and
+                hardware gating. */}
+                            {isXrayLsReportingContext({
+                              modality: workflow.currentRow?.modality,
+                              region: studySetup.matchedStudyRegion,
+                              family: studySetup.studyContext?.family,
+                              studyDescription: workflow.currentRow?.studyDescription ?? null,
+                            }) ? (
+                              <XrayLsSpineCanvas
+                                disabled={isLocked || isFinalized}
+                                region={studySetup.matchedStudyRegion ?? "LS Spine"}
                               />
                             ) : null}
                             <ObservationLedgerPanel

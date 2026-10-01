@@ -280,3 +280,74 @@ describe("matchStudyRegionByCoreAnatomy — token fallback", () => {
     expect(matchStudyRegion("CR X-Ray Chest AP", TABS)).toBe("X-Ray Chest AP");
   });
 });
+
+describe("billed lumbosacral radiograph → Study Tab (live catalog shape)", () => {
+  // Live test-catalog export 2026-09-28, in Study Tab sortOrder.
+  const SPINE_TABS = [
+    "X-Ray Dorsal Spine",
+    "X-Ray Lumbar Spine",
+    "X-Ray Whole Spine (Scoliosis)",
+    "X-Ray Sacrum",
+    "X-Ray Coccyx",
+    "X-Ray Chest PA",
+  ];
+
+  it("resolves the billed 'LS SPINE' names to the lumbar Study Tab", () => {
+    // `XR028` = "XRAY LS SPINE AP/LAT", `XRAYLSPINE` = "X-RAY LS SPINE LAT".
+    expect(
+      resolveAutoStudyRegion({
+        modality: "CR",
+        billedTestName: "XRAY LS SPINE AP/LAT",
+        orderedRegionNames: filterRegionNamesForModality(SPINE_TABS, "CR"),
+      }).region,
+    ).toBe("X-Ray Lumbar Spine");
+    expect(
+      resolveAutoStudyRegion({
+        modality: "CR",
+        billedTestName: "X-RAY LS SPINE LAT",
+        orderedRegionNames: filterRegionNamesForModality(SPINE_TABS, "CR"),
+      }).region,
+    ).toBe("X-Ray Lumbar Spine");
+  });
+
+  it("keeps the billed-name precedence over a DICOM description", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "CR",
+      billedTestName: "XRAY LS SPINE AP/LAT",
+      studyDescription: "XR LUMBAR SPINE",
+      orderedRegionNames: filterRegionNamesForModality(SPINE_TABS, "CR"),
+    });
+    expect(match.source).toBe("billed");
+    expect(match.region).toBe("X-Ray Lumbar Spine");
+  });
+
+  it("does not file a dorsolumbar study under the dorsal protocol", () => {
+    // `XR022` = "XRAY DL SPINE AP/LAT". A dorsolumbar film covers the
+    // thoracolumbar junction; silently applying the dorsal-spine protocol would
+    // report the wrong region, so it stays unresolved for a manual choice.
+    expect(
+      resolveAutoStudyRegion({
+        modality: "CR",
+        billedTestName: "XRAY DL SPINE AP/LAT",
+        orderedRegionNames: filterRegionNamesForModality(SPINE_TABS, "CR"),
+      }).region,
+    ).toBeNull();
+    // A spelled-out dorsal name still resolves by substring.
+    expect(
+      resolveAutoStudyRegion({
+        modality: "CR",
+        billedTestName: "X-RAY DORSAL SPINE AP/LAT",
+        orderedRegionNames: filterRegionNamesForModality(SPINE_TABS, "CR"),
+      }).region,
+    ).toBe("X-Ray Dorsal Spine");
+  });
+
+  it("leaves sacrum and coccyx alone, and never cross-matches the chest", () => {
+    const tabs = filterRegionNamesForModality(SPINE_TABS, "CR");
+    expect(matchStudyRegionByCoreAnatomy("cr x-ray sacrum ap", tabs)).toBe("X-Ray Sacrum");
+    expect(matchStudyRegionByCoreAnatomy("cr ls spine ap", tabs)).toBe("X-Ray Lumbar Spine");
+    expect(matchStudyRegionByCoreAnatomy("cr ls spine ap", ["X-Ray Chest PA"])).toBeNull();
+    // The chest fallback is unchanged by the lumbar synonyms.
+    expect(matchStudyRegionByCoreAnatomy("cr chest x-ray", tabs)).toBe("X-Ray Chest PA");
+  });
+});

@@ -269,6 +269,21 @@ lib/xrayCervicalContradictions.ts # normal-vs-abnormal, view-gated and level-con
 components/radiology/reporting-canvas/XrayCervicalCanvas.tsx
 ```
 
+### Frontend X-ray Lumbosacral Spine reporting (`artifacts/diagnostic-erp/src/`)
+```
+lib/xrayLsViews.ts                # technique → performed views, adequacy, coverage + the pars / dynamic / junction / SI gates
+lib/xrayLsLevels.ts               # lumbosacral level vocabulary (T12–S1), transitional junction, level-consistency issues
+lib/xrayLsNumbering.ts            # numbering basis (standard / LSTV / designated L5 / manual), label derivation + prose round-trip
+lib/xrayLsAtoms.ts                # LsAtomSpec → ledger patch atoms, normalized level in the slot key
+lib/xrayLsNormalAtoms.ts          # coverage-aware NORMAL baseline (never certifies unseen anatomy)
+lib/xrayLsMeasures.ts             # translation / Cobb / angulation / height loss with level + view + provenance
+lib/xrayLsDynamic.ts              # flexion-extension entries, derived change, radiologist-selected instability
+lib/xrayLsHardware.ts             # instrumentation, continuity, lucency graded, never overstated
+lib/xrayLsSubMasters.ts           # 12 clinical sub-master palettes (tiles / presets) + numbering and view gates
+lib/xrayLsContradictions.ts       # normal-vs-abnormal, view-gated and level/numbering-consistency warnings
+components/radiology/reporting-canvas/XrayLsSpineCanvas.tsx
+```
+
 ---
 
 ## 🟢 Shared / Core — load-bearing for both zones, treat like billing
