@@ -2,7 +2,9 @@
  * Document OCR: Ollama (primary) → client Tesseract (secondary) →
  * Gemini (tertiary, only when a key exists and the client asks).
  */
-import { generateAiForTask } from "@workspace/ai-providers";
+import { desc } from "drizzle-orm";
+import { db, clinicSettingsTable } from "@workspace/db";
+import { generateAiForTask, resolveTaskRoute } from "@workspace/ai-providers";
 import { geminiOcrBill, geminiOcrInvoice, geminiParseBankStatement } from "@workspace/integrations-gemini-ai";
 import { getGeminiOcrApiKey, resolveOllamaVisionForOcr } from "./ocrProviderResolver";
 
@@ -54,6 +56,8 @@ export interface BillOcrResult {
   ocrProvider: "ollama" | "gemini" | "none";
   tesseractFallbackSuggested: boolean;
   geminiFallbackAvailable?: boolean;
+  /** Why the primary engine produced nothing — `confidencePercent: 0` can't tell an unreachable Ollama from a truncated answer. */
+  failureReason?: string;
 }
 
 export interface BankTransaction {
@@ -236,6 +240,43 @@ export async function ocrInvoice(
   return local;
 }
 
+/**
+ * The operator's configured Local AI budget, applied to document OCR — this path
+ * used to send no timeout at all (measured: 40 s and 180 s scans). It can only
+ * raise the floor, never lower it: a vision bill reply measures ~45–100 s, so a
+ * 30 s setting would have timed out every scan the day this shipped.
+ */
+const OCR_TIMEOUT_FLOOR_SECONDS = 90;
+
+async function ocrRequestTimeoutMs(): Promise<number> {
+  let seconds = OCR_TIMEOUT_FLOOR_SECONDS;
+  try {
+    const [row] = await db
+      .select({ seconds: clinicSettingsTable.ollamaTimeoutSeconds })
+      .from(clinicSettingsTable)
+      .orderBy(desc(clinicSettingsTable.id))
+      .limit(1);
+    const configured = Number(row?.seconds ?? 0);
+    if (Number.isFinite(configured) && configured > 0) seconds = configured;
+  } catch {
+    // DB unavailable — the floor still bounds the request
+  }
+  return Math.min(300, Math.max(OCR_TIMEOUT_FLOOR_SECONDS, Math.round(seconds))) * 1000;
+}
+
+/**
+ * Honour the model pinned to a task in AI Model Routing. `generateAiForTask`
+ * skips its route lookup whenever the caller pins `provider`, so resolving it
+ * here is the only way that setting reaches document OCR. The provider stays
+ * Ollama either way — a photographed bill never goes to a cloud provider
+ * unless the operator asked for the Gemini pass.
+ */
+async function visionModelForTask(taskKey: string, fallback: string): Promise<string> {
+  const route = await resolveTaskRoute(taskKey).catch(() => null);
+  const model = route?.provider === "ollama" ? (route.model ?? "").trim() : "";
+  return model || fallback;
+}
+
 async function ollamaVisionJson(task: string, prompt: string, imageBase64: string, maxTokens: number): Promise<string> {
   const ollama = await resolveOllamaVisionForOcr();
   if (!ollama) {
@@ -243,12 +284,17 @@ async function ollamaVisionJson(task: string, prompt: string, imageBase64: strin
   }
   const result = await generateAiForTask(task, prompt, [imageBase64], {
     provider: "ollama",
-    model: ollama.model,
+    model: await visionModelForTask(task, ollama.model),
     endpointUrl: ollama.endpointUrl,
     maxTokens,
+    timeoutMs: await ocrRequestTimeoutMs(),
   });
-  if (!result.success || !result.text?.trim()) {
-    throw new Error(result.error || "Ollama returned no text");
+  if (!result.success) {
+    throw new Error(result.error || "Ollama request failed");
+  }
+  if (!result.text?.trim()) {
+    // A thinking model that spends the whole budget on chain-of-thought answers with an empty `response`.
+    throw new Error("OLLAMA_EMPTY_RESPONSE (model produced no answer text — likely chain-of-thought filled the token budget)");
   }
   return result.text;
 }
@@ -307,7 +353,16 @@ export function buildBillFieldMeta(
 export async function ollamaOcrBill(imageBase64: string): Promise<BillOcrResult> {
   try {
     const raw = await ollamaVisionJson("bill_ocr", BILL_PROMPT, imageBase64, 1024);
-    const parsed = parseJsonBlob(raw) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseJsonBlob(raw) as Record<string, unknown>;
+    } catch (e) {
+      const reply = raw.trim();
+      throw new Error(
+        `BILL_JSON_UNPARSEABLE (${e instanceof Error ? e.message : String(e)}) — ` +
+          `reply ${reply.length} chars, done without a closing brace? tail "${reply.slice(-48)}"`,
+      );
+    }
     const band =
       parsed.confidence === "high" || parsed.confidence === "medium" || parsed.confidence === "low"
         ? (parsed.confidence as "high" | "medium" | "low")
@@ -336,7 +391,9 @@ export async function ollamaOcrBill(imageBase64: string): Promise<BillOcrResult>
       ocrProvider: "ollama",
       tesseractFallbackSuggested: false,
     };
-  } catch {
+  } catch (err) {
+    const failureReason = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+    console.warn(`[ocr] bill OCR fell back to Tesseract: ${failureReason}`);
     return {
       vendor: "",
       date: "",
@@ -349,6 +406,7 @@ export async function ollamaOcrBill(imageBase64: string): Promise<BillOcrResult>
       confidencePercent: 0,
       ocrProvider: "none",
       tesseractFallbackSuggested: true,
+      failureReason,
     };
   }
 }

@@ -125,7 +125,19 @@ type ScanBillResult = {
   invoiceNumber?: string;
   fields?: Partial<Record<string, BillOcrFieldMeta>>;
   ocrProvider?: string;
+  failureReason?: string;
 };
+
+/** Confidence is a fixed 0 whenever the engine gave nothing usable, so the raw reason is the only diagnosis staff get. */
+function ocrFailureHint(reason: string): string {
+  if (reason.startsWith("OLLAMA_EMPTY_RESPONSE")) {
+    return "AI engine returned no answer — the configured vision model could not finish. Check the vision model in AI settings, or re-scan with Tesseract.";
+  }
+  if (reason.startsWith("BILL_JSON_UNPARSEABLE")) {
+    return "AI engine answered in an unexpected format — re-check the fields manually or re-scan.";
+  }
+  return reason.length > 120 ? `${reason.slice(0, 117)}…` : reason;
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   rent: "bg-blue-100 text-blue-700",
@@ -281,6 +293,7 @@ export default function Expenses() {
     isBlurred?: boolean;
     fields?: Partial<Record<string, BillOcrFieldMeta>>;
     ocrProvider?: string;
+    failureReason?: string;
   } | null>(null);
   const [ocrConfirmed, setOcrConfirmed] = useState(false);
   const [fieldMeta, setFieldMeta] = useState<Partial<Record<string, BillOcrFieldMeta>>>({});
@@ -1190,6 +1203,7 @@ export default function Expenses() {
                     isBlurred: result.isBlurred,
                     fields,
                     ocrProvider: result.ocrProvider,
+                    failureReason: result.failureReason,
                   });
                   setForm((prev) => {
                     const bill = result.amount ? String(result.amount) : prev.billAmount;
@@ -1232,6 +1246,7 @@ export default function Expenses() {
                           ocrMeta.confidencePercent != null ? `${ocrMeta.confidencePercent}% confidence` : ocrMeta.confidence,
                           ocrMeta.ocrProvider ? `source ${ocrMeta.ocrProvider}` : null,
                           ocrMeta.isBlurred ? "blurry image" : null,
+                          ocrMeta.failureReason ? ocrFailureHint(ocrMeta.failureReason) : null,
                         ]
                           .filter(Boolean)
                           .join(" · ")}
