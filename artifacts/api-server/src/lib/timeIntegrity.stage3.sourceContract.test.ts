@@ -12,6 +12,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  CARE_CLASS_A_DATE_FIELDS,
+  CARE_NEVER_BUSINESS_DATE_FIELDS,
+  isCareNeverBusinessDate,
+} from "./careDateFieldRegistry";
+import { clinicDateAuthority, resolveCreateBusinessDate } from "./careBusinessDatePolicy";
 
 const ROOT = resolve(__dirname, "../../../..");
 const read = (rel: string) => readFileSync(resolve(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
@@ -136,6 +142,9 @@ describe("§13 — enforcement is gated on the cutover at every Class-A site", (
   it("all five write paths ask the database before judging a date", () => {
     const accounting = read("artifacts/api-server/src/routes/accounting.ts");
     const expenses = read("artifacts/api-server/src/routes/expenses.ts");
+    // Three sites in accounting: voucher POST, voucher PATCH, and the bank
+    // import. The import is not a Class-A *rejection* gate — since PR 3c the
+    // cutover decides whether it posts today with the bank's date preserved.
     expect([...accounting.matchAll(/businessDateEnforcementActive\(\)/g)]).toHaveLength(3);
     expect([...expenses.matchAll(/businessDateEnforcementActive\(\)/g)]).toHaveLength(2);
   });
@@ -151,5 +160,83 @@ describe("§13 — enforcement is gated on the cutover at every Class-A site", (
     for (const rel of ["routes/day-close.ts", "routes/staff.ts", "routes/form-f.ts", "routes/bills.ts", "routes/radiology.ts"]) {
       expect(read("artifacts/api-server/src/" + rel), rel).not.toMatch(/timeIntegrity|businessDateEnforcementActive|recordBusinessDateRejection/);
     }
+  });
+});
+
+/**
+ * PR 3c — management decision of 2026-10-01, recorded in design doc §12. A bank
+ * statement is a document about the past, so the import now keeps the bank's own
+ * date as an external Class-B fact and posts the voucher on CARE's clinic date,
+ * instead of refusing the whole batch the way PR 2 did. These assertions are
+ * what stop that rule from drifting back into either extreme: writing the bank's
+ * date into the ledger, or blocking the workflow again.
+ */
+describe("§12 — bank feeds carry an external date, never a business date", () => {
+  const FEED_SQL = read("migrations/add_vouchers_external_event_date_20261001.sql").replace(/--.*$/gm, "");
+  const accounting = read("artifacts/api-server/src/routes/accounting.ts");
+
+  it("the submitted statement date can no longer reach vouchers.date", () => {
+    expect(accounting).toMatch(/const date = enforcementActive \? importAuthority\.clinicDate : bankDate;/);
+    expect(accounting).not.toContain("submitted: txn.date");
+    expect(accounting).toContain('externalEventDate: enforcementActive ? bankDate : null,');
+    expect(accounting).toContain('externalEventSource: enforcementActive ? "bank-statement-import" : null,');
+  });
+
+  it("the duplicate guard spans both date columns, or the change would reopen double-posting", () => {
+    // Rows imported before this change hold the bank date in `date`; rows
+    // imported after hold it in `external_event_date`. Keying only on the new
+    // column would make an already-imported pre-cutover statement importable a
+    // second time — the strictness removed from one place must not open a hole
+    // in another.
+    expect(accounting).toMatch(/and\(gte\(vouchersTable\.date, minDate\), lte\(vouchersTable\.date, maxDate\)\)/);
+    expect(accounting).toMatch(/and\(gte\(vouchersTable\.externalEventDate, minDate\), lte\(vouchersTable\.externalEventDate, maxDate\)\)/);
+    expect(accounting).toMatch(/dupKey\(v\.externalEventDate \?\? v\.date,/);
+    expect(accounting).toMatch(/const key = dupKey\(bankDate, amount, txn\.reference, txn\.description\);/);
+  });
+
+  it("the guard is structurally refused any power over the external date", () => {
+    expect(isCareNeverBusinessDate("vouchers", "external_event_date")).toBe(true);
+    expect(CARE_NEVER_BUSINESS_DATE_FIELDS["vouchers.external_event_date"].class).toBe("B");
+    const decision = resolveCreateBusinessDate({
+      table: "vouchers",
+      column: "external_event_date",
+      submitted: "2026-09-24",
+      authority: clinicDateAuthority(new Date("2026-10-01T10:00:00+05:30")),
+    });
+    expect(decision.ok && "policed" in decision && decision.policed).toBe(false);
+    // Adding this rule must not have smuggled a third Class-A field in.
+    expect(Object.keys(CARE_CLASS_A_DATE_FIELDS).sort()).toEqual(["expenses.expense_date", "vouchers.date"]);
+  });
+
+  it("the migration adds two nullable columns and touches no existing row", () => {
+    expect(FEED_SQL).toMatch(/ALTER TABLE "vouchers" ADD COLUMN IF NOT EXISTS "external_event_date" text;/);
+    expect(FEED_SQL).toMatch(/ALTER TABLE "vouchers" ADD COLUMN IF NOT EXISTS "external_event_source" text;/);
+    expect(FEED_SQL).not.toMatch(/ADD COLUMN[^;]*(NOT NULL|DEFAULT)/i);
+    expect(FEED_SQL).not.toMatch(/^\s*UPDATE\s+/im);
+    expect(FEED_SQL).not.toMatch(/^\s*(DELETE|TRUNCATE|DROP)\b/im);
+    expect(FEED_SQL).toMatch(/CREATE INDEX IF NOT EXISTS "vouchers_external_event_date_idx"/);
+  });
+
+  it("the Drizzle schema mirrors the SQL columns", () => {
+    const s = read("lib/db/src/schema/accounting.ts");
+    expect(s).toMatch(/externalEventDate: text\("external_event_date"\)/);
+    expect(s).toMatch(/externalEventSource: text\("external_event_source"\)/);
+    expect(s).toMatch(/externalEventDateIdx: index\("vouchers_external_event_date_idx"\)/);
+  });
+
+  it("an accepted import writes one evidence row that cannot fail the save", () => {
+    expect(accounting).toContain('event: "external-date-import"');
+    expect(accounting).toContain('outcome: "accepted"');
+    // The non-throwing writer only — a route that branches on evidence capture
+    // would turn an audit-table problem into a lost accounting batch.
+    expect(accounting).not.toMatch(/(if\s*\(\s*!?\s*await|=)\s*await recordTimeIntegrityEvent/);
+  });
+
+  it("an unparsable bank date is refused as a data problem, not filed as backdating", () => {
+    expect(accounting).toContain('/^\\d{4}-\\d{2}-\\d{2}$/.test(txn.date)');
+    const importRoute = accounting.slice(accounting.indexOf('router.post("/bank-statement/import"'));
+    expect(importRoute).not.toContain("recordBusinessDateRejection");
+    expect(importRoute).not.toContain("careBusinessDateErrorBody");
+    expect(importRoute).toContain("Nothing was written from this batch");
   });
 });

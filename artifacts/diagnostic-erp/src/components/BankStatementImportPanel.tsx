@@ -41,6 +41,7 @@ export default function BankStatementImportPanel({
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(0);
   const [skippedDuplicates, setSkippedDuplicates] = useState(0);
+  const [postingDate, setPostingDate] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [isBlurred, setIsBlurred] = useState(false);
   const [editing, setEditing] = useState<{ base64: string; mimeType: string } | null>(null);
@@ -83,7 +84,7 @@ export default function BankStatementImportPanel({
   };
 
   const parse = async (override?: { imageBase64: string; mimeType: string }) => {
-    setParsing(true); setError(""); setTxns([]); setImported(0); setSkippedDuplicates(0); setIsBlurred(false);
+    setParsing(true); setError(""); setTxns([]); setImported(0); setSkippedDuplicates(0); setPostingDate(null); setIsBlurred(false);
     const b64 = override?.imageBase64 ?? imageBase64;
     const mt = override?.mimeType ?? imageMime;
     try {
@@ -137,13 +138,14 @@ export default function BankStatementImportPanel({
     if (!bankAccountId || !contraAccountId) { setError("Select both accounts before importing."); return; }
     setImporting(true); setError("");
     try {
-      const data = await api.post<{ imported: number; skippedDuplicates?: number }>("/api/accounting/bank-statement/import", {
+      const data = await api.post<{ imported: number; skippedDuplicates?: number; postingDate?: string }>("/api/accounting/bank-statement/import", {
         bankAccountId: Number(bankAccountId),
         contraAccountId: Number(contraAccountId),
         transactions: txns,
       });
       setImported(data.imported);
       setSkippedDuplicates(data.skippedDuplicates ?? 0);
+      setPostingDate(data.postingDate ?? null);
       onImported();
       setTxns([]);
     } catch (e: unknown) {
@@ -184,11 +186,13 @@ export default function BankStatementImportPanel({
               {imported > 0 ? `${imported} transaction${imported === 1 ? "" : "s"} imported successfully!` : "No new transactions imported."}
             </p>
             <p className="text-sm text-green-700">
-              {imported > 0 && "They have been added to the vouchers ledger."}
+              {imported > 0 && (postingDate
+                ? `Posted as ${postingDate} — CARE's business date. Each voucher keeps the statement's own date beside it, so nothing here is backdated.`
+                : "They have been added to the vouchers ledger.")}
               {skippedDuplicates > 0 && (imported > 0 ? " " : "") + `${skippedDuplicates} row${skippedDuplicates === 1 ? "" : "s"} skipped — already imported for this bank account (matched by date, amount, and reference/description).`}
             </p>
           </div>
-          <Button variant="outline" size="sm" className="ml-auto" onClick={() => { setImported(0); setSkippedDuplicates(0); }}>Import More</Button>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => { setImported(0); setSkippedDuplicates(0); setPostingDate(null); }}>Import More</Button>
         </div>
       )}
 

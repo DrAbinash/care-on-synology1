@@ -88,6 +88,7 @@ export const CARE_CLASS_A_DATE_FIELDS: Record<string, CareClassADateField> = {
  * reason a same-day rule must never be applied to it.
  */
 export const CARE_NEVER_BUSINESS_DATE_FIELDS: Record<string, { class: Exclude<CareDateClass, "A">; reason: string }> = {
+  "vouchers.external_event_date": { class: "B", reason: "The date a bank printed on its own statement (management decision 2026-10-01, design doc §12). It is external evidence about a movement, and the voucher's posting date is the separate Class-A `vouchers.date`. Policing it would make importing any statement older than today impossible again, which is the workflow management chose to keep." },
   "patients.date_of_birth": { class: "B", reason: "A historical fact about a person. A same-day rule would make it impossible to register a patient." },
   "fetal_usg_studies.lmp": { class: "B", reason: "Last menstrual period — by definition earlier than today; the GA calculation depends on it." },
   "fetal_usg_studies.edd": { class: "C", reason: "Estimated delivery date — by definition in the future." },

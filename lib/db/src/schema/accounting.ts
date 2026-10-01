@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, numeric, boolean, integer, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, numeric, boolean, integer, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -76,11 +76,24 @@ export const vouchersTable = pgTable("vouchers", {
    * unique index can enforce one original voucher per expense payment.
    */
   expensePaymentId: integer("expense_payment_id"),
+  /**
+   * The date an *external* system printed for this movement — today only the
+   * bank-statement import writes it. It is a Class-B external fact and is never
+   * a CARE business date: `date` above stays the server-derived posting date, so
+   * a statement about last week posts in this week's books with the bank's own
+   * calendar preserved beside it. NULL means "not from an external feed".
+   * Paired with `externalEventSource`, which names the path that wrote it.
+   */
+  externalEventDate: text("external_event_date"),
+  externalEventSource: text("external_event_source"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   expensePaymentIdUq: uniqueIndex("vouchers_expense_payment_id_uq")
     .on(t.expensePaymentId)
     .where(sql`${t.expensePaymentId} IS NOT NULL`),
+  externalEventDateIdx: index("vouchers_external_event_date_idx")
+    .on(t.externalEventDate)
+    .where(sql`${t.externalEventSource} IS NOT NULL`),
 }));
 
 // Audit trail for voucher edits
