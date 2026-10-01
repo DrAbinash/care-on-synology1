@@ -847,6 +847,28 @@ async function exportViewLayoutPdf(
   doc.save(`Referral_Commission_Report_${mode}_${from}_to_${to}.pdf`);
 }
 
+// ── Quick date ranges ─────────────────────────────────────────────────────────
+type RangePreset = "this-month" | "last-month" | "last-7" | "last-30" | "custom";
+
+const isoDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** Full calendar month, offsetMonths from the current one (0 = this month, -1 = last). */
+function monthRange(offsetMonths: number): { from: string; to: string } {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offsetMonths);
+  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return { from: isoDate(d), to: isoDate(end) };
+}
+
+const RANGE_PRESETS: { id: Exclude<RangePreset, "custom">; label: string; range: () => { from: string; to: string } }[] = [
+  { id: "this-month", label: "This month", range: () => ({ from: monthRange(0).from, to: isoDate(new Date()) }) },
+  { id: "last-month", label: "Last month", range: () => monthRange(-1) },
+  { id: "last-7", label: "Last 7 days", range: () => ({ from: isoDate(new Date(Date.now() - 7 * 86400e3)), to: isoDate(new Date()) }) },
+  { id: "last-30", label: "Last 30 days", range: () => ({ from: isoDate(new Date(Date.now() - 30 * 86400e3)), to: isoDate(new Date()) }) },
+];
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const { toast } = useToast();
@@ -862,6 +884,9 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
 
   const [from, setFrom] = useState(firstOfMonth);
   const [to, setTo] = useState(today);
+  // Which quick range the two date boxes currently represent. Editing a date by
+  // hand drops it to "custom" so no preset looks selected while lying about it.
+  const [preset, setPreset] = useState<RangePreset>("this-month");
   const [doctorId, setDoctorId] = useState<number | null>(null);
   const [mode, setMode] = useState<ReportMode>("by-doctor");
   const [cols, setCols] = useState<ColFlags>(DEFAULT_COLS);
@@ -871,6 +896,13 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
   // Rate Bands: which categories/groups to include. Empty = every category.
   const [bandCats, setBandCats] = useState<Set<string>>(new Set());
+
+  const applyPreset = (id: Exclude<RangePreset, "custom">) => {
+    const { from: f, to: t } = RANGE_PRESETS.find((p) => p.id === id)!.range();
+    setPreset(id);
+    setFrom(f);
+    setTo(t);
+  };
 
   const { data: doctorsData } = useQuery({
     queryKey: ["/api/super-admin/doctors-list"],
@@ -1167,11 +1199,27 @@ export default function ReferralReport({ onBack }: { onBack: () => void }) {
             <div className="flex flex-wrap gap-3 items-end">
               <div>
                 <Label className="text-xs">From</Label>
-                <Input type="date" value={from} onChange={e => setFrom(e.target.value)} className="mt-1 w-36" />
+                <Input type="date" value={from} onChange={e => { setPreset("custom"); setFrom(e.target.value); }} className="mt-1 w-36" />
               </div>
               <div>
                 <Label className="text-xs">To</Label>
-                <Input type="date" value={to} onChange={e => setTo(e.target.value)} className="mt-1 w-36" />
+                <Input type="date" value={to} onChange={e => { setPreset("custom"); setTo(e.target.value); }} className="mt-1 w-36" />
+              </div>
+              <div>
+                <Label className="text-xs">Quick range</Label>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {RANGE_PRESETS.map(p => (
+                    <Button
+                      key={p.id}
+                      type="button"
+                      size="sm"
+                      variant={preset === p.id ? "default" : "outline"}
+                      onClick={() => applyPreset(p.id)}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
               </div>
               <div>
                 <Label className="text-xs">Referral Doctor</Label>
