@@ -89,21 +89,39 @@ export default function DocumentScanCapture<TResult = unknown>({
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
     setCameraActive(false);
   }, []);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
+  // The <video> element is only mounted while `cameraActive` is true, so the
+  // stream cannot be attached inside startCamera() — at that point the ref is
+  // still null and the assignment is silently skipped, which left a live stream
+  // feeding a black box. Attach it once the element exists.
+  useEffect(() => {
+    if (!cameraActive) return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream) return;
+    video.srcObject = stream;
+    video.play().catch(() => {
+      onError?.("Camera started but the preview could not be shown. Upload a photo instead.");
+    });
+  }, [cameraActive, onError]);
+
   const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      const msg = "This page must be opened over HTTPS (or localhost) to use the camera. You can still upload a photo instead.";
+      onError?.(msg);
+      toast({ title: "Camera blocked", description: msg, variant: "destructive" });
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
       setCameraActive(true);
     } catch {
       const msg = "Camera not available. You can still upload a photo instead.";
@@ -113,9 +131,17 @@ export default function DocumentScanCapture<TResult = unknown>({
   };
 
   const captureFromCamera = () => {
-    if (!videoRef.current || !canvasRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    if (!video.videoWidth || !video.videoHeight) {
+      toast({
+        title: "Camera is still starting",
+        description: "Wait for the live preview to appear, then capture again — or use Upload File.",
+        variant: "destructive",
+      });
+      return;
+    }
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
