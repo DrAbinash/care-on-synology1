@@ -40,6 +40,7 @@ Class A = system business date. Class B = historical fact, legitimately earlier.
 |---|---|---|---|---|
 | `vouchers.date` | `text` | yes | **A (enforced)** | `routes/accounting.ts:45,268` (POST), `:295,312,353` (PATCH, no schema, no guard), `:1411,1492` (bank import, no format check); server writers `lib/auto-voucher.ts:193,288,377,455,541,614,685`, `routes/accounting.ts:1279,1317` |
 | `expenses.expense_date` | `text` | yes | **A (enforced)** | `lib/expenseV2Service.ts:301` ← `CreateExpenseBody` (`lib/api-zod/.../api.ts:3041`); `routes/expenses.ts:467-471,519` (PATCH); drives list filter `routes/expenses.ts:82` and duplicate window `lib/expenseV2Service.ts:249` |
+| `vouchers.external_event_date` | `text` | yes, but only on the bank import | **B** (external, added by PR 3c) | The date the bank printed. Never a CARE business date — it is on `CARE_NEVER_BUSINESS_DATE_FIELDS`, so the guard cannot be pointed at it even by mistake. See §12. |
 | `day_closures.closure_date`, `user_day_closures.closure_date` | `date` | **no** — server-derived Node IST | A (already authoritative; nothing to police) | `routes/day-close.ts:493,501` and `:1436,1443`; the row also carries `closed_at`/`covered_to_ts` overwritten with Node `new Date()` at `:488,505-506` even though the columns are `.defaultNow()` (`lib/db/src/schema/dayClosures.ts:19,25`) → see §9 item 6 |
 | `fetal_usg_studies.established_ga_date` | `varchar(20)` | no — server-written | A, **defective zone** | `routes/fetalUsgLevel4.ts:308` uses `asOfDate.toISOString().split("T")[0]`, a UTC slice, so it names the wrong clinic day 00:00–05:29 IST → PR 4, not a client-authority problem |
 | `expense_payments.payment_date` | `text` | yes (`routes/expenses.ts:262`) | **?** | schema comment `lib/db/src/schema/expensePayments.ts:11-12` says reconciliation keys on `created_at` and `payment_date` is "business/reference only". Cannot enforce a field whose meaning is unconfirmed → §9 item 2 |
@@ -84,7 +85,7 @@ Ordinary-staff Class-A write paths, in the order I intend to wire them:
 
 1. `POST /api/accounting/vouchers` — `routes/accounting.ts:250` (has `VoucherBody`; date becomes guard-derived or guard-validated).
 2. `PATCH /api/accounting/vouchers/:id` — `routes/accounting.ts:292`. Today: **no request schema**, `date` written whenever different (`:312,353`), `editedBy` **from the body** (`:295`). Both the immutability and the actor problem live here; policy §6 says the actor fix travels with the remediation, so PR 2 also stops trusting `editedBy`.
-3. `POST /api/accounting/bank-statement/import` — `routes/accounting.ts:1421,1492`; `transactions[].date` reaches `vouchers.date` with no format check and **no audit row**.
+3. `POST /api/accounting/bank-statement/import` — `routes/accounting.ts:1421,1492`; `transactions[].date` reaches `vouchers.date` with no format check and **no audit row**. **Status changed twice since this line was written:** PR 2 made every row's date a Class-A judgement and refused the batch atomically; management then chose a different rule for bank feeds (§12), so the endpoint is no longer a Class-A rejection path — it posts on the clinic date and keeps the bank's date as an external fact. Line numbers above are as of PR 2 and have since moved.
 4. `POST /api/expenses` — `routes/expenses.ts:341` → `lib/expenseV2Service.ts:301`; also carries `approvedBy` from the body (`:349,402`).
 5. `PATCH /api/expenses/:id` — `routes/expenses.ts:458`; re-dating is blocked **only** when `hasLedger` (`:485-504`), so a PENDING/FAILED expense is freely re-datable, and a date-only edit writes **no audit row** (`:529`). No UI caller exists for this route.
 6. `POST /api/expenses/:id/payments` — deferred to §9 item 2 (`payment_date` meaning unconfirmed).
@@ -127,6 +128,8 @@ Nothing changes in PR 1. Relevant for PR 2/3a: day-close rows already derive `cl
 ## 9. Items I am not guessing about
 
 Each of these is a §30 stop condition ("a field's business meaning is unclear"). None blocks PR 1; each blocks the specific PR named.
+
+Two items outside this list have since been **closed by management rather than by me**: whether a privileged correction path exists, and how bank feeds should be dated. Both answers and their consequences are in §12 (2026-10-01). Everything below is still open.
 
 1. **`expenses.invoice_date` vs `expenses.expense_date`** — RESOLVED IN PR 2 by keeping both, with different classes: the scanned bill's printed date is stored as `invoice_date` (Class B, historical vendor fact) and `expense_date` is now only ever the trusted CARE clinic date (Class A). Live evidence in §10.4 shows a past Form F procedure date and a 1980 DOB still saving byte-exact, so the information is not lost. Still open: whether `invoice_date` should ever drive accounting (it currently does not — it is display-only, `routes/expenses.ts:409`).
 2. **`expense_payments.payment_date`** — the schema comment calls it "business/reference only" while day-close keys on `created_at` (`lib/db/src/schema/expensePayments.ts:11-12`). If it is a business date it becomes Class A and is enforced; if decorative, it should arguably stop being accepted from clients. Blocks PR 2 item 6.
@@ -202,6 +205,8 @@ Run at `serverNow = 2026-09-30T19:50:42Z`, i.e. **01:20 IST on 2026-10-01**: the
 **Bank-statement import is now refused when any row is dated outside the current CARE clinic date.** Before PR 2 I recorded it in §4 as an *unguarded* path and intended to leave it for a decision; the live harness then proved an ordinary staff account (`/accounting` only) could post a GL voucher dated **yesterday** through it — status 200, one real row written. Leaving a proven bypass of the primary invariant while claiming the invariant was met would have made the acceptance statement false, so I closed it.
 
 The consequence is deliberate and needs your confirmation: **importing a statement that covers past days is no longer possible for ordinary staff.** Accounting-wise that is exactly what policy §0 describes as backdated creation, and the guard refuses atomically so nothing half-writes. But if the clinic reconciles bank statements by importing a week at a time, this will surface as a blocked workflow, and the correct fix is the PR 3b correction/period-posting path rather than a window. Say so before PR 3a if bank feeds should instead be treated as an external-source accounting path with its own rule.
+
+**RESOLVED 2026-10-01 (PR 3c, §12):** management chose the external-source rule, so the atomic refusal described above is **no longer the behaviour of this endpoint**. This section is kept as written because it is the record of what PR 2 shipped and measured — §10.3's bank-import rows were true at head `2c5bc973` and are superseded, not corrected, by §12.
 
 ### 10.6 What PR 2 does not claim
 
@@ -286,3 +291,60 @@ PR 2 (#789) was squash-merged as `740ee52d` and #790 (`d986685d`, per-book bill 
 - Run at `serverNow 2026-09-30T20:48Z` = **02:18 IST on 2026-10-01**, again inside the divergence window, so the §7 attack case was exercised by the real clock difference, not a faked one.
 
 On #790 specifically: it edits `routes/bills.ts`, `routes/form-f.ts`, `documentNumberCounters.ts` and adds a migration that `UPDATE`s `bills.ledger_id` for NULL rows. None of it introduces a client-supplied business date on a path this control polices, and the source-contract test's assertions that `bills.ts` and `form-f.ts` remain free of the guard still hold at this head. #790's own "Super Admin" route file lives under `__super_admin_quarantine/backup_usb_isolation_restore_point/`, which is not a mounted route, so nothing there reaches the API — recorded as an observation, not as a verified claim about its behaviour.
+
+## 12. PR 3c — management's two answers, and the bank-feed rule
+
+Both escalated questions (§10.5, §11.6) were answered on 2026-10-01.
+
+### 12.1 Decision 1: there is no privileged correction workflow
+
+**No ordinary staff *and* no super-admin may change a posted Class-A business date. §5's STOP applies: CARE will not offer a privileged re-dating path**, because the higher-authorization condition §5 requires cannot be met inside the clinic's process. Practical consequences, stated plainly so nobody rediscovers them:
+
+- A wrongly dated voucher or expense is corrected by **reversing and re-creating** — a new row with a new identity and the new posting date, with the original left exactly as it is (§4). This repo does not yet automate reversals for vouchers; that is a workflow gap, not a permission gap.
+- The evidence table stays **rejection-centric by design**, and PR 5's forensic view therefore shows rejected attempts, external-dated imports (§12.2), clock/time-authority health and cutover status. It will **not** show "corrections" or "overrides" — not because they are hidden, but because CARE has no such path to record. §20's list is otherwise satisfied.
+- Nothing in PR 3c opens a door here: the import rule below is not a correction path, because it never edits an existing row and never lets a caller choose a posting date.
+- `describeBusinessDateRejection` (PR 1's un-persisted shape) is now provably superseded and is deleted in PR 3b, which is what remains of that stage.
+
+### 12.2 Decision 2: bank feeds get their own rule
+
+`POST /api/accounting/bank-statement/import` stops being a Class-A rejection path. A statement is a document about the past, so it is now treated the way the rest of the policy already treats external dates (§9/§11 for DICOM `StudyDate`, §3.1 for `bank_transactions.transaction_date`): the external calendar is data, and CARE's own day is the business date.
+
+| | before (PR 2, §10.5) | after (PR 3c) |
+|---|---|---|
+| `vouchers.date` for an imported row | the submitted bank date, refused unless it equals today | **always** the trusted CARE clinic date, server-derived |
+| the bank's printed date | rejected with the batch | preserved on the row as `external_event_date` (Class B) |
+| provenance | inferred from `narration` | `external_event_source = 'bank-statement-import'`, written only by this path |
+| duplicate guard | `(date, amount, reference/description)` | `(bank date, amount, reference/description)`, spanning both columns |
+| evidence | a rejection row | one **accepted** `external-date-import` event per batch that posts |
+| the operator sees | "nothing was written from this batch of N rows" | "Posted as 2026-10-01 — CARE's business date", and each ledger line names the statement date |
+
+Schema: `migrations/add_vouchers_external_event_date_20261001.sql` adds two **nullable, unconstrained** columns and one partial index. No `UPDATE`, no backfill, no default — every existing row keeps NULL, which is the honest answer for "not from an external feed". `vouchers.external_event_date` went onto `CARE_NEVER_BUSINESS_DATE_FIELDS` at the same time, so the guard is structurally incapable of policing it later; a test asserts the Class-A set is still exactly `vouchers.date` + `expenses.expense_date`, i.e. this rule did not smuggle in a third enforced field.
+
+### 12.3 Why this is not a loophole in §2
+
+§0 forbids *staff* choosing the accounting day. Under this rule the submitted date never becomes the posting date — not when it differs from today, and not when it happens to equal today either, which is strictly tighter than PR 2's comparison-and-accept. The client-supplied value is demoted from "the business date" to "a fact about somebody else's document", and the demotion is recorded on the row and in the evidence table rather than discarded. No grace window, no allowance, no exception to the create-invariant is introduced; §26's "no silent substitution" is honoured because the substitution is the disclosed design and the original value is kept.
+
+### 12.4 The accounting consequence management should see
+
+A statement of September movements imported in October now **belongs to October's books**: the voucher numbers take the posting month (`PV-202610-…`), and the two report endpoints that key on `vouchers.date` (`routes/reports.ts:355` range report, `:528` daily summary) will show the movement on the import day. Day-close is unaffected — `routes/day-close.ts` never reads `vouchers` (it reads `voucher_audits` for staff edit counts only), which matches §8. Measured, not assumed: `vouchers.date` has exactly those two readers outside the accounting route.
+
+Three behaviours were available and all are defensible: silently rewriting history into September (what the code did before any control), refusing the batch (§10.5, PR 2), or posting today and preserving the bank's calendar (this). Choosing "today" is what "bank feeds get their own rule" means without creating a same-day-only exception that §26 forbids. If the clinic ever needs the movement to *land in September's period*, that is the accounting-basis question D-1 — period-close design, not date validation — and it stays out of scope here.
+
+### 12.5 Live evidence at this head
+
+Re-run on another brand-new scratch database (`care_timegate4`) after applying **183/183** feature migrations, with the rebuilt bundle driven over real HTTP by the same ordinary-staff session:
+
+- **48/48** financial assertions (was 39/39; the nine new ones are the bank-feed cases), **4/4** clinical pass-through, **174** unit tests across the six business-time suites.
+- A two-row statement dated `2026-09-30` and `2026-09-29` imports with **200** and posts **both rows on `2026-10-01`**; a query for any voucher carrying either bank date as its posting date returns **0**; `external_event_date` holds `2026-09-30,2026-09-29` exactly; both voucher numbers are `PV-202610-…`; both narrations name the statement date.
+- **Re-importing the same statement posts nothing twice** (`imported = 0, skipped = 2`), and a seeded **pre-cutover-shaped** row — bank date in `date`, `external_event_source` NULL — is still caught as already posted (`imported = 0, skipped = 1`). Without the two-column span the second case would have double-posted, which is the regression this rule could have created.
+- A batch containing `30/09/2026` is refused **400 before any insert** (0 rows for that reference) and is *not* written as a backdating attempt, because nothing was attempted — it is a data-quality error with no `CARE_BUSINESS_DATE` code.
+- Exactly **one** accepted `external-date-import` evidence row exists, naming session actor `subject_id = 2` and `trusted_clinic_date = 2026-10-01`; a zero-row batch writes none. The eight rejections still all wrote evidence, `meta_json` still leaks no `token|password|bearer|authorization|phone|email`, and evidence `UPDATE`/`DELETE` remain refused.
+- **This run cannot claim the divergence window.** It executed at 13:14 IST, so the UTC slice equalled the CARE date and case [12] legitimately posted a 201 instead of a 400 — the harness now prints that explicitly instead of asserting a rejection that this hour cannot produce. §7's divergence attack remains measured where it was measured: the §10.3 run at 01:20 IST and the §11.7 run at 02:18 IST.
+- ERP `vite build` exit 0; libs `tsc --build`, api-server `tsc --noEmit`, `check-migration-order.cjs` and `grounding-check.cjs` (105 claims) all clean. The full ERP suite is **unchanged from the recorded baseline** — 2 failed files / 1 failed test of 4199 (`aiQueryContract`'s POSIX-path assertion and `composeStudyContext`, which needs `DATABASE_URL`), neither touched by this PR; the api-server suite is still not runnable green on this workstation (§10.6).
+
+### 12.6 PR 3c limits
+
+- Only the bank import writes the external columns. OCR'd bill scans keep using `purchase_invoices.invoice_date` (Class B already, §3.1), and no other path was reclassified.
+- The vouchers list UI still displays `date` and has no column for `external_event_date`; the printed ledger line carries the statement date so a single voucher is still readable on its own. Surfacing both dates in the grid is a PR 5 candidate.
+- Hand-made vouchers are untouched: a staff member typing a voucher date still gets the Class-A judgement, and the external columns stay NULL for them.
+- If a future feed needs the *amount* or *reference* trusted from outside as well, that is a new external-source design; nothing here generalises the rule beyond this endpoint.

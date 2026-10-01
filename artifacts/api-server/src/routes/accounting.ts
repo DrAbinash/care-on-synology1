@@ -14,6 +14,7 @@ import {
 import {
   businessDateEnforcementActive,
   recordBusinessDateRejection,
+  recordTimeIntegrityEvent,
 } from "../lib/timeIntegrity";
 import { auditFromRequest } from "../lib/audit";
 import { autoVoucherForPayment, resolveMethodAccount, ensureAccount } from "../lib/auto-voucher";
@@ -1527,68 +1528,75 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
   const dupKey = (date: string, amount: number, reference: string, description: string) =>
     `${date}|${amount.toFixed(2)}|${(reference || description || "").trim().toLowerCase()}`;
 
-  // CARE business-time policy: an import posts GL vouchers, so each row's date
-  // is judged exactly like a hand-made voucher. A statement covering earlier
-  // days is therefore a batch of backdated entries, and because a bulk endpoint
-  // must not write half a batch, the whole request is refused before anything is
-  // inserted. Management decision recorded in the PR 2 design doc — this closes
-  // a bypass proven live, not theorised.
+  // CARE business-time policy — the bank-feed rule (management decision
+  // 2026-10-01, design doc §12). An import posts GL vouchers, so its *posting*
+  // date is the trusted CARE clinic date and never the date a client submitted.
+  // The date the bank printed is a Class-B external fact and is kept beside it
+  // in `external_event_date`, which is what lets a statement covering earlier
+  // days be imported without producing a batch of backdated entries. PR 2
+  // refused such a batch outright; management chose this rule instead, so the
+  // movement still reaches the books and its true calendar is not lost.
+  // Pre-cutover deployments keep the old behaviour verbatim — forward-only.
   const importAuthority = clinicDateAuthority();
-  if (await businessDateEnforcementActive()) {
-    for (const txn of toImport) {
-      const rowDecision = resolveCreateBusinessDate({
-        table: "vouchers",
-        column: "date",
-        submitted: txn.date,
-        authority: importAuthority,
-      });
-      if (!rowDecision.ok) {
-        await recordBusinessDateRejection({
-          rejection: rowDecision,
-          authority: importAuthority,
-          actor: (req as StaffAuthRequest).staffSession ?? null,
-          endpoint: "/api/accounting/bank-statement/import",
-          method: "POST",
-          module: "accounting",
-          entityType: "bank-statement-import",
-          meta: { rowsInBatch: toImport.length },
-        });
-        res.status(400).json({
-          ...careBusinessDateErrorBody(rowDecision),
-          message: `${rowDecision.attempted ?? "an"} is not the current CARE business date. A bank-statement import posts vouchers, so every row must carry ${importAuthority.clinicDate}. Nothing was written from this batch of ${toImport.length} row(s).`,
-          totalRows: toImport.length,
-        });
-        return;
-      }
+  const enforcementActive = await businessDateEnforcementActive();
+
+  // After the cutover the external date is the duplicate key, so it must be a
+  // real calendar date before anything is written. This is a data-quality
+  // refusal, not a business-date refusal: it carries no CARE_BUSINESS_DATE code
+  // and is not recorded as a backdating attempt, because nothing was attempted.
+  if (enforcementActive) {
+    const malformed = toImport.find((txn) => !/^\d{4}-\d{2}-\d{2}$/.test(txn.date));
+    if (malformed) {
+      apiError(
+        res,
+        400,
+        `A bank statement row has a date neither parser could normalise ("${String(malformed.date).slice(0, 32)}"). Every row needs YYYY-MM-DD. Nothing was written from this batch of ${toImport.length} row(s).`,
+      );
+      return;
     }
   }
 
-  const dates = toImport.map(t => t.date || importAuthority.clinicDate);
-  const minDate = dates.reduce((a, b) => (a < b ? a : b));
-  const maxDate = dates.reduce((a, b) => (a > b ? a : b));
+  const bankDates = toImport.map(t => t.date || importAuthority.clinicDate);
+  const minDate = bankDates.reduce((a, b) => (a < b ? a : b));
+  const maxDate = bankDates.reduce((a, b) => (a > b ? a : b));
+
+  // Statement rows posted before this change carry the bank's date in `date`;
+  // rows posted after it carry that date in `external_event_date` and today's
+  // clinic date in `date`. The guard spans both columns and keys on whichever
+  // one holds the bank's calendar, so a statement imported in either era is
+  // still recognised as already posted. Keying only on the new column would
+  // have made a pre-cutover statement re-importable — a double-posting hole
+  // created by the very change meant to close a different one.
   const existingForAccount = await db.select({
-    date: vouchersTable.date, amount: vouchersTable.amount,
+    date: vouchersTable.date, externalEventDate: vouchersTable.externalEventDate,
+    amount: vouchersTable.amount,
     reference: vouchersTable.reference, particular: vouchersTable.particular,
   }).from(vouchersTable).where(and(
-    gte(vouchersTable.date, minDate),
-    lte(vouchersTable.date, maxDate),
+    or(
+      and(gte(vouchersTable.date, minDate), lte(vouchersTable.date, maxDate)),
+      and(gte(vouchersTable.externalEventDate, minDate), lte(vouchersTable.externalEventDate, maxDate)),
+    ),
     or(eq(vouchersTable.debitAccountId, String(bankAccountId)), eq(vouchersTable.creditAccountId, String(bankAccountId))),
   ));
-  const seenKeys = new Set(existingForAccount.map(v => dupKey(v.date, Number(v.amount), v.reference ?? "", v.particular ?? "")));
+  const seenKeys = new Set(existingForAccount.map(v => dupKey(v.externalEventDate ?? v.date, Number(v.amount), v.reference ?? "", v.particular ?? "")));
 
   let created = 0;
   let skippedDuplicates = 0;
   for (const txn of toImport) {
     const isDebit = txn.debit > 0;
     const amount = isDebit ? txn.debit : txn.credit;
-    const date = txn.date || importAuthority.clinicDate;
+    const bankDate = txn.date || importAuthority.clinicDate;
+    const date = enforcementActive ? importAuthority.clinicDate : bankDate;
 
-    const key = dupKey(date, amount, txn.reference, txn.description);
+    const key = dupKey(bankDate, amount, txn.reference, txn.description);
     if (seenKeys.has(key)) { skippedDuplicates++; continue; }
     seenKeys.add(key);
 
     const vType = isDebit ? "payment" : "receipt";
     const prefix = isDebit ? "PV" : "RV";
+    // Numbering follows the posting month, so a September statement imported in
+    // October takes October voucher numbers: the GL entry is an October entry,
+    // and the bank's calendar lives in `external_event_date` instead.
     const monthKey = date.slice(0, 7).replace("-", "");
 
     // MAX of numbers issued, re-read each iteration so it already includes the
@@ -1610,12 +1618,51 @@ router.post("/bank-statement/import", async (req, res): Promise<void> => {
       amount: String(amount),
       particular: txn.description || "Bank statement import",
       reference: txn.reference || null,
-      narration: `Bank import — balance ₹${txn.balance.toLocaleString("en-IN")}`,
+      // The printed ledger line names the bank's day, because after the cutover
+      // `date` no longer does. A reader of the voucher alone must be able to see
+      // that this is a September movement posted in October.
+      narration: enforcementActive
+        ? `Bank import — statement date ${bankDate}, balance ₹${txn.balance.toLocaleString("en-IN")}`
+        : `Bank import — balance ₹${txn.balance.toLocaleString("en-IN")}`,
+      externalEventDate: enforcementActive ? bankDate : null,
+      externalEventSource: enforcementActive ? "bank-statement-import" : null,
     });
     created++;
   }
 
-  res.json({ imported: created, skippedDuplicates });
+  // The first deliberately *accepted* integrity event in this control. §11.3
+  // kept the evidence table to rejections only, because a successful Class-A
+  // create is already proved by the row and its DB-generated `created_at`. A
+  // bank import is different: the row's posting date and the bank's date do not
+  // agree, by design, so "why does this October voucher describe a September
+  // payment" needs its own answer with the actor and the trusted clinic date
+  // attached. No body, no per-row amounts.
+  if (enforcementActive && created > 0) {
+    await recordTimeIntegrityEvent({
+      event: "external-date-import",
+      outcome: "accepted",
+      trustedClinicDate: importAuthority.clinicDate,
+      endpoint: "/api/accounting/bank-statement/import",
+      method: "POST",
+      module: "accounting",
+      entityType: "bank-statement-import",
+      actor: (req as StaffAuthRequest).staffSession ?? null,
+      reason: `Statement rows dated ${minDate} to ${maxDate} posted on the CARE clinic date ${importAuthority.clinicDate}`,
+      meta: {
+        rowsPosted: created,
+        skippedDuplicates,
+        externalDateMin: minDate,
+        externalDateMax: maxDate,
+        postingDate: importAuthority.clinicDate,
+      },
+    });
+  }
+
+  res.json({
+    imported: created,
+    skippedDuplicates,
+    postingDate: enforcementActive ? importAuthority.clinicDate : undefined,
+  });
 });
 
 function escapeXml(s: string): string {
