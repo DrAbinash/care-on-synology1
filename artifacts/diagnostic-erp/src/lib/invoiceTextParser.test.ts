@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseInvoiceText, normalizeInvoiceDate } from "./invoiceTextParser";
+import { parseInvoiceText, normalizeInvoiceDate, normaliseMoney } from "./invoiceTextParser";
 
 describe("parseInvoiceText — real Tesseract output", () => {
   // This is the EXACT, verbatim stdout of tesseract.js's recognize() run
@@ -135,5 +135,64 @@ describe("normalizeInvoiceDate", () => {
   });
   it("returns empty string for unparseable input", () => {
     expect(normalizeInvoiceDate("not a date")).toBe("");
+  });
+});
+
+describe("parseInvoiceText — patterns measured on real phone scans (2026-10-02)", () => {
+  // Shapes captured by running tesseract.js over five stored clinic bills.
+  // Names and numbers here are synthetic look-alikes; no real bill text.
+  it("reads a figure that has words between the label and the amount", () => {
+    const r = parseInvoiceText("Sharma Traders\nGSTIN: 20AAAAA0000A1Z5\nTotal Pes Rs. 950,00");
+    expect(r.totalAmount).toBe(950);
+  });
+
+  it("accepts a comma as the decimal separator", () => {
+    const r = parseInvoiceText("Sharma Traders\nGRAND TOTAL 950,00");
+    expect(r.totalAmount).toBe(950);
+  });
+
+  it("keeps Indian digit grouping as thousands when a decimal point exists", () => {
+    const r = parseInvoiceText("Sharma Traders\nGRAND TOTAL 1,45,000.00");
+    expect(r.totalAmount).toBe(145000);
+  });
+
+  it("parses the 'Date :-' form every Indian bill prints", () => {
+    const r = parseInvoiceText("Sharma Traders\nAdd = Date :- 01/10/2026\nGRAND TOTAL 950.00");
+    expect(r.date).toBe("2026-10-01");
+  });
+
+  it("prefers the real total over a stray number beside the word Total", () => {
+    // The measured failure: a serial column OCR'd as "05072000 — Total 06.08"
+    // beat the true "Total Pes Rs. 950,00" and prefilled ₹6.08 on a ₹950 bill.
+    const r = parseInvoiceText([
+      "Sharma Traders",
+      "1 Pcs 809.00",
+      "Total Pes Rs. 950,00",
+      "05072000 — Total 06.08 BE un",
+    ].join("\n"));
+    expect(r.totalAmount).toBe(950);
+  });
+
+  it("does not invent a total when OCR fused the label and lost the decimal", () => {
+    // "CRANDTOTAL 1450000" is the real OCR of "GRAND TOTAL 14500.00". Matching
+    // it would need a word-boundary-free pattern, which then reads a ₹14.5 lakh
+    // bill out of a ₹14,500 one. A blank field is corrected by staff; this is
+    // deliberately left unfilled.
+    const r = parseInvoiceText("Sharma Traders\nCRANDTOTAL 1450000");
+    expect(r.totalAmount).toBe(0);
+  });
+
+  it("skips OCR debris and document titles when choosing the letterhead", () => {
+    const r = parseInvoiceText("—mm— eT\nfra EES\nTAX INVOICE S— Dated\nGanesh Infotech\nGRAND TOTAL 950.00");
+    expect(r.vendor).toBe("Ganesh Infotech");
+  });
+});
+
+describe("normaliseMoney", () => {
+  it("separates decimal commas from grouping commas", () => {
+    expect(normaliseMoney("950,00")).toBe(950);
+    expect(normaliseMoney("1,45,000.00")).toBe(145000);
+    expect(normaliseMoney("1,234")).toBe(1234);
+    expect(normaliseMoney("14500.00")).toBe(14500);
   });
 });
