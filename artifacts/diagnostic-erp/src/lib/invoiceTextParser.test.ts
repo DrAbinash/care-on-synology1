@@ -173,6 +173,17 @@ describe("parseInvoiceText — patterns measured on real phone scans (2026-10-02
     expect(r.totalAmount).toBe(950);
   });
 
+  it("reads the grand total from the Amount Chargeable line, not a GST summary row", () => {
+    // Measured shape: the only bare "Total" on the page is a GST table column
+    // header, so tiering by strength is what keeps the ₹3,983.06 taxable value
+    // out of a ₹4,700 bill.
+    const r = parseInvoiceText(`Ganesh Infotech
+Amount Chargeable (in words) Rs. 4700.00
+Description Rate HSNGST SSSTATCST Total
+Total] 3,983.06 368.47 368.47 716.94`);
+    expect(r.totalAmount).toBe(4700);
+  });
+
   it("does not invent a total when OCR fused the label and lost the decimal", () => {
     // "CRANDTOTAL 1450000" is the real OCR of "GRAND TOTAL 14500.00". Matching
     // it would need a word-boundary-free pattern, which then reads a ₹14.5 lakh

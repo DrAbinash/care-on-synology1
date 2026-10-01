@@ -199,7 +199,12 @@ export function parseInvoiceText(rawText: string): ParsedInvoice {
 
   const subtotal = moneyValue(lines, /\bsubtotal\b/);
   const gstAmount = moneyValue(lines, /\bgst\b/) || moneyValue(lines, /\btax\b/);
+  // Tiered by strength, strongest first. "Amount Chargeable" is the grand-total
+  // line on an Indian tax invoice, and a scan whose only bare "Total" is a GST
+  // summary column header (Total] 3,983.06 368.47 …) otherwise reports that
+  // taxable value as the bill amount.
   const totalAmount = moneyValue(lines, /\bgrand\s*total\b/)
+    || moneyValue(lines, /(?:amount|net)\s+chargeable/)
     || moneyValue(lines, /(?:total\s+payable|amount\s+payable)/)
     || moneyValue(lines, /\btotal\b/);
 
