@@ -181,6 +181,34 @@ async function main() {
     const oldGone = (await db.query(`SELECT count(*)::int c FROM information_schema.columns WHERE table_name='dicom_nodes' AND column_name='pull_interval_minutes'`)).rows[0].c;
     assert("dicom_nodes old column removed (pull_interval_minutes absent)", 0, oldGone);
 
+    // AI audit privacy default. The column records a privacy claim, so an insert
+    // that omits it must not default to a positive one. Asserted against a real
+    // Postgres because only the database knows which DEFAULT the migration chain
+    // actually left behind — lib/db/src/schema/aiReporting.ts saying "false" is not
+    // evidence unless a migrations/*.sql file carried it to the deploy.
+    const anonDefault = async () =>
+      (
+        await db.query(`
+          SELECT pg_get_expr(d.adbin, d.adrelid) AS def
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+           WHERE c.relnamespace = 'public'::regnamespace
+             AND c.relname = 'ai_reporting_audit_logs'
+             AND a.attname = 'anonymized'
+             AND a.attnum > 0 AND NOT a.attisdropped
+        `)
+      ).rows[0]?.def;
+    assert('AI audit "anonymized" DB default is false', "false", await anonDefault());
+    const anonProbe = (
+      await db.query(`
+        INSERT INTO ai_reporting_audit_logs (user_name, provider, prompt_text)
+        VALUES ('CARE-SMOKE', 'smoke', 'anonymized default probe')
+        RETURNING anonymized
+      `)
+    ).rows[0];
+    assert('AI audit insert omitting "anonymized" records false', false, anonProbe?.anonymized);
+
     // ── §3 UPGRADE SAFETY (populated re-run) ──────────────────────────────
     console.log(`\n${YEL}§3 UPGRADE SAFETY (populated re-run / restart)${NC}`);
     await db.query(`
@@ -214,6 +242,7 @@ async function main() {
     assert("total table count unchanged", before.tbl, after.tbl);
     assert("SIGNED report content immutable", before.sig, after.sig);
     assert("feature flag config preserved", before.flag, after.flag);
+    assert('AI audit "anonymized" DB default survives a re-run', "false", await anonDefault());
   } finally {
     await db.end();
     const cleanup = new Client({ connectionString: adminUrl });

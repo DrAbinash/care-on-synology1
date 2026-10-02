@@ -42,7 +42,10 @@ export const aiReportingAuditLogsTable = pgTable(
     numImages: integer("num_images").notNull().default(0),
     // Records whether identifiers were actually removed from what was sent.
     // Defaults to false so that an insert which forgets the column cannot
-    // silently file a positive privacy claim.
+    // silently file a positive privacy claim. This line only declares intent:
+    // the deployed column default comes from
+    // migrations/zzz_ai_audit_anonymized_default.sql, because care-db-patch-v2
+    // — not drizzle-kit push — is what reaches a production database.
     anonymized: boolean("anonymized").notNull().default(false),
     includedDemographics: boolean("included_demographics").notNull().default(false),
     wasInsertedToReport: boolean("was_inserted_to_report").notNull().default(false),
