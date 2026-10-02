@@ -177,6 +177,7 @@ const RadiologyProductivity   = lazy(() => import("@/pages/RadiologyProductivity
 const AiModelRouting        = lazy(() => import("@/pages/AiModelRouting"));
 const ReportTemplatesPage   = lazy(() => import("@/pages/ReportTemplates"));
 const AiAuditLog            = lazy(() => import("@/pages/AiAuditLog"));
+const AiEgressInspector     = lazy(() => import("@/pages/AiEgressInspector"));
 const AiQualityScores       = lazy(() => import("@/pages/AiQualityScores"));
 const AiPromptEffectiveness = lazy(() => import("@/pages/AiPromptEffectiveness"));
 const AiDicomFindings       = lazy(() => import("@/pages/AiDicomFindings"));
@@ -305,7 +306,7 @@ const ERP_NAV_ORDER = [
   "/", "/dashboard", "/my-daily-summary", "/my-day-close", "/reception-command-center", "/daily-summary", "/patients", "/register", "/appointments", "/queue", "/online-bookings",
   "/radiology", "/radiology/legacy", "/radiology/worklist", "/radiology/open", "/radiology/report-generator", "/radiology/report-builder", "/radiology/findings-manager", "/radiology/reporting-workspace", "/radiology/advanced-tools", "/radiology/pacs-dashboard", "/radiology/operational-health", "/radiology/pacs-settings", "/radiology/network-control-center", "/radiology/pacs-logs",
   "/radiology/dicom-agent-dashboard", "/radiology/modality-management",
-  "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/mwl-dashboard", "/radiology/study-access-logs", "/radiology/ai-audit-log",
+  "/radiology/agent-setup", "/radiology/ai-reporting-settings", "/radiology/ai-prompt-templates", "/radiology/ai-model-routing", "/radiology/structured-report-templates", "/radiology/mwl-dashboard", "/radiology/study-access-logs", "/radiology/ai-audit-log", "/radiology/ai-egress-inspector",
   "/radiology/viewer", "/radiology/archive-lifecycle", "/radiology/watchdog", "/radiology/ai-inference-settings", "/radiology/hl7-settings", "/teleradiology",
   "/radiology/usg-measurements", "/radiology/usg-admin-settings", "/radiology/usg-rollout", "/radiology/usg-demo",
   "/usg", "/usg/worklist", "/usg/measurements", "/usg/reporting", "/usg/doppler", "/usg/key-images", "/usg/settings", "/usg/critical", "/usg/analytics",
@@ -571,6 +572,7 @@ function Router() {
               <Route path="/radiology/ai-model-routing" component={AiModelRouting} />
               <Route path="/radiology/structured-report-templates" component={ReportTemplatesPage} />
               <Route path="/radiology/ai-audit-log" component={AiAuditLog} />
+              <Route path="/radiology/ai-egress-inspector" component={AiEgressInspector} />
       <Route path="/radiology/ai-quality-scores" component={AiQualityScores} />
       <Route path="/radiology/ai-prompt-effectiveness" component={AiPromptEffectiveness} />
       <Route path="/radiology/ai-dicom-findings" component={AiDicomFindings} />

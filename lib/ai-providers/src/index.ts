@@ -1664,4 +1664,5 @@ export * from "./openAiCompatible";
 export * from "./pricing";
 export * from "./builtinModelCapabilities";
 export * from "./cloudImagePolicy";
+export * from "./phiText";
 export { OpenAiCompatibleProvider } from "./openAiCompatibleProvider";

@@ -193,6 +193,14 @@ const FEATURES: RadiologyFeature[] = [
     icon: BookOpen,
   },
   {
+    name: "AI Egress Inspector",
+    route: "/radiology/ai-egress-inspector",
+    purpose: "See the exact images and prompt text one AI request would send, and whether the privacy gates allow it.",
+    status: "Active",
+    adminOnly: true,
+    icon: BookOpen,
+  },
+  {
     name: "Quality Scores",
     route: "/radiology/ai-quality-scores",
     purpose: "View and manage AI quality scores for generated reports.",

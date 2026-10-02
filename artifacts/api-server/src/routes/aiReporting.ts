@@ -54,6 +54,11 @@ import {
   resolveTaskRoute,
   generateAiForTask,
   getDefaultProviderName,
+  isLocalExecutionProvider,
+  cloudTextPhiAllowed,
+  detectPhiCategories,
+  scrubPhiText,
+  type PhiCategory,
 } from "@workspace/ai-providers";
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
@@ -64,7 +69,7 @@ import {
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
-import { AI_MASTER_FLAG, setMasterAiFlag } from "../lib/ai/clinicalConfigService";
+import { AI_MASTER_FLAG, setMasterAiFlag, getOvernightOpsControls } from "../lib/ai/clinicalConfigService";
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import {
   buildAiReportingDraftDiagnostics,
@@ -830,6 +835,130 @@ router.post("/query", async (req, res): Promise<void> => {
  * with per-task routing and fallback. Accepts current report body + impression
  * as context and returns AI-generated draft sections.
  */
+/**
+ * POST /api/ai-reporting/egress-preview
+ *
+ * Read-only. Shows exactly what one send would put on the wire — the real
+ * images, the real prompt, the real destination — without calling any model.
+ *
+ * This exists because a privacy setting is otherwise unverifiable: a banner
+ * either asserts redaction or it does not, and staff have no way to check. The
+ * verdict here is computed from the same gates the send path uses, so it can
+ * disagree with the settings screen and the operator can see the disagreement.
+ */
+router.post("/egress-preview", async (req, res): Promise<void> => {
+  const sReq = req as StaffAuthRequest;
+  const globalSettings = await getGlobalSettings();
+  if (!canUse(sReq, globalSettings.allowedRoles)) {
+    res.status(403).json({ error: "Insufficient permissions." }); return;
+  }
+
+  const body = (req.body ?? {}) as {
+    studyInstanceUID?: string;
+    promptText?: string;
+    maxImages?: number;
+  };
+
+  const studyInstanceUID = (body.studyInstanceUID ?? "").trim();
+  if (studyInstanceUID && !/^[0-9.]+$/.test(studyInstanceUID)) {
+    res.status(400).json({ error: "Invalid studyInstanceUID." }); return;
+  }
+
+  const taskRoute = await resolveTaskRoute("radiology_draft");
+  const providerName = taskRoute?.provider ?? globalSettings.defaultProvider;
+  if (!BUILTIN_PROVIDER_NAMES.includes(providerName)) {
+    res.status(400).json({ error: "Invalid provider." }); return;
+  }
+  const isLocal = isLocalExecutionProvider(providerName);
+  const provConfig = await loadProviderConfig(providerName);
+  const model = taskRoute?.model ?? provConfig?.defaultModel ?? "";
+
+  let cloudVisionAllowed = false;
+  try {
+    const ops = await getOvernightOpsControls();
+    cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
+  } catch {
+    cloudVisionAllowed = false;
+  }
+
+  // Same cap the real drafting path uses, so the preview cannot be used to
+  // pull more of a study than an AI call would.
+  const maxImages = Math.max(0, Math.min(Math.floor(body.maxImages ?? 6) || 0, 6));
+  let images: string[] = [];
+  let imageByteSizes: number[] = [];
+  let seriesSelected = 0;
+  if (studyInstanceUID && maxImages > 0) {
+    const fetched = await fetchStudyImages({
+      studyInstanceUID,
+      maxImages,
+      maxWidthPx: 512,
+    });
+    images = fetched.images;
+    imageByteSizes = fetched.imageByteSizes;
+    seriesSelected = fetched.seriesSelected;
+  }
+
+  const promptText = (body.promptText ?? "").trim();
+  const categories: PhiCategory[] = promptText ? detectPhiCategories(promptText) : [];
+  const scrubbed = promptText ? scrubPhiText(promptText) : null;
+
+  const textWouldBeRedacted = !isLocal && categories.length > 0 && globalSettings.cloudTextPhiAllowed === true;
+  const blocks: Array<{ code: string; reason: string }> = [];
+  if (!isLocal && images.length > 0 && !cloudVisionAllowed) {
+    blocks.push({
+      code: "PHI_IMAGE_CLOUD_BLOCKED",
+      reason: `${images.length} clinical image(s) would go to ${providerName}. Cloud vision is not enabled by an administrator.`,
+    });
+  }
+  if (!isLocal && categories.length > 0 && globalSettings.cloudTextPhiAllowed !== true) {
+    blocks.push({
+      code: "PHI_TEXT_CLOUD_BLOCKED",
+      reason: `The prompt names a patient (${categories.join(", ")}). Nothing would be sent.`,
+    });
+  }
+
+  res.json({
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    destination: {
+      provider: providerName,
+      model: model || null,
+      execution: isLocal ? "LOCAL" : "CLOUD",
+      routedBy: taskRoute ? `task-route:radiology_draft` : "settings-default",
+      providerConfigured: Boolean(provConfig?.isEnabled),
+    },
+    images: {
+      requested: maxImages,
+      seriesSelected,
+      count: images.length,
+      totalBytes: images.reduce((a, b) => a + b.length, 0),
+      perImageBytes: imageByteSizes,
+      frames: images.map((b64) => `data:image/jpeg;base64,${b64}`),
+    },
+    prompt: {
+      chars: promptText.length,
+      identifierCategories: categories,
+      scrubbed: scrubbed?.text ?? "",
+      fieldsRedacted: scrubbed?.removedCount ?? 0,
+      wouldBeRedacted: textWouldBeRedacted,
+    },
+    gates: {
+      cloudVisionAllowed,
+      cloudTextPhiAllowed: globalSettings.cloudTextPhiAllowed === true,
+    },
+    verdict: blocks.length > 0
+      ? { allowed: false, code: blocks[0].code, reason: blocks.map((b) => b.reason).join(" "), blocks }
+      : {
+          allowed: true,
+          code: null,
+          reason: isLocal
+            ? "On-prem provider — the data does not leave the clinic."
+            : "Allowed under the current settings.",
+          blocks: [],
+        },
+  });
+});
+
 router.post("/draft", async (req, res): Promise<void> => {
   const requestId = newAiRequestId();
   const routeStartedAt = new Date().toISOString();
