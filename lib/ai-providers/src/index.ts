@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { decryptSecret } from "@workspace/crypto";
+import { isLocalExecutionProvider } from "./openAiCompatible";
 
 // ─── Canonical on-prem Local AI (chat/vision) ───────────────────────────────
 // Keep in sync with artifacts/api-server/.../canonicalLocalAi.ts.
@@ -20,6 +21,65 @@ import { decryptSecret } from "@workspace/crypto";
 
 export const CANONICAL_OLLAMA_ENDPOINT = "http://172.16.1.140:11434";
 export const CANONICAL_LOCAL_CHAT_VISION_MODEL = "qwen3-vl:8b";
+
+// ─── Request deadlines ───────────────────────────────────────────────────────
+// Until now only Ollama honoured `timeoutMs`, and only when a caller happened
+// to pass one — so a wedged model, or a cloud endpoint that accepts the socket
+// and never answers, held an Express request open indefinitely. The ceiling is
+// deliberately generous: a six-image MRI draft on the clinic GPU is legitimately
+// slow, and cutting that off would trade a late answer for no answer. Callers
+// with a tighter or looser budget (OCR, the overnight batch) still pass their
+// own value, which always wins.
+
+const AI_REQUEST_TIMEOUT_FLOOR_SECONDS = 30;
+const AI_REQUEST_TIMEOUT_CEILING_SECONDS = 900;
+const AI_REQUEST_TIMEOUT_DEFAULT_SECONDS = 300;
+
+export function resolveRequestTimeoutMs(explicit?: number): number {
+  const fromCaller =
+    explicit != null && Number.isFinite(explicit) ? Math.floor(explicit) : null;
+  if (fromCaller != null && fromCaller > 0) return fromCaller;
+
+  const configured = Number(process.env.AI_REQUEST_TIMEOUT_SECONDS);
+  const seconds = Number.isFinite(configured) && configured > 0
+    ? Math.min(AI_REQUEST_TIMEOUT_CEILING_SECONDS, Math.max(AI_REQUEST_TIMEOUT_FLOOR_SECONDS, Math.floor(configured)))
+    : AI_REQUEST_TIMEOUT_DEFAULT_SECONDS;
+  return seconds * 1000;
+}
+
+/** Distinguishes "the model was too slow" from "the model failed". */
+export class AiRequestTimeoutError extends Error {
+  readonly aiTimedOut = true;
+  constructor(provider: string, ms: number) {
+    super(`${provider} did not respond within ${Math.round(ms / 1000)}s — the request was abandoned.`);
+    this.name = "AiRequestTimeoutError";
+  }
+}
+
+/**
+ * Releases the caller when a provider stops answering.
+ *
+ * The SDK-backed providers are driven by their own clients, so this unblocks
+ * the request rather than cancelling the socket; Ollama gets a real
+ * AbortSignal. Either way the clinician gets an error instead of a spinner.
+ */
+export async function withAiDeadline<T>(work: Promise<T>, ms: number, provider: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new AiRequestTimeoutError(provider, ms)), ms);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** A "Test connection" click is a ten-token probe; it must never hang Settings. */
+const AI_CONNECTION_TEST_TIMEOUT_MS = 30_000;
 
 function envOllamaEndpoint(): string {
   const raw =
@@ -413,11 +473,15 @@ class OpenAIProvider implements AiProvider {
       for (const img of opts.images) {
         content.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } });
       }
-      const resp = await client.chat.completions.create({
-        model: opts.model || "gpt-4o",
-        messages: [{ role: "user", content }],
-        max_tokens: opts.maxTokens ?? 4096,
-      });
+      const resp = await withAiDeadline(
+        client.chat.completions.create({
+          model: opts.model || "gpt-4o",
+          messages: [{ role: "user", content }],
+          max_tokens: opts.maxTokens ?? 4096,
+        }),
+        resolveRequestTimeoutMs(opts.timeoutMs),
+        "OpenAI",
+      );
       return { text: resp.choices[0]?.message?.content ?? "", success: true };
     } catch (err: unknown) {
       return { text: "", success: false, error: err instanceof Error ? err.message : "OpenAI error" };
@@ -427,11 +491,15 @@ class OpenAIProvider implements AiProvider {
   async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const client = await getOpenAIClient(this.apiKey);
-      const resp = await client.chat.completions.create({
-        model: model || "gpt-4o-mini",
-        messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
-        max_tokens: 10,
-      });
+      const resp = await withAiDeadline(
+        client.chat.completions.create({
+          model: model || "gpt-4o-mini",
+          messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
+          max_tokens: 10,
+        }),
+        AI_CONNECTION_TEST_TIMEOUT_MS,
+        "OpenAI",
+      );
       return { ok: true, message: resp.choices[0]?.message?.content ?? "Connected" };
     } catch (err: unknown) {
       return { ok: false, message: err instanceof Error ? err.message : "OpenAI connection failed" };
@@ -451,7 +519,11 @@ class GeminiProvider implements AiProvider {
       for (const img of opts.images) {
         parts.push({ inlineData: { mimeType: "image/jpeg", data: img } });
       }
-      const result = await model.generateContent(parts);
+      const result = await withAiDeadline(
+        model.generateContent(parts),
+        resolveRequestTimeoutMs(opts.timeoutMs),
+        "Gemini",
+      );
       return { text: result.response.text(), success: true };
     } catch (err: unknown) {
       return { text: "", success: false, error: err instanceof Error ? err.message : "Gemini error" };
@@ -463,7 +535,11 @@ class GeminiProvider implements AiProvider {
       // Use the caller's selected model verbatim; only fall back to the
       // lightweight probe model when no model was supplied.
       const gm = await getGeminiModel(this.apiKey, model || "gemini-1.5-flash");
-      const result = await gm.generateContent("Reply with exactly the word: CONNECTED");
+      const result = await withAiDeadline(
+        gm.generateContent("Reply with exactly the word: CONNECTED"),
+        AI_CONNECTION_TEST_TIMEOUT_MS,
+        "Gemini",
+      );
       return { ok: true, message: result.response.text() };
     } catch (err: unknown) {
       return { ok: false, message: err instanceof Error ? err.message : "Gemini connection failed" };
@@ -489,11 +565,15 @@ class AnthropicProvider implements AiProvider {
         content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img } });
       }
       content.push({ type: "text", text: opts.prompt });
-      const resp = await client.messages.create({
-        model: opts.model || "claude-3-5-sonnet-20241022",
-        max_tokens: opts.maxTokens ?? 4096,
-        messages: [{ role: "user", content: content as unknown as Parameters<typeof client.messages.create>[0]["messages"][number]["content"] }],
-      });
+      const resp = await withAiDeadline(
+        client.messages.create({
+          model: opts.model || "claude-3-5-sonnet-20241022",
+          max_tokens: opts.maxTokens ?? 4096,
+          messages: [{ role: "user", content: content as unknown as Parameters<typeof client.messages.create>[0]["messages"][number]["content"] }],
+        }),
+        resolveRequestTimeoutMs(opts.timeoutMs),
+        "Anthropic",
+      );
       const block = resp.content[0];
       return { text: block?.type === "text" ? block.text : "", success: true };
     } catch (err: unknown) {
@@ -504,11 +584,15 @@ class AnthropicProvider implements AiProvider {
   async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const client = await getAnthropicClient(this.apiKey);
-      const resp = await client.messages.create({
-        model: model || "claude-3-5-haiku-20241022",
-        max_tokens: 10,
-        messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
-      });
+      const resp = await withAiDeadline(
+        client.messages.create({
+          model: model || "claude-3-5-haiku-20241022",
+          max_tokens: 10,
+          messages: [{ role: "user", content: "Reply with exactly the word: CONNECTED" }],
+        }),
+        AI_CONNECTION_TEST_TIMEOUT_MS,
+        "Anthropic",
+      );
       const block = resp.content[0];
       return { ok: true, message: block?.type === "text" ? block.text : "Connected" };
     } catch (err: unknown) {
@@ -644,9 +728,10 @@ class OllamaProvider implements AiProvider {
     const totalImageBytes = images.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
     const startedAt = new Date().toISOString();
     const t0 = Date.now();
-    const timeoutMsConfigured = opts.timeoutMs != null && Number.isFinite(opts.timeoutMs)
-      ? Math.max(1, Math.floor(opts.timeoutMs))
-      : null;
+    // Always bounded: with no budget from the caller this used to be `null`, so
+    // a wedged model held the request open forever. The existing classifier
+    // already reports an aborted signal as timeoutStage "provider_http".
+    const timeoutMsConfigured = resolveRequestTimeoutMs(opts.timeoutMs);
     const requestedNumCtx =
       opts.numCtx != null && Number.isFinite(opts.numCtx) ? Math.floor(opts.numCtx) : null;
 
@@ -691,9 +776,7 @@ class OllamaProvider implements AiProvider {
         headers: { "Content-Type": "application/json" },
         body: bodyJson,
       };
-      if (timeoutMsConfigured != null) {
-        init.signal = AbortSignal.timeout(timeoutMsConfigured);
-      }
+      init.signal = AbortSignal.timeout(timeoutMsConfigured);
       const resp = await fetch(`${base}/api/chat`, init);
       const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
@@ -1322,6 +1405,11 @@ export const AI_TASK_KEYS = AI_TASK_CATALOG.map((t) => t.key);
  * Resolve the default provider name: the explicit global default, else the first
  * enabled provider, else gemini. Centralized here so every caller (legacy AI,
  * radiology, routing) shares one fallback policy.
+ *
+ * "First enabled" is ordered on-prem-first. BUILTIN_PROVIDER_NAMES lists openai
+ * and gemini before ollama, so enabling a cloud key for one feature used to
+ * silently re-route every task that has no routing row — including the clinical
+ * note endpoint, which sends named demographics.
  */
 export async function getDefaultProviderName(): Promise<string> {
   const [global] = await db
@@ -1339,7 +1427,11 @@ export async function getDefaultProviderName(): Promise<string> {
       /* ignore malformed settings */
     }
   }
-  for (const name of BUILTIN_PROVIDER_NAMES) {
+  const localFirst = [
+    ...BUILTIN_PROVIDER_NAMES.filter((n) => isLocalExecutionProvider(n)),
+    ...BUILTIN_PROVIDER_NAMES.filter((n) => !isLocalExecutionProvider(n)),
+  ];
+  for (const name of localFirst) {
     const [p] = await db
       .select({ isEnabled: aiProviderSettingsTable.isEnabled })
       .from(aiProviderSettingsTable)
