@@ -27,6 +27,7 @@ import {
   resolveTaskRoute,
 } from "@workspace/ai-providers";
 import { resolveLocalAiRuntime } from "../aiPipeline/runtimeConfig";
+import { DRAFT_SAFETY_CLAUSES } from "./draftPromptSafety";
 import { orthancAuthHeaders, resolveOrthancBaseFromSources } from "./studyImageFetch";
 import { logger } from "../logger";
 import {
@@ -115,7 +116,10 @@ const DRAFT_PROMPT = [
   "Provide a detailed radiology report based on the supplied imaging.",
   "",
   "=== INSTRUCTION ===",
-  "Generate a refined radiology report. Return ONLY two sections:",
+  "Generate a refined radiology report.",
+  "Do NOT use wording from a different modality or body region.",
+  DRAFT_SAFETY_CLAUSES,
+  "Return ONLY two sections:",
   "FINDINGS: (structured findings)",
   "IMPRESSION: (concise impression)",
   "Do not include any other text or explanations.",

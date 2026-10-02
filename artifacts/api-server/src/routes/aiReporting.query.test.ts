@@ -20,6 +20,7 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 let settingsJson: string;
 let templateRows: Array<{ promptContent: string }>;
 let auditInserts: Record<string, unknown>[];
+let draftInserts: Record<string, unknown>[];
 let pacsSettingsQueries: number;
 const { masterAiFlagState } = vi.hoisted(() => ({
   masterAiFlagState: { enabled: true },
@@ -36,6 +37,7 @@ vi.mock("@workspace/db", () => {
   const pacsSettingsTable = { key: "key", category: "category", value: "value" };
   const patientsTable = { id: "id", firstName: "first_name", lastName: "last_name", ageValue: "age_value", gender: "gender" };
   const aiReportingAuditLogsTable = { marker: "ai_reporting_audit_logs" };
+  const aiReportingDraftsTable = { marker: "ai_reporting_drafts" };
 
   const db = {
     select: () => ({
@@ -58,7 +60,9 @@ vi.mock("@workspace/db", () => {
     }),
     insert: (table: unknown) => ({
       values: (vals: Record<string, unknown>) => {
-        if ((table as { marker?: string })?.marker === "ai_reporting_audit_logs") auditInserts.push(vals);
+        const marker = (table as { marker?: string })?.marker;
+        if (marker === "ai_reporting_audit_logs") auditInserts.push(vals);
+        if (marker === "ai_reporting_drafts") draftInserts.push(vals);
         const thenable = Promise.resolve([{ id: 4242 }]);
         // POST /draft persists the draft with .returning({ id }) before it audits.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,7 +81,7 @@ vi.mock("@workspace/db", () => {
     db,
     aiProviderSettingsTable,
     aiReportingAuditLogsTable,
-    aiReportingDraftsTable: {},
+    aiReportingDraftsTable,
     aiPromptTemplatesTable,
     pacsSettingsTable,
     patientsTable,
@@ -229,6 +233,7 @@ beforeEach(() => {
   });
   templateRows = [];
   auditInserts = [];
+  draftInserts = [];
   pacsSettingsQueries = 0;
   generateAiResponse.mockClear();
   generateAiForTask.mockClear();
@@ -459,6 +464,236 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     const prompt = String(generateAiForTask.mock.calls[0][1]);
     expect(prompt).toContain("CANONICAL BODY");
     expect(prompt).not.toContain("LEGACY BODY");
+  });
+});
+
+describe("POST /api/ai-reporting/draft — the `field` the workstation sends is honoured", () => {
+  // RW-02. Ctrl+I has always posted `field: "impression"` and read only
+  // `res.impression`, but the handler never destructured the key. It asked the
+  // model for a whole report every time, so each Ctrl+I also produced a set of
+  // Findings nobody requested — invented from the same prompt — and returned
+  // them under `findings`/`draft` for any surface to offer as a replacement of
+  // text the radiologist had already typed.
+
+  const aiText = (text: string) =>
+    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+
+  test("field:impression asks for an impression only and returns no findings", async () => {
+    aiText("IMPRESSION: Mild disc bulge at L4-L5.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ reportBody: "L4-L5 mild disc bulge indenting the thecal sac.", field: "impression", provider: "gemini" }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
+    expect(res.body.findings).toBe("");
+    expect(res.body.draft).toBe("");
+    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(prompt).toMatch(/Write ONLY the IMPRESSION/);
+    expect(prompt).not.toContain("FINDINGS: (structured findings)");
+  });
+
+  test("REGRESSION: a response with no IMPRESSION marker cannot leak into findings", async () => {
+    // The two-section parser falls back to `aiResponse.trim()` for findings when
+    // it finds no `FINDINGS:` marker. On the impression-only branch that
+    // fallback would hand the impression back AS the findings — the exact silent
+    // substitution the branch exists to prevent.
+    aiText("Mild disc bulge at L4-L5.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), res);
+
+    expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
+    expect(res.body.findings).toBe("");
+  });
+
+  test("without `field` the two-section parse is unchanged", async () => {
+    aiText("FINDINGS: Alpha.\nIMPRESSION: Beta.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", provider: "gemini" }), res);
+
+    expect(res.body.findings).toBe("Alpha.");
+    expect(res.body.draft).toBe("Alpha.");
+    expect(res.body.impression).toBe("Beta.");
+  });
+
+  test("the grounding and preservation clauses reach the model on both branches", async () => {
+    aiText("FINDINGS: x\nIMPRESSION: y");
+    const full = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", provider: "gemini" }), full);
+    aiText("IMPRESSION: y");
+    const impOnly = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), impOnly);
+
+    for (const call of [0, 1]) {
+      const prompt = String(generateAiForTask.mock.calls[call][1]);
+      // RW-03: /draft carried no anti-hallucination, measurement-preservation or
+      // laterality-preservation clause at all, while the background composer's
+      // prompt carried all three.
+      expect(prompt).toContain("8.7 mm stays 8.7 mm");
+      expect(prompt).toContain("Never move a finding to a different side or to a different spinal level");
+      expect(prompt).toContain("Never escalate a supplied severity");
+      expect(prompt).toContain("Do NOT invent an abnormality, diagnosis, measurement, spinal level or side");
+    }
+  });
+
+  test("a malformed body is a 400 naming the field, and the model is never called", async () => {
+    const res = makeRes();
+    await draftHandler(makeReq({ worklistId: "not-a-number", provider: "gemini" }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(String(res.body.error)).toMatch(/worklistId/);
+    expect(generateAiForTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/ai-reporting/draft — output is grounded by the composer's own validator", () => {
+  // RW-03. The background composer gated its draft through
+  // `validateComposerOutput`; the interactive path returned model prose with no
+  // grounding check whatsoever, so an invented "severe canal stenosis" was
+  // byte-identical on the wire to one the radiologist's own findings supported.
+  // The fix calls that same validator — it does not reimplement it.
+
+  const aiText = (text: string) =>
+    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+
+  test("a draft that stays inside the supplied findings is reported ok", async () => {
+    aiText("FINDINGS: L4-L5 mild disc bulge indenting the thecal sac.\nIMPRESSION: Mild disc bulge at L4-L5.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ reportBody: "L4-L5 mild disc bulge indenting the thecal sac.", provider: "gemini" }),
+      res,
+    );
+
+    expect(res.body.validation.ok).toBe(true);
+    expect(res.body.validation.errors).toEqual([]);
+    expect(res.body.aiSafetyLabel).toBe("AI Draft – Requires Radiologist Review");
+  });
+
+  test("an invented abnormality is flagged and the safety label changes", async () => {
+    aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Severe canal stenosis with cord compression.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", provider: "gemini" }), res);
+
+    expect(res.body.validation.ok).toBe(false);
+    expect(res.body.validation.errors).toContain("unsupported_abnormality");
+    expect(res.body.validation.unsupportedMentions).toContain("stenosis");
+    expect(res.body.aiSafetyLabel).toMatch(/[Uu]ngrounded/);
+  });
+
+  test("§17: 8.7 mm rewritten as 8 mm is a named measurement mutation", async () => {
+    aiText("FINDINGS: 8 mm posterior disc protrusion at L4-L5.\nIMPRESSION: Disc protrusion.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ reportBody: "8.7 mm posterior disc protrusion at L4-L5.", provider: "gemini" }),
+      res,
+    );
+
+    expect(res.body.validation.errors).toContain("measurement_mutation");
+    expect(res.body.validation.ok).toBe(false);
+  });
+
+  test("§18: a spinal level the findings never mentioned is a named level change", async () => {
+    aiText("FINDINGS: L3-L4 disc bulge.\nIMPRESSION: Disc bulge.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 disc bulge.", provider: "gemini" }), res);
+
+    expect(res.body.validation.errors).toContain("level_change");
+    expect(res.body.validation.levelChanges).toContain("L3-L4");
+  });
+
+  test("flagging is advisory: the draft is still returned, blocking is still false", async () => {
+    // §14: "Do not blindly make every warning blocking. Preserve usability."
+    // Whether any of this should hard-block is the open product-owner decision
+    // in ARCHITECTURE.md §8.1, so the route labels the draft and hands it over.
+    aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Severe canal stenosis.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", provider: "gemini" }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.validation.blocking).toBe(false);
+    expect(res.body.impression).toContain("stenosis");
+    expect(res.body.draftId).toBe(4242);
+  });
+
+  test("the verdict names its validator and states what it could not check", async () => {
+    // §39: a green label that quietly could not see half the report is worse
+    // than no label, so the gaps travel with the verdict.
+    aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Mild disc bulge.");
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", provider: "gemini" }), res);
+
+    expect(res.body.validation.validator).toBe("reportComposer.validateComposerOutput");
+    expect(res.body.validation.imagesSentToModel).toBe(0);
+    expect(res.body.validation.notChecked.length).toBeGreaterThan(0);
+    expect(res.body.validation.notChecked.join(" ")).toMatch(/key-image registry/);
+  });
+});
+
+describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical draft behind", () => {
+  // RW-23. The reporting workspace's next-study preload used to fire this route
+  // with nothing but { studyInstanceUID, modality } — no findings, no impression,
+  // no clinical history — for a study the radiologist had not opened, then throw
+  // the answer away client-side. Server-side it still fetched Orthanc images, ran
+  // a full inference from a template-only prompt, and stored the result.
+  // GET /drafts/:studyId returns every row for that UID with no provenance filter,
+  // so an invented, image-only draft became retrievable by whoever opened that
+  // study next and looked like an ordinary AI draft.
+
+  const aiText = (text: string) =>
+    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+
+  test("warmUpOnly still loads and exercises the model — that is the point of the call", async () => {
+    aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.3.1", modality: "MRI", warmUpOnly: true }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(generateAiForTask).toHaveBeenCalledTimes(1);
+  });
+
+  test("warmUpOnly persists no ai_reporting_drafts row and returns draftId: null", async () => {
+    aiText("FINDINGS: severe canal stenosis.\nIMPRESSION: Severe canal stenosis.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.3.2", modality: "MRI", warmUpOnly: true }),
+      res,
+    );
+
+    expect(draftInserts).toHaveLength(0);
+    expect(res.body.draftId).toBeNull();
+  });
+
+  test("the audit row is still written, so the AI call is not invisible", async () => {
+    // Discarding the draft must not discard the record that a model call
+    // happened for this study — the audit log is the accountability trail.
+    aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.3.3", modality: "MRI", warmUpOnly: true }),
+      res,
+    );
+
+    expect(auditInserts).toHaveLength(1);
+    expect(auditInserts[0]["studyInstanceUID"]).toBe("1.2.840.113619.2.55.3.3");
+    expect(auditInserts[0]["draftId"]).toBeNull();
+  });
+
+  test("control: the same request without warmUpOnly still persists its draft", async () => {
+    aiText("FINDINGS: L4-L5 mild disc bulge.\nIMPRESSION: Mild disc bulge.");
+    const res = makeRes();
+    await draftHandler(
+      makeReq({ studyInstanceUID: "1.2.840.113619.2.55.3.4", modality: "MRI", reportBody: "L4-L5 mild disc bulge." }),
+      res,
+    );
+
+    expect(draftInserts).toHaveLength(1);
+    expect(draftInserts[0]["studyInstanceUID"]).toBe("1.2.840.113619.2.55.3.4");
+    expect(res.body.draftId).toBe(4242);
   });
 });
 

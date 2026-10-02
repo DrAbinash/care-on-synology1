@@ -2175,7 +2175,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         priorUrl ? api.get(priorUrl) : Promise.resolve(null),
         api.get(`/api/radiology/report-generator/measurements?studyId=${encodeURIComponent(next.id)}`),
         next.studyInstanceUID
-          ? api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality })
+          // Warm-up only: this exists to pull the model into memory before the
+          // radiologist reaches the next study. It carries no findings, and its
+          // result is discarded, so it must not leave a stored AI draft behind
+          // for that study — `warmUpOnly` tells the server exactly that.
+          ? api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality, warmUpOnly: true })
           : Promise.resolve(null),
       ]).then(() => useWorkspace.getState().markNextStudyPreloaded());
     }

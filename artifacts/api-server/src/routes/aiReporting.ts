@@ -65,7 +65,9 @@ import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiol
 import { resolveTestModel } from "../lib/ai/testProviderModel";
 import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
+  AiReportingDraftRequestSchema,
   AiReportingQueryRequestSchema,
+  type AiDraftValidation,
   type AiPromptSource,
   type AiReportingQueryResponse,
 } from "@workspace/api-zod";
@@ -78,6 +80,7 @@ import {
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
+import { DRAFT_SAFETY_CLAUSES } from "../lib/ai/draftPromptSafety";
 import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 import {
   impressionMatchesStudyContext,
@@ -85,6 +88,8 @@ import {
   studyLooksLikeBrain,
   studyLooksLikeChest,
 } from "../lib/aiDraftStudyContext";
+import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
+import { parseComposerSnapshot } from "../lib/reportComposer/types";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -830,11 +835,74 @@ router.post("/query", async (req, res): Promise<void> => {
 });
 
 /**
- * POST /api/ai-reporting/draft
- * Phase 6: Copilot draft generation — reuses existing provider infrastructure
- * with per-task routing and fallback. Accepts current report body + impression
- * as context and returns AI-generated draft sections.
+ * Checks the interactive draft path structurally cannot perform. Reported in
+ * the response rather than left implied, because a validator that quietly
+ * cannot see part of the report is worse than no validator — the green label
+ * becomes a claim nobody tested.
  */
+const DRAFT_VALIDATION_GAPS = [
+  "selected-image overclaim checks: /draft fetches its own middle-slice JPEGs and has no frozen key-image registry, so the snapshot stays TEXT_ONLY",
+  "definite laterality and severity correlation: /draft is sent no structured observations, so those two remain advisory",
+  "technique grounding: the reporting workspace does not send Technique to this route",
+];
+
+/**
+ * Run the background composer's own grounding validator over an interactive
+ * draft, so the two AI paths cannot drift apart on what counts as invented.
+ *
+ * This is a call, not a second validator: `validateComposerOutput` already gates
+ * the composer's READY state and is already covered by
+ * validateOutput.definiteMutations.test.ts and selectedImages.*.test.ts. Before
+ * this ran, /draft returned model prose with no grounding check at all, so an
+ * invented "severe canal stenosis" was byte-identical on the wire to one the
+ * radiologist's own findings supported.
+ *
+ * Advisory by design — see `AiDraftValidation.blocking`.
+ */
+function validateDraftGrounding(input: {
+  worklistId?: number | null;
+  modality?: string;
+  studyDescription?: string;
+  reportBody?: string | null;
+  impression?: string | null;
+  clinicalHistory?: string | null;
+  draftFindings: string;
+  draftImpression: string;
+  imagesSentToModel: number;
+}): AiDraftValidation {
+  const snapshot = parseComposerSnapshot({
+    worklistId: input.worklistId ?? null,
+    modality: input.modality,
+    studyType: input.studyDescription,
+    clinicalHistory: input.clinicalHistory ?? "",
+    technique: "",
+    findings: input.reportBody ?? "",
+    impression: input.impression ?? "",
+    recommendation: "",
+    observations: [],
+  });
+  const result = validateComposerOutput(snapshot, {
+    findings: input.draftFindings,
+    impression: input.draftImpression,
+    recommendation: "",
+    unresolvedQuestions: [],
+    warnings: [],
+  });
+  return {
+    ok: result.ok,
+    blocking: false,
+    errors: result.errors,
+    warnings: result.warnings,
+    unsupportedMentions: result.unsupportedMentions,
+    lateralitySwaps: result.lateralitySwaps,
+    levelChanges: result.levelChanges,
+    severityEscalations: result.severityEscalations,
+    validator: "reportComposer.validateComposerOutput",
+    notChecked: DRAFT_VALIDATION_GAPS,
+    imagesSentToModel: input.imagesSentToModel,
+  };
+}
+
 /**
  * POST /api/ai-reporting/egress-preview
  *
@@ -959,6 +1027,13 @@ router.post("/egress-preview", async (req, res): Promise<void> => {
   });
 });
 
+/**
+ * POST /api/ai-reporting/draft
+ * Interactive copilot draft generation — reuses existing provider infrastructure
+ * with per-task routing and fallback. Accepts the radiologist's current report
+ * body + impression as context and returns AI-generated draft sections, each
+ * carrying a grounding verdict from the composer's own validator.
+ */
 router.post("/draft", async (req, res): Promise<void> => {
   const requestId = newAiRequestId();
   const routeStartedAt = new Date().toISOString();
@@ -974,6 +1049,14 @@ router.post("/draft", async (req, res): Promise<void> => {
   }
 
   const user = sReq.staffSession!;
+  const parsedBody = AiReportingDraftRequestSchema.safeParse(req.body);
+  if (!parsedBody.success) {
+    const first = parsedBody.error.issues[0];
+    res.status(400).json({
+      error: `Invalid AI draft request: ${first ? `${first.path.join(".") || "body"} — ${first.message}` : "malformed body"}`,
+    });
+    return;
+  }
   const {
     worklistId,
     studyInstanceUID: studyInstanceUIDBody,
@@ -984,18 +1067,18 @@ router.post("/draft", async (req, res): Promise<void> => {
     impression,
     clinicalHistory,
     provider: providerReq,
-  } = req.body as {
-    worklistId?: number;
-    studyInstanceUID?: string;
-    modality?: string;
-    studyDescription?: string;
-    reportBody?: string;
-    /** The key the reporting workspace's Ctrl+I posts the typed findings under. */
-    findings?: string;
-    impression?: string;
-    clinicalHistory?: string;
-    provider?: string;
-  };
+    field: fieldReq,
+    warmUpOnly,
+  } = parsedBody.data;
+
+  // `field` names the one section the caller will consume. Ctrl+I in the
+  // reporting workspace has always posted "impression" and read only
+  // `res.impression`, but the handler never destructured the key — so every
+  // Ctrl+I also asked the model for a full set of Findings nobody requested,
+  // invented them from the same prompt, and returned them under `findings` and
+  // `draft` for any surface to offer as a replacement of text the radiologist
+  // had already typed.
+  const wantsImpressionOnly = fieldReq === "impression";
 
   // `reportBody` is canonical; `findings` is what the workstation has always
   // sent. Reading only the former meant Ctrl+I asked for an impression without
@@ -1124,14 +1207,26 @@ router.post("/draft", async (req, res): Promise<void> => {
   if (modality?.trim()) {
     finalPrompt += `\nModality: ${modality.trim()}`;
   }
-  finalPrompt += "\n\n=== INSTRUCTION ===\n" +
-    "Generate a refined radiology report for THIS study only.\n" +
+  const crossModalityClause =
     "Do NOT use wording from a different modality or body region " +
-    "(e.g. never write 'chest radiograph' for a CT/MRI brain).\n" +
-    "Return ONLY two sections:\n" +
-    "FINDINGS: (structured findings)\n" +
-    "IMPRESSION: (concise impression)\n" +
-    "Do not include any other text or explanations.";
+    "(e.g. never write 'chest radiograph' for a CT/MRI brain).\n";
+  finalPrompt += wantsImpressionOnly
+    ? "\n\n=== INSTRUCTION ===\n" +
+      "Write ONLY the IMPRESSION for THIS study, summarising the Current Findings above.\n" +
+      "Do NOT restate or rewrite the findings, and do NOT add any finding that is not already in them.\n" +
+      crossModalityClause +
+      DRAFT_SAFETY_CLAUSES +
+      "\nReturn ONLY:\n" +
+      "IMPRESSION: (concise impression)\n" +
+      "Do not include any other text or explanations."
+    : "\n\n=== INSTRUCTION ===\n" +
+      "Generate a refined radiology report for THIS study only.\n" +
+      crossModalityClause +
+      DRAFT_SAFETY_CLAUSES +
+      "\nReturn ONLY two sections:\n" +
+      "FINDINGS: (structured findings)\n" +
+      "IMPRESSION: (concise impression)\n" +
+      "Do not include any other text or explanations.";
 
   // Clinic Local AI timeout (used by radiology-ollama — NOT applied on this path today).
   let clinicOllamaTimeoutSeconds: number | null = null;
@@ -1202,10 +1297,19 @@ router.post("/draft", async (req, res): Promise<void> => {
   let draftImpression = "";
   let parser = null as ReturnType<typeof buildParserMeta> | null;
   if (success && aiResponse) {
-    const findingsMatch = aiResponse.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
-    const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
-    draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
-    draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    if (wantsImpressionOnly) {
+      // Only an impression was asked for, so only an impression is parsed.
+      // Running the two-section parser here would find no `FINDINGS:` marker and
+      // fall through to `aiResponse.trim()` — handing the impression back AS the
+      // findings, which is precisely the silent substitution the `field` branch
+      // exists to prevent.
+      draftImpression = (aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i)?.[1] ?? aiResponse).trim();
+    } else {
+      const findingsMatch = aiResponse.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
+      const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
+      draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
+      draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    }
     // Drop cross-modality garbage (chest radiograph on CT Brain, etc.)
     if (
       draftImpression
@@ -1215,6 +1319,21 @@ router.post("/draft", async (req, res): Promise<void> => {
     }
     parser = buildParserMeta(aiResponse, draftFindings, draftImpression);
   }
+
+  // Grounding verdict from the composer's own validator. Advisory — nothing here
+  // withholds the draft; it labels it, so ungrounded model prose cannot arrive
+  // looking identical to prose the radiologist's own findings support.
+  const validation = validateDraftGrounding({
+    worklistId: worklistId ?? null,
+    modality,
+    studyDescription,
+    reportBody,
+    impression,
+    clinicalHistory,
+    draftFindings,
+    draftImpression,
+    imagesSentToModel: images.length,
+  });
 
   const diag = buildAiReportingDraftDiagnostics({
     requestId,
@@ -1234,9 +1353,14 @@ router.post("/draft", async (req, res): Promise<void> => {
   });
   logAiReportingDraftDiagnostics(diag, success ? "info" : "error");
 
-  // Save draft to DB
+  // Save draft to DB. Skipped for a declared provider warm-up: the model still
+  // gets loaded and exercised, and the audit row below still records that an AI
+  // call happened, but a study nobody asked about does not acquire a stored
+  // draft that GET /drafts/:studyInstanceUID will later hand to whoever opens
+  // it. That draft would have been written from a prompt carrying no findings
+  // at all — pure image-plus-template invention with no radiologist input.
   let draftId: number | null = null;
-  if (success) {
+  if (success && !warmUpOnly) {
     const inserted = await db.insert(aiReportingDraftsTable)
       .values({
         studyInstanceUID: studyInstanceUID ?? null,
@@ -1317,6 +1441,9 @@ router.post("/draft", async (req, res): Promise<void> => {
 
   res.json({
     // `findings` is the workspace autofill key; `draft` kept for older clients.
+    // Both are empty when the caller asked for an impression only, so no surface
+    // can offer model-invented findings as a replacement for text the
+    // radiologist already typed.
     findings: draftFindings,
     draft: draftFindings,
     impression: draftImpression,
@@ -1324,7 +1451,10 @@ router.post("/draft", async (req, res): Promise<void> => {
     model: model || null,
     draftId,
     requestId,
-    aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    validation,
+    aiSafetyLabel: validation.ok
+      ? "AI Draft – Requires Radiologist Review"
+      : "AI Draft – Ungrounded content flagged – verify before accepting",
   });
 });
 
