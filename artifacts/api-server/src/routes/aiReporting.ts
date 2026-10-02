@@ -145,6 +145,8 @@ async function getGlobalSettings(): Promise<{
   defaultPromptTemplate: string;
   includeDemographics: boolean;
   anonymize: boolean;
+  /** Opt-in to send prompt text that names a patient to a cloud provider. */
+  cloudTextPhiAllowed: boolean;
   allowedRoles: string[];
 }> {
   const row = await db
@@ -160,6 +162,7 @@ async function getGlobalSettings(): Promise<{
     defaultPromptTemplate: "",
     includeDemographics: false,
     anonymize: true,
+    cloudTextPhiAllowed: false,
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   };
 
@@ -426,6 +429,7 @@ router.post("/settings", async (req, res): Promise<void> => {
       defaultPromptTemplate?: string;
       includeDemographics?: boolean;
       anonymize?: boolean;
+      cloudTextPhiAllowed?: boolean;
       allowedRoles?: string[];
     };
     providers?: Record<string, {
