@@ -40,7 +40,10 @@ export const aiReportingAuditLogsTable = pgTable(
     model: text("model"),
     promptText: text("prompt_text"),
     numImages: integer("num_images").notNull().default(0),
-    anonymized: boolean("anonymized").notNull().default(true),
+    // Records whether identifiers were actually removed from what was sent.
+    // Defaults to false so that an insert which forgets the column cannot
+    // silently file a positive privacy claim.
+    anonymized: boolean("anonymized").notNull().default(false),
     includedDemographics: boolean("included_demographics").notNull().default(false),
     wasInsertedToReport: boolean("was_inserted_to_report").notNull().default(false),
     draftId: integer("draft_id"),             // FK → ai_reporting_drafts if saved

@@ -58,6 +58,7 @@ import {
 import { radiologyWorklistTable } from "@workspace/db/schema";
 import { RadiologyIdentityError, resolveAuthorizedStudyUid } from "../lib/radiologyIdentity";
 import { resolveTestModel } from "../lib/ai/testProviderModel";
+import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 import {
   AiReportingQueryRequestSchema,
   type AiPromptSource,
@@ -760,7 +761,11 @@ router.post("/query", async (req, res): Promise<void> => {
   }
 
   if (shouldAnonymize) {
-    finalPrompt = `[Note: Patient identifiers have been removed from images for privacy.]\n\n${finalPrompt}`;
+    // The images are a PACS render with the overlay text composited into the
+    // pixels, so they can still carry the name, ID and date of birth. The old
+    // wording told the model those had been removed — a statement about a step
+    // that never runs. This one is true and gives the model something to do.
+    finalPrompt = `[Privacy: these images are NOT de-identified and may show the patient's name, ID or date of birth. Do not transcribe any identifier into your answer — refer to "the patient".]\n\n${finalPrompt}`;
   }
 
   // Fetch images — server-side only, resolved from Orthanc by UID.
@@ -793,7 +798,7 @@ router.post("/query", async (req, res): Promise<void> => {
     model: model || null,
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
-    anonymized: shouldAnonymize,
+    anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: includeDemographics && !shouldAnonymize,
     success,
     errorMessage: errorMsg ?? null,
@@ -808,7 +813,7 @@ router.post("/query", async (req, res): Promise<void> => {
     provider: providerName,
     model: model || null,
     numImages: images.length,
-    anonymized: shouldAnonymize,
+    anonymized: DICOM_REDACTION_PERFORMED,
     promptSource,
     promptChars: finalPrompt.length,
   };
@@ -1121,7 +1126,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     model: model || null,
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
-    anonymized: true,
+    anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: false,
     wasInsertedToReport: false,
     draftId,
@@ -1221,7 +1226,7 @@ router.post("/polish", async (req, res): Promise<void> => {
     model: null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
-    anonymized: true,
+    anonymized: DICOM_REDACTION_PERFORMED,
     success,
     errorMessage: success ? null : (aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });
@@ -1312,7 +1317,7 @@ router.post("/image-review", async (req, res): Promise<void> => {
     model: model || null,
     promptText: prompt.substring(0, 2000),
     numImages: images.length,
-    anonymized: true,
+    anonymized: DICOM_REDACTION_PERFORMED,
     success,
     errorMessage: success ? null : (aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });
@@ -1454,7 +1459,7 @@ router.post("/compare", async (req, res): Promise<void> => {
     model: null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
-    anonymized: true,
+    anonymized: DICOM_REDACTION_PERFORMED,
     success,
     errorMessage: success ? null : (aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });
