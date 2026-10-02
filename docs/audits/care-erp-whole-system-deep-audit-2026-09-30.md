@@ -35,6 +35,7 @@ The brief required the independent audit to precede any reading of prior conclus
 | Drizzle tables declared | **455** across 180 schema files |
 | Migrations | **182** files; DDL of record `zz_schema_reconcile_20260709.sql` = 27,342 lines |
 | `CHECK` / `FOREIGN KEY` / `GRANT\|REVOKE` in the DDL of record | **0 / 0 / 0** |
+| …but FKs **do** exist in the live database | Corrected after publication (see §8 **R-09**): `lib/db/drizzle/*.sql` contains **70 `FOREIGN KEY` statements**, and `pg_constraint` on production reports **14 FKs referencing `patients`** (`orders`, `bills`, `appointments`, `form_f_records`, `samples`, `outsource_orders`, `pregnancy_episodes`, `abha_links`, `abdm_care_contexts`, `abdm_consent_artefacts`, `external_patient_links`, `diagnostic_referrals`, `emergency_imported_transactions`, `emergency_patient_resolutions`). Enforcement is therefore **partial and origin-dependent**, not absent: `radiology_worklist.patient_id` has **no** FK. |
 | DDL statements executed from boot code | **363** (`ADD COLUMN`/`CREATE INDEX` forms) inside `api-server/src/index.ts` (3,069 lines) |
 | DB-gated API test files / `.request.test.ts` | **44 / 25** |
 | Test files asserting source text (`readFileSync`) | **148 of 755 (19.6%)**, 461 occurrences |
@@ -120,7 +121,7 @@ flowchart TB
         INT["integration / outbox / emitReportToHope"]
         CRN["cron / worker"]
     end
-    subgraph DATA["PostgreSQL 455 tables (0 FK, 0 CHECK in DDL of record)"]
+    subgraph DATA["PostgreSQL 455 tables (DDL of record: 0 FK; live DB: FKs exist but coverage is partial)"]
         DB1[("patients/orders/bills/payments")]
         DB2[("radiology_worklist/studies/drafts")]
         DB3[("patient_reports + amendments")]
@@ -162,7 +163,7 @@ Each entry names the modules it spans. Evidence and severity are in §6.
 
 | CF | Wiring failure | Spans |
 |---|---|---|
-| CF-01 | **One human, many chart numbers.** UHID has no unique constraint in the DDL that builds production; ~9 patient-creating paths; 3 resolvers use `eq(patientId).limit(1)`; no merge/dedupe tool exists at all (`git grep mergePatient` → 0 hits) so every duplicate is permanent across ~70 `patient_id` tables with 0 FKs. | patients, billing, radiology, lab, portal, HOPE, reports |
+| CF-01 | **One human, many chart numbers.** UHID has no unique constraint in the DDL that builds production; ~9 patient-creating paths; 3 resolvers use `eq(patientId).limit(1)`; no merge/dedupe tool exists at all (`git grep mergePatient` → 0 hits) so any duplicate is permanent across ~70 `patient_id` tables **whose FK coverage is partial** — 14 tables have a real FK to `patients` on the live DB, while `radiology_worklist.patient_id` has none (§0.2, §8 R-09). Measured live on 2026-10-02: **0 duplicate UHIDs today**, so this is an unenforced guard rather than active damage. | patients, billing, radiology, lab, portal, HOPE, reports |
 | CF-02 | **Integer primary keys leak into the clinical identifier space.** MWL publish sends `patient?.uhid ?? String(patient.id)` as DICOM PatientID; intake writes it back into `patients.patient_id`. Also `uhid: … ?? r.patientId` in the workspace and displayed on the demography card. | radiology, PACS, patients, OHIF, reports |
 | CF-03 | **Placeholder phone `"0000000000"` is a live join key.** Auto-created by DICOM intake and emergency reconcile; accepted by the portal's `validPhone`; used by self-registration's find-or-create → a kiosk registration can attach bills, orders and reports to an unrelated auto-created DICOM patient. | patients, portal, kiosk, WhatsApp, billing |
 | CF-04 | **A refund is written into two fields and read by nine formulas.** `paidAmount -= refund` **and** `refundAmount += refund`, then `balance = max(0, T − P − R)`; one consumer documents the opposite convention. Under-collection, auto-`paid`, wrong dues SMS, wrong commission qualification. | billing, payments, dues, reports, WhatsApp, commission, day-close |
@@ -311,7 +312,7 @@ Stored-vs-derived audit: **stored** `subtotal`, `discount`, `taxAmount`, `totalA
 
 ### Map 8 — Database ownership
 
-Most contested table: `radiology_worklist` — **22 writer files**. `patients` 9, `bills` 17, `orders` 16, `payments` 13, `vouchers` 11. `ledger_id` is written by two routes, a super-admin host **and boot SQL**. **58 declared tables have zero inserts** (`backup_logs`, `role_permissions`, `sync_queue`, `tokens`, `outsource_orders`, all `finding*` knowledge tables, …) — `patient_counter` is dead as a writer yet still read as a high-water source by the UHID seeder. There are **no FKs to enforce any of it**, and `ON DELETE CASCADE` exists in exactly one schema file; deletion is manual cascade (`ledgers/:id/reset` deletes payments, **`bill_audits`**, bills, order_tests, orders, appointments, patients).
+Most contested table: `radiology_worklist` — **22 writer files**. `patients` 9, `bills` 17, `orders` 16, `payments` 13, `vouchers` 11. `ledger_id` is written by two routes, a super-admin host **and boot SQL**. **58 declared tables have zero inserts** (`backup_logs`, `role_permissions`, `sync_queue`, `tokens`, `outsource_orders`, all `finding*` knowledge tables, …) — `patient_counter` is dead as a writer yet still read as a high-water source by the UHID seeder. FK enforcement is **partial, not absent** (§8 R-09): 14 tables carry a live FK to `patients`, but `radiology_worklist` — the most contested table — has none, so its `patient_id` pointer is unenforced. `ON DELETE CASCADE` exists in exactly one schema file; deletion is manual cascade (`ledgers/:id/reset` deletes payments, **`bill_audits`**, bills, order_tests, orders, appointments, patients).
 
 ### Map 9 — Configuration precedence
 
@@ -337,7 +338,7 @@ Backend: `code default → host .env (interpolation only) → compose environmen
 
 | Failure mode | Can current software produce it? | Mechanism / what stands in the way |
 |---|---|---|
-| **Wrong patient (chart collision)** | **Yes** | No UHID unique constraint on a reconcile-built DB; `limit(1)` resolvers; no merge tool; ~70 tables, 0 FKs |
+| **Wrong patient (chart collision)** | **Yes** | No UHID unique constraint on a reconcile-built DB; `limit(1)` resolvers; no merge tool; ~70 tables, FK coverage partial and missing on `radiology_worklist` (§8 R-09) |
 | **Wrong patient (identity auto-link)** | **Yes, partially guarded** | 0.85 name-similarity writes `patientId` live; draft-save refuses `DRAFT_PATIENT_MISMATCH` on the bound path; the study-less report create path is exempt by design; `canHydrateDraftForPatient` returns `true` when either side is null |
 | **Wrong study** | **Yes** | accession non-unique and used as a viewer launch key; `study_instance_uid` uniqueness boot-optional; two study-id namespaces with unordered `limit(1)` |
 | **Lab result attached to the wrong specimen** | **Yes, no guard exists** | reports carry no `sampleId`; `type` chosen by the operator; radiology's matcher skipped for non-radiology types; report create from a free patient dropdown |
@@ -551,6 +552,7 @@ Cross-checked rather than trusted. Outcomes:
 | R-06 | Prior figure "455 declared tables / 169 reporting tables" (from the radiology audit's agent) | 455 declared tables retained (command published); the reporting-subset figure replaced with "218 tables in the ~40 reporting-named schema files"; and in this whole-system audit, 58 tables identified as having no writer | The earlier name-extraction pattern silently matched only 196 of 455 tables. **No severity moved.** |
 | R-07 | "295 route files, 768 handler registrations" | Published both counts and the method difference (§0.4): 795 and 1,874 | Two grep definitions; the third number (38 unguarded mounts / 47 files with no auth call) is the one findings depend on |
 | **R-08** | "Audited tree = `b112c22e`", with all citations read from that working tree | **The branch advanced mid-audit to `edc73a67`** (open PR #797, `feat(accounting): post bank imports on CARE's date…`), which rewrites 47 net lines of `accounting.ts`. Three citations were re-pinned against `origin/main` (`ee897099`): CA-13 (`:316` → `:266,320`, plus the `:406-408` audit nuance), CA-55 (`:476` → `:441,459` with the `expensePaymentId` guard gap named), CA-60 (`:1398` → `:1403`), and §7.2's ACC-P1-3 note. The load-bearing GL claims were re-verified unchanged on main: `accounting.ts:1349` (`// refunds/reversals not synced here`), its `:1280` comment ("only POSITIVE, non-superseded payments"), `accounting.ts:1291`, `auto-voucher.ts:238-239,661,726`, `daily-summary.ts:76` | Discovered by re-fetching `origin/main` before opening this PR. **No finding and no severity changed.** It is recorded because an audit that cites line numbers must state which tree it read |
+| **R-09** | "**0 `FOREIGN KEY`** … in the DDL of record" generalised through this document into *"there are no FKs to enforce any of it"*, *"~70 `patient_id` tables with 0 FKs"*, and the Mermaid label "0 FK, 0 CHECK" | **The measurement was right and the generalisation was wrong.** `migrations/zz_schema_reconcile_20260709.sql` does contain 0 FK statements, but `lib/db/drizzle/*.sql` contains **70 `FOREIGN KEY` statements**, and `pg_constraint` on the live production database reports **14 foreign keys referencing `patients`** (`orders`, `bills`, `appointments`, `form_f_records`, `samples`, `outsource_orders`, `pregnancy_episodes`, `abha_links`, `abdm_care_contexts`, `abdm_consent_artefacts`, `external_patient_links`, `diagnostic_referrals`, `emergency_imported_transactions`, `emergency_patient_resolutions`). The true finding is stronger and different: **two schema lineages with different constraint behaviour**, so FK coverage is *partial and origin-dependent* — `radiology_worklist.patient_id`, the most-written table in the system, is unenforced while `bills.patient_id` is enforced. §0.2, §2 Map 1, CF-01, §4 Map 8 and §5 corrected accordingly | Found while scoping a phantom-patient purge on 2026-10-02: I predicted the delete would silently orphan rows because there were no FKs, and production raised FK constraints instead. Measured 0 duplicate UHIDs at the same time, so CA-02 remains an unenforced-guard finding with **no active damage** — **no severity moved** |
 
 ---
 
