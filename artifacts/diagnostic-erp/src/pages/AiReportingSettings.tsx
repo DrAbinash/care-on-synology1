@@ -1101,7 +1101,7 @@ export function AiReportingPanel() {
               <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 flex gap-2 text-xs">
                 <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
                 <p className="text-amber-800 dark:text-amber-300">
-                  <strong>No identifiers are removed from the images.</strong> They leave the clinic as the PACS renders them, and that render burns the patient&apos;s name, ID and date of birth into the picture. This switch only adds an instruction asking the model not to repeat them, so a cloud provider still receives the identifiers. Keep imaging on a local model until de-identification is built.
+                  <strong>No identifiers are removed before sending.</strong> The images leave as the scanner stored them — the viewer render carries no DICOM tags, but anything the machine burned into the picture, which is routine on ultrasound, still shows the patient&apos;s name. The prompt carries whichever demographics you enable below. This switch only adds an instruction asking the model not to repeat identifiers. Keep imaging on a local model until de-identification is built.
                 </p>
               </div>
             )}
