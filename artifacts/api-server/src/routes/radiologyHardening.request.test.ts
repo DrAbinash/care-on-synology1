@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -543,5 +543,69 @@ describe.skipIf(!dbReady)("radiology identity hardening — request level", () =
         impression: "normal",
       });
     expect([200, 201]).toContain(res.status);
+  });
+
+  it("23. unmatched DICOM intake mints no phantom patient and links no patient", async () => {
+    // Production shape for a walk-in scanned before billing: the modality sends
+    // its own per-day PatientID, a name, and a blank accession. There is no DOB
+    // in the payload, so no safe merge is possible. Intake used to answer that by
+    // INSERTing a patients row (phone 0000000000, DOB 1900-01-01, UHID = the
+    // modality string) — the source of 3,047 patients holding no bill, order or
+    // appointment.
+    const dicomUid = `PHMOD${(marker.replace(/[^A-Za-z0-9]/g, "") || "999").toUpperCase()}`;
+    // Scoped to this run's marker so a leftover row from another run can never
+    // make this assertion pass or fail by accident.
+    const phantomsFor = () =>
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(patientsTable)
+        .where(
+          or(
+            eq(patientsTable.patientId, dicomUid),
+            and(eq(patientsTable.lastName, "Phantomcheck"), eq(patientsTable.firstName, marker)),
+          ),
+        );
+
+    expect(Number((await phantomsFor())[0]!.n)).toBe(0);
+
+    const headers: Record<string, string> = { ...auth };
+    const internalKey = process.env.INTERNAL_API_KEY;
+    if (internalKey) headers.Authorization = `Bearer ${internalKey}`;
+
+    const res = await request(app)
+      .post("/api/internal/radiology/studies")
+      .set(headers)
+      .send({
+        patientName: `Phantomcheck^${marker}`,
+        patientId: dicomUid,
+        modality: "MR",
+        studyDate: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+        studyDescription: "MRI Brain phantom gate",
+        studyInstanceUID: `1.2.840.hard.phantom.${marker}`,
+        accessionNumber: "",
+      });
+    expect(res.status).toBe(201);
+    const worklistId = Number(res.body?.worklistId);
+    expect(worklistId).toBeGreaterThan(0);
+
+    try {
+      const [wl] = await db
+        .select()
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, worklistId));
+      // Documented unlinked state: nullable FK + the schema's default status.
+      expect(wl.patientId).toBeNull();
+      expect(wl.patientMatchStatus).toBe("UNMATCHED");
+      // The DICOM identifier is still retained for later reconciliation.
+      expect(wl.dicomPatientId).toBe(dicomUid);
+      // And the row was already RED with no billed study: the invented patient
+      // never made this study reportable anyway.
+      expect(wl.matchScore).toBe("RED");
+      expect(String(wl.matchWarnings)).toContain("NO_LINKED_STUDY");
+
+      expect(Number((await phantomsFor())[0]!.n)).toBe(0);
+    } finally {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId));
+    }
   });
 });

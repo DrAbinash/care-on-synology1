@@ -1,13 +1,20 @@
 /**
- * dicomPatientCreator.ts
- * Auto-creates patients from DICOM demographics during study intake.
- * Merge-safety: checks existing patients by PatientID, name+DOB, or phone.
- * Prevents duplicate MRNs by linking to existing patient when found.
+ * dicomPatientCreator.ts — resolve a DICOM study to an EXISTING CARE patient.
+ *
+ * Despite the name, this module no longer creates patients. It used to, and the
+ * name+DOB merge below could never stop it: intake passes the caret-stripped
+ * display name, so parseDicomName yields an empty firstName and that branch is
+ * skipped, and the DICOM payload carries no PatientBirthDate to fall back on.
+ * Every unseen modality PatientID therefore inserted a placeholder patient
+ * (UHID copied from the scanner, first_name "Unknown", phone "0000000000", DOB
+ * "1900-01-01"), which was then bound to a study by name alone while the same
+ * intake pass scored that study RED for unresolved identity. Intake now links
+ * or leaves the study unlinked; creation belongs to Bill Desk, where a human
+ * and a price exist.
  */
 import { db } from "@workspace/db";
 import { patientsTable } from "@workspace/db/schema";
-import { eq, sql, ilike, or, and } from "drizzle-orm";
-import { nextPatientId } from "./documentNumberCounters";
+import { eq, ilike, and } from "drizzle-orm";
 
 export type DicomDemographics = {
   patientId?: string;       // DICOM PatientID (0010,0020)
@@ -36,23 +43,9 @@ function parseDicomDate(raw?: string): string {
   return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
 }
 
-function parseDicomAge(raw?: string): { ageValue?: number; ageUnit?: string } {
-  if (!raw || raw.length < 2) return {};
-  const unit = raw.slice(-1).toUpperCase(); // Y/M/D/W
-  const value = parseInt(raw.slice(0, -1), 10);
-  if (isNaN(value)) return {};
-  const unitMap: Record<string, string> = { Y: "years", M: "months", D: "days", W: "weeks" };
-  return { ageValue: value, ageUnit: unitMap[unit] || "years" };
-}
-
 function parseDicomSex(raw?: string): string {
   const map: Record<string, string> = { M: "male", F: "female", O: "other" };
   return map[raw?.toUpperCase() ?? ""] || "other";
-}
-
-async function generatePatientId(): Promise<string> {
-  // Same SEQUENCE allocator as Billing Desk POST /api/patients.
-  return nextPatientId(db);
 }
 
 /**
@@ -99,54 +92,4 @@ export async function findExistingPatient(
   }
 
   return null;
-}
-
-/**
- * Create a patient from DICOM demographics, or return existing one.
- * Returns { patient, isNew, mergeWarning }.
- */
-export async function createOrLinkPatientFromDicom(
-  demo: DicomDemographics,
-): Promise<{
-  patient: typeof patientsTable.$inferSelect;
-  isNew: boolean;
-  mergeWarning?: string;
-}> {
-  const existing = await findExistingPatient(demo);
-  if (existing) {
-    let warning: string | undefined;
-    const { firstName, lastName } = parseDicomName(demo.patientName);
-    const dob = parseDicomDate(demo.dateOfBirth);
-    // Warn if DOB doesn't match exactly (name-only match)
-    if (dob && existing.dateOfBirth !== dob) {
-      warning = `Name matched but DOB differs: DICOM=${dob}, existing=${existing.dateOfBirth}`;
-    }
-    return { patient: existing, isNew: false, mergeWarning: warning };
-  }
-
-  // Create new patient
-  const { firstName, lastName } = parseDicomName(demo.patientName);
-  const dob = parseDicomDate(demo.dateOfBirth);
-  const ageInfo = parseDicomAge(demo.age);
-  const gender = parseDicomSex(demo.sex);
-  const patientId = demo.patientId || (await generatePatientId());
-
-  // Use a placeholder phone if none provided (DICOM rarely has phone)
-  const phone = "0000000000";
-
-  const [patient] = await db
-    .insert(patientsTable)
-    .values({
-      patientId,
-      firstName: firstName || "Unknown",
-      lastName: lastName || "",
-      dateOfBirth: dob || "1900-01-01",
-      gender,
-      phone,
-      ageValue: ageInfo.ageValue ?? null,
-      ageUnit: ageInfo.ageUnit ?? null,
-    })
-    .returning();
-
-  return { patient, isNew: true };
 }

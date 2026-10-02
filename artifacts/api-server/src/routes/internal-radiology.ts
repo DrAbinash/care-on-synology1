@@ -39,7 +39,7 @@ import { requireInternalApiKey, safeEqual } from "../lib/internalApiKeyAuth";
 import { normalizeRole, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { checkWriteLock } from "../lib/studyLocks";
 import { todayIST } from "../lib/istDate";
-import { createOrLinkPatientFromDicom, type DicomDemographics } from "../lib/dicomPatientCreator";
+import { findExistingPatient, type DicomDemographics } from "../lib/dicomPatientCreator";
 import { computeStudyPriority, applyPriorityToStudy } from "../lib/studyPriorityEngine";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
@@ -541,6 +541,21 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
     }
 
     if (!resolvedPatientId) {
+      // Link-only: DICOM intake must not CREATE patients. It could never match
+      // one here either — intake hands over the *display* name (caret-stripped by
+      // formatDicomPersonNameForDisplay above), so parseDicomName returns an
+      // empty firstName and findExistingPatient's name+DOB branch is
+      // unreachable, and the payload carries no PatientBirthDate at all. Every
+      // unseen modality PatientID therefore INSERTed a placeholder: UHID set to
+      // the modality's own per-day string, first_name "Unknown", DOB
+      // 1900-01-01, phone 0000000000. That is how 3,047 patients holding no
+      // bill, order or appointment came to exist — for studies scored RED anyway.
+      //
+      // NULL patient_id with UNMATCHED is the state the schema documents as its
+      // own default. Billed studies still self-heal: worklistBillingLink matches
+      // on the normalized accession and back-fills patient_id from the study,
+      // which needs no invented identity. What changes is the un-billed walk-in:
+      // it now waits in Match Center instead of arriving with a fake MRN.
       try {
         const demo: DicomDemographics = {
           patientId: rawDicomPatientId ?? undefined,
@@ -550,12 +565,14 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
           studyDate: studyDate ?? undefined,
           modality,
         };
-        const result = await createOrLinkPatientFromDicom(demo);
-        resolvedPatientId = result.patient.id;
-        patientMatchStatus = result.isNew ? "AUTO_CREATED" : "MATCHED_BY_DEMOGRAPHICS";
-        logger.info({ patientId: resolvedPatientId, status: patientMatchStatus }, "Auto-linked patient from DICOM");
+        const existing = await findExistingPatient(demo);
+        if (existing) {
+          resolvedPatientId = existing.id;
+          patientMatchStatus = "MATCHED_BY_DEMOGRAPHICS";
+          logger.info({ patientId: resolvedPatientId }, "Auto-linked existing patient from DICOM demographics");
+        }
       } catch (err) {
-        logger.warn({ err }, "Auto-create patient failed");
+        logger.warn({ err }, "DICOM demographic match failed; leaving the study unlinked");
       }
     }
 
