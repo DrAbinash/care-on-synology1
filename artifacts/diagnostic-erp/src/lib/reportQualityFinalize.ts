@@ -2,11 +2,16 @@
  * reportQualityFinalize.ts — canonical engine integration for the workspace
  * finalize gate (PR #101 Phase 5).
  *
- * Policy (docs/report-quality-engine/ARCHITECTURE.md §8): only deterministic
- * structured-tier findings with severity "blocker" hard-block finalize. Heuristic
- * text-tier findings are advisory (warnings in the dialog). Overrides are
- * append-only via POST /api/report-quality/evaluations/:id/override and keyed
- * by stable ruleId.
+ * Blocking policy is NOT settled, and nothing in this gate stops a signature
+ * today. ARCHITECTURE.md §8.1 lists "block vs warn" as an open product-owner
+ * decision ("Needs sign-off — this changes radiologist workflow"), and the
+ * structured tier is still Phase-3 shadow: every one of its rule definitions
+ * carries `blockingEligibility: false` (rules/structured/index.ts:26), so the
+ * engine itself declares them non-blocking. FinalizeSignDialog renders
+ * `unresolvedBlockers` under "Review before signing (does not block)" and they
+ * are deliberately absent from its `canConfirm`. Heuristic text-tier findings
+ * are advisory. Overrides are append-only via
+ * POST /api/report-quality/evaluations/:id/override and keyed by stable ruleId.
  */
 
 export type CanonicalQualityFinding = {
@@ -54,7 +59,11 @@ export type FinalizeQualityGate = {
   overrides: QualityOverrideRow[];
 };
 
-/** Deterministic structured blockers are the only hard finalize gate. */
+/**
+ * Names the findings that WOULD hard-block finalize once the block-vs-warn
+ * decision (ARCHITECTURE.md §8.1) is made and wired. Review-only today — they
+ * never reach FinalizeSignDialog's `canConfirm`. See the file header.
+ */
 export function isHardBlockingFinding(f: CanonicalQualityFinding): boolean {
   return f.severity === "blocker" && f.tier === "structured";
 }
