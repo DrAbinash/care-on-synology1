@@ -613,15 +613,19 @@ reportComposerRouter.post("/vision-trial", async (req, res): Promise<void> => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const confirmCloudVisionTrial = body.confirmCloudVisionTrial === true;
+  // The admin setting is the only authority here. The request body used to be
+  // able to grant itself cloud vision — both directly, and again when the ops
+  // settings failed to load — which made "clinical images need an explicit
+  // opt-in" a suggestion the caller could overrule. The confirm checkbox stays:
+  // it records that the operator acknowledged the trial, it does not authorise
+  // it. Denials are the fail-closed branch.
   let cloudVisionAllowed = false;
   try {
     const ops = await getOvernightOpsControls();
     cloudVisionAllowed = ops.deepseekCloudVisionAllowed === true;
   } catch {
-    cloudVisionAllowed = body.cloudVisionAllowed === true;
+    cloudVisionAllowed = false;
   }
-  // Explicit body flag may also enable for controlled UI trial (still requires confirm).
-  if (body.cloudVisionAllowed === true) cloudVisionAllowed = true;
 
   const imagesRaw = Array.isArray(body.images) ? body.images : [];
   const images = imagesRaw
