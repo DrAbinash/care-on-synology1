@@ -18,6 +18,7 @@ import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinal
 import { offlineBlockMessage } from "@/lib/reliability";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import { collectCompositionFinalizeGate } from "@/lib/observationLedger";
+import { decideAiFinalizeGate } from "@/lib/aiFinalizeGate";
 import { buildSignedReportBodyHtml } from "@/lib/radiologyReportPrintLiveMerge";
 import type {
   PreviewFindingsItem, ReportHeadingCase, ReportImpressionStyle,
@@ -115,17 +116,15 @@ const finalizeReport = useCallback(async () => {
   }
 
   // Guard 10: pending AI proposals must never silently finalize
-  const pendingAi = reportComposer.job?.trackedChanges?.filter((c) => c.reviewState === "PENDING") ?? [];
-  if (
-    !aiFinalizeBypassRef.current &&
-    pendingAi.length > 0 &&
-    reportComposer.job &&
-    ["READY", "STALE_READY"].includes(reportComposer.job.status ?? "")
-  ) {
+  const aiGate = decideAiFinalizeGate({
+    job: reportComposer.job,
+    bypassed: aiFinalizeBypassRef.current,
+  });
+  if (aiGate.block) {
     setAiFinalizeGate("pending");
     toast({
       title: "AI suggestions remain unreviewed",
-      description: `${pendingAi.length} AI change(s) pending. Review, or Reject remaining and continue.`,
+      description: `${aiGate.pendingCount} AI change(s) pending. Review, or Reject remaining and continue.`,
       variant: "destructive",
     });
     reportComposer.setReviewOpen(true);

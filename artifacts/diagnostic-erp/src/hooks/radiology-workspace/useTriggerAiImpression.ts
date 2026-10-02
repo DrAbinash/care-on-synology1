@@ -11,6 +11,11 @@
  * It is surfaced as a toast and never as text: the impression still lands in
  * the ghost layer and still needs an explicit accept.
  *
+ * A response is dropped unless the study open when it lands is the study the
+ * request was built from (see shouldApplyAsyncStudyKey). Without that, an
+ * impression summarising Patient A's findings appears in Patient B's ghost
+ * layer one keystroke from being accepted into B's report.
+ *
  * Registers the callback on the zai workspace store so the command palette /
  * host bridge can invoke it. useWorkspaceCommands closes over the same
  * returned callback for the keyboard path.
@@ -20,6 +25,7 @@ import { useCallback, useEffect } from "react";
 import type { AiDraftValidation, AiReportingDraftRequest } from "@workspace/api-zod";
 import { api } from "@/lib/fetchApi";
 import { draftValidationNotice } from "@/lib/aiDraftValidation";
+import { shouldApplyAsyncStudyKey } from "@/lib/radiologyWorkspaceSafety";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
@@ -40,8 +46,17 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
   const { toast } = useToast();
 
   const triggerAiImpression = useCallback(async () => {
-    const cur = useWorkspace.getState().findingsText;
+    const atRequest = useWorkspace.getState();
+    const cur = atRequest.findingsText;
     if (!cur.trim()) return;
+    // Captured BEFORE the await. A /draft round trip to a local model takes
+    // seconds, and a radiologist working a list moves on inside that window; the
+    // callback still closes over the study the request was built from, so the
+    // response has to be checked against the study that is open when it lands.
+    const requested = {
+      studyId: atRequest.activeStudyId,
+      studyInstanceUID: atRequest.activeStudyInstanceUID ?? studyInstanceUID ?? null,
+    };
     try {
       const body: AiReportingDraftRequest = {
         studyInstanceUID,
@@ -50,8 +65,21 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
         reportBody: cur,
       };
       const res = await api.post<AiDraftResponse>("/api/ai-reporting/draft", body);
+      const now = useWorkspace.getState();
+      const sameStudy =
+        shouldApplyAsyncStudyKey(requested.studyId, now.activeStudyId)
+        && shouldApplyAsyncStudyKey(requested.studyInstanceUID, now.activeStudyInstanceUID);
+      if (!sameStudy) {
+        toast({
+          title: "AI impression discarded",
+          description: "You moved to another study while the model was working. Nothing was changed.",
+          variant: "destructive",
+          duration: 12000,
+        });
+        return;
+      }
       if (res.impression) {
-        useWorkspace.getState().setGhostText(res.impression, "impression");
+        now.setGhostText(res.impression, "impression");
         const notice = draftValidationNotice(res.validation, { impressionOnly: true });
         if (notice) {
           toast({

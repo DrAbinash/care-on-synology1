@@ -94,6 +94,64 @@ describe("mergeSentences (findings/impression)", () => {
   });
 });
 
+/**
+ * Measurement safety. A merge that quietly turns a measured 12.6 mm into 12 mm
+ * is not a formatting change — the decimal is the difference between a disc that
+ * is watched and one that is operated on, and the merged text still reads like a
+ * measurement somebody took.
+ */
+describe("mergeSentences — measurement precision is clinical detail", () => {
+  it("does not collapse 12.6 mm into 12 mm", () => {
+    const existing = "Thecal sac measured 12.6 mm at L4-L5.";
+    const incoming = "Thecal sac measured 12 mm at L4-L5.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("12.6 mm");
+    expect(out).toContain("12 mm");
+  });
+
+  it("keeps a decimal when the AI paraphrase drops it", () => {
+    const existing = "Anteroposterior diameter 8.7 mm.";
+    const incoming = "Anteroposterior diameter 8 mm.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("8.7 mm");
+    expect(out.split("\n").length).toBe(2);
+  });
+
+  it("still dedupes an identical measurement", () => {
+    const a = "Thecal sac measured 12.6 mm at L4-L5.";
+    expect(mergeSentences(a, a)).toBe(a);
+  });
+
+  it("treats a unit change as a conflict, not a restatement", () => {
+    const existing = "Lesion measured 12 mm.";
+    const incoming = "Lesion measured 12 cm.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("12 mm");
+    expect(out).toContain("12 cm");
+  });
+
+  it("preserves the level a measurement belongs to", () => {
+    const existing = "Canal diameter 12.6 mm at L4-L5.";
+    const incoming = "Canal diameter 12.6 mm at L5-S1.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("L4-L5");
+    expect(out).toContain("L5-S1");
+  });
+
+  it("never downgrades precision when a sentence carries two measurements", () => {
+    // hasConflictingClinicalDetail compares only the FIRST match of each guard
+    // regex, and the first mm/cm match here is identical in both sentences. The
+    // sentence still does not merge, because the word-level subsequence test
+    // fails on 4.1 vs 4 — so the precise figure survives and the rounded one is
+    // discarded rather than replacing it.
+    const existing = "Canal 12.6 mm and foramen 4.1 mm at L4-L5.";
+    const incoming = "Canal 12.6 mm and foramen 4 mm at L4-L5.";
+    const out = mergeSentences(existing, incoming);
+    expect(out).toContain("4.1 mm");
+    expect(out).not.toContain("foramen 4 mm");
+  });
+});
+
 describe("mergeReportFieldContent — source order equivalence", () => {
   it("quick-select then quick-findings ≈ reverse", () => {
     const qs = "MRI performed on 3T scanner.";
