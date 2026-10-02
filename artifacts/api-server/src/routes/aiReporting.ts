@@ -846,7 +846,8 @@ router.post("/draft", async (req, res): Promise<void> => {
     studyInstanceUID: studyInstanceUIDBody,
     modality: modalityBody,
     studyDescription: studyDescriptionBody,
-    reportBody,
+    reportBody: reportBodyReq,
+    findings: findingsReq,
     impression,
     clinicalHistory,
     provider: providerReq,
@@ -856,10 +857,17 @@ router.post("/draft", async (req, res): Promise<void> => {
     modality?: string;
     studyDescription?: string;
     reportBody?: string;
+    /** The key the reporting workspace's Ctrl+I posts the typed findings under. */
+    findings?: string;
     impression?: string;
     clinicalHistory?: string;
     provider?: string;
   };
+
+  // `reportBody` is canonical; `findings` is what the workstation has always
+  // sent. Reading only the former meant Ctrl+I asked for an impression without
+  // ever giving the model the findings it was supposed to summarise.
+  const reportBody = reportBodyReq?.trim() ? reportBodyReq : findingsReq;
 
   // Look up worklist for study metadata — accept worklistId OR studyInstanceUID
   // (workspace autofill historically sent only studyInstanceUID + modality).
