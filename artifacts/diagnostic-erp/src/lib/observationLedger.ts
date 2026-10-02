@@ -546,6 +546,47 @@ export function detectUnownedSiblingConflictsForLedger(opts: {
 
 export const UNOWNED_SIBLING_HINT = "Review nearby unowned text after this finding changed.";
 
+export const ORPHANED_RECOMMENDATION_HINT =
+  "This advice came from a finding that has since changed or been removed. Re-read it before signing.";
+
+export type OrphanedRecommendationWarning = { sentence: string; hint: string };
+
+/**
+ * Advice still sitting in the Recommendation box whose owning observation no
+ * longer stands — either stale on hydrate, or protected because a manual edit
+ * removed or rewrote the finding it was derived from.
+ *
+ * Never deletes and never blocks. Only sentences still traceable to a ledger
+ * patch are named: advice with no owning observation is indistinguishable from
+ * the radiologist's own, including a legitimate follow-up on a normal study, so
+ * flagging it would train the signer to ignore the whole panel.
+ */
+export function detectOrphanedRecommendationsForLedger(opts: {
+  recommendation: string;
+  patches: Array<{ lastRendered: { recommendation?: string }; protected?: boolean; stale?: boolean }>;
+  provenance?: FieldProvenanceMap;
+}): OrphanedRecommendationWarning[] {
+  const seen = new Set<string>();
+  const out: OrphanedRecommendationWarning[] = [];
+  for (const p of opts.patches) {
+    if (!p.stale && !p.protected) continue;
+    const rendered = (p.lastRendered.recommendation ?? "").trim();
+    if (!rendered) continue;
+    // The radiologist adopted this sentence — it is their advice now.
+    if (contributionProtected(rendered, opts.provenance)) continue;
+    for (const raw of splitToSentences(rendered)) {
+      const sentence = raw.trim();
+      if (!sentence) continue;
+      const key = normalizeContributionMatch(sentence);
+      if (!key || seen.has(key)) continue;
+      if (!fieldContainsContribution(opts.recommendation, sentence)) continue;
+      seen.add(key);
+      out.push({ sentence, hint: ORPHANED_RECOMMENDATION_HINT });
+    }
+  }
+  return out;
+}
+
 export function extractCareObservationLedger(column: unknown): unknown {
   if (!column || typeof column !== "object") return null;
   const rec = column as Record<string, unknown>;
@@ -585,26 +626,39 @@ export function impressionNeedsRefreshFromNarrative(
 export type CompositionFinalizeGateState = {
   impressionNeedsRefresh: boolean;
   siblingWarnings: Array<{ sentence: string; token: string; hint: string }>;
+  orphanedRecommendations: OrphanedRecommendationWarning[];
   stalePatchCount: number;
 };
 
 export function collectCompositionFinalizeGate(opts: {
   impressionNeedsRefresh: boolean;
   findings: string;
+  recommendation: string;
   patches: LedgerPatch[];
+  provenance?: FieldProvenanceMap;
 }): CompositionFinalizeGateState {
   const siblingWarnings = detectUnownedSiblingConflictsForLedger({
     findings: opts.findings,
     patches: opts.patches,
   }).map((w) => ({ ...w, hint: UNOWNED_SIBLING_HINT }));
+  const orphanedRecommendations = detectOrphanedRecommendationsForLedger({
+    recommendation: opts.recommendation,
+    patches: opts.patches,
+    provenance: opts.provenance,
+  });
   return {
     impressionNeedsRefresh: opts.impressionNeedsRefresh,
     siblingWarnings,
+    orphanedRecommendations,
     stalePatchCount: opts.patches.filter((p) => p.stale).length,
   };
 }
 
-/** Stale impression blocks finalize unless refreshed or explicitly acknowledged. Sibling warnings never block. */
+/**
+ * Stale impression blocks finalize unless refreshed or explicitly acknowledged.
+ * Sibling warnings and orphaned recommendations never block — they are named so
+ * the signer sees them, because deleting either would destroy radiologist text.
+ */
 export function compositionFinalizeAllowed(opts: {
   impressionNeedsRefresh: boolean;
   impressionRefreshed: boolean;

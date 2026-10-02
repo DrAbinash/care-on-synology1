@@ -868,7 +868,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       [key]: v,
       fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
     };
-    if (f === "findings" && (opts?.source === "manual" || !opts?.source)) {
+    if (f === "findings") {
+      // Armed on the field, not the source: a new abnormality stales the
+      // Impression whether it arrived from the keyboard, a tile, a template, the
+      // companion panel, dictation or the AI ghost layer, and the radiologist
+      // still has to re-read the Impression before signing. Callers that write
+      // Findings and Impression in one action (report-format apply below, the
+      // template apply and companion auto-populate in useReportingStudySetup)
+      // arm here and clear on the impression write — which is why the clearing
+      // half is keyed on source and this half is not.
       p.impressionNeedsRefresh = true;
     }
     if (f === "impression" && opts?.source && opts.source !== "manual") {
@@ -935,6 +943,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       [key]: result.text,
       fieldProvenance: { ...get().fieldProvenance, [f]: result.provenance },
+      // Same gate as setField, and it has to be repeated rather than delegated:
+      // mergeField is an additive sentence insert, so it can never be the second
+      // half of a paired findings+impression write that setField's callers rely
+      // on to clear the flag. Every insert path — dictation, tiles, templates,
+      // the companion panel, the measurement box, an accepted AI ghost — comes
+      // through here, and before this they all left the Impression unflagged
+      // while a hand-typed Findings edit did flag it.
+      ...(f === "findings" ? { impressionNeedsRefresh: true } : {}),
+      ...(f === "impression" && source !== "manual" ? { impressionNeedsRefresh: false } : {}),
     });
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(result.text, scopedSnippetMacros(get));

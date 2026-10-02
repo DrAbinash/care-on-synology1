@@ -230,9 +230,11 @@ const finalizeReport = useCallback(async () => {
   });
 
   const latest = useWorkspace.getState();
-  const siblingHits = collectCompositionFinalizeGate({
+  const compositionGate = collectCompositionFinalizeGate({
     impressionNeedsRefresh: latest.impressionNeedsRefresh,
     findings: latest.findingsText,
+    recommendation: latest.recommendationText,
+    provenance: latest.fieldProvenance.recommendation,
     patches: latest.appliedPathologyPatches.map((p) => ({
       id: p.id,
       observation: p.observation as never,
@@ -266,8 +268,9 @@ const finalizeReport = useCallback(async () => {
       ...(isCritical && criticalNote ? [criticalNote] : []),
     ].filter(Boolean).join(", "),
     compositionImpressionNeedsRefresh: latest.impressionNeedsRefresh,
-    compositionSiblingWarnings: siblingHits.siblingWarnings,
-    compositionStalePatchCount: siblingHits.stalePatchCount,
+    compositionSiblingWarnings: compositionGate.siblingWarnings,
+    compositionOrphanedRecommendations: compositionGate.orphanedRecommendations,
+    compositionStalePatchCount: compositionGate.stalePatchCount,
   });
 
   if (!result.confirmed) return;

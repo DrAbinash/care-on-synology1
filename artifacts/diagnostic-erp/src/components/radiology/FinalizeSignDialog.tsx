@@ -171,6 +171,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           gate={{
             impressionNeedsRefresh: Boolean(input.compositionImpressionNeedsRefresh),
             siblingWarnings: input.compositionSiblingWarnings ?? [],
+            orphanedRecommendations: input.compositionOrphanedRecommendations ?? [],
             stalePatchCount: input.compositionStalePatchCount ?? 0,
           }}
           impressionRefreshed={impressionRefreshed}

@@ -125,6 +125,7 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
     const gate = collectCompositionFinalizeGate({
       impressionNeedsRefresh: true,
       findings: useWorkspace.getState().findingsText,
+      recommendation: useWorkspace.getState().recommendationText,
       patches: useWorkspace.getState().appliedPathologyPatches.map((p) => ({
         id: p.id,
         observation: p.observation as never,
@@ -229,6 +230,7 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
     const gate = collectCompositionFinalizeGate({
       impressionNeedsRefresh: useWorkspace.getState().impressionNeedsRefresh,
       findings: useWorkspace.getState().findingsText,
+      recommendation: useWorkspace.getState().recommendationText,
       patches: useWorkspace.getState().appliedPathologyPatches.map((p) => ({
         id: p.id,
         observation: p.observation as never,
