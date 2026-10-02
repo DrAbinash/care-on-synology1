@@ -309,3 +309,56 @@ describe("POST /api/ai-reporting/query — canonical prompt contract", () => {
     expect(generateAiResponse).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/ai-reporting/query — the privacy record must describe what happened", () => {
+  // The audit log is a compliance artefact. It used to copy the "Anonymize
+  // Patient Data" setting, so switching it on filed a positive record of a
+  // control that does not exist: no DICOM tag is stripped and no burned-in
+  // overlay is masked anywhere in this codebase.
+
+  const withAnonymizeOn = () => {
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: true,
+      anonymize: true,
+      allowedRoles: [],
+    });
+  };
+
+  test("anonymize ON does not make the audit row claim identifiers were removed", async () => {
+    withAnonymizeOn();
+    const res = makeRes();
+    await queryHandler(makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0 }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(auditInserts).toHaveLength(1);
+    expect(auditInserts[0]["anonymized"]).toBe(false);
+    expect(res.body.anonymized).toBe(false);
+  });
+
+  test("anonymize ON no longer tells the model identifiers were removed", async () => {
+    withAnonymizeOn();
+    const res = makeRes();
+    await queryHandler(makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0 }), res);
+
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
+    expect(prompt).not.toMatch(/identifiers have been removed/i);
+    expect(prompt).toMatch(/NOT de-identified/);
+    expect(prompt).toMatch(/[Dd]o not transcribe any identifier/);
+  });
+
+  test("the setting still governs behaviour it can actually govern: demographics stay out", async () => {
+    withAnonymizeOn();
+    const res = makeRes();
+    await queryHandler(
+      makeReq({ promptText: "Findings", provider: "gemini", maxImages: 0, patientId: 11 }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(auditInserts[0]["includedDemographics"]).toBe(false);
+    expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Patient:|DOB/i);
+  });
+});

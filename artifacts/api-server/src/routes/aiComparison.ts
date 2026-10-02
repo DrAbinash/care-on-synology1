@@ -8,6 +8,7 @@ import { aiProviderSettingsTable, aiReportingAuditLogsTable } from "@workspace/d
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { generateAiResponse, BUILTIN_PROVIDER_NAMES } from "@workspace/ai-providers";
+import { DICOM_REDACTION_PERFORMED } from "../lib/ai/dicomRedaction";
 
 export const aiComparisonRouter = Router();
 
@@ -61,7 +62,7 @@ aiComparisonRouter.post("/run", async (req, res): Promise<void> => {
         model: null,
         promptText: prompt.substring(0, 2000),
         numImages: images?.length ?? 0,
-        anonymized: true,
+        anonymized: DICOM_REDACTION_PERFORMED,
         success: result.success,
         errorMessage: result.success ? null : (result.error ?? null),
       }).catch(() => { /* non-critical */ });
@@ -126,7 +127,7 @@ aiComparisonRouter.post("/save-winner", async (req, res): Promise<void> => {
     model: null,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
-    anonymized: true,
+    anonymized: DICOM_REDACTION_PERFORMED,
     success: true,
     errorMessage: null,
   }).catch(() => { /* non-critical */ });

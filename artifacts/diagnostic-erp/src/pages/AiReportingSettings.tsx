@@ -1072,8 +1072,8 @@ export function AiReportingPanel() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer select-none">
                 <div>
-                  <p className="text-xs font-semibold">Anonymize Patient Data</p>
-                  <p className="text-[10px] text-muted-foreground">Strip identifiers from DICOM images before sending to AI</p>
+                  <p className="text-xs font-semibold">Ask AI Not To Repeat Identifiers</p>
+                  <p className="text-[10px] text-muted-foreground">Adds a privacy instruction to the prompt. Does not remove identifiers from the images.</p>
                 </div>
                 <div
                   className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${globalDraft.anonymize ? "bg-primary" : "bg-muted"}`}
@@ -1086,7 +1086,7 @@ export function AiReportingPanel() {
               <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer select-none">
                 <div>
                   <p className="text-xs font-semibold">Include Patient Demographics</p>
-                  <p className="text-[10px] text-muted-foreground">Append age, gender (not name) to AI prompt for context</p>
+                  <p className="text-[10px] text-muted-foreground">Append the patient&apos;s name, age and gender to the AI prompt</p>
                 </div>
                 <div
                   className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${globalDraft.includeDemographics ? "bg-primary" : "bg-muted"}`}
@@ -1099,9 +1099,9 @@ export function AiReportingPanel() {
 
             {globalDraft.anonymize && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 flex gap-2 text-xs">
-                <ShieldCheck size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
                 <p className="text-amber-800 dark:text-amber-300">
-                  <strong>Anonymization enabled</strong> — patient name, ID, and DOB will be stripped from all DICOM metadata before sending to AI. Only image pixels and non-identifying clinical context are transmitted.
+                  <strong>No identifiers are removed from the images.</strong> They leave the clinic as the PACS renders them, and that render burns the patient&apos;s name, ID and date of birth into the picture. This switch only adds an instruction asking the model not to repeat them, so a cloud provider still receives the identifiers. Keep imaging on a local model until de-identification is built.
                 </p>
               </div>
             )}
@@ -1117,7 +1117,7 @@ export function AiReportingPanel() {
               <li>All AI queries are routed through the ERP backend — never directly from the browser.</li>
               <li>Only users with the <code className="bg-muted px-1 rounded">ai_reporting.use</code> permission can query AI.</li>
               <li>Only admins can configure API keys (<code className="bg-muted px-1 rounded">ai_reporting.configure</code> permission).</li>
-              <li>Every AI query is audit-logged with user, study, provider, and anonymization status.</li>
+              <li>Every AI reporting query is audit-logged with user, study, provider, and whether identifiers were actually removed from what was sent.</li>
               <li>AI responses are draft-only — a doctor/radiologist must review and approve before final signing.</li>
             </ul>
           </div>

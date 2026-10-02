@@ -195,11 +195,11 @@ export default function AiAuditLog() {
                     <div className="inline-flex items-center gap-1">
                       {row.anonymized ? (
                         <Badge variant="outline" className="text-[10px] h-5 gap-1">
-                          <ShieldCheck size={10} /> Anonymized
+                          <ShieldCheck size={10} /> Identifiers removed
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="text-[10px] h-5 gap-1 border-amber-300 text-amber-700">
-                          <AlertTriangle size={10} /> Identified
+                          <AlertTriangle size={10} /> Identifiers sent as-is
                         </Badge>
                       )}
                     </div>
@@ -260,7 +260,7 @@ export default function AiAuditLog() {
                 <p className="font-medium">{detailRow?.wasInsertedToReport ? "Yes" : "No"}</p>
               </div>
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Anonymized</span>
+                <span className="text-xs text-muted-foreground">Identifiers removed before sending</span>
                 <p className="font-medium">{detailRow?.anonymized ? "Yes" : "No"}</p>
               </div>
               <div className="space-y-1">
