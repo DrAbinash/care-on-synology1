@@ -29,6 +29,7 @@ interface GlobalSettings {
   defaultPromptTemplate: string;
   includeDemographics: boolean;
   anonymize: boolean;
+  cloudTextPhiAllowed: boolean;
   allowedRoles: string[];
 }
 
@@ -772,6 +773,7 @@ export function AiReportingPanel() {
     defaultPromptTemplate: "",
     includeDemographics: false,
     anonymize: true,
+    cloudTextPhiAllowed: false,
     allowedRoles: ["admin", "super_admin", "doctor", "radiologist"],
   });
 
@@ -1093,6 +1095,19 @@ export function AiReportingPanel() {
                   onClick={() => setGlobalDraft((g) => ({ ...g, includeDemographics: !g.includeDemographics }))}
                 >
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.includeDemographics ? "translate-x-5" : "translate-x-0.5"}`} />
+                </div>
+              </label>
+
+              <label className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-background cursor-pointer select-none">
+                <div>
+                  <p className="text-xs font-semibold">Allow Identifiers In Cloud Text</p>
+                  <p className="text-[10px] text-muted-foreground">Off by default: a prompt that names a patient is blocked from cloud providers. When on, names, IDs and dates of birth are redacted before sending.</p>
+                </div>
+                <div
+                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${globalDraft.cloudTextPhiAllowed ? "bg-primary" : "bg-muted"}`}
+                  onClick={() => setGlobalDraft((g) => ({ ...g, cloudTextPhiAllowed: !g.cloudTextPhiAllowed }))}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${globalDraft.cloudTextPhiAllowed ? "translate-x-5" : "translate-x-0.5"}`} />
                 </div>
               </label>
             </div>

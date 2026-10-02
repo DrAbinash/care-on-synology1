@@ -1180,6 +1180,51 @@ export async function generateAiResponse(
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
 
+  // ─── Central privacy gate — DEFAULT DENY for anything leaving the clinic ───
+  // The image gate below has always existed. The text beside it did not: the
+  // only check ran when at least one image was attached, so a text-only prompt
+  // naming a patient reached any enabled cloud provider unchecked. The
+  // clinical-note endpoint is the concrete case — it builds a prompt with the
+  // patient's name, MRN, date of birth, sex and blood group.
+  //
+  // Local providers are unaffected, which is the point: with the on-prem
+  // default from #806 nothing here changes day-to-day behaviour, and a cloud
+  // route now has to be chosen deliberately, with the identifiers scrubbed.
+  if (!isLocalExecutionProvider(providerName)) {
+    const { detectPhiCategories, scrubPhiText } = await import("./phiText");
+    const categories = detectPhiCategories(prompt ?? "");
+    if (categories.length > 0) {
+      if (!(await cloudTextPhiAllowed())) {
+        const reason = "Patient identifiers are present in the prompt";
+        return {
+          text: "",
+          success: false,
+          error: `PHI_TEXT_CLOUD_BLOCKED: ${reason} (${categories.join(", ")}). Nothing was sent to ${providerName}. Keep this task on a local model, or enable "Allow identifiers in cloud text requests" in AI Reporting Settings to send it with those fields redacted.`,
+          diagnostics: {
+            provider: providerName,
+            resolvedEndpoint: null,
+            model: options?.model ?? null,
+            numberOfImages: imgs.length,
+            totalImageBytes,
+            promptLength: (prompt ?? "").length,
+            startedAt,
+            elapsedMs: 0,
+            httpStatus: null,
+            responseLength: 0,
+            finishReason: null,
+            errorClass: "PhiTextCloudBlocked",
+            errorCode: "PHI_TEXT_CLOUD_BLOCKED",
+            errorMessage: reason,
+            timeoutStage: null,
+            timeoutMsConfigured: options?.timeoutMs ?? null,
+          },
+        };
+      }
+      // Allowed, so send the least that still answers the question.
+      prompt = scrubPhiText(prompt ?? "").text;
+    }
+  }
+
   // Central cloud image egress — DEFAULT DENY. Local providers (Ollama +
   // Local OpenAI-Compatible) are never gated as cloud.
   if (imgs.length > 0) {
@@ -1400,6 +1445,29 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
 ];
 
 export const AI_TASK_KEYS = AI_TASK_CATALOG.map((t) => t.key);
+
+/**
+ * Whether a cloud provider may receive prompt text that names a patient.
+ *
+ * Deliberately NOT a caller option: the request that wants the exception must
+ * not be able to grant it — that is the same defect fixed on the image path in
+ * #806. Only the stored AI Reporting settings can turn this on, and the default
+ * is deny.
+ */
+export async function cloudTextPhiAllowed(): Promise<boolean> {
+  try {
+    const [global] = await db
+      .select({ settingsJson: aiProviderSettingsTable.settingsJson })
+      .from(aiProviderSettingsTable)
+      .where(eq(aiProviderSettingsTable.provider, "__global__"))
+      .limit(1);
+    if (!global?.settingsJson) return false;
+    const parsed = JSON.parse(global.settingsJson) as { cloudTextPhiAllowed?: unknown };
+    return parsed.cloudTextPhiAllowed === true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve the default provider name: the explicit global default, else the first
