@@ -296,7 +296,6 @@ export function ReportComposerTestPanel({
     try {
       const r = await api.post<VisionTrialResponse>("/api/radiology/report-composer/vision-trial", {
         confirmCloudVisionTrial: confirmCloudVision,
-        cloudVisionAllowed: confirmCloudVision || diagnostics?.deepseekCloudVisionAllowed === true,
         clinicalPrompt: `Limited MRI review trial. Region: ${region}. Synthetic/de-identified only.`,
         runLocal: true,
         runDeepSeek: true,
@@ -424,11 +423,11 @@ export function ReportComposerTestPanel({
         <p className="text-[10px] text-muted-foreground">
           Compares local <code className="bg-muted px-1 rounded">qwen3-vl:8b</code> vs{" "}
           <code className="bg-muted px-1 rounded">{diagnostics?.deepSeekVisionModel ?? "deepseek-v4-flash-vision-exp"}</code>{" "}
-          on the same synthetic de-identified image set. Does not replace overnight. No clinical write.
+          on the same prompt. This panel attaches no images, does not replace overnight, and never writes a clinical report.
         </p>
         <label className="flex items-center gap-2 text-[11px]">
           <input type="checkbox" checked={confirmCloudVision} onChange={(e) => setConfirmCloudVision(e.target.checked)} />
-          Cloud Vision Trial — I confirm sending only de-identified derived images to DeepSeek official API
+          Cloud Vision Trial — I allow the prompt text to go to the DeepSeek official API. Sending images needs cloud vision enabled by an admin.
         </label>
         <Button size="sm" variant="outline" className="h-8 text-xs w-full" disabled={disabled || busy || !confirmCloudVision} onClick={() => void runVisionTrial()}>
           RUN VISION A/B TRIAL
