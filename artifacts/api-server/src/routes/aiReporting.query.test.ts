@@ -59,7 +59,16 @@ vi.mock("@workspace/db", () => {
     insert: (table: unknown) => ({
       values: (vals: Record<string, unknown>) => {
         if ((table as { marker?: string })?.marker === "ai_reporting_audit_logs") auditInserts.push(vals);
-        return Promise.resolve([]);
+        const thenable = Promise.resolve([{ id: 4242 }]);
+        // POST /draft persists the draft with .returning({ id }) before it audits.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (thenable as any).returning = async () => [{ id: 4242 }];
+        return thenable;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      set: (vals: Record<string, unknown>) => {
+        auditInserts.push({ __update: vals });
+        return { where: async () => [] };
       },
     }),
   };
@@ -110,11 +119,30 @@ vi.mock("../lib/ai/embeddings", () => ({
   isEmbeddingAvailable: () => false,
 }));
 
+// POST /draft resolves the local runtime before it sizes the context window.
+vi.mock("../lib/aiPipeline/runtimeConfig", () => ({
+  resolveLocalAiRuntime: async () => ({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaNumCtx: 8192 }),
+}));
+
 const generateAiResponse = vi.fn(async (_provider: string, _prompt: string, _images: string[], _opts: { model?: string }) => ({
   success: true,
   text: "AI DRAFT RESPONSE",
   error: undefined as string | undefined,
 }));
+
+// POST /draft goes out through generateAiForTask, not generateAiResponse.
+const generateAiForTask = vi.fn(
+  async (
+    _task: string,
+    _prompt: string,
+    _images: string[],
+    _opts?: { model?: string; numCtx?: number; endpointUrl?: string; think?: boolean },
+  ) => ({
+    success: true,
+    text: "FINDINGS: unremarkable.\nIMPRESSION: No acute intracranial abnormality.",
+    error: undefined as string | undefined,
+  }),
+);
 
 vi.mock("@workspace/ai-providers", () => ({
   BUILTIN_PROVIDER_NAMES: ["gemini", "openai"],
@@ -127,7 +155,12 @@ vi.mock("@workspace/ai-providers", () => ({
   generateAiResponse: (provider: string, prompt: string, images: string[], opts: { model?: string }) =>
     generateAiResponse(provider, prompt, images, opts),
   resolveTaskRoute: vi.fn(async () => null),
-  generateAiForTask: vi.fn(),
+  generateAiForTask: (
+    task: string,
+    prompt: string,
+    images: string[],
+    opts?: { model?: string; numCtx?: number; endpointUrl?: string; think?: boolean },
+  ) => generateAiForTask(task, prompt, images, opts),
   getDefaultProviderName: vi.fn(() => "gemini"),
 }));
 
@@ -170,6 +203,7 @@ function makeReq(body: Record<string, unknown>) {
 }
 
 const queryHandler = getRouteHandler("post", "/query");
+const draftHandler = getRouteHandler("post", "/draft");
 
 beforeEach(() => {
   masterAiFlagState.enabled = true;
@@ -185,6 +219,7 @@ beforeEach(() => {
   auditInserts = [];
   pacsSettingsQueries = 0;
   generateAiResponse.mockClear();
+  generateAiForTask.mockClear();
 });
 
 describe("POST /api/ai-reporting/query — canonical prompt contract", () => {
@@ -360,5 +395,57 @@ describe("POST /api/ai-reporting/query — the privacy record must describe what
     expect(res.statusCode).toBe(200);
     expect(auditInserts[0]["includedDemographics"]).toBe(false);
     expect(String(generateAiResponse.mock.calls[0][1])).not.toMatch(/Patient:|DOB/i);
+  });
+});
+
+describe("POST /api/ai-reporting/draft — the report body must reach the model", () => {
+  // Ctrl+I in the reporting workspace calls this route. It used to post the
+  // typed findings under `findings` while the handler destructured `reportBody`,
+  // so the model was asked for an impression without ever being given the
+  // findings it was supposed to summarise — and the mismatch was invisible
+  // because the caller only console.warns.
+
+  const body = "Extra-axial CSF space prominent frontally. No midline shift.";
+
+  test("reportBody is appended to the prompt as the current findings", async () => {
+    settingsJson = JSON.stringify({
+      enabled: true, defaultProvider: "gemini", defaultPrompt: "Draft an impression.",
+      includeDemographics: false, anonymize: false, allowedRoles: [],
+    });
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: body, modality: "CT", provider: "gemini" }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(generateAiForTask).toHaveBeenCalledTimes(1);
+    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(prompt).toContain("Current Findings:");
+    expect(prompt).toContain(body);
+  });
+
+  test("REGRESSION: the `findings` key older bundles send is not silently dropped", async () => {
+    settingsJson = JSON.stringify({
+      enabled: true, defaultProvider: "gemini", defaultPrompt: "Draft an impression.",
+      includeDemographics: false, anonymize: false, allowedRoles: [],
+    });
+    const res = makeRes();
+    await draftHandler(makeReq({ findings: body, modality: "CT", provider: "gemini" }), res);
+
+    expect(res.statusCode).toBe(200);
+    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(prompt).toContain("Current Findings:");
+    expect(prompt).toContain(body);
+  });
+
+  test("reportBody wins when a caller sends both keys with different text", async () => {
+    settingsJson = JSON.stringify({
+      enabled: true, defaultProvider: "gemini", defaultPrompt: "Draft an impression.",
+      includeDemographics: false, anonymize: false, allowedRoles: [],
+    });
+    const res = makeRes();
+    await draftHandler(makeReq({ reportBody: "CANONICAL BODY", findings: "LEGACY BODY", provider: "gemini" }), res);
+
+    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(prompt).toContain("CANONICAL BODY");
+    expect(prompt).not.toContain("LEGACY BODY");
   });
 });
