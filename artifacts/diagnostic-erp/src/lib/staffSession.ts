@@ -174,6 +174,7 @@ const PERMISSION_ALIASES: Readonly<Record<string, string>> = {
   "/radiology/study-access-logs": "/radiology",
   "/radiology/quality-gates": "/radiology",
   "/radiology/ai-audit-log": "/radiology",
+  "/radiology/ai-egress-inspector": "/radiology",
   "/radiology/ai-quality-scores": "/radiology",
   "/radiology/ai-prompt-effectiveness": "/radiology",
   "/radiology/ai-dicom-findings": "/radiology",

@@ -145,7 +145,7 @@ const generateAiForTask = vi.fn(
 );
 
 vi.mock("@workspace/ai-providers", () => ({
-  BUILTIN_PROVIDER_NAMES: ["gemini", "openai"],
+  BUILTIN_PROVIDER_NAMES: ["gemini", "openai", "ollama"],
   BUILTIN_PROVIDER_CONFIGS: {},
   loadProviderConfigs: vi.fn(async () => ({})),
   loadProviderConfig: vi.fn(async () => ({ isEnabled: true, defaultModel: "gemini-default" })),
@@ -162,6 +162,17 @@ vi.mock("@workspace/ai-providers", () => ({
     opts?: { model?: string; numCtx?: number; endpointUrl?: string; think?: boolean },
   ) => generateAiForTask(task, prompt, images, opts),
   getDefaultProviderName: vi.fn(() => "gemini"),
+  // The egress preview composes these. Detection/scrubbing themselves have
+  // dedicated tests in lib/ai-providers/src/phiText.test.ts — what is pinned
+  // here is that the route wires them into its verdict.
+  isLocalExecutionProvider: (p: string) => p === "ollama" || p === "local_openai_compatible",
+  cloudTextPhiAllowed: async () => false,
+  detectPhiCategories: (t: string) => (/\bPatient\s*:/i.test(t) ? ["name"] : []),
+  scrubPhiText: (t: string) => ({
+    text: t.replace(/\bPatient\s*:.*$/im, "Patient: [REDACTED]"),
+    removedCategories: ["name"],
+    removedCount: 1,
+  }),
 }));
 
 import { aiReportingRouter as router } from "./aiReporting";
@@ -204,6 +215,7 @@ function makeReq(body: Record<string, unknown>) {
 
 const queryHandler = getRouteHandler("post", "/query");
 const draftHandler = getRouteHandler("post", "/draft");
+const previewHandler = getRouteHandler("post", "/egress-preview");
 
 beforeEach(() => {
   masterAiFlagState.enabled = true;
@@ -447,5 +459,84 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     const prompt = String(generateAiForTask.mock.calls[0][1]);
     expect(prompt).toContain("CANONICAL BODY");
     expect(prompt).not.toContain("LEGACY BODY");
+  });
+});
+
+describe("POST /api/ai-reporting/egress-preview — say what would actually leave", () => {
+  // A privacy setting is otherwise unverifiable: the screen asserts something
+  // and staff have no artefact to check it against. This route must apply the
+  // same gates as the send path and report the verdict honestly.
+
+  const settingsWith = (over: Record<string, unknown>) => {
+    settingsJson = JSON.stringify({
+      enabled: true,
+      defaultProvider: "gemini",
+      defaultPrompt: "",
+      includeDemographics: false,
+      anonymize: true,
+      cloudTextPhiAllowed: false,
+      allowedRoles: [],
+      ...over,
+    });
+  };
+
+  test("cloud + a prompt that names a patient is reported as blocked", async () => {
+    settingsWith({});
+    const res = makeRes();
+    await previewHandler(makeReq({ promptText: "Patient: Ananya Sharma\nNo abnormality." }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.destination.execution).toBe("CLOUD");
+    expect(res.body.prompt.identifierCategories).toEqual(["name"]);
+    expect(res.body.verdict.allowed).toBe(false);
+    expect(res.body.verdict.code).toBe("PHI_TEXT_CLOUD_BLOCKED");
+  });
+
+  test("an on-prem provider is allowed and labelled LOCAL, because nothing leaves", async () => {
+    settingsWith({ defaultProvider: "ollama" });
+    const res = makeRes();
+    await previewHandler(makeReq({ promptText: "Patient: Ananya Sharma" }), res);
+
+    expect(res.body.destination.execution).toBe("LOCAL");
+    expect(res.body.verdict.allowed).toBe(true);
+    expect(res.body.verdict.reason).toMatch(/does not leave the clinic/);
+  });
+
+  test("the opt-in flips the verdict and shows the redacted text it would send", async () => {
+    settingsWith({ cloudTextPhiAllowed: true });
+    const res = makeRes();
+    await previewHandler(makeReq({ promptText: "Patient: Ananya Sharma\nNo abnormality." }), res);
+
+    expect(res.body.verdict.allowed).toBe(true);
+    expect(res.body.prompt.wouldBeRedacted).toBe(true);
+    expect(res.body.prompt.scrubbed).toContain("Patient: [REDACTED]");
+    expect(res.body.prompt.scrubbed).not.toContain("Ananya");
+  });
+
+  test("a clean prompt is not flagged, so the screen does not cry wolf", async () => {
+    settingsWith({});
+    const res = makeRes();
+    await previewHandler(makeReq({ promptText: "No midline shift. Ventricles normal." }), res);
+
+    expect(res.body.prompt.identifierCategories).toEqual([]);
+    expect(res.body.verdict.allowed).toBe(true);
+  });
+
+  test("the image request is capped at what a real draft would pull", async () => {
+    settingsWith({});
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "1.2.3.4", maxImages: 9999 }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.images.requested).toBe(6);
+  });
+
+  test("a malformed study UID is rejected before Orthanc is touched", async () => {
+    settingsWith({});
+    const res = makeRes();
+    await previewHandler(makeReq({ studyInstanceUID: "../../etc/passwd", maxImages: 6 }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(pacsSettingsQueries).toBe(0);
   });
 });
