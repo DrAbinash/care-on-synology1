@@ -18,6 +18,10 @@ import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinal
 import { offlineBlockMessage } from "@/lib/reliability";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import { collectCompositionFinalizeGate } from "@/lib/observationLedger";
+import { buildSignedReportBodyHtml } from "@/lib/radiologyReportPrintLiveMerge";
+import type {
+  PreviewFindingsItem, ReportHeadingCase, ReportImpressionStyle,
+} from "@/lib/radiologyReportPreviewHtml";
 import { bumpSessionCompleted, type ReadingSessionState } from "@/lib/readingSession";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
@@ -60,6 +64,15 @@ export type UseStudyFinalizeOptions = {
   };
   goNextStudy: () => void;
   setReadingSession: Dispatch<SetStateAction<ReadingSessionState>>;
+  /** Presentation choices that shape the signed body. Must be the SAME values
+   *  the pre-sign print preview uses, or the issued document is not the one
+   *  the radiologist approved. */
+  presentation: {
+    headingCase: ReportHeadingCase;
+    impressionStyle: ReportImpressionStyle;
+    useStructured: boolean;
+    findingsMap: Record<string, PreviewFindingsItem>;
+  };
 };
 
 export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
@@ -67,7 +80,14 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
+    presentation,
   } = opts;
+
+  // Destructured so the finalize callback depends on the four values, not on a
+  // fresh wrapper object every render.
+  const {
+    headingCase, impressionStyle, useStructured, findingsMap,
+  } = presentation;
 
   // Alias for verbatim finalize body (uses studySetup.checklistPercent)
   const studySetup = { checklistPercent };
@@ -241,6 +261,21 @@ const finalizeReport = useCallback(async () => {
   const combinedTitle = linkedForFinalize
     ? `${workflow.currentRow?.studyDescription ?? "Report"} + ${linkedForFinalize.title}`
     : (workflow.currentRow?.studyDescription ?? "Report");
+  // The stored artifact is built by the SAME function that built the pre-sign
+  // print preview, so Clinical History and Technique reach the signed report,
+  // its PDF, the WhatsApp link and the PACS archive. The title is not repeated
+  // here: reportPresentation renders it in the study-title bar.
+  const signedBodyHtml = buildSignedReportBodyHtml({
+    clinicalHistory: signed.clinicalHistoryText,
+    technique: signed.techniqueText,
+    findingsText: signedFindings,
+    impressionText: signedImpression,
+    recommendationText: signedRecommendation,
+    impressionStyle,
+    headingCase,
+    useStructured,
+    findingsMap,
+  });
   try {
     const finalizeResult = await finalizeRadiologyReport(
       ({
@@ -257,10 +292,7 @@ const finalizeReport = useCallback(async () => {
       } as any),
       {
         title: combinedTitle,
-        htmlBody: (() => {
-          const esc = (s: string) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
-          return `<h2>${esc(combinedTitle)}</h2><p><b>Findings:</b> ${esc(signedFindings).replace(/\n/g,"<br/>")}</p><p><b>Impression:</b> ${esc(signedImpression).replace(/\n/g,"<br/>")}</p><p><b>Recommendation:</b> ${esc(signedRecommendation).replace(/\n/g,"<br/>")}</p>`;
-        })(),
+        htmlBody: signedBodyHtml,
         impression: [signedImpression],
         isCritical: criticalMarked,
         criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
@@ -351,7 +383,7 @@ const finalizeReport = useCallback(async () => {
   } catch (err) {
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
-}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy]);
+}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, headingCase, impressionStyle, useStructured, findingsMap]);
 
   return {
     finalizeReport,

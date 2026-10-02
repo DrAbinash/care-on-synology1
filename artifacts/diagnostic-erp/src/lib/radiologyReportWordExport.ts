@@ -24,6 +24,12 @@
  * <strong>/<em>/<br/>. This is a purpose-built converter for exactly that
  * shape, not a general HTML-to-docx tool — it will not attempt to handle
  * arbitrary HTML from anywhere else in the app.
+ *
+ * parseReportHtmlToBlocks() is the exception: it is also the reader used by
+ * storedReportBody.ts to recover sections from a SIGNED patient_reports.body,
+ * which five different writers produce in five different shapes. It therefore
+ * accepts bare <h1>/<h3>/<h4>/<h5>/<h6> as well. Anything it does not
+ * recognise is ignored rather than guessed at.
  */
 
 export interface InlineSegment {
@@ -35,10 +41,11 @@ export interface InlineSegment {
 
 const ENTITY_MAP: Record<string, string> = {
   "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&nbsp;": " ",
+  "&apos;": "'", "&#39;": "'",
 };
 
 function decodeEntities(s: string): string {
-  return s.replace(/&(?:amp|lt|gt|quot|nbsp);/g, (m) => ENTITY_MAP[m] ?? m);
+  return s.replace(/&(?:amp|lt|gt|quot|nbsp|apos|#39);/g, (m) => ENTITY_MAP[m] ?? m);
 }
 
 function stripTags(s: string): string {
@@ -89,18 +96,33 @@ export type ReportBlock =
  * Matches recognized block tags in document order; the outer <div> wrapper
  * and every style="…" attribute are ignored by construction — only the tag
  * NAMES below are matched, nothing else is interpreted as markup.
+ *
+ * The generic <h1>/<h3>…<h6> alternative sits AFTER the <h3><u> one so
+ * buildPreviewHtml's underlined headings keep parsing as heading2 exactly as
+ * before. It exists because stored patient_reports bodies come from five
+ * different writers, and three of them (command centre, USG companion,
+ * reporting studio) use bare <h3>/<h4> headings that this parser used to skip
+ * — dropping those sections from Word export and from anything else that reads
+ * a signed body back.
  */
 export function parseReportHtmlToBlocks(html: string): ReportBlock[] {
   const blocks: ReportBlock[] = [];
   const blockRe =
-    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
+    /<div[^>]*class="[^"]*study-title-bar[^"]*"[^>]*>([\s\S]*?)<\/div>|<div[^>]*class="[^"]*section-heading[^"]*"[^>]*>([\s\S]*?)<\/div>|<h2[^>]*>([\s\S]*?)<\/h2>|<h3[^>]*><u>([\s\S]*?)<\/u><\/h3>|<h([13456])[^>]*>([\s\S]*?)<\/h[13456]>|<hr[^>]*\/?>|<ul[^>]*>([\s\S]*?)<\/ul>|<ol[^>]*>([\s\S]*?)<\/ol>|<p[^>]*>([\s\S]*?)<\/p>/gi;
   let m: RegExpExecArray | null;
   while ((m = blockRe.exec(html)) !== null) {
-    const [full, titleBar, sectionH, h2, h3, ul, ol, p] = m;
+    const [full, titleBar, sectionH, h2, h3, hLevel, hGeneric, ul, ol, p] = m;
     if (titleBar !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(titleBar)) }); continue; }
     if (sectionH !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(sectionH)) }); continue; }
     if (h2 !== undefined) { blocks.push({ type: "heading1", text: decodeEntities(stripTags(h2)) }); continue; }
     if (h3 !== undefined) { blocks.push({ type: "heading2", text: decodeEntities(stripTags(h3)) }); continue; }
+    if (hGeneric !== undefined) {
+      blocks.push({
+        type: hLevel === "1" ? "heading1" : "heading2",
+        text: decodeEntities(stripTags(hGeneric)),
+      });
+      continue;
+    }
     if (ul !== undefined || ol !== undefined) {
       const listInner = ul ?? ol;
       const items = [...listInner.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)].map((li) => parseInlineHtml(li[1]));

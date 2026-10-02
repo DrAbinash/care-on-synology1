@@ -1515,6 +1515,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow,
     goNextStudy,
     setReadingSession,
+    // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
+    // the signed body and the pre-sign print preview cannot drift apart.
+    presentation: { headingCase, impressionStyle, useStructured, findingsMap },
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {

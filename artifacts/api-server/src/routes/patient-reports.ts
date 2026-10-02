@@ -2765,7 +2765,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     safeguardWatermarkHtml: safeguards.watermark,
     isCritical: r.isCritical,
     criticalNote: r.criticalNote,
-    impression: r.impression,
+    // The .impression highlight box is a summary slot for report types whose
+    // body is plain result text. Every radiology body already renders its own
+    // Impression section — the workspace, command-center, USG, reporting-studio
+    // and D5/D1 structured writers all emit one — and the draft print-preview
+    // the radiologist approved sets no box at all. Passing the column here too
+    // printed the same impression twice on the signed document, its PDF, the
+    // WhatsApp link and the PACS archive. The column itself is untouched.
+    impression: r.type === "radiology" ? null : r.impression,
     parameters: parameterRows,
     // Radiology bodies are trusted HTML from the frozen render pipeline;
     // everything else is escaped plain text (unchanged behavior).

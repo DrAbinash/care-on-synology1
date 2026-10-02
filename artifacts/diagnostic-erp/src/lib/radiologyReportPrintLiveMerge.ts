@@ -22,6 +22,7 @@ import {
   type ProvenanceVisualKind,
 } from "./reportFieldMerge";
 import { hydratePrintPreviewKeyImages } from "./radiologyReportPdfExport";
+import { findingsMapToText } from "./findingsMapText";
 import { PROVENANCE_PREVIEW_CSS } from "./radiologyReportPreviewHtml";
 import { CARE_LETTERHEAD_LOGO_DATA_URL } from "./careLetterheadLogo";
 import { patchLetterpadDemographyHtml } from "./reportDemography";
@@ -160,6 +161,53 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
   }
 
   return parts.join("\n");
+}
+
+export type SignedReportBodyInput = {
+  clinicalHistory: string;
+  technique: string;
+  findingsText: string;
+  impressionText: string;
+  recommendationText: string;
+  impressionStyle?: ReportImpressionStyle;
+  headingCase?: ReportHeadingCase;
+  /** Per-region structured cards, when the matched format drives Findings. */
+  findingsMap?: Record<string, PreviewFindingsItem>;
+  useStructured?: boolean;
+};
+
+/**
+ * The body stored on the signed `patient_reports` row.
+ *
+ * Deliberately the same builder the pre-sign print preview uses, so the issued
+ * document carries the same sections in the same order as the one the
+ * radiologist approved — Clinical History and Technique included. The finalize
+ * path used to hand-roll `<h2>title</h2><p><b>Findings:</b>…`, which dropped
+ * both sections from every signed report, PDF, WhatsApp link and PACS archive
+ * even though the preview had shown them.
+ *
+ * Per-region structured headings are used only while `findingsMap` still
+ * reproduces `findingsText` exactly. The text is what every finalize gate
+ * evaluated and what the signer saw, and the map→text sync is one-way, so a
+ * map left stale by direct typing must never be what gets signed.
+ */
+export function buildSignedReportBodyHtml(input: SignedReportBodyInput): string {
+  const structuredInSync = Boolean(
+    input.useStructured
+    && input.findingsMap
+    && findingsMapToText(input.findingsMap) === input.findingsText,
+  );
+  return buildLivePrintBodyHtml({
+    clinicalHistory: input.clinicalHistory,
+    technique: input.technique,
+    rawFindings: input.findingsText,
+    findingsMap: structuredInSync ? input.findingsMap! : {},
+    useStructured: structuredInSync,
+    impression: input.impressionText.split("\n").filter(Boolean),
+    recommendation: input.recommendationText,
+    impressionStyle: input.impressionStyle,
+    headingCase: input.headingCase,
+  });
 }
 
 /** Replace `<div class="body">…</div>` using depth counting (nested section headings). */
