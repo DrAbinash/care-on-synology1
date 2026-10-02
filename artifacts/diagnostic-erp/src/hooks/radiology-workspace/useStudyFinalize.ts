@@ -336,7 +336,24 @@ const finalizeReport = useCallback(async () => {
     );
 
     // 7. Honest toast
-    if (finalizeResult.signed) {
+    if (finalizeResult.idempotent) {
+      // The server returned this study's EXISTING report row — patient-reports.ts
+      // answers HTTP 200 `{ ...existingReport, idempotent: true }` purely because
+      // the worklist already holds a reportId, with no comparison against the
+      // body/impression this call sent. So signedBodyHtml above was never
+      // written. Claiming "finalized & signed" here was the false-success half of
+      // the finding; the backup clear in step 8 was the half that destroyed the
+      // only remaining copy of the discarded edits.
+      toast({
+        title: "Edits NOT saved — a report is already finalized for this study",
+        description:
+          `Report #${finalizeResult.reportId ?? "—"} already exists, so the server returned it unchanged. `
+          + "What is on screen is NOT what is signed. Your local draft backup has been kept so nothing is lost — "
+          + "open the signed report and compare before editing again.",
+        variant: "destructive",
+        duration: 15000,
+      });
+    } else if (finalizeResult.signed) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
     } else if (finalizeResult.reportCreationSkipped) {
       toast({
@@ -362,7 +379,10 @@ const finalizeReport = useCallback(async () => {
     }
 
     // 7b. Auto-push to Hope when this study is linked to a Hope referral (best-effort).
-    if (finalizeResult.signed && (finalizeResult.reportId || studyId)) {
+    // Skipped on the idempotent path: the report on screen was not written, so
+    // "Sent to Hope" would describe a document the radiologist was just told
+    // was not saved.
+    if (!finalizeResult.idempotent && finalizeResult.signed && (finalizeResult.reportId || studyId)) {
       void api
         .post<{ ok?: boolean; alreadySent?: boolean; error?: string }>("/api/internal/radiology/send-report-to-hope", {
           reportId: finalizeResult.reportId ?? undefined,
@@ -381,19 +401,33 @@ const finalizeReport = useCallback(async () => {
     }
 
     // 8. Post-finalize cleanup
-    workflow.markCompleted(studyId);
-    if (linkedForFinalize?.studyId) {
-      const linkedId = Number(linkedForFinalize.studyId);
-      if (Number.isInteger(linkedId)) workflow.markCompleted(linkedId);
+    if (finalizeResult.idempotent) {
+      // Nothing was written, so nothing was completed: the study stays in the
+      // queue, the reading session is not credited, and both local backups are
+      // kept because they are the only surviving copy of the discarded text.
+      // `cancelFinalize` rather than no call at all — otherwise `isFinalizing`
+      // stays true and the workspace is left showing a permanent finalizing
+      // state over a report that never changed.
+      useWorkspace.getState().cancelFinalize();
+    } else {
+      workflow.markCompleted(studyId);
+      if (linkedForFinalize?.studyId) {
+        const linkedId = Number(linkedForFinalize.studyId);
+        if (Number.isInteger(linkedId)) workflow.markCompleted(linkedId);
+      }
+      draftBackup.clear();
+      clearRescueDraft();
+      useWorkspace.getState().completeFinalize();
+      setReadingSession(prev => bumpSessionCompleted(prev));
     }
-    draftBackup.clear();
-    clearRescueDraft();
-    useWorkspace.getState().completeFinalize();
-    setReadingSession(prev => bumpSessionCompleted(prev));
 
     // 9. Invalidate queries
     qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });
     qc.invalidateQueries({ queryKey: ["radiology-existing-draft", studyId] });
+    // The per-study detail query now carries the authoritative signed status the
+    // workspace locks on; without this the lock keeps reading the pre-sign row
+    // until its 60 s staleTime expires.
+    qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });
 
     // 10. RIS throughput — auto-advance to the next eligible study.
     // goNextStudy handles the transition lock + wrong-patient arrival

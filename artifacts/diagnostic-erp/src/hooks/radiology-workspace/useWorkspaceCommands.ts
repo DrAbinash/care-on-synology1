@@ -235,7 +235,30 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
       }
       if (e.ctrlKey && e.shiftKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
-        useWorkspace.getState().undoLastPatch();
+        const ws = useWorkspace.getState();
+        // Read the frame BEFORE the pop: `undoLastPatch` returns a plain boolean
+        // (24 existing tests assert `.toBe(true)`, so widening it to a union
+        // would silently invert every one of them — `"empty"` is truthy). The
+        // frame stays on the stack when refused, so its `activeStudyId` is still
+        // readable afterwards, but capturing it here keeps the two facts that
+        // decide the message from being read at different times.
+        const topFrame = ws.patchUndoStack[ws.patchUndoStack.length - 1] ?? null;
+        const undone = ws.undoLastPatch();
+        if (!undone && topFrame && topFrame.activeStudyId !== ws.activeStudyId) {
+          // The store refused to restore a frame captured against another study.
+          // Silent refusal here would leave the radiologist pressing Ctrl+Shift+Z
+          // repeatedly on a report that had already changed under them.
+          // `pushNotification` is deliberately NOT used: its only consumer
+          // renders `kind === "interrupt"` as a red card headed "Critical finding
+          // detected", and `kind: "ledger"` / `"edge-glow"` render nowhere.
+          toast({
+            title: "Undo refused — that edit belongs to a different study",
+            description:
+              "The workspace switched study since that edit was made, so restoring it would have written the previous patient's report text into this one. Nothing was changed.",
+            variant: "destructive",
+            duration: 8000,
+          });
+        }
         return;
       }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }
