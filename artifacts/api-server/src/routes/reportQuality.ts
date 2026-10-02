@@ -25,9 +25,11 @@ import {
   radiologyReportDraftsTable,
   radiologyWorklistTable,
   radiologyStudiesTable,
+  patientsTable,
   type ReportQualityEvaluation,
 } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
+import { sanitizeDicomSex } from "@workspace/pathology";
 import {
   runQualityEngine,
   textParityScorer,
@@ -161,6 +163,65 @@ async function assembleStudyContext(draftId: number): Promise<StudyContext | und
 }
 
 /**
+ * Resolve the patient's sex and age for a report draft from the CANONICAL
+ * records — the DICOM worklist row and the patient master — never from
+ * caller-supplied text.
+ *
+ * Q109 (gender/anatomy contradiction) and Q110 (age-inappropriate wording) are
+ * wrong-patient / wrong-report detectors. Feeding either one a sex or age the
+ * caller chose would let the exact mistake it exists to catch also silence it,
+ * so a server-resolved value always wins over `body.text`.
+ *
+ * `sanitizeDicomSex` is the shared normalizer (lib/pathology) already used by
+ * the worklist poller and by the client's own demography merge: it accepts
+ * M/F/O/MALE/FEMALE/OTHER/UNKNOWN and returns null for anything else — so a
+ * free-text `patients.gender` such as "Mrs" resolves to no sex at all, which
+ * leaves the rules honestly notEvaluated rather than firing on a guess. ("Mrs"
+ * starts with M; passed through raw it would read as male and raise a gender
+ * contradiction against female anatomy that is correct for that patient.)
+ *
+ * Best-effort and never throws: any gap returns null for that field.
+ */
+async function resolveDraftDemography(draftId: number): Promise<{ sex: string | null; age: string | null }> {
+  try {
+    const [draft] = await db
+      .select({ worklistId: radiologyReportDraftsTable.worklistId, patientId: radiologyReportDraftsTable.patientId })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId))
+      .limit(1);
+    if (!draft) return { sex: null, age: null };
+
+    let worklistSex: string | null = null;
+    let worklistAge: string | null = null;
+    if (draft.worklistId != null) {
+      const [w] = await db
+        .select({ sex: radiologyWorklistTable.sex, age: radiologyWorklistTable.age })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, draft.worklistId))
+        .limit(1);
+      worklistSex = sanitizeDicomSex(w?.sex) ?? null;
+      worklistAge = w?.age?.trim() || null;
+    }
+
+    let masterSex: string | null = null;
+    let masterAge: string | null = null;
+    if (draft.patientId != null) {
+      const [p] = await db
+        .select({ gender: patientsTable.gender, ageValue: patientsTable.ageValue, ageUnit: patientsTable.ageUnit })
+        .from(patientsTable)
+        .where(eq(patientsTable.id, draft.patientId))
+        .limit(1);
+      masterSex = sanitizeDicomSex(p?.gender) ?? null;
+      if (p?.ageValue != null) masterAge = `${p.ageValue}${p.ageUnit ? ` ${p.ageUnit}` : ""}`.trim();
+    }
+
+    return { sex: worklistSex ?? masterSex, age: worklistAge ?? masterAge };
+  } catch {
+    return { sex: null, age: null };
+  }
+}
+
+/**
  * Best-effort Phase-3 structured shadow run. Assembles the structured context
  * (study slot from the draft + any structured slots supplied in the request),
  * evaluates the scoped structured engine, and persists a separate evaluation
@@ -241,7 +302,16 @@ router.post("/evaluate", async (req, res) => {
     res.status(400).json({ error: "text (report content) is required" });
     return;
   }
-  const text = body.text;
+  // Canonical patient demography overrides whatever the caller sent, so the
+  // wrong-patient rules (Q109/Q110) are fed from the record, not from the
+  // report being checked. Falls back to the caller's value only when the draft
+  // has no resolvable worklist row or patient master.
+  const demography = body.reportDraftId != null ? await resolveDraftDemography(body.reportDraftId) : null;
+  const text = {
+    ...body.text,
+    sex: demography?.sex ?? body.text.sex ?? null,
+    age: demography?.age ?? body.text.age ?? null,
+  };
   const modality = body.modality ?? text.modality ?? "";
   const studyType = body.studyType ?? text.studyDescription ?? null;
 
@@ -262,7 +332,7 @@ router.post("/evaluate", async (req, res) => {
   // Phase 3 (shadow): additionally run the scoped structured engine and persist
   // a SEPARATE evaluation (source "shadow:structured-v3") for analysis. The
   // primary text evaluation + response above are unchanged. Best-effort.
-  const shadowStructuredEvaluationId = await runStructuredShadow(body, modality, studyType);
+  const shadowStructuredEvaluationId = await runStructuredShadow({ ...body, text }, modality, studyType);
 
   res.status(201).json({ evaluationId, shadowStructuredEvaluationId, ...dto });
 });

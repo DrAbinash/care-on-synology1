@@ -1487,6 +1487,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────
+  // canonicalDemography is assembled further down this hook body, so finalize
+  // reaches it through a ref rather than a captured value: the quality rules
+  // that need patient sex/age must see the demography as it stands at sign-off.
+  const canonicalDemographyRef = useRef<ReportDemography | null>(null);
+  const getCanonicalDemography = useCallback(
+    () => canonicalDemographyRef.current,
+    [],
+  );
+
   const {
     finalizeReport,
     formFFinalizeOpen,
@@ -1515,6 +1524,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow,
     goNextStudy,
     setReadingSession,
+    getDemography: getCanonicalDemography,
     // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
     // the signed body and the pre-sign print preview cannot drift apart.
     presentation: { headingCase, impressionStyle, useStructured, findingsMap },
@@ -2356,6 +2366,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     });
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
+
+  useEffect(() => {
+    canonicalDemographyRef.current = canonicalDemography;
+  }, [canonicalDemography]);
 
   // ─── Export / share / verify (Phase 3) ─────────────────────────────────────
   const {

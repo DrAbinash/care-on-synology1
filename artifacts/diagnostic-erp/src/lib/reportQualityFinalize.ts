@@ -93,8 +93,17 @@ export function buildWorkspaceQualityRequest(params: {
   recommendation?: string;
   checklistPercent?: number;
   missingRequiredMeasurements?: string[];
+  /** Canonical patient demography. Q109 (sex vs anatomy) and Q110 (age vs
+   *  wording) cannot fire without these; the server re-resolves both from the
+   *  draft's worklist/patient record and its value wins, so this is the
+   *  fallback for a finalize with no saved draft. */
+  sex?: string | null;
+  age?: string | null;
 }) {
-  const impressionLine = params.impression?.trim() ?? "";
+  const impressionLines = (params.impression ?? "")
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   return {
     reportDraftId: params.draftId ?? undefined,
     modality: params.modality ?? undefined,
@@ -102,10 +111,16 @@ export function buildWorkspaceQualityRequest(params: {
     source: "workspace-finalize",
     text: {
       findings: params.findings?.trim() ?? "",
-      impression: impressionLine ? [impressionLine] : [],
+      // One element per impression point, exactly as the report renders them.
+      // Passing the whole field as a single element made the duplicate-
+      // impression-line rule (Q102) unable to fire at sign-off: with one
+      // element there is never a pair to compare.
+      impression: impressionLines,
       recommendation: params.recommendation?.trim() ?? undefined,
       technique: params.technique?.trim() ?? undefined,
       clinicalHistory: params.clinicalHistory?.trim() ?? undefined,
+      sex: params.sex?.trim() || null,
+      age: params.age?.trim() || null,
       modality: params.modality ?? null,
       studyDescription: params.studyDescription ?? null,
       checklistPercent: params.checklistPercent,

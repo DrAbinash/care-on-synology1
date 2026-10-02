@@ -64,6 +64,10 @@ export type UseStudyFinalizeOptions = {
   };
   goNextStudy: () => void;
   setReadingSession: Dispatch<SetStateAction<ReadingSessionState>>;
+  /** Canonical patient demography, read at sign-off. Q109 (sex vs anatomy) and
+   *  Q110 (age vs wording) cannot fire without it — they are the codebase's only
+   *  wrong-patient-report detectors. Null until the demography merge has run. */
+  getDemography: () => { sex?: string | null; age?: string | null } | null;
   /** Presentation choices that shape the signed body. Must be the SAME values
    *  the pre-sign print preview uses, or the issued document is not the one
    *  the radiologist approved. */
@@ -80,7 +84,7 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
     studyId, draftId, isOnline, checklistPercent, saveDraft, finalizeFlow,
     draftBackup, qc, toast, isCritical, criticalNote, checklistComm,
     session, sessionFresh, reportComposer, workflow, goNextStudy, setReadingSession,
-    presentation,
+    getDemography, presentation,
   } = opts;
 
   // Destructured so the finalize callback depends on the four values, not on a
@@ -146,11 +150,25 @@ const finalizeReport = useCallback(async () => {
 
   // 2. Validate (local + server validate-draft when available) — live store
   const live = readWorkspaceClinicalTexts();
+  // Read once, at sign-off: every rule below that needs patient sex or age is a
+  // wrong-patient / wrong-report detector, and none of them can fire without it.
+  const demography = getDemography();
+  const patientSex = demography?.sex ?? null;
+  const patientAge = demography?.age ?? null;
   const validationIssues = validateReport({
     findings: live.findingsText,
-    impression: [live.impressionText],
+    // One element per impression point — the same shape the canonical quality
+    // request uses. A single joined string leaves the duplicate-impression rule
+    // (Q102) with no pair to compare, so it can never fire here either.
+    impression: live.impressionText.split(/\n+/).map((l) => l.trim()).filter(Boolean),
+    recommendation: live.recommendationText,
     technique: live.techniqueText,
-  } as any);
+    clinicalHistory: live.clinicalHistoryText,
+    sex: patientSex,
+    age: patientAge,
+    modality: workflow.currentRow.modality,
+    studyDescription: workflow.currentRow.studyDescription,
+  });
   if (effectiveDraftId) {
     try {
       const serverVal = await api.post<{
@@ -178,6 +196,8 @@ const finalizeReport = useCallback(async () => {
       impression: live.impressionText,
       recommendation: live.recommendationText,
       checklistPercent: studySetup.checklistPercent,
+      sex: patientSex,
+      age: patientAge,
     });
   } catch (err) {
     toast({
@@ -383,7 +403,7 @@ const finalizeReport = useCallback(async () => {
   } catch (err) {
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
-}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, headingCase, impressionStyle, useStructured, findingsMap]);
+}, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, headingCase, impressionStyle, useStructured, findingsMap]);
 
   return {
     finalizeReport,
