@@ -460,9 +460,14 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     const id = await newDraft({ isCritical: true });
     const res = await request(app)
       .post(`/api/patient-reports/${id}/acknowledge-critical`)
+      // No Authorization header at all.
       .send({ acknowledgedBy: "Whoever Typed This" });
+    // 401 from requireStaffAuth, which answers before the handler runs — so the
+    // handler's own acknowledger_identity_unavailable is unreachable defense in
+    // depth here, not the response. Asserting that string instead would pin the
+    // test to which of two layers refuses, when the claim is that the typed name
+    // never becomes the record. The row state below is that claim.
     expect(res.status).toBe(401);
-    expect(res.body.error).toBe("acknowledger_identity_unavailable");
     const r = await row(id);
     expect(r.criticalAcknowledgedBy).toBeNull();
     expect(r.criticalAcknowledgedAt).toBeNull();
