@@ -16,11 +16,17 @@
  * Execute: pass --execute.
  * Bound the window: --days=14 (default).
  *
- * Run via care-migrate (compose manual profile):
- *   docker compose --profile manual run --rm care-migrate \
+ * Run via the `migrate` service (compose *service* name; `care-migrate` is only
+ * its container_name, and the image must be rebuilt after a pull because a
+ * service-scoped `up -d --build care-api` does not rebuild it):
+ *   docker compose build migrate
+ *   docker compose --profile manual run --rm migrate \
  *     pnpm --filter @workspace/db run usg-link:dry-run
- *   docker compose --profile manual run --rm care-migrate \
+ *   docker compose --profile manual run --rm migrate \
  *     pnpm --filter @workspace/db run usg-link:execute
+ *
+ * Not care-db-patch-v2: that container is bare postgres:16-alpine with only the
+ * SQL migration directories mounted — it has no Node and no repo source.
  */
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../src/index";
