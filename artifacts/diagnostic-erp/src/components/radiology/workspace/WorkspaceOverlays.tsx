@@ -30,7 +30,6 @@ import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
 import { LinkStudyDialog } from "@/components/radiology/LinkStudyDialog";
 import {
   canForceReleaseStudyLock,
-  canTrialEditSignedReport,
   defaultReadingQueueDatePreset,
   visibleTabRefetchInterval,
 } from "@/lib/workspaceGuards";
@@ -684,29 +683,32 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
       {/* ─── Zero-Click Read Loop success toast ─── */}
       {(isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-2">
-          <div className="flex items-center gap-2 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 px-4 py-2 text-white shadow-2xl shadow-emerald-500/40 ring-2 ring-emerald-300/50">
+          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-white shadow-2xl ring-2 ${
+            linkedReportId
+              ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-emerald-500/40 ring-emerald-300/50"
+              // Green here would celebrate a study that has no report behind it.
+              : "bg-gradient-to-r from-rose-500 via-rose-600 to-rose-700 shadow-rose-500/40 ring-rose-300/50"
+          }`}>
             <ShieldCheck className="h-4 w-4" />
             <span className="text-sm font-semibold">
-              {allowEditSigned ? "Trial edit unlocked" : "Report signed & delivered"}
+              {linkedReportId ? "Report signed" : "Study marked final — NO report exists"}
             </span>
-            {!allowEditSigned && canTrialEditSignedReport(isOwner, role) && (
-              <button
-                type="button"
-                className="ml-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide hover:bg-white/30"
-                data-testid="trial-edit-signed-report"
-                title="Unlock editors to fix this signed report (trial)"
-                onClick={() => {
-                  setAllowEditSigned(true);
-                  useWorkspace.setState({ isFinalized: false });
-                  toast({
-                    title: "Editing unlocked",
-                    description: "Trial mode — edit, save draft, and re-finalize when ready.",
-                  });
-                }}
-              >
-                Edit report
-              </button>
-            )}
+            {/* No "Edit report" button here. Unlocking the editors on a signed
+                study promised a trial mode in which the text could be edited,
+                saved and signed again, and the server refuses all three: the
+                draft write is rejected with REPORT_LOCKED, and re-finalize
+                returns the existing row untouched. The radiologist retyped the
+                report, saw the editors open, and signed again into a document
+                that never changed. A signed report's text is locked until a
+                real correction path exists; say that instead of offering one
+                that fails. */}
+            <span
+              className="ml-1 rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium text-white/90"
+              data-testid="signed-report-lock"
+              title="The signed text is locked. Nothing typed here can change it."
+            >
+              Locked — corrections need an administrator
+            </span>
             {readingSession.enabled && !allowEditSigned && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
             <ChevronRight className="h-4 w-4 animate-pulse" /></>}
           </div>

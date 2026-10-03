@@ -2168,9 +2168,11 @@ patientReportsRouter.patch("/:id", async (req, res) => {
   // ── The signed-artifact guard ──────────────────────────────────────────────
   // A signed report is a medico-legal artifact: its content, its signer and its
   // signing time are the evidence. Ordinary updates may not touch any of them.
-  // Correction goes through POST /:id/amend (a new row on the chain) or, before
-  // verification, through POST /:id/withdraw-signature (an explicit, attributed
-  // return to draft). Both leave an audit record; a PATCH leaves none.
+  // Correction goes through POST /:id/amend (a new row on the chain, structured
+  // documents only) or, before verification, through POST /:id/withdraw-signature
+  // (an explicit, attributed un-signing — which clears the signature but does not
+  // by itself unlock the study's draft). Both leave an audit record; a PATCH
+  // leaves none.
   const signed = isSignedArtifact(existing);
   const decision = classifySignedReportPatch({
     signed,
@@ -2282,7 +2284,15 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     );
     res.status(409).json({
       error: "already_signed",
-      message: "This report is already signed. Use POST /:id/withdraw-signature to return it to draft, or POST /:id/amend to correct it.",
+      // Reaching this branch means the row carries NO signed structured
+      // document (that case is refused above), and POST /:id/amend refuses
+      // exactly such rows — so it must not be offered here. Withdrawal does
+      // clear the signature and is audited, but it leaves the worklist row
+      // REPORT_FINAL and the draft finalised, so the text is still not
+      // editable; say that rather than promise a way back to draft.
+      message:
+        "This report is already signed, and signing again would overwrite the original signer and signing time. "
+        + "POST /:id/withdraw-signature records an attributed withdrawal; amending a legacy-signed report is not available.",
     });
     return;
   }
@@ -2604,15 +2614,25 @@ patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Withdraw a signature — the only way back to an editable draft
+// Withdraw a signature — an attributed un-signing, NOT a route back to an
+// editable draft
 // ────────────────────────────────────────────────────────────────────────────
-// A signed report's content is immutable, so correcting one before it is
-// counter-signed needs an explicit, attributed way to un-sign it. This is not
-// an edit and not a deletion: the row keeps its content, the signature fields
-// are cleared, the status returns to draft, and the hash-chained audit record
-// keeps who signed it, when, and who withdrew it. Once a report is verified or
-// delivered the signature can no longer be withdrawn — correction then goes
-// through POST /:id/amend, which preserves the superseded version.
+// A signed report's content is immutable, so this records who took the
+// signature off and why: the row keeps its content, the signature fields are
+// cleared, the status returns to draft, and the hash-chained audit record keeps
+// who signed it, when, and who withdrew it.
+//
+// What it unlocks, precisely: the report ROW becomes editable again — PATCH
+// /:id then writes the corrected text and /:id/sign re-signs it, which is a
+// real correction loop and the one this clinic runs on today (the legacy path).
+// What it does NOT unlock: the worklist row stays REPORT_FINAL with reportId
+// still pointing here and the draft row keeps finalReportId, so
+// assertDraftWritable refuses every draft write. That is why the Reporting
+// Workspace offers no correction from this route — the editors there are
+// draft-backed, and reaching withdrawal from the UI is the missing half.
+// Once a report is verified or delivered the signature can no longer be
+// withdrawn; correction then goes through POST /:id/amend, which preserves the
+// superseded version — and that route exists only for structured documents.
 patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
   const id = Number(req.params.id);
   const b = (req.body ?? {}) as Record<string, unknown>;
@@ -2636,14 +2656,21 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
     res.status(409).json({ error: "not_signed", message: "This report is not signed." });
     return;
   }
+  // Computed before the verified check: only a report carrying a signed
+  // structured document can go onto the amendment chain, so a verified LEGACY
+  // report must not be pointed at POST /:id/amend — that endpoint answers 409
+  // not_a_signed_structured_report for it.
+  const structuredDoc = structuredSignedDocOf(existing.structuredJson);
   if (existing.status === "verified" || existing.status === "delivered") {
     res.status(409).json({
       error: "already_verified",
-      message: "A verified report cannot be un-signed. Use POST /:id/amend to create a corrected version.",
+      message: structuredDoc
+        ? "A verified report cannot be un-signed. Use POST /:id/amend to create a corrected version."
+        : "A verified report cannot be un-signed. This row has no signed structured document, so it cannot be amended either; a corrected report must be issued as a new one.",
     });
     return;
   }
-  if (structuredSignedDocOf(existing.structuredJson)) {
+  if (structuredDoc) {
     res.status(409).json({
       error: "structured_signed_report",
       message: "This report carries a signed structured document. Use POST /:id/amend to create a corrected version.",
