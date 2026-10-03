@@ -18,7 +18,7 @@ import {
   type RepeatingGroupDef,
   type StructuredFormatDoc,
 } from "@/lib/structuredFormat";
-import { headingsForTemplate } from "@/lib/reportSubHeadings";
+import { headingsForTemplate, retitleFindingsDocument } from "@/lib/reportSubHeadings";
 
 const MODALITIES = ["MRI", "CT", "USG", "X-RAY", "DOPPLER", "ECHO", "PET-CT", "FLUOROSCOPY", "OTHER"];
 const BODY_PARTS = ["BRAIN", "SPINE_LS", "SPINE_CERVICAL", "SPINE_DORSAL", "CHEST", "ABDOMEN", "PELVIS", "CARDIAC", "NECK", "KNEE", "SHOULDER", "HIP", "CAROTID", "OTHER"];
@@ -101,6 +101,23 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
     () => headingsForTemplate({ sectionsJson: JSON.stringify(doc), defaultFindings }),
     [doc, defaultFindings],
   );
+  /** Sections are where sub-headings are actually edited, so the list has to be
+   *  appliable: renaming or adding a section should change what prints without
+   *  hand-editing the findings text underneath. */
+  const sectionLabels = useMemo(
+    () => doc.sections.map((s) => s.label.trim()).filter(Boolean),
+    [doc.sections],
+  );
+  const sectionDefaults = useMemo(
+    () => Object.fromEntries(
+      doc.sections.map((s) => [s.label.trim(), (s.normalText || s.defaultText || "").trim()]),
+    ),
+    [doc.sections],
+  );
+  const headingsMatchSections =
+    printedHeadings.length === sectionLabels.length &&
+    printedHeadings.every((h, i) => h.trim().toLowerCase() === sectionLabels[i]?.toLowerCase());
+  const canApplySectionHeadings = sectionLabels.length > 0 && !headingsMatchSections;
 
   function patchSection(id: string, patch: Partial<FormatSection>) {
     setDoc((d) => ({ ...d, sections: d.sections.map((s) => s.id === id ? { ...s, ...patch } : s) }));
@@ -197,6 +214,25 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
                     {printedHeadings.map((h) => (
                       <span key={h} className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-900">{h}</span>
                     ))}
+                  </span>
+                )}
+                {canApplySectionHeadings && (
+                  <span className="mt-1 block space-y-1" data-testid="format-subheading-drift">
+                    <span className="block text-[10px] text-amber-700">
+                      These sub-headings do not match the sections under Sections
+                      ({sectionLabels.join(", ")}).
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[11px]"
+                      onClick={() => setDefaultFindings(
+                        retitleFindingsDocument(defaultFindings, sectionLabels, sectionDefaults),
+                      )}
+                    >
+                      Use the Sections list as sub-headings
+                    </Button>
                   </span>
                 )}
               </label>

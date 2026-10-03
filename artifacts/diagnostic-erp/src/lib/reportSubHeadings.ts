@@ -88,10 +88,25 @@ export function findingsTextFromSections(sections: ReportSection[]): string {
  * was never under a heading (or under one that was deleted) is preserved rather
  * than dropped — free text first, then a trailing section for headings that
  * disappeared, so a rename never loses the words underneath it.
+ *
+ * `defaults` fills a heading that arrived with no body of its own, keyed by
+ * label and matched the same case- and space-insensitive way as headings. It
+ * exists so a format's own normal wording can populate a newly named section —
+ * text the format author wrote, never something invented here.
  */
-export function retitleFindingsDocument(text: string, headings: string[]): string {
+export function retitleFindingsDocument(
+  text: string,
+  headings: string[],
+  defaults?: Record<string, string>,
+): string {
   const wanted = headings.map((h) => h.trim()).filter(Boolean);
   if (wanted.length === 0) return text.trim();
+
+  const defaultsByKey = new Map<string, string>();
+  for (const [label, body] of Object.entries(defaults ?? {})) {
+    const trimmed = body?.trim();
+    if (trimmed) defaultsByKey.set(key(label), trimmed);
+  }
 
   const blocks = parseFindingsDocument(text);
   const bodies = new Map<string, string[]>();
@@ -114,7 +129,7 @@ export function retitleFindingsDocument(text: string, headings: string[]): strin
   if (orphans.length > 0) out.push(orphans.join("\n\n"));
   for (const heading of wanted) {
     const k = key(heading);
-    const body = (bodies.get(k) ?? []).join("\n").trim();
+    const body = (bodies.get(k) ?? []).join("\n").trim() || (defaultsByKey.get(k) ?? "");
     const tableBlocks = tables.filter((t) => t.headingKey === k)
       .map((t) => tableToFindingsText(t.header, t.rows));
     // Heading and body sit on adjacent lines, which is how the presets and
@@ -155,14 +170,15 @@ export function findingsBodyForTemplate(template: {
   return fromSections || authored;
 }
 
-/** The headings a format will print with, for the Templates screen. */
+/** The headings a format will print with, for the Templates screen.
+ *  Derived from the same body the workspace applies, so a preview can never
+ *  promise sub-headings that the report then fails to print. */
 export function headingsForTemplate(template: {
   sectionsJson?: string | null;
   defaultFindings?: string | null;
 } | null | undefined): string[] {
-  const authored = template?.defaultFindings?.trim() ?? "";
-  if (authored && findingsDocumentHasStructure(authored)) return headingsInFindings(authored);
-  return sectionsFromTemplateJson(template?.sectionsJson).map((s) => s.label);
+  const body = findingsBodyForTemplate(template);
+  return findingsDocumentHasStructure(body) ? headingsInFindings(body) : [];
 }
 /** The headings a findings document currently carries, in order. */
 export function headingsInFindings(text: string): string[] {

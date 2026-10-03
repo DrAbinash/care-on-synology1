@@ -94,6 +94,14 @@ describe("findingsBodyForTemplate", () => {
     expect(headingsForTemplate({ sectionsJson: V1, defaultFindings: "One flat paragraph." }))
       .toEqual(["Alignment", "Vertebral Body", "Disc Level Analysis"]);
   });
+
+  it("promises no sub-headings it cannot print", () => {
+    // Sections with no normal wording of their own, plus a run-on authored
+    // paragraph: findingsBodyForTemplate falls back to that paragraph, so the
+    // preview must not claim the section names as headings.
+    expect(headingsForTemplate({ sectionsJson: V2_NO_NORMALS, defaultFindings: "One flat paragraph." }))
+      .toEqual([]);
+  });
 });
 
 describe("retitleFindingsDocument", () => {
@@ -152,5 +160,22 @@ describe("retitleFindingsDocument", () => {
   it("matches headings case- and space-insensitively", () => {
     const out = retitleFindingsDocument("alignment:\nNormal lordosis.", ["Alignment"]);
     expect(out).toContain("Alignment:\nNormal lordosis.");
+  });
+
+  it("fills a heading that has no body from the format's own normal wording", () => {
+    const out = retitleFindingsDocument(
+      "Alignment:\nNormal lumbar lordosis.",
+      ["Alignment", "Facets & Ligaments"],
+      { "Facets  &  ligaments": "No facet arthropathy." },
+    );
+    expect(out).toContain("Facets & Ligaments:\nNo facet arthropathy.");
+    // What the radiologist already wrote is untouched by the defaults.
+    expect(out).toContain("Normal lumbar lordosis.");
+  });
+
+  it("still refuses to invent text for a heading with no body and no default", () => {
+    const out = retitleFindingsDocument("Alignment:\nNormal lordosis.", ["Alignment", "Sacrum"]);
+    expect(out).toContain("Sacrum:");
+    expect(out).not.toMatch(/Sacrum:\n\s*\S/);
   });
 });
