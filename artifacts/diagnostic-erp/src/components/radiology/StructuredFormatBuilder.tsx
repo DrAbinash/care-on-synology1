@@ -18,6 +18,7 @@ import {
   type RepeatingGroupDef,
   type StructuredFormatDoc,
 } from "@/lib/structuredFormat";
+import { headingsForTemplate } from "@/lib/reportSubHeadings";
 
 const MODALITIES = ["MRI", "CT", "USG", "X-RAY", "DOPPLER", "ECHO", "PET-CT", "FLUOROSCOPY", "OTHER"];
 const BODY_PARTS = ["BRAIN", "SPINE_LS", "SPINE_CERVICAL", "SPINE_DORSAL", "CHEST", "ABDOMEN", "PELVIS", "CARDIAC", "NECK", "KNEE", "SHOULDER", "HIP", "CAROTID", "OTHER"];
@@ -94,6 +95,12 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
   }, [template?.sectionsJson]);
   const selected = doc.sections.find((s) => s.id === selectedSectionId) ?? null;
   const previewMap = useMemo(() => allNormalFindingsMap(doc), [doc]);
+  /** The sub-headings this format will print with, exactly as the workspace
+   *  resolves them — so what is previewed here is what reaches the page. */
+  const printedHeadings = useMemo(
+    () => headingsForTemplate({ sectionsJson: JSON.stringify(doc), defaultFindings }),
+    [doc, defaultFindings],
+  );
 
   function patchSection(id: string, patch: Partial<FormatSection>) {
     setDoc((d) => ({ ...d, sections: d.sections.map((s) => s.id === id ? { ...s, ...patch } : s) }));
@@ -177,7 +184,21 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
               <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} /> Active</label>
               <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} /> Default for this region</label>
               <label className="col-span-2 text-xs space-y-1">Default normal findings
-                <textarea value={defaultFindings} onChange={(e) => setDefaultFindings(e.target.value)} rows={3} className="w-full p-2 rounded-lg border bg-background" />
+                <textarea value={defaultFindings} onChange={(e) => setDefaultFindings(e.target.value)} rows={6} className="w-full p-2 rounded-lg border bg-background font-mono text-[11px]" />
+                <span className="block text-[10px] text-muted-foreground">
+                  A line ending with &ldquo;:&rdquo; becomes a printed sub-heading, with the
+                  lines under it inside that section. A line starting with &ldquo;|&rdquo;
+                  prints as a table row — useful for canal diameters. Leave this as one
+                  paragraph and the report is built from the sections listed under Sections,
+                  so adding a section there adds a sub-heading here automatically.
+                </span>
+                {printedHeadings.length > 0 && (
+                  <span className="mt-1 flex flex-wrap gap-1" data-testid="format-subheading-preview">
+                    {printedHeadings.map((h) => (
+                      <span key={h} className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-900">{h}</span>
+                    ))}
+                  </span>
+                )}
               </label>
               <label className="col-span-2 text-xs space-y-1">Default impression
                 <textarea value={defaultImpression} onChange={(e) => setDefaultImpression(e.target.value)} rows={2} className="w-full p-2 rounded-lg border bg-background" />
