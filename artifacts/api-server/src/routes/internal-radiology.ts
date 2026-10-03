@@ -960,6 +960,47 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       });
     }
 
+    // Bill-desk link for ultrasound, which can never identify itself.
+    //
+    // The USG unit has no MWL, so it cannot know CARE's accession and sends no
+    // StudyInstanceUID the ERP already holds: measured 666 of 668 US worklist
+    // rows arriving with study_id NULL while 711 billed US studies sat waiting
+    // with an accession. autoLinkBilledStudyForWorklist already solves this —
+    // name / modality / date ranked, unique-or-refuse, capped to YELLOW for
+    // Match Center review — but it only ran from the ERP UI and from the
+    // finalize path, which USG no longer uses. Running it here is what puts
+    // bill, test name, referring doctor and demographics on the row the Studio
+    // reads, without inventing a patient to hang them on.
+    //
+    // Ultrasound only, deliberately: MR/CT do get MWL accessions, so their
+    // linking stays on the accession fast path rather than on a name guess.
+    // Placed after the priority/assignment block so a fresh link cannot trigger
+    // them, and before the re-score below so the matcher sees the link.
+    if (!row.studyId && isUltrasoundModality(modality)) {
+      try {
+        const { autoLinkBilledStudyForWorklist } = await import("../lib/pacs/worklistBillingLink");
+        const link = await autoLinkBilledStudyForWorklist(row.id, "pacs-intake");
+        if (link.linked && link.studyId) {
+          const [linked] = await db
+            .select()
+            .from(radiologyWorklistTable)
+            .where(eq(radiologyWorklistTable.id, row.id))
+            .limit(1);
+          if (linked) row = linked;
+          logger.info(
+            { worklistId: row.id, studyId: link.studyId, method: link.method, matchScore: link.matchScore },
+            "Intake linked USG study to its bill",
+          );
+        } else {
+          logger.info({ worklistId: row.id, reason: link.reason }, "Intake USG bill link: no unique billed study");
+        }
+      } catch (err) {
+        // A link attempt must never cost the study its intake — the sync agent
+        // treats any non-2xx as permanent and drops the study forever.
+        logger.warn({ err, worklistId: row.id }, "Intake USG bill link failed");
+      }
+    }
+
     // Run matching engine to compute and store match score / warnings.
     // Skip when Match Center has already APPROVED identity — re-scoring must
     // not downgrade match state on a locked patient association.
