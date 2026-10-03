@@ -354,14 +354,33 @@ describe("D6 — PATCH defense-in-depth (signed structured bodies are immutable)
   test("a row carrying a signed-final structured document rejects body edits (409, use Amend), even at status draft", async () => {
     const res = await patchBody("REWRITTEN BODY");
     expect(res.statusCode).toBe(409);
-    expect(res.body.error).toContain("Signed structured reports");
+    expect(res.body.error).toBe("signed_report_immutable");
+    expect(res.body.message).toContain("Amend");
+    expect(res.body.fields).toEqual(["body"]);
     expect(writeCalls.filter((w) => w.kind === "update")).toHaveLength(0); // nothing persisted
   });
 
   test("a legacy draft row (no structured document) still accepts body edits (legacy contract unchanged)", async () => {
-    reportRow = { ...reportRow, structuredJson: null };
+    // Genuinely unsigned: the shared fixture above carries signedAt/signedByName
+    // because the D5 structured path stamps them while leaving status "draft".
+    // Clearing only structuredJson would leave a SIGNED row and assert that a
+    // signed report is still editable — which is the RR-01 hole, not the legacy
+    // contract. See the next test for that row.
+    reportRow = { ...reportRow, structuredJson: null, signedAt: null, signedByName: null, signatureId: null };
     const res = await patchBody("edited legacy body");
     expect(res.statusCode).toBe(200);
     expect(writeCalls.filter((w) => w.kind === "update")).toHaveLength(1);
+  });
+
+  test("RR-01: a signed row still at status draft is immutable — signedAt alone is a sufficient witness", async () => {
+    // This is the hole the fixture above used to encode as expected behaviour.
+    // No structured document, lifecycle status still the schema default "draft",
+    // but signedByName and signedAt are set — so the row IS a signed artifact
+    // and its body must not change under its own signature.
+    reportRow = { ...reportRow, structuredJson: null };
+    const res = await patchBody("REWRITTEN AFTER SIGNING");
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toBe("signed_report_immutable");
+    expect(writeCalls.filter((w) => w.kind === "update")).toHaveLength(0);
   });
 });

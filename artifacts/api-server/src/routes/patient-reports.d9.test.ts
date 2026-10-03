@@ -293,14 +293,23 @@ beforeEach(() => {
 // ── POST /:id/sign — legacy-sign protection (Phase 2) ────────────────────────
 
 describe("D9 — legacy sign protection", () => {
-  test("legacy UNSTRUCTURED report sign is unchanged (client-supplied name still honored)", async () => {
+  test("legacy UNSTRUCTURED report sign takes the signer from the session, never the body", async () => {
     plainReportQueryScript = [[ROW_LEGACY_DRAFT]];
     const res = await post("/:id/sign", "100", { signedByName: "Dr. Legacy" }, SIGNER);
     expect(res.statusCode).toBe(200);
     const update = allWrites.find((w) => w.kind === "update" && w.table === "patient_reports");
     expect(update).toBeTruthy();
-    expect(update!.values).toMatchObject({ signedByName: "Dr. Legacy", status: "pending_verification" });
+    // D9 originally characterized this path as "client-supplied name still
+    // honored" — that was RR-03: the browser named the signer, so it could name
+    // anybody. The signer of record is now the authenticated session subject,
+    // and the rejected assertion is preserved in the audit row instead of the
+    // report, so the attempt is still visible without becoming the attribution.
+    expect(update!.values).toMatchObject({ signedByName: "Dr. Sen", status: "pending_verification" });
     expect(audits("legacy_sign_rejected")).toHaveLength(0);
+    const signed = audits("legacy_sign");
+    expect(signed).toHaveLength(1);
+    expect(String(signed[0].newValue)).toContain('"identitySource":"session"');
+    expect(String(signed[0].newValue)).toContain('"rejectedCallerName":"Dr. Legacy"');
   });
 
   test("structured-signed report → 409, row never written, refusal audited", async () => {
@@ -484,13 +493,20 @@ describe("D9 — structured countersign rejections (all audited, nothing written
     expect(audits("verify_attempt")).toHaveLength(0); // structured path never entered
   });
 
-  test("legacy pending_verification report verifies exactly as before (old report compatibility)", async () => {
+  test("legacy pending_verification report verifies with the session as verifier of record", async () => {
     plainReportQueryScript = [[ROW_LEGACY_PENDING]];
     const res = await post("/:id/verify", "101", { verifiedByName: "Dr. B" }, VERIFIER);
     expect(res.statusCode).toBe(200);
     const update = allWrites.find((w) => w.kind === "update" && w.table === "patient_reports");
-    expect(update!.values).toMatchObject({ verifiedByName: "Dr. B", status: "verified" }); // legacy path: client name honored
-    expect(audits("verify_attempt")).toHaveLength(0);
+    // Same rule the structured path already applied ("session identity, never
+    // client input") now holds on the legacy path too: the caller's "Dr. B" is
+    // audited as rejected and the session's Dr. Verma becomes the verifier.
+    expect(update!.values).toMatchObject({ verifiedByName: "Dr. Verma", status: "verified" });
+    expect(audits("verify_attempt")).toHaveLength(0); // structured path never entered
+    const legacy = audits("legacy_verify");
+    expect(legacy).toHaveLength(1);
+    expect(String(legacy[0].newValue)).toContain('"identitySource":"session"');
+    expect(String(legacy[0].newValue)).toContain('"rejectedCallerName":"Dr. B"');
   });
 });
 

@@ -310,12 +310,20 @@ describe("Stage 0 · U-8 — actor authority characterization (source contracts)
     expect(s).toContain('actor: b.actor ?? "mwl-agent"');
   });
 
-  it("CHARACTERIZATION: a critical-result acknowledgement names whoever the body says and writes no audit row", () => {
+  it("GOOD PATTERN (must not regress): a critical-result acknowledgement names the session and writes an audit row", () => {
+    // Stage 0 characterized this route as "names whoever the body says and
+    // writes no audit row" — an accurate description of a defect, not a
+    // contract to preserve. It was remediated on its own merits (the
+    // signed-artifact trust model): the acknowledger is the authenticated
+    // session, a body-supplied name is never read, and the acknowledgement is
+    // audited. Flipping this assertion is the review the file's header asks
+    // for, so the change is recorded here rather than made silently.
     const s = src("../routes/patient-reports.ts");
     const ack = s.slice(s.indexOf("acknowledge-critical"));
-    expect(ack).toContain('b.acknowledgedBy === "string"');
-    expect(ack).toContain("criticalAcknowledgedAt: new Date()"); // instant trusted, actor not
-    expect(ack.slice(0, 1200)).not.toMatch(/auditFromRequest|auditLifecycleEvent/);
+    expect(ack).toContain("const acknowledgedBy = session?.subjectName?.trim()");
+    expect(ack).not.toContain('b.acknowledgedBy === "string"');
+    expect(ack).toContain("criticalAcknowledgedAt");
+    expect(ack).toMatch(/auditLifecycleEvent\(\s*"critical_acknowledged"/);
   });
 
   it("GOOD PATTERN (must not regress): the structured finalize path ignores a client-supplied createdBy", () => {
