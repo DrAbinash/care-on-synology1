@@ -19,7 +19,9 @@
     "phase-f:execute": "tsx scripts/phase-f-template-consolidation.ts execute",
     "phase-f:rollback": "tsx scripts/phase-f-template-consolidation.ts rollback",
     "stamp-accession:dry-run": "tsx scripts/stamp-blank-accession-usg.ts",
-    "stamp-accession:execute": "tsx scripts/stamp-blank-accession-usg.ts --execute"
+    "stamp-accession:execute": "tsx scripts/stamp-blank-accession-usg.ts --execute",
+    "usg-link:dry-run": "tsx scripts/backfill-usg-bill-link.ts",
+    "usg-link:execute": "tsx scripts/backfill-usg-bill-link.ts --execute"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",
