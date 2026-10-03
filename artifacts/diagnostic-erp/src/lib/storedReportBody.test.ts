@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { findingsMapToText } from "./findingsMapText";
 import { parseStoredReportBody } from "./storedReportBody";
 import { buildSignedReportBodyHtml } from "./radiologyReportPrintLiveMerge";
 
@@ -222,7 +223,10 @@ describe("buildSignedReportBodyHtml — the artifact must match the approved pre
       Brain: { normal: false, text: "No lesion." },
       Orbits: { normal: true, text: "Normal." },
     };
-    const findingsText = "Brain: No lesion.\n\nOrbits: Normal.";
+    // Built with the same producer the workspace sync effect uses, so this
+    // asserts the real contract: the map and the text agree, and the section
+    // labels print as headings rather than as inline bold prefixes.
+    const findingsText = findingsMapToText(findingsMap);
     const html = buildSignedReportBodyHtml({ ...input, findingsText, useStructured: true, findingsMap });
     expect(html).toContain("BRAIN");
     expect(html).toContain("ORBITS");

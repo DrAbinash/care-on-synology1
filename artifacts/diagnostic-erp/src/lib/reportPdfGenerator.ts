@@ -13,6 +13,7 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
+import { parseFindingsDocument } from "./findingsDocument";
 import {
   resolveCareLetterpadChrome,
   parseMeasurementMm,
@@ -262,7 +263,12 @@ function drawWrappedBody(
 }
 
 /** Findings may contain "LABEL: body" lines — bold the label like the letter pad.
- *  Also supports **bold** markdown spans and preserves s/o style slashes. */
+ *  Also supports **bold** markdown spans and preserves s/o style slashes.
+ *
+ *  Headings authored on their own line ("Alignment:") and `|`-delimited tables
+ *  (per-level canal diameters) come from the same document model the print and
+ *  preview surfaces read, so the downloaded PDF shows the same structure the
+ *  radiologist saw on screen instead of a wall of text. */
 function drawFindingsBlock(
   doc: jsPDF,
   findings: string,
@@ -274,28 +280,69 @@ function drawFindingsBlock(
   lineH: number,
 ): number {
   const normalized = normalizeReportPlainText(findings);
-  const paragraphs = normalized.split(/\n+/).map((p) => p.trim()).filter(Boolean);
-  for (const para of paragraphs) {
-    const m = para.match(/^([A-Z][A-Z0-9 /&().-]{1,48}):\s*([\s\S]*)$/);
-    if (m) {
-      const label = `${m[1]}:`;
-      const rest = m[2].trim();
+  for (const block of parseFindingsDocument(normalized)) {
+    if (block.kind === "heading") {
       doc.setFont(font, "bold");
       doc.setFontSize(bodySize);
-      doc.setTextColor(0, 0, 0);
-      doc.text(label, x, y);
-      const labelW = doc.getTextWidth(label) + 1.2;
-      if (rest) {
-        y = drawInlineMarkdown(doc, rest, x + labelW, y, Math.max(20, maxW - labelW), font, bodySize, lineH, x);
-      } else {
-        y += lineH;
-      }
-    } else {
-      y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x);
+      doc.setTextColor(30, 27, 75);
+      doc.text(block.text, x, y);
+      y += lineH;
+      y += lineH * 0.2;
+      continue;
     }
-    y += lineH * 0.35;
+    if (block.kind === "table") {
+      y = drawFindingsTable(doc, block.header, block.rows, x, y, maxW, font, bodySize, lineH);
+      y += lineH * 0.35;
+      continue;
+    }
+    for (const para of block.text.split(/\n+/).map((p) => p.trim()).filter(Boolean)) {
+      const m = para.match(/^([A-Z][A-Z0-9 /&().-]{1,48}):\s*([\s\S]*)$/);
+      if (m) {
+        const label = `${m[1]}:`;
+        const rest = m[2].trim();
+        doc.setFont(font, "bold");
+        doc.setFontSize(bodySize);
+        doc.setTextColor(0, 0, 0);
+        doc.text(label, x, y);
+        const labelW = doc.getTextWidth(label) + 1.2;
+        if (rest) {
+          y = drawInlineMarkdown(doc, rest, x + labelW, y, Math.max(20, maxW - labelW), font, bodySize, lineH, x);
+        } else {
+          y += lineH;
+        }
+      } else {
+        y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x);
+      }
+      y += lineH * 0.35;
+    }
   }
   return y;
+}
+
+/** Same table engine the MEASUREMENTS section already uses, so a canal
+ *  diameter table looks like the rest of the letter-pad output and paginates
+ *  on its own instead of running off the page. */
+function drawFindingsTable(
+  doc: jsPDF,
+  header: string[],
+  rows: string[][],
+  x: number,
+  y: number,
+  maxW: number,
+  font: string,
+  size: number,
+  lineH: number,
+): number {
+  autoTable(doc, {
+    startY: y,
+    head: [header],
+    body: rows,
+    styles: { fontSize: size - 0.5, font, cellPadding: 1.1 },
+    headStyles: { fillColor: [241, 245, 249], textColor: [0, 0, 0], fontStyle: "bold" },
+    margin: { left: x, right: Math.max(4, doc.internal.pageSize.getWidth() - x - maxW) },
+  });
+  const finalY = (doc as unknown as { lastAutoTable?: { finalY?: number } }).lastAutoTable?.finalY;
+  return typeof finalY === "number" && Number.isFinite(finalY) ? finalY + lineH * 0.4 : y + lineH * (rows.length + 1);
 }
 
 /**

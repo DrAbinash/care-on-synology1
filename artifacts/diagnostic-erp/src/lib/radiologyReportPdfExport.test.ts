@@ -3,6 +3,11 @@ import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages,
 import type { ReportImageRef } from "./reportImageRefs";
 
 describe("buildFindingsText", () => {
+  // A section heading goes on its own line and its body on the next. That is
+  // the convention findingsDocument.ts reads, and it is what makes the letter
+  // pad draw the heading as a heading instead of bolding a label at the start
+  // of a sentence — the complaint that a spine report arrived as one long line.
+
   it("returns the raw freeform text, trimmed, when not structured", () => {
     expect(
       buildFindingsText({ useStructured: false, findingsMap: {}, rawFindings: "  Lungs clear.  \n" }),
@@ -15,7 +20,7 @@ describe("buildFindingsText", () => {
       findingsMap: { "lung fields": { normal: true, text: "" } },
       rawFindings: "",
     });
-    expect(text).toBe("LUNG FIELDS: Normal.");
+    expect(text).toBe("LUNG FIELDS:\nNormal.");
   });
 
   it("renders an abnormal region's own text instead of 'Normal.'", () => {
@@ -24,7 +29,7 @@ describe("buildFindingsText", () => {
       findingsMap: { "lung fields": { normal: false, text: "Right lower lobe consolidation." } },
       rawFindings: "",
     });
-    expect(text).toBe("LUNG FIELDS: Right lower lobe consolidation.");
+    expect(text).toBe("LUNG FIELDS:\nRight lower lobe consolidation.");
   });
 
   it("uses an em-dash placeholder for an abnormal region with no text yet", () => {
@@ -33,7 +38,7 @@ describe("buildFindingsText", () => {
       findingsMap: { "lung fields": { normal: false, text: "" } },
       rawFindings: "",
     });
-    expect(text).toBe("LUNG FIELDS: —");
+    expect(text).toBe("LUNG FIELDS:\n—");
   });
 
   it("joins multiple regions with a blank line between them, in map insertion order", () => {
@@ -49,7 +54,7 @@ describe("buildFindingsText", () => {
       },
       rawFindings: "",
     });
-    expect(text).toBe("LUNG FIELDS: Normal.\n\nHEART: Cardiomegaly.");
+    expect(text).toBe("LUNG FIELDS:\nNormal.\n\nHEART:\nCardiomegaly.");
   });
 
   it("respects title_case heading formatting", () => {
@@ -59,7 +64,7 @@ describe("buildFindingsText", () => {
       rawFindings: "",
       headingCase: "title_case",
     });
-    expect(text).toBe("Lung Fields: Normal.");
+    expect(text).toBe("Lung Fields:\nNormal.");
   });
 });
 
