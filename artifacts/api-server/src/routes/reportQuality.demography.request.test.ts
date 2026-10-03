@@ -240,9 +240,10 @@ describe.skipIf(!dbReady)("report-quality /evaluate — canonical demography bea
   });
 
   it("DICOM worklist sex wins over a contradicting patient-master gender", async () => {
-    // Worklist says F, the linked patient master says "male". Female anatomy in
-    // the prose contradicts only the worklist value, so Q109 firing proves the
-    // DICOM record took precedence over the ERP master.
+    // Worklist says F, the linked patient master says "male". The prose names
+    // female anatomy, which is CONSISTENT with F and contradictory against M —
+    // so Q109 staying silent is what proves the DICOM record took precedence.
+    // Read the other way round and this assertion would be rewarding the bug.
     const ids = await evaluate(
       {
         findings: "The uterus is normal in size and signal.",
@@ -252,7 +253,19 @@ describe.skipIf(!dbReady)("report-quality /evaluate — canonical demography bea
       },
       draftConflictId,
     );
-    expect(ids).toContain("Q109");
+    expect(ids).not.toContain("Q109");
+
+    // Positive control: the silence above must mean "sex resolved to F", not
+    // "sex resolved to nothing". With no draft there is no canonical record, so
+    // the caller's M stands and the very same prose has to raise Q109.
+    const callerMale = await evaluate({
+      findings: "The uterus is normal in size and signal.",
+      impression: ["Normal study."],
+      technique: "T2 weighted sequences.",
+      clinicalHistory: "Pelvic pain.",
+      sex: "M",
+    });
+    expect(callerMale).toContain("Q109");
   });
 
   it("falls back to the patient master when the worklist row carries no DICOM sex", async () => {
