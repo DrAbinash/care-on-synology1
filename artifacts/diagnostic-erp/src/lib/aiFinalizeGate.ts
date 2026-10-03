@@ -2,9 +2,9 @@
  * The finalize gate for unreviewed AI Composer proposals ("Guard 10").
  *
  * Extracted from useStudyFinalize so the decision can be tested. It was inline
- * in a 700-line hook that no test in this repo can reach — the ERP test
- * environment has no DOM — which meant the only thing standing between an
- * outstanding AI review and a signed report was an untested `if`.
+ * in a hook that no test in this repo can reach — the ERP test environment has
+ * no DOM — which meant the only thing standing between an outstanding AI review
+ * and a signed report was an untested `if`.
  */
 
 export type AiFinalizeGateJob = {
