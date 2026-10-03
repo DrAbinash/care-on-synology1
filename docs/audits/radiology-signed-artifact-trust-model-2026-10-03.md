@@ -19,7 +19,13 @@ The three states are **not** identical, and the gap is larger than it looks.
 | --- | --- | --- | --- |
 | **Production** (what the clinic runs) | `2d51e8d7` | 2026-09-16 (PR #722) | 110 commits behind `origin/main` |
 | **`origin/main`** | `bc8ca8c5` | 2026-10-03 00:29 +0530 (PR #814) | contains production; merge-base of this branch |
-| **This branch** | `011f01a0` | 2026-10-03 | 15 commits ahead of `origin/main`, no divergence |
+| **This branch** — code head | `011f01a0` | 2026-10-03 | 15 commits ahead of `origin/main`, no divergence |
+| **This branch** — head including docs | (the tip) | 2026-10-03 | 16 commits ahead; the 16th is **docs-only** (+5,954 lines, no code, schema or migration) |
+
+`011f01a0` is the head CI verified for *code*. The docs-only commit on top of it differs
+solely by the three audit documents, so the code tree both verdicts rest on is identical
+at either. This document deliberately does not print the tip SHA: recording it here would
+be invalidated by the commit that records it. Read the tip from `git rev-parse HEAD`.
 
 Production was read from the live `GET /api/health` response, not assumed.
 `git merge-base --is-ancestor 2d51e8d7 origin/main` → **yes**, so the branch is
@@ -769,12 +775,12 @@ logins available. Every step states its expected result.
 
 ## Final deliverable
 
-1. **Production / main / remediation comparison** — §Phase 0. `2d51e8d7` (production) → `bc8ca8c5` (`origin/main`, +110) → `011f01a0` (branch, +15, no divergence).
+1. **Production / main / remediation comparison** — §Phase 0. `2d51e8d7` (production) → `bc8ca8c5` (`origin/main`, +110) → `011f01a0` (branch code head, +15, no divergence) → docs-only tip (+16).
 2. **CI status** — §Phase 1 and §CI at head `011f01a0`. At the final head `011f01a0` (run 37099518715): **both jobs `completed / success`, nothing failed** — static checks green, and **9376 passed | 3 skipped (9379 tests)** across **819 files passed | 1 skipped (820)**, plus browser smoke **4 passed**. The previous head `eb19b73e` had one failure (9375 passed / 1 failed / 3 skipped) and that failure was an over-specified assertion in a new test, not the product; corrected in `011f01a0`.
 3. **DB-backed test status** — CI provisions `postgres:16-alpine`; the DB-gated files **do** run there. Migration smoke `26 passed, 0 failed`, `454` tables unchanged, `patient_reports` count unchanged, and its own `✅ SIGNED report content immutable` check green. Bootstrap: `15 drizzle applied, 184/184 feature migrations OK`. The two new suites executed against a real database and **both are fully green at head**: `signedArtifactGuard` **47/47**, `signedArtifactTrust` **23/23**.
 4. **RR-01 / RR-02 / RR-03 current status** — §Phase 2. All three **STILL PRESENT** at `9904be9c`; **ALREADY FIXED** at `011f01a0` (RR-03 was *partially* fixed before: the instant was already server-side, the identity was not).
 5. **Exact implementation performed** — §Phase 3.
-6. **Files changed** — *by this delivery* (the last 5 commits): 11 files — `signedArtifactGuard.ts` (new, 198), `signedArtifactGuard.test.ts` (new, 363), `signedArtifactTrust.request.test.ts` (new, 651), `patient-reports.ts`, `patient-reports.d6.test.ts`, `patient-reports.d9.test.ts`, `reportQuality.demography.request.test.ts`, `internal-reporting-studio.ts`, `boundary.ts`, `businessTime.stage0.characterization.test.ts`, `ReportHub.tsx`. *Whole branch vs `origin/main`:* 50 files, 5661 insertions, 234 deletions.
+6. **Files changed** — *by this delivery's five code commits* (`5add85c5`…`011f01a0`): **11 files, +1,684 −95** — `signedArtifactGuard.ts` (new, 198), `signedArtifactGuard.test.ts` (new, 363), `signedArtifactTrust.request.test.ts` (new, 651), `patient-reports.ts`, `patient-reports.d6.test.ts`, `patient-reports.d9.test.ts`, `reportQuality.demography.request.test.ts`, `internal-reporting-studio.ts`, `boundary.ts`, `businessTime.stage0.characterization.test.ts`, `ReportHub.tsx`. A sixteenth, **docs-only** commit then adds the three audit documents (+5,954, no code). *Whole branch vs `origin/main`:* **53 files, +11,615 −234** across 16 commits; excluding `docs/`, **50 files, +5,661 −234**.
 7. **Schema / migrations changed** — **NONE**. §Phase 4.
 8. **Existing production-data impact** — no row becomes invalid, unreadable or unrenderable. Behaviour change: rows carrying a signed witness at a status the old code did not gate become immutable, and acknowledged critical results become un-clearable. Measured by the five read-only queries in §Phase 4. One column changes meaning on **new** writes only: `radiology_studies.final_reported_by` stores `"Radiology Service"` instead of `NULL` when the boundary caller omits a name.
 9. **Backfill requirement** — **NONE**. No constraint is proposed, so nothing can violate one. Preflight queries are supplied to *measure* the behaviour change, not to authorize a write. No backfill was executed.
@@ -784,7 +790,7 @@ logins available. Every step states its expected result.
 13. **Durable-provenance recommendation** — §Phase 7: not durable today (parsed and dropped at `reportComposer/types.ts:97`); mechanically trivial to add under `structured_json.audit.fieldProvenance` with zero migration; **defer**, and derive it server-side rather than persisting a client claim.
 14. **Manual pre-adoption clinical smoke-test protocol** — §Phase 8: 24-step protocol + 8 adversarial scenarios + one acceptance gate, each with its expected result.
 15. **PR URL** — https://github.com/DrAbinash/care-on-synology1/pull/815. **Note: this PR is open, not a draft** (`draft: false` on the GitHub record). It is green and mergeable, so it is one click away from `main`. Nothing has been merged and nothing has been deployed; the branch state is reported here so the operator makes that click deliberately. Verdict A below is the recommendation about it.
-16. **Final HEAD SHA** — `011f01a09db86ff9e335c1f533a9b7f15f71bce8` is the **CI-verified code head** (run 37099518715, both jobs green). Exactly one commit follows it on the branch: the docs-only commit carrying this document and its two companions. It contains no code, no schema and no migration, so it cannot change behaviour — but it is the branch head, and CI re-runs on it. Every SHA cited elsewhere in this document refers to code state and is unaffected.
+16. **Final HEAD SHA** — `011f01a09db86ff9e335c1f533a9b7f15f71bce8` is the **CI-verified code head** (run 37099518715, both jobs green, 9376 passed / 0 failed). Only **docs-only** commits sit above it — the ones carrying this document and its two companions. They contain no code, no schema and no migration, so they cannot change behaviour; CI re-runs on the tip regardless. The branch tip is not printed here because this document is inside it and any SHA written would be stale the moment it is committed — read it from `git rev-parse HEAD`. Every other SHA cited in this document refers to code state and is unaffected.
 
 ### Before → after
 
