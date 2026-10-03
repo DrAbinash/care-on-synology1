@@ -143,6 +143,14 @@ That answers Phase 1's requirement directly: the DB-gated files that silently sk
 on a workstation without `DATABASE_URL` **were exercised in a real CI/test database
 environment** at the exact branch head, and they pass.
 
+**Re-verified on the docs-only tip.** CI also ran on the commit that carries this
+document (run 37100316220) and returned the **identical** result: `9376 passed | 3
+skipped (9379 tests)`, `819 passed | 1 skipped (820 files)`, migration smoke
+`26 passed, 0 failed` with `✅ SIGNED report content immutable`, and both new suites
+green (23 and 47 tests). So the checks a reviewer sees against the mergeable tip are
+not inherited from an earlier commit — they ran on it. `git diff 011f01a0 HEAD -- ':!docs'`
+is empty, which is why the numbers could not have moved.
+
 ---
 
 ## Phase 2 — Re-verification of RR-01, RR-02, RR-03
@@ -839,7 +847,7 @@ logins available. Every step states its expected result.
 Reasons, each tied to evidence above rather than to confidence:
 
 1. **No schema change, so no migration risk.** `git diff origin/main...HEAD -- lib/db migrations` is empty. There is nothing to apply to the production database, nothing to backfill, and no table recreation. Rollback is a plain `git revert` — no data migration to unwind, which is the usual reason a production merge is hard to undo.
-2. **CI is fully green at the exact head.** Run 37099518715: static checks `success` (typecheck clean in all four packages, 105/105 grounding claims, no migration-order violations) and tests `success` (**9376 passed, 3 skipped, 0 failed**, 819/820 files), migration smoke **26/26**, bootstrap **184/184 feature migrations**, browser smoke **4/4**. The single failure seen at the previous head was in my own new test, not in the product, and it is fixed.
+2. **CI is fully green at the exact head.** Run 37099518715: static checks `success` (typecheck clean in all four packages, 105/105 grounding claims, no migration-order violations) and tests `success` (**9376 passed, 3 skipped, 0 failed**, 819/820 files), migration smoke **26/26**, bootstrap **184/184 feature migrations**, browser smoke **4/4**. The single failure seen at the previous head was in my own new test, not in the product, and it is fixed. **Run 37100316220 then repeated the identical result on the docs-only tip** — the checks a reviewer sees against the mergeable commit ran on that commit.
 3. **The three P0 findings are closed with executing tests, not assertions about source.** All 14 required adversarial cases are covered by HTTP-level tests against a real Postgres (§Phase 5), including the negative cases that matter most: a client naming another radiologist as signer, a client-supplied signing instant, and clearing an acknowledged critical result. 47 + 23 new tests, all green in CI.
 4. **Read paths are untouched.** No change to report retrieval, PDF/print rendering, amendment-chain rendering, public-token sharing, or PACS/HOPE delivery. The migration smoke's `✅ patient_reports count unchanged (1)` and `✅ total table count unchanged (454)` corroborate that existing rows are neither rewritten nor orphaned. Existing historical reports and drafts remain readable; drafts remain editable (§Phase 5 cases 13–14).
 5. **The bypass surface was enumerated, not sampled.** All 14 `update(patientReportsTable)` call sites are tabulated (§Phase 5); exactly one writes protected content, and it is now guarded. The sole ERP caller of `PATCH` was updated in the same delivery so the UI no longer offers an edit the server will refuse.
