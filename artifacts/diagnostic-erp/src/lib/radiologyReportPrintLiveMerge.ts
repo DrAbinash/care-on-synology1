@@ -10,6 +10,7 @@ import type { ReportImageRef } from "./reportImageRefs";
 import {
   escHtml,
   fmtHeading,
+  renderFindingsDocumentHtml,
   type ReportHeadingCase,
   type ReportImpressionStyle,
   type PreviewFindingsItem,
@@ -143,9 +144,15 @@ export function buildLivePrintBodyHtml(input: LivePrintBodyInput): string {
     }
     if (findingsParts.length > 0) parts.push(...findingsParts);
   } else if (input.rawFindings?.trim()) {
+    // "Findings" stays the top-level section; a report authored with
+    // sub-headings (spine: Alignment, Disc Level Analysis, Canal Diameter …)
+    // renders them beneath it instead of dissolving into one paragraph.
     parts.push(
       `<div class="section-heading">${escHtml(fmtHeading("Findings", hc))}</div>`,
-      `<p>${formatPrintBodyHtml(input.rawFindings.trim())}</p>`,
+      renderFindingsDocumentHtml(input.rawFindings.trim(), {
+        headingCase: hc,
+        renderBody: formatPrintBodyHtml,
+      }),
     );
   }
 

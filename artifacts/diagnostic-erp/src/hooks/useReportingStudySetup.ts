@@ -18,6 +18,7 @@ import {
   resolveAutoStudyRegion,
 } from "@/lib/studyRegion";
 import { pickQuickProtocol, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
+import { findingsBodyForTemplate } from "@/lib/reportSubHeadings";
 import {
   recordTechniqueAutoOrigin,
   shouldAutoReplaceTechniqueOnRegionChange,
@@ -512,7 +513,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
 
     if (templateApplySourceRef.current === "manual") {
       setters.replaceTechnique(sections.technique || fields.technique, "template");
-      setters.replaceFindings(selectedTemplate.defaultFindings || "", "template");
+      setters.replaceFindings(findingsBodyForTemplate(selectedTemplate), "template");
       setters.replaceImpression(selectedTemplate.defaultImpression || "", "template");
       if (fields.recommendation.trim()) {
         setters.setRecommendation(fields.recommendation);
@@ -527,8 +528,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       setters.setTechniqueIfEmpty(sections.technique, "template");
       lastInsertedTechniqueRef.current = sections.technique;
     }
-    if (!fields.findings.trim() && selectedTemplate.defaultFindings) {
-      setters.setFindingsIfEmpty(selectedTemplate.defaultFindings, "template");
+    if (!fields.findings.trim()) {
+      // Sections, not just the authored paragraph: a format that declares its
+      // anatomy but carries no structured text still produces a sub-headed
+      // report, so adding a section in the Templates screen is enough.
+      const body = findingsBodyForTemplate(selectedTemplate);
+      if (body) setters.setFindingsIfEmpty(body, "template");
     }
     if (!fields.impression.trim() && selectedTemplate.defaultImpression) {
       setters.setImpressionIfEmpty(selectedTemplate.defaultImpression, "template");
@@ -808,12 +813,11 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
         setters.setTechnique(techniqueText);
         lastInsertedTechniqueRef.current = techniqueText;
       }
-      if (match.defaultFindings) setters.setFindings(match.defaultFindings);
-      else if (Object.keys(sectionMap).length) {
-        setters.setFindings(
-          Object.entries(sectionMap).map(([label, v]) => `${label}: ${v.text}`).join("\n\n"),
-        );
-      }
+      // The same resolution the automatic path uses, so choosing a format by
+      // hand cannot produce a different-looking report than the same format
+      // loaded on its own.
+      const body = findingsBodyForTemplate(match);
+      if (body) setters.setFindings(body);
       if (match.defaultImpression) setters.setImpression(match.defaultImpression);
       const baseRec = "Please correlate with clinical findings.";
       setters.setRecommendation(

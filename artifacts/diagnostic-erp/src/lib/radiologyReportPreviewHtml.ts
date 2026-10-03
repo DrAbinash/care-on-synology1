@@ -18,6 +18,7 @@ import {
   type FieldProvenanceMap,
   type ProvenanceVisualKind,
 } from "./reportFieldMerge";
+import { parseFindingsDocument } from "./findingsDocument";
 
 /**
  * Screen-only Preview provenance decoration.
@@ -136,6 +137,69 @@ export function fmtHeading(text: string, headingCase: ReportHeadingCase): string
   return text.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
 }
 
+/**
+ * Render findings as the document it actually is: sub-headings become section
+ * headings, `|`-rows become a table, and everything else stays a paragraph.
+ *
+ * This is why it exists: a spine report authored as labelled sections used to
+ * print as one run-on paragraph, because every non-structured path emitted a
+ * single `<p>` for the whole findings field. See findingsDocument.ts for the
+ * convention this reads.
+ *
+ * `renderBody` lets a caller keep its own paragraph treatment — the print path
+ * passes the **bold** markdown formatter, the preview passes provenance tinting.
+ */
+export function renderFindingsDocumentHtml(
+  findingsText: string,
+  opts: {
+    headingCase?: ReportHeadingCase;
+    /** CSS margin for paragraphs, so callers keep their spacing setting. */
+    margin?: string;
+    renderBody?: (text: string) => string;
+    /** Sub-heading markup. The print surface has a `.section-heading`
+     *  stylesheet; the preview and Word export carry inline styles only, so
+     *  they must pass their own or the sub-headings arrive unstyled. */
+    renderHeading?: (label: string) => string;
+  } = {},
+): string {
+  const hc = opts.headingCase ?? "all_caps";
+  const margin = opts.margin ?? "0 0 12px";
+  const renderBody = opts.renderBody
+    ?? ((t: string) => escHtml(t).replaceAll("\n", "<br/>"));
+  const renderHeading = opts.renderHeading
+    ?? ((label: string) => `<div class="section-heading">${escHtml(label)}</div>`);
+  const blocks = parseFindingsDocument(findingsText);
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (b.kind === "heading") {
+      // Callers receive the label already case-normalised; escaping stays with
+      // them because only they know what markup they are producing.
+      const label = fmtHeading(b.text, hc);
+      parts.push(renderHeading(label));
+      continue;
+    }
+    if (b.kind === "para") {
+      parts.push(`<p style="margin:${margin};">${renderBody(b.text)}</p>`);
+      continue;
+    }
+    parts.push(renderFindingsTableHtml(b.header, b.rows));
+  }
+  return parts.join("\n");
+}
+
+function renderFindingsTableHtml(header: string[], rows: string[][]): string {
+  // Inline styles, not just the class: this table reaches the screen preview,
+  // Word export and the print surface, and only the print template is
+  // guaranteed to carry a stylesheet.
+  const th = (c: string) => `<th style="border:1px solid #cbd5e1;padding:4px 6px;text-align:left;background:#f1f5f9;">${escHtml(c)}</th>`;
+  const td = (c: string) => `<td style="border:1px solid #cbd5e1;padding:4px 6px;text-align:left;">${escHtml(c)}</td>`;
+  const head = header.map(th).join("");
+  const body = rows
+    .map((r) => `<tr>${header.map((_, i) => td(r[i] ?? "")).join("")}</tr>`)
+    .join("");
+  return `<table class="findings-table" style="border-collapse:collapse;width:100%;font-size:11px;margin:6px 0 12px;"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
 /** Build the same HTML the Preview pane and Word export use. */
 export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
   const hc = opts.headingCase ?? "all_caps";
@@ -171,10 +235,17 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
       })
       .join("\n");
   } else {
-    const body = opts.rawFindings.trim()
-      ? htmlWithProvenance(opts.rawFindings, opts.findingsProvenance)
-      : "<em style='color:#aaa;'>No findings entered.</em>";
-    findingsHtml = `<p style="margin:0 0 ${sp};">${body}</p>`;
+    if (!opts.rawFindings.trim()) {
+      findingsHtml = `<p style="margin:0 0 ${sp};"><em style='color:#aaa;'>No findings entered.</em></p>`;
+    } else {
+      findingsHtml = renderFindingsDocumentHtml(opts.rawFindings, {
+        headingCase: hc,
+        margin: `0 0 ${sp}`,
+        renderBody: (t) => htmlWithProvenance(t, opts.findingsProvenance),
+        renderHeading: (label) =>
+          `<p style="margin:${sp} 0 2px;font-size:12pt;"><u><strong>${escHtml(label)}</strong></u></p>`,
+      });
+    }
   }
 
   const impressionBullets = opts.impression.filter(Boolean).map(normalizeImpressionBullet);

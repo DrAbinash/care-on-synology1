@@ -42,8 +42,9 @@ export function buildFindingsText(opts: {
     .map(([label, item]) => {
       const raw = item.text.trim().replace(/\s+/g, " ");
       const sentence = raw || (item.normal ? "Normal." : "—");
-      // Blank line between anatomical sections — letter-pad readability
-      return `${fmtHeading(label, hc)}: ${sentence}`;
+      // Heading on its own line — the convention findingsDocument.ts reads, so
+      // the PDF draws it as a section heading like the print surface does.
+      return `${fmtHeading(label, hc)}:\n${sentence}`;
     })
     .filter(Boolean)
     .join("\n\n");

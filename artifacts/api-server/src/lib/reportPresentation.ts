@@ -776,6 +776,12 @@ export function renderReportDocument(
     .body p, .body div { orphans: ${orphans}; widows: ${widows}; }
     p { orphans: ${orphans}; widows: ${widows}; }
 
+    /* ── Findings tables (e.g. per-level canal diameters in spine reports) ── */
+    .findings-table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; font-size: 11px; white-space: normal; }
+    .findings-table th { background: ${!banded ? "#1e1b4b" : pal.headerBg}; color: #fff; padding: 5px 7px; text-align: left; border: 1px solid ${pal.sectionBorder}; }
+    .findings-table td { padding: 5px 7px; border: 1px solid ${pal.sectionBorder}; }
+    .findings-table tr { break-inside: avoid; page-break-inside: avoid; }
+
     /* ── Impression ── */
     .impression {
       ${slotCss(template.impressionTypography ?? {})}

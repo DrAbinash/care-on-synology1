@@ -156,7 +156,40 @@ const PRESETS = [
         { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable. No collection or mass." },
       ],
     }),
-    defaultFindings: "Lumbar lordosis is preserved. Vertebral body heights and marrow signal are maintained throughout. Disc heights and signal intensity are preserved at all levels. No disc herniation, bulge or extrusion. Facet joints and ligamentum flavum are unremarkable. Neural foramina are patent bilaterally at all levels. Spinal canal of adequate dimensions. Cauda equina nerve roots appear normal. Paraspinal soft tissues are unremarkable.",
+    // Sub-headed body. A line that is exactly "Label:" is a section heading and
+    // a `|`-row is a table — see diagnostic-erp/src/lib/findingsDocument.ts,
+    // which the print, preview and PDF surfaces all share. The canal column is
+    // left as "—" on purpose: those are measurements, and a format must never
+    // print a number the radiologist did not take.
+    defaultFindings: `Alignment:
+Normal lumbar lordosis maintained. No scoliosis or listhesis.
+
+Vertebral Body:
+Normal height, signal and morphology throughout. No marrow infiltration or compression fracture.
+
+Disc Level Analysis:
+L1-L2: Normal disc height and signal. No disc herniation. Neural foramen patent.
+L2-L3: Normal disc height and signal. No disc herniation. Neural foramen patent.
+L3-L4: Normal disc height and signal. No disc herniation. Neural foramen patent.
+L4-L5: Normal disc height and signal. No disc herniation. Neural foramen patent.
+L5-S1: Normal disc height and signal. No disc herniation. Neural foramen patent.
+
+Facets & Ligaments:
+Facet joints are unremarkable at the imaged levels. No significant arthropathy. No ligamentum flavum hypertrophy.
+
+Thecal Sac & Neural Structures:
+Thecal sac of adequate calibre. Cauda equina nerve roots appear normal. No nerve root compression.
+
+Posterior Structures:
+Posterior elements, paraspinal soft tissues and visualised marrow are unremarkable. No collection or mass.
+
+Canal Diameter:
+| Level | AP Canal (mm) |
+| L1-L2 | — |
+| L2-L3 | — |
+| L3-L4 | — |
+| L4-L5 | — |
+| L5-S1 | — |`,
     defaultImpression: "Normal MRI Lumbo-sacral Spine. No disc herniation, nerve root compression or spinal canal stenosis.",
     macrosJson: JSON.stringify([
       { key: "disc_prolapse", label: "Disc Prolapse/HNP", text: "Posterior disc prolapse/herniation at [LEVEL] causing [mild/moderate/severe] [central/paracentral/foraminal] canal stenosis with [RIGHT/LEFT/bilateral] nerve root compression." },
@@ -189,7 +222,37 @@ const PRESETS = [
         { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable." },
       ],
     }),
-    defaultFindings: "Cervical lordosis maintained. Craniovertebral junction normal. Vertebral body heights and marrow signal normal. Disc heights and T2 signal preserved at C2-C3 through C7-T1. No disc herniation or significant spondylotic change. Facet/uncovertebral joints unremarkable. Neural foramina patent bilaterally. Spinal canal adequate. Spinal cord normal in calibre and signal. No myelopathic signal change. Paraspinal soft tissues unremarkable.",
+    defaultFindings: `Alignment:
+Normal cervical lordosis maintained. No subluxation or listhesis. Craniovertebral junction normal — no Chiari malformation.
+
+Vertebral Body:
+Normal vertebral body heights and marrow signal. No destructive lesion or compression fracture.
+
+Disc Level Analysis:
+C2-C3: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
+C3-C4: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
+C4-C5: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
+C5-C6: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
+C6-C7: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
+C7-T1: Normal disc height and T2 signal. No herniation. Foramen patent.
+
+Facets & Ligaments:
+Facet and uncovertebral joints are unremarkable. No significant spondylotic change. Ligamentum flavum normal.
+
+Thecal Sac & Neural Structures:
+Spinal cord normal in calibre and signal throughout. No myelopathic signal change. No cord compression. Nerve roots unremarkable.
+
+Posterior Structures:
+Posterior elements intact. Paraspinal soft tissues unremarkable. No epidural collection.
+
+Cervical Canal Diameter:
+| Level | AP Canal (mm) |
+| C2-C3 | — |
+| C3-C4 | — |
+| C4-C5 | — |
+| C5-C6 | — |
+| C6-C7 | — |
+| C7-T1 | — |`,
     defaultImpression: "Normal MRI Cervical Spine. No cord compression or significant spondylosis.",
     macrosJson: JSON.stringify([
       { key: "myelopathy", label: "Cervical Myelopathy", text: "T2 hyperintense signal within the spinal cord at [LEVEL], consistent with myelopathic change secondary to [canal stenosis/disc herniation]." },
@@ -226,7 +289,33 @@ const PRESETS = [
         { label: "Paraspinal Soft Tissues", normal: "Paraspinal soft tissues are unremarkable. No collection or mass." },
       ],
     }),
-    defaultFindings: "Normal dorsal kyphosis. Vertebral body heights and marrow signal are maintained. Disc heights and signal are preserved from T1-T2 through T11-T12 with no herniation. Facet joints unremarkable. Spinal canal adequate. Spinal cord normal in calibre and signal. Posterior elements intact. No epidural collection or paraspinal mass.",
+    defaultFindings: `Alignment:
+Normal dorsal kyphosis maintained. No scoliosis, listhesis or subluxation.
+
+Vertebral Body:
+Normal vertebral body heights and marrow signal throughout. No destructive lesion or compression fracture.
+
+Disc Level Analysis:
+T1-T2: Normal disc height and signal. No herniation.
+T2-T3: Normal disc height and signal. No herniation.
+T3-T4: Normal disc height and signal. No herniation.
+T4-T5: Normal disc height and signal. No herniation.
+T5-T6: Normal disc height and signal. No herniation.
+T6-T7: Normal disc height and signal. No herniation.
+T7-T8: Normal disc height and signal. No herniation.
+T8-T9: Normal disc height and signal. No herniation.
+T9-T10: Normal disc height and signal. No herniation.
+T10-T11: Normal disc height and signal. No herniation.
+T11-T12: Normal disc height and signal. No herniation.
+
+Facets & Ligaments:
+Facet joints unremarkable. No ligamentum flavum hypertrophy.
+
+Thecal Sac & Neural Structures:
+Spinal canal adequate. Spinal cord normal in calibre and signal. No cord compression. No myelopathic signal change. Conus unremarkable.
+
+Posterior Structures:
+Posterior elements intact. No epidural collection or paraspinal mass.`,
     defaultImpression: "Normal MRI Dorsal Spine. No focal disc herniation, cord compression or marrow pathology.",
     macrosJson: JSON.stringify([
       { key: "compression_fracture", label: "Compression Fracture", text: "Wedge compression fracture of [VERTEBRAL LEVEL] with [X]% loss of height. [Acute / Subacute / Chronic] based on signal characteristics." },
@@ -535,21 +624,35 @@ const PRESETS = [
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-function countFindingsItems(sectionsJson: string | null | undefined): number {
-  if (!sectionsJson) return 0;
-  try {
-    const parsed = JSON.parse(sectionsJson) as { findingsItems?: unknown[] };
-    return Array.isArray(parsed.findingsItems) ? parsed.findingsItems.length : 0;
-  } catch {
-    return 0;
-  }
+/**
+ * A preset row the application has never handed to a person. Rows last written
+ * by a named staff member came from the Templates screen, and their wording is
+ * theirs to keep.
+ */
+function isCodeOwned(updatedBy: string | null | undefined): boolean {
+  return !updatedBy || updatedBy === "system" || updatedBy.startsWith("system-");
 }
 
 /**
- * Upgrade existing *preset* rows whose anatomy sections lag the code PRESETS
- * (e.g. old cervical had 4 bundled sections; new has per-level C2–C7).
- * Only touches is_preset=true rows and only when the new preset has MORE
- * findingsItems — never shrinks a clinic-customized denser template.
+ * Source files in this repo are CRLF, so a multi-line preset literal carries
+ * `\r` into every string the database stores and every report that later
+ * renders it. Newlines in a report body are meaningful (they are the section
+ * breaks), so the return characters are stripped on the way in.
+ */
+function presetText(value: string | null | undefined): string | null {
+  return value == null ? null : value.replace(/\r\n/g, "\n");
+}
+
+/**
+ * Bring preset rows up to the shape declared in code.
+ *
+ * The previous rule compared findings-item COUNTS and only ever GREW a
+ * template. Two consequences, both hit for real: a preset whose wording changed
+ * but whose section count did not could never reach an installed database (so a
+ * shipped format improvement silently did nothing), and a template a
+ * radiologist had edited was overwritten wholesale the moment its section count
+ * happened to rise. Ownership is the correct test — code may refresh what code
+ * still owns, and a person's edit is final.
  */
 async function upgradePresetTemplateSections(): Promise<number> {
   const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
@@ -559,6 +662,10 @@ async function upgradePresetTemplateSections(): Promise<number> {
       .select({
         id: structuredReportTemplatesTable.id,
         sectionsJson: structuredReportTemplatesTable.sectionsJson,
+        defaultFindings: structuredReportTemplatesTable.defaultFindings,
+        defaultImpression: structuredReportTemplatesTable.defaultImpression,
+        macrosJson: structuredReportTemplatesTable.macrosJson,
+        updatedBy: structuredReportTemplatesTable.updatedBy,
       })
       .from(structuredReportTemplatesTable)
       .where(and(
@@ -566,24 +673,23 @@ async function upgradePresetTemplateSections(): Promise<number> {
         eq(structuredReportTemplatesTable.isPreset, true),
       ))
       .limit(1);
-    if (!existing) continue;
-    const oldCount = countFindingsItems(existing.sectionsJson);
-    const newCount = countFindingsItems(preset.sectionsJson);
-    if (newCount <= oldCount) continue;
+    if (!existing || !isCodeOwned(existing.updatedBy)) continue;
     // USG presets omit defaultImpression; MRI/CT presets include it.
-    const impression =
-      "defaultImpression" in preset
-        ? ((preset as { defaultImpression?: string | null }).defaultImpression ?? null)
-        : null;
+    const wanted = {
+      sectionsJson: presetText(preset.sectionsJson),
+      defaultFindings: presetText(preset.defaultFindings),
+      defaultImpression: presetText(
+        "defaultImpression" in preset
+          ? ((preset as { defaultImpression?: string | null }).defaultImpression ?? null)
+          : null,
+      ),
+      macrosJson: presetText(preset.macrosJson),
+    };
+    const differs = (Object.keys(wanted) as (keyof typeof wanted)[])
+      .some((key) => existing[key] !== wanted[key]);
+    if (!differs) continue;
     await db.update(structuredReportTemplatesTable)
-      .set({
-        sectionsJson: preset.sectionsJson,
-        defaultFindings: preset.defaultFindings ?? null,
-        defaultImpression: impression,
-        macrosJson: preset.macrosJson ?? null,
-        updatedAt: new Date(),
-        updatedBy: "system-spine-format-upgrade",
-      })
+      .set({ ...wanted, updatedAt: new Date(), updatedBy: "system-preset-format-refresh" })
       .where(eq(structuredReportTemplatesTable.id, existing.id));
     upgraded++;
   }
@@ -671,6 +777,14 @@ async function ensurePresetTemplatesSeeded(): Promise<number> {
     if (existing.length > 0) continue;
     await db.insert(structuredReportTemplatesTable).values({
       ...preset,
+      sectionsJson: presetText(preset.sectionsJson) ?? preset.sectionsJson,
+      defaultFindings: presetText(preset.defaultFindings),
+      defaultImpression: presetText(
+        "defaultImpression" in preset
+          ? ((preset as { defaultImpression?: string | null }).defaultImpression ?? null)
+          : null,
+      ),
+      macrosJson: presetText(preset.macrosJson),
       createdBy: "system",
     });
     inserted++;
@@ -678,16 +792,13 @@ async function ensurePresetTemplatesSeeded(): Promise<number> {
   return inserted;
 }
 
-/** Seed missing + upgrade lagging spine/brain presets. Safe to call often. */
 /**
  * Apply preset-declared `isDefault` to rows that already exist in the database.
  *
  * Neither existing sync can carry this flag. `ensurePresetTemplatesSeeded` only
  * inserts rows that are missing — in a live clinic all 29 are present — and
- * `upgradePresetTemplateSections` returns early whenever `newCount <= oldCount`,
- * so a preset whose findings list did not grow is never written at all. Adding
- * `isDefault` to a preset without this would fix a fresh install and silently do
- * nothing to the one that matters.
+ * `upgradePresetTemplateSections` skips any row a named person has edited, so a
+ * newly declared default would never reach the one installation that matters.
  *
  * Deliberately one-way:
  *   - it never sets `is_default` from true back to false;
