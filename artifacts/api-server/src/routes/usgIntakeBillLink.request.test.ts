@@ -20,10 +20,12 @@ import {
   orderTestsTable,
   ordersTable,
   patientsTable,
+  portalSessionsTable,
   radiologyAuditLogTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
   testsTable,
+  usersTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 
@@ -32,6 +34,13 @@ const dbReady = hasDatabaseUrl();
 describe.skipIf(!dbReady)("USG intake bill-desk link — request level", () => {
   let app: Express;
   const marker = `uslink-${randomUUID().slice(0, 8)}`;
+  // /api/internal/* is behind requireStaffOrInternalAuth (internal-radiology.ts:363).
+  // A session token is the presentation that works whether or not the test
+  // environment sets INTERNAL_API_KEY; CI does not, and posting with no
+  // credential at all is a 401 before the intake handler ever runs.
+  const token = `uslink-token-${randomUUID()}`;
+  let userId = 0;
+  const auth = { Authorization: `Bearer ${token}` };
 
   let testUsg = 0;
   let patientSolo = 0;
@@ -108,7 +117,7 @@ describe.skipIf(!dbReady)("USG intake bill-desk link — request level", () => {
   }
 
   async function postScannerStudy(patientName: string, dicomPatientId: string, uid: string) {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...auth };
     const internalKey = process.env.INTERNAL_API_KEY;
     if (internalKey) headers.Authorization = `Bearer ${internalKey}`;
 
@@ -133,6 +142,27 @@ describe.skipIf(!dbReady)("USG intake bill-desk link — request level", () => {
 
   beforeAll(async () => {
     app = await createTestApp();
+
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `USG Link ${marker}`,
+        email: `${marker}@vitest.invalid`,
+        username: marker,
+        role: "staff",
+        permissions: JSON.stringify(["/radiology", "/patients", "/billing"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user.id;
+    await db.insert(portalSessionsTable).values({
+      token,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
 
     const [usg] = await db
       .insert(testsTable)
@@ -206,6 +236,8 @@ describe.skipIf(!dbReady)("USG intake bill-desk link — request level", () => {
       await db.delete(ordersTable).where(eq(ordersTable.id, o.id)).catch(() => {});
     }
     await db.delete(testsTable).where(eq(testsTable.id, testUsg)).catch(() => {});
+    await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token)).catch(() => {});
+    if (userId) await db.delete(usersTable).where(eq(usersTable.id, userId)).catch(() => {});
     for (const pid of [patientSolo, patientTwinA, patientTwinB]) {
       if (pid) await db.delete(patientsTable).where(eq(patientsTable.id, pid)).catch(() => {});
     }
