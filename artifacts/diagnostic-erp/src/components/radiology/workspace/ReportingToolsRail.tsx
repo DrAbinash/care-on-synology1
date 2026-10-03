@@ -39,8 +39,6 @@ import {
   isMriDorsoLumbarReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
 import {
-  isBrainMeasuresReportingContext,
-  isMriBrainReportingContext,
   isXrayCervicalReportingContext,
   isXrayChestReportingContext,
   isXrayLsReportingContext,
@@ -64,8 +62,6 @@ import {
   MriDorsalCanvas,
   ObservationLedgerPanel,
   SpineApCanalMeasurements,
-  BrainMeasuresStrip,
-  MriBrainCanvas,
   XrayChestCanvas,
   XrayCervicalCanvas,
   XrayLsSpineCanvas,
@@ -646,6 +642,21 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                         ),
                         structured: (
                           <div className="space-y-3">
+                            {/* StructuredFormatPanel returns null when the selected
+                                format has no fields, which left this tab looking
+                                broken and gave no way to tell "nothing chosen" from
+                                "nothing available". Free typing is still open in the
+                                report body, so say that rather than show a void. */}
+                            {!studySetup.selectedTemplate ? (
+                              <div
+                                className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-700"
+                                data-testid="r2-structured-no-format"
+                              >
+                                No report format matched this study, so there is nothing
+                                to fill in here. Type the report in the body — the study
+                                region and its format are chosen on the Region/Study step.
+                              </div>
+                            ) : null}
                             <StructuredFormatPanel
                               sectionsJson={studySetup.selectedTemplate?.sectionsJson}
                               values={structuredValues}
@@ -665,30 +676,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               }}
                               onAcceptImpression={acceptStructuredImpressionCandidate}
                             />
-                            {isBrainMeasuresReportingContext({
-                              modality: workflow.currentRow?.modality,
-                              region: studySetup.matchedStudyRegion,
-                              family: studySetup.studyContext?.family,
-                              studyDescription: workflow.currentRow?.studyDescription ?? null,
-                            }) ? (
-                              <>
-                                {isMriBrainReportingContext({
-                                  modality: workflow.currentRow?.modality,
-                                  region: studySetup.matchedStudyRegion,
-                                  family: studySetup.studyContext?.family,
-                                  studyDescription: workflow.currentRow?.studyDescription ?? null,
-                                }) ? (
-                                  <MriBrainCanvas
-                                    disabled={isLocked || isFinalized}
-                                    region={studySetup.matchedStudyRegion ?? "Brain"}
-                                  />
-                                ) : null}
-                                <BrainMeasuresStrip
-                                  disabled={isLocked || isFinalized}
-                                  region={studySetup.matchedStudyRegion ?? "Brain"}
-                                />
-                              </>
-                            ) : null}
+                            {/* MRI Brain's palette and measures are NOT duplicated here. They
+                                render in the report body (ReportCanvas.tsx) alongside the lumbar
+                                / cervical / dorsal canvases, where a brain study actually looks.
+                                Keeping them rail-only was why brain reporting was undiscoverable. */}
                             {isMriLumbarReportingContext({
                               modality: workflow.currentRow?.modality,
                               region: studySetup.matchedStudyRegion,

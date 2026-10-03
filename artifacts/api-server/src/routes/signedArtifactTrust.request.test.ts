@@ -372,6 +372,11 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
       .send({ signedByName: OTHER_NAME });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("already_signed");
+    // A refusal that names a route this row cannot use is a wasted trip and a
+    // lost correction. POST /:id/amend answers 409 not_a_signed_structured_report
+    // for any row without a signed structured document — which is exactly what
+    // reaches this branch.
+    expect(res.body.message ?? "").not.toContain("/:id/amend");
 
     const after = await row(id);
     // The original signing instant and signer survive the attempt untouched.
@@ -604,7 +609,7 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     expect(audits[0].newValue).toContain('"outcome":"rejected"');
   });
 
-  it("a VERIFIED report's signature cannot be withdrawn — correction goes through amend", async () => {
+  it("a VERIFIED report's signature cannot be withdrawn, and a legacy one is not sent to amend", async () => {
     const id = await newDraft();
     await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
     await request(app).post(`/api/patient-reports/${id}/verify`).set("Authorization", `Bearer ${otherToken}`).send({});
@@ -615,6 +620,10 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
       .send({ reason: "Too late, but trying." });
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("already_verified");
+    // This row was created on the legacy path, so it carries no structured
+    // document and POST /:id/amend refuses it. Offering amend here would send
+    // staff to an endpoint whose only reply is another 409.
+    expect(res.body.message ?? "").not.toContain("/:id/amend");
     expect((await row(id)).status).toBe("verified"); // countersignature intact
   });
 

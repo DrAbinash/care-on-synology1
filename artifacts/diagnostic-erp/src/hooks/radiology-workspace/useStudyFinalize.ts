@@ -105,7 +105,19 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
 
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
 const finalizeReport = useCallback(async () => {
-  if (!studyId || !workflow.currentRow) return;
+  // Guard, but never a silent one. This returned without a word, so pressing
+  // Finalize & Sign looked like a busy system that had ignored the click — the
+  // radiologist's only evidence was nothing happening.
+  if (!studyId || !workflow.currentRow) {
+    toast({
+      title: "Nothing to finalize",
+      description: !studyId
+        ? "No study is open. Choose one in the worklist first."
+        : "This study's worklist row is not loaded, so there is nothing to sign. Reopen the study from the worklist.",
+      variant: "destructive",
+    });
+    return;
+  }
   const offlineMsg = offlineBlockMessage(isOnline, "finalize");
   if (offlineMsg) { toast({ title: "Offline", description: offlineMsg, variant: "destructive" }); return; }
 
@@ -355,11 +367,18 @@ const finalizeReport = useCallback(async () => {
     } else if (finalizeResult.signed) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
     } else if (finalizeResult.reportCreationSkipped) {
+      // Not a success path. The worklist row is marked final while no report
+      // exists — nothing to print, nothing to send, nothing in Report Hub. The
+      // old wording ("Worklist marked final") read as completion in a calm voice,
+      // so a radiologist who believed it walked away from a study that has no
+      // report behind it. Destructive, and the fix named.
       toast({
-        title: "Worklist marked final",
+        title: "Study marked final — but NO report was created",
         description: finalizeResult.reportCreationSkipped.includes("no patient")
-          ? "Study finalized on the worklist. No billed patient report row (expected until billing is linked)."
+          ? "No patient is linked to this study, so there is no billable patient to attach a report to. Nothing has been printed or sent. Link the study to its patient and bill in Match Center, then finalize again."
           : `No patient report row created: ${finalizeResult.reportCreationSkipped}`,
+        variant: "destructive",
+        duration: 15000,
       });
     } else {
       toast({ title: "Report saved but NOT signed", description: finalizeResult.signError ?? "Sign error", variant: "destructive" });

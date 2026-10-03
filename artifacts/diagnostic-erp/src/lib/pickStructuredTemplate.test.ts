@@ -31,9 +31,87 @@ describe("inferStructuredTemplateMatch", () => {
       studyType: "PLAIN",
     });
   });
+
+  it("returns null instead of guessing a body part the study never named", () => {
+    // Every one of these used to resolve confidently: MRI and CT to BRAIN, USG to
+    // ABDOMEN, X-RAY to CHEST. The modality matched, the anatomy did not, and the
+    // function answered as though both had.
+    expect(inferStructuredTemplateMatch("MR", "MRI KNEE")).toBeNull();
+    expect(inferStructuredTemplateMatch("MRI", "MR LEFT KNEE")).toBeNull();
+    expect(inferStructuredTemplateMatch("CT", "CT LIVER")).toBeNull();
+    expect(inferStructuredTemplateMatch("USG", "USG BREAST")).toBeNull();
+    expect(inferStructuredTemplateMatch("XR", "X-RAY RIGHT HAND")).toBeNull();
+  });
+
+  it("still matches the anatomy it is actually told", () => {
+    // Guards the other direction: null-ing the fallback must not have narrowed
+    // the keyword matches that real PACS descriptions rely on.
+    expect(inferStructuredTemplateMatch("MRI", "MRI BRAIN WITH CONTRAST")).toEqual({
+      bodyPart: "BRAIN",
+      studyType: "CONTRAST",
+    });
+    expect(inferStructuredTemplateMatch("MRI", "MRI DWI STROKE PROTOCOL")).toEqual({
+      bodyPart: "BRAIN",
+      studyType: "STROKE_PROTOCOL",
+    });
+    expect(inferStructuredTemplateMatch("CT", "HRCT CHEST")).toEqual({
+      bodyPart: "CHEST",
+      studyType: "HRCT",
+    });
+    expect(inferStructuredTemplateMatch("USG", "KUB ULTRASOUND")).toEqual({
+      bodyPart: "ABDOMEN",
+      studyType: undefined,
+    });
+    expect(inferStructuredTemplateMatch("MR", "MRI DORSAL SPINE")).toEqual({
+      bodyPart: "SPINE_DORSAL",
+      studyType: "PLAIN",
+    });
+  });
+});
+
+describe("which format a region opens on — the declared default, not the sort order", () => {
+  it("takes the declared default even when another row sorts first", () => {
+    // The whole reason isDefault exists. Production shipped with it false on all
+    // 29 rows, so every region resolved through the rows[0] tail below and a
+    // brain study landed on "MRI Brain Plain" only because P sorts before S and W.
+    const rows = [
+      { id: 1, templateName: "MRI Brain Advanced Research", modality: "MRI", bodyPart: "BRAIN", studyType: "RESEARCH" },
+      { id: 2, templateName: "MRI Brain Plain", modality: "MRI", bodyPart: "BRAIN", studyType: "PLAIN", isDefault: true },
+      { id: 3, templateName: "MRI Brain With Contrast", modality: "MRI", bodyPart: "BRAIN", studyType: "CONTRAST" },
+    ];
+    expect(pickStructuredTemplateForRegion(rows, "MR", "Brain")?.id).toBe(2);
+  });
+
+  it("resolves no format for a region the mapping does not know", () => {
+    // studyRegionToBodyPart covers spine segments, brain, chest and abdomen only.
+    // USG regions — obstetric, pelvis, scrotum, limb doppler — are not in it, so
+    // the region path returns null for them rather than guessing. Recorded here
+    // because it is easy to misread as a bug: ultrasound reporting runs through
+    // its own surface and does not depend on this path.
+    const rows = [
+      { id: 1, templateName: "Anomaly Scan", modality: "USG", bodyPart: "OBSTETRIC", studyType: "ANOMALY" },
+      { id: 2, templateName: "Early Pregnancy", modality: "USG", bodyPart: "OBSTETRIC", studyType: "EARLY" },
+    ];
+    expect(pickStructuredTemplateForRegion(rows, "USG", "Obstetric")).toBeNull();
+    // …and the same rows do resolve once the region is one the mapping knows,
+    // so this is the mapping refusing, not the pool being empty.
+    expect(pickStructuredTemplateForRegion(
+      [{ id: 1, templateName: "USG Abdomen", modality: "USG", bodyPart: "ABDOMEN", studyType: "GREY_SCALE" }],
+      "USG",
+      "Abdomen",
+    )?.id).toBe(1);
+  });
 });
 
 describe("pickStructuredTemplate", () => {
+  it("chooses no template for an unrecognised MRI rather than the brain one", () => {
+    // TEMPLATES holds an MRI Brain row, which is exactly what an MRI knee used to
+    // be handed. With formats seeded in production this stops being cosmetic:
+    // brain sections would pre-fill a knee report.
+    const match = pickStructuredTemplate(TEMPLATES, "MR", "MRI KNEE");
+    expect(match).toBeNull();
+  });
+
   it("picks LS spine template not brain for LS spine study", () => {
     const match = pickStructuredTemplate(TEMPLATES, "MR", "MRI LS SPINE");
     expect(match?.id).toBe(2);

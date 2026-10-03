@@ -289,7 +289,11 @@ export async function assertDraftWritable(opts: {
       throw new RadiologyIdentityError(409, "DRAFT_PATIENT_MISMATCH", "Draft patient does not match the worklist patient.");
     }
     if (worklist.status === "REPORT_FINAL" || worklist.status === "DELIVERED" || worklist.reportId) {
-      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study already has a final report. Use amend instead of editing the draft.");
+      // Do not name a route that this row cannot use. POST /:id/amend refuses
+      // every report without a signed structured document, so pointing a
+      // legacy-signed study at it sent staff to an endpoint that answers 409
+      // not_a_signed_structured_report.
+      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study already has a final report, so its draft is locked. Nothing typed here can change the signed text; correcting a signed report is a separate, attributed action.");
     }
   }
 

@@ -4,6 +4,7 @@ import { db } from "@workspace/db";
 import { structuredReportTemplatesTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
+import { logger } from "../lib/logger";
 import { apiErrorFromZod } from "../lib/api-error";
 import { USG_STRUCTURED_TEMPLATE_PRESETS } from "../lib/usgReportTemplates";
 
@@ -41,9 +42,24 @@ export const PostTemplateBody = PatchTemplateBody.extend({
 });
 
 // ─── Preset templates ─────────────────────────────────────────────────────────
+//
+// `isDefault: true` marks the format a study of that modality + body part opens
+// on. It is not decoration: `preferRegionDefault` (ERP side) resolves a group as
+// `defaults[0] ?? first-v2-row ?? rows[0]`, so a group where nothing declares a
+// default is decided by template_name sort order. MRI Brain is exactly that case
+// today — "MRI Brain Plain" wins only because it sorts before "MRI Brain With
+// Contrast" and "MRI Stroke Protocol". A rename, or a v2 format landing, would
+// silently change which protocol a routine brain study opens on.
+//
+// Deliberately left without a default: the USG groups. "USG Abdomen" vs "Whole
+// Abdomen", the three obstetric scans, the two pelvic and two limb-doppler rows
+// each need a clinical preference that this file has no authority to invent, and
+// ultrasound reporting has its own working surface. Those keep the existing
+// first-row behaviour rather than getting a guess written down as policy.
 const PRESETS = [
   {
     templateName: "MRI Brain Plain",
+    isDefault: true,
     modality: "MRI",
     bodyPart: "BRAIN",
     studyType: "PLAIN",
@@ -119,6 +135,7 @@ const PRESETS = [
   },
   {
     templateName: "MRI LS Spine",
+    isDefault: true,
     modality: "MRI",
     bodyPart: "SPINE_LS",
     studyType: "PLAIN",
@@ -150,6 +167,7 @@ const PRESETS = [
   },
   {
     templateName: "MRI Cervical Spine",
+    isDefault: true,
     modality: "MRI",
     bodyPart: "SPINE_CERVICAL",
     studyType: "PLAIN",
@@ -181,6 +199,7 @@ const PRESETS = [
   },
   {
     templateName: "MRI Dorsal Spine",
+    isDefault: true,
     modality: "MRI",
     bodyPart: "SPINE_DORSAL",
     studyType: "PLAIN",
@@ -292,6 +311,7 @@ const PRESETS = [
   },
   {
     templateName: "CT Brain",
+    isDefault: true,
     modality: "CT",
     bodyPart: "BRAIN",
     studyType: "PLAIN",
@@ -345,6 +365,7 @@ const PRESETS = [
   },
   {
     templateName: "CT Chest",
+    isDefault: true,
     modality: "CT",
     bodyPart: "CHEST",
     studyType: "PLAIN",
@@ -372,6 +393,7 @@ const PRESETS = [
   },
   {
     templateName: "CT Abdomen & Pelvis",
+    isDefault: true,
     modality: "CT",
     bodyPart: "ABDOMEN",
     studyType: "CONTRAST",
@@ -402,6 +424,7 @@ const PRESETS = [
   },
   {
     templateName: "X-Ray Chest PA View",
+    isDefault: true,
     modality: "X-RAY",
     bodyPart: "CHEST",
     studyType: "PA_VIEW",
@@ -428,6 +451,7 @@ const PRESETS = [
   },
   {
     templateName: "X-Ray Spine",
+    isDefault: true,
     modality: "X-RAY",
     bodyPart: "SPINE_LS",
     studyType: "AP_LATERAL",
@@ -481,6 +505,7 @@ const PRESETS = [
   },
   {
     templateName: "Doppler Carotid",
+    isDefault: true,
     modality: "DOPPLER",
     bodyPart: "CAROTID",
     studyType: "COLOUR_DOPPLER",
@@ -654,11 +679,78 @@ async function ensurePresetTemplatesSeeded(): Promise<number> {
 }
 
 /** Seed missing + upgrade lagging spine/brain presets. Safe to call often. */
-export async function syncStructuredReportPresets(): Promise<{ inserted: number; upgraded: number; findingsRemapped: number }> {
+/**
+ * Apply preset-declared `isDefault` to rows that already exist in the database.
+ *
+ * Neither existing sync can carry this flag. `ensurePresetTemplatesSeeded` only
+ * inserts rows that are missing — in a live clinic all 29 are present — and
+ * `upgradePresetTemplateSections` returns early whenever `newCount <= oldCount`,
+ * so a preset whose findings list did not grow is never written at all. Adding
+ * `isDefault` to a preset without this would fix a fresh install and silently do
+ * nothing to the one that matters.
+ *
+ * Deliberately one-way:
+ *   - it never sets `is_default` from true back to false;
+ *   - it skips the write when the row is already default;
+ *   - it skips the write when another active row in the same modality + body_part
+ *     group already holds the default, so shipping a second default cannot leave
+ *     a region with two, and an administrator's chosen format is never overwritten.
+ *
+ * The last rule is the one that keeps this safe to run on every list load, like
+ * the syncs beside it.
+ */
+async function syncPresetDefaultFlags(): Promise<number> {
+  const allPresets = [...PRESETS, ...USG_STRUCTURED_TEMPLATE_PRESETS];
+  const declared = allPresets.filter(
+    (p) => (p as { isDefault?: boolean }).isDefault === true,
+  );
+
+  let applied = 0;
+  for (const preset of declared) {
+    const [row] = await db
+      .select({
+        id: structuredReportTemplatesTable.id,
+        isDefault: structuredReportTemplatesTable.isDefault,
+      })
+      .from(structuredReportTemplatesTable)
+      .where(and(
+        eq(structuredReportTemplatesTable.templateName, preset.templateName),
+        eq(structuredReportTemplatesTable.isPreset, true),
+      ))
+      .limit(1);
+    if (!row || row.isDefault) continue;
+
+    const [alreadyOwned] = await db
+      .select({ id: structuredReportTemplatesTable.id })
+      .from(structuredReportTemplatesTable)
+      .where(and(
+        eq(structuredReportTemplatesTable.modality, preset.modality),
+        eq(structuredReportTemplatesTable.bodyPart, preset.bodyPart),
+        eq(structuredReportTemplatesTable.isDefault, true),
+        eq(structuredReportTemplatesTable.isActive, true),
+      ))
+      .limit(1);
+    if (alreadyOwned) continue;
+
+    await db
+      .update(structuredReportTemplatesTable)
+      .set({
+        isDefault: true,
+        updatedAt: new Date(),
+        updatedBy: "system-preset-defaults",
+      })
+      .where(eq(structuredReportTemplatesTable.id, row.id));
+    applied++;
+  }
+  return applied;
+}
+
+export async function syncStructuredReportPresets(): Promise<{ inserted: number; upgraded: number; findingsRemapped: number; defaultsApplied: number }> {
   const inserted = await ensurePresetTemplatesSeeded();
   const upgraded = await upgradePresetTemplateSections();
   const findingsRemapped = await upgradeSpineFindingSections();
-  return { inserted, upgraded, findingsRemapped };
+  const defaultsApplied = await syncPresetDefaultFlags();
+  return { inserted, upgraded, findingsRemapped, defaultsApplied };
 }
 
 structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
@@ -669,8 +761,20 @@ structuredReportTemplatesRouter.get("/", async (req, res): Promise<void> => {
   let query = db.select().from(structuredReportTemplatesTable).$dynamic();
   if (modality) query = query.where(eq(structuredReportTemplatesTable.modality, modality));
 
-  // Keep clinic presets in sync with code (spine per-level expansion, etc.).
-  try { await syncStructuredReportPresets(); } catch { /* non-fatal */ }
+  // Keep clinic presets in sync with code (spine per-level expansion, per-region
+  // default formats, etc.). Failure is non-fatal — the query below still serves
+  // whatever the table holds. It is not, however, allowed to be silent: this is
+  // the only path that creates preset rows, so a throw here is precisely how a
+  // radiologist ends up facing an empty Formats panel with no reason attached to
+  // it and no trace in the logs for anyone else to find.
+  try {
+    await syncStructuredReportPresets();
+  } catch (err) {
+    logger.warn(
+      { err, scope: "structured-report-templates.preset-sync" },
+      "preset sync failed; serving structured_report_templates as it stands",
+    );
+  }
 
   let rows = await query.orderBy(
     structuredReportTemplatesTable.modality,
