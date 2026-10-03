@@ -340,14 +340,27 @@ describe("Stage 0 · U-8 — actor authority characterization (source contracts)
 });
 
 describe("Stage 0 · U-4/U-12 — client-supplied instants reaching timestamp columns", () => {
-  it("CHARACTERIZATION: the Reporting Studio finalize path takes signedAt and the signer name from the body, behind a shared studio key", () => {
+  it("GOOD PATTERN (must not regress): the Reporting Studio finalize path bounds the relayed signer name and instant", () => {
+    // Stage 0 characterized this as taking signedAt and the signer name from
+    // the body unchecked, behind a shared studio key. Still a shared key — no
+    // person and no session exist to derive identity or time from — but the
+    // relayed values are now bounded rather than trusted, and the server's own
+    // receipt time is stored beside them so a signed row always carries an
+    // authoritative instant.
     const s = src("../routes/internal-reporting-studio.ts");
     expect(s).toContain("router.use(requireStudioKey)");
     const fin = s.slice(s.indexOf('router.post("/finalize"'));
-    expect(fin).toContain("b.finalizedAt");
+    expect(fin).toContain("boundRelayedPersonName(b.radiologistName");
+    expect(fin).toContain("resolveRelayedInstant(b.finalizedAt, serverReceivedAt)");
     expect(fin).toContain("signedAt: finalizedAt");
     expect(fin).toContain("signedByName: radiologistName");
-    expect(fin).toMatch(/radiologistName[\s\S]{0,120}b\.radiologistName/);
+    expect(fin).toContain("serverReceivedAt: serverReceivedAt.toISOString()");
+    // Honest residue of U-4/U-12: a relayed instant that parses and is not in
+    // the future is still stored, because a bridge re-pushing yesterday's
+    // finalized report is normal. The dangerous direction — a future-dated
+    // signature post-dating its own evidence — is refused.
+    expect(fin).toContain("finalizedAtSource: relayedInstant.source");
+    expect(fin).toContain("finalizedAtRejected: relayedInstant.rejected");
   });
 
   it("CHARACTERIZATION: TAT/SLA accepts client instants and derives the breach verdict from them", () => {

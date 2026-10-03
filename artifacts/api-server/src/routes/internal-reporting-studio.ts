@@ -35,6 +35,7 @@ import {
 import { and, eq, inArray, gte, gt, notInArray, sql, desc, asc } from "drizzle-orm";
 import { safeEqual } from "../lib/internalApiKeyAuth";
 import { logger } from "../lib/logger";
+import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
 import { autoLinkBilledStudyForWorklist } from "../lib/pacs/worklistBillingLink";
 import { matchAllowsFinalize } from "../lib/radiologyIdentity";
 import { isObstetricUsgStudy } from "../lib/usgModality";
@@ -808,12 +809,19 @@ router.post("/finalize", async (req, res) => {
       }
     }
 
-    const radiologistName =
-      (typeof b.radiologistName === "string" && b.radiologistName.trim()) || "Reporting Studio";
-    const finalizedAt =
-      typeof b.finalizedAt === "string" && !Number.isNaN(new Date(b.finalizedAt).getTime())
-        ? new Date(b.finalizedAt)
-        : new Date();
+    // The Studio authenticates with a shared service key, so there is no
+    // session and no person here to derive identity or time from — the relay's
+    // own values are the only candidates. They are therefore bounded rather
+    // than trusted: the name is length-capped and whitespace-collapsed so it
+    // cannot smuggle content into a signature block, and the instant is refused
+    // if it is unparseable or in the future, because a future-dated signature
+    // post-dates the evidence for whatever it signs. The server's own receipt
+    // time is always recorded alongside, so the stored instant is never the
+    // only authority on when this became a signed artifact.
+    const serverReceivedAt = new Date();
+    const radiologistName = boundRelayedPersonName(b.radiologistName, "Reporting Studio");
+    const relayedInstant = resolveRelayedInstant(b.finalizedAt, serverReceivedAt);
+    const finalizedAt = relayedInstant.at;
     const reportText = b.reportText ?? {};
     const bodyHtml = buildReportBody(reportText);
     const impression =
@@ -865,6 +873,10 @@ router.post("/finalize", async (req, res) => {
                   studyInstanceUID: existing.studyInstanceUID,
                   radiologistRegNumber: b.radiologistRegNumber ?? null,
                   source: "reporting-studio",
+                  // Authoritative receipt time, recorded next to the relayed
+                  // `signedAt` so a signed row always carries a server-side
+                  // instant even when the Studio supplied its own.
+                  serverReceivedAt: serverReceivedAt.toISOString(),
                   ...(typeof b.pdfUrl === "string" && b.pdfUrl.trim()
                     ? { reportingStudioPdfUrl: b.pdfUrl.trim() }
                     : {}),
@@ -940,6 +952,14 @@ router.post("/finalize", async (req, res) => {
         reportId,
         radiologistRegNumber: b.radiologistRegNumber ?? null,
         finalizedAt: finalizedAt.toISOString(),
+        // Provenance of the two relayed values that became the signature:
+        // whether the instant came from the Studio or was replaced by the
+        // server clock, and why. `identitySource: "relay"` is recorded rather
+        // than disguised as a session — a shared key carries no person.
+        serverReceivedAt: serverReceivedAt.toISOString(),
+        finalizedAtSource: relayedInstant.source,
+        finalizedAtRejected: relayedInstant.rejected,
+        identitySource: "relay",
         pdfUrl: typeof b.pdfUrl === "string" ? b.pdfUrl : null,
         linkedStudyId: linkResult.studyId ?? existing.studyId ?? null,
       }),
