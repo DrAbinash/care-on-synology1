@@ -75,7 +75,12 @@ async function persistEvaluation(dto: QualityReportDTO): Promise<number> {
       deterministicRuleCount: dto.deterministicRuleCount,
       heuristicRuleCount: dto.heuristicRuleCount,
       notEvaluatedJson: JSON.stringify(dto.notEvaluated),
-      runtimeMs: dto.runtimeMs,
+      // The engine times itself with performance.now(), so runtimeMs is a float;
+      // runtime_ms is an integer column and Postgres rejects "0.5702". This is
+      // the only un-try/caught write in the handler, so an unrounded value here
+      // turned every POST /evaluate into a 500 — silently, because the workspace
+      // treats the quality check as best-effort.
+      runtimeMs: Math.round(dto.runtimeMs),
       engineVersion: dto.engineVersion,
       ruleVersion: dto.ruleVersion,
       knowledgePackVersion: dto.knowledgePackVersion ?? undefined,

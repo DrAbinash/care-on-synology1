@@ -198,8 +198,13 @@ describe.skipIf(!dbReady)("report-quality /evaluate — canonical demography bea
     const res = await request(app)
       .post("/api/report-quality/evaluate")
       .set("Authorization", `Bearer ${token}`)
-      .send({ source: marker, modality: "MRI", studyType: "MRI PELVIS", reportDraftId, text })
-      .expect(201);
+      .send({ source: marker, modality: "MRI", studyType: "MRI PELVIS", reportDraftId, text });
+    // Not .expect(201): supertest asserts the status before the body is readable,
+    // so a server-side fault reports as a bare "expected 201, got 500" and names
+    // nothing. This route 500'd on every call for months that way.
+    if (res.status !== 201) {
+      throw new Error(`POST /api/report-quality/evaluate → ${res.status}: ${res.text}`);
+    }
     const findings = (res.body.findings ?? []) as Array<{ ruleId: string }>;
     return findings.map((f) => f.ruleId);
   }
