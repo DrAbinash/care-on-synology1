@@ -23,6 +23,7 @@ export type FinalizePromptInput = {
   qualityGate?: FinalizeQualityGate | null;
   compositionImpressionNeedsRefresh?: boolean;
   compositionSiblingWarnings?: Array<{ sentence: string; token: string; hint: string }>;
+  compositionOrphanedRecommendations?: Array<{ sentence: string; hint: string }>;
   compositionStalePatchCount?: number;
 };
 

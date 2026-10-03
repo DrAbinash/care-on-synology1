@@ -310,12 +310,20 @@ describe("Stage 0 · U-8 — actor authority characterization (source contracts)
     expect(s).toContain('actor: b.actor ?? "mwl-agent"');
   });
 
-  it("CHARACTERIZATION: a critical-result acknowledgement names whoever the body says and writes no audit row", () => {
+  it("GOOD PATTERN (must not regress): a critical-result acknowledgement names the session and writes an audit row", () => {
+    // Stage 0 characterized this route as "names whoever the body says and
+    // writes no audit row" — an accurate description of a defect, not a
+    // contract to preserve. It was remediated on its own merits (the
+    // signed-artifact trust model): the acknowledger is the authenticated
+    // session, a body-supplied name is never read, and the acknowledgement is
+    // audited. Flipping this assertion is the review the file's header asks
+    // for, so the change is recorded here rather than made silently.
     const s = src("../routes/patient-reports.ts");
     const ack = s.slice(s.indexOf("acknowledge-critical"));
-    expect(ack).toContain('b.acknowledgedBy === "string"');
-    expect(ack).toContain("criticalAcknowledgedAt: new Date()"); // instant trusted, actor not
-    expect(ack.slice(0, 1200)).not.toMatch(/auditFromRequest|auditLifecycleEvent/);
+    expect(ack).toContain("const acknowledgedBy = session?.subjectName?.trim()");
+    expect(ack).not.toContain('b.acknowledgedBy === "string"');
+    expect(ack).toContain("criticalAcknowledgedAt");
+    expect(ack).toMatch(/auditLifecycleEvent\(\s*"critical_acknowledged"/);
   });
 
   it("GOOD PATTERN (must not regress): the structured finalize path ignores a client-supplied createdBy", () => {
@@ -332,14 +340,27 @@ describe("Stage 0 · U-8 — actor authority characterization (source contracts)
 });
 
 describe("Stage 0 · U-4/U-12 — client-supplied instants reaching timestamp columns", () => {
-  it("CHARACTERIZATION: the Reporting Studio finalize path takes signedAt and the signer name from the body, behind a shared studio key", () => {
+  it("GOOD PATTERN (must not regress): the Reporting Studio finalize path bounds the relayed signer name and instant", () => {
+    // Stage 0 characterized this as taking signedAt and the signer name from
+    // the body unchecked, behind a shared studio key. Still a shared key — no
+    // person and no session exist to derive identity or time from — but the
+    // relayed values are now bounded rather than trusted, and the server's own
+    // receipt time is stored beside them so a signed row always carries an
+    // authoritative instant.
     const s = src("../routes/internal-reporting-studio.ts");
     expect(s).toContain("router.use(requireStudioKey)");
     const fin = s.slice(s.indexOf('router.post("/finalize"'));
-    expect(fin).toContain("b.finalizedAt");
+    expect(fin).toContain("boundRelayedPersonName(b.radiologistName");
+    expect(fin).toContain("resolveRelayedInstant(b.finalizedAt, serverReceivedAt)");
     expect(fin).toContain("signedAt: finalizedAt");
     expect(fin).toContain("signedByName: radiologistName");
-    expect(fin).toMatch(/radiologistName[\s\S]{0,120}b\.radiologistName/);
+    expect(fin).toContain("serverReceivedAt: serverReceivedAt.toISOString()");
+    // Honest residue of U-4/U-12: a relayed instant that parses and is not in
+    // the future is still stored, because a bridge re-pushing yesterday's
+    // finalized report is normal. The dangerous direction — a future-dated
+    // signature post-dating its own evidence — is refused.
+    expect(fin).toContain("finalizedAtSource: relayedInstant.source");
+    expect(fin).toContain("finalizedAtRejected: relayedInstant.rejected");
   });
 
   it("CHARACTERIZATION: TAT/SLA accepts client instants and derives the breach verdict from them", () => {

@@ -1,10 +1,23 @@
 import { describe, expect, it, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { writeTestArtifact } from "../../../../tests/helpers/resolveTestArtifactDir";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
 import { buildReportingStudyContext } from "./reportingStudyContext";
-import { extractCareObservationLedger, parseObservationLedger, detectUnownedSiblingConflicts, UNOWNED_SIBLING_HINT } from "./observationLedger";
+import {
+  extractCareObservationLedger,
+  parseObservationLedger,
+  detectUnownedSiblingConflicts,
+  UNOWNED_SIBLING_HINT,
+  collectCompositionFinalizeGate,
+  compositionFinalizeAllowed,
+  detectOrphanedRecommendationsForLedger,
+  ORPHANED_RECOMMENDATION_HINT,
+} from "./observationLedger";
+import { normalizeForDedupe, type FieldProvenanceMap } from "./reportFieldMerge";
 import { buildOwnershipTrace, formatOwnershipTraceClipboard, ownershipTraceLooksLikePhi } from "./ownershipTrace";
 import { selectedQuickFindingIds } from "./observationSlot";
 import { buildPreviewHtml } from "./radiologyReportPreviewHtml";
@@ -299,6 +312,211 @@ describe("unowned sibling warning K", () => {
   });
 });
 
+describe("impression staleness gate arms on every findings write (RW-05)", () => {
+  beforeEach(() => resetStore());
+
+  const armed = () => useWorkspace.getState().impressionNeedsRefresh;
+
+  it("hand-typed findings arm the gate — the one path that already worked", () => {
+    useWorkspace.getState().setField("findings", "New parenchymal lesion.", { source: "manual" });
+    expect(armed()).toBe(true);
+  });
+
+  it("a tile or snippet insert through mergeField arms the gate", () => {
+    useWorkspace.getState().mergeField("findings", FAZEKAS1.sentence, "quick-select");
+    expect(useWorkspace.getState().findingsText).toMatch(/Fazekas grade 1/i);
+    expect(armed()).toBe(true);
+  });
+
+  it("dictation in replace mode arms the gate", () => {
+    useWorkspace.getState().replaceField("findings", "Dictated findings replace the whole field.", "radiologist-voice");
+    expect(armed()).toBe(true);
+  });
+
+  it("a template or companion-panel findings write arms the gate", () => {
+    useWorkspace.getState().setField("findings", "Template findings.", { source: "template" });
+    expect(armed()).toBe(true);
+  });
+
+  it("an accepted AI draft in findings arms the gate", () => {
+    useWorkspace.getState().mergeField("findings", "AI proposed an additional lesion.", "ai-draft");
+    expect(armed()).toBe(true);
+  });
+
+  it("writing the recommendation or technique alone never arms it", () => {
+    useWorkspace.getState().mergeField("recommendation", "Follow up in 3 months.", "quick-findings");
+    useWorkspace.getState().setField("technique", "T2 sagittal sequences.", { source: "template" });
+    expect(armed()).toBe(false);
+  });
+
+  it("a paired findings+impression write clears itself", () => {
+    const s = useWorkspace.getState();
+    s.setField("findings", "Template findings.", { source: "template" });
+    expect(armed()).toBe(true);
+    s.setField("impression", "Template impression.", { source: "template" });
+    expect(armed()).toBe(false);
+  });
+
+  it("applying a whole report format does not spuriously block signing", () => {
+    useWorkspace.getState().applyFormatById(FAZEKAS_SENILE.id);
+    const s = useWorkspace.getState();
+    expect(s.findingsText).toMatch(/Fazekas grade 1/i);
+    expect(s.impressionText.trim().length).toBeGreaterThan(0);
+    expect(armed()).toBe(false);
+  });
+
+  it("a hand-retyped impression does not clear the gate — only a ledger refresh does", () => {
+    const s = useWorkspace.getState();
+    s.mergeField("findings", FAZEKAS1.sentence, "quick-select");
+    expect(armed()).toBe(true);
+    s.setField("impression", "Radiologist retyped the impression by hand.", { source: "manual" });
+    expect(armed()).toBe(true);
+  });
+});
+
+describe("orphaned recommendation named at finalize (RW-08)", () => {
+  beforeEach(() => resetStore());
+
+  const ADVICE = "Recommend MRI with contrast for further evaluation.";
+
+  function overlayWithAdvice(id: string) {
+    return useWorkspace.getState().applyPathologyOverlay({
+      incoming: { findings: FAZEKAS1.sentence, impression: FAZEKAS1.impressionSentence, recommendation: ADVICE },
+      templates: { findings: FAZEKAS1.sentence, impression: FAZEKAS1.impressionSentence, recommendation: ADVICE },
+      ownership: { conflictGroup: FAZEKAS1.conflictGroup, anatomicalSection: FAZEKAS1.anatomicalSection },
+      source: "quick-select",
+      id,
+      region: FAZEKAS1.scopeBodyPart,
+      label: FAZEKAS1.label,
+      findingsText: FAZEKAS1.sentence,
+    });
+  }
+
+  function liveGate() {
+    const s = useWorkspace.getState();
+    return collectCompositionFinalizeGate({
+      impressionNeedsRefresh: s.impressionNeedsRefresh,
+      findings: s.findingsText,
+      recommendation: s.recommendationText,
+      provenance: s.fieldProvenance.recommendation,
+      patches: s.appliedPathologyPatches.map((p) => ({
+        id: p.id,
+        observation: p.observation as never,
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        replacedBaseline: p.replacedBaseline ?? { findings: [], impression: [] },
+        source: p.source,
+        protected: Boolean(p.protected),
+        stale: p.stale,
+      })),
+    });
+  }
+
+  const named = () => liveGate().orphanedRecommendations.map((w) => w.sentence);
+
+  it("flags advice whose observation went stale, and never deletes it", () => {
+    const hits = detectOrphanedRecommendationsForLedger({
+      recommendation: `Clinical correlation.\n${ADVICE}`,
+      patches: [{ lastRendered: { recommendation: ADVICE }, stale: true }],
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.sentence).toBe(ADVICE);
+    expect(hits[0]!.hint).toBe(ORPHANED_RECOMMENDATION_HINT);
+  });
+
+  it("stays silent while the observation still stands", () => {
+    expect(detectOrphanedRecommendationsForLedger({
+      recommendation: ADVICE,
+      patches: [{ lastRendered: { recommendation: ADVICE } }],
+    })).toHaveLength(0);
+  });
+
+  it("stays silent once the advice has already been deleted from the box", () => {
+    expect(detectOrphanedRecommendationsForLedger({
+      recommendation: "Clinical correlation only.",
+      patches: [{ lastRendered: { recommendation: ADVICE }, stale: true }],
+    })).toHaveLength(0);
+  });
+
+  it("stays silent once the radiologist has taken the sentence over", () => {
+    const provenance: FieldProvenanceMap = { [normalizeForDedupe(ADVICE)]: ["manual"] };
+    expect(detectOrphanedRecommendationsForLedger({
+      recommendation: ADVICE,
+      patches: [{ lastRendered: { recommendation: ADVICE }, stale: true }],
+      provenance,
+    })).toHaveLength(0);
+  });
+
+  it("names one warning when two stale observations contributed the same advice", () => {
+    expect(detectOrphanedRecommendationsForLedger({
+      recommendation: ADVICE,
+      patches: [
+        { lastRendered: { recommendation: ADVICE }, stale: true },
+        { lastRendered: { recommendation: ADVICE }, protected: true },
+      ],
+    })).toHaveLength(1);
+  });
+
+  it("names the advice after save → reopen corrupts the finding it came from", { timeout: 20000 }, () => {
+    expect(overlayWithAdvice("qf-adv")).toBe("applied");
+    expect(useWorkspace.getState().recommendationText).toContain("Recommend MRI with contrast");
+    expect(named()).toHaveLength(0);
+
+    const ledger = useWorkspace.getState().serializeObservationLedger();
+    useWorkspace.setState({ findingsText: "Externally corrupted narrative. No fazekas sentence remains." });
+    useWorkspace.getState().hydrateObservationLedger(ledger);
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.stale)).toBe(true);
+
+    expect(named()).toContain(ADVICE);
+    expect(useWorkspace.getState().recommendationText).toContain("Recommend MRI with contrast");
+  });
+
+  it("names the advice when the radiologist deletes the finding it came from (audit Path B)", () => {
+    overlayWithAdvice("qf-adv");
+    expect(named()).toHaveLength(0);
+
+    const withoutFinding = useWorkspace.getState().findingsText
+      .split("\n")
+      .filter((line) => !/fazekas/i.test(line))
+      .join("\n");
+    expect(withoutFinding).not.toMatch(/fazekas/i);
+    useWorkspace.getState().setField("findings", withoutFinding, { source: "manual" });
+
+    expect(named()).toContain(ADVICE);
+    expect(useWorkspace.getState().recommendationText).toContain("Recommend MRI with contrast");
+  });
+
+  it("leaves the radiologist's own follow-up alone in the same box", () => {
+    overlayWithAdvice("qf-adv");
+    useWorkspace.getState().mergeField("recommendation", "Follow up in 3 months.", "manual");
+    const ledger = useWorkspace.getState().serializeObservationLedger();
+    useWorkspace.setState({ findingsText: "Externally corrupted narrative. No fazekas sentence remains." });
+    useWorkspace.getState().hydrateObservationLedger(ledger);
+
+    const sentences = named();
+    expect(sentences).toContain(ADVICE);
+    expect(sentences.some((s) => /follow up in 3 months/i.test(s))).toBe(false);
+  });
+
+  it("is advisory only — it never becomes a hard block on signing", { timeout: 20000 }, () => {
+    overlayWithAdvice("qf-adv");
+    const ledger = useWorkspace.getState().serializeObservationLedger();
+    useWorkspace.setState({ findingsText: "Externally corrupted narrative. No fazekas sentence remains." });
+    useWorkspace.getState().hydrateObservationLedger(ledger);
+    expect(named()).toContain(ADVICE);
+
+    useWorkspace.getState().refreshImpressionFromLedger();
+    const after = liveGate();
+    expect(after.orphanedRecommendations.length).toBeGreaterThanOrEqual(1);
+    expect(compositionFinalizeAllowed({
+      impressionNeedsRefresh: after.impressionNeedsRefresh,
+      impressionRefreshed: true,
+      impressionReviewedAnyway: false,
+    })).toBe(true);
+    expect(useWorkspace.getState().recommendationText).toContain("Recommend MRI with contrast");
+  });
+});
+
 describe("ownership trace L/M", () => {
   beforeEach(() => resetStore());
 
@@ -321,6 +539,51 @@ describe("ownership trace L/M", () => {
     expect(clip).toContain("Brain|fazekas|*|*");
     expect(ownershipTraceLooksLikePhi(clip, ["Priya Sharma", "UHID-777", "ACC-999", "9876543210"])).toBe(false);
     expect(clip).not.toMatch(/patientName|uhid|accessionNumber|referringDoctor/i);
+  });
+});
+
+describe("orphaned-recommendation wiring contracts (RW-08, source-level)", () => {
+  // This repo's test environment has no browser/DOM, so the two hops that
+  // TypeScript cannot police are enforced the way aiQueryContract.test.ts and
+  // canonicalWorkspaceRouting.test.ts do it: read the real source and fail
+  // loudly if the wire is cut. `recommendation` is a required parameter of
+  // collectCompositionFinalizeGate, so tsc catches dropping it; `provenance`
+  // and the dialog forwarding are both optional and would fail silently.
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const ERP_SRC = resolve(HERE, "..");
+  const read = (rel: string) => readFileSync(resolve(ERP_SRC, rel), "utf8");
+
+  const finalizeHook = read("hooks/radiology-workspace/useStudyFinalize.ts");
+  const dialog = read("components/radiology/FinalizeSignDialog.tsx");
+  const gateComponent = read("components/radiology/zai-workspace/finalize-dialog.tsx");
+
+  it("the finalize hook feeds the live Recommendation box and its provenance into the gate", () => {
+    const gateCall = /collectCompositionFinalizeGate\(\{[\s\S]*?\n {2}\}\);/.exec(finalizeHook)?.[0] ?? "";
+    expect(gateCall).toBeTruthy();
+    expect(gateCall).toMatch(/recommendation:\s*\w+\.recommendationText/);
+    expect(gateCall).toMatch(/provenance:\s*\w+\.fieldProvenance\.recommendation/);
+  });
+
+  it("the hook forwards the result to the dialog instead of dropping it", () => {
+    expect(finalizeHook).toMatch(/compositionOrphanedRecommendations:\s*\w+\.orphanedRecommendations/);
+  });
+
+  it("the dialog passes the real array through, never a hardcoded empty one", () => {
+    expect(dialog).toMatch(/orphanedRecommendations:\s*input\.compositionOrphanedRecommendations/);
+    expect(dialog).not.toMatch(/orphanedRecommendations:\s*\[\s*\]/);
+  });
+
+  it("the gate component renders the array it was given", () => {
+    expect(gateComponent).toMatch(/gate\.orphanedRecommendations/);
+    expect(gateComponent).toContain('data-testid="finalize-orphaned-recommendations"');
+  });
+
+  it("compositionFinalizeAllowed still reads only the impression booleans — advice can never become a hard block", () => {
+    const ledgerSrc = readFileSync(resolve(HERE, "observationLedger.ts"), "utf8");
+    const fn = /export function compositionFinalizeAllowed\([\s\S]*?\n\}/.exec(ledgerSrc)?.[0] ?? "";
+    expect(fn).toBeTruthy();
+    expect(fn).not.toMatch(/recommendation/i);
+    expect(fn).not.toMatch(/sibling/i);
   });
 });
 

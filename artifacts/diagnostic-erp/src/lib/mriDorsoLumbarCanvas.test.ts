@@ -14,9 +14,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import {
+  CLINICAL_RESET_FIELDS,
+  emptyClinicalState,
+} from "@/lib/zai-workspace/clinicalStateReset";
 import {
   JUNCTION_LEDGER_REGION,
   JUNCTION_LEVEL,
@@ -55,10 +59,36 @@ describe("the coverage state slice", () => {
   });
 
   it("resets with the study, so coverage cannot leak between patients", () => {
-    const selectStudy = read("src/lib/zai-workspace/store.ts");
-    const line = selectStudy.split(/\r?\n/).find((l) => l.includes("selectStudy: (id) =>"));
-    expect(line).toBeTruthy();
-    expect(line).toContain("dorsoLumbarNumbering: defaultDorsoLumbarState()");
+    // `selectStudy` no longer carries its own inline list of ~61 fields: the
+    // clinical reset now lives in one shared definition that all three reset
+    // paths spread (`lib/zai-workspace/clinicalStateReset.ts`). The property
+    // this test protects is unchanged and is now asserted behaviourally rather
+    // than by grepping one line of the store, which is what let the PARTIAL and
+    // end-of-queue paths drift while this stayed green.
+    expect(CLINICAL_RESET_FIELDS).toContain("dorsoLumbarNumbering");
+    expect(emptyClinicalState().dorsoLumbarNumbering).toEqual(defaultDorsoLumbarState());
+
+    const storeSrc = read("src/lib/zai-workspace/store.ts");
+    const selectStudy = storeSrc.slice(storeSrc.indexOf("selectStudy: (id) => {"));
+    expect(selectStudy.slice(0, 1200)).toMatch(/set\(\{\s*\.\.\.emptyClinicalState\(\),/);
+
+    // End to end through the real store action. Fake timers keep the deferred
+    // recomputeCopilot()/seedSystemNormalImpression() pair — which needs a
+    // hydrated reportingContext this test does not build — from running.
+    vi.useFakeTimers();
+    try {
+      useWorkspace.setState({
+        dorsoLumbarNumbering: { ...defaultDorsoLumbarState(), superior: "T9-T10" },
+        studies: [{ id: "dl-next", studyInstanceUID: "1.2.840.DL", clinicalHistory: "" }],
+      } as never);
+      expect(useWorkspace.getState().dorsoLumbarNumbering.superior).toBe("T9-T10");
+
+      useWorkspace.getState().selectStudy("dl-next");
+
+      expect(useWorkspace.getState().dorsoLumbarNumbering).toEqual(defaultDorsoLumbarState());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

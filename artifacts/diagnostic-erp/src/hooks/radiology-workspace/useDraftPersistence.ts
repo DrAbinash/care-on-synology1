@@ -57,6 +57,7 @@ import {
 import { reportFormatRevision } from "@/lib/zai-workspace/fullReportBaseline";
 import { reconstructStartingCanvasBaseline } from "@/lib/zai-workspace/startingCanvasHighlight";
 import { normalizeImpressionLines } from "@/lib/workspaceReportState";
+import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 
@@ -161,26 +162,18 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     onStudySwitchPageReset();
     // Clear zustand editor unconditionally — worklist navigate() does not call
     // selectStudy, so Patient A text must not linger on Patient B.
+    //
+    // This is the PARTIAL reset: it spreads the same clinical definition as
+    // selectStudy's FULL reset, and differs only by keeping `reportingContext`,
+    // which the hydrate effect below (declared after this one, so it runs after)
+    // repopulates for the incoming study. Widening this list is safe against a
+    // mid-session wipe: `onStudySwitchPageReset` is a stable useCallback over a
+    // state setter, so this effect re-fires only when `studyId` genuinely
+    // changes. `clinicalHistoryText` is an identity field the helper leaves to
+    // the caller — cleared here, reseeded from the study row in selectStudy.
     useWorkspace.setState({
-      findingsText: "",
-      impressionText: "",
-      recommendationText: "",
-      techniqueText: "",
+      ...emptyClinicalState(),
       clinicalHistoryText: "",
-      fieldProvenance: {},
-      isDirty: false,
-      isFinalized: false,
-      isFinalizing: false,
-      ghostText: null,
-      ghostTextTarget: null,
-      primaryFindingsSection: null,
-      linkedStudy: null,
-      activeFindingsSectionId: null,
-      appliedPatternMarkers: [],
-      abnormalPatternConfirm: null,
-      ...(useWorkspace.getState().abnormalPatternConfirm
-        ? { mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }
-        : {}),
     });
     // Draft identity resets inside useRadiologyDraftId on studyId change —
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { Button } from "@/components/ui/button";
 import { diffSentences, diffSummary, type DiffLine } from "@/lib/sentenceDiff";
+import { parseStoredReportBody } from "@/lib/storedReportBody";
 import { Clock, Copy, GitCompare, FileText } from "lucide-react";
 
 /**
@@ -14,9 +15,13 @@ import { Clock, Copy, GitCompare, FileText } from "lucide-react";
  *
  * Follow-up diff: compares the selected prior report against the CURRENT
  * draft, sentence by sentence — green = new in this draft, red struck-
- * through = present before but missing now, plain = unchanged. One-click
- * "Copy findings" / "Copy impression" merges the prior text into the
- * current draft via the same dedupe-safe merge used everywhere else.
+ * through = present before but missing now, plain = unchanged.
+ *
+ * A prior report's `body` is signed report HTML, not narrative text, so it is
+ * run through parseStoredReportBody() before it is displayed, diffed or copied.
+ * "Copy findings" REPLACES the current Findings field with the prior study's
+ * Findings section (it does not merge) and the replacement is attributed to the
+ * radiologist as a manual edit, exactly as typing it would be.
  */
 
 type PriorReport = {
@@ -72,9 +77,20 @@ export default function FollowUpPanel({ patientId, currentFindings, onCopyFindin
   const priors = data?.items ?? [];
   const compareReport = priors.find((p) => p.id === compareId) ?? null;
 
+  const compared = useMemo(
+    () => (compareReport
+      ? parseStoredReportBody(compareReport.body, { title: compareReport.title })
+      : null),
+    [compareReport],
+  );
+  const priorFindings = useMemo(
+    () => (compared?.findings || compared?.fullText || "").trim(),
+    [compared],
+  );
+
   const diff = useMemo(
-    () => (compareReport ? diffSentences(compareReport.body || "", currentFindings || "") : []),
-    [compareReport, currentFindings],
+    () => (compareReport ? diffSentences(priorFindings, currentFindings || "") : []),
+    [compareReport, priorFindings, currentFindings],
   );
   const summary = useMemo(() => diffSummary(diff), [diff]);
 
@@ -112,7 +128,7 @@ export default function FollowUpPanel({ patientId, currentFindings, onCopyFindin
           <DiffView lines={diff} />
           <div className="flex gap-1.5">
             <Button size="sm" variant="outline" className="h-6 text-[10px]" disabled={disabled}
-              onClick={() => onCopyFindings(compareReport.body || "")}>
+              onClick={() => onCopyFindings(priorFindings)}>
               <Copy size={10} /> Copy findings
             </Button>
             {compareReport.impression && (
@@ -130,7 +146,10 @@ export default function FollowUpPanel({ patientId, currentFindings, onCopyFindin
         <Clock size={9} /> Prior studies ({data?.total ?? priors.length})
       </p>
       <div className="flex flex-col">
-        {priors.map((p, i) => (
+        {priors.map((p, i) => {
+          // Only the expanded row is parsed; the other nine stay untouched.
+          const parsed = expandedId === p.id ? parseStoredReportBody(p.body, { title: p.title }) : null;
+          return (
           <div key={p.id} className="relative pl-4 pb-2">
             {/* timeline spine */}
             <span className="absolute left-1 top-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
@@ -158,11 +177,13 @@ export default function FollowUpPanel({ patientId, currentFindings, onCopyFindin
                 {expandedId === p.id ? "hide" : "view"}
               </button>
             </div>
-            {expandedId === p.id && (
+            {parsed && (
               <div className="mt-1 rounded border bg-background p-2 text-[10px] whitespace-pre-wrap max-h-48 overflow-y-auto">
                 <p className="flex items-center gap-1 font-semibold mb-1"><FileText size={9} /> Report text</p>
-                {p.body || "(empty)"}
-                {p.impression && (
+                {parsed.fullText.trim() || "(empty)"}
+                {/* The body already carries an Impression section for every
+                    writer; the column is only a fallback for rows that do not. */}
+                {!parsed.impression.trim() && p.impression && (
                   <>
                     <p className="font-semibold mt-1.5 mb-0.5">Impression</p>
                     {p.impression}
@@ -171,7 +192,8 @@ export default function FollowUpPanel({ patientId, currentFindings, onCopyFindin
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -46,6 +46,88 @@ export type AiReportingQueryRequest = z.infer<typeof AiReportingQueryRequestSche
 /** Where the effective prompt came from — returned for safe debugging. */
 export type AiPromptSource = "request" | "template" | "settings-default";
 
+/**
+ * Canonical request contract for POST /api/ai-reporting/draft.
+ *
+ * `/draft` was the last AI route still hand-destructuring `req.body`, so a key
+ * the workstation sent and the handler did not read was invisible: Ctrl+I posted
+ * `field: "impression"` for years while the server generated a whole report.
+ * Declaring the contract here makes that class of drift a reviewable fact.
+ *
+ * `studyInstanceUID` is deliberately a plain bounded string rather than the
+ * `dicomUid` regex `/query` uses. `/draft` only ever uses it to look up a
+ * worklist row and to fetch images through a parameterised query, and tightening
+ * it would start rejecting worklist rows carrying non-standard UIDs — a
+ * behaviour change this contract is not here to make.
+ */
+export const AiReportingDraftRequestSchema = z.object({
+  worklistId: z.number().int().positive().nullish(),
+  studyInstanceUID: z.string().max(128).nullish(),
+  modality: z.string().max(16).nullish(),
+  studyDescription: z.string().max(200).nullish(),
+  /** Canonical key for the radiologist's typed Findings. */
+  reportBody: z.string().max(20_000).nullish(),
+  /** Legacy alias older workstation bundles send; `reportBody` wins. */
+  findings: z.string().max(20_000).nullish(),
+  impression: z.string().max(20_000).nullish(),
+  clinicalHistory: z.string().max(5_000).nullish(),
+  provider: z.string().max(64).nullish(),
+  /**
+   * The single section the caller will consume. Absent means "both sections".
+   * Only "impression" is sent today, by the workspace's Ctrl+I.
+   */
+  field: z.enum(["findings", "impression"]).nullish(),
+  /**
+   * The caller declares this request is a provider warm-up, not a draft a human
+   * asked for. The model is still loaded and exercised — that is the point —
+   * and the audit row is still written, but nothing is persisted to
+   * `ai_reporting_drafts`.
+   *
+   * The reporting workspace's next-study preload sends this. Without it, every
+   * study switch asked the model for a full report on a study nobody had opened
+   * yet, from a prompt carrying no findings whatsoever, stored the answer, and
+   * left it retrievable through GET /drafts/:studyInstanceUID by whoever opened
+   * that study next.
+   */
+  warmUpOnly: z.boolean().optional(),
+});
+
+export type AiReportingDraftRequest = z.infer<typeof AiReportingDraftRequestSchema>;
+
+/**
+ * Grounding verdict for one AI draft.
+ *
+ * Produced by the background composer's existing validator
+ * (`artifacts/api-server/src/lib/reportComposer/validateOutput.ts`) so the
+ * interactive draft path and the composer cannot drift apart on what counts as
+ * an invented finding. `notChecked` is part of the contract, not decoration:
+ * a validator that quietly cannot see half the report is worse than no
+ * validator, because the green label is then a claim nobody tested.
+ */
+export interface AiDraftValidation {
+  ok: boolean;
+  /**
+   * Always false today. Whether any of these should hard-block a draft is the
+   * open product-owner decision in docs/report-quality-engine/ARCHITECTURE.md
+   * §8.1; the composer's own structured rules carry `blockingEligibility: false`
+   * for the same reason. Declared so callers render a badge, not a wall.
+   */
+  blocking: boolean;
+  errors: string[];
+  warnings: string[];
+  /** Clinical terms in the AI output with no support in the supplied text. */
+  unsupportedMentions: string[];
+  lateralitySwaps: string[];
+  levelChanges: string[];
+  severityEscalations: string[];
+  /** Name of the validator that produced this, so the label is traceable. */
+  validator: "reportComposer.validateComposerOutput";
+  /** Checks this path structurally cannot perform, stated rather than implied. */
+  notChecked: string[];
+  /** How many images actually went to the model for this draft. */
+  imagesSentToModel: number;
+}
+
 export interface AiReportingQueryResponse {
   aiResponse: string;
   provider: string;

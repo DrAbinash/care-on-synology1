@@ -563,3 +563,80 @@ describe("D8 — share targets the latest deliverable version", () => {
     expect(shares()).toHaveLength(0);
   });
 });
+
+// ── Signed-document section integrity (RW-01 / RW-15 / RW-16) ────────────────
+// The workspace now stores the signed body with the SAME builder that built the
+// pre-sign print preview, so the body carries its own Clinical History,
+// Technique and Impression sections. Two consequences are asserted here on the
+// real delivery surfaces: the `impression` COLUMN must not also be rendered as
+// a separate highlight box on a radiology document (it would print the
+// impression twice), and report types whose body has no such section must keep
+// the box.
+
+describe("Signed document — every intended section reaches the issued artifact, once", () => {
+  const RADIOLOGY_BODY = [
+    '<div class="section-heading">CLINICAL HISTORY</div><p>Headache for 3 weeks.</p>',
+    '<div class="section-heading">TECHNIQUE</div><p>MRI Brain with contrast.</p>',
+    '<div class="section-heading">FINDINGS</div><p>No acute intracranial lesion.</p>',
+    '<div class="section-heading">Impression</div><ul><li>Normal MRI Brain</li></ul>',
+    '<div class="section-heading">RECOMMENDATION</div><p>Clinical correlation advised.</p>',
+  ].join("\n");
+  const RAD_ROW = fullRow({
+    id: 921, reportNumber: "RPT-RAD", title: "MRI Brain",
+    body: RADIOLOGY_BODY, impression: "Normal MRI Brain",
+  });
+  const LAB_ROW = fullRow({
+    id: 922, reportNumber: "RPT-LAB", type: "pathology", title: "CBC",
+    body: "Haemoglobin 8.7 g/dL", impression: "Iron deficiency anaemia",
+  });
+
+  test("print: Clinical History and Technique are in the signed document, and the impression is not doubled", async () => {
+    plainReportQueryScript = [[RAD_ROW], [RAD_ROW]];
+    linkageQueryScript = [[], []];
+    joinedQueryScript = [joined(RAD_ROW)];
+    const res = await getSurface("/:id/print", "921");
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("CLINICAL HISTORY");
+    expect(res.body).toContain("Headache for 3 weeks.");
+    expect(res.body).toContain("TECHNIQUE");
+    expect(res.body).toContain("MRI Brain with contrast.");
+    expect(res.body).toContain("RECOMMENDATION");
+    // The body's own Impression section survives; the highlight box built from
+    // the impression column does not.
+    expect(res.body).toContain("Normal MRI Brain");
+    expect(res.body).not.toContain('class="impression"');
+    expect(res.body).not.toContain("<strong>Impression:</strong>");
+    // The study title is rendered once, by the title bar — the body no longer
+    // repeats it as its own heading.
+    expect((res.body.match(/class="study-title-bar"/g) ?? [])).toHaveLength(1);
+    expect(res.body).not.toMatch(/<h2[^>]*>\s*MRI Brain/);
+  });
+
+  test("PDF is rendered from the same model, so it cannot reintroduce the second impression", async () => {
+    plainReportQueryScript = [[RAD_ROW], [RAD_ROW]];
+    linkageQueryScript = [[], []];
+    joinedQueryScript = [joined(RAD_ROW)];
+    const res = await getSurface("/:id/pdf", "921");
+    const html = res.body.toString();
+    expect(html).toContain("CLINICAL HISTORY");
+    expect(html).toContain("TECHNIQUE");
+    expect(html).not.toContain('class="impression"');
+  });
+
+  test("non-radiology reports keep the highlight box — their body has no Impression section", async () => {
+    plainReportQueryScript = [[LAB_ROW], [LAB_ROW]];
+    linkageQueryScript = [[], []];
+    joinedQueryScript = [joined(LAB_ROW)];
+    const res = await getSurface("/:id/print", "922");
+    expect(res.body).toContain('<div class="impression"><strong>Impression:</strong> Iron deficiency anaemia</div>');
+  });
+
+  test("the impression COLUMN is untouched, so follow-up compare/copy still reads it", async () => {
+    plainReportQueryScript = [[RAD_ROW], [RAD_ROW]];
+    linkageQueryScript = [[], []];
+    joinedQueryScript = [joined(RAD_ROW)];
+    const res = await getById("921");
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("Normal MRI Brain");
+  });
+});

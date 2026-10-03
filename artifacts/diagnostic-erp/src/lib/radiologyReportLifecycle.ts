@@ -103,6 +103,16 @@ export interface FinalizeResult {
   linkedMarkedFinal?: boolean;
   /** Set when the linked worklist flip failed. Primary finalize still stands. */
   linkedMarkError?: string | null;
+  /**
+   * True when POST /api/patient-reports returned the study's EXISTING report
+   * row instead of writing the content this call was given. The route keys on
+   * `bound.worklist.reportId` alone (patient-reports.ts:2008-2018) and does no
+   * content comparison, so a re-finalize after edits answers HTTP 200 with the
+   * old row and `idempotent: true` — the new title/body/impression were
+   * discarded. Callers must not report success, and must not clear the local
+   * draft backups, which are the only remaining copy of what was thrown away.
+   */
+  idempotent?: boolean;
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -198,6 +208,7 @@ export async function finalizeRadiologyReport(
   let reportId: number | null = null;
   let reportRow: Record<string, unknown> | null = null;
   let reportCreationSkipped: string | null = null;
+  let reportIdempotent = false;
   // The study key drafts were saved under — D5's structured finalize resolves
   // "the draft for this study" by this exact value (see
   // structuredFinalizeTransaction's drafts lookup in patient-reports.ts).
@@ -268,6 +279,9 @@ export async function finalizeRadiologyReport(
       });
       reportId = report.id;
       reportRow = report;
+      // `idempotent: true` means the server handed back the row that was
+      // already bound to this worklist and never wrote the body above.
+      reportIdempotent = report.idempotent === true;
     }
   } else {
     // R1.4 review finding: leaving this unset made the 3 callers' generic
@@ -340,6 +354,7 @@ export async function finalizeRadiologyReport(
     signError,
     linkedMarkedFinal,
     linkedMarkError,
+    idempotent: reportIdempotent,
   };
 }
 

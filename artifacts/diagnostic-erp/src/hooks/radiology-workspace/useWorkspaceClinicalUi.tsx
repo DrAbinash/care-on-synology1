@@ -750,14 +750,46 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow.refreshQueue();
   }, [workflow]);
 
+  // ─── Per-study detail: authoritative signed status + canonical demography ──
+  // Heavy dicomMetadata is omitted from the polled queue list, so this is the
+  // only per-study fetch that carries both. It used to be declared 1,500 lines
+  // further down, after every lock decision below, and typed as
+  // `{ dicomMetadata?, age? }` — which threw away the `status` the server
+  // already returns (`pacsWorklistDetailFields.ts:22`) and left the locks
+  // reading `workflow.currentRow.status` instead.
+  //
+  // That queue row is not a safe source for a signed-state lock: the queue query
+  // is keyed on the filter, not on `studyId`, it polls every 30 s with
+  // `placeholderData: (prev) => prev`, and it is null for any study outside the
+  // currently fetched filter. A report signed elsewhere (command center,
+  // report list, another workstation) therefore left this workspace editable
+  // until the poll happened to bring the row back. This query is keyed on
+  // `studyId` and refetches on study change, so it is the canonical source.
+  const worklistDetailQ = useQuery<{
+    status?: string | null;
+    dicomMetadata?: string | Record<string, unknown> | null;
+    age?: string | null;
+  }>({
+    queryKey: ["pacs-worklist-detail", studyId],
+    queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
+    enabled: Number.isFinite(studyId) && (studyId as number) > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
+  /**
+   * Signed per the database for THIS study. Falls back to the queue row only
+   * while the detail query is in flight, so a lock is never briefly lifted on
+   * mount. `DELIVERED` counts as signed: it is downstream of REPORT_FINAL and
+   * the queue-based lock already treated it as closed for locking purposes.
+   */
+  const authoritativeStatus = worklistDetailQ.data?.status ?? workflow.currentRow?.status ?? null;
+  const studyIsSignedElsewhere = authoritativeStatus === "REPORT_FINAL" || authoritativeStatus === "DELIVERED";
+
   // 2. Study lock (claim/heartbeat/release)
   const studyLock = useStudyLock(studyId, {
     enabled: Boolean(
       workflow.currentRow
-      && (
-        allowEditSigned
-        || (workflow.currentRow.status !== "REPORT_FINAL" && workflow.currentRow.status !== "DELIVERED")
-      ),
+      && (allowEditSigned || !studyIsSignedElsewhere),
     ) as any,
   });
   const isLocked = studyLock.status === "locked-by-other";
@@ -765,7 +797,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   /** Trial-phase unlock: edit a signed report in place (editors + draft save). */
   const contentLocked =
     isLocked
-    || ((isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && !allowEditSigned);
+    || ((isFinalized || studyIsSignedElsewhere) && !allowEditSigned);
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
@@ -781,7 +813,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       impression: [impressionText],
       recommendation: recommendationText,
     },
-    enabled: allowEditSigned || workflow.currentRow?.status !== "REPORT_FINAL",
+    enabled: allowEditSigned || !studyIsSignedElsewhere,
   });
 
   // 5. Finalize flow (promise-based sign dialog)
@@ -1487,6 +1519,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────
+  // canonicalDemography is assembled further down this hook body, so finalize
+  // reaches it through a ref rather than a captured value: the quality rules
+  // that need patient sex/age must see the demography as it stands at sign-off.
+  const canonicalDemographyRef = useRef<ReportDemography | null>(null);
+  const getCanonicalDemography = useCallback(
+    () => canonicalDemographyRef.current,
+    [],
+  );
+
   const {
     finalizeReport,
     formFFinalizeOpen,
@@ -1515,6 +1556,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     workflow,
     goNextStudy,
     setReadingSession,
+    getDemography: getCanonicalDemography,
+    // Same four values useWorkspaceExportShare feeds buildLivePrintBodyHtml, so
+    // the signed body and the pre-sign print preview cannot drift apart.
+    presentation: { headingCase, impressionStyle, useStructured, findingsMap },
   });
 
   const acceptStructuredImpressionCandidate = useCallback((text: string) => {
@@ -2162,7 +2207,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         priorUrl ? api.get(priorUrl) : Promise.resolve(null),
         api.get(`/api/radiology/report-generator/measurements?studyId=${encodeURIComponent(next.id)}`),
         next.studyInstanceUID
-          ? api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality })
+          // Warm-up only: this exists to pull the model into memory before the
+          // radiologist reaches the next study. It carries no findings, and its
+          // result is discarded, so it must not leave a stored AI draft behind
+          // for that study — `warmUpOnly` tells the server exactly that.
+          ? api.post("/api/ai-reporting/draft", { studyInstanceUID: next.studyInstanceUID, modality: next.modality, warmUpOnly: true })
           : Promise.resolve(null),
       ]).then(() => useWorkspace.getState().markNextStudyPreloaded());
     }
@@ -2276,17 +2325,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   );
 
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
-  // Heavy dicomMetadata is omitted from the polled list — fetch per-study detail.
-  const worklistDetailQ = useQuery<{
-    dicomMetadata?: string | Record<string, unknown> | null;
-    age?: string | null;
-  }>({
-    queryKey: ["pacs-worklist-detail", studyId],
-    queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
-    enabled: Number.isFinite(studyId) && (studyId as number) > 0,
-    staleTime: 60_000,
-    retry: false,
-  });
+  // `worklistDetailQ` is declared with the study-lock section above, because the
+  // lock needs its `status`; `canonicalDemography` below still consumes it.
 
   const patientMasterQ = useQuery<{
     dateOfBirth?: string | null;
@@ -2353,6 +2393,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     });
     return merged;
   }, [workflow.currentRow, patientMasterQ.data, worklistDetailQ.data, demographyOverrides, doctorsCatalogQ.data]);
+
+  useEffect(() => {
+    canonicalDemographyRef.current = canonicalDemography;
+  }, [canonicalDemography]);
 
   // ─── Export / share / verify (Phase 3) ─────────────────────────────────────
   const {

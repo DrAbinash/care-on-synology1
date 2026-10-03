@@ -140,6 +140,7 @@ import {
   popClinicalUndoSnapshot,
   topClinicalUndoSnapshot,
 } from "./clinicalUndo";
+import { emptyClinicalState } from "./clinicalStateReset";
 import type { StartingCanvasBaseline } from "./startingCanvasHighlight";
 import {
   defaultImpressionFromFindings,
@@ -260,6 +261,13 @@ export type PendingPathologyPatch = {
 };
 
 type PatchSnapshot = {
+  /**
+   * The study this frame was captured against. `useWorkspace` is a module-scope
+   * singleton, so an undo frame outlives the study it belongs to; restoring one
+   * blindly writes Patient A's five texts into Patient B's report. Compared in
+   * `undoLastPatch` before anything is restored.
+   */
+  activeStudyId: string | null;
   clinicalHistoryText: string;
   techniqueText: string;
   findingsText: string;
@@ -279,6 +287,7 @@ const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
 
 function captureClinicalSnapshot(s: S): PatchSnapshot {
   return {
+    activeStudyId: s.activeStudyId,
     clinicalHistoryText: s.clinicalHistoryText,
     techniqueText: s.techniqueText,
     findingsText: s.findingsText,
@@ -844,7 +853,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     set({ studies: next });
   },
-  selectStudy: (id) => { const st = get().studies.find(s => s.id === id); if (!st) return; set({ activeStudyId: id, findingsText: "", impressionText: "", recommendationText: "", techniqueText: "", clinicalHistoryText: st.clinicalHistory || "", fieldProvenance: {}, measurements: [], priors: [], isDirty: false, isFinalized: false, isFinalizing: false, railStage: "orient", ghostText: null, ghostTextTarget: null, acknowledgedCopilotIds: new Set(), activeCopilotItem: null, voiceTranscript: "", voiceListening: false, selectedFormatIds: [], reportFormatPickerOpen: false, appliedFormatReportTitle: null, appliedPathologyPatches: [], patchUndoStack: [], lastPatchSnapshot: null, startingCanvasBaseline: null, impressionNeedsRefresh: false, activeAnchor: null, selectedObservationId: null, measurementIntent: null, canalIntentLevel: null, structuredViewerMeasurements: emptyViewerMeasurementsState(), dorsalCanalForced: false, canalApProvenance: {}, lumbarNumbering: defaultLumbarNumbering(), dorsalNumbering: defaultDorsalNumbering(), dorsoLumbarNumbering: defaultDorsoLumbarState(), sequencesAvailable: defaultSpineSequences(), screening: defaultScreeningState(), studyComposition: "unknown", studyCompositionProvenance: "none", studyCompositionOverridden: false, impressionOrderFrozen: false, vascularTechnique: defaultVascularTechnique(), activeStudyInstanceUID: st.studyInstanceUID ?? null, coverageMarks: [], coverageByScope: {}, appliedFormatName: null, ownershipReviewWarnings: [], ledgerHydrationWarning: null, voiceComposerObservations: [], voiceComposerTranscriptHistory: [], criticalSlaStartedAt: null, criticalSlaEscalated: false, preloadTriggered: false, nextStudyPreloaded: false, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT, primaryFindingsSection: null, linkedStudy: null, activeFindingsSectionId: null, appliedPatternMarkers: [], abnormalPatternConfirm: null, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null }); setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0); },
+  selectStudy: (id) => {
+    const st = get().studies.find(s => s.id === id);
+    if (!st) {
+      // Was a bare `return`. A silent no-op on a reset path is how the
+      // cross-patient undo leak stayed hidden: every caller assumes the switch
+      // happened and carries on with the previous study's state on screen.
+      console.warn("[care.workspace_store] selectStudy ignored — id is not in the worklist; clinical state NOT reset", {
+        id,
+        activeStudyId: get().activeStudyId,
+        knownStudies: get().studies.length,
+      });
+      return;
+    }
+    set({
+      ...emptyClinicalState(),
+      // Identity and context stay per-caller: the PARTIAL reset in
+      // useDraftPersistence must not wipe reportingContext or race hydration.
+      activeStudyId: id,
+      activeStudyInstanceUID: st.studyInstanceUID ?? null,
+      clinicalHistoryText: st.clinicalHistory || "",
+      reportingContext: EMPTY_REPORTING_STUDY_CONTEXT,
+    });
+    setTimeout(() => { get().recomputeCopilot(); get().seedSystemNormalImpression(); }, 0);
+  },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
     const opts = typeof optsOrSource === "string"
@@ -868,7 +900,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       [key]: v,
       fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
     };
-    if (f === "findings" && (opts?.source === "manual" || !opts?.source)) {
+    if (f === "findings") {
+      // Armed on the field, not the source: a new abnormality stales the
+      // Impression whether it arrived from the keyboard, a tile, a template, the
+      // companion panel, dictation or the AI ghost layer, and the radiologist
+      // still has to re-read the Impression before signing. Callers that write
+      // Findings and Impression in one action (report-format apply below, the
+      // template apply and companion auto-populate in useReportingStudySetup)
+      // arm here and clear on the impression write — which is why the clearing
+      // half is keyed on source and this half is not.
       p.impressionNeedsRefresh = true;
     }
     if (f === "impression" && opts?.source && opts.source !== "manual") {
@@ -935,6 +975,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       [key]: result.text,
       fieldProvenance: { ...get().fieldProvenance, [f]: result.provenance },
+      // Same gate as setField, and it has to be repeated rather than delegated:
+      // mergeField is an additive sentence insert, so it can never be the second
+      // half of a paired findings+impression write that setField's callers rely
+      // on to clear the flag. Every insert path — dictation, tiles, templates,
+      // the companion panel, the measurement box, an accepted AI ghost — comes
+      // through here, and before this they all left the Impression unflagged
+      // while a hand-typed Findings edit did flag it.
+      ...(f === "findings" ? { impressionNeedsRefresh: true } : {}),
+      ...(f === "impression" && source !== "manual" ? { impressionNeedsRefresh: false } : {}),
     });
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(result.text, scopedSnippetMacros(get));
@@ -1083,7 +1132,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   startFinalize: () => set({ isFinalizing: true }),
   completeFinalize: () => { const id = get().activeStudyId; if (!id) { set({ isFinalizing: false }); return; } const c = new Set(get().completedStudyIds); c.add(id); set({ isFinalizing: false, isFinalized: true, completedStudyIds: c, lastSignAt: Date.now(), criticalSlaStartedAt: null, criticalSlaEscalated: false }); /* Navigation after finalize is handled by the workspace page (React Router navigate),  not here — the store has no router access. */ },
   cancelFinalize: () => set({ isFinalizing: false }),
-  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) get().selectStudy(r[0].id); else set({ activeStudyId: null, findingsText: "", impressionText: "", recommendationText: "", fieldProvenance: {} }); },
+  advanceToNextStudy: () => { const { studies, completedStudyIds, activeStudyId, nextStudyId, nextStudyPreloaded } = get(); if (nextStudyId && nextStudyPreloaded) { get().selectStudy(nextStudyId); set({ nextStudyId: null, nextStudyPreloaded: false }); return; } const r = studies.filter(s => !completedStudyIds.has(s.id) && s.id !== activeStudyId); const pr: Record<string, number> = { stat: 0, urgent: 1, routine: 2, vip: 1 }; r.sort((a, b) => ((pr[a.priority] ?? 2) - (pr[b.priority] ?? 2)) || (a.tatMinutes - b.tatMinutes)); if (r[0]) { get().selectStudy(r[0].id); return; }
+    // End of the queue — no study is open, so nothing clinical may remain. This
+    // was a third hand-maintained reset list (4 of ~61 fields) and it left the
+    // last reported study's ledger, undo stack, measurements and protocol
+    // answers sitting in the singleton store.
+    set({ ...emptyClinicalState(), activeStudyId: null, reportingContext: EMPTY_REPORTING_STUDY_CONTEXT });
+  },
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
   pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null }),
   startCriticalSla: () => set({ criticalSlaStartedAt: Date.now(), criticalSlaEscalated: false }), clearCriticalSla: () => set({ criticalSlaStartedAt: null, criticalSlaEscalated: false }), escalateCriticalSla: () => set({ criticalSlaEscalated: true }),
@@ -2368,6 +2423,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const popped = popClinicalUndoSnapshot(get().patchUndoStack);
     if (!popped) return false;
     const { snapshot: snap, remaining } = popped;
+    if (snap.activeStudyId !== get().activeStudyId) {
+      // Defence in depth. All three reset paths now clear the stack, so reaching
+      // this branch means a switch that went through none of them — a deep link,
+      // browser Back/Forward, or selectStudy no-oping on an id absent from the
+      // worklist.
+      // Restoring here would write the previous patient's five texts, provenance
+      // and ledger into this patient's report, and autosave would then persist
+      // them inside the current generation where no guard intercepts.
+      //
+      // The frame is left on the stack rather than dropped: it is still the
+      // correct history for the study it came from, and discarding it would
+      // destroy the only record of what the radiologist undid there. Callers
+      // that surface this (Ctrl+Shift+Z) read the top frame's activeStudyId to
+      // tell "refused" apart from "nothing to undo".
+      console.warn("[care.workspace_store] undo refused — the frame belongs to a different study", {
+        frameStudyId: snap.activeStudyId,
+        activeStudyId: get().activeStudyId,
+      });
+      return false;
+    }
     set({
       clinicalHistoryText: snap.clinicalHistoryText,
       techniqueText: snap.techniqueText,

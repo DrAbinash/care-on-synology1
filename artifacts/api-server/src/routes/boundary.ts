@@ -36,8 +36,10 @@ import {
   portalSessionsTable,
   usersTable,
   clinicSettingsTable,
+  radiologyAuditLogTable,
 } from "@workspace/db/schema";
 import { and, eq, gt, inArray } from "drizzle-orm";
+import { boundRelayedPersonName, resolveRelayedInstant } from "../lib/signedArtifactGuard";
 
 const router = Router();
 
@@ -333,16 +335,61 @@ router.post("/studies/:accession/report", async (req, res) => {
     return;
   }
 
+  // Same trust model as the reporting-studio bridge: the caller authenticates
+  // with a shared service key, so it can name any radiologist and assert any
+  // instant. The name is bounded rather than trusted, and the instant is
+  // refused if it is unparseable or in the future — `new Date(garbage)` used to
+  // reach the driver as an Invalid Date, and a future-dated finalization
+  // post-dates the evidence for the report it signs.
+  const serverReceivedAt = new Date();
+  const reportedByName = boundRelayedPersonName(reportedBy, "Radiology Service");
+  const relayedInstant = resolveRelayedInstant(reportedAt, serverReceivedAt);
+  const reportedAtInstant = relayedInstant.at;
+
+  // A re-push overwrites a study that may already have been finalized, and
+  // `finalReportedBy`/`finalReportedAt` are single columns — so without this
+  // row the superseded attribution is simply gone and the artifact silently
+  // becomes a different report under a different name. Audit log only: the
+  // existing columns keep their current meaning and the callback stays
+  // accepted, because re-pushing a corrected report is this bridge's job.
+  const superseded =
+    study.finalReport != null && study.finalReport !== finalReportText
+      ? {
+          finalReportedBy: study.finalReportedBy,
+          finalReportedAt: study.finalReportedAt
+            ? new Date(study.finalReportedAt).toISOString()
+            : null,
+          status: study.status,
+        }
+      : null;
+
   await db
     .update(radiologyStudiesTable)
     .set({
       finalReport: finalReportText,
-      finalReportedBy: typeof reportedBy === "string" ? reportedBy : null,
-      finalReportedAt: reportedAt ? new Date(reportedAt) : new Date(),
+      finalReportedBy: reportedByName,
+      finalReportedAt: reportedAtInstant,
       status: status === "reported_final" ? "reported_final" : study.status,
       updatedAt: new Date(),
     })
     .where(eq(radiologyStudiesTable.id, study.id));
+
+  await db.insert(radiologyAuditLogTable).values({
+    worklistId: null,
+    accessionNumber: accession,
+    action: superseded ? "REPORT_FINAL_SUPERSEDED" : "REPORT_FINAL",
+    actor: reportedByName,
+    details: JSON.stringify({
+      source: "boundary",
+      studyId: study.id,
+      identitySource: "relay",
+      reportedAt: reportedAtInstant.toISOString(),
+      reportedAtSource: relayedInstant.source,
+      reportedAtRejected: relayedInstant.rejected,
+      serverReceivedAt: serverReceivedAt.toISOString(),
+      superseded,
+    }),
+  });
 
   res.json({ ok: true });
 });

@@ -1,5 +1,6 @@
 /**
- * Composition finalize gate — stale impression + unowned sibling leftovers.
+ * Composition finalize gate — stale impression, unowned sibling leftovers and
+ * recommendations whose finding has since changed.
  *
  * The workspace's FinalizeSignDialog is the canonical sign path. This module
  * supplies the warning block it renders so a stale impression cannot be signed
@@ -31,7 +32,10 @@ export function CompositionFinalizeGate({
 }) {
   const stale = gate.impressionNeedsRefresh && !impressionRefreshed;
   const siblings = gate.siblingWarnings;
-  if (!stale && siblings.length === 0 && gate.stalePatchCount === 0) return null;
+  const orphanedAdvice = gate.orphanedRecommendations;
+  if (!stale && siblings.length === 0 && orphanedAdvice.length === 0 && gate.stalePatchCount === 0) {
+    return null;
+  }
 
   return (
     <div
@@ -81,6 +85,22 @@ export function CompositionFinalizeGate({
                 <span className="font-semibold">“{w.token}”</span>
                 {" — "}
                 <span>{w.sentence}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {orphanedAdvice.length > 0 && (
+        <div data-testid="finalize-orphaned-recommendations" className="space-y-1">
+          <p className="text-xs font-medium text-amber-900">
+            Recommendation may no longer follow from the Findings (kept as written — not deleted)
+          </p>
+          <ul className={`space-y-1 text-[11px] text-amber-950/90 ${orphanedAdvice.length > 2 ? "max-h-24 overflow-y-auto" : ""}`}>
+            {orphanedAdvice.map((w, i) => (
+              <li key={`${w.sentence}-${i}`} data-testid={`finalize-orphaned-recommendation-${i}`}>
+                <span>{w.sentence}</span>
+                {" — "}
+                <span className="text-amber-900/80">{w.hint}</span>
               </li>
             ))}
           </ul>

@@ -25,7 +25,7 @@ import {
   radiologyShareLinksTable,
 } from "@workspace/db/schema";
 import { sendReportEmail } from "../email";
-import { requireStaffAuth, type StaffAuthRequest } from "../middleware/requireStaffAuth";
+import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
@@ -64,6 +64,11 @@ import {
   type FinalWorklistRow,
 } from "../lib/radiologyD1FinalWriter";
 import { verifyContentSha256 } from "../lib/structuredReport/hash";
+import {
+  classifySignedReportPatch,
+  isSignedArtifact,
+  resolveSignerIdentity,
+} from "../lib/signedArtifactGuard";
 import {
   renderReportDocument,
   type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
@@ -507,10 +512,26 @@ function structuredSignedDocOf(structuredJson: unknown): StructuredSignedDocShap
 }
 
 /** D9 Phase 7 — hash-chained lifecycle audit record (attempts, rejections,
- *  legacy-sign refusals). Success events are written INSIDE the verify
- *  transaction instead, so they roll back with it. auditLog never throws. */
+ *  legacy-sign refusals, signed-artifact mutations, signature withdrawals).
+ *  Success events are written INSIDE the verify transaction instead, so they
+ *  roll back with it. auditLog never throws. `audit_logs.action` is a free-text
+ *  column with no CHECK constraint, so widening this union is not a schema
+ *  change.
+ *
+ *  `verify_attempt`/`verify_rejected` belong to the STRUCTURED countersign path
+ *  only; the legacy path audits as `legacy_verify`, so a row's action still
+ *  tells you which of the two paths produced it. */
 async function auditLifecycleEvent(
-  action: "verify_attempt" | "verify_rejected" | "legacy_sign_rejected",
+  action:
+    | "verify_attempt"
+    | "verify_rejected"
+    | "legacy_verify"
+    | "legacy_sign_rejected"
+    | "legacy_sign"
+    | "signed_mutation_rejected"
+    | "critical_state_changed"
+    | "critical_acknowledged"
+    | "signature_withdrawn",
   actor: { userId?: number | null; userName?: string; role?: string },
   entityId: string,
   payload: Record<string, unknown>,
@@ -2144,31 +2165,29 @@ patientReportsRouter.patch("/:id", async (req, res) => {
     res.status(404).json({ error: "Report not found" });
     return;
   }
-  // Once verified, only critical-ack and re-share are allowed.
-  if (existing.status === "verified" || existing.status === "delivered") {
-    if (
-      typeof b.body === "string" || typeof b.parameters !== "undefined" ||
-      typeof b.title === "string" || typeof b.impression === "string"
-    ) {
-      res.status(409).json({ error: "Verified reports cannot be edited. Use Amend instead." });
-      return;
-    }
-  }
-  // Ticket D6 defense-in-depth: a row carrying a SIGNED-final structured
-  // document (D5) is a signed medico-legal artifact regardless of the legacy
-  // status column (D5 rows keep the schema default "draft"). Editing its
-  // content in place would silently diverge — or destroy — the signed bytes,
-  // so it gets the same use-Amend contract as verified reports.
-  const signedStructured =
-    (existing.structuredJson as { audit?: { signature?: { state?: string } } } | null)?.audit?.signature?.state === "final";
-  if (signedStructured) {
-    if (
-      typeof b.body === "string" || typeof b.parameters !== "undefined" ||
-      typeof b.title === "string" || typeof b.impression === "string"
-    ) {
-      res.status(409).json({ error: "Signed structured reports cannot be edited. Use Amend instead." });
-      return;
-    }
+  // ── The signed-artifact guard ──────────────────────────────────────────────
+  // A signed report is a medico-legal artifact: its content, its signer and its
+  // signing time are the evidence. Ordinary updates may not touch any of them.
+  // Correction goes through POST /:id/amend (a new row on the chain) or, before
+  // verification, through POST /:id/withdraw-signature (an explicit, attributed
+  // return to draft). Both leave an audit record; a PATCH leaves none.
+  const signed = isSignedArtifact(existing);
+  const decision = classifySignedReportPatch({
+    signed,
+    criticalAcknowledgedAt: existing.criticalAcknowledgedAt,
+    body: b,
+  });
+  if (!decision.allow) {
+    const session = (req as StaffAuthRequest).staffSession;
+    await auditLifecycleEvent(
+      "signed_mutation_rejected",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      String(id),
+      { reportId: id, status: existing.status, signedAt: existing.signedAt, attempted: decision.fields },
+      decision.code,
+    );
+    res.status(409).json({ error: decision.code, message: decision.message, fields: decision.fields });
+    return;
   }
 
   const updates: Record<string, unknown> = {};
@@ -2180,10 +2199,19 @@ patientReportsRouter.patch("/:id", async (req, res) => {
   if (typeof b.templateId === "number") updates.templateId = b.templateId;
   if (typeof b.isCritical === "boolean") {
     updates.isCritical = b.isCritical;
-    if (!b.isCritical) {
-      updates.criticalNote = null;
-      updates.criticalAcknowledgedAt = null;
-      updates.criticalAcknowledgedBy = null;
+    // Clearing the flag is only reachable on a row that is unsigned AND never
+    // acknowledged — classifySignedReportPatch above refuses otherwise — so the
+    // acknowledgement columns are already null here and are not touched.
+    if (!b.isCritical) updates.criticalNote = null;
+    if (signed && b.isCritical !== existing.isCritical) {
+      const session = (req as StaffAuthRequest).staffSession;
+      await auditLifecycleEvent(
+        "critical_state_changed",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        { reportId: id, from: existing.isCritical, to: b.isCritical },
+        b.isCritical ? "critical_escalated_on_signed_report" : "critical_downgraded_on_signed_report",
+      );
     }
   }
   if (typeof b.criticalNote === "string") updates.criticalNote = b.criticalNote;
@@ -2241,26 +2269,72 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     });
     return;
   }
-  let signedByName = typeof b.signedByName === "string" ? b.signedByName.trim() : "";
+  // Re-signing an already-signed row would overwrite signedByName and signedAt
+  // and destroy the original signing instant with no trace of the first one.
+  // Withdraw the signature explicitly instead — that records who un-signed it.
+  if (isSignedArtifact(existing)) {
+    await auditLifecycleEvent(
+      "legacy_sign_rejected",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      String(id),
+      { reportId: id, status: existing.status, signedAt: existing.signedAt, signedBy: existing.signedByName },
+      "already_signed",
+    );
+    res.status(409).json({
+      error: "already_signed",
+      message: "This report is already signed. Use POST /:id/withdraw-signature to return it to draft, or POST /:id/amend to correct it.",
+    });
+    return;
+  }
+  // The signer of record comes from the server: the chosen signature block's
+  // own database row, or the authenticated session subject. A name in the
+  // request body is never used — it is only recorded when it differs, because a
+  // client asserting somebody else's name is the mis-attribution to catch.
+  let signatureName: string | null = null;
   if (signatureId) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, signatureId));
     if (!sig) {
       res.status(404).json({ error: "Signature not found" });
       return;
     }
-    if (!signedByName) signedByName = sig.name;
+    signatureName = sig.name;
   }
-  if (!signedByName) {
-    res.status(400).json({ error: "signedByName or signatureId required" });
+  const identity = resolveSignerIdentity({
+    sessionName: session?.subjectName,
+    signatureName,
+    callerSuppliedName: b.signedByName,
+  });
+  if (!identity.name) {
+    res.status(400).json({
+      error: "signer_identity_unavailable",
+      message: "Could not establish who is signing. Pass a signatureId, or sign in with a named staff account.",
+    });
     return;
   }
+  const signedAt = new Date();
   const [row] = await db.update(patientReportsTable).set({
     signatureId,
-    signedByName,
-    signedAt: new Date(),
+    signedByName: identity.name,
+    signedAt,
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
-  if (row) void freezeSignedReportPresentation(row.id);
+  if (row) {
+    void freezeSignedReportPresentation(row.id);
+    await auditLifecycleEvent(
+      "legacy_sign",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      String(id),
+      {
+        reportId: id,
+        signedByName: identity.name,
+        identitySource: identity.source,
+        signatureId,
+        signedAt: signedAt.toISOString(),
+        rejectedCallerName: identity.rejectedCallerName,
+      },
+      `identity_source:${identity.source}`,
+    );
+  }
   res.json(row);
 });
 
@@ -2305,36 +2379,64 @@ patientReportsRouter.post("/:id/verify", async (req, res) => {
     res.status(409).json({ error: "Report already verified" });
     return;
   }
-  let verifiedByName = typeof b.verifiedByName === "string" ? b.verifiedByName.trim() : "";
+  // The verifier of record comes from the server — the same rule the structured
+  // countersign path already applies ("session identity, never client input").
+  const verifySession = (req as StaffAuthRequest).staffSession;
+  let verifierSignatureName: string | null = null;
   if (verifierSigId) {
     const [sig] = await db.select().from(signaturesTable).where(eq(signaturesTable.id, verifierSigId));
     if (!sig) {
       res.status(404).json({ error: "Verifier signature not found" });
       return;
     }
-    if (!verifiedByName) verifiedByName = sig.name;
+    verifierSignatureName = sig.name;
     if (existing.signatureId && existing.signatureId === verifierSigId) {
       res.status(409).json({ error: "Verifier must be a different person from the signer" });
       return;
     }
   }
-  if (!verifiedByName) {
-    res.status(400).json({ error: "verifiedByName or signatureId required" });
+  const verifierIdentity = resolveSignerIdentity({
+    sessionName: verifySession?.subjectName,
+    signatureName: verifierSignatureName,
+    callerSuppliedName: b.verifiedByName,
+  });
+  if (!verifierIdentity.name) {
+    res.status(400).json({
+      error: "verifier_identity_unavailable",
+      message: "Could not establish who is verifying. Pass a signatureId, or sign in with a named staff account.",
+    });
     return;
   }
+  const verifiedByName = verifierIdentity.name;
   // Block name-based bypass: even if no signatureId is provided, the verifier's
   // name must differ (case-insensitively) from the signer's recorded name.
   if (existing.signedByName && existing.signedByName.trim().toLowerCase() === verifiedByName.toLowerCase()) {
     res.status(409).json({ error: "Verifier must be a different person from the signer" });
     return;
   }
+  const verifiedAt = new Date();
   const [row] = await db.update(patientReportsTable).set({
     verifiedBySignatureId: verifierSigId,
     verifiedByName,
-    verifiedAt: new Date(),
+    verifiedAt,
     verifierNotes: typeof b.verifierNotes === "string" ? b.verifierNotes : null,
     status: "verified",
   }).where(eq(patientReportsTable.id, id)).returning();
+
+  await auditLifecycleEvent(
+    "legacy_verify",
+    { userId: verifySession?.subjectId, userName: verifySession?.subjectName, role: verifySession?.role },
+    String(id),
+    {
+      reportId: id,
+      verifiedByName,
+      identitySource: verifierIdentity.source,
+      verifiedAt: verifiedAt.toISOString(),
+      rejectedCallerName: verifierIdentity.rejectedCallerName,
+      outcome: "verified",
+    },
+    `identity_source:${verifierIdentity.source}`,
+  );
 
   hookConsumeOnReportVerified({
     id: row.id,
@@ -2447,22 +2549,141 @@ patientReportsRouter.post("/:id/public-link", async (req, res) => {
 });
 
 // Acknowledge a critical alert (silences the dashboard counter).
+//
+// The acknowledger is the authenticated session, never a name in the request
+// body. This is the record that a clinician was told about a potentially
+// life-threatening finding and accepted responsibility for acting on it; an
+// endpoint that let the caller type any name into it made that record worth
+// nothing, and let one person discharge another's obligation.
 patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
   const id = Number(req.params.id);
-  const b = (req.body ?? {}) as Record<string, unknown>;
-  const acknowledgedBy = typeof b.acknowledgedBy === "string" ? b.acknowledgedBy.trim() : "";
+  const session = (req as StaffAuthRequest).staffSession;
+  const acknowledgedBy = session?.subjectName?.trim() ?? "";
   if (!acknowledgedBy) {
-    res.status(400).json({ error: "acknowledgedBy required" });
+    res.status(401).json({
+      error: "acknowledger_identity_unavailable",
+      message: "Sign in with a named staff account to acknowledge a critical result.",
+    });
     return;
   }
+  const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  if (!existing.isCritical) {
+    res.status(409).json({
+      error: "not_a_critical_report",
+      message: "This report is not flagged critical, so there is nothing to acknowledge.",
+    });
+    return;
+  }
+  const criticalAcknowledgedAt = new Date();
   const [row] = await db.update(patientReportsTable).set({
-    criticalAcknowledgedAt: new Date(),
+    criticalAcknowledgedAt,
     criticalAcknowledgedBy: acknowledgedBy,
   }).where(eq(patientReportsTable.id, id)).returning();
   if (!row) {
     res.status(404).json({ error: "Report not found" });
     return;
   }
+  await auditLifecycleEvent(
+    "critical_acknowledged",
+    { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+    String(id),
+    {
+      reportId: id,
+      acknowledgedBy,
+      acknowledgedAt: criticalAcknowledgedAt.toISOString(),
+      reportStatus: existing.status,
+      signed: isSignedArtifact(existing),
+    },
+    "critical_result_acknowledged",
+  );
+  res.json(row);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Withdraw a signature — the only way back to an editable draft
+// ────────────────────────────────────────────────────────────────────────────
+// A signed report's content is immutable, so correcting one before it is
+// counter-signed needs an explicit, attributed way to un-sign it. This is not
+// an edit and not a deletion: the row keeps its content, the signature fields
+// are cleared, the status returns to draft, and the hash-chained audit record
+// keeps who signed it, when, and who withdrew it. Once a report is verified or
+// delivered the signature can no longer be withdrawn — correction then goes
+// through POST /:id/amend, which preserves the superseded version.
+patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
+  const id = Number(req.params.id);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const session = (req as StaffAuthRequest).staffSession;
+  const actor = session?.subjectName?.trim() ?? "";
+  if (!actor) {
+    res.status(401).json({ error: "Staff authentication required" });
+    return;
+  }
+  const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+  if (!reason) {
+    res.status(400).json({ error: "reason required", message: "Say why the signature is being withdrawn." });
+    return;
+  }
+  const [existing] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  if (!isSignedArtifact(existing)) {
+    res.status(409).json({ error: "not_signed", message: "This report is not signed." });
+    return;
+  }
+  if (existing.status === "verified" || existing.status === "delivered") {
+    res.status(409).json({
+      error: "already_verified",
+      message: "A verified report cannot be un-signed. Use POST /:id/amend to create a corrected version.",
+    });
+    return;
+  }
+  if (structuredSignedDocOf(existing.structuredJson)) {
+    res.status(409).json({
+      error: "structured_signed_report",
+      message: "This report carries a signed structured document. Use POST /:id/amend to create a corrected version.",
+    });
+    return;
+  }
+  // Only the person who signed it, or an administrator, may withdraw it.
+  const sessionRole = (session?.role ?? "").toLowerCase();
+  const isSigner = (existing.signedByName ?? "").trim().toLowerCase() === actor.toLowerCase();
+  if (!isSigner && !FULL_ACCESS_ROLES.has(sessionRole)) {
+    await auditLifecycleEvent(
+      "signature_withdrawn",
+      { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+      String(id),
+      { reportId: id, signedByName: existing.signedByName, outcome: "rejected" },
+      "not_the_signer",
+    );
+    res.status(403).json({ error: "not_the_signer", message: "Only the signer or an administrator can withdraw this signature." });
+    return;
+  }
+
+  const withdrawn = {
+    signedByName: existing.signedByName,
+    signedAt: existing.signedAt,
+    signatureId: existing.signatureId,
+  };
+  const [row] = await db.update(patientReportsTable).set({
+    signedByName: null,
+    signedAt: null,
+    signatureId: null,
+    status: "draft",
+  }).where(eq(patientReportsTable.id, id)).returning();
+
+  await auditLifecycleEvent(
+    "signature_withdrawn",
+    { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+    String(id),
+    { reportId: id, reason, withdrawn, outcome: "withdrawn" },
+    reason,
+  );
   res.json(row);
 });
 
@@ -2765,7 +2986,14 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     safeguardWatermarkHtml: safeguards.watermark,
     isCritical: r.isCritical,
     criticalNote: r.criticalNote,
-    impression: r.impression,
+    // The .impression highlight box is a summary slot for report types whose
+    // body is plain result text. Every radiology body already renders its own
+    // Impression section — the workspace, command-center, USG, reporting-studio
+    // and D5/D1 structured writers all emit one — and the draft print-preview
+    // the radiologist approved sets no box at all. Passing the column here too
+    // printed the same impression twice on the signed document, its PDF, the
+    // WhatsApp link and the PACS archive. The column itself is untouched.
+    impression: r.type === "radiology" ? null : r.impression,
     parameters: parameterRows,
     // Radiology bodies are trusted HTML from the frozen render pipeline;
     // everything else is escaped plain text (unchanged behavior).
