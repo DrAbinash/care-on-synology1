@@ -19,6 +19,7 @@ import {
   type StructuredFormatDoc,
 } from "@/lib/structuredFormat";
 import { headingsForTemplate, retitleFindingsDocument } from "@/lib/reportSubHeadings";
+import { findingsDocumentHasStructure } from "@/lib/findingsDocument";
 
 const MODALITIES = ["MRI", "CT", "USG", "X-RAY", "DOPPLER", "ECHO", "PET-CT", "FLUOROSCOPY", "OTHER"];
 const BODY_PARTS = ["BRAIN", "SPINE_LS", "SPINE_CERVICAL", "SPINE_DORSAL", "CHEST", "ABDOMEN", "PELVIS", "CARDIAC", "NECK", "KNEE", "SHOULDER", "HIP", "CAROTID", "OTHER"];
@@ -114,10 +115,11 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
     ),
     [doc.sections],
   );
-  const headingsMatchSections =
-    printedHeadings.length === sectionLabels.length &&
-    printedHeadings.every((h, i) => h.trim().toLowerCase() === sectionLabels[i]?.toLowerCase());
-  const canApplySectionHeadings = sectionLabels.length > 0 && !headingsMatchSections;
+  /** Only a format whose findings text is still one run-on paragraph needs this.
+   *  A curated document (the spine presets) already prints better headings than
+   *  its raw card labels, so offering to overwrite it would be a footgun. */
+  const authoredIsDocument = findingsDocumentHasStructure(defaultFindings);
+  const canApplySectionHeadings = sectionLabels.length > 0 && !authoredIsDocument;
 
   function patchSection(id: string, patch: Partial<FormatSection>) {
     setDoc((d) => ({ ...d, sections: d.sections.map((s) => s.id === id ? { ...s, ...patch } : s) }));
@@ -217,10 +219,10 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
                   </span>
                 )}
                 {canApplySectionHeadings && (
-                  <span className="mt-1 block space-y-1" data-testid="format-subheading-drift">
-                    <span className="block text-[10px] text-amber-700">
-                      These sub-headings do not match the sections under Sections
-                      ({sectionLabels.join(", ")}).
+                  <span className="mt-1 block space-y-1" data-testid="format-subheading-apply">
+                    <span className="block text-[10px] text-muted-foreground">
+                      This format prints its findings as one paragraph. Its sections
+                      ({sectionLabels.join(", ")}) can print as sub-headings instead.
                     </span>
                     <Button
                       type="button"
@@ -231,8 +233,13 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
                         retitleFindingsDocument(defaultFindings, sectionLabels, sectionDefaults),
                       )}
                     >
-                      Use the Sections list as sub-headings
+                      Add these sections as sub-headings
                     </Button>
+                    <span className="block text-[10px] text-muted-foreground">
+                      Nothing is discarded: the wording above stays, each new heading is
+                      filled only with this format&rsquo;s own normal text, and a heading
+                      with no normal text is left empty for you to write.
+                    </span>
                   </span>
                 )}
               </label>
