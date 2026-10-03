@@ -22,7 +22,21 @@ export type StructuredTemplateRow = {
   schemaVersion?: number;
 };
 
-/** Infer internal bodyPart (+ optional studyType) from modality + description. */
+/**
+ * Infer internal bodyPart (+ optional studyType) from modality + description.
+ *
+ * Returns null when nothing in the description matched. It used to fall through
+ * to a per-modality default — Brain for MRI and CT, Abdomen for USG, Chest for
+ * X-ray — so an MRI knee, a CT liver, an abdominal-wall USG or a hand X-ray each
+ * received a confidently-named template for a body part the study was not of.
+ * That is the same guessing `pickStructuredTemplateForRegion` already refuses,
+ * and documents refusing, for a resolved region ("return null rather than
+ * guessing (the old MRI default was Brain)"). With report formats actually seeded
+ * into `structured_report_templates` a guess stops being inert: it pre-fills
+ * sections the radiologist then has to notice are wrong.
+ *
+ * A null here means "no format chosen", which every caller already handles.
+ */
 export function inferStructuredTemplateMatch(
   modality: string | null | undefined,
   studyDescription: string | null | undefined,
@@ -59,7 +73,7 @@ export function inferStructuredTemplateMatch(
       return { bodyPart: "BRAIN", studyType: "PLAIN" };
     }
     if (desc.includes("SPINE")) return { bodyPart: "SPINE_LS", studyType: "PLAIN" };
-    return { bodyPart: "BRAIN", studyType: "PLAIN" };
+    return null;
   }
 
   if (mod === "CT") {
@@ -67,7 +81,7 @@ export function inferStructuredTemplateMatch(
     if (desc.includes("CHEST")) return { bodyPart: "CHEST", studyType: "PLAIN" };
     if (desc.includes("ABDOMEN") || desc.includes("PELVIS")) return { bodyPart: "ABDOMEN", studyType: "PLAIN" };
     if (desc.includes("TRAUMA")) return { bodyPart: "BRAIN", studyType: "TRAUMA" };
-    return { bodyPart: "BRAIN", studyType: "PLAIN" };
+    return null;
   }
 
   if (mod === "USG") {
@@ -75,14 +89,20 @@ export function inferStructuredTemplateMatch(
     if (desc.includes("OBSTETRIC") || desc.includes(" OB ") || desc.includes("FETAL")) return { bodyPart: "OBSTETRIC" };
     if (desc.includes("THYROID") || desc.includes("NECK")) return { bodyPart: "NECK" };
     if (desc.includes("DOPPLER")) return { bodyPart: "DOPPLER" };
-    return { bodyPart: "ABDOMEN" };
+    // Abdomen was the fallback rather than a keyword, so "USG ABDOMEN" reached its
+    // body part by never having matched anything. Naming it explicitly is what
+    // lets the fallback below become a refusal instead of a guess.
+    if (desc.includes("ABDOMEN") || desc.includes("ABD") || desc.includes("KUB") || desc.includes("RENAL")) {
+      return { bodyPart: "ABDOMEN" };
+    }
+    return null;
   }
 
   if (mod === "X-RAY") {
     if (desc.includes("CERVICAL")) return { bodyPart: "SPINE_CERVICAL" };
     if (desc.includes("LS") || desc.includes("LUMBO")) return { bodyPart: "SPINE_LS" };
     if (desc.includes("CHEST")) return { bodyPart: "CHEST" };
-    return { bodyPart: "CHEST" };
+    return null;
   }
 
   return null;
