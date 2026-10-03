@@ -39,8 +39,6 @@ import {
   isMriDorsoLumbarReportingContext,
 } from "@/lib/mriSpineCanvasRegions";
 import {
-  isBrainMeasuresReportingContext,
-  isMriBrainReportingContext,
   isXrayCervicalReportingContext,
   isXrayChestReportingContext,
   isXrayLsReportingContext,
@@ -64,8 +62,6 @@ import {
   MriDorsalCanvas,
   ObservationLedgerPanel,
   SpineApCanalMeasurements,
-  BrainMeasuresStrip,
-  MriBrainCanvas,
   XrayChestCanvas,
   XrayCervicalCanvas,
   XrayLsSpineCanvas,
@@ -665,30 +661,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               }}
                               onAcceptImpression={acceptStructuredImpressionCandidate}
                             />
-                            {isBrainMeasuresReportingContext({
-                              modality: workflow.currentRow?.modality,
-                              region: studySetup.matchedStudyRegion,
-                              family: studySetup.studyContext?.family,
-                              studyDescription: workflow.currentRow?.studyDescription ?? null,
-                            }) ? (
-                              <>
-                                {isMriBrainReportingContext({
-                                  modality: workflow.currentRow?.modality,
-                                  region: studySetup.matchedStudyRegion,
-                                  family: studySetup.studyContext?.family,
-                                  studyDescription: workflow.currentRow?.studyDescription ?? null,
-                                }) ? (
-                                  <MriBrainCanvas
-                                    disabled={isLocked || isFinalized}
-                                    region={studySetup.matchedStudyRegion ?? "Brain"}
-                                  />
-                                ) : null}
-                                <BrainMeasuresStrip
-                                  disabled={isLocked || isFinalized}
-                                  region={studySetup.matchedStudyRegion ?? "Brain"}
-                                />
-                              </>
-                            ) : null}
+                            {/* MRI Brain's palette and measures are NOT duplicated here. They
+                                render in the report body (ReportCanvas.tsx) alongside the lumbar
+                                / cervical / dorsal canvases, where a brain study actually looks.
+                                Keeping them rail-only was why brain reporting was undiscoverable. */}
                             {isMriLumbarReportingContext({
                               modality: workflow.currentRow?.modality,
                               region: studySetup.matchedStudyRegion,
