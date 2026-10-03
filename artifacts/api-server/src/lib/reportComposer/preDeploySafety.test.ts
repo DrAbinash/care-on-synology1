@@ -148,13 +148,20 @@ describe("pre-deploy safety contracts — finalize + apply guards (10–11)", ()
 
   it("11. finalize with pending AI changes shows explicit gate (no silent inclusion)", () => {
     // Phase 3/4: Guard 10 body in useStudyFinalize; gate JSX in WorkspaceOverlays.
+    // The pending-count decision itself lives in lib/aiFinalizeGate.ts, extracted so
+    // it can be executed — this package has no DOM harness. The hook must still be
+    // the thing calling it, or the extracted gate is dead code and finalize is open.
     const finalizeHook = readErp("hooks/radiology-workspace/useStudyFinalize.ts");
     const workspace = readErpWorkspace();
-    const tree = `${finalizeHook}\n${workspace}`;
+    const gate = readErp("lib/aiFinalizeGate.ts");
+    const tree = `${finalizeHook}\n${workspace}\n${gate}`;
     expect(finalizeHook).toContain("Guard 10: pending AI proposals must never silently finalize");
+    expect(finalizeHook).toContain("const aiGate = decideAiFinalizeGate({");
+    expect(finalizeHook).toContain("if (aiGate.block)");
     expect(workspace).toContain('data-testid="ai-finalize-gate"');
     expect(tree).toContain("AI suggestions remain unreviewed");
-    expect(tree).toContain('reviewState === "PENDING"');
+    expect(gate).toContain('reviewState === "PENDING"');
+    expect(gate).toContain('block: true, pendingCount');
   });
 });
 
