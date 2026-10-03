@@ -290,10 +290,16 @@ export default function ReportHub() {
   }
 
   async function ackCritical(r: ReportRow) {
-    const who = window.prompt("Acknowledged by (your name)?");
-    if (!who) return;
+    // The server records the logged-in user as the acknowledger and ignores any
+    // name in the body, so this confirms rather than asks: the old name prompt
+    // let a user type a colleague's name that was then silently discarded while
+    // the acknowledgement was attributed to whoever was signed in.
+    const ok = window.confirm(
+      `Confirm you have communicated the critical result of ${r.reportNumber} to the treating clinician.\n\nThis acknowledgement will be recorded permanently against your logged-in name and cannot be cleared.`,
+    );
+    if (!ok) return;
     try {
-      await api.post(`/api/patient-reports/${r.id}/acknowledge-critical`, { acknowledgedBy: who });
+      await api.post(`/api/patient-reports/${r.id}/acknowledge-critical`, {});
       toast({ title: "Acknowledged" });
       refresh();
     } catch (err) {
@@ -721,7 +727,13 @@ function EditorDialog({
     }).catch((err) => toast({ title: "Load failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }));
   }, [viewVersion, toast]);
 
-  const editable = report ? report.status === "draft" : false;
+  // Lifecycle status alone is not enough: the structured finalize path stamps
+  // signedAt/signedByName while leaving status at "draft" (awaiting
+  // countersign), and the server refuses content edits on any signed artifact.
+  // Gating on status only offered a live Save Draft button that would 409 —
+  // and before the server guard existed, silently rewrote a signed report.
+  const signed = !!report && (!!report.signedAt || !!report.lifecycle?.structuredSigned);
+  const editable = report ? report.status === "draft" && !signed : false;
 
   async function save() {
     if (!report) return;
@@ -908,7 +920,7 @@ function EditorDialog({
             <div className="border rounded-md p-3 text-xs space-y-2">
               <div className="font-semibold">Actions</div>
               {editable && <Button onClick={save} disabled={busy} className="w-full">{busy ? "Saving…" : "Save Draft"}</Button>}
-              {report.status === "draft" && !report.lifecycle?.structuredSigned && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
+              {report.status === "draft" && !signed && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
               {(report.status === "pending_verification" || (report.lifecycle?.pendingVerification && report.lifecycle?.structuredSigned)) && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
               {(report.status === "verified" || report.status === "delivered") && (
                 <>
@@ -920,7 +932,11 @@ function EditorDialog({
             </div>
 
             {!editable && (
-              <div className="border rounded-md p-3 text-[11px] bg-amber-50 text-amber-800">This report is locked. Body and parameters can no longer be edited (verified or higher).</div>
+              <div className="border rounded-md p-3 text-[11px] bg-amber-50 text-amber-800">
+                {signed
+                  ? <>This report is signed{report.signedByName ? ` by ${report.signedByName}` : ""}. The server keeps the exact content that was signed, so body, impression and parameters are locked here. A correction has to be issued as an amendment, which preserves this version.</>
+                  : "This report is locked. Body and parameters can no longer be edited (verified or higher)."}
+              </div>
             )}
             {signatures.length === 0 && (
               <div className="border rounded-md p-3 text-[11px] bg-amber-50 text-amber-800">No signatures uploaded yet — open the <strong>Signatures</strong> manager from the toolbar to add doctor signatures before signing reports.</div>
@@ -943,15 +959,16 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
   const { toast } = useToast();
   const active = signatures.filter((s) => s.isActive);
   const [signatureId, setSignatureId] = useState<string>(active[0] ? String(active[0].id) : "");
-  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
     setBusy(true);
     try {
+      // No signer name is sent: the server takes it from the chosen signature
+      // record, or from the logged-in session when none is chosen. A typed name
+      // would be ignored, so offering the field would only misreport who signed.
       await api.post(`/api/patient-reports/${report.id}/sign`, {
         signatureId: signatureId ? Number(signatureId) : null,
-        signedByName: name.trim() || undefined,
       });
       toast({ title: "Report signed" });
       onDone();
@@ -973,14 +990,13 @@ function SignDialog({ open, onOpenChange, report, signatures, onDone }: { open: 
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose a signature on file…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / Type name only —</SelectItem>
+                <SelectItem value="">— None / sign as me —</SelectItem>
                 {active.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>
-          </div>
-          <div>
-            <Label>Override name (optional)</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Leave blank to use signature's name" />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The signer of record is the name on the chosen signature, or your logged-in name if you choose none.
+            </p>
           </div>
         </div>
         <DialogFooter>
@@ -996,16 +1012,16 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
   const { toast } = useToast();
   const candidates = signatures.filter((s) => s.isActive && s.id !== report.signatureId);
   const [signatureId, setSignatureId] = useState<string>(candidates[0] ? String(candidates[0].id) : "");
-  const [name, setName] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
     setBusy(true);
     try {
+      // As in SignDialog: the verifier of record comes from the chosen
+      // signature or the session, never from the request body.
       await api.post(`/api/patient-reports/${report.id}/verify`, {
         signatureId: signatureId ? Number(signatureId) : null,
-        verifiedByName: name.trim() || undefined,
         verifierNotes: notes.trim() || undefined,
       });
       toast({ title: "Report verified" });
@@ -1029,14 +1045,13 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
             <Select value={signatureId} onValueChange={setSignatureId}>
               <SelectTrigger><SelectValue placeholder="Choose verifier…" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">— None / Type name only —</SelectItem>
+                <SelectItem value="">— None / verify as me —</SelectItem>
                 {candidates.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name} ({s.role})</SelectItem>)}
               </SelectContent>
             </Select>
-          </div>
-          <div>
-            <Label>Override name (optional)</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Leave blank to use signature's name" />
+            <p className="mt-1 text-xs text-muted-foreground">
+              The verifier of record is the name on the chosen signature, or your logged-in name if you choose none. It must differ from the signer.
+            </p>
           </div>
           <div>
             <Label>Notes</Label>
