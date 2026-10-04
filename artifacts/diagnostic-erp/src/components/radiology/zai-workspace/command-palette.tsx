@@ -14,7 +14,7 @@ interface CommandItem {
   shortcut?: string;
 }
 
-export function CommandPalette() {
+export function CommandPalette({ onPrintReport }: { onPrintReport?: () => void }) {
   const open = useWorkspaceSelector((s) => s.showCommandPalette);
   const setOpen = useWorkspaceSelector((s) => s.setCommandPalette);
   const [query, setQuery] = useState("");
@@ -50,7 +50,19 @@ export function CommandPalette() {
     },
     { id: "ai-ghost", label: "Suggest with AI at cursor", icon: Sparkles, group: "AI", action: () => ws.setGhostText("Findings concerning for acute abnormality.", "findings") },
     { id: "finalize", label: "Finalize & sign", icon: AlertTriangle, group: "Actions", action: () => ws.startFinalize(), shortcut: "⌃↵" },
-    { id: "print", label: "Print report", icon: Printer, group: "Actions", action: () => window.print() },
+    // Printing the workspace window would put the worklist, the viewer and every
+    // other patient's row on paper, so this command exists only when the real
+    // print route is wired — and then it IS that route, not the browser's own.
+    ...(onPrintReport
+      ? [{
+        id: "print",
+        label: "Print report",
+        detail: "Saves, then prints the final layout",
+        icon: Printer,
+        group: "Actions",
+        action: () => onPrintReport(),
+      } as CommandItem]
+      : []),
     {
       id: "voice",
       label: "Toggle voice listen",
