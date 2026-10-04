@@ -1,4 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
+import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
 import { lookupTilesForContext } from "@/lib/zai-workspace/quick-select-library";
 import type { QuickSelectField, QuickSelectTile } from "@/lib/zai-workspace/types";
 import { useMemo, useState, useRef, useEffect } from "react";
@@ -208,27 +209,7 @@ export function QuickSelectStrip({
             onPick={() => {
               const ws = useWorkspace.getState();
               if (field === "findings" || field === "impression") {
-                const ownership = {
-                  anatomicalSection: tile.anatomicalSection || undefined,
-                  conflictGroup: tile.conflictGroup || undefined,
-                  baselineReplaces: tile.baselineReplaces,
-                  concept: tile.concept,
-                };
-                const templates = field === "findings"
-                  ? { findings: tile.sentence, impression: tile.impressionSentence }
-                  : { impression: tile.sentence };
-                ws.applyPathologyOverlay({
-                  incoming: templates,
-                  templates,
-                  ownership,
-                  source: "quick-select",
-                  id: `qs-${tile.id}`,
-                  region: tile.scopeBodyPart,
-                  concept: tile.concept,
-                  label: tile.label,
-                  findingsText: tile.sentence,
-                  supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
-                });
+                ws.applyPathologyOverlay(quickSelectTilePatch(tile, field));
               } else {
                 ws.mergeField(field, tile.sentence, "quick-select");
               }

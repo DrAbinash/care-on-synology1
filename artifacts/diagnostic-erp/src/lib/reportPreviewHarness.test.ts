@@ -95,7 +95,11 @@ function applyTile(base: ReportNarrative, label: string, side: "left" | "right" 
   const fill = (s?: string) => (s ?? "").replaceAll("{side}", side);
   const result = applyPathologyPatch({
     existing: base,
-    incoming: { findings: fill(t.sentence), impression: fill(t.impressionSentence) },
+    incoming: {
+      findings: fill(t.sentence),
+      impression: fill(t.impressionSentence),
+      recommendation: fill(t.recommendationSentence),
+    },
     ownership: {
       anatomicalSection: t.anatomicalSection,
       conflictGroup: t.conflictGroup,
@@ -105,6 +109,7 @@ function applyTile(base: ReportNarrative, label: string, side: "left" | "right" 
     provenance: {
       findings: provenanceFromText(base.findings, "template"),
       impression: provenanceFromText(base.impression, "template"),
+      recommendation: provenanceFromText(base.recommendation, "template"),
     },
     source: "quick-select",
   });
@@ -418,6 +423,18 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // keep calling a stenotic spine normal.
     expect(spineCanal.narrative.impression).not.toContain("Normal MRI lumbo-sacral spine");
     expect(spineCanal.narrative.impression).toContain("Mild canal stenosis at L4-L5");
+
+    // A box that changes the plan of care must not leave the report still
+    // advising a normal spine; a box that says nothing about treatment must not
+    // invent advice. Both halves were broken together while Recommendation was
+    // dropped by the button whatever the box carried.
+    expect(spineHerniation.narrative.recommendation).toContain(
+      "Conservative management with NSAIDs and physiotherapy",
+    );
+    expect(brainInfarct.narrative.recommendation).toContain("Immediate stroke team notification");
+    expect(brainFazekas.narrative.recommendation).toContain("Control of vascular risk factors");
+    expect(spineCanal.narrative.recommendation).not.toContain("Conservative management");
+    expect(spineCanal.narrative.recommendation).toContain("Clinical correlation");
     for (const level of ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]) {
       expect(spineCanal.narrative.findings, `${level} canal row`)
         .toContain(`| ${level} | — |`);
