@@ -85,4 +85,71 @@ describe("level-targeted pathology overlay", () => {
       "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.",
     );
   });
+
+  it("replaces only the owned clause and keeps the rest of the level line", () => {
+    const multiClause = FINDINGS.replace(
+      "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.",
+      "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen. The L4-L5 facet joints are unremarkable.",
+    );
+    const patched = applyPathologyPatch({
+      existing: {
+        clinicalHistory: "Low back pain.",
+        technique: "MRI lumbo-sacral spine on 3T.",
+        findings: multiClause,
+        impression: "Normal MRI lumbo-sacral spine.",
+        recommendation: "Clinical correlation.",
+      },
+      incoming: {
+        findings: "Broad-based disc bulge at L4-L5 with posterocentral-right paracentral protrusion.",
+        impression: "Disc herniation at L4-L5.",
+      },
+      ownership: { concept: "disc_contour", conflictGroup: "disc bulge" },
+      provenance: { findings: provenanceFromText(multiClause, "template") },
+      source: "quick-select",
+    });
+    expect(patched.replacedSentences).toEqual([
+      "L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.",
+    ]);
+    // The unowned facet clause survives, and the line keeps its level prefix.
+    expect(patched.narrative.findings).toContain(
+      "L4-L5: The L4-L5 facet joints are unremarkable.",
+    );
+    expect(patched.narrative.findings).toContain("Broad-based disc bulge at L4-L5");
+  });
+
+  it("places a pure addition inside its own section, not at the end of the document", () => {
+    const patched = applyPathologyPatch({
+      existing: {
+        clinicalHistory: "Low back pain.",
+        technique: "MRI lumbo-sacral spine on 3T.",
+        findings: FINDINGS,
+        impression: "Normal MRI lumbo-sacral spine.",
+        recommendation: "Clinical correlation.",
+      },
+      // Nothing in the normal document states the thecal sac at L4-L5, so this
+      // is a pure addition — it must still land next to the L4-L5 wording.
+      incoming: {
+        findings: "Mild thecal sac indentation at L4-L5.",
+        impression: "Mild thecal sac indentation at L4-L5.",
+      },
+      ownership: { concept: "thecal_sac", level: "L4-L5" },
+      provenance: { findings: provenanceFromText(FINDINGS, "template") },
+      source: "quick-select",
+    });
+    const f = patched.narrative.findings;
+    const lines = f.split("\n");
+    const row = (s: string) => lines.findIndex((l) => l.includes(s));
+    // Pure addition: nothing in the normal document was contradicted.
+    expect(patched.replacedSentences).toHaveLength(0);
+    for (const level of LEVELS) {
+      expect(f, `${level} normal wording`).toContain(`${level}: Normal disc height`);
+    }
+    expect(row("Mild thecal sac indentation at L4-L5.")).toBeGreaterThan(-1);
+    expect(row("Mild thecal sac indentation at L4-L5.")).toBeGreaterThan(row("L4-L5: Normal disc height"));
+    expect(row("Mild thecal sac indentation at L4-L5.")).toBeLessThan(row("L5-S1: Normal disc height"));
+    expect(row("Mild thecal sac indentation at L4-L5.")).toBeLessThan(row("Canal Diameter:"));
+    for (const level of LEVELS) {
+      expect(f, `${level} canal row`).toContain(`| ${level} | — |`);
+    }
+  });
 });

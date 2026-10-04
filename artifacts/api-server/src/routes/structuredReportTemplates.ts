@@ -178,7 +178,7 @@ Facets & Ligaments:
 Facet joints are unremarkable at the imaged levels. No significant arthropathy. No ligamentum flavum hypertrophy.
 
 Thecal Sac & Neural Structures:
-Thecal sac of adequate calibre. Cauda equina nerve roots appear normal. No nerve root compression.
+Thecal sac of adequate calibre with no significant central canal stenosis. Cauda equina nerve roots appear normal. No nerve root compression.
 
 Posterior Structures:
 Posterior elements, paraspinal soft tissues and visualised marrow are unremarkable. No collection or mass.
@@ -240,7 +240,7 @@ Facets & Ligaments:
 Facet and uncovertebral joints are unremarkable. No significant spondylotic change. Ligamentum flavum normal.
 
 Thecal Sac & Neural Structures:
-Spinal cord normal in calibre and signal throughout. No myelopathic signal change. No cord compression. Nerve roots unremarkable.
+Spinal canal adequate with no significant central stenosis. Spinal cord normal in calibre and signal throughout. No myelopathic signal change. No cord compression. Nerve roots unremarkable.
 
 Posterior Structures:
 Posterior elements intact. Paraspinal soft tissues unremarkable. No epidural collection.
@@ -312,7 +312,7 @@ Facets & Ligaments:
 Facet joints unremarkable. No ligamentum flavum hypertrophy.
 
 Thecal Sac & Neural Structures:
-Spinal canal adequate. Spinal cord normal in calibre and signal. No cord compression. No myelopathic signal change. Conus unremarkable.
+Spinal canal adequate with no significant central stenosis. Spinal cord normal in calibre and signal. No cord compression. No myelopathic signal change. Conus unremarkable.
 
 Posterior Structures:
 Posterior elements intact. No epidural collection or paraspinal mass.`,

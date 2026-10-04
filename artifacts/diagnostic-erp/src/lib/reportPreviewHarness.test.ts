@@ -131,6 +131,7 @@ const spineDoc = {
   recommendation: "Clinical correlation.",
 };
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
+const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
 const CASES: Case[] = [
   {
@@ -165,6 +166,12 @@ const CASES: Case[] = [
     note: "The case to read carefully: does the structure survive a click?",
     study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
     narrative: spineHerniation.narrative, replaced: spineHerniation.replaced,
+  },
+  {
+    key: "7-spine-canal-click", title: "…then the Mild canal stenosis L4-L5 box is clicked",
+    note: "The normal document must not keep denying what the box just asserted.",
+    study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
+    narrative: spineCanal.narrative, replaced: spineCanal.replaced,
   },
 ];
 
@@ -311,5 +318,30 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     expect(brainInfarct.narrative.findings).toContain("Restricted diffusion");
     expect(brainFazekas.narrative.findings).toContain("Fazekas grade 1");
     expect(spineHerniation.narrative.findings).toContain("L4-L5");
+
+    // A canal box speaks about the canal, so it owns the document's study-wide
+    // canal denial and must land in the canal section — not beside the disc
+    // levels, and not alongside the sentence that still denies it.
+    expect(spineCanal.replaced).toEqual([
+      "Thecal sac of adequate calibre with no significant central canal stenosis.",
+    ]);
+    const section = (name: string, until: string) =>
+      spineCanal.narrative.findings.split(`${name}:`)[1]?.split(`${until}:`)[0] ?? "";
+    expect(section("Thecal Sac & Neural Structures", "Posterior Structures"))
+      .toContain("Mild canal stenosis at L4-L5");
+    expect(section("Thecal Sac & Neural Structures", "Posterior Structures"))
+      .toContain("No nerve root compression.");
+    expect(section("Thecal Sac & Neural Structures", "Posterior Structures"))
+      .not.toMatch(/adequate calibre|central canal stenosis/i);
+    expect(section("Disc Level Analysis", "Facets & Ligaments"))
+      .not.toContain("canal stenosis");
+    // The bottom line is the line a referring surgeon reads first: it must not
+    // keep calling a stenotic spine normal.
+    expect(spineCanal.narrative.impression).not.toContain("Normal MRI lumbo-sacral spine");
+    expect(spineCanal.narrative.impression).toContain("Mild canal stenosis at L4-L5");
+    for (const level of ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]) {
+      expect(spineCanal.narrative.findings, `${level} canal row`)
+        .toContain(`| ${level} | — |`);
+    }
   });
 });
