@@ -26,6 +26,23 @@ import type {
   ReportImpressionStyle,
 } from "@/lib/radiologyReportPreviewHtml";
 
+/**
+ * When the real print button appears.
+ *
+ * A draft id used to be required, but the handler saves the draft itself — so on
+ * a study nobody has touched yet, the one action that reaches paper was missing
+ * for the first thirty seconds, which is about how long a normal report takes to
+ * read. A signed report still gets no print route here: what must come off the
+ * printer is the signed artifact, not this editor's live text merged into the
+ * final layout, and that re-print belongs to the report itself.
+ */
+export function canPrintLikeFinal(input: {
+  onPrintLikeFinal?: (() => void | Promise<unknown>) | null;
+  linkedReportId?: string | number | null;
+}): boolean {
+  return Boolean(input.onPrintLikeFinal) && !input.linkedReportId;
+}
+
 /** One A4 page at 96dpi — minimum preview height when measurement is unavailable. */
 const MIN_PREVIEW_PAGE_PX = 1122;
 
@@ -311,13 +328,13 @@ export default function ReportExportPanel({
             {exportingPdf ? <RefreshCw className="h-3 w-3 mr-1 animate-spin" /> : <Printer className="h-3 w-3 mr-1" />}
             PDF
           </Button>
-          {onPrintLikeFinal && draftId && !linkedReportId && (
+          {canPrintLikeFinal({ onPrintLikeFinal, linkedReportId }) && (
             <Button
               size="sm"
               variant="outline"
               className="h-6 text-[10px] px-2"
               disabled={disabled || printingLikeFinal}
-              onClick={() => void onPrintLikeFinal()}
+              onClick={() => void onPrintLikeFinal?.()}
               title="Print draft using final layout (no DRAFT watermark)"
               data-testid="print-like-final"
             >
