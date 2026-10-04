@@ -616,7 +616,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           </div>
         </div>
       ) : null}
-      <ZaiCommandPalette />
+      <ZaiCommandPalette onPrintReport={() => void handlePrintLikeFinal()} />
       <LinkStudyDialog
         open={linkStudyOpen}
         onOpenChange={setLinkStudyOpen}
