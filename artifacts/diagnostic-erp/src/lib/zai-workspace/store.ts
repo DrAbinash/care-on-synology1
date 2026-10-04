@@ -7,6 +7,7 @@ import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTi
 import {
   DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
 } from "./report-formats-library";
+import { mergeStructuredNormalFormats, type StructuredNormalRow } from "./structuredNormalFormats";
 import {
   bumpReportFormatUsage,
   createReportFormatOnServer,
@@ -455,6 +456,8 @@ interface S {
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
   quickSelectTiles: QuickSelectTile[]; quickSelectEditorOpen: boolean; quickSelectEditingTile: QuickSelectTile | null; quickSelectEditorField: QuickSelectField | null;
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
+  /** Templates-screen rows the current format library was built from. */
+  structuredNormalRows: StructuredNormalRow[];
   /** Printed heading from the last applied Full Report Format (null = use fallback chain). */
   appliedFormatReportTitle: string | null;
   saveAsFormatDialogOpen: boolean; mergePreviewOpen: boolean; lastMergeResult: MergeResult | null;
@@ -605,6 +608,7 @@ export type WorkspaceStore = S & {
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  ingestStructuredNormalFormats: (rows: StructuredNormalRow[]) => void;
   toggleFormatFavorite: (id: string) => void;
   applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
   setLinkedStudies: (primary: FindingsStudySection, linked: FindingsStudySection, opts?: { markDirty?: boolean }) => void;
@@ -792,7 +796,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   sessionStartedAt: Date.now(), lastSignAt: null, fatigueCardDismissed: false,
   notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false,
   quickSelectTiles: typeof window !== "undefined" ? loadTiles() : DEFAULT_QUICK_SELECT_TILES, quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null,
-  reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, selectedFormatIds: [], reportFormatPickerOpen: false,
+  reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, structuredNormalRows: [], selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
@@ -2771,11 +2775,29 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     void deleteReportFormatOnServer(id).catch(() => { /* offline soft-fail */ });
   },
   openSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: true }), closeSaveAsFormatDialog: () => set({ saveAsFormatDialogOpen: false }),
-  resetReportFormatsToDefaults: () => set({ reportFormats: resetFormatsToDefaults(), selectedFormatIds: [] }),
+  resetReportFormatsToDefaults: () => set({
+    reportFormats: mergeStructuredNormalFormats(resetFormatsToDefaults(), get().structuredNormalRows),
+    selectedFormatIds: [],
+  }),
+  /**
+   * The Templates screen's rows ARE the Normal Formats: each complete normal
+   * becomes a format and shadows the built-in copy of the same exam, so what
+   * auto-opens and what Quick Normal applies is the wording edited on screen.
+   *
+   * Idempotent — the structured entries are dropped before merging, so calling
+   * this on every template refresh cannot accumulate duplicates.
+   */
+  ingestStructuredNormalFormats: (rows) => {
+    const library = get().reportFormats.filter((f: ReportFormat) => f.structuredTemplateId == null);
+    set({
+      structuredNormalRows: rows,
+      reportFormats: mergeStructuredNormalFormats(library, rows),
+    });
+  },
   hydrateContentLibraries: async () => {
     try {
       const formats = await hydrateReportFormatsLibrary();
-      set({ reportFormats: formats });
+      set({ reportFormats: mergeStructuredNormalFormats(formats, get().structuredNormalRows) });
     } catch { /* keep bootstrap loadFormats() */ }
     try {
       await hydrateChocolateMacrosFromServer();

@@ -249,6 +249,18 @@ export function StructuredFormatBuilder({ template, onSave, onClose }: Props) {
               <label className="col-span-2 text-xs space-y-1">Technique (generated into Technique when empty/merged)
                 <textarea value={doc.technique ?? ""} onChange={(e) => setDoc((d) => ({ ...d, technique: e.target.value }))} rows={2} className="w-full p-2 rounded-lg border bg-background" />
               </label>
+              {/* A Normal Format needs all four boxes. Without this the
+                  recommendation stayed in code, so the one screen could not
+                  author the report it prints. */}
+              <label className="col-span-2 text-xs space-y-1">Default recommendation
+                <textarea
+                  value={doc.recommendation ?? ""}
+                  onChange={(e) => setDoc((d) => ({ ...d, recommendation: e.target.value }))}
+                  rows={2}
+                  className="w-full p-2 rounded-lg border bg-background"
+                  data-testid="format-default-recommendation"
+                />
+              </label>
               {upgrade.copiedCount >= 3 && !upgradeDismissed && (
                 <div className="col-span-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs space-y-2" data-testid="format-upgrade-banner">
                   <p className="font-semibold text-amber-900">{upgrade.reason}</p>

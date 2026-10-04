@@ -141,6 +141,13 @@ export interface ReportFormat {
   techniqueFragments?: Array<{ text: string; dedupeKey: string; preserve?: boolean }>;
   /** Optional explicit normal-concept ownership. Legacy prose formats omit this. */
   baselineManifest?: BaselineManifest;
+  /**
+   * Set when this format IS a `structured_report_templates` row — the wording
+   * the Templates screen edits. Never persisted to the local library: the
+   * database row is the only copy, and a stored duplicate would be a second,
+   * staler Normal Format for the same exam.
+   */
+  structuredTemplateId?: number;
   isCommon: boolean;
   custom?: boolean;
   favorite?: boolean;

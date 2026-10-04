@@ -69,6 +69,7 @@ export function adaptToV2(raw: unknown): StructuredFormatDoc {
     return { ...base, id };
   });
   const doc = emptyFormatDoc(v1.technique ?? "");
+  doc.recommendation = v1.recommendation ?? "";
   doc.sections = sections;
   return doc;
 }

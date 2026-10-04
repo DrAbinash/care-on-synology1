@@ -33,6 +33,12 @@ import { MRI_BRAIN_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriBra
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./zai-workspace/fullReportBaseline";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-tiles.data";
 import {
+  mergeStructuredNormalFormats,
+  type StructuredNormalRow,
+} from "./zai-workspace/structuredNormalFormats";
+import { resolveNormalBootstrapFormat } from "./zai-workspace/normalBootstrap";
+import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import {
   renderReportDocument,
   resolvePresentationTemplate,
   type ReportDocumentModel,
@@ -133,6 +139,36 @@ const spineDoc = {
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
+/** What the auto-open bootstrap actually chooses once the Templates row is in
+ *  the library — the report the radiologist sees before touching anything. */
+const autoOpenedLs = (() => {
+  const rows: StructuredNormalRow[] = [{
+    id: 71,
+    templateName: "MRI LS Spine",
+    modality: "MRI",
+    bodyPart: "SPINE_LS",
+    studyType: "PLAIN",
+    sectionsJson: JSON.stringify({
+      technique: "MRI Lumbo-sacral Spine: T1W and T2W sagittal, T2W axial at disc levels.",
+      recommendation: "Clinical correlation.",
+      findingsItems: [],
+    }),
+    defaultFindings: presetDefaultFindings("MRI LS Spine"),
+    defaultImpression: "Normal MRI lumbo-sacral spine.",
+    isActive: true,
+    isDefault: true,
+  }];
+  const formats = mergeStructuredNormalFormats(DEFAULT_REPORT_FORMATS, rows);
+  const decision = resolveNormalBootstrapFormat({
+    ctx: buildReportingStudyContext({
+      modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
+    }),
+    formats,
+  });
+  if (decision?.status !== "apply") throw new Error(`auto-open did not resolve: ${JSON.stringify(decision)}`);
+  return decision.format;
+})();
+
 const CASES: Case[] = [
   {
     key: "1-brain-normal", title: "MRI Brain — Normal (one click)",
@@ -172,6 +208,18 @@ const CASES: Case[] = [
     note: "The normal document must not keep denying what the box just asserted.",
     study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
     narrative: spineCanal.narrative, replaced: spineCanal.replaced,
+  },
+  {
+    key: "8-spine-auto-open", title: "MRI LS Spine — what auto-opens after #107",
+    note: "The Normal Format the Templates screen holds, chosen by the bootstrap: sub-headings and the canal table, in one click.",
+    study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
+    narrative: {
+      clinicalHistory: "Low back pain with right leg radiculopathy.",
+      technique: autoOpenedLs.technique,
+      findings: autoOpenedLs.findings,
+      impression: autoOpenedLs.impression,
+      recommendation: autoOpenedLs.recommendation,
+    },
   },
 ];
 

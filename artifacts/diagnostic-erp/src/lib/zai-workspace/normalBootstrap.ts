@@ -74,6 +74,7 @@ const DENIAL_RE =
 const CONTRAST_RE = /contrast|gadolin|gadobutrol|post.?contrast|ce.?mri|c\.?e\.?mri/i;
 const PLAIN_RE = /\bplain\b|non.?contrast|without contrast/i;
 const EPILEPSY_RE = /epilep|seizure/i;
+const STROKE_RE = /stroke|acute.?infarct|dwi.?protocol/i;
 const SCREENING_RE = /screen|whole.?spine|wbv/i;
 const ORBIT_RE = /orbit/i;
 
@@ -96,13 +97,23 @@ function assertsPathology(text: string): boolean {
  * Screening normals are allowed (they ARE complete normal reports) — but only
  * if their body actually reads normal (the pathological "screening" complete
  * cases like the degenerative LS+Whole-Spine variant fail the assertion check).
+ *
+ * A Templates-screen row is named after the examination ("MRI LS Spine"), not
+ * after its normality, so the name test is replaced by the completeness test:
+ * both findings and impression must carry prose. Asserted pathology still
+ * disqualifies it — that check is the one that matters.
  */
 export function isNormalBootstrapCandidate(
-  format: Pick<ReportFormat, "name" | "findings" | "impression" | "diagnosisTags" | "protocolScope">,
+  format: Pick<ReportFormat, "name" | "findings" | "impression" | "diagnosisTags" | "protocolScope" | "structuredTemplateId">,
 ): boolean {
   const name = (format.name ?? "").toLowerCase();
   const isNormalish = /\bnormal\b/.test(name) || /\bscreening\b/.test(name);
-  if (!isNormalish) return false;
+  if (format.structuredTemplateId != null) {
+    if (!(format.findings ?? "").trim()) return false;
+    if (!(format.impression ?? "").trim()) return false;
+  } else if (!isNormalish) {
+    return false;
+  }
   const body = `${format.findings ?? ""}\n${format.impression ?? ""}`;
   if (assertsPathology(body)) return false;
   return true;
@@ -218,6 +229,7 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   // 2. Protocol markers narrow the candidate set.
   const wantsContrast = CONTRAST_RE.test(hay) && !PLAIN_RE.test(hay);
   const wantsEpilepsy = EPILEPSY_RE.test(hay);
+  const wantsStroke = STROKE_RE.test(hay);
   const wantsScreening = SCREENING_RE.test(hay);
   const wantsOrbit = ORBIT_RE.test(hay);
 
@@ -225,6 +237,7 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   const isContrastVariant = (f: ReportFormat) => /contrast/.test(name(f)) || /contrast/i.test(f.protocolScope ?? "");
   const isScreeningVariant = (f: ReportFormat) => /screening/.test(name(f)) || /screening/i.test(f.protocolScope ?? "");
   const isEpilepsyVariant = (f: ReportFormat) => /epilep/.test(name(f)) || EPILEPSY_RE.test(f.protocolScope ?? "");
+  const isStrokeVariant = (f: ReportFormat) => /stroke/.test(name(f)) || STROKE_RE.test(f.protocolScope ?? "");
   const isOrbitVariant = (f: ReportFormat) => /orbit/.test(name(f));
 
   let pool = candidates;
@@ -239,6 +252,16 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     if (pool.length === 0) return { status: "no-match", reason: "epilepsy protocol without epilepsy normal format" };
   } else {
     pool = pool.filter((f) => !isEpilepsyVariant(f));
+  }
+
+  // Stroke protocol likewise: a Templates row for "MRI Brain Stroke Protocol"
+  // is a different examination, and must not tie with the plain brain normal
+  // and leave the study with no auto-open at all.
+  if (wantsStroke) {
+    const stroke = pool.filter((f) => isStrokeVariant(f));
+    if (stroke.length > 0) pool = stroke;
+  } else {
+    pool = pool.filter((f) => !isStrokeVariant(f));
   }
 
   // Plain / contrast identity. A contrast-marked study never takes a plain
@@ -275,6 +298,13 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
     const wholeSpineNamed = pool.filter((f) => /whole\s*spine/i.test(f.name ?? ""));
     if (wholeSpineNamed.length > 0) pool = wholeSpineNamed;
   }
+
+  // A Templates-screen row outranks every built-in copy of the same exam: it is
+  // the wording the radiologist edits, so it is the wording that must print.
+  // This runs BEFORE the curated-baseline narrowing, which knows only about
+  // formats authored in code and would otherwise discard the row.
+  const onScreen = pool.filter((f) => f.structuredTemplateId != null);
+  if (onScreen.length > 0) pool = onScreen;
 
   // Within the correctly resolved protocol identity, curated versioned
   // baselines outrank legacy prose-only normals.

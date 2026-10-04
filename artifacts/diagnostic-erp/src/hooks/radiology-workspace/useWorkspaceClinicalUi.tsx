@@ -2117,6 +2117,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (sorted[0]) openStudy(sorted[0].id);
   }, [studies, activeStudyId, studyId, openStudy]);
 
+  // ─── The Templates screen's rows ARE the Normal Formats ────────────────────
+  // The auto-bootstrap and Quick Normal read the format library, which until now
+  // was its own hard-coded system, so wording edited on the Templates screen
+  // could never change what printed. Every complete normal row becomes a format
+  // here and shadows the built-in copy of the same examination.
+  useEffect(() => {
+    if (!studySetup.templatesLoaded) return;
+    useWorkspace.getState().ingestStructuredNormalFormats(studySetup.templates);
+  }, [studySetup.templates, studySetup.templatesLoaded]);
+
   // ─── Normal auto-bootstrap (usg-reports concept; ONE-TIME, new report) ──
   //
   // OPEN STUDY → appropriate COMPLETE NORMAL REPORT already present.
@@ -2135,6 +2145,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (existingDraft) return; // saved report — never re-bootstrap
     if (contentLocked) return; // locked-by-other / finalized / signed
     if (normalBootstrapDoneRef.current === studyId) return; // one decision per study
+    // The Normal Format for this exam may still be arriving from the Templates
+    // screen. Deciding before it lands would commit to the built-in wording and
+    // never revisit, which is the failure this change exists to remove.
+    if (!studySetup.templatesLoaded) return;
     const state = useWorkspace.getState();
     if (!reportBodyAllowsNormalBootstrap({
       technique: state.techniqueText,
@@ -2187,6 +2201,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studyId, draftHydratedStudyId, existingDraft, contentLocked, draftBackup,
     studySetup.studyContext, studySetup.selectedTemplateId, studySetupSetters,
     findingsMap, useStructured, toast, setUseStructured, reportFormatCount,
+    studySetup.templatesLoaded, studySetup.templates,
   ]);
 
   // ─── Preload next study at 80% findings completion ──────────────────────────

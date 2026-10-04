@@ -65,6 +65,7 @@ const PRESETS = [
     studyType: "PLAIN",
     sectionsJson: JSON.stringify({
       technique: "MRI Brain was performed on a high-field scanner using standard brain protocol including T1W sagittal, T2W axial, FLAIR axial, DWI with ADC mapping, and T2* / SWI sequences.",
+      recommendation: "Clinical correlation.",
       findingsItems: [
         { label: "Brain Parenchyma", normal: "Normal in size, signal and morphology. No focal signal abnormality." },
         { label: "White Matter", normal: "No abnormal T2/FLAIR hyperintense signal change. No periventricular or subcortical white matter lesions." },
@@ -141,6 +142,7 @@ const PRESETS = [
     studyType: "PLAIN",
     sectionsJson: JSON.stringify({
       technique: "MRI Lumbo-sacral Spine: T1W and T2W sagittal, T2W axial at disc levels.",
+      recommendation: "Clinical correlation.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal lumbar lordosis maintained. No scoliosis or listhesis." },
         { label: "L1-L2", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
@@ -206,6 +208,7 @@ Canal Diameter:
     studyType: "PLAIN",
     sectionsJson: JSON.stringify({
       technique: "MRI Cervical Spine: T1W and T2W sagittal, T2W axial at disc levels.",
+      recommendation: "Clinical correlation.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal cervical lordosis. No subluxation or listhesis." },
         { label: "Craniovertebral Junction", normal: "Normal. No Chiari malformation or craniovertebral junction anomaly." },
@@ -268,6 +271,7 @@ Cervical Canal Diameter:
     studyType: "PLAIN",
     sectionsJson: JSON.stringify({
       technique: "MRI Dorsal (Thoracic) Spine: T1W and T2W sagittal, axial at selected levels.",
+      recommendation: "Clinical correlation.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal dorsal kyphosis. No scoliosis or listhesis." },
         { label: "T1-T2", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent." },
@@ -330,6 +334,7 @@ Posterior elements intact. No epidural collection or paraspinal mass.`,
     studyType: "SCREENING_WHOLE_SPINE",
     sectionsJson: JSON.stringify({
       technique: "MRI Lumbo-sacral Spine with whole spine screening: T1W and T2W sagittal of the lumbosacral spine with axial T2W at the disc levels, together with sagittal T1W/T2W screening sequences of the cervical and dorsal spine.",
+      recommendation: "Clinical correlation. Dedicated MRI LS spine if clinically indicated.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal lumbar lordosis maintained. No scoliosis or listhesis." },
         { label: "L1-L2", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No spinal canal stenosis." },
@@ -368,6 +373,7 @@ Posterior elements intact. No epidural collection or paraspinal mass.`,
     studyType: "SCREENING_WHOLE_SPINE",
     sectionsJson: JSON.stringify({
       technique: "MRI Cervical Spine with whole spine screening: T1W and T2W sagittal of the cervical spine with axial T2W at the disc levels, together with sagittal T1W/T2W screening sequences of the dorsal and lumbosacral spine.",
+      recommendation: "Clinical correlation. Dedicated MRI cervical spine if clinically indicated.",
       findingsItems: [
         { label: "Alignment & Curvature", normal: "Normal cervical lordosis. No subluxation or listhesis." },
         { label: "Craniovertebral Junction", normal: "Normal. No Chiari malformation or abnormal signal." },

@@ -429,7 +429,9 @@ export function loadFormats(): ReportFormat[] {
 }
 
 export function saveFormats(f: ReportFormat[]) {
-  cacheFormatsLocally(f);
+  // A format that IS a Templates-screen row lives only in that row. Caching it
+  // here would create a second Normal Format for the exam, and the stale one.
+  cacheFormatsLocally(f.filter((x) => x.structuredTemplateId == null));
 }
 
 export function createFormat(i: Omit<ReportFormat, "id" | "createdAt" | "updatedAt">): ReportFormat {
