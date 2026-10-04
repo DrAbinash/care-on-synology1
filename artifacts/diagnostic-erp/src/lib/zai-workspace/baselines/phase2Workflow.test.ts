@@ -278,8 +278,8 @@ describe("Phase 2 owned baseline workflows", () => {
       impressionText: state.impressionText,
       patches: state.appliedPathologyPatches,
     });
-    expect(spans.some((s) => s.kind === "known-abnormal" && s.bold && s.text === abnormal)).toBe(true);
-    expect(spans.some((s) => s.kind === "manual-change" && !s.bold && /Mild loss/.test(s.text))).toBe(true);
+    expect(spans.some((s) => s.kind === "known-abnormal" && s.abnormal && s.text === abnormal)).toBe(true);
+    expect(spans.some((s) => s.kind === "manual-change" && !s.abnormal && /Mild loss/.test(s.text))).toBe(true);
     expect(spans.every((s) => s.text !== state.findingsText)).toBe(true);
 
     const html = buildPreviewHtml({

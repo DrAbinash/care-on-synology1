@@ -19,6 +19,7 @@ import {
   type ProvenanceVisualKind,
 } from "./reportFieldMerge";
 import { parseFindingsDocument } from "./findingsDocument";
+import { isAbnormalFindingsLine } from "./abnormalEmphasis";
 
 /**
  * Screen-only Preview provenance decoration.
@@ -160,10 +161,15 @@ export function renderFindingsDocumentHtml(
      *  stylesheet; the preview and Word export carry inline styles only, so
      *  they must pass their own or the sub-headings arrive unstyled. */
     renderHeading?: (label: string) => string;
+    /** Bold the lines that assert pathology. On by default: this is the printed
+     *  half of the editor's colour, and every surface that renders a findings
+     *  document is a surface that reaches paper. */
+    emphasizeAbnormal?: boolean;
   } = {},
 ): string {
   const hc = opts.headingCase ?? "all_caps";
   const margin = opts.margin ?? "0 0 12px";
+  const emphasize = opts.emphasizeAbnormal !== false;
   const renderBody = opts.renderBody
     ?? ((t: string) => escHtml(t).replaceAll("\n", "<br/>"));
   const renderHeading = opts.renderHeading
@@ -179,6 +185,20 @@ export function renderFindingsDocumentHtml(
       continue;
     }
     if (b.kind === "para") {
+      const lines = b.text.split("\n");
+      const flags = lines.map((line) => emphasize && isAbnormalFindingsLine(line));
+      if (flags.some(Boolean)) {
+        // Bold per line, so a section that mixes a normal sentence with an
+        // abnormal one still prints the normal sentence in plain type.
+        const body = lines
+          .map((line, i) => {
+            const html = renderBody(line);
+            return flags[i] ? `<strong>${html}</strong>` : html;
+          })
+          .join("<br/>");
+        parts.push(`<p style="margin:${margin};">${body}</p>`);
+        continue;
+      }
       parts.push(`<p style="margin:${margin};">${renderBody(b.text)}</p>`);
       continue;
     }

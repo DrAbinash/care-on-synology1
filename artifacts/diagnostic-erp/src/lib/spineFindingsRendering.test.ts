@@ -121,3 +121,43 @@ describe("renderFindingsDocumentHtml on the screen preview", () => {
     expect(html).toContain('<span class="prov">Normal lordosis.</span>');
   });
 });
+
+/** One click on the "Disc herniation L4-L5" box, in the section it belongs to. */
+const MIXED_SPINE = SPINE.replace(
+  "L2-L3: Normal disc height and signal. No disc herniation. Neural foramen patent.",
+  "L2-L3: Normal disc height and signal. No disc herniation. Neural foramen patent.\n"
+  + "L4-L5: Broad-based disc bulge indenting the thecal sac.",
+);
+
+describe("abnormal lines are bold in the printed document", () => {
+  const ABNORMAL_LINE = "L4-L5: Broad-based disc bulge indenting the thecal sac.";
+
+  it("bolds the abnormal level and leaves its normal neighbours in plain type", () => {
+    const html = renderFindingsDocumentHtml(MIXED_SPINE, { renderBody: (t) => t });
+    expect(html).toContain(`<strong>${ABNORMAL_LINE}</strong>`);
+    expect(html).not.toContain("<strong>L1-L2: Normal disc height");
+    expect(html).not.toContain("<strong>Normal lumbar lordosis");
+  });
+
+  it("reaches the signed print body through the same rule as the preview", () => {
+    const html = signed(MIXED_SPINE);
+    expect(html).toContain(`<strong>${ABNORMAL_LINE}</strong>`);
+    // The canal table is data, not prose: no row is bolded on a measurement.
+    expect(html).not.toMatch(/<td[^>]*><strong>/);
+  });
+
+  it("adds nothing to a report that is entirely normal", () => {
+    const html = signed(SPINE);
+    expect(html).not.toContain("<strong>L1-L2:");
+    expect(html).not.toMatch(/<p[^>]*><strong>[A-Z][a-z]/);
+  });
+
+  it("stays switchable for a caller that wants the text exactly as authored", () => {
+    const html = renderFindingsDocumentHtml(MIXED_SPINE, {
+      renderBody: (t) => t,
+      emphasizeAbnormal: false,
+    });
+    expect(html).not.toContain("<strong>");
+    expect(html).toContain(ABNORMAL_LINE);
+  });
+});

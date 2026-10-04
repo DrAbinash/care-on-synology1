@@ -20,7 +20,9 @@ import {
 } from "@/lib/dictationObservationBreak";
 import { cn } from "@/lib/utils";
 import {
+  buildAbnormalContributionSpans,
   buildStartingCanvasChangeHighlights,
+  workspaceOverlayPieceClasses,
   workspaceOverlayPieces,
 } from "@/lib/zai-workspace/startingCanvasHighlight";
 
@@ -163,13 +165,18 @@ export function FindingsEditor({
 
   const canvasChangePieces = useMemo(() => {
     if (field !== "findings" && field !== "impression") return null;
-    if (!startingCanvasBaseline) return null;
-    const spans = buildStartingCanvasChangeHighlights({
-      baseline: startingCanvasBaseline,
-      findingsText,
-      impressionText,
-      patches: appliedPathologyPatches,
-    });
+    // With the Starting Canvas reference, show every change from it. Without it
+    // — after a save and reopen, or a report not begun from a complete normal —
+    // still colour what a Quick Select box contributed, because that is the
+    // distinction being asked for and it must not vanish in those cases.
+    const spans = startingCanvasBaseline
+      ? buildStartingCanvasChangeHighlights({
+        baseline: startingCanvasBaseline,
+        findingsText,
+        impressionText,
+        patches: appliedPathologyPatches,
+      })
+      : buildAbnormalContributionSpans({ findingsText, impressionText, patches: appliedPathologyPatches });
     if (spans.length === 0) return null;
     const text = typeof value === "string" ? value : "";
     return workspaceOverlayPieces(text, spans, field);
@@ -343,11 +350,8 @@ export function FindingsEditor({
                 ? canvasChangePieces.map((piece, i) => (
                   <span
                     key={`${i}-${piece.text.slice(0, 12)}`}
-                    className={cn(
-                      piece.highlight && "canvas-change-highlight rounded-sm bg-amber-200/55 dark:bg-amber-700/35",
-                      piece.highlight && piece.bold && "known-abnormal-bold font-bold",
-                    )}
-                    data-canvas-change={piece.highlight ? (piece.bold ? "abnormal" : "manual") : undefined}
+                    className={workspaceOverlayPieceClasses(piece)}
+                    data-canvas-change={piece.highlight ? (piece.abnormal ? "abnormal" : "manual") : undefined}
                   >
                     {piece.text}
                   </span>

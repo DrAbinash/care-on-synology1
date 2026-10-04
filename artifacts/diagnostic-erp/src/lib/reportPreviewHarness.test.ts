@@ -294,8 +294,7 @@ function previewHtml(c: Case, patient: ReportData): string {
   });
 }
 
-const PATIENTS: Record<string, ReportData> = {
-  MRI_BRAIN: {
+const PATIENTS: Record<string, ReportData> = {  MRI_BRAIN: {
     patientName: "RAMESH KUMAR", age: "62", sex: "M", accessionNumber: "PREVIEW-BRN-001",
     studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
   },
@@ -304,6 +303,31 @@ const PATIENTS: Record<string, ReportData> = {
     studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
   },
 };
+
+/**
+ * What must be bold on the printed page, in the radiologist's terms rather than
+ * as a copy of the output: a normal report carries no bold findings at all — the
+ * one-click page is scanned, not read — and a report where a box added an
+ * abnormality carries that sentence and nothing else from its section.
+ */
+const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
+  "1-brain-normal": { count: 0 },
+  "2-brain-infarct": { count: 1, contains: "Restricted diffusion" },
+  "3-brain-fazekas": { count: 1, contains: "Fazekas grade 1" },
+  "4-spine-normal-quicknormal": { count: 0 },
+  "5-spine-subheaded": { count: 0 },
+  "6-spine-subheaded-click": { count: 1, contains: "Broad-based disc bulge at L4-L5" },
+  "7-spine-canal-click": { count: 1, contains: "Mild canal stenosis at L4-L5" },
+  "8-spine-auto-open": { count: 0 },
+};
+
+/** Bold spans inside the printed findings body, headings and the impression
+ *  label excluded — the sentence the paper actually shows in bold. */
+function printedBoldFindingsLines(page: string): string[] {
+  return (page.match(/<strong>([^<]{20,})<\/strong>/g) ?? [])
+    .map((s) => s.replace(/^<strong>|<\/strong>$/g, ""))
+    .filter((t) => !t.startsWith("Impression:"));
+}
 
 describe("report preview harness", () => {
   it("renders every case through the real print, PDF and preview paths", () => {
@@ -324,6 +348,12 @@ describe("report preview harness", () => {
       // The impression is the clinical bottom line: the sentence itself must be
       // bold on the printed page, not only the "Impression:" label.
       expect(page).toContain("<strong>Impression: ");
+
+      // The other half of the editor's colour: on paper, only what is abnormal.
+      const bolded = printedBoldFindingsLines(page);
+      const want = PRINT_EMPHASIS[c.key] ?? { count: 0 };
+      expect(bolded, `${c.key} bolds ${want.count} findings line(s)`).toHaveLength(want.count);
+      if (want.contains) expect(bolded.join(" ")).toContain(want.contains);
       writeFileSync(join(OUT, `${c.key}.print.html`), page);
       writeFileSync(join(OUT, `${c.key}.screen.html`), previewHtml(c, report));
 
@@ -345,6 +375,7 @@ describe("report preview harness", () => {
         printedTableRows: (page.match(/class="findings-table"[\s\S]*?<\/table>/g) ?? [])
           .join("").match(/<tr/g)?.length ?? 0,
         replacedNormalSentences: c.replaced ?? [],
+        printedBoldFindings: bolded,
         findingsText: c.narrative.findings,
       });
     }

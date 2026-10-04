@@ -14,6 +14,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { CARE_LETTERHEAD_LOGO_DATA_URL, CARE_LETTERHEAD_LOGO_SIZE } from "./careLetterheadLogo";
 import { parseFindingsDocument } from "./findingsDocument";
+import { isAbnormalFindingsLine } from "./abnormalEmphasis";
 import {
   resolveCareLetterpadChrome,
   parseMeasurementMm,
@@ -296,6 +297,9 @@ function drawFindingsBlock(
       continue;
     }
     for (const para of block.text.split(/\n+/).map((p) => p.trim()).filter(Boolean)) {
+      // The PDF half of the editor's colour: a line that asserts pathology is
+      // drawn bold, a normal one is not, on every surface the report reaches.
+      const emphatic = isAbnormalFindingsLine(para);
       const m = para.match(/^([A-Z][A-Z0-9 /&().-]{1,48}):\s*([\s\S]*)$/);
       if (m) {
         const label = `${m[1]}:`;
@@ -306,12 +310,12 @@ function drawFindingsBlock(
         doc.text(label, x, y);
         const labelW = doc.getTextWidth(label) + 1.2;
         if (rest) {
-          y = drawInlineMarkdown(doc, rest, x + labelW, y, Math.max(20, maxW - labelW), font, bodySize, lineH, x);
+          y = drawInlineMarkdown(doc, rest, x + labelW, y, Math.max(20, maxW - labelW), font, bodySize, lineH, x, emphatic);
         } else {
           y += lineH;
         }
       } else {
-        y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x);
+        y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x, emphatic);
       }
       y += lineH * 0.35;
     }
@@ -386,20 +390,23 @@ export function normalizeReportPlainText(raw: string): string {
   ).replace(/[ \t]{2,}/g, " ").trim();
 }
 
-type InlineSeg = { text: string; bold: boolean };
+export type InlineSeg = { text: string; bold: boolean };
 
-function parseInlineMarkdown(text: string): InlineSeg[] {
+/** `**bold**` / `__bold__` spans, with `baseBold` for a whole line the report
+ *  wants emphasised (an abnormal findings line — the PDF half of the colour the
+ *  editor shows). Explicit markdown still wins inside it. */
+export function parseInlineMarkdown(text: string, baseBold = false): InlineSeg[] {
   const segs: InlineSeg[] = [];
   const re = /\*\*([^*]+)\*\*|__([^_]+)__/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) != null) {
-    if (m.index > last) segs.push({ text: text.slice(last, m.index), bold: false });
+    if (m.index > last) segs.push({ text: text.slice(last, m.index), bold: baseBold });
     segs.push({ text: m[1] ?? m[2] ?? "", bold: true });
     last = m.index + m[0].length;
   }
-  if (last < text.length) segs.push({ text: text.slice(last), bold: false });
-  if (segs.length === 0) segs.push({ text, bold: false });
+  if (last < text.length) segs.push({ text: text.slice(last), bold: baseBold });
+  if (segs.length === 0) segs.push({ text, bold: baseBold });
   return segs.filter((s) => s.text.length > 0);
 }
 
@@ -414,8 +421,9 @@ function drawInlineMarkdown(
   bodySize: number,
   lineH: number,
   indentX: number,
+  baseBold = false,
 ): number {
-  const segs = parseInlineMarkdown(text);
+  const segs = parseInlineMarkdown(text, baseBold);
   let cx = x;
   let lineStartX = x;
   const lineMax = (start: number) => start === indentX ? maxW + (x - indentX) : maxW;
