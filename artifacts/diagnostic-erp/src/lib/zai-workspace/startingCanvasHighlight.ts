@@ -2,7 +2,11 @@
  * Workspace-only Starting Canvas change presentation.
  *
  * HIGHLIGHT = changed from Starting Canvas (never written into clinical text)
- * BOLD      = known clinically significant abnormal contribution
+ * COLOUR    = known clinically significant abnormal contribution, so the
+ *             radiologist can see at a glance which lines a box added
+ *
+ * Weight is never applied here — the overlay must stay character-for-character
+ * aligned with the transparent textarea on top of it. Bold belongs to the print.
  *
  * Final Preview/PDF/Print must never receive these decorations.
  */
@@ -30,8 +34,9 @@ export type ChangeHighlightSpan = {
   field: "findings" | "impression";
   text: string;
   kind: ChangeHighlightKind;
-  /** Bold only for known abnormal contributions. */
-  bold: boolean;
+  /** A known clinically significant abnormal contribution — painted a distinct
+   *  colour in the editor and printed bold. */
+  abnormal: boolean;
 };
 
 function splitSentences(text: string): string[] {
@@ -82,16 +87,16 @@ export function buildStartingCanvasChangeHighlights(opts: {
     spans.push(span);
   };
 
-  // Known abnormal contributions → bold + highlight
+  // Known abnormal contributions → colour + highlight
   for (const p of patches) {
     if (!isKnownAbnormalPatch(p)) continue;
     const f = (p.lastRendered.findings ?? "").trim();
     const i = (p.lastRendered.impression ?? "").trim();
     if (f && findingsText.includes(f)) {
-      push({ field: "findings", text: f, kind: "known-abnormal", bold: true });
+      push({ field: "findings", text: f, kind: "known-abnormal", abnormal: true });
     }
     if (i && impressionText.includes(i)) {
-      push({ field: "impression", text: i, kind: "known-abnormal", bold: true });
+      push({ field: "impression", text: i, kind: "known-abnormal", abnormal: true });
     }
   }
 
@@ -99,7 +104,7 @@ export function buildStartingCanvasChangeHighlights(opts: {
     spans.filter((s) => s.kind === "known-abnormal").map((s) => `${s.field}|${normalizeKey(s.text)}`),
   );
 
-  // Manual / new text vs baseline sentences → highlight only (not bold)
+  // Manual / new text vs baseline sentences → highlight only (not abnormal)
   for (const field of ["findings", "impression"] as const) {
     const current = field === "findings" ? findingsText : impressionText;
     const base = field === "findings" ? baseline.findings : baseline.impression;
@@ -109,10 +114,44 @@ export function buildStartingCanvasChangeHighlights(opts: {
       const key = normalizeKey(sentence);
       if (baseKeys.has(key)) continue;
       if (abnormalKeys.has(`${field}|${key}`)) continue;
-      push({ field, text: sentence, kind: "manual-change", bold: false });
+      push({ field, text: sentence, kind: "manual-change", abnormal: false });
     }
   }
 
+  return spans;
+}
+
+/**
+ * Abnormal contributions with no Starting Canvas reference.
+ *
+ * The diff above needs the format the report began from, which is absent after a
+ * save and reopen, and whenever a report was not started from a complete normal.
+ * The patch records answer "what did a box add?" on their own, so the editor's
+ * colour must not depend on the baseline — otherwise the distinction the owner
+ * asked for silently disappears in the cases it matters most.
+ */
+export function buildAbnormalContributionSpans(opts: {
+  findingsText: string;
+  impressionText: string;
+  patches: AppliedPathologyPatch[];
+}): ChangeHighlightSpan[] {
+  const spans: ChangeHighlightSpan[] = [];
+  const seen = new Set<string>();
+  for (const p of opts.patches) {
+    if (!isKnownAbnormalPatch(p)) continue;
+    for (const field of ["findings", "impression"] as const) {
+      const rendered = field === "findings"
+        ? (p.lastRendered.findings ?? "")
+        : (p.lastRendered.impression ?? "");
+      const text = rendered.trim();
+      const into = field === "findings" ? opts.findingsText : opts.impressionText;
+      if (!text || !into.includes(text)) continue;
+      const key = `${field}|${normalizeKey(text)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      spans.push({ field, text, kind: "known-abnormal", abnormal: true });
+    }
+  }
   return spans;
 }
 
@@ -188,7 +227,7 @@ export function reconstructStartingCanvasBaseline(opts: {
 export type WorkspaceOverlayPiece = {
   text: string;
   highlight: boolean;
-  bold: boolean;
+  abnormal: boolean;
 };
 
 /** Split clinical text into display-only overlay pieces for FindingsEditor. */
@@ -200,7 +239,7 @@ export function workspaceOverlayPieces(
   const fieldSpans = spans
     .filter((s) => s.field === field && text.includes(s.text))
     .sort((a, b) => text.indexOf(a.text) - text.indexOf(b.text) || b.text.length - a.text.length);
-  if (fieldSpans.length === 0) return [{ text, highlight: false, bold: false }];
+  if (fieldSpans.length === 0) return [{ text, highlight: false, abnormal: false }];
 
   const pieces: WorkspaceOverlayPiece[] = [];
   let cursor = 0;
@@ -212,13 +251,30 @@ export function workspaceOverlayPieces(
     if (idx < 0) continue;
     used.add(key);
     if (idx > cursor) {
-      pieces.push({ text: text.slice(cursor, idx), highlight: false, bold: false });
+      pieces.push({ text: text.slice(cursor, idx), highlight: false, abnormal: false });
     }
-    pieces.push({ text: span.text, highlight: true, bold: span.bold });
+    pieces.push({ text: span.text, highlight: true, abnormal: span.abnormal });
     cursor = idx + span.text.length;
   }
   if (cursor < text.length) {
-    pieces.push({ text: text.slice(cursor), highlight: false, bold: false });
+    pieces.push({ text: text.slice(cursor), highlight: false, abnormal: false });
   }
-  return pieces.length ? pieces : [{ text, highlight: false, bold: false }];
+  return pieces.length ? pieces : [{ text, highlight: false, abnormal: false }];
+}
+
+/**
+ * Editor classes for one overlay piece.
+ *
+ * COLOUR, never weight: a heavier glyph is a different width than the same text
+ * in the textarea underneath, and that layer must line up character for character
+ * or the caret drifts away from the text it is sitting on. The abnormal lines are
+ * printed bold, which is where weight belongs.
+ *
+ * Kept here rather than inline so the rule is testable without a browser.
+ */
+export function workspaceOverlayPieceClasses(piece: WorkspaceOverlayPiece): string {
+  if (!piece.highlight) return "";
+  return piece.abnormal
+    ? "canvas-change-highlight rounded-sm bg-rose-200/60 text-rose-900 dark:bg-rose-700/40 dark:text-rose-100"
+    : "canvas-change-highlight rounded-sm bg-amber-200/55 dark:bg-amber-700/35";
 }
