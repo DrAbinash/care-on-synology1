@@ -153,6 +153,50 @@ describe("boxes reachable on the study being read", () => {
   });
 });
 
+describe("a box the radiologist makes himself", () => {
+  it("keeps the advice he typed and puts it in the report", () => {
+    // The editor's Save goes through the store, which persists to localStorage;
+    // this is the closest this suite can come to actually clicking the button.
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+    resetWorkspace();
+
+    const advice = "Refer to the spine surgeon. Repeat MRI at 6 weeks.";
+    useWorkspace.getState().saveQuickSelectTile({
+      field: "findings",
+      label: "My own herniation box",
+      sentence: "Large right paracentral disc extrusion at L5-S1 compressing the S1 root.",
+      category: "abnormal",
+      scopeModality: "MR",
+      scopeBodyPart: "LS Spine",
+      favorite: false,
+      custom: true,
+      usageCount: 0,
+      impressionSentence: "Disc extrusion at L5-S1 with S1 root compression.",
+      recommendationSentence: advice,
+    });
+
+    const mine = useWorkspace.getState().quickSelectTiles
+      .find((t) => t.label === "My own herniation box");
+    expect(mine, "the saved box is not in the catalog").toBeTruthy();
+    expect(mine!.recommendationSentence).toBe(advice);
+
+    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(mine!, "findings"));
+    const text = useWorkspace.getState().recommendationText;
+    // One sentence per line, which is how the engine writes every section —
+    // and the report's own advice is still there underneath it.
+    expect(text.split("\n")).toEqual([
+      "Clinical correlation.",
+      "Refer to the spine surgeon.",
+      "Repeat MRI at 6 weeks.",
+    ]);
+  });
+});
+
 describe("editing a shipped box keeps what it carries", () => {
   it("saves the Impression and Recommendation lines it was seeded with", () => {
     const existing = tile("Disc herniation L4-L5");
