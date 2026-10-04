@@ -11,6 +11,7 @@
 import {
   mergeReportFieldContentWithProvenance,
   normalizeForDedupe,
+  provenanceFromText,
   splitToSentences,
   fuzzySentenceSimilarity,
   isLightSentenceEdit,
@@ -24,6 +25,7 @@ import {
   buildCanonicalObservation,
   extractLevel,
   hasStructuredOwnership,
+  normalizeLevel,
   sentenceOwnedBySlot,
 } from "./observationSlot";
 
@@ -261,6 +263,42 @@ function placeIncomingBeforeScreening(fieldText: string, incoming: string | unde
  * Never drops unrelated sentences. Manual anatomy sentences are kept and
  * flagged `ambiguous` so the existing overwrite dialog can confirm.
  */
+/**
+ * Layout lines, not clinical sentences.
+ *
+ * A report authored as a document — `Disc Level Analysis:` then one readable
+ * line per level — has to survive a Quick Select click. Three rules follow:
+ * a sub-heading line, a `|` measurement row and a blank separator are never
+ * ownable by a tile; a line that opens with a level token keeps that level for
+ * every sentence inside it, so one line per level stays clause-targetable; and
+ * replacement text goes back where the replaced sentence sat, because text
+ * appended at the end of the field prints under whatever heading comes next.
+ */
+const LINE_LEVEL_PREFIX =
+  /^((?:[CDLSST]\s?\d{1,2}\s?[-–—/]\s?(?:S\s?1|[CDLSST]\s?\d{1,2})|S1)\s*:)\s*/i;
+
+/** A line that is only a label ending in a colon — a heading, not a sentence. */
+const HEADING_LINE = /^[^|:\n]{1,60}:$/;
+
+function moveIncomingIntoSection(
+  lines: string[],
+  incoming: string,
+  slot: number,
+  existingText: string,
+): { lines: string[]; inserted: string[] } {
+  const already = new Set(splitToSentences(existingText).map((s) => normalizeForDedupe(s)));
+  const inserted: string[] = [];
+  for (const s of splitToSentences(incoming)) {
+    const key = normalizeForDedupe(s);
+    if (!key || already.has(key)) continue;
+    inserted.push(s);
+    already.add(key);
+  }
+  if (inserted.length === 0) return { lines, inserted };
+  const at = Math.min(Math.max(slot, 0), lines.length);
+  return { lines: [...lines.slice(0, at), ...inserted, ...lines.slice(at)], inserted };
+}
+
 export function applyPathologyPatch(opts: {
   existing: ReportNarrative;
   incoming: PathologyIncoming;
@@ -303,62 +341,128 @@ export function applyPathologyPatch(opts: {
     incoming: string | undefined,
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
-    const kept: string[] = [];
     const incomingOrgans = new Set<string>();
     if (!structured) {
       for (const a of ANATOMY_ALIASES) {
         if (a.re.test(incomingHay)) incomingOrgans.add(a.key);
       }
     }
-    for (const s of splitToSentences(existing)) {
-      // A `|`-row is a measurement, not a clinical sentence. Ownership matches
-      // on concept and level, so a canal-diameter row for L4-L5 looked like a
-      // sentence the L4-L5 disc tile owned, and the row was deleted silently —
-      // the printed table lost a level. Rows are never replaceable text.
-      if (s.trimStart().startsWith("|")) {
-        kept.push(s);
+
+    const owns = (probe: string): boolean => structured
+      ? sentenceOwnedBySlot(probe, {
+        concept: slotObs.concept ?? opts.ownership.concept ?? null,
+        level: slotObs.level || opts.ownership.level || "",
+        laterality: slotObs.laterality || opts.ownership.laterality || "",
+        anatomicalSection: slotObs.anatomicalSection,
+        baselineReplaces: baseline,
+      })
+      : Boolean(
+        (baseline && probe.includes(baseline))
+        || sentenceMentions(probe, keys)
+        || (asserted.length > 0 && deniesPathology(probe, asserted))
+        || (incomingOrgans.size > 0 && asserted.length > 0 &&
+          [...incomingOrgans].some((org) => sentenceMentions(probe, [org]))),
+      );
+
+    // Walk the field line by line so a document keeps its document shape.
+    const lines = existing.split(/\r?\n/);
+    const keptLines: string[] = [];
+    /** Where the replaced sentence sat — the replacement goes back here. */
+    let replacementSlot = -1;
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith("|") || HEADING_LINE.test(trimmed)) {
+        keptLines.push(rawLine);
         continue;
       }
-      const owned = structured
-        ? sentenceOwnedBySlot(s, {
-          concept: slotObs.concept ?? opts.ownership.concept ?? null,
-          level: slotObs.level || opts.ownership.level || "",
-          laterality: slotObs.laterality || opts.ownership.laterality || "",
-          anatomicalSection: slotObs.anatomicalSection,
-          baselineReplaces: baseline,
-        })
-        : (baseline && s.includes(baseline))
-          || sentenceMentions(s, keys)
-          || (asserted.length > 0 && deniesPathology(s, asserted))
-          || (incomingOrgans.size > 0 && asserted.length > 0 &&
-            [...incomingOrgans].some((org) => sentenceMentions(s, [org])));
-      if (!owned) {
-        kept.push(s);
+      const prefixMatch = trimmed.match(LINE_LEVEL_PREFIX);
+      const prefix = prefixMatch ? prefixMatch[1].trim() : "";
+      const body = prefixMatch ? trimmed.slice(prefixMatch[0].length) : trimmed;
+      const units = splitToSentences(body);
+      if (units.length === 0) {
+        keptLines.push(rawLine);
         continue;
       }
-      if (isProtectedManualSentence(s, provenance, { baselineReplaces: baseline }) && !opts.force) {
-        ambiguous = true;
-        kept.push(s);
-        continue;
+      const keep: string[] = [];
+      for (const u of units) {
+        // The line's level is part of the sentence for ownership purposes, so
+        // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
+        // clause itself does not repeat the level.
+        const probe = prefix ? `${prefix} ${u}` : u;
+        if (!owns(probe)) {
+          keep.push(u);
+          continue;
+        }
+        // Provenance is keyed by the text as it was written, which may or may
+        // not carry the line's level token — a manual "L4-L5: …" line is stored
+        // whole. Test both forms, or the radiologist's own wording would lose
+        // the protection that makes a re-select ask before overwriting.
+        const protectedManual =
+          isProtectedManualSentence(u, provenance, { baselineReplaces: baseline })
+          || (prefix && isProtectedManualSentence(probe, provenance, { baselineReplaces: baseline }));
+        if (protectedManual && !opts.force) {
+          ambiguous = true;
+          keep.push(u);
+          continue;
+        }
+        replacedSentences.push(probe);
+        if (replacementSlot < 0) replacementSlot = keptLines.length;
       }
-      replacedSentences.push(s);
+      if (keep.length === 0) continue;
+      keptLines.push(prefix ? `${prefix} ${keep.join(" ")}` : keep.join(" "));
     }
-    const keptText = kept.join("\n");
+
+    const keptText = keptLines.join("\n");
     const keptProv: FieldProvenanceMap = {};
-    for (const s of kept) {
+    for (const s of splitToSentences(keptText)) {
       const k = normalizeForDedupe(s);
       if (k && provenance?.[k]) keptProv[k] = provenance[k]!;
     }
     if (!incoming?.trim()) {
       return { text: keptText, provenance: keptProv };
     }
-    return mergeReportFieldContentWithProvenance({
-      field,
-      existing: keptText,
-      incoming,
-      source,
-      existingProvenance: keptProv,
-    });
+
+    // Nothing was replaced and the field is not a document: keep the established
+    // merge rules (dedupe, light-edit folding, subsequence handling).
+    const isDocument = lines.some((l) => HEADING_LINE.test(l.trim()))
+      || lines.some((l) => LINE_LEVEL_PREFIX.test(l.trim()));
+    if (replacementSlot < 0 && (field !== "findings" || !isDocument)) {
+      return mergeReportFieldContentWithProvenance({
+        field,
+        existing: keptText,
+        incoming,
+        source,
+        existingProvenance: keptProv,
+      });
+    }
+
+    /**
+     * A document keeps its document shape. The generic merge cannot do this: it
+     * re-splits every line into sentences and rejoins with a single newline, so
+     * a level line is shredded into fragments and the text lands under whatever
+     * heading happens to follow. Instead the incoming sentences go where the
+     * replaced clause sat, or — when nothing was replaced — after the last line
+     * of the same level, so L4-L5 wording stays in the L4-L5 neighbourhood.
+     */
+    let slot = replacementSlot;
+    if (slot < 0) {
+      const wantLevel = slotObs.level || opts.ownership.level || "";
+      const lastWithLevel = keptLines.reduce(
+        (acc, line, i) => {
+          const m = line.trim().match(LINE_LEVEL_PREFIX);
+          if (!m) return acc;
+          const norm = normalizeLevel(m[1]);
+          return norm && norm === normalizeLevel(wantLevel) ? i : acc;
+        },
+        -1,
+      );
+      slot = lastWithLevel >= 0 ? lastWithLevel + 1 : keptLines.length;
+    }
+
+    const placed = moveIncomingIntoSection(keptLines, incoming, slot, keptText);
+    const mergedProv = { ...keptProv, ...provenanceFromText(placed.inserted.join("\n"), source) };
+    return { text: placed.lines.join("\n"), provenance: mergedProv };
   };
 
   const findings = patchField(
@@ -397,10 +501,13 @@ export function applyPathologyPatch(opts: {
   // template-default impression text.
   const hasAbnormalContent = asserted.length > 0 || replacedSentences.length > 0;
   if (hasAbnormalContent) {
+    // A box that asserts pathology contradicts a "Normal MRI …" impression even
+    // when it brings no impression line of its own. Keying the sweep on the
+    // impression's own contents used to print that false normality.
     impressionText = stripNormalImpressionLinesProvenanceAware(
       splitToSentences(impressionText),
       {
-        onlyIfAbnormal: true,
+        onlyIfAbnormal: asserted.length === 0,
         provenance: opts.provenance?.impression,
       },
     ).join("\n");

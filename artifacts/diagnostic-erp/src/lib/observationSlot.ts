@@ -191,6 +191,27 @@ export function sentenceHasLevel(sentence: string, level: string): boolean {
   return compactSent.includes(compactWant);
 }
 
+/** A stray sequence name ("T2", "STIR") reads as a level here, which is the
+ * safe direction: it only ever blocks a replacement, never authorises one. */
+const ANY_LEVEL_MENTION = /\b[CDLSST]\s?\d{1,2}\b/i;
+
+/** "Lumbosacral" matches its own word only, so "sacral" cannot leak out of it. */
+const ANY_REGION_MENTION =
+  /\b(cervical|craniovertebral|cervicothoracic|thoracolumbar|dorsal|thoracic|lumbar|lumbosacral|sacral|sacroiliac)\b/i;
+
+function namesAnyLevel(sentence: string): boolean {
+  return extractLevelFromText(sentence) !== "" || ANY_LEVEL_MENTION.test(sentence);
+}
+
+/**
+ * A sentence naming a level ("L4-L5: …") or a region ("Dorsal spine: …") speaks
+ * for that site alone. Anything else — "Thecal sac of adequate calibre with no
+ * significant central canal stenosis." — is a study-wide claim.
+ */
+function isStudyWideClaim(sentence: string): boolean {
+  return !namesAnyLevel(sentence) && !ANY_REGION_MENTION.test(sentence);
+}
+
 /**
  * Resolve a raw concept / alias string to its canonical concept id.
  *
@@ -385,14 +406,20 @@ export function sentenceOwnedBySlot(
 ): boolean {
   const baseline = (obs.baselineReplaces ?? "").trim();
   if (baseline && sentence.includes(baseline)) return true;
+  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept);
   const level = normalizeLevel(obs.level);
-  if (level && !sentenceHasLevel(sentence, level)) return false;
+  if (level && !sentenceHasLevel(sentence, level)) {
+    // A study-wide sentence speaks for every level, so one level's pathology
+    // falsifies it and the tile owns it. A sentence pinned to another level or
+    // another region is that site's claim, and stays.
+    if (!matchesConcept || !isStudyWideClaim(sentence)) return false;
+  }
   const obsLat = normalizeLaterality(obs.laterality);
   if (obsLat && obsLat !== "bilateral") {
     const mentioned = lateralityMentionedInSentence(sentence);
     if (mentioned && mentioned !== "bilateral" && mentioned !== obsLat) return false;
   }
-  if (sentenceMatchesConcept(sentence, obs.concept)) return true;
+  if (matchesConcept) return true;
   // An explicit baseline contract is the ownership boundary. Anatomy/level
   // identifies where that concept lives, but must not absorb other concepts
   // at the same site. Legacy overlays without a contract retain section scope.
