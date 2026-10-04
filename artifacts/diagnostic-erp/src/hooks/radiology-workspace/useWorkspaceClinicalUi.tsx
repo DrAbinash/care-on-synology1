@@ -477,6 +477,7 @@ import {
   billedStudyContextForNormal,
   buildCareReportFormatIdentity,
   extractCareReportFormatIdentity,
+  quickNormalOutcomeMessage,
   resolveNormalBootstrapFormat,
 } from "@/lib/zai-workspace/normalBootstrap";
 import { reportFormatRevision } from "@/lib/zai-workspace/fullReportBaseline";
@@ -534,6 +535,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const [draftHydratedStudyId, setDraftHydratedStudyId] = useState<number | null>(null);
   const setLastSavedAtRef = useRef<(d: Date | null) => void>(() => {});
   const [appliedNormalFormatName, setAppliedNormalFormatName] = useState<string | null>(null);
+  const [normalSkipReason, setNormalSkipReason] = useState<string | null>(null);
   const [bootstrapAppliedThisOpen, setBootstrapAppliedThisOpen] = useState(false);
   const [stagedAiProposals, setStagedAiProposals] = useState<StagedAiProposal[]>([]);
   const [linkStudyOpen, setLinkStudyOpen] = useState(false);
@@ -1093,6 +1095,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setCanUndoStartReport(false);
     setStructuredValues({});
     setAppliedNormalFormatName(null);
+    setNormalSkipReason(null);
     setBootstrapAppliedThisOpen(false);
     setStagedAiProposals([]);
     structuredTouchedRef.current = false;
@@ -1838,12 +1841,14 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       protocolLoaded: !!studySetup.activeProtocol,
       protocolName: studySetup.activeProtocol?.name ?? null,
       emptyNeedsStart: reportNeedsStart && !bootstrapAppliedThisOpen,
+      normalSkipReason,
     });
   }, [
     studyId,
     draftHydratedStudyId,
     bootstrapAppliedThisOpen,
     appliedNormalFormatName,
+    normalSkipReason,
     studySetup.activeProtocol,
     reportNeedsStart,
   ]);
@@ -2183,6 +2188,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (decision == null) return; // identity / library unresolved yet — may retry
     normalBootstrapDoneRef.current = studyId; // decision made — never again this study
     if (decision.status !== "apply") {
+      // Same words the button gives, on the strip that is already there — so a blank
+      // page is never just a blank page.
+      const why = quickNormalOutcomeMessage(decision);
+      setNormalSkipReason(`${why.title} — ${why.description}`);
       console.debug("[radiology-workspace] normal bootstrap skipped:", decision.reason);
       return;
     }
@@ -2199,6 +2208,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // structured-template cards remain available via the template picker).
     setUseStructured(false);
     setAppliedNormalFormatName(decision.format.name || "Normal format");
+    setNormalSkipReason(null);
     setBootstrapAppliedThisOpen(true);
     setCanUndoStartReport(true);
     toast({
