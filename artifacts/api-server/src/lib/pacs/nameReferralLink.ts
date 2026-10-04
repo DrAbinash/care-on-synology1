@@ -46,7 +46,36 @@ export type RankedBillCandidate = {
   suggestable: boolean;
   /** Eligible for unique auto-link (still capped to YELLOW after link). */
   autoLinkEligible: boolean;
+  /** ISO when the bill was raised, if the caller supplied it. */
+  billCreatedAt: string | null;
+  /**
+   * Minutes between the bill being raised and this DICOM row arriving.
+   * Positive = billed before the scan, which is the normal front-desk order.
+   * null when either timestamp is unknown. Ranking hint only.
+   */
+  minutesFromArrival: number | null;
 };
+
+function toEpochMs(value: Date | string | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Signed minutes from "bill raised" to "study arrived", or null when either
+ * side is missing. Used to order Match Center suggestions only — it never
+ * changes a candidate's points and never decides an auto-link.
+ */
+export function billToArrivalMinutes(opts: {
+  arrivedAt: Date | string | null | undefined;
+  billCreatedAt: Date | string | null | undefined;
+}): number | null {
+  const arrivedMs = toEpochMs(opts.arrivedAt);
+  const billMs = toEpochMs(opts.billCreatedAt);
+  if (arrivedMs === null || billMs === null) return null;
+  return Math.round((arrivedMs - billMs) / 60000);
+}
 
 export function classifyMatchLane(match: MatchResult): MatchLane {
   const hasIdKey = match.reasons.some(
@@ -100,10 +129,15 @@ function doctorConflict(
 
 /**
  * Score one billed study against DICOM intake and annotate Lane B flags.
+ *
+ * `arrivedAt` is the moment the DICOM row reached CARE (the worklist row's
+ * created_at is a faithful proxy: the Orthanc sync agent polls every 60
+ * seconds). It only orders equally-scored candidates.
  */
 export function rankBillCandidate(
   dicom: DicomInput,
   bill: BilledTestInput,
+  opts?: { arrivedAt?: Date | string | null },
 ): RankedBillCandidate {
   const match = calculateMatchScore(dicom, bill);
   const nameSim = nameSimilarity(dicom.patientName, bill.patientName);
@@ -137,7 +171,30 @@ export function rankBillCandidate(
     lane,
     suggestable,
     autoLinkEligible,
+    billCreatedAt:
+      bill.billCreatedAt instanceof Date
+        ? bill.billCreatedAt.toISOString()
+        : bill.billCreatedAt ?? null,
+    minutesFromArrival: billToArrivalMinutes({
+      arrivedAt: opts?.arrivedAt,
+      billCreatedAt: bill.billCreatedAt,
+    }),
   };
+}
+
+/**
+ * Tie-break only: bill raised closest in time to the study's arrival wins,
+ * candidates with no known timing go last. Distance is symmetric because a
+ * bill can legitimately be raised a few minutes after the scan when the
+ * patient is sent to the desk straight from the room.
+ */
+export function arrivalProximityTiebreak(
+  a: { minutesFromArrival: number | null },
+  b: { minutesFromArrival: number | null },
+): number {
+  const am = a.minutesFromArrival === null ? Number.POSITIVE_INFINITY : Math.abs(a.minutesFromArrival);
+  const bm = b.minutesFromArrival === null ? Number.POSITIVE_INFINITY : Math.abs(b.minutesFromArrival);
+  return am - bm;
 }
 
 export function pickNameReferralSuggestions(
@@ -149,7 +206,10 @@ export function pickNameReferralSuggestions(
     .sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.nameSimilarity !== a.nameSimilarity) return b.nameSimilarity - a.nameSimilarity;
-      return b.referringDoctorSimilarity - a.referringDoctorSimilarity;
+      if (b.referringDoctorSimilarity !== a.referringDoctorSimilarity) {
+        return b.referringDoctorSimilarity - a.referringDoctorSimilarity;
+      }
+      return arrivalProximityTiebreak(a, b);
     })
     .slice(0, limit);
 }
@@ -157,6 +217,11 @@ export function pickNameReferralSuggestions(
 /**
  * Unique strong name±referral winner for auto-link.
  * Always treat result as YELLOW-tier method (caller persists PENDING review).
+ *
+ * Bill-vs-arrival timing is deliberately not consulted here. It orders Match
+ * Center suggestions; it must never decide a link, because two same-name
+ * patients scanned an hour apart are separated by minutes and that is not
+ * evidence of identity.
  */
 export function selectUniqueNameReferralAutoLink(
   ranked: RankedBillCandidate[],

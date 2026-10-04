@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { formatBillToScanGap } from "@/lib/billToScanGap";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,6 +80,8 @@ type CandidateStudy = {
   lane?: "id_keys" | "name_referral";
   suggestable?: boolean;
   autoLinkEligible?: boolean;
+  billCreatedAt?: string | null;
+  minutesFromArrival?: number | null;
 };
 
 type MatchListFilter = "all" | "unbilled" | "needs_review" | "resolved";
@@ -540,6 +543,9 @@ export default function MyCollection() {
                                     {typeof cand.referringDoctorSimilarity === "number" && cand.referringDoctorSimilarity > 0
                                       ? ` · Doctor ${Math.round(cand.referringDoctorSimilarity * 100)}%`
                                       : ""}
+                                    {cand.minutesFromArrival != null
+                                      ? ` · ${formatBillToScanGap(cand.minutesFromArrival)}`
+                                      : ""}
                                   </div>
                                 </div>
                                 <Button
@@ -796,6 +802,9 @@ export default function MyCollection() {
                               ? ` · Doctor ${Math.round(cand.referringDoctorSimilarity * 100)}%`
                               : ""}
                           </span>
+                        ) : null}
+                        {cand.minutesFromArrival != null ? (
+                          <span className="col-span-2">{formatBillToScanGap(cand.minutesFromArrival)}</span>
                         ) : null}
                       </div>
                       {cand.matchWarnings.length > 0 && (

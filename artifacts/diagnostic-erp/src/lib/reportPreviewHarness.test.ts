@@ -210,7 +210,7 @@ const CASES: Case[] = [
     narrative: spineCanal.narrative, replaced: spineCanal.replaced,
   },
   {
-    key: "8-spine-auto-open", title: "MRI LS Spine — what auto-opens after #107",
+    key: "8-spine-auto-open", title: "MRI LS Spine — what auto-opens now",
     note: "The Normal Format the Templates screen holds, chosen by the bootstrap: sub-headings and the canal table, in one click.",
     study: { modality: "MRI", bodyPart: "LS Spine", title: "MRI LUMBOSACRAL SPINE" },
     narrative: {
