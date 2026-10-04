@@ -326,6 +326,30 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "8-spine-auto-open": { count: 0 },
 };
 
+/**
+ * The advice half of one Quick Select click, read off the printed page rather
+ * than from the store: a box that adds an abnormality must also add what to do
+ * about it, and a box that carries no advice of its own must invent none and
+ * must not borrow another box's. Every string here is copied from the Report
+ * Format the tile cites, so the table cannot quietly agree with a tile that has
+ * since drifted.
+ */
+const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
+  "1-brain-normal": { must: [] },
+  "2-brain-infarct": { must: ["Immediate stroke team notification", "MRA head and neck recommended"] },
+  "3-brain-fazekas": { must: ["Control of vascular risk factors"] },
+  "4-spine-normal-quicknormal": { must: [] },
+  "5-spine-subheaded": { must: [] },
+  "6-spine-subheaded-click": {
+    must: ["Conservative management with NSAIDs and physiotherapy", "Surgical referral if neurological deficits develop"],
+  },
+  "7-spine-canal-click": {
+    must: [],
+    mustNot: ["Conservative management with NSAIDs", "Immediate stroke team notification"],
+  },
+  "8-spine-auto-open": { must: [] },
+};
+
 /** Bold spans inside the printed findings body, headings and the impression
  *  label excluded — the sentence the paper actually shows in bold. */
 function printedBoldFindingsLines(page: string): string[] {
@@ -359,6 +383,14 @@ describe("report preview harness", () => {
       const want = PRINT_EMPHASIS[c.key] ?? { count: 0 };
       expect(bolded, `${c.key} bolds ${want.count} findings line(s)`).toHaveLength(want.count);
       if (want.contains) expect(bolded.join(" ")).toContain(want.contains);
+
+      const advice = PRINT_ADVICE[c.key] ?? { must: [] };
+      for (const line of advice.must) {
+        expect(page, `${c.key} lost the advice "${line}" on paper`).toContain(line);
+      }
+      for (const line of advice.mustNot ?? []) {
+        expect(page, `${c.key} printed advice from a box nobody clicked`).not.toContain(line);
+      }
       writeFileSync(join(OUT, `${c.key}.print.html`), page);
       writeFileSync(join(OUT, `${c.key}.screen.html`), previewHtml(c, report));
 
@@ -382,6 +414,7 @@ describe("report preview harness", () => {
         replacedNormalSentences: c.replaced ?? [],
         printedBoldFindings: bolded,
         findingsText: c.narrative.findings,
+        recommendationText: c.narrative.recommendation,
       });
     }
 
