@@ -49,3 +49,26 @@ describe("no route prints the application", () => {
     expect(src).toContain("onPrintReport");
   });
 });
+
+describe("the top bar reaches paper without opening Layout / Export", () => {
+  const src = readFileSync(
+    resolve(__dirname, "../components/radiology/workspace/WorkspaceTopBar.tsx"),
+    "utf8",
+  );
+
+  it("offers the same print route the panel button runs", () => {
+    // One action, one implementation: the strip button and the panel button must not
+    // grow separate print code.
+    expect(src).toMatch(/canPrintLikeFinal\(\{[^}]*onPrintLikeFinal: handlePrintLikeFinal/);
+    expect(src).toMatch(/onClick=\{\(\) => void handlePrintLikeFinal\(\)\}/);
+    expect(src).toContain('data-testid="btn-workspace-print"');
+    expect(src).not.toContain("window.print(");
+  });
+
+  it("applies the same rule about a signed report", () => {
+    // The gate is shared, not re-typed — a second copy of the condition is how the
+    // panel button came to require a draft id that the handler creates itself.
+    expect(src).toContain("linkedReportId");
+    expect(src).not.toMatch(/canPrintLikeFinal\(\{(?![^}]*linkedReportId)/);
+  });
+});
