@@ -473,6 +473,8 @@ import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/con
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
 import { reportBodyAllowsNormalBootstrap, resolvePrintedReportTitle } from "@/lib/zai-workspace/fullReportFormat";
 import {
+  billedNameFromWorklistRow,
+  billedStudyContextForNormal,
   buildCareReportFormatIdentity,
   extractCareReportFormatIdentity,
   resolveNormalBootstrapFormat,
@@ -2166,7 +2168,14 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         || (Array.isArray(backup.impression) ? backup.impression.join("").trim() : "")
       )
     ) return; // prior local work for this study — offer the restore banner instead
-    const ctx = studySetup.studyContext;
+    // The billed exam name is part of the exam's identity, not a label: an MRI
+    // booked in DICOM as "MR BRAIN" but billed "MRI Brain with contrast" must not
+    // auto-open the plain technique. Quick Normal already reads it this way, and
+    // the two paths have to pick the same report.
+    const ctx = billedStudyContextForNormal(
+      studySetup.studyContext,
+      billedNameFromWorklistRow(workflow.currentRow),
+    );
     const decision = resolveNormalBootstrapFormat({
       ctx,
       formats: state.reportFormats,
@@ -2202,6 +2211,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studySetup.studyContext, studySetup.selectedTemplateId, studySetupSetters,
     findingsMap, useStructured, toast, setUseStructured, reportFormatCount,
     studySetup.templatesLoaded, studySetup.templates,
+    workflow.currentRow?.testName, workflow.currentRow?.billedTestName,
+    workflow.currentRow?.studyDescription,
   ]);
 
   // ─── Preload next study at 80% findings completion ──────────────────────────
