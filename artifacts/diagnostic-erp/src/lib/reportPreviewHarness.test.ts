@@ -36,7 +36,7 @@ import {
   mergeStructuredNormalFormats,
   type StructuredNormalRow,
 } from "./zai-workspace/structuredNormalFormats";
-import { resolveNormalBootstrapFormat } from "./zai-workspace/normalBootstrap";
+import { billedStudyContextForNormal, resolveNormalBootstrapFormat } from "./zai-workspace/normalBootstrap";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
   renderReportDocument,
@@ -174,6 +174,32 @@ const autoOpenedLs = (() => {
   return decision.format;
 })();
 
+/**
+ * A brain MRI the booking system describes as plain "MR BRAIN" and the desk bills
+ * with contrast. The Technique section is a clinical claim about what was acquired,
+ * so choosing the plain normal here would sign out sequences that never ran — the
+ * defect #827 removes, rendered as the two pages it used to be able to produce.
+ */
+const BRAIN_DICOM_ONLY = buildReportingStudyContext({
+  modality: "MR", studyDescription: "MR BRAIN", regions: ["Brain"], source: "auto",
+});
+const brainContrastAuto = (() => {
+  const decision = resolveNormalBootstrapFormat({
+    ctx: billedStudyContextForNormal(BRAIN_DICOM_ONLY, "MRI Brain with contrast"),
+    formats: DEFAULT_REPORT_FORMATS,
+  });
+  if (decision?.status !== "apply") throw new Error(`contrast brain normal did not auto-open: ${JSON.stringify(decision)}`);
+  return decision.format;
+})();
+const brainPlainAuto = (() => {
+  const decision = resolveNormalBootstrapFormat({
+    ctx: BRAIN_DICOM_ONLY,
+    formats: DEFAULT_REPORT_FORMATS,
+  });
+  if (decision?.status !== "apply") throw new Error(`plain brain normal did not resolve: ${JSON.stringify(decision)}`);
+  return decision.format;
+})();
+
 const CASES: Case[] = [
   {
     key: "1-brain-normal", title: "MRI Brain — Normal (one click)",
@@ -224,6 +250,30 @@ const CASES: Case[] = [
       findings: autoOpenedLs.findings,
       impression: autoOpenedLs.impression,
       recommendation: autoOpenedLs.recommendation,
+    },
+  },
+  {
+    key: "9-brain-contrast-billed", title: "MRI Brain — what auto-opens when the desk billed contrast",
+    note: "Booked in DICOM as plain “MR BRAIN”, billed “MRI Brain with contrast”. The technique must name the contrast sequence and the agent.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (CONTRAST)" },
+    narrative: {
+      clinicalHistory: "Headache. Rule space-occupying lesion.",
+      technique: brainContrastAuto.technique,
+      findings: brainContrastAuto.findings,
+      impression: brainContrastAuto.impression,
+      recommendation: brainContrastAuto.recommendation,
+    },
+  },
+  {
+    key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
+    note: "Read only to compare with the case above: same study, format chosen from the DICOM header alone. This is what #827 removed.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: {
+      clinicalHistory: "Headache. Rule space-occupying lesion.",
+      technique: brainPlainAuto.technique,
+      findings: brainPlainAuto.findings,
+      impression: brainPlainAuto.impression,
+      recommendation: brainPlainAuto.recommendation,
     },
   },
 ];
@@ -324,6 +374,10 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "6-spine-subheaded-click": { count: 1, contains: "Broad-based disc bulge at L4-L5" },
   "7-spine-canal-click": { count: 1, contains: "Mild canal stenosis at L4-L5" },
   "8-spine-auto-open": { count: 0 },
+  // Both brain pages below are complete normals, so neither may carry a bold
+  // findings line — the only difference between them is which sequences were run.
+  "9-brain-contrast-billed": { count: 0 },
+  "10-brain-plain-by-dicom": { count: 0 },
 };
 
 /**
@@ -348,6 +402,8 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
     mustNot: ["Conservative management with NSAIDs", "Immediate stroke team notification"],
   },
   "8-spine-auto-open": { must: [] },
+  "9-brain-contrast-billed": { must: [] },
+  "10-brain-plain-by-dicom": { must: [] },
 };
 
 /** Bold spans inside the printed findings body, headings and the impression
@@ -436,6 +492,13 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     expect(brainFazekas.narrative.findings).toContain("Fazekas grade 1");
     expect(spineHerniation.narrative.findings).toContain("L4-L5");
 
+    // The two brain pages above are the same study. Only the billed name tells
+    // them apart, and the printed technique must carry that difference — a report
+    // that signed out plain sequences for a contrast exam is a false clinical claim.
+    expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
+    expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
+    expect(CASES.length).toBe(10);
+
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
     // levels, and not alongside the sentence that still denies it.
@@ -472,5 +535,23 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
       expect(spineCanal.narrative.findings, `${level} canal row`)
         .toContain(`| ${level} | — |`);
     }
+  });
+
+  it("prints the contrast study as a contrast study", () => {
+    const contrastCase = CASES.find((c) => c.key === "9-brain-contrast-billed");
+    const plainCase = CASES.find((c) => c.key === "10-brain-plain-by-dicom");
+    if (!contrastCase || !plainCase) throw new Error("the billed-contrast pair is missing from the pack");
+    const patient = PATIENTS.MRI_BRAIN;
+    const contrastPage = printPageHtml(contrastCase, toReportData(contrastCase, patient));
+    const plainPage = printPageHtml(plainCase, toReportData(plainCase, patient));
+
+    // Read the pages rather than the intent: Technique is what a referring surgeon
+    // relies on to know whether an enhancing study exists at all.
+    expect(contrastPage).toContain("Post-contrast");
+    expect(contrastPage).toContain("Gadobutrol");
+    expect(plainPage).not.toMatch(/post-contrast|gadobutrol|gadolinium/i);
+    // The study title follows the exam, so the two pages are not interchangeable.
+    expect(contrastPage).toContain("MRI BRAIN (CONTRAST)");
+    expect(plainPage).not.toContain("MRI BRAIN (CONTRAST)");
   });
 });

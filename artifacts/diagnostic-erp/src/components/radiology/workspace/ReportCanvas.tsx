@@ -108,6 +108,7 @@ import {
 } from "@/lib/reportingPaneFocus";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import {
+  billedNameFromWorklistRow,
   billedStudyContextForNormal,
   quickNormalOutcomeMessage,
   resolveNormalBootstrapFormat,
@@ -665,11 +666,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                               });
                               return;
                             }
-                            const billed =
-                              workflow.currentRow?.testName
-                              || workflow.currentRow?.billedTestName
-                              || workflow.currentRow?.studyDescription
-                              || null;
+                            const billed = billedNameFromWorklistRow(workflow.currentRow);
                             const decision = resolveNormalBootstrapFormat({
                               ctx: billedStudyContextForNormal(studySetup.studyContext, billed),
                               formats: state.reportFormats,
@@ -699,12 +696,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             reportingContext={studySetup.studyContext}
                             modality={workflow.currentRow?.modality ?? null}
                             bodyPartFallback={studySetup.matchedStudyRegion}
-                            studyDescription={
-                              workflow.currentRow?.testName
-                              || workflow.currentRow?.billedTestName
-                              || workflow.currentRow?.studyDescription
-                              || null
-                            }
+                            studyDescription={billedNameFromWorklistRow(workflow.currentRow)}
                             hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
                             disabled={isLocked || isFinalized}
                           />

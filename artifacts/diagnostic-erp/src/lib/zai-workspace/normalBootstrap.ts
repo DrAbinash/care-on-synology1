@@ -167,6 +167,18 @@ export function billedStudyContextForNormal<T extends { studyDescription?: strin
   return { ...ctx, studyDescription: desc ? `${billed}. ${desc}` : billed };
 }
 
+/** The name the centre billed for this row, as a radiologist would say it. */
+export function billedNameFromWorklistRow(
+  row: {
+    testName?: string | null;
+    billedTestName?: string | null;
+    studyDescription?: string | null;
+  } | null | undefined,
+): string | null {
+  if (!row) return null;
+  return row.testName || row.billedTestName || row.studyDescription || null;
+}
+
 /** Doctor-facing result of pressing Quick Normal. `applied` means a format was chosen. */
 export function quickNormalOutcomeMessage(decision: NormalBootstrapDecision | null): {
   applied: boolean;
