@@ -90,6 +90,10 @@ export type FormatSection = {
 export type StructuredFormatDoc = {
   schemaVersion: typeof STRUCTURED_FORMAT_SCHEMA_VERSION;
   technique?: string;
+  /** Complete-normal recommendation prose. Alongside technique, this is what a
+   *  Normal Format needs in full — findings and impression already have their
+   *  own columns. */
+  recommendation?: string;
   tokens: string[];
   mutexGroups: MutexGroupDef[];
   repeatingGroupDefs: RepeatingGroupDef[];
@@ -101,6 +105,7 @@ export type V1SectionsJson = {
   technique?: string;
   findingsItems?: Array<{ label: string; normal: string }>;
   impression?: string;
+  recommendation?: string;
   placeholders?: unknown;
   schemaVersion?: number;
 };

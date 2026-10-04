@@ -198,11 +198,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     staleTime: 5 * 60_000,
   });
 
-  const { data: templates = [] } = useQuery<StructuredTemplate[]>({
+  const { data: templatesData } = useQuery<StructuredTemplate[]>({
     queryKey: ["structured-templates"],
     queryFn: () => api.get("/api/radiology/structured-report-templates"),
     staleTime: 5 * 60_000,
   });
+  const templates = templatesData ?? [];
+  /** An empty template list is a real state, not "still loading" — the normal
+   *  auto-bootstrap needs to tell them apart before it commits one decision. */
+  const templatesLoaded = templatesData !== undefined;
 
   /** Server-backed Study Tabs for Section 1 (id + name). Authoritative catalog. */
   const availableStudyTabs = useMemo(() => {
@@ -937,5 +941,6 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     removeStructuredFinding,
     quickSelectData,
     templates,
+    templatesLoaded,
   };
 }
