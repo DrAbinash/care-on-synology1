@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BilledTestInput, DicomInput } from "./matchingEngine";
 import {
+  billToArrivalMinutes,
   capNameReferralAutoScore,
   classifyMatchLane,
   normalizeStudyDateIso,
@@ -113,5 +114,79 @@ describe("nameReferralLink", () => {
     ];
     expect(ranked[0]!.suggestable).toBe(false);
     expect(ranked[0]!.autoLinkEligible).toBe(false);
+  });
+
+  it("computes bill-to-arrival minutes and stays null when a side is unknown", () => {
+    const arrived = new Date("2026-08-27T10:30:00Z");
+    expect(
+      billToArrivalMinutes({ arrivedAt: arrived, billCreatedAt: new Date("2026-08-27T10:16:00Z") }),
+    ).toBe(14);
+    expect(
+      billToArrivalMinutes({ arrivedAt: arrived, billCreatedAt: new Date("2026-08-27T10:40:00Z") }),
+    ).toBe(-10);
+    expect(billToArrivalMinutes({ arrivedAt: arrived, billCreatedAt: null })).toBeNull();
+    expect(billToArrivalMinutes({ arrivedAt: null, billCreatedAt: arrived })).toBeNull();
+  });
+
+  it("orders equally-scored suggestions by time proximity without changing points", () => {
+    const arrived = new Date("2026-08-27T10:30:00Z");
+    const far = rankBillCandidate(
+      dicom({ referringDoctor: null }),
+      bill({ id: 21, referringDoctor: null, billCreatedAt: new Date("2026-08-27T02:00:00Z") }),
+      { arrivedAt: arrived },
+    );
+    const near = rankBillCandidate(
+      dicom({ referringDoctor: null }),
+      bill({
+        id: 22,
+        referringDoctor: null,
+        accessionNumber: "ACC-20260827-US-02",
+        billCreatedAt: new Date("2026-08-27T10:16:00Z"),
+      }),
+      { arrivedAt: arrived },
+    );
+    expect(near.points).toBe(far.points);
+    expect(near.minutesFromArrival).toBe(14);
+    expect(far.minutesFromArrival).toBe(510);
+    // `far` is listed first so the reorder can only come from timing.
+    expect(pickNameReferralSuggestions([far, near]).map((c) => c.studyId)).toEqual([22, 21]);
+  });
+
+  it("never lets time proximity turn an ambiguous same-name pile into an auto-link", () => {
+    const arrived = new Date("2026-08-27T10:30:00Z");
+    const ranked = [
+      rankBillCandidate(
+        dicom({ referringDoctor: null }),
+        bill({
+          id: 31,
+          referringDoctor: null,
+          billCreatedAt: new Date("2026-08-27T10:29:00Z"),
+        }),
+        { arrivedAt: arrived },
+      ),
+      rankBillCandidate(
+        dicom({ referringDoctor: null }),
+        bill({
+          id: 32,
+          referringDoctor: null,
+          accessionNumber: "ACC-20260827-US-02",
+          billCreatedAt: new Date("2026-08-26T01:00:00Z"),
+        }),
+        { arrivedAt: arrived },
+      ),
+    ];
+    expect(ranked.every((c) => c.autoLinkEligible)).toBe(true);
+    expect(selectUniqueNameReferralAutoLink(ranked)).toBeNull();
+    expect(pickNameReferralSuggestions(ranked).map((c) => c.studyId)).toEqual([31, 32]);
+  });
+
+  it("keeps the existing order when no arrival time is supplied", () => {
+    const a = rankBillCandidate(dicom(), bill({ id: 41 }));
+    const b = rankBillCandidate(
+      dicom(),
+      bill({ id: 42, patientName: "Rina Devi", referringDoctor: "Dr Other" }),
+    );
+    expect(a.minutesFromArrival).toBeNull();
+    expect(pickNameReferralSuggestions([a, b]).map((c) => c.studyId)).toEqual([41]);
   });
 });

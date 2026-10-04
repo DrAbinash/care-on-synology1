@@ -56,6 +56,7 @@ import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSit
 import { decideRouting, getRoutingStats } from "../lib/dicomRoutingOptimizer";
 import { runMatchingEngineForWorklist } from "./internal-radiology";
 import {
+  arrivalProximityTiebreak,
   NAME_REFERRAL_SUGGEST_DAY_RADIUS,
   pickNameReferralSuggestions,
   rankBillCandidate,
@@ -2977,6 +2978,7 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
       sex: patientsTable.gender,
       testName: testsTable.name,
       billNumber: billsTable.billNumber,
+      billCreatedAt: billsTable.createdAt,
     };
 
     // Date-window pool (name±referral suggestions) + recent pool (manual search).
@@ -3028,8 +3030,11 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
         billNumber: s.billNumber as string | null,
         studyDate: s.studyDate,
         referringDoctor: s.referringDoctor as string | null,
+        billCreatedAt: s.billCreatedAt,
       };
-      const rank = rankBillCandidate(dicomInput, billInput);
+      const rank = rankBillCandidate(dicomInput, billInput, {
+        arrivedAt: worklistItem.createdAt,
+      });
       return {
         study: {
           ...s,
@@ -3046,6 +3051,8 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
         lane: rank.lane,
         suggestable: rank.suggestable,
         autoLinkEligible: rank.autoLinkEligible,
+        billCreatedAt: rank.billCreatedAt,
+        minutesFromArrival: rank.minutesFromArrival,
       };
     });
 
@@ -3056,7 +3063,8 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
         const bs = b.suggestable && b.lane === "name_referral" ? 1 : 0;
         if (bs !== as) return bs - as;
       }
-      return b.matchPoints - a.matchPoints;
+      if (b.matchPoints !== a.matchPoints) return b.matchPoints - a.matchPoints;
+      return arrivalProximityTiebreak(a, b);
     });
 
     const suggestionRanks = pickNameReferralSuggestions(
@@ -3071,6 +3079,8 @@ radiologyRouter.get("/pacs-worklist/:id/matching-candidates", async (req, res) =
         lane: c.lane,
         suggestable: c.suggestable,
         autoLinkEligible: c.autoLinkEligible,
+        billCreatedAt: c.billCreatedAt,
+        minutesFromArrival: c.minutesFromArrival,
       })),
       5,
     );
