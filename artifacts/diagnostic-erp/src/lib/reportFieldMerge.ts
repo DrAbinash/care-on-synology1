@@ -449,6 +449,11 @@ export function mergeSentencesWithProvenance(
     let merged = false;
     for (let i = 0; i < out.length; i++) {
       const o = out[i]!;
+      // A `|`-row is a measurement table row, and dedupe strips its pipes, so
+      // "| L4-L5 | — |" normalises to the level alone — which made the incoming
+      // "…at L4-L5…" sentence look like a longer version of the row and
+      // overwrite it. Rows hold numbers, not prose: never a merge target.
+      if (o.text.trim().startsWith("|") || s.trim().startsWith("|")) continue;
       const on = normalizeForDedupe(o.text);
       if (hasConflictingClinicalDetail(o.text, s)) continue;
       const shorter = on.length <= n.length ? on : n;
