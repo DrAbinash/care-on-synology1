@@ -33,6 +33,12 @@ export interface BilledTestInput {
   studyDate?: string | null;
   /** Referring physician from billed study / order doctor (optional soft match). */
   referringDoctor?: string | null;
+  /**
+   * When the bill was raised. Consumed only for ranking Match Center
+   * suggestions — deliberately never scored here, so it cannot push a
+   * candidate across the auto-link threshold or the ambiguity gap.
+   */
+  billCreatedAt?: Date | string | null;
 }
 
 export interface MatchResult {

@@ -69,6 +69,7 @@ type StudyJoinRow = {
   sex: string | null;
   testName: string;
   billNumber: string | null;
+  billCreatedAt: Date | null;
 };
 
 function dicomFromWorklist(worklistItem: WorklistRow): DicomInput {
@@ -101,6 +102,7 @@ const studySelect = {
   sex: patientsTable.gender,
   testName: testsTable.name,
   billNumber: billsTable.billNumber,
+  billCreatedAt: billsTable.createdAt,
 };
 
 async function applyWorklistStudyLink(opts: {
@@ -302,20 +304,25 @@ export async function autoLinkBilledStudyForWorklist(
     .limit(300);
 
   const ranked = (nameStudies as StudyJoinRow[]).map((s) =>
-    rankBillCandidate(dicomInput, {
-      id: s.id,
-      patientId: s.patientId,
-      patientName: String(s.patientName || ""),
-      patientUHID: s.patientUHID,
-      age: String(s.age || ""),
-      sex: s.sex,
-      testName: s.testName,
-      modality: s.modality,
-      accessionNumber: s.accessionNumber,
-      billNumber: s.billNumber,
-      studyDate: s.studyDate,
-      referringDoctor: s.referringDoctor,
-    }),
+    rankBillCandidate(
+      dicomInput,
+      {
+        id: s.id,
+        patientId: s.patientId,
+        patientName: String(s.patientName || ""),
+        patientUHID: s.patientUHID,
+        age: String(s.age || ""),
+        sex: s.sex,
+        testName: s.testName,
+        modality: s.modality,
+        accessionNumber: s.accessionNumber,
+        billNumber: s.billNumber,
+        studyDate: s.studyDate,
+        referringDoctor: s.referringDoctor,
+        billCreatedAt: s.billCreatedAt,
+      },
+      { arrivedAt: worklistItem.createdAt },
+    ),
   );
 
   const nameBest = selectUniqueNameReferralAutoLink(ranked);
