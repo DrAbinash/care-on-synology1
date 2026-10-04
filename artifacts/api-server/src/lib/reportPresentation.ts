@@ -538,6 +538,15 @@ export function renderReportDocument(
     ? `<div class="stamp ${model.stamp.kind}">${escapeHtml(model.stamp.label)}</div>`
     : "";
 
+  /** A radiology impression is the clinical bottom line, so the sentence itself
+   *  is bold, not just the label. Pathology reports keep the existing shape —
+   *  their impression block carries structured sub-headings. */
+  const impressionBlockHtml = model.impression
+    ? model.typeLabel === "RADIOLOGY"
+      ? `<div class="impression"><strong>Impression: ${escapeHtml(model.impression)}</strong></div>`
+      : `<div class="impression"><strong>Impression:</strong> ${escapeHtml(model.impression)}</div>`
+    : "";
+
   const bodyHtml = model.bodyHtml
     ? `<div class="body">${model.bodyHtml}</div>`
     : model.bodyText
@@ -1039,7 +1048,7 @@ export function renderReportDocument(
     ${criticalBanner}
     <div class="content-area${sidePanel ? " has-side-images" : ""}">
       <div class="report-column">
-        ${model.impression ? `<div class="impression"><strong>Impression:</strong> ${escapeHtml(model.impression)}</div>` : ""}
+        ${impressionBlockHtml}
         ${parametersHtml(model.parameters)}
         ${bodyHtml}
         ${!sidePanel ? imagesBlock : ""}

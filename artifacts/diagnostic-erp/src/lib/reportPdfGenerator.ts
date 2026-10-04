@@ -475,7 +475,9 @@ function drawNumberedImpression(
   });
   items.forEach((item, i) => {
     const prefix = `${i + 1}. `;
-    doc.setFont(font, "normal");
+    // The impression is the clinical bottom line of the report, so it is set in
+    // bold on the letter pad as well as on screen and in Word.
+    doc.setFont(font, "bold");
     doc.setFontSize(bodySize);
     const lines = doc.splitTextToSize(item, maxW - doc.getTextWidth(prefix)) as string[];
     doc.text(prefix, x, y);
