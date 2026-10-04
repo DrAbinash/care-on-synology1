@@ -257,7 +257,7 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
       opts.impressionProvenance,
     );
     if (ist === "numbered") {
-      impressionHtml = `<ol style="margin:4px 0 0 22px;padding:0;">${impressionBullets.map((b) => {
+      impressionHtml = `<ol style="margin:4px 0 0 22px;padding:0;font-weight:700;">${impressionBullets.map((b) => {
         const seg = provenanceMapToSegments(b, opts.impressionProvenance ?? {})[0];
         const kind = seg ? provenanceVisualKind(seg.sources) : "manual";
         const cls = PROV_CLASS[kind];
@@ -266,9 +266,9 @@ export function buildPreviewHtml(opts: BuildPreviewHtmlOpts): string {
         return `<li>${wrapped}</li>`;
       }).join("")}</ol>`;
     } else if (ist === "plain") {
-      impressionHtml = `<p style="margin:4px 0;">${impressionBody.replace(/<br\/>/g, "; ")}</p>`;
+      impressionHtml = `<p style="margin:4px 0;font-weight:700;">${impressionBody.replace(/<br\/>/g, "; ")}</p>`;
     } else {
-      impressionHtml = `<ul style="margin:4px 0 0 18px;padding:0;">${impressionBullets.map((b) => {
+      impressionHtml = `<ul style="margin:4px 0 0 18px;padding:0;font-weight:700;">${impressionBullets.map((b) => {
         const seg = provenanceMapToSegments(b, opts.impressionProvenance ?? {})[0];
         const kind = seg ? provenanceVisualKind(seg.sources) : "manual";
         const cls = PROV_CLASS[kind];

@@ -22,6 +22,7 @@ import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLinesProvenanceAware } from "./quickFindingsMerge";
 import {
   buildCanonicalObservation,
+  extractLevel,
   hasStructuredOwnership,
   sentenceOwnedBySlot,
 } from "./observationSlot";
@@ -279,7 +280,12 @@ export function applyPathologyPatch(opts: {
     conflictGroup: opts.ownership.conflictGroup,
     anatomicalSection: opts.ownership.anatomicalSection,
     baselineReplaces: opts.ownership.baselineReplaces,
-    level: opts.ownership.level,
+    // A tile that names a level owns ONLY that level. Without this, "Disc
+    // herniation L4-L5" matched every level's normal sentence and deleted all
+    // five, leaving the other discs silent about herniation. Reading the level
+    // out of the tile's own wording engages the existing level gate, and a tile
+    // that names no level behaves exactly as before.
+    level: opts.ownership.level || extractLevel(incomingHay),
     laterality: opts.ownership.laterality,
   });
   // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
@@ -305,6 +311,14 @@ export function applyPathologyPatch(opts: {
       }
     }
     for (const s of splitToSentences(existing)) {
+      // A `|`-row is a measurement, not a clinical sentence. Ownership matches
+      // on concept and level, so a canal-diameter row for L4-L5 looked like a
+      // sentence the L4-L5 disc tile owned, and the row was deleted silently —
+      // the printed table lost a level. Rows are never replaceable text.
+      if (s.trimStart().startsWith("|")) {
+        kept.push(s);
+        continue;
+      }
       const owned = structured
         ? sentenceOwnedBySlot(s, {
           concept: slotObs.concept ?? opts.ownership.concept ?? null,

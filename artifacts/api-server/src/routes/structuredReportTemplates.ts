@@ -168,11 +168,11 @@ Vertebral Body:
 Normal height, signal and morphology throughout. No marrow infiltration or compression fracture.
 
 Disc Level Analysis:
-L1-L2: Normal disc height and signal. No disc herniation. Neural foramen patent.
-L2-L3: Normal disc height and signal. No disc herniation. Neural foramen patent.
-L3-L4: Normal disc height and signal. No disc herniation. Neural foramen patent.
-L4-L5: Normal disc height and signal. No disc herniation. Neural foramen patent.
-L5-S1: Normal disc height and signal. No disc herniation. Neural foramen patent.
+L1-L2: Normal disc height and signal, no disc herniation and a patent neural foramen.
+L2-L3: Normal disc height and signal, no disc herniation and a patent neural foramen.
+L3-L4: Normal disc height and signal, no disc herniation and a patent neural foramen.
+L4-L5: Normal disc height and signal, no disc herniation and a patent neural foramen.
+L5-S1: Normal disc height and signal, no disc herniation and a patent neural foramen.
 
 Facets & Ligaments:
 Facet joints are unremarkable at the imaged levels. No significant arthropathy. No ligamentum flavum hypertrophy.
@@ -229,12 +229,12 @@ Vertebral Body:
 Normal vertebral body heights and marrow signal. No destructive lesion or compression fracture.
 
 Disc Level Analysis:
-C2-C3: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
-C3-C4: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
-C4-C5: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
-C5-C6: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
-C6-C7: Normal disc height and T2 signal. No herniation. Uncovertebral and facet joints unremarkable. Foramen patent.
-C7-T1: Normal disc height and T2 signal. No herniation. Foramen patent.
+C2-C3: Normal disc height and T2 signal, no herniation, unremarkable uncovertebral and facet joints and a patent foramen.
+C3-C4: Normal disc height and T2 signal, no herniation, unremarkable uncovertebral and facet joints and a patent foramen.
+C4-C5: Normal disc height and T2 signal, no herniation, unremarkable uncovertebral and facet joints and a patent foramen.
+C5-C6: Normal disc height and T2 signal, no herniation, unremarkable uncovertebral and facet joints and a patent foramen.
+C6-C7: Normal disc height and T2 signal, no herniation, unremarkable uncovertebral and facet joints and a patent foramen.
+C7-T1: Normal disc height and T2 signal, no herniation and a patent foramen.
 
 Facets & Ligaments:
 Facet and uncovertebral joints are unremarkable. No significant spondylotic change. Ligamentum flavum normal.
@@ -296,17 +296,17 @@ Vertebral Body:
 Normal vertebral body heights and marrow signal throughout. No destructive lesion or compression fracture.
 
 Disc Level Analysis:
-T1-T2: Normal disc height and signal. No herniation.
-T2-T3: Normal disc height and signal. No herniation.
-T3-T4: Normal disc height and signal. No herniation.
-T4-T5: Normal disc height and signal. No herniation.
-T5-T6: Normal disc height and signal. No herniation.
-T6-T7: Normal disc height and signal. No herniation.
-T7-T8: Normal disc height and signal. No herniation.
-T8-T9: Normal disc height and signal. No herniation.
-T9-T10: Normal disc height and signal. No herniation.
-T10-T11: Normal disc height and signal. No herniation.
-T11-T12: Normal disc height and signal. No herniation.
+T1-T2: Normal disc height and signal, with no herniation.
+T2-T3: Normal disc height and signal, with no herniation.
+T3-T4: Normal disc height and signal, with no herniation.
+T4-T5: Normal disc height and signal, with no herniation.
+T5-T6: Normal disc height and signal, with no herniation.
+T6-T7: Normal disc height and signal, with no herniation.
+T7-T8: Normal disc height and signal, with no herniation.
+T8-T9: Normal disc height and signal, with no herniation.
+T9-T10: Normal disc height and signal, with no herniation.
+T10-T11: Normal disc height and signal, with no herniation.
+T11-T12: Normal disc height and signal, with no herniation.
 
 Facets & Ligaments:
 Facet joints unremarkable. No ligamentum flavum hypertrophy.
@@ -376,7 +376,7 @@ Posterior elements intact. No epidural collection or paraspinal mass.`,
         { label: "C4-C5", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
         { label: "C5-C6", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
         { label: "C6-C7", normal: "Normal disc height and signal. No disc herniation. Neural foramina patent. No cord compression." },
-        { label: "C7-T1", normal: "Normal disc height and signal. No herniation. Neural foramina patent." },
+        { label: "C7-T1", normal: "Normal disc height and signal, with no herniation. Neural foramina patent." },
         { label: "Vertebral Bodies", normal: "Normal height and marrow signal. No fracture or infiltration." },
         { label: "Facet Joints / Uncovertebral", normal: "Facet and uncovertebral joints are unremarkable." },
         { label: "Spinal Canal", normal: "Spinal canal of adequate dimensions. No significant central stenosis." },
