@@ -5,6 +5,7 @@
 import type { AiProvider, AiProviderConfig, AiQueryOptions, AiQueryResult } from "./index";
 import {
   openAiCompatibleChat,
+  probeOpenAiCompatibleModels,
   COMPATIBLE_PROVIDER_DEFAULTS,
   isLocalOpenAiCompatibleProvider,
   type CompatibleImagePart,
@@ -159,6 +160,33 @@ export class OpenAiCompatibleProvider implements AiProvider {
       this.opts.allowEmptyApiKey === true ||
       defaults?.allowEmptyApiKey === true ||
       isLocalOpenAiCompatibleProvider(this.providerName);
+
+    // A local OpenAI-compatible server has a cheap GET /models; ask it first so
+    // "down", "needs a key" and "model not loaded" stop looking identical.
+    // Cloud vendors are deliberately not probed — this adds no external call.
+    let availableModels: string[] | undefined;
+    let note = "";
+    if (isLocalOpenAiCompatibleProvider(this.providerName)) {
+      const listing = await probeOpenAiCompatibleModels(this.baseURL, { apiKey: this.apiKey });
+      if (listing.reachable) {
+        availableModels = listing.models;
+        if (listing.models.length > 0 && probe !== "unknown" && !listing.models.includes(probe)) {
+          note = ` — server lists ${listing.models.length} model(s), "${probe}" is not one of them`;
+        }
+      } else if (listing.httpStatus == null || listing.httpStatus >= 500) {
+        // No socket answer or a server-side failure: the chat call cannot succeed,
+        // and waiting its 30s deadline only delays the operator's answer.
+        return {
+          ok: false,
+          message: `local server unreachable at ${this.baseURL}/models (${listing.error})`,
+        };
+      } else {
+        // 401/403/404 — the server is alive but /models is gated or unimplemented;
+        // the chat completion below remains the real verdict.
+        note = ` (GET /models: ${listing.error})`;
+      }
+    }
+
     const r = await openAiCompatibleChat({
       provider: this.providerName,
       baseURL: this.baseURL,
@@ -171,8 +199,8 @@ export class OpenAiCompatibleProvider implements AiProvider {
       jsonMode: false,
       allowEmptyApiKey: allowEmpty,
     });
-    if (!r.ok) return { ok: false, message: r.safeError };
-    return { ok: true, message: r.text.slice(0, 200) };
+    if (!r.ok) return { ok: false, message: `${r.safeError}${note}` };
+    return { ok: true, message: `${r.text.slice(0, 200)}${note}`, availableModels };
   }
 
   /**

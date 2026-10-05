@@ -27,6 +27,8 @@ import { clinicSettingsTable, radiologyAiReviewAuditsTable } from "@workspace/db
 import { desc, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { validateOllamaUrl } from "../lib/ssrf/ollamaUrlGuard";
+import { verifyOllamaFallbackIdentity } from "../lib/ai/localAiFallbackIdentity";
+import { normalizeOllamaEndpointUrl } from "@workspace/ai-providers";
 
 export const radiologyOllamaRouter = Router();
 
@@ -352,7 +354,7 @@ ${b.reportText || b.findings || ""}`,
 };
 
 // ── GET /status — current config summary via canonical runtime ───────────────
-radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
+radiologyOllamaRouter.get("/status", async (req, res): Promise<void> => {
   try {
     const { resolveLocalAiRuntime } = await import("../lib/aiPipeline/runtimeConfig");
     const {
@@ -384,11 +386,38 @@ radiologyOllamaRouter.get("/status", async (_req, res): Promise<void> => {
     let knownModels: string[] = [];
     try { knownModels = JSON.parse(row?.ollamaKnownModels ?? "[]"); } catch { /**/ }
 
+    // Config-only statement of what the fallback can and cannot do, plus an
+    // opt-in runtime comparison (?verifyFallback=1). Neither changes which
+    // endpoint inference actually uses.
+    const sameAddress =
+      Boolean(runtime.ollamaFallbackUrl) &&
+      normalizeOllamaEndpointUrl(String(runtime.ollamaBaseUrl)) ===
+        normalizeOllamaEndpointUrl(String(runtime.ollamaFallbackUrl));
+    const fallbackIdentity =
+      req.query.verifyFallback === "1" || req.query.verifyFallback === "true"
+        ? await verifyOllamaFallbackIdentity({
+            primaryUrl: runtime.ollamaBaseUrl,
+            fallbackUrl: runtime.ollamaFallbackUrl,
+            localOnly: row?.ollamaLocalOnly ?? false,
+          })
+        : null;
+
     res.json({
       configured,
       enabled: runtime.ollamaEnabled,
       primaryUrl: runtime.ollamaBaseUrl ?? null,
       fallbackUrl: runtime.ollamaFallbackUrl ?? null,
+      fallbackSemantics: !runtime.ollamaFallbackUrl
+        ? "none"
+        : sameAddress
+          ? "same_address"
+          : (fallbackIdentity?.kind ?? "unverified"),
+      fallbackMeaning: !runtime.ollamaFallbackUrl
+        ? "No fallback address configured — a failed primary has nowhere to go."
+        : sameAddress
+          ? "Fallback is the same address as primary — a retry against one server, not redundancy."
+          : "A different address. Run this status with ?verifyFallback=1 to learn whether it is a genuinely separate runtime or the same Ollama on a second interface.",
+      fallbackIdentity,
       model: runtime.localChatVisionModel,
       localOnly: row?.ollamaLocalOnly ?? false,
       timeoutSeconds: row?.ollamaTimeoutSeconds ?? 30,

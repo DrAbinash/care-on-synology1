@@ -4,10 +4,16 @@
  *
  * Intentionally imports only Node built-ins (no @workspace/db) so the CLI can
  * reuse it with its own pg pool. Callers inject the `query` function.
+ * The one non-builtin import is @workspace/ai-providers/canonical — a leaf
+ * module with no imports of its own, so it still pulls in no database pool.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, statfsSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+  CANONICAL_OLLAMA_ENDPOINT,
+} from "@workspace/ai-providers/canonical";
 import { DEFAULT_THRESHOLDS, type OpsCtx, type ProbeFn, type ProbeResult, type QueryFn } from "./operationsChecks";
 import type { OpsVersionInfo } from "./operationsHealth";
 
@@ -119,7 +125,7 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
       env.OLLAMA_BASE_URL ||
       env.OLLAMA_FALLBACK_URL ||
       pacs["ollama_url"] ||
-      "http://172.16.1.140:11434",
+      CANONICAL_OLLAMA_ENDPOINT,
   );
   // Canonical local chat/vision model (embeddings remain nomic-embed-text separately).
   const ollamaModel =
@@ -127,7 +133,31 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     env.AI_MODEL_VISION ||
     env.AI_MODEL_STANDARD ||
     pacs["ollama_model"] ||
-    "qwen3-vl:8b";
+    CANONICAL_LOCAL_CHAT_VISION_MODEL;
+
+  // Vendor-neutral local OpenAI-compatible server, if the clinic saved one. Its
+  // saved endpoint is the versioned base (…/v1); inference supplies the saved
+  // key, while ops probes GET /models without one.
+  let localOpenAiBase: string | null = null;
+  let localOpenAiModel: string | null = null;
+  let localOpenAiEnabled = true;
+  try {
+    const rows = await input.query(
+      "SELECT endpoint_url, default_model, is_enabled FROM ai_provider_settings WHERE provider = 'local_openai_compatible' LIMIT 1",
+    );
+    const row = rows[0];
+    if (row) {
+      localOpenAiEnabled = row.is_enabled !== false;
+      localOpenAiBase = stripSlash(row.endpoint_url ? String(row.endpoint_url) : null);
+      localOpenAiModel = row.default_model ? String(row.default_model).trim() : null;
+    }
+  } catch {
+    // Table absent / not queryable in tests — treated as not configured.
+    localOpenAiBase = null;
+    localOpenAiModel = null;
+  }
+  const envOpenAiBase = stripSlash(env.LOCAL_OPENAI_COMPATIBLE_BASE_URL);
+  if (!localOpenAiBase) localOpenAiBase = envOpenAiBase;
   const publicBase = stripSlash(env.PUBLIC_BASE_URL || (env.NETWORK_PUBLIC_DOMAIN ? `https://${env.NETWORK_PUBLIC_DOMAIN}` : null));
 
   const version = resolveVersionInfo(env);
@@ -173,6 +203,12 @@ export async function buildOpsContext(input: BuildCtxInput): Promise<OpsCtx> {
     poolStats: input.poolStats ?? null,
     orthanc: { baseUrl: orthancBase, headers: orthancHeaders(env), configured: !!orthancBase },
     ollama: { baseUrl: ollamaBase, model: ollamaModel, configured: !!ollamaBase },
+    localOpenAi: {
+      baseUrl: localOpenAiBase,
+      model: localOpenAiModel,
+      configured: !!localOpenAiBase,
+      enabled: localOpenAiEnabled,
+    },
     ohifUrl: ohif,
     publicBaseUrl: publicBase,
     displayToken,

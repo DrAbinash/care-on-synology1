@@ -246,6 +246,34 @@ async function main() {
       add("AI", "configured Ollama model", has ? P : W, has ? `${CFG.ollamaModel} present` : `${CFG.ollamaModel} NOT pulled (have: ${names.slice(0,4).join(", ")}${names.length>4?"…":""})`, has ? {} : { remediation: `On the Ollama host run: ollama pull ${CFG.ollamaModel}` });
     } else add("AI", "Ollama", W, `${tags.error || "HTTP " + tags.status} — AI controls will show unavailable`, { remediation: "Check the Ollama endpoint (default http://172.16.1.140:11434) is up and LAN-reachable" });
   }
+  // Local OpenAI-compatible server (Settings → AI Providers). It speaks the OpenAI
+  // wire format, so it is asked GET <endpoint>/models — /api/tags would 404 and be
+  // misread as "AI down". A key is deliberately not sent by this probe.
+  if (client && await tableExists("ai_provider_settings")) {
+    let prov = null;
+    try {
+      prov = (await q("SELECT endpoint_url, default_model, is_enabled FROM ai_provider_settings WHERE provider = 'local_openai_compatible' LIMIT 1"))?.[0] ?? null;
+    } catch { prov = null; }
+    if (!prov?.endpoint_url) {
+      add("AI", "Local OpenAI-compatible", S, "not configured in Settings — Ollama serves every local route");
+    } else if (prov.is_enabled === false) {
+      add("AI", "Local OpenAI-compatible", S, `${prov.endpoint_url} configured but switched off — any route pointing at it will fail`, { remediation: "Enable it in Settings → AI Providers, or move the route back to Ollama." });
+    } else {
+      const m = await httpProbe(String(prov.endpoint_url), { path: "/models", expectJson: true, ms: 6000 });
+      if (m.status === 401 || m.status === 403) {
+        add("AI", "Local OpenAI-compatible", P, `${prov.endpoint_url} alive (GET /models needs a key — the saved key is used by inference, not this probe)`);
+      } else if (m.ok && Array.isArray(m.body?.data ?? m.body?.models)) {
+        const served = (m.body.data ?? m.body.models).map((x) => x?.id || x?.name || "").filter(Boolean);
+        const want = String(prov.default_model || "").trim();
+        const has = !want || served.includes(want);
+        add("AI", "Local OpenAI-compatible", has ? P : W, has ? `${served.length} model(s) served${want ? ` incl. ${want}` : ""}` : `${want} NOT served (have: ${served.slice(0, 4).join(", ") || "none"})`, has ? {} : { remediation: `Load ${want} on the server, or save a served model id in Settings → AI Providers.` });
+      } else if (m.status === 404) {
+        add("AI", "Local OpenAI-compatible", W, `${prov.endpoint_url} answered 404 for /models — the saved endpoint may be missing the versioned base`, { remediation: "Save the base URL ending in /v1, e.g. http://host:8080/v1." });
+      } else {
+        add("AI", "Local OpenAI-compatible", W, `${m.error || "HTTP " + m.status} — routes on this provider will fail`, { remediation: "Start the local server or move the affected route back to Ollama." });
+      }
+    }
+  }
   if (!CFG.aiGateway) add("AI", "CARE AI Gateway", S, "AI_GATEWAY_URL not set");
   else {
     const g = await httpProbe(CFG.aiGateway, { path: "/health", ms: 6000 });

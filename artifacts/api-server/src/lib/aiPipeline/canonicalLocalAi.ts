@@ -3,12 +3,22 @@
  *
  * ONE endpoint + ONE chat/vision model until the architecture is stable.
  * Embeddings (nomic-embed-text) and Paddle OCR remain separate exceptions.
+ *
+ * The values themselves are defined once, in @workspace/ai-providers, so the
+ * provider layer and this pipeline layer cannot drift. This module keeps the
+ * normalisation helpers and re-exports the constants for existing importers.
  */
 
-export const CANONICAL_OLLAMA_ENDPOINT = "http://172.16.1.140:11434";
-export const CANONICAL_LOCAL_CHAT_VISION_MODEL = "qwen3-vl:8b";
-/** Embeddings only — not a chat/vision alternative. */
-export const CANONICAL_EMBEDDING_MODEL = "nomic-embed-text";
+import {
+  CANONICAL_OLLAMA_ENDPOINT,
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+} from "@workspace/ai-providers/canonical";
+
+export {
+  CANONICAL_OLLAMA_ENDPOINT,
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+  CANONICAL_EMBEDDING_MODEL,
+} from "@workspace/ai-providers/canonical";
 
 /**
  * Stale clinic_settings / UI values from before the single-model lock.
