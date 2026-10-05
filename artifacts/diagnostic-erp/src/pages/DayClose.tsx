@@ -47,6 +47,10 @@ type StaffUserStatus = {
   approvedByName: string | null;
   approvedAt: string | null;
   handoverNote: string | null;
+  /** Payments in this person's still-open window. 0 once they have closed. */
+  livePaymentCount?: number;
+  /** Instant their current window opened — their own close, or the clinic's. */
+  windowSince?: string | null;
   /** How many drawer closes this staff has on IST today (may include prior overall windows). */
   todayCloseCount?: number;
   postClosure?: {
@@ -79,12 +83,67 @@ type TodayStaffClose = {
   beforeCurrentWindow: boolean;
 };
 
+/**
+ * The handover frame, computed server-side in lib/handoverBoard.ts from the
+ * same rows as `users` and `todayCloses` above. It exists because a staff
+ * drawer runs close-to-close while every report runs calendar midnight in IST,
+ * and reading those two side by side without being told which is which is how
+ * "Day Close" became unreadable at 6 pm.
+ */
+type HandoverSlip = {
+  slipNo: number;
+  closureId: number;
+  closedAt: string | null;
+  coveredFromTs: string | null;
+  collected: number;
+  counted: number;
+  variance: number;
+  drawerStatus: string;
+  /** This slip's window opened before today's midnight — it carries older cash. */
+  spansYesterday: boolean;
+};
+
+type HandoverRow = {
+  userName: string;
+  slips: HandoverSlip[];
+  handedOver: number;
+  collectedInSlips: number;
+  variance: number;
+  withStaff: number;
+  withStaffPayments: number;
+  /** Set when cash has been sitting with this person since an earlier day. */
+  withStaffCarriedFrom: string | null;
+  state: "awaiting_handover" | "handed_over" | "still_open";
+  lastHandoverAt: string | null;
+};
+
+type HandoverBoard = {
+  generatedAt: string;
+  closureDate: string;
+  lastOverallClose: string | null;
+  rows: HandoverRow[];
+  totals: {
+    handedOver: number;
+    withStaff: number;
+    accountedFor: number;
+    collectedTodayCalendar: number;
+    carriedAcrossMidnight: number;
+    slipsToday: number;
+    slipsUnbalanced: number;
+    awaitingHandoverStaff: number;
+    carriedFromEarlierDays: number;
+    carriedStaffCount: number;
+    boardIsClear: boolean;
+  };
+};
+
 type StaffStatusResult = {
   users: StaffUserStatus[];
   lastOverallClose: string | null;
   todayIst?: string;
   todayCloses?: TodayStaffClose[];
   sameDayAfterPriorClose?: { billCount: number; billTotal: number };
+  handover?: HandoverBoard;
 };
 
 type SuspenseItem = { id: number; amount: number; rawMethod: string; recordedByName: string | null };
@@ -189,6 +248,17 @@ const fmtIst = (iso: string | null) =>
 
 const fmtTime = (iso: string | null) =>
   iso ? new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) : "—";
+
+/**
+ * "2026-10-05" → "5 Oct". The carried-over badge names a DAY, and `fmtTime`
+ * would have printed "12:00 am" for it — a midnight instant is not a date.
+ * Parsed at IST midnight explicitly so the label never shifts with the
+ * viewer's own timezone, which is the same reason `clinicDateOf` exists server-side.
+ */
+const fmtDay = (istDate: string | null | undefined) =>
+  istDate
+    ? new Date(`${istDate}T00:00:00+05:30`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" })
+    : "—";
 
 function n(v: string | number | undefined | null): number {
   return Number(v ?? 0) || 0;
@@ -653,6 +723,19 @@ export default function DayClose() {
     .filter((u) => u.postClosure && (u.postClosure.billCount > 0 || u.postClosure.paymentCount > 0))
     .map((u) => ({ userName: u.userName, postClosure: u.postClosure! }));
 
+  // The handover frame, keyed by name, so the table the owner already opens at
+  // 6 pm gains a "with staff" column and a reconciling footer without a second
+  // request, a second page, or a second definition of today.
+  const handover = staffStatusQ.data?.handover;
+  const handoverByName = new Map((handover?.rows ?? []).map((r) => [r.userName, r]));
+  // Lets the slip list carry the same #1 / #2 numbering as the table above,
+  // so "Sanjeev closed twice today" reads as two named handovers, not two rows.
+  const slipByClosureId = new Map(
+    (handover?.rows ?? []).flatMap((r) =>
+      r.slips.map((s) => [s.closureId, s] as const),
+    ),
+  );
+
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto min-w-0">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -733,6 +816,7 @@ export default function DayClose() {
                         <th className="px-3 py-2 text-right whitespace-nowrap">Exp. Digital</th>
                         <th className="px-3 py-2 text-right whitespace-nowrap">Counted Dig.</th>
                         <th className="px-3 py-2 text-right whitespace-nowrap">Dig. Var.</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap" title="Collected since this person's last slip and not yet handed over">With staff</th>
                         <th className="px-3 py-2 whitespace-nowrap">Status</th>
                         <th className="px-3 py-2 whitespace-nowrap">Closed At</th>
                         <th className="px-3 py-2 text-right whitespace-nowrap">Actions</th>
@@ -742,6 +826,7 @@ export default function DayClose() {
                       {staffStatusQ.data.users.map((u) => {
                         const cashVar = u.cashVariance ?? 0;
                         const digVar = u.digitalVariance ?? 0;
+                        const h = handoverByName.get(u.userName);
                         return (
                           <tr key={u.userId} className={`border-b last:border-b-0 ${
                             u.drawerStatus === "mismatch"
@@ -804,6 +889,37 @@ export default function DayClose() {
                               {u.isClosed && u.digitalVariance !== null
                                 ? (digVar === 0 ? "✓" : `${digVar < 0 ? "−" : "+"}${inr(Math.abs(digVar))}`)
                                 : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums" data-testid="with-staff-cell">
+                              {h && h.withStaff > 0 ? (
+                                <span className={
+                                  h.state === "still_open"
+                                    // They have not closed at all, so this IS the Expected
+                                    // columns to their right — not money on top of them.
+                                    // Shown quietly for exactly that reason.
+                                    ? "font-normal text-muted-foreground"
+                                    : "font-semibold text-orange-700 dark:text-orange-300"
+                                }
+                                  title={h.state === "still_open"
+                                    ? "Not yet closed — this is the same money as the Expected columns, still in their hand."
+                                    : "Collected after their last slip was closed and counted. This is on top of what you already hold from them."}
+                                >
+                                  {inr(h.withStaff)}
+                                  <span className="font-normal text-[10px]">
+                                    {" "}{h.state === "still_open" ? "not closed" : `+${h.withStaffPayments} after slip`}
+                                  </span>
+                                  {h.withStaffCarriedFrom && (
+                                    <span
+                                      className="ml-1 px-1 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300 text-[9px] font-black uppercase"
+                                      title={`Collected on ${h.withStaffCarriedFrom} and still not handed over. The day closed around it; it stays here until it is settled.`}
+                                    >
+                                      since {fmtDay(h.withStaffCarriedFrom)}
+                                    </span>
+                                  )}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </td>
                             <td className="px-3 py-2">
                               <DrawerBadge status={u.drawerStatus} />
@@ -889,23 +1005,41 @@ export default function DayClose() {
                     </Badge>
                   </div>
                   <div className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x">
-                    <table className="w-full text-sm min-w-[40rem]">
+                    <table className="w-full text-sm min-w-[52rem]">
                       <thead className="text-left text-xs text-muted-foreground uppercase border-b bg-muted/30">
                         <tr>
                           <th className="px-3 py-2">Staff</th>
+                          <th className="px-3 py-2">Slip</th>
                           <th className="px-3 py-2">Closed At</th>
                           <th className="px-3 py-2 text-right">Cash</th>
                           <th className="px-3 py-2 text-right">Digital</th>
-                          <th className="px-3 py-2 text-right">Total</th>
+                          <th className="px-3 py-2 text-right" title="What the software collected in this slip's window">Collected</th>
+                          <th className="px-3 py-2 text-right" title="What was physically counted and handed over">Counted</th>
+                          <th className="px-3 py-2 text-right">Variance</th>
                           <th className="px-3 py-2">Status</th>
                           <th className="px-3 py-2">Window</th>
                           <th className="px-3 py-2 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {staffStatusQ.data.todayCloses!.map((c) => (
-                          <tr key={c.id} className="border-b last:border-b-0">
+                        {staffStatusQ.data.todayCloses!.map((c) => {
+                          const s = slipByClosureId.get(c.id);
+                          return (
+                          <tr key={c.id} className={`border-b last:border-b-0 ${
+                            s && Math.abs(s.variance) > 0.005 ? "bg-red-50/40 dark:bg-red-950/10" : ""
+                          }`}>
                             <td className="px-3 py-2 font-medium">{c.userName}</td>
+                            <td className="px-3 py-2 tabular-nums whitespace-nowrap">
+                              {s ? `#${s.slipNo}` : "—"}
+                              {s?.spansYesterday && (
+                                <span
+                                  className="ml-1 px-1 py-0.5 rounded bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200 text-[9px] font-black uppercase whitespace-nowrap"
+                                  title="This slip's window opened before today's midnight, so it carries cash collected on an earlier day. It is the reason the slips do not add up to the calendar-day figure."
+                                >
+                                  spans earlier
+                                </span>
+                              )}
+                            </td>
                             <td className="px-3 py-2 text-xs whitespace-nowrap">
                               {c.closedAt
                                 ? new Date(c.closedAt).toLocaleString("en-IN", {
@@ -919,7 +1053,17 @@ export default function DayClose() {
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">{inr(c.actualCash)}</td>
                             <td className="px-3 py-2 text-right tabular-nums">{inr(c.actualDigital)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{inr(c.totalExpected)}</td>
                             <td className="px-3 py-2 text-right tabular-nums font-semibold">{inr(c.totalActual)}</td>
+                            <td className={`px-3 py-2 text-right tabular-nums font-semibold ${
+                              Math.abs(c.variance) < 0.005 ? "text-green-600"
+                              : c.variance < 0 ? "text-red-600"
+                              : "text-amber-600"
+                            }`}>
+                              {Math.abs(c.variance) < 0.005
+                                ? "✓"
+                                : `${c.variance < 0 ? "−" : "+"}${inr(Math.abs(c.variance))}`}
+                            </td>
                             <td className="px-3 py-2"><DrawerBadge status={c.drawerStatus} /></td>
                             <td className="px-3 py-2">
                               {c.beforeCurrentWindow ? (
@@ -943,10 +1087,111 @@ export default function DayClose() {
                               </Button>
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+              {/* ── The handover frame: what you hold, what they hold, and why
+                      the slips do not add up to the day's collections ───────── */}
+              {handover && (
+                <div className="mt-5 border-t pt-4 space-y-3" data-testid="handover-summary">
+                  {handover.totals.carriedStaffCount > 0 && (
+                    <div
+                      className="rounded-lg border-2 border-orange-500 bg-orange-50 dark:bg-orange-950/30 p-3"
+                      role="alert"
+                      data-testid="carried-over-alert"
+                    >
+                      <p className="text-xs font-black uppercase tracking-wide text-orange-800 dark:text-orange-200 flex items-center gap-1.5">
+                        <AlertTriangle size={13} /> Carried from an earlier day · {inr(handover.totals.carriedFromEarlierDays)}
+                      </p>
+                      <p className="text-[11px] text-orange-800/80 dark:text-orange-200/80 mt-1">
+                        {handover.totals.carriedStaffCount} {handover.totals.carriedStaffCount === 1 ? "person is" : "people are"} still
+                        holding money collected before today. Closing the day does not clear it — the line stays
+                        here, against the name, until it is handed in.
+                      </p>
+                      <ul className="mt-1.5 space-y-0.5">
+                        {handover.rows.filter((r) => r.withStaffCarriedFrom).map((r) => (
+                          <li key={r.userName} className="text-[11px] font-semibold text-orange-900 dark:text-orange-100">
+                            {r.userName} · {inr(r.withStaff)} · since {fmtDay(r.withStaffCarriedFrom)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      {
+                        label: "Handed over today",
+                        value: handover.totals.handedOver,
+                        note: `${handover.totals.slipsToday} slip${handover.totals.slipsToday === 1 ? "" : "s"} you hold cash against`,
+                        tone: "text-green-700 dark:text-green-300",
+                      },
+                      {
+                        label: "Still with staff",
+                        value: handover.totals.withStaff,
+                        note: `${handover.totals.awaitingHandoverStaff} ${handover.totals.awaitingHandoverStaff === 1 ? "person" : "people"} not yet handed in`,
+                        tone: handover.totals.withStaff > 0 ? "text-orange-700 dark:text-orange-300" : "text-green-700 dark:text-green-300",
+                      },
+                      {
+                        label: "Accounted for",
+                        value: handover.totals.accountedFor,
+                        note: "handed over + with staff",
+                        tone: "text-foreground",
+                      },
+                    ].map((c) => (
+                      <div key={c.label} className="rounded-lg border bg-muted/20 p-3">
+                        <p className="text-[10px] uppercase tracking-wide font-semibold text-muted-foreground">{c.label}</p>
+                        <p className={`text-lg font-extrabold tabular-nums ${c.tone}`}>{inr(c.value)}</p>
+                        <p className="text-[11px] text-muted-foreground">{c.note}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="rounded-lg bg-gray-900 dark:bg-gray-950 text-white p-3 space-y-1 text-[11px]">
+                    <div className="flex flex-wrap items-center gap-x-2">
+                      <span className="text-gray-400">Software collected today, calendar day (the figure every report uses):</span>
+                      <span className="font-bold tabular-nums">{inr(handover.totals.collectedTodayCalendar)}</span>
+                    </div>
+                    {Math.abs(handover.totals.carriedAcrossMidnight) > 0.005 ? (
+                      <div className="flex flex-wrap items-center gap-x-2">
+                        <span className="text-gray-400">Difference — drawers run close-to-close, so cash crosses midnight between slips:</span>
+                        <span className="font-bold tabular-nums text-violet-300">
+                          {handover.totals.carriedAcrossMidnight < 0 ? "−" : "+"}{inr(Math.abs(handover.totals.carriedAcrossMidnight))}
+                        </span>
+                        <span className="text-gray-400">· see the “spans earlier” tags above</span>
+                      </div>
+                    ) : (
+                      <div className="text-green-400 font-semibold">
+                        ✓ The handover frame and the calendar day agree exactly today.
+                      </div>
+                    )}
+                    <div className="pt-1.5 border-t border-white/10">
+                      {handover.totals.boardIsClear ? (
+                        <span className="inline-flex items-center gap-1.5 text-sm font-bold text-green-400" data-testid="board-clear">
+                          <CheckCircle2 size={14} /> Board clear — every slip matches its collection and nothing is with staff
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-sm font-bold text-orange-300" data-testid="board-open">
+                          <AlertTriangle size={14} />
+                          {handover.totals.slipsUnbalanced > 0
+                            && `${handover.totals.slipsUnbalanced} slip${handover.totals.slipsUnbalanced === 1 ? "" : "s"} unbalanced`}
+                          {handover.totals.slipsUnbalanced > 0 && handover.totals.withStaff > 0 && " · "}
+                          {handover.totals.withStaff > 0 && `${inr(handover.totals.withStaff)} still with staff`}
+                          {" — you can still close the day; these lines carry forward"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground">
+                    A rupee belongs to the slip that was open when it was collected. Once a slip is closed and
+                    printed, everything after it opens the next one — the same evening or the next day — which is
+                    why one slip can start yesterday and still be handed over today.
+                  </p>
                 </div>
               )}
             </CardContent>
