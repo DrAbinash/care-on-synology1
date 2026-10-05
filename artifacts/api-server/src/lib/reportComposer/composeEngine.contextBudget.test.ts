@@ -281,6 +281,6 @@ describe("B. at the measured real persona size, what the clinic can actually do"
     expect(run.safeError).toBe("composer_context_budget_exceeded");
     expect(composeMock).not.toHaveBeenCalled();
     expect(run.provenance?.degradedReason).toMatch(/3 fit this report/i);
-    expect(run.provenance?.degradedReason).toMatch(/ollama_composer_num_ctx/i);
+    expect(run.provenance?.degradedReason).toMatch(/ollama_composer_num_ctx cannot help/i);
   });
 });

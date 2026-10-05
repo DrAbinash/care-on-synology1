@@ -91,7 +91,7 @@ export function planComposerVisionContext(opts: {
 
   const reason = fits
     ? `${imageCount} image(s) ≈ ${estimatedTokens} tokens (${EMPIRICAL_TOKENS_PER_VISION_IMAGE}/image) + ${COMPOSER_OUTPUT_RESERVE_TOKENS} output reserve → num_ctx ${numCtx} (configured ${configured}, ceiling ${ceiling})`
-    : `${imageCount} image(s) need ~${requiredTokens} tokens but the composer ceiling is ${ceiling}. Select fewer key images (${fitAtCeiling.maxImages} fit this report), or shorten the report text, or raise ollama_composer_num_ctx above ${ceiling} in clinic settings.`;
+    : `${imageCount} image(s) need ~${requiredTokens} tokens but the composer ceiling is ${ceiling}. Select fewer key images (${fitAtCeiling.maxImages} fit this report), or shorten the report text. Raising ollama_composer_num_ctx cannot help — resolveComposerRuntime clamps it to ${ceiling}.`;
 
   return {
     fits,

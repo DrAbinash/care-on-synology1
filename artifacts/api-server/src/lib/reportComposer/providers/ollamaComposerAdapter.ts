@@ -87,7 +87,8 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
             safeError: "composer_context_budget_exceeded",
             detail:
               `The request needs ~${exceeded.requestTokens ?? "more"} tokens but this model context holds `
-              + `${exceeded.availableContext ?? "fewer"}. Select fewer key images or raise ollama_composer_num_ctx.`,
+              + `${exceeded.availableContext ?? "fewer"}. Select fewer key images or shorten the report text; `
+              + `if it persists, the vision model's own context is the limit.`,
             latencyMs: Date.now() - started,
             execution,
           };
