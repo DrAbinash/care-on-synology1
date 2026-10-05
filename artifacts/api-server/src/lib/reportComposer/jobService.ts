@@ -375,6 +375,10 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.safeError === "composer_model_not_configured" ||
       run.safeError === "composer_provider_not_configured" ||
       run.safeError === "malformed_json" ||
+      // A server that answers with chain-of-thought only will answer that way
+      // every time; retrying just burns the clinic GPU overnight and delays the
+      // drafts that could have been written.
+      run.safeError === "empty_final_content" ||
       run.safeError === "vision_model_required" ||
       run.safeError === "vision_capability_unverified" ||
       run.safeError === "composer_num_ctx_insufficient" ||

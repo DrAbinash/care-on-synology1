@@ -143,10 +143,6 @@ export async function openAiCompatibleChat(
       body as unknown as Parameters<typeof client.chat.completions.create>[0],
     );
 
-    const text =
-      "choices" in resp && Array.isArray(resp.choices)
-        ? (resp.choices[0]?.message?.content ?? "")
-        : "";
     const usageRaw = "usage" in resp ? resp.usage : undefined;
     const latencyMs = Date.now() - started;
     const usage: CompatibleUsage = {
@@ -155,18 +151,33 @@ export async function openAiCompatibleChat(
       totalTokens: usageRaw?.total_tokens ?? null,
     };
 
-    if (!String(text).trim()) {
+    // Fail closed on the FINAL answer only. A server can answer 200 with the
+    // visible `message.content` null, empty or whitespace while it spent the
+    // whole budget on `reasoning_content` (measured with Gemma-4 12B QAT via
+    // LM Studio, 2026-10-05: ~88 % of the output was reasoning and `content`
+    // stayed empty until max_tokens ≈ 420). Chain-of-thought is never a
+    // radiology answer, so it is deliberately not read, not substituted and not
+    // retained here — an empty final content is a provider FAILURE, not a draft.
+    // Only a non-empty string counts as an answer: an absent choice, a null
+    // message, and a non-string `content` (an object/array would stringify to
+    // something useless yet "non-blank") all fail the same way.
+    const choices = "choices" in resp && Array.isArray(resp.choices) ? resp.choices : [];
+    const rawContent = (choices[0] as { message?: { content?: unknown } } | undefined)?.message
+      ?.content;
+    const text = typeof rawContent === "string" ? rawContent : "";
+
+    if (!text.trim()) {
       return {
         ok: false,
         provider,
         model,
-        safeError: "empty_model_response",
+        safeError: "empty_final_content",
         latencyMs,
         usage,
       };
     }
 
-    return { ok: true, text: String(text), provider, model, latencyMs, usage };
+    return { ok: true, text, provider, model, latencyMs, usage };
   } catch (err: unknown) {
     const latencyMs = Date.now() - started;
     const raw = err instanceof Error ? err.message : String(err);
