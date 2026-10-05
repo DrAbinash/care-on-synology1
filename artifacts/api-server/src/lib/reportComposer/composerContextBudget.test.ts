@@ -75,7 +75,10 @@ describe("planComposerVisionContext — never silently truncates clinical input"
     expect(p.fits).toBe(false);
     expect(p.numCtx).toBeLessThanOrEqual(p.ceilingNumCtx);
     expect(p.reason).toMatch(/fewer key images/i);
-    expect(p.reason).toMatch(/ollama_composer_num_ctx/i);
+    // The setting is clamped by resolveComposerRuntime, so telling someone to
+    // raise it past the ceiling would be advice that cannot work.
+    expect(p.reason).toMatch(/ollama_composer_num_ctx cannot help/i);
+    expect(p.reason).toMatch(/clamps it to 8192/i);
     expect(p.maxImagesAtCeiling).toBeLessThan(4);
   });
 
