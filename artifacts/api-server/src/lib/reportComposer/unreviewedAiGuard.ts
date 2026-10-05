@@ -27,12 +27,21 @@
  */
 import { db } from "@workspace/db";
 import { aiReportComposeJobsTable } from "@workspace/db/schema";
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, like, or } from "drizzle-orm";
 import { logger } from "../logger";
 import type { TrackedChange } from "./types";
 
 /** Statuses whose PENDING proposals are still live and still signable. */
 export const UNREVIEWED_AI_JOB_STATUSES = ["READY", "STALE_READY"] as const;
+
+/**
+ * Coarse pre-filter for the query, in the exact compact form `JSON.stringify`
+ * writes for these rows. It exists only so the row cap below applies to
+ * *candidate* jobs rather than to the 20 most recent jobs of any kind — without
+ * it, twenty fully-reviewed drafts could hide an unreviewed one behind them.
+ * The decision itself is still made in `firstUnreviewedJob`, from parsed JSON.
+ */
+const PENDING_MARKER_LIKE = '%"reviewState":"PENDING"%';
 
 export type UnreviewedAiDraft = {
   jobId: number;
@@ -106,6 +115,7 @@ export async function findUnreviewedAiDraft(refs: {
       .where(
         and(
           inArray(aiReportComposeJobsTable.status, [...UNREVIEWED_AI_JOB_STATUSES]),
+          like(aiReportComposeJobsTable.trackedChangesJson, PENDING_MARKER_LIKE),
           or(...scopes),
         ),
       )

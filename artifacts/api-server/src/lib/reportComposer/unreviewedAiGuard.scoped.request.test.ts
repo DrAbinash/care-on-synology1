@@ -76,6 +76,7 @@ describe.skipIf(!hasDatabaseUrl())("unreviewed-AI finalize guard — DB scoping"
     changes: TrackedChange[];
     reportId?: number | null;
     studyId?: number | null;
+    updatedAt?: Date;
   }) {
     // The snapshot text varies per call so two ACTIVE rows never collide with
     // the composer's idempotency index.
@@ -105,6 +106,7 @@ describe.skipIf(!hasDatabaseUrl())("unreviewed-AI finalize guard — DB scoping"
         trackedChangesJson: JSON.stringify(opts.changes),
         proposedFindings: "Scoped guard draft.",
         priority: 40,
+        ...(opts.updatedAt ? { updatedAt: opts.updatedAt } : {}),
       })
       .returning();
     jobIds.push(row.id);
@@ -198,5 +200,30 @@ describe.skipIf(!hasDatabaseUrl())("unreviewed-AI finalize guard — DB scoping"
       await seedJob({ worklistId: worklistA, status, changes: [change("PENDING")] });
     }
     expect(await findUnreviewedAiDraft({ worklistId: worklistA })).toBeNull();
+  });
+
+  it("G. twenty fully-reviewed drafts cannot bury an older unreviewed one", async () => {
+    await clearJobs();
+    // The read is capped, so the cap has to apply to jobs that could still be
+    // unreviewed — not to whatever was touched most recently. Without that,
+    // re-composing a study twenty times would silently disarm the guard.
+    const base = Date.now();
+    const stalePending = await seedJob({
+      worklistId: worklistA,
+      status: "READY",
+      changes: [change("PENDING", true)],
+      updatedAt: new Date(base - 60 * 60 * 1000),
+    });
+    for (let i = 0; i < 25; i += 1) {
+      await seedJob({
+        worklistId: worklistA,
+        status: "READY",
+        changes: [change("ACCEPTED"), change("REJECTED")],
+        updatedAt: new Date(base + i * 60 * 1000),
+      });
+    }
+    const hit = await findUnreviewedAiDraft({ worklistId: worklistA });
+    expect(hit?.jobId).toBe(stalePending.id);
+    expect(hit?.pendingChangeCount).toBe(1);
   });
 });
