@@ -282,6 +282,11 @@ type PatchSnapshot = {
   appliedFormatReportTitle?: string | null;
   startingCanvasBaseline?: StartingCanvasBaseline | null;
   appliedPatternMarkers?: AppliedPatternMarker[];
+  /**
+   * Optional, like the four above, so frames captured before this field existed
+   * restore nothing rather than forcing the flag to a value they never recorded.
+   */
+  impressionNeedsRefresh?: boolean;
 };
 
 const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
@@ -302,6 +307,7 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     appliedFormatReportTitle: s.appliedFormatReportTitle,
     startingCanvasBaseline: s.startingCanvasBaseline ?? null,
     appliedPatternMarkers: s.appliedPatternMarkers.map((m) => ({ ...m })),
+    impressionNeedsRefresh: s.impressionNeedsRefresh,
   };
 }
 
@@ -2477,6 +2483,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...(snap.appliedPatternMarkers !== undefined
         ? { appliedPatternMarkers: snap.appliedPatternMarkers }
         : {}),
+      ...(snap.impressionNeedsRefresh !== undefined
+        ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
+        : {}),
       patchUndoStack: remaining,
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),
       isDirty: true,
@@ -2721,6 +2730,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const historyProv = (r.clinicalHistory ?? "").trim()
       ? buildProv(r.clinicalHistorySentences ?? [])
       : (get().fieldProvenance.clinicalHistory ?? EMPTY_FIELD_PROVENANCE);
+    const mergedNarrative: ReportNarrative = {
+      clinicalHistory: historyText,
+      technique: r.technique,
+      findings: r.findings,
+      impression: r.impression,
+      recommendation: r.recommendation,
+    };
+    // The merge replaces all five fields with template-derived prose, so an
+    // observation whose rendered contribution is no longer present is stale —
+    // the same judgement hydrateObservationLedger makes on reopen, using the
+    // same function. Stale is not deleted: the ledger panel shows NEEDS REFRESH
+    // and the radiologist can re-apply. Leaving a patch live instead would have
+    // it claim ownership of sentences the merge just overwrote, so the next tile
+    // re-select would strip prose that is no longer his.
+    const reconciledPatches = get().appliedPathologyPatches.map((p) => (
+      reconcilePatchAgainstNarrative(toLedgerPatch(p), mergedNarrative).stale
+        ? { ...p, stale: true }
+        : p
+    ));
+    const mergeSnapshot = captureClinicalSnapshot(get());
+    const mergedImpressionNeedsRefresh = impressionNeedsRefreshFromNarrative(
+      r.impression,
+      reconciledPatches.map(toLedgerPatch),
+      impressionProv,
+    );
     set({
       techniqueText: r.technique,
       findingsText: r.findings,
@@ -2739,10 +2773,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastMergeResult: null,
       lastMergeFormats: null,
       reportFormatPickerOpen: false,
-      appliedPathologyPatches: [],
-      lastPatchSnapshot: null,
-      patchUndoStack: [],
-      impressionNeedsRefresh: false,
+      appliedPathologyPatches: reconciledPatches,
+      ...withPushedClinicalUndo(get(), mergeSnapshot),
+      impressionNeedsRefresh: mergedImpressionNeedsRefresh,
       appliedFormatReportTitle:
         r.combinedReportTitle
         || (get().lastMergeFormats?.a?.reportTitle ?? "").trim()
