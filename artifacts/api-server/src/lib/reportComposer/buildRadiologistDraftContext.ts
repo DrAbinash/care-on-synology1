@@ -117,7 +117,7 @@ function projectObservation(o: ComposeObservation) {
  * prevent.
  */
 export function measurementAlreadyInText(measurement: string, text: string): boolean {
-  const numbers = measurement.match(/\d+(?:\.\d+)?/g) ?? [];
+  const numbers: string[] = measurement.match(/\d+(?:\.\d+)?/g) ?? [];
   if (numbers.length === 0) return false;
   return numbers.every((n) => {
     const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
