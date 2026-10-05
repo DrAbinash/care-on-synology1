@@ -719,6 +719,38 @@ export function maxBoundary(t1: Date | null, t2: Date | null): Date | null {
   return t1 > t2 ? t1 : t2;
 }
 
+/**
+ * A drawer variance is always COUNTED minus EXPECTED: negative is money missing
+ * from the drawer, positive is a surplus. The card reads the sign, not the
+ * words — it colours a negative variance red and a positive one amber — so the
+ * closed and reopened branches of `buildDrawerStatusPayload` must not compute it
+ * in opposite directions. They did: a ₹500 shortage showed as red "−₹500" on a
+ * closed drawer and as amber "+₹500" once the same drawer was reopened to
+ * investigate it.
+ *
+ * The total for a closed drawer still comes from its stored `variance` column,
+ * because that is the number written and audited at close time. Every close
+ * writer in this file computes it as `totalActual - totalExpected` (see
+ * `/`, `/my-close`, `/staff-close`), so the stored column follows this
+ * convention too, and the reopened branch applies it directly.
+ *
+ * Pure — exported for unit testing without a DB.
+ */
+export function drawerVariances(counts: {
+  countedCash: number;
+  expectedCash: number;
+  countedDigital: number;
+  expectedDigital: number;
+  countedTotal: number;
+  expectedTotal: number;
+}): { cashVariance: number; digitalVariance: number; totalVariance: number } {
+  return {
+    cashVariance: counts.countedCash - counts.expectedCash,
+    digitalVariance: counts.countedDigital - counts.expectedDigital,
+    totalVariance: counts.countedTotal - counts.expectedTotal,
+  };
+}
+
 async function userWindowBoundary(userName: string): Promise<Date | null> {
   const [lastOverall] = await db
     .select({ ts: dayClosuresTable.coveredToTs })
@@ -1218,6 +1250,19 @@ async function buildDrawerStatusPayload(userName: string) {
     const to = new Date();
     const s = await summarizeUserWindow(userName, from, to);
     const expectedDigital = s.totals.upi + s.totals.card + s.totals.cheque + s.totals.other;
+    const countedDigital = n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
+      + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther);
+    // Expected is LIVE (money collected since the drawer was reopened); counted
+    // is what this drawer counted when it closed. `drawerVariances` keeps the
+    // sign the same way round as the closed branch below.
+    const v = drawerVariances({
+      countedCash: n(latestUserClose.actualCash),
+      expectedCash: s.totals.cash,
+      countedDigital,
+      expectedDigital,
+      countedTotal: n(latestUserClose.totalActual),
+      expectedTotal: s.totals.total,
+    });
     return {
       drawerStatus: "reopened" as const,
       userName,
@@ -1225,17 +1270,13 @@ async function buildDrawerStatusPayload(userName: string) {
       coveredToTs: to,
       expectedCash: s.totals.cash,
       countedCash: n(latestUserClose.actualCash),
-      cashVariance: s.totals.cash - n(latestUserClose.actualCash),
+      cashVariance: v.cashVariance,
       expectedDigital,
-      countedDigital: n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
-        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther),
-      digitalVariance: expectedDigital - (
-        n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
-        + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther)
-      ),
+      countedDigital,
+      digitalVariance: v.digitalVariance,
       expectedTotal: s.totals.total,
       actualTotal: n(latestUserClose.totalActual),
-      totalVariance: s.totals.total - n(latestUserClose.totalActual),
+      totalVariance: v.totalVariance,
       closedAt: latestUserClose.closedAt,
       closedBy: latestUserClose.userName,
       handoverNote: latestUserClose.notes || null,
@@ -1256,6 +1297,14 @@ async function buildDrawerStatusPayload(userName: string) {
     + n(latestUserClose.expectedCheque) + n(latestUserClose.expectedOther);
   const actDigital = n(latestUserClose.actualUpi) + n(latestUserClose.actualCard)
     + n(latestUserClose.actualCheque) + n(latestUserClose.actualOther);
+  const variances = drawerVariances({
+    countedCash: actCash,
+    expectedCash: expCash,
+    countedDigital: actDigital,
+    expectedDigital: expDigital,
+    countedTotal: act,
+    expectedTotal: exp,
+  });
 
   return {
     drawerStatus: latestUserClose.drawerStatus,
@@ -1264,12 +1313,15 @@ async function buildDrawerStatusPayload(userName: string) {
     coveredToTs: latestUserClose.coveredToTs,
     expectedCash: expCash,
     countedCash: actCash,
-    cashVariance: actCash - expCash,
+    cashVariance: variances.cashVariance,
     expectedDigital: expDigital,
     countedDigital: actDigital,
-    digitalVariance: actDigital - expDigital,
+    digitalVariance: variances.digitalVariance,
     expectedTotal: exp,
     actualTotal: act,
+    // The stored column, not `variances.totalVariance`: this is the number that
+    // was written and audited at close time. It is computed the same way round
+    // by every close writer in this file, so the two agree.
     totalVariance: v,
     closedAt: latestUserClose.closedAt,
     closedBy: latestUserClose.userName,
@@ -1779,6 +1831,11 @@ dayCloseRouter.get("/staff-preview/:userName", requireOwnerOrAdmin, async (req, 
     suspenseCount: s.suspenseItems.length,
     suspenseItems: s.suspenseItems,
     bills: s.bills,
+    // Same shape as `/my-preview`, deliberately: My Daily Summary shows this
+    // window for a filtered staff member, and the orange "same-day after prior
+    // close" badge plus the row highlighting are a money-safety signal, not an
+    // optional extra. A response that omits it silently drops the warning.
+    sameDayAfterPriorClose: s.sameDayAfterPriorClose,
   });
 });
 
