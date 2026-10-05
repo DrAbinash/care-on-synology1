@@ -319,6 +319,36 @@ function withPushedClinicalUndo(s: S, snap: PatchSnapshot): Pick<S, "patchUndoSt
   };
 }
 
+/**
+ * The one place that decides whether a signed study may still be written to.
+ *
+ * Scope is the same-session window, and that is a real limit rather than an
+ * oversight: `completeFinalize` is the only writer of `isFinalized: true` and
+ * nothing rehydrates it from the server's REPORT_FINAL status, so a report
+ * signed on another workstation is held by `studyIsSignedElsewhere` in the hook
+ * layer and by `assertDraftWritable` (409 REPORT_LOCKED) on the server. What
+ * this closes is the window where the report was signed here, the workspace is
+ * still on screen, and an action armed before signing — an open merge preview, a
+ * pending overwrite, a tile still selected — fires after it.
+ *
+ * `allowEditSigned` is not consulted because it cannot be true: its only setter
+ * call passes `false`, and `signedReportCorrectionTruth.test.ts` pins that no
+ * click handler ever flips it on. The guards already in this file do not
+ * consult it either.
+ *
+ * Not applied to the reset/hydration paths (`selectStudy`, `setEditorContent`,
+ * `hydrateObservationLedger`) — reopening a signed study to read or print it is
+ * legitimate, and those are how its content reaches the screen.
+ */
+function refuseSignedMutation(s: S, action: string): boolean {
+  if (!s.isFinalized) return false;
+  console.warn("[care.workspace_store] clinical mutation refused — the report is signed", {
+    action,
+    activeStudyId: s.activeStudyId,
+  });
+  return true;
+}
+
 
 function narrativeFromState(s: Pick<S, "clinicalHistoryText" | "techniqueText" | "findingsText" | "impressionText" | "recommendationText">): ReportNarrative {
   return {
@@ -628,7 +658,7 @@ export type WorkspaceStore = S & {
    * Non-overridden slots restore replacedBaseline, same as removeObservation.
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
-  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
    * When editingId's clinical slot changes to an occupied sibling, updates that sibling
@@ -889,6 +919,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   setNextStudy: (id) => set({ nextStudyId: id }), markNextStudyPreloaded: () => set({ nextStudyPreloaded: true }),
   setField: (f, v, optsOrSource) => {
+    // Also covers setFieldIfEmpty and replaceField, which both delegate here.
+    if (refuseSignedMutation(get(), `setField:${f}`)) return;
     const opts = typeof optsOrSource === "string"
       ? { source: optsOrSource, replaceProvenance: true as const }
       : optsOrSource;
@@ -963,8 +995,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     setTimeout(() => get().recomputeCopilot(), 0);
   },
   mergeField: (f, incoming, source) => {
-    // Store-level guard: voice notes must never land on a finalized report.
-    if (get().isFinalized && source === "radiologist-voice") return;
+    // Subsumes the old voice-only guard. Dictation was the single source refused
+    // on a signed report; every other source that reaches here — tile, template,
+    // companion panel, measurement box, an accepted AI ghost — was let through.
+    if (refuseSignedMutation(get(), `mergeField:${source}`)) return;
     const key = fieldTextKey(f);
     const existing = get()[key];
     const existingProvenance = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;
@@ -2332,6 +2366,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
 
   removeObservation: (id, opts) => {
+    if (refuseSignedMutation(get(), "removeObservation")) return "blocked";
     const patch = get().appliedPathologyPatches.find((p) => p.id === id);
     if (!patch) return "missing";
     const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
@@ -2697,6 +2732,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   applyMergedResult: () => {
+    if (refuseSignedMutation(get(), "applyMergedResult")) {
+      // Same shape as confirmOverwriteAndApply's finalized branch: clear the
+      // dialog instead of leaving an Apply button that silently does nothing.
+      // The merge preview can be armed before signing and applied after it.
+      set({
+        mergePreviewOpen: false,
+        lastMergeResult: null,
+        lastMergeFormats: null,
+        abnormalPatternConfirm: null,
+      });
+      return;
+    }
     const patternConfirm = get().abnormalPatternConfirm;
     if (patternConfirm) {
       set({
