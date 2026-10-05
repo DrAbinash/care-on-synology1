@@ -99,6 +99,11 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   // response is another person's live cash totals, exactly like the two admin
   // drawer endpoints already listed.
   { file: "day-close.ts", localPath: "/staff-preview/:userName", fullPath: "/api/day-close/staff-preview/" },
+  // Also by hand: the handler reads no caller identity at all (it returns EVERY
+  // staff member's drawer to any owner/admin), so the marker scan has nothing to
+  // see. It is registered because of who must NOT be able to read it from cache
+  // on a shared terminal, not because of who it is scoped to.
+  { file: "day-close.ts", localPath: "/staff-status", fullPath: "/api/day-close/staff-status" },
   // Missed in the original audit sweep: scopes via session.subjectName, not
   // the bare "subjectId" token PERSONAL_IDENTITY_MARKERS looks for — found
   // while diagnosing "My Daily Summary" showing stale data on every visit.

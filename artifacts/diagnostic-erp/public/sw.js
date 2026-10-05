@@ -124,6 +124,11 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // scopes by req.params.userName while the access check lives in
                                                       // requireOwnerOrAdmin — so the scan is blind to it while the
                                                       // response is exactly as personal as its two siblings above.
+  "/api/day-close/staff-status",                     // every staff drawer's cash for the current window, now
+                                                      // including the handover board. Same URL for every owner, so a
+                                                      // cached 200 could be served to a lower-privilege user on a
+                                                      // shared billing terminal before their own (403) resolves —
+                                                      // the /api/dashboard/reconciliation reason, one floor lower.
   "/api/radiology/user-item-usage",                  // per-radiologist recent-item usage log
   "/api/dicom-workflow/radiologist-queue",           // conditionally personal (?filter=assigned_to_me
                                                       // scopes results by the caller's own radiologist id;
