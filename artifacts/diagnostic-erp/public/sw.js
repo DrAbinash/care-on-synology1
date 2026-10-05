@@ -117,6 +117,13 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/day-close/my-",                              // per-cashier drawer/closure status — shared billing terminals
   "/api/day-close/staff-drawer-status/",             // admin viewing another staff's drawer on My Daily Summary
   "/api/day-close/staff-post-closure-activity/",     // admin viewing another staff's post-closure activity
+  "/api/day-close/staff-preview/",                   // admin viewing another staff's LIVE open window (the money
+                                                      // totals behind "Since last close"). Registered by hand, not
+                                                      // discovered: the guard test's marker scan looks for a personal
+                                                      // identity token inside the GET handler body, and this handler
+                                                      // scopes by req.params.userName while the access check lives in
+                                                      // requireOwnerOrAdmin — so the scan is blind to it while the
+                                                      // response is exactly as personal as its two siblings above.
   "/api/radiology/user-item-usage",                  // per-radiologist recent-item usage log
   "/api/dicom-workflow/radiologist-queue",           // conditionally personal (?filter=assigned_to_me
                                                       // scopes results by the caller's own radiologist id;

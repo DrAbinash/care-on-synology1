@@ -107,6 +107,9 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
       "/api/day-close/my-post-closure-activity",
       "/api/day-close/staff-drawer-status/Vijay%20Yadav",
       "/api/day-close/staff-post-closure-activity/Vijay%20Yadav",
+      // Admin viewing another staff member's live open window on My Daily
+      // Summary — another person's cash totals, same class as the two above.
+      "/api/day-close/staff-preview/SANJEEV%20KUMAR",
       "/api/dashboard/my-daily-summary",
       "/api/radiology/user-item-usage",
       "/api/dicom-workflow/radiologist-queue",
