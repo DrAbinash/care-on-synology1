@@ -6,6 +6,7 @@
 export type StudyReadyKind =
   | "restored_draft"
   | "applied_normal_format"
+  | "normal_not_applied"
   | "protocol_blank"
   | "empty_start"
   | "restored_draft_with_protocol"
@@ -32,6 +33,12 @@ export type StudyReadyInputs = {
   protocolName?: string | null;
   /** Report body is still empty and Start Report is available. */
   emptyNeedsStart: boolean;
+  /**
+   * Why the automatic normal report did not arrive, in the same words the Quick
+   * Normal button uses. Only shown when the page is blank, so a study that simply
+   * has no normal format never shouts about it.
+   */
+  normalSkipReason?: string | null;
 };
 
 /**
@@ -63,6 +70,14 @@ export function deriveStudyReadyStatus(input: StudyReadyInputs): StudyReadyStatu
       label: "Restored your draft",
       canUndo: false,
     };
+  }
+
+  // A blank page with a reason beats a blank page with a guess. This is the one
+  // surface where he learns that no normal report exists for THIS exam, so he does
+  // not have to notice the absence and go looking for the button.
+  const skip = (input.normalSkipReason ?? "").trim();
+  if (input.emptyNeedsStart && skip) {
+    return { kind: "normal_not_applied", label: skip, canUndo: false };
   }
 
   if (input.protocolLoaded && input.emptyNeedsStart) {

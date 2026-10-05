@@ -840,10 +840,17 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     {/* Single study-ready status strip (startup facts only) */}
                     {studyReadyStatus.label && !isLocked && !isFinalized && (
                       <div
-                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-emerald-200/70 bg-emerald-50/60 text-emerald-900 text-[11px]"
+                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] ${
+                          studyReadyStatus.kind === "normal_not_applied"
+                            ? "border-amber-200/80 bg-amber-50/70 text-amber-900"
+                            : "border-emerald-200/70 bg-emerald-50/60 text-emerald-900"
+                        }`}
                         data-testid="study-ready-status"
+                        data-kind={studyReadyStatus.kind}
                       >
-                        <span className="flex-1 min-w-0 truncate">{studyReadyStatus.label}</span>
+                        <span className={studyReadyStatus.kind === "normal_not_applied" ? "flex-1" : "flex-1 min-w-0 truncate"}>
+                          {studyReadyStatus.label}
+                        </span>
                         {studyReadyStatus.canUndo && (
                           <Button
                             size="sm"

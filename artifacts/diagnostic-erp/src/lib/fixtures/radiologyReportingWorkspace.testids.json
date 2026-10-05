@@ -3,7 +3,7 @@
   "phase": 1,
   "capturedAt": "2026-09-26",
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
-  "note": "Updated when MRI abnormal strip landed (mri-abnormal-*).",
+  "note": "Updated when the Print action joined the top bar (btn-workspace-print); previously when the MRI abnormal strip landed (mri-abnormal-*).",
   "declaredInJsx": [
     "abnormal-pattern-apply",
     "abnormal-pattern-dismiss",
@@ -11,6 +11,7 @@
     "abnormal-pattern-strip",
     "ai-finalize-gate",
     "btn-start-report",
+    "btn-workspace-print",
     "btn-workspace-whatsapp-share",
     "canonical-technique-editor",
     "clinic-quick-select",
