@@ -1144,6 +1144,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   acknowledgeCopilotItem: (id) => { const a = new Set(get().acknowledgedCopilotIds); a.add(id); set({ acknowledgedCopilotIds: a }); },
   setActiveCopilotItem: (i) => set({ activeCopilotItem: i }),
   insertCopilotText: (item) => {
+    // Defence in depth, on the same reasoning as undoLastPatch's cross-study
+    // refusal: copilotItems, acknowledgedCopilotIds and activeCopilotItem are
+    // all in CLINICAL_RESET_FIELDS, so the ordinary switch path has already
+    // emptied the rail before this can fire. Reaching the refusal means the
+    // item arrived by a route that went round that reset — a click handler
+    // holding the previous render's item after a navigation, a deep link, or
+    // browser Back/Forward. Inserting would write the previous patient's
+    // sentence into this patient's Findings, and autosave would then persist it
+    // inside the current generation where no guard intercepts.
+    //
+    // Checked before the insertText test so the refusal does not depend on what
+    // the item happens to carry. The `missing-impression` branch below is
+    // currently unreachable — that item is built without insertText — and this
+    // ordering means it cannot be revived unguarded.
+    //
+    // An unstamped item is refused as well: see CopilotItem.studyId.
+    if (item.studyId !== get().activeStudyId) {
+      console.warn("[care.workspace_store] copilot insert refused — the suggestion belongs to a different study", {
+        itemId: item.id,
+        itemStudyId: item.studyId ?? null,
+        activeStudyId: get().activeStudyId,
+      });
+      return;
+    }
     if (!item.insertText) return;
     if (item.kind === "missing" && item.id === "missing-impression") {
       set({ activeCopilotItem: item });
@@ -1177,7 +1201,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     get().acknowledgeCopilotItem(item.id);
   },
-  recomputeCopilot: () => { const { findingsText, impressionText, measurements, activeStudyId, priors, copilotItems } = get(); const st = get().studies.find(s => s.id === activeStudyId); if (!st?.patient) { if (copilotItems.length) set({ copilotItems: [] }); return; } const items = runCopilotAnalysis({ findingsText, impressionText, measurements, modality: st.modality, sex: st.patient?.sex, hasPrior: priors.length > 0 }); if (JSON.stringify(copilotItems) === JSON.stringify(items)) return; const ci = items.filter(i => i.kind === "critical" && !get().acknowledgedCopilotIds.has(i.id)); if (ci.length > 0) { /* The SLA clock starts on the finding, not on the card. Both used to sit inside the `!get().notification` gate, so a card still on screen from the previous study suppressed the clock too — the finding ran unacknowledged with no elapsed time being measured at all. */ if (!get().criticalSlaStartedAt) get().startCriticalSla(); if (!get().notification) get().pushNotification({ kind: "interrupt", text: `Critical finding: ${ci[0].detail}` }); } set({ copilotItems: items }); },
+  /**
+   * Every item is stamped with the study it was computed from, and the stamp is
+   * applied BEFORE the `JSON.stringify` no-op comparison below — the stored
+   * items already carry it, so comparing unstamped against stamped would never
+   * match and would silently turn that early return into dead code (pinned by
+   * `clinicalStateReset.hardening.test.ts` and `setFieldIdempotent.test.ts`).
+   * `st.id` is used rather than `activeStudyId` because the guard above has
+   * already proven they are the same study and `st.id` is non-nullable.
+   */
+  recomputeCopilot: () => { const { findingsText, impressionText, measurements, activeStudyId, priors, copilotItems } = get(); const st = get().studies.find(s => s.id === activeStudyId); if (!st?.patient) { if (copilotItems.length) set({ copilotItems: [] }); return; } const items = runCopilotAnalysis({ findingsText, impressionText, measurements, modality: st.modality, sex: st.patient?.sex, hasPrior: priors.length > 0 }).map(i => ({ ...i, studyId: st.id })); if (JSON.stringify(copilotItems) === JSON.stringify(items)) return; const ci = items.filter(i => i.kind === "critical" && !get().acknowledgedCopilotIds.has(i.id)); if (ci.length > 0) { /* The SLA clock starts on the finding, not on the card. Both used to sit inside the `!get().notification` gate, so a card still on screen from the previous study suppressed the clock too — the finding ran unacknowledged with no elapsed time being measured at all. */ if (!get().criticalSlaStartedAt) get().startCriticalSla(); if (!get().notification) get().pushNotification({ kind: "interrupt", text: `Critical finding: ${ci[0].detail}` }); } set({ copilotItems: items }); },
   setRailStage: (s) => set({ railStage: s }), toggleCommandPalette: () => set({ showCommandPalette: !get().showCommandPalette }), setCommandPalette: (o) => set({ showCommandPalette: o }),
   toggleVoiceBar: () => set({ showVoiceBar: !get().showVoiceBar }), setVoiceListening: (o) => set({ voiceListening: o }), setVoiceTranscript: (t) => set({ voiceTranscript: t }), setVoiceProvider: (p) => set({ voiceProvider: p }),
   parkStudy: () => { const id = get().activeStudyId; if (!id) return; const pk = new Set(get().parkedStudyIds); pk.add(id); set({ parkedStudyIds: pk }); get().advanceToNextStudy(); },
