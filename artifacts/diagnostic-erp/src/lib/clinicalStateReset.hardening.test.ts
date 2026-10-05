@@ -700,6 +700,41 @@ describe("study switch — every clinical field must actually be cleared", () =>
 });
 
 /**
+ * A worklist row with a patient attached. `recomputeCopilot` returns early
+ * without one (`if (!st?.patient)`), so any test that needs the copilot to
+ * actually run has to build this rather than just setting activeStudyId.
+ */
+function criticalStudyRow() {
+  return {
+    id: "study-C",
+    accession: "ACC-C",
+    studyInstanceUID: "1.2.840.C",
+    patient: {
+      id: "pt-C",
+      name: "Patient C",
+      age: 52,
+      sex: "M",
+      uhid: "UHID-C",
+      referringDoctor: "Dr Ref",
+    },
+    modality: "CT",
+    bodyPart: "CHEST",
+    studyDescription: "CT chest",
+    clinicalHistory: "Sudden breathlessness",
+    status: "draft",
+    priority: "urgent",
+    receivedAt: new Date().toISOString(),
+    priorCount: 0,
+    criticalFlag: false,
+    aiDraftReady: false,
+    tatMinutes: 12,
+    slaMinutes: 30,
+    series: 1,
+    images: 240,
+  };
+}
+
+/**
  * ─── The second-order consequence of an unlisted field ──────────────────────
  *
  * `notification` missing from CLINICAL_RESET_FIELDS did more than show Patient
@@ -721,35 +756,7 @@ describe("critical-result SLA clock — must not depend on the interrupt card be
   /** A study row with a patient, so `recomputeCopilot` gets past its own guard. */
   function openCriticalStudy(notification: WorkspaceStore["notification"]): void {
     useWorkspace.setState({
-      studies: [
-        {
-          id: "study-C",
-          accession: "ACC-C",
-          studyInstanceUID: "1.2.840.C",
-          patient: {
-            id: "pt-C",
-            name: "Patient C",
-            age: 52,
-            sex: "M",
-            uhid: "UHID-C",
-            referringDoctor: "Dr Ref",
-          },
-          modality: "CT",
-          bodyPart: "CHEST",
-          studyDescription: "CT chest",
-          clinicalHistory: "Sudden breathlessness",
-          status: "draft",
-          priority: "urgent",
-          receivedAt: new Date().toISOString(),
-          priorCount: 0,
-          criticalFlag: false,
-          aiDraftReady: false,
-          tatMinutes: 12,
-          slaMinutes: 30,
-          series: 1,
-          images: 240,
-        },
-      ],
+      studies: [criticalStudyRow()],
       activeStudyId: "study-C",
       activeStudyInstanceUID: "1.2.840.C",
       findingsText: "Large right-sided pneumothorax.",
@@ -804,5 +811,83 @@ describe("critical-result SLA clock — must not depend on the interrupt card be
     expect(s.copilotItems).toEqual([]);
     expect(s.criticalSlaStartedAt).toBeNull();
     expect(s.criticalSlaEscalated).toBe(false);
+  });
+});
+
+/**
+ * ─── Clearing the rail is only half of it ───────────────────────────────────
+ *
+ * Draft hydration writes the new patient's report through `setEditorContent`,
+ * and that was the one content writer which never deferred `recomputeCopilot`
+ * — setField, mergeField, insertMeasurement, insertAllMeasurements,
+ * insertCopilotText and applyMacroWithValues all do. Before `copilotItems`
+ * entered CLINICAL_RESET_FIELDS the gap was invisible: the previous patient's
+ * items were still sitting in the rail, so it looked populated. Emptying the
+ * field exposed it — the rail would have stayed empty until the radiologist's
+ * first keystroke, on exactly the studies that have a saved draft.
+ */
+describe("study switch — the copilot rail is rebuilt for the study now open", () => {
+  const CRITICAL = {
+    findings: "Large right-sided pneumothorax.",
+    impression: "",
+    recommendation: "",
+    technique: "CT chest",
+    clinicalHistory: "Sudden breathlessness",
+  };
+
+  it("recomputes once hydration has written the new patient's report", () => {
+    vi.useFakeTimers();
+    try {
+      // Patient A is open and the rail is full of A's items.
+      useWorkspace.setState({
+        studies: [criticalStudyRow()],
+        activeStudyId: "study-A",
+        copilotItems: [
+          { id: "A-item", kind: "suggestion", title: "A", detail: "A", confidence: "high", source: "A" },
+        ],
+      } as never);
+
+      // The switch — the PARTIAL reset, exactly as useDraftPersistence performs it.
+      useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+      expect(useWorkspace.getState().copilotItems).toEqual([]);
+
+      // Hydration then writes Patient B's report, and B is the critical one.
+      useWorkspace.setState({ activeStudyId: "study-C", activeStudyInstanceUID: "1.2.840.C" } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+
+      // Deferred, like every other content writer — nothing has run yet.
+      expect(useWorkspace.getState().copilotItems).toEqual([]);
+
+      vi.runAllTimers();
+
+      const items = useWorkspace.getState().copilotItems;
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.some((i) => i.kind === "critical")).toBe(true);
+      expect(items.every((i) => i.id !== "A-item")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an identical write a genuine no-op — the recompute sits after the early return", () => {
+    vi.useFakeTimers();
+    try {
+      useWorkspace.setState({ studies: [criticalStudyRow()], activeStudyId: "study-C" } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+      vi.runAllTimers();
+      const firstPass = useWorkspace.getState().copilotItems;
+
+      // setFieldIdempotent.test.ts pins the no-op. Prove the early return is
+      // still taken by clearing isDirty first: a write that reached the `set`
+      // would put it straight back.
+      useWorkspace.setState({ isDirty: false } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+      vi.runAllTimers();
+
+      expect(useWorkspace.getState().isDirty).toBe(false);
+      expect(useWorkspace.getState().copilotItems).toEqual(firstPass);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

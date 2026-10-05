@@ -1047,6 +1047,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: nextProv,
       isDirty: true,
     });
+    // Every other content writer defers this (setField, mergeField,
+    // insertMeasurement, insertAllMeasurements, insertCopilotText,
+    // applyMacroWithValues) and setEditorContent was the omission. It matters
+    // because this is the writer draft hydration uses, and hydration follows
+    // the study-switch reset that empties copilotItems — without the recompute
+    // the rail stayed empty until the radiologist's first keystroke. Deliberately
+    // after the no-op return above, so an identical write is still a true no-op.
+    setTimeout(() => get().recomputeCopilot(), 0);
   },
   setMeasurements: (m) => {
     const prev = get().measurements;
