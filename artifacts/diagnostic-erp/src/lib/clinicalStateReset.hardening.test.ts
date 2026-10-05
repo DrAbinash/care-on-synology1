@@ -508,3 +508,192 @@ describe("re-finalize over an existing report — the discarded-edit path must n
     expect(src).toMatch(/if \(!finalizeResult\.idempotent && finalizeResult\.signed &&/);
   });
 });
+
+/**
+ * ─── Classification: the mechanism, not the backlog ─────────────────────────
+ *
+ * Every test above dirties an enumerated list of fields and asserts an
+ * enumerated list. An enumerated test cannot notice a field nobody enumerated —
+ * which is exactly how `notification`, `copilotItems`, `pendingPathologyPatch`,
+ * `activeMacroPrompt` and the pending-format keys survived: clinical state that
+ * no list mentioned, so no assertion covered it and the suite stayed green.
+ *
+ * These tests invert that. They derive the field list from the live store and
+ * require every non-action key to be classified as exactly one of:
+ *
+ *   CLINICAL_RESET_FIELDS — one study's clinical state; must be empty on switch
+ *   IDENTITY_CONTEXT_KEYS — owned by the caller, deliberately not in the helper
+ *   SESSION_SCOPE_KEYS    — app/session state that must SURVIVE a switch
+ *
+ * A field added to the store and left unclassified fails here *by name*, so its
+ * author has to decide which bucket it belongs in. The failure mode is now
+ * safe: forget to classify a clinical field and CI stops, instead of Patient A's
+ * state quietly riding along into Patient B's report.
+ */
+
+/** The caller owns these; `emptyClinicalState` must never touch them (asserted above). */
+const IDENTITY_CONTEXT_KEYS = [
+  "activeStudyId",
+  "activeStudyInstanceUID",
+  "clinicalHistoryText",
+  "reportingContext",
+] as const;
+
+/**
+ * Content libraries, device and UI preferences, and queue progress. None of it
+ * belongs to one study, so a switch must leave it alone — clearing the worklist
+ * or the tile library on every navigation would be its own bug.
+ */
+const SESSION_SCOPE_KEYS = [
+  "studies",
+  "nextStudyId",
+  "showCommandPalette",
+  "showVoiceBar",
+  "voiceProvider",
+  "completedStudyIds",
+  "parkedStudyIds",
+  "sessionStartedAt",
+  "lastSignAt",
+  "fatigueCardDismissed",
+  "criticalSlaMinutes",
+  "quickSelectTiles",
+  "quickSelectEditorOpen",
+  "quickSelectEditingTile",
+  "quickSelectEditorField",
+  "reportFormats",
+  "structuredNormalRows",
+  "saveAsFormatDialogOpen",
+  "snippetMacros",
+  "macroEditorOpen",
+  "editingMacro",
+  "signOffProfiles",
+  "abnormalPatternLibrary",
+  "abnormalPatternSuggestionsEnabled",
+  "patternUsageCounts",
+] as const;
+
+const POISON = "__patient_A__";
+
+function stateKeys(): string[] {
+  return Object.entries(useWorkspace.getState() as unknown as Record<string, unknown>)
+    .filter(([, v]) => typeof v !== "function")
+    .map(([k]) => k);
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown): unknown => (v instanceof Set ? [...v].sort() : v);
+  try {
+    return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+  } catch {
+    return a === b;
+  }
+}
+
+/** A value guaranteed to differ from `pristine`, so survival after a reset is detectable. */
+function poisonValue(pristine: unknown): unknown {
+  if (pristine instanceof Set) return new Set([POISON]);
+  if (Array.isArray(pristine)) return [POISON];
+  if (typeof pristine === "string") return POISON;
+  if (typeof pristine === "boolean") return !pristine;
+  if (typeof pristine === "number") return pristine + 4242;
+  if (pristine === null || pristine === undefined) return POISON;
+  return { [POISON]: true };
+}
+
+/** Writes Patient A's fingerprints into every clinical field; returns the keys that took. */
+function poisonEveryClinicalField(): string[] {
+  const pristine = useWorkspace.getState() as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  const poisoned: string[] = [];
+  for (const key of CLINICAL_RESET_FIELDS) {
+    const before = pristine[key];
+    const after = poisonValue(before);
+    if (!sameValue(before, after)) {
+      patch[key] = after;
+      poisoned.push(key);
+    }
+  }
+  useWorkspace.setState(patch as never);
+  return poisoned;
+}
+
+describe("state classification — no store field may be left unclassified", () => {
+  it("puts every non-action store key in exactly one bucket", () => {
+    const classified = [
+      ...([...CLINICAL_RESET_FIELDS] as string[]),
+      ...([...IDENTITY_CONTEXT_KEYS] as string[]),
+      ...([...SESSION_SCOPE_KEYS] as string[]),
+    ];
+
+    const dupes = [...new Set(classified.filter((k, i) => classified.indexOf(k) !== i))];
+    expect(dupes, `field classified in two buckets: ${dupes.join(", ")}`).toEqual([]);
+
+    const keys = stateKeys();
+    const unclassified = keys.filter((k) => !classified.includes(k));
+    expect(
+      unclassified,
+      `unclassified store field(s): ${unclassified.join(", ")} — `
+        + `decide clinical (add to CLINICAL_RESET_FIELDS + emptyClinicalState), `
+        + `identity, or session for each. Leaving it out means it survives a study switch.`,
+    ).toEqual([]);
+
+    const stale = classified.filter((k) => !keys.includes(k));
+    expect(stale, `classified names that are not live store fields: ${stale.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("study switch — every clinical field must actually be cleared", () => {
+  it("PARTIAL reset (worklist navigate / URL sync) clears all of them", () => {
+    const poisoned = poisonEveryClinicalField();
+    // If a field could not be poisoned, nothing below proves anything about it.
+    expect(poisoned).toEqual([...CLINICAL_RESET_FIELDS]);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+    const empty = emptyClinicalState() as unknown as Record<string, unknown>;
+    const survived = poisoned.filter((k) => !sameValue(after[k], empty[k]));
+    expect(survived, `Patient A's state survived the switch: ${survived.join(", ")}`).toEqual([]);
+  });
+
+  it("FULL reset (selectStudy) clears all of them", () => {
+    vi.useFakeTimers();
+    try {
+      const poisoned = poisonEveryClinicalField();
+      useWorkspace.setState({
+        studies: [{ id: "study-B", studyInstanceUID: "1.2.840.B", clinicalHistory: "B: 61M, headache" }],
+      } as never);
+
+      useWorkspace.getState().selectStudy("study-B");
+
+      const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+      const empty = emptyClinicalState() as unknown as Record<string, unknown>;
+      const survived = poisoned.filter((k) => !sameValue(after[k], empty[k]));
+      expect(survived, `Patient A's state survived selectStudy: ${survived.join(", ")}`).toEqual([]);
+      // Identity comes from the study row, not the helper.
+      expect(after.activeStudyId).toBe("study-B");
+      expect(after.clinicalHistoryText).toBe("B: 61M, headache");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves session state intact while doing it", () => {
+    const markers: Record<string, unknown> = {
+      showCommandPalette: true,
+      fatigueCardDismissed: true,
+      criticalSlaMinutes: 30,
+      completedStudyIds: new Set(["study-Z"]),
+      parkedStudyIds: new Set(["study-Y"]),
+    };
+    poisonEveryClinicalField();
+    useWorkspace.setState(markers as never);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+    for (const [key, value] of Object.entries(markers)) {
+      expect(sameValue(after[key], value), `session field clobbered by the reset: ${key}`).toBe(true);
+    }
+  });
+});
