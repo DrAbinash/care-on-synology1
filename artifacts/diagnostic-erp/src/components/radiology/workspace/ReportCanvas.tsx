@@ -35,6 +35,7 @@ import PriorComparisonToolbar from "@/components/radiology/PriorComparisonToolba
 import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsBanner";
 import { requestOhifNavigateToAnchor } from "@/lib/ohifViewerBridge";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
@@ -1940,7 +1941,17 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       )}
                     </div>
 
-                    {/* Critical finding mark + communication checklist (legacy) */}
+                    {/* Critical finding mark + communication checklist (legacy).
+                        Part of the optional critical-result COMMUNICATION
+                        workflow (ff_radiology_critical_result_comms, default
+                        OFF). This panel is the ONLY place isCritical,
+                        criticalNote and checklistComm can be set, so hiding it
+                        is precisely what would make the pre-sign
+                        acknowledgement block unsatisfiable — which is why
+                        useStudyFinalize withholds the detector's hits from that
+                        block whenever this panel is hidden. The DETECTOR itself
+                        is unaffected either way. */}
+                    {criticalCommsEnabled() && (
                     <div className="flex flex-col gap-2 border rounded-md p-3 bg-red-50/40 border-red-100" data-testid="critical-finding-panel">
                       <div className="flex items-center gap-2">
                         <Switch
@@ -1982,6 +1993,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         </>
                       )}
                     </div>
+                    )}
                     </ReportAccordionSection>
 
                     {/* 9. REPORT / LAYOUT / EXPORT — Classic/Premium, preview,

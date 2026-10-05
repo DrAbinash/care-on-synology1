@@ -194,7 +194,10 @@ const navItems: NavEntry[] = [
       { path: "/radiology/my-collection",        icon: ShieldAlert,    label: "DICOM Match" },
       { path: "/radiology/reporting-workspace", icon: FilePen,        label: "Reporting Workspace" },
       { path: "/report-delivery",               icon: Send,           label: "Report Delivery" },
-      { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings" },
+      // Gated by the optional critical-result COMMUNICATION workflow; the route
+      // itself stays registered so an existing bookmark resolves to the page's
+      // own "switched off" notice instead of a dead link.
+      { path: "/radiology/critical-findings",   icon: AlertCircle,    label: "Critical Findings", featureFlag: "ff_radiology_critical_result_comms" },
       { path: "/pacs",                          icon: Monitor,        label: "PACS Viewer" },
       { path: "/echo",                          icon: Heart,          label: "Echo" },
       {

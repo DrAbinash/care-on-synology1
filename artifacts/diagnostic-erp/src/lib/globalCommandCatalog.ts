@@ -2,6 +2,7 @@
  * Searchable destinations for the ERP-wide Ctrl+K palette (header, all pages).
  * Keep keywords generous — staff search by task name, not route.
  */
+import { isFeatureEnabled } from "@/lib/staffSession";
 
 export type GlobalCommandAction = {
   id: string;
@@ -10,6 +11,11 @@ export type GlobalCommandAction = {
   group: string;
   keywords?: string[];
   hint?: string;
+  /** When set, the entry is offered only while this ff_* flag is enabled —
+   *  the same declarative gate `components/Layout.tsx` applies to nav leaves.
+   *  Filtered at render time (not at module load) because GLOBAL_COMMANDS is
+   *  built once on import, before GET /api/feature-flags has hydrated. */
+  featureFlag?: string;
 };
 
 function settingsTab(id: string, label: string, keywords: string[] = []): GlobalCommandAction {
@@ -63,7 +69,11 @@ export const GLOBAL_COMMAND_ACTIONS: GlobalCommandAction[] = [
   page("rad-reporting", "Reporting Workspace", "/radiology/reporting-workspace", "Radiology", ["report", "dictation", "radiologist"]),
   page("rad-dicom-match", "DICOM Match", "/radiology/my-collection", "Radiology", ["match", "collection"]),
   page("rad-delivery", "Report Delivery", "/report-delivery", "Radiology", ["send report", "whatsapp report"]),
-  page("rad-critical", "Critical Findings", "/radiology/critical-findings", "Radiology", ["critical", "alert"]),
+  // Gated: the Critical Findings tracker is part of the optional critical-result
+  // COMMUNICATION workflow (see lib/criticalResultCommsFlag.ts). Its nav item in
+  // Layout.tsx carries the same flag, so the palette and the sidebar can never
+  // disagree about whether the page is reachable.
+  { ...page("rad-critical", "Critical Findings", "/radiology/critical-findings", "Radiology", ["critical", "alert"]), featureFlag: "ff_radiology_critical_result_comms" },
   page("pacs-viewer", "PACS Viewer", "/pacs", "Radiology", ["ohif", "viewer", "images"]),
   page("echo", "Echo", "/echo", "Radiology", ["echocardiography", "cardiac"]),
   page("usg-worklist", "USG Worklist", "/radiology/worklist?modality=USG", "Radiology", ["ultrasound worklist"]),
@@ -228,6 +238,18 @@ export function dedupeGlobalCommands(actions: GlobalCommandAction[]): GlobalComm
 }
 
 export const GLOBAL_COMMANDS = dedupeGlobalCommands(GLOBAL_COMMAND_ACTIONS);
+
+/**
+ * True when `action` should be offered in the palette right now.
+ *
+ * Must be called during render, never memoised into a module-level constant:
+ * GLOBAL_COMMANDS is built at import time, when staffSession's serverFlags is
+ * still null and every ff_* flag reads as its default. Evaluating visibility
+ * per render is what lets an entry appear once GET /api/feature-flags resolves.
+ */
+export function isCommandActionVisible(action: GlobalCommandAction): boolean {
+  return !action.featureFlag || isFeatureEnabled(action.featureFlag);
+}
 
 /** Value string fed to cmdk for fuzzy matching. */
 export function commandSearchValue(action: GlobalCommandAction): string {

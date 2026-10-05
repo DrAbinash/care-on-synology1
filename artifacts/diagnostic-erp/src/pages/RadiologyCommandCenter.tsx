@@ -22,6 +22,7 @@ import { api } from "@/lib/fetchApi";
 import { queryAiReporting } from "@/lib/aiReportingClient";
 import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
 import { finalizeRadiologyReport, saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import DeprecatedSurfaceBanner from "@/components/radiology/DeprecatedSurfaceBanner";
 import {
   registerDraftRescueSaver, deregisterDraftRescueSaver,
@@ -223,6 +224,17 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
   const [recommendation, setRecommendation] = useState("Please correlate with clinical findings.");
   const [isCritical, setIsCritical] = useState(false);
   const [criticalNote, setCriticalNote] = useState("");
+  // This owner-only legacy page carries its own complete copy of the
+  // critical-result COMMUNICATION workflow: a "Critical Finding: Active/Off"
+  // button, a "Critical Communication Checklist", an auto-detect effect that
+  // flips the flag and toasts "Please complete the communication checklist",
+  // and a pre-sign warning about the unchecked flag. It is gated by the same
+  // ff_radiology_critical_result_comms as the Reporting Workspace, because a
+  // toggle that only hid the workspace copy would not actually turn the
+  // workflow off. The DETECTOR behind hasCritical/hasCriticalFinding still
+  // runs; what is suppressed is the flag, the checklist and the instructions to
+  // complete it. Read once per render — effects below capture this value.
+  const criticalCommsOn = criticalCommsEnabled();
   const [reportStatus, setReportStatus] = useState<string>("DRAFT");
   const [selectedChocolateFindings, setSelectedChocolateFindings] = useState<ChocolateFinding[]>([]);
   
@@ -573,7 +585,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       }
     }
     
-    if (hasCritical && !isCritical) {
+    if (criticalCommsOn && hasCritical && !isCritical) {
       setIsCritical(true);
       toast({
         title: "Critical Finding Auto-Detected",
@@ -587,7 +599,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
         studyInstanceUID: study.studyInstanceUID
       }).catch(() => {});
     }
-  }, [multiSelections, activeBuilderTypes, isCritical, study]);
+  }, [multiSelections, activeBuilderTypes, isCritical, study, criticalCommsOn]);
 
   // Hybrid Template + Findings merge
   const appendSelectedFindings = () => {
@@ -659,12 +671,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
       }
     }
 
-    if (hasCriticalFinding && !isCritical) {
+    if (criticalCommsOn && hasCriticalFinding && !isCritical) {
       warnings.push("A critical finding is active in selections, but Critical Findings flag is not checked.");
     }
 
     return warnings;
-  }, [study, rawFindings, impression, activeBuilderTypes, multiSelections, isCritical]);
+  }, [study, rawFindings, impression, activeBuilderTypes, multiSelections, isCritical, criticalCommsOn]);
 
   // Auto-populate template/text from AI draft or preset defaults when study changes
   useEffect(() => {
@@ -1490,7 +1502,12 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               return prev;
                             });
                           }
-                          if (finding.isCritical) {
+                          // Gated: with the workflow off there is no Critical
+                          // Finding button or checklist on screen, so a library
+                          // finding must not silently flip a flag and write a
+                          // note that the radiologist can neither see nor edit —
+                          // both are persisted into the signed report below.
+                          if (criticalCommsOn && finding.isCritical) {
                             setIsCritical(true);
                             if (finding.shortName) setCriticalNote(finding.shortName);
                           }
@@ -1880,7 +1897,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                     </div>
 
                     {/* Critical communication checklist */}
-                    {isCritical && (
+                    {criticalCommsOn && isCritical && (
                       <div className="border border-rose-950/40 bg-rose-950/10 rounded-lg p-3 space-y-2.5 mt-auto">
                         <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1">
                           <AlertOctagon size={12} />
@@ -2370,6 +2387,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
               <div className="flex items-center justify-between border-t border-slate-800 pt-3">
                 <div className="flex items-center gap-3">
                   {/* Critical finding button */}
+                  {criticalCommsOn && (
                   <div className="flex items-center gap-2">
                     <Button
                       size="sm"
@@ -2389,6 +2407,7 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                       />
                     )}
                   </div>
+                  )}
                 </div>
 
                 <div className="flex gap-2">

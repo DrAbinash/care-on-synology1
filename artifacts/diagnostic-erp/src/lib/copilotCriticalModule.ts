@@ -10,12 +10,29 @@
  *
  * Registered on import, pure, alias-free — same pattern as the comparison and
  * measurement-completeness modules.
+ *
+ * GATED by ff_radiology_critical_result_comms (default OFF). This module's
+ * entire output is an instruction to use the workspace's critical-communication
+ * controls — "Mark Critical Finding" and the F5 communication checklist. When
+ * the flag is off those controls are not rendered, so the advisory would tell
+ * the radiologist to do something the UI offers no way to do. It therefore
+ * stays silent rather than nagging about a workflow that is switched off.
+ *
+ * Note what this does NOT gate: the underlying DETECTOR. `detectCriticalFindings`
+ * (criticalResults.ts) and the workspace lint rule `CRITICAL_FINDING` still run,
+ * and the copilot rail still shows the purely informational "Critical finding
+ * detected" item produced by runCopilotAnalysis. Detection is untouched by
+ * design; only the communication workflow around it is optional.
  */
 import type { CopilotContext, CopilotItem } from "./copilotOrchestrator";
 import { registerCopilotModule } from "./copilotModules";
 import { detectCriticalFindings } from "./criticalResults";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 
 export function criticalModuleItems(ctx: CopilotContext): CopilotItem[] {
+  // Fail closed: before /api/feature-flags has hydrated, isFeatureEnabled
+  // returns the default (false), so no advisory can appear on a cold start.
+  if (!criticalCommsEnabled()) return [];
   const hits = detectCriticalFindings(ctx.findings, ctx.impression, ctx.criticalWatchList);
   if (hits.length === 0) return [];
   const labels = hits.map((h) => h.label).join(", ");

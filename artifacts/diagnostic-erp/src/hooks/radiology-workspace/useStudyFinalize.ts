@@ -14,6 +14,7 @@ import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import { runFinalizeQualityEvaluation } from "@/lib/reportQualityFinalizeApi";
 import { detectCriticalFindings } from "@/lib/criticalResults";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
 import { clearRescueDraft } from "@/lib/draftRescue";
@@ -220,13 +221,28 @@ const finalizeReport = useCallback(async () => {
   const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
 
   // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
+  //
+  // The DETECTOR always runs — ff_radiology_critical_result_comms does not
+  // blind it, and `criticalHits` stays available for anything that merely
+  // reports. What the flag governs is whether a detection creates SIGNING
+  // FRICTION. With the workflow off, the "Mark Critical Finding" switch and the
+  // communication checklist are not rendered at all, so neither `isCritical`
+  // nor `checklistComm.phoned` can ever be set by the radiologist. Passing the
+  // raw hits into computeFinalizeSafety / criticalFindingBlocksFinalize anyway
+  // would raise `criticalRequiresAck`, and FinalizeSignDialog's canConfirm
+  // (`!criticalRequiresAck || criticalAck`) would then demand a tick from a
+  // checkbox that no longer exists — the report could never be signed. So the
+  // hits are withheld from both gates, which is exactly the state the workflow
+  // was in before it was built: advisory detection without a protocol to satisfy.
   const criticalHits = detectCriticalFindings(live.findingsText, [live.impressionText]);
-  const criticalMarked = isCritical || criticalHits.length > 0;
+  const criticalCommsOn = criticalCommsEnabled();
+  const gatedCriticalHits = criticalCommsOn ? criticalHits : [];
+  const criticalMarked = criticalCommsOn ? (isCritical || criticalHits.length > 0) : false;
   const criticalCommunicated = checklistComm.phoned;
   const safetyIssues = computeFinalizeSafety({
     checklistActive: false,
     checklistPercent: 100,
-    criticalHits: criticalHits.map(h => ({ label: h.label })),
+    criticalHits: gatedCriticalHits.map(h => ({ label: h.label })),
     criticalMarked,
     criticalCommunicated,
   });
@@ -270,13 +286,13 @@ const finalizeReport = useCallback(async () => {
     criticalRequiresAck: criticalFindingBlocksFinalize({
       checklistActive: false,
       checklistPercent: 100,
-      criticalHits: criticalHits.map(h => ({ label: h.label })),
+      criticalHits: gatedCriticalHits.map(h => ({ label: h.label })),
       criticalMarked,
       criticalCommunicated,
     }),
     criticalSummary: [
-      ...criticalHits.map(h => h.label),
-      ...(isCritical && criticalNote ? [criticalNote] : []),
+      ...gatedCriticalHits.map(h => h.label),
+      ...(criticalCommsOn && isCritical && criticalNote ? [criticalNote] : []),
     ].filter(Boolean).join(", "),
     compositionImpressionNeedsRefresh: latest.impressionNeedsRefresh,
     compositionSiblingWarnings: compositionGate.siblingWarnings,
@@ -329,7 +345,14 @@ const finalizeReport = useCallback(async () => {
         htmlBody: signedBodyHtml,
         impression: [signedImpression],
         isCritical: criticalMarked,
-        criticalNote: criticalNote || (criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
+        // The auto-derived note is produced by the DETECTOR but lands in the
+        // SIGNED record. With the communication workflow off, the panel that
+        // would have shown the radiologist those labels is not rendered, so a
+        // hidden detector must not silently add text to a signed report —
+        // hence the criticalCommsOn term. A note the radiologist actually typed
+        // is preserved either way: discarding real clinical input would be a
+        // worse outcome than a slightly inconsistent flag.
+        criticalNote: criticalNote || (criticalCommsOn && criticalHits.length > 0 ? criticalHits.map(h => h.label).join(", ") : null),
         createdBy: sessionFresh?.user?.name ?? undefined,
         actor: sessionFresh?.user?.name ?? undefined,
         signatureId: result.signatureId,

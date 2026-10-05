@@ -3079,10 +3079,42 @@ router.post("/quality-gates", async (req, res): Promise<void> => {
 // ──────────────────────────── Phase 21: Critical Finding Escalation ────────────────────────────
 
 /**
+ * Whole-subsystem gate: the critical-result COMMUNICATION workflow is optional.
+ *
+ * This centre does not currently follow a formal critical-result communication
+ * protocol, so the workflow ships switched off. `ff_radiology_critical_result_comms`
+ * (default OFF, togglable from Settings → Feature Flags) governs the pre-sign
+ * acknowledgement block, the interrupt card, the 15-minute SLA timer, the
+ * copilot reminders, the Mark Critical Finding panel and the Critical Findings
+ * page — and these three endpoints, which are that workflow's only API surface.
+ * A gated-off feature must be indistinguishable from a feature that does not
+ * exist, so a direct API call gets 404 (the same shape the UI routes use), not
+ * a 403/501 that advertises a disabled subsystem.
+ *
+ * Deliberately NOT gated here: the finding detector (lib/criticalResults.ts),
+ * the radiology_critical_findings table and its existing rows, the PACS
+ * critical alerts widget, and /api/radiology/critical-findings — those are
+ * independent of the communication workflow and stay live either way. No row is
+ * ever created, altered or deleted by the toggle.
+ *
+ * A `router.use` gate would be wrong: this file registers unrelated routes
+ * below, and Express would silently apply the flag to all of them. Hence an
+ * explicit call at the top of each of the three handlers.
+ *
+ * The flag key is written as a literal at each call site (not hoisted into a
+ * constant) on purpose: radiologyOpsHealth.test.ts's source pin greps the
+ * backend for `isFeatureEnabledServer("ff_radiology_*")` literals to prove the
+ * registry's `wired: true` is truthful, and a constant would hide this gate
+ * from both that check and a plain grep for the key.
+ */
+
+/**
  * GET /api/ai-reporting/critical-findings
  * List critical findings.
  */
 router.get("/critical-findings", async (req, res): Promise<void> => {
+  if (!(await isFeatureEnabledServer("ff_radiology_critical_result_comms"))) { res.status(404).json({ error: "not_found" }); return; }
+
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!canUse(sReq, globalSettings.allowedRoles)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
@@ -3104,6 +3136,8 @@ router.get("/critical-findings", async (req, res): Promise<void> => {
  * Create a critical finding record.
  */
 router.post("/critical-findings", async (req, res): Promise<void> => {
+  if (!(await isFeatureEnabledServer("ff_radiology_critical_result_comms"))) { res.status(404).json({ error: "not_found" }); return; }
+
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!canUse(sReq, globalSettings.allowedRoles)) { res.status(403).json({ error: "Insufficient permissions." }); return; }
@@ -3133,6 +3167,8 @@ router.post("/critical-findings", async (req, res): Promise<void> => {
  * Update notification status.
  */
 router.patch("/critical-findings/:id", async (req, res): Promise<void> => {
+  if (!(await isFeatureEnabledServer("ff_radiology_critical_result_comms"))) { res.status(404).json({ error: "not_found" }); return; }
+
   const sReq = req as StaffAuthRequest;
   const globalSettings = await getGlobalSettings();
   if (!canUse(sReq, globalSettings.allowedRoles)) { res.status(403).json({ error: "Insufficient permissions." }); return; }

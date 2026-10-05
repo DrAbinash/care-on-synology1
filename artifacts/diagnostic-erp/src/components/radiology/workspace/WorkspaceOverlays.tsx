@@ -39,6 +39,7 @@ import {
   linkedStudyPayload,
 } from "@/lib/multiStudyReport";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
@@ -652,7 +653,12 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         onResolve={finalizeFlow.resolve}
         onCancel={finalizeFlow.cancel}
       />
-      <InterruptChannelCard />
+      {/* The interrupt card is the critical-result COMMUNICATION workflow's
+          popup. store.recomputeCopilot is the only producer of a
+          kind:"interrupt" notification and already refuses to push one when
+          ff_radiology_critical_result_comms is off; this gate also covers a
+          card that was on screen when an admin turned the flag off. */}
+      {criticalCommsEnabled() && <InterruptChannelCard />}
       <QuickSelectEditor />
 
       {studyLocalEdit && (
