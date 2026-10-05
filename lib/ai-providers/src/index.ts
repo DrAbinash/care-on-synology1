@@ -485,7 +485,14 @@ class OpenAIProvider implements AiProvider {
         resolveRequestTimeoutMs(opts.timeoutMs),
         "OpenAI",
       );
-      return { text: resp.choices[0]?.message?.content ?? "", success: true };
+      // Same rule as the shared transport: an empty final answer is a failure,
+      // never an empty draft. See openAiCompatible.ts for the reasoning-only
+      // case this guards against.
+      const finalContent = resp.choices[0]?.message?.content;
+      if (typeof finalContent !== "string" || !finalContent.trim()) {
+        return { text: "", success: false, error: "empty_final_content" };
+      }
+      return { text: finalContent, success: true };
     } catch (err: unknown) {
       return { text: "", success: false, error: err instanceof Error ? err.message : "OpenAI error" };
     }
@@ -503,7 +510,13 @@ class OpenAIProvider implements AiProvider {
         AI_CONNECTION_TEST_TIMEOUT_MS,
         "OpenAI",
       );
-      return { ok: true, message: resp.choices[0]?.message?.content ?? "Connected" };
+      // "Connected" as a fallback string would report success on an empty
+      // answer — the very thing this guard exists to prevent.
+      const probeText = resp.choices[0]?.message?.content;
+      if (typeof probeText !== "string" || !probeText.trim()) {
+        return { ok: false, message: "empty_final_content" };
+      }
+      return { ok: true, message: probeText };
     } catch (err: unknown) {
       return { ok: false, message: err instanceof Error ? err.message : "OpenAI connection failed" };
     }
