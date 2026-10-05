@@ -93,6 +93,12 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "day-close.ts", localPath: "/my-drawer-status", fullPath: "/api/day-close/my-drawer-status" },
   { file: "day-close.ts", localPath: "/my-list", fullPath: "/api/day-close/my-list" },
   { file: "day-close.ts", localPath: "/my-post-closure-activity", fullPath: "/api/day-close/my-post-closure-activity" },
+  // Registered by hand: the marker scan below cannot see it. The handler scopes
+  // by req.params.userName and its access check lives in requireOwnerOrAdmin, so
+  // no PERSONAL_IDENTITY_MARKERS token appears inside the handler body — yet the
+  // response is another person's live cash totals, exactly like the two admin
+  // drawer endpoints already listed.
+  { file: "day-close.ts", localPath: "/staff-preview/:userName", fullPath: "/api/day-close/staff-preview/" },
   // Missed in the original audit sweep: scopes via session.subjectName, not
   // the bare "subjectId" token PERSONAL_IDENTITY_MARKERS looks for — found
   // while diagnosing "My Daily Summary" showing stale data on every visit.

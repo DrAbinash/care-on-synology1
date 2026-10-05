@@ -2072,7 +2072,13 @@ export default function MyDailySummary() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
-  // Day Close open window preview — shows current open window count for the user
+  // Day Close open window preview — the live window of the SAME person the
+  // drawer card below shows. `drawerStaffName` is the one scope decision on this
+  // screen and both boxes now read it: previously this box always called
+  // /my-preview, so a super-admin filtered to Sanjeev saw their own ₹0 window
+  // sitting directly above Sanjeev's closed ₹2,43,000 drawer and the pair read
+  // as one empty drawer. /staff-preview/:userName is the admin-gated twin of
+  // /my-preview and returns the same shape.
   const myPreviewQ = useQuery<{
     userName: string;
     coveredFromTs: string | null;
@@ -2098,8 +2104,16 @@ export default function MyDailySummary() {
       sameDayAfterPriorClose?: boolean;
     }>;
   }>({
-    queryKey: ["my-day-close-preview"],
-    queryFn: () => api.get("/api/day-close/my-preview"),
+    queryKey: ["my-day-close-preview", drawerStaffName ?? "self"],
+    queryFn: () => api.get(
+      drawerStaffName
+        ? `/api/day-close/staff-preview/${encodeURIComponent(drawerStaffName)}`
+        : "/api/day-close/my-preview",
+    ),
+    // Super-admin "All Staff" has no single open window — skipped for the same
+    // reason drawerQ is, so the box can never show the admin's own drawer while
+    // every other number on the page is clinic-wide.
+    enabled: !isSuperAdmin || !!staffFilter.trim(),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
@@ -2708,17 +2722,41 @@ export default function MyDailySummary() {
         <div className="bg-white dark:bg-card border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Since last close (Live)</h3>
+            <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">
+              {/* Whose window this is, always on screen: the box follows the
+                  staff filter, and an unlabelled row of zeros above a cashier's
+                  closed drawer reads as that cashier's empty drawer. */}
+              Since last close (Live)
+              <span className="ml-1.5 font-black text-blue-700 dark:text-blue-300" data-testid="live-window-owner">
+                · {myPreviewQ.data.userName || drawerStaffName || "You"}
+              </span>
+            </h3>
             <span className="text-xs text-gray-500 dark:text-gray-400 flex-1 min-w-[12rem]">
               {myPreviewQ.data.coveredFromTs
                 ? `${new Date(myPreviewQ.data.coveredFromTs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })} — now · not calendar Today (IST)`
                 : "Since start — now · not calendar Today (IST)"}
             </span>
-            <Link href="/my-day-close">
-              <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
-                <Lock size={12} /> Close My Drawer
-              </Button>
-            </Link>
+            {drawerStaffName ? (
+              // Another person's window cannot be closed from here: /my-day-close
+              // records counted cash against the SIGNED-IN user's drawer. The
+              // handover close for a staff member lives on the Day Close screen.
+              <Link href="/day-close">
+                <Button
+                  size="sm"
+                  className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0"
+                  title={`${drawerStaffName}'s drawer is closed from Day Close, where the counted cash is recorded against their name`}
+                  data-testid="live-window-close-other"
+                >
+                  <Lock size={12} /> Close {drawerStaffName}'s Drawer
+                </Button>
+              </Link>
+            ) : (
+              <Link href="/my-day-close">
+                <Button size="sm" className="h-8 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0">
+                  <Lock size={12} /> Close My Drawer
+                </Button>
+              </Link>
+            )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
             <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-2.5">
