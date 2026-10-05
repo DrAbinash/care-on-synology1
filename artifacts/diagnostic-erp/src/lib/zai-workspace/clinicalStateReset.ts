@@ -21,6 +21,19 @@
  *
  *   activeStudyId, activeStudyInstanceUID, clinicalHistoryText, reportingContext
  *
+ * Some entries look like UI chrome rather than clinical state and are still
+ * here on purpose. `notification` is the one that matters: it is the critical
+ * interrupt card, and `recomputeCopilot` raises a new one only when the slot is
+ * already empty. Left behind, Patient A's card suppressed Patient B's critical
+ * finding outright — and, because the critical-result SLA clock was started from
+ * inside that same branch, no elapsed time was measured for it either. The
+ * clock is now decoupled in the store; resetting the field is what closes the
+ * card half.
+ *
+ * The `pending*` / `confirmOverwriteOpen` / `activeMacroPrompt` entries are the
+ * payload of a modal the radiologist had open on Patient A. Nothing closes that
+ * modal on navigation, so its Apply would land on Patient B.
+ *
  * Every value is constructed fresh per call. Hoisting any of them to a module
  * constant would hand two studies the same Set/array/object reference and
  * re-open the leak this module exists to close.
@@ -48,20 +61,29 @@ export const CLINICAL_RESET_FIELDS = [
   "fieldProvenance",
   "measurements",
   "priors",
+  "criticalFindings",
   "isDirty",
   "isFinalized",
   "isFinalizing",
   "railStage",
   "ghostText",
   "ghostTextTarget",
+  "copilotItems",
+  "notification",
   "acknowledgedCopilotIds",
   "activeCopilotItem",
   "voiceTranscript",
   "voiceListening",
+  "activeMacroPrompt",
   "selectedFormatIds",
   "reportFormatPickerOpen",
+  "confirmOverwriteOpen",
+  "pendingFormatIds",
+  "pendingFormatOverwrite",
+  "pendingFormatRegion",
   "appliedFormatReportTitle",
   "appliedPathologyPatches",
+  "pendingPathologyPatch",
   "patchUndoStack",
   "lastPatchSnapshot",
   "startingCanvasBaseline",
@@ -123,20 +145,29 @@ export function emptyClinicalState(): ClinicalResetState {
     fieldProvenance: {},
     measurements: [],
     priors: [],
+    criticalFindings: [],
     isDirty: false,
     isFinalized: false,
     isFinalizing: false,
     railStage: "orient",
     ghostText: null,
     ghostTextTarget: null,
+    copilotItems: [],
+    notification: null,
     acknowledgedCopilotIds: new Set(),
     activeCopilotItem: null,
     voiceTranscript: "",
     voiceListening: false,
+    activeMacroPrompt: null,
     selectedFormatIds: [],
     reportFormatPickerOpen: false,
+    confirmOverwriteOpen: false,
+    pendingFormatIds: [],
+    pendingFormatOverwrite: null,
+    pendingFormatRegion: null,
     appliedFormatReportTitle: null,
     appliedPathologyPatches: [],
+    pendingPathologyPatch: null,
     patchUndoStack: [],
     lastPatchSnapshot: null,
     startingCanvasBaseline: null,

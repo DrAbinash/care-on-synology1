@@ -23,6 +23,7 @@ import {
   emptyClinicalState,
 } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import type { WorkspaceStore } from "@/lib/zai-workspace/store";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ERP_SRC = resolve(HERE, "..");
@@ -695,5 +696,113 @@ describe("study switch — every clinical field must actually be cleared", () =>
     for (const [key, value] of Object.entries(markers)) {
       expect(sameValue(after[key], value), `session field clobbered by the reset: ${key}`).toBe(true);
     }
+  });
+});
+
+/**
+ * ─── The second-order consequence of an unlisted field ──────────────────────
+ *
+ * `notification` missing from CLINICAL_RESET_FIELDS did more than show Patient
+ * A's card over Patient B's report. `recomputeCopilot` raises the interrupt
+ * card AND starts the critical-result SLA clock from inside the same
+ * `!get().notification` branch, so a card already on screen suppressed both: an
+ * unacknowledged critical finding then ran with no elapsed time being measured
+ * at all, which is the half of the defect that reaches a medico-legal record.
+ *
+ * Resetting the field closes the cross-patient window. Decoupling the clock
+ * closes the rest of it — a format-overwrite card on the SAME study, or any
+ * future producer of `notification`, still occupies that one slot.
+ *
+ * Driven through the real `runCopilotAnalysis` ("pneumothorax" in Findings is
+ * one of the CRITICAL_PATTERNS in zai-workspace/types.ts) rather than a stub,
+ * so this fails if either the rule table or the gate changes.
+ */
+describe("critical-result SLA clock — must not depend on the interrupt card being renderable", () => {
+  /** A study row with a patient, so `recomputeCopilot` gets past its own guard. */
+  function openCriticalStudy(notification: WorkspaceStore["notification"]): void {
+    useWorkspace.setState({
+      studies: [
+        {
+          id: "study-C",
+          accession: "ACC-C",
+          studyInstanceUID: "1.2.840.C",
+          patient: {
+            id: "pt-C",
+            name: "Patient C",
+            age: 52,
+            sex: "M",
+            uhid: "UHID-C",
+            referringDoctor: "Dr Ref",
+          },
+          modality: "CT",
+          bodyPart: "CHEST",
+          studyDescription: "CT chest",
+          clinicalHistory: "Sudden breathlessness",
+          status: "draft",
+          priority: "urgent",
+          receivedAt: new Date().toISOString(),
+          priorCount: 0,
+          criticalFlag: false,
+          aiDraftReady: false,
+          tatMinutes: 12,
+          slaMinutes: 30,
+          series: 1,
+          images: 240,
+        },
+      ],
+      activeStudyId: "study-C",
+      activeStudyInstanceUID: "1.2.840.C",
+      findingsText: "Large right-sided pneumothorax.",
+      impressionText: "",
+      copilotItems: [],
+      acknowledgedCopilotIds: new Set<string>(),
+      criticalSlaStartedAt: null,
+      criticalSlaEscalated: false,
+      notification,
+    } as never);
+  }
+
+  it("starts the clock and raises the card when nothing else is on screen", () => {
+    openCriticalStudy(null);
+
+    useWorkspace.getState().recomputeCopilot();
+
+    const s = useWorkspace.getState();
+    expect(typeof s.criticalSlaStartedAt).toBe("number");
+    expect(s.notification?.kind).toBe("interrupt");
+    expect(s.notification?.text).toMatch(/pneumothorax/i);
+  });
+
+  it("still starts the clock when another card already occupies the slot", () => {
+    openCriticalStudy({ kind: "ledger", text: "A card from the previous study", id: "stale" });
+
+    useWorkspace.getState().recomputeCopilot();
+
+    // The regression: the clock used to live inside `!get().notification`.
+    expect(typeof useWorkspace.getState().criticalSlaStartedAt).toBe("number");
+  });
+
+  it("does not restart a clock that is already running", () => {
+    openCriticalStudy(null);
+    useWorkspace.setState({ criticalSlaStartedAt: 1_700_000_000_000 } as never);
+
+    useWorkspace.getState().recomputeCopilot();
+
+    expect(useWorkspace.getState().criticalSlaStartedAt).toBe(1_700_000_000_000);
+  });
+
+  it("takes the card, the items and the clock away on a study switch", () => {
+    openCriticalStudy(null);
+    useWorkspace.getState().recomputeCopilot();
+    expect(useWorkspace.getState().notification).not.toBeNull();
+    expect(useWorkspace.getState().copilotItems.length).toBeGreaterThan(0);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const s = useWorkspace.getState();
+    expect(s.notification).toBeNull();
+    expect(s.copilotItems).toEqual([]);
+    expect(s.criticalSlaStartedAt).toBeNull();
+    expect(s.criticalSlaEscalated).toBe(false);
   });
 });
