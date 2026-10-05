@@ -30,6 +30,10 @@ import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
+import {
+  findUnreviewedAiDraft,
+  unreviewedAiFinalizeError,
+} from "../lib/reportComposer/unreviewedAiGuard";
 // ── Ticket D5 — structured signed-report path (flag-gated, legacy default) ───
 import {
   radiologyReportDraftsTable,
@@ -2007,6 +2011,23 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // Unreviewed-AI server-side finalize gate — the same rule the workspace's
+  // Guard 10 applies in the browser, evaluated here so a direct API call cannot
+  // skip it. Placed BEFORE any patient_reports row is created or the D5
+  // structured-finalize transaction runs, so an unreviewed AI draft can never
+  // reach a signed document. Studies with no composer job (the overwhelming
+  // majority, and every non-AI page) fall straight through.
+  if (type === "radiology") {
+    const unreviewed = await findUnreviewedAiDraft({
+      worklistId: bound?.worklistId ?? worklistIdIn ?? studyRef,
+      studyId: studyRef,
+    });
+    if (unreviewed) {
+      res.status(409).json(unreviewedAiFinalizeError(unreviewed));
+      return;
+    }
+  }
+
   let presetUsed = typeof b.stylePresetUsed === "string" ? b.stylePresetUsed : null;
   if (!presetUsed && type === "radiology") {
     try {
@@ -2296,6 +2317,22 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     });
     return;
   }
+  // Defense in depth: signing an existing row from Report Hub / the legacy
+  // pages goes through THIS route rather than POST /, so the unreviewed-AI rule
+  // is applied here too. `patient_reports.study_id` holds the worklist row id
+  // for workspace finalizes, and the composer job may be scoped by either.
+  if (isRadiologyReportType(existing.type)) {
+    const unreviewed = await findUnreviewedAiDraft({
+      worklistId: existing.studyId ?? null,
+      studyId: existing.studyId ?? null,
+      reportId: existing.id,
+    });
+    if (unreviewed) {
+      res.status(409).json(unreviewedAiFinalizeError(unreviewed));
+      return;
+    }
+  }
+
   // The signer of record comes from the server: the chosen signature block's
   // own database row, or the authenticated session subject. A name in the
   // request body is never used — it is only recorded when it differs, because a

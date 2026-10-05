@@ -1530,7 +1530,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         label=""
                         minHeight="50vh"
                         fillHeight
-                        placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for AI ghost."
+                        placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for a phrase suggestion (not AI)."
                         showGhost
                         hideQuickSelect
                         transientHighlight={

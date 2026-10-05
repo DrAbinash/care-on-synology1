@@ -257,7 +257,7 @@ export function FindingsEditor({
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           {issues.length > 0 && <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{issues.length} lint</span>}
-          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm" title="AI ghost (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> AI</button>
+          <button onClick={sg} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition shadow-sm" title="Phrase suggestion — local template, not AI (Ctrl+Enter)"><span className="font-mono text-[10px]">⌃↵</span> Phrase</button>
         </div>
       </div>
 

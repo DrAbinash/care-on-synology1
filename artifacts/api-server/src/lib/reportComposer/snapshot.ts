@@ -50,7 +50,9 @@ export function canonicalObservationKey(o: ComposeObservation): string {
  *
  * Includes every field that materially changes the clinical meaning of an
  * observation: region, concept, level, laterality, severity,
- * anatomicalSection, findingsText, impressionText, recommendationText.
+ * anatomicalSection, findingsText, impressionText, recommendationText,
+ * measurement. A measured AP canal diameter of 7.1 mm is clinical content — a
+ * READY draft composed before the value changed must not stay applicable after it.
  *
  * Excludes id / source / conflictGroup / baselineReplaces — those are
  * provenance/bookkeeping, not clinical content. Changing them MUST NOT alter
@@ -65,6 +67,7 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
     norm(o.level),
     norm(o.laterality),
     norm(o.severity),
+    norm(o.measurement),
     norm(o.anatomicalSection),
     norm(o.findingsText),
     norm(o.impressionText),

@@ -3,6 +3,7 @@
  * Local domain facade; network stays Ollama-native (not OpenAI-compatible).
  */
 import { validateOllamaUrl } from "../../ssrf/ollamaUrlGuard";
+import { parseOllamaContextExceeded } from "../../ai/contextBudget";
 import type {
   ComposerProviderAdapter,
   ComposerProviderCapabilities,
@@ -73,6 +74,24 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
       });
 
       if (!res.ok) {
+        // Ollama answers a too-large request with an explicit
+        // exceed_context_size_error. Naming it is the difference between the
+        // radiologist seeing "select fewer images" and seeing "ollama_http_400".
+        const body = await res.text().catch(() => "");
+        const exceeded = parseOllamaContextExceeded(body);
+        if (exceeded) {
+          return {
+            ok: false,
+            provider: "ollama",
+            model,
+            safeError: "composer_context_budget_exceeded",
+            detail:
+              `The request needs ~${exceeded.requestTokens ?? "more"} tokens but this model context holds `
+              + `${exceeded.availableContext ?? "fewer"}. Select fewer key images or raise ollama_composer_num_ctx.`,
+            latencyMs: Date.now() - started,
+            execution,
+          };
+        }
         return {
           ok: false,
           provider: "ollama",
@@ -108,6 +127,18 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "ollama_error";
+      const exceeded = parseOllamaContextExceeded(msg);
+      if (exceeded) {
+        return {
+          ok: false,
+          provider: "ollama",
+          model,
+          safeError: "composer_context_budget_exceeded",
+          detail: "Ollama rejected the request as larger than its context window.",
+          latencyMs: Date.now() - started,
+          execution,
+        };
+      }
       const safeError = /abort|timeout/i.test(msg) ? "ollama_timeout" : "ollama_unreachable";
       return {
         ok: false,

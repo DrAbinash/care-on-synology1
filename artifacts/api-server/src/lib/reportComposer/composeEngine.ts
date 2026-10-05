@@ -21,6 +21,7 @@ import {
 } from "./buildRadiologistDraftContext";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
+import { planComposerVisionContext } from "./composerContextBudget";
 import type { KeyImageOwnershipContext } from "./keyImageOwnership";
 import {
   resolveComposerProvider,
@@ -359,9 +360,8 @@ export async function runReportComposer(opts: {
     }
     // local_openai_compatible: adapter enforces Settings.supportsVision fail-closed.
 
-    // Respect canonical runtime settings — never silently inflate numCtx/timeout.
-    // If the configured context window is below the clinic minimum for vision
-    // drafts, fail with an actionable error instead of mutating admin settings.
+    // Floor guard: a context window below the clinic minimum cannot hold even a
+    // single image plus the clinical truth, so fail with an actionable error.
     const MIN_VISION_NUM_CTX = 2048;
     if (isOllama && runtime.numCtx < MIN_VISION_NUM_CTX) {
       return {
@@ -389,13 +389,43 @@ export async function runReportComposer(opts: {
 
     const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
     const user = buildUserPrompt(opts.kind, opts.snapshot);
+
+    // Images cost context on top of the clinical truth. Size num_ctx for THIS
+    // request from CARE's existing empirical estimator rather than trusting the
+    // admin default (4096), which cannot hold 4 key images. Bounded by the
+    // ceiling the composer clamp already enforces, never lowered below the
+    // configured value, and a request that cannot fit even then FAILS instead of
+    // letting Ollama truncate the radiologist's own observations.
+    let composeNumCtx = runtime.numCtx;
+    if (isOllama) {
+      const plan = planComposerVisionContext({
+        imageCount: resolved.images.length,
+        systemPrompt: system,
+        userPrompt: user,
+        configuredNumCtx: runtime.numCtx,
+      });
+      if (!plan.fits) {
+        return {
+          ok: false,
+          safeError: "composer_context_budget_exceeded",
+          latencyMs: Date.now() - started,
+          model: visionModel,
+          provenance: {
+            ...provenance,
+            degradedReason: plan.reason,
+          },
+        };
+      }
+      composeNumCtx = plan.numCtx;
+    }
+
     const primary = await providerAdapter.compose({
       systemPrompt: system,
       userPrompt: user,
       model: visionModel,
       temperature: runtime.temperature,
       timeoutMs: runtime.timeoutMs,
-      numCtx: runtime.numCtx,
+      numCtx: composeNumCtx,
       endpoint: isLocalOpenAi ? (localEndpoint ?? undefined) : runtime.endpoint,
       localOnly: runtime.localOnly,
       // Preserve each resolved image's actual MIME (jpeg/png/webp) — do not coerce to JPEG.
@@ -406,6 +436,7 @@ export async function runReportComposer(opts: {
     });
 
     if (!primary.ok) {
+      const detail = primary.detail ?? primary.safeError ?? "compose_failed";
       return {
         ok: false,
         safeError: primary.safeError ?? "compose_failed",
@@ -413,7 +444,7 @@ export async function runReportComposer(opts: {
         model: visionModel,
         provenance: {
           ...provenance,
-          degradedReason: primary.safeError ?? "compose_failed",
+          degradedReason: detail,
         },
       };
     }
