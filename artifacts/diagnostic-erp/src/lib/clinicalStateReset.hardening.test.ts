@@ -23,6 +23,7 @@ import {
   emptyClinicalState,
 } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import type { WorkspaceStore } from "@/lib/zai-workspace/store";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ERP_SRC = resolve(HERE, "..");
@@ -506,5 +507,387 @@ describe("re-finalize over an existing report — the discarded-edit path must n
   it("does not push a report to Hope that it just said was not saved", () => {
     const src = read(FINALIZE_SRC);
     expect(src).toMatch(/if \(!finalizeResult\.idempotent && finalizeResult\.signed &&/);
+  });
+});
+
+/**
+ * ─── Classification: the mechanism, not the backlog ─────────────────────────
+ *
+ * Every test above dirties an enumerated list of fields and asserts an
+ * enumerated list. An enumerated test cannot notice a field nobody enumerated —
+ * which is exactly how `notification`, `copilotItems`, `pendingPathologyPatch`,
+ * `activeMacroPrompt` and the pending-format keys survived: clinical state that
+ * no list mentioned, so no assertion covered it and the suite stayed green.
+ *
+ * These tests invert that. They derive the field list from the live store and
+ * require every non-action key to be classified as exactly one of:
+ *
+ *   CLINICAL_RESET_FIELDS — one study's clinical state; must be empty on switch
+ *   IDENTITY_CONTEXT_KEYS — owned by the caller, deliberately not in the helper
+ *   SESSION_SCOPE_KEYS    — app/session state that must SURVIVE a switch
+ *
+ * A field added to the store and left unclassified fails here *by name*, so its
+ * author has to decide which bucket it belongs in. The failure mode is now
+ * safe: forget to classify a clinical field and CI stops, instead of Patient A's
+ * state quietly riding along into Patient B's report.
+ */
+
+/** The caller owns these; `emptyClinicalState` must never touch them (asserted above). */
+const IDENTITY_CONTEXT_KEYS = [
+  "activeStudyId",
+  "activeStudyInstanceUID",
+  "clinicalHistoryText",
+  "reportingContext",
+] as const;
+
+/**
+ * Content libraries, device and UI preferences, and queue progress. None of it
+ * belongs to one study, so a switch must leave it alone — clearing the worklist
+ * or the tile library on every navigation would be its own bug.
+ */
+const SESSION_SCOPE_KEYS = [
+  "studies",
+  "nextStudyId",
+  "showCommandPalette",
+  "showVoiceBar",
+  "voiceProvider",
+  "completedStudyIds",
+  "parkedStudyIds",
+  "sessionStartedAt",
+  "lastSignAt",
+  "fatigueCardDismissed",
+  "criticalSlaMinutes",
+  "quickSelectTiles",
+  "quickSelectEditorOpen",
+  "quickSelectEditingTile",
+  "quickSelectEditorField",
+  "reportFormats",
+  "structuredNormalRows",
+  "saveAsFormatDialogOpen",
+  "snippetMacros",
+  "macroEditorOpen",
+  "editingMacro",
+  "signOffProfiles",
+  "abnormalPatternLibrary",
+  "abnormalPatternSuggestionsEnabled",
+  "patternUsageCounts",
+] as const;
+
+const POISON = "__patient_A__";
+
+function stateKeys(): string[] {
+  return Object.entries(useWorkspace.getState() as unknown as Record<string, unknown>)
+    .filter(([, v]) => typeof v !== "function")
+    .map(([k]) => k);
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown): unknown => (v instanceof Set ? [...v].sort() : v);
+  try {
+    return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+  } catch {
+    return a === b;
+  }
+}
+
+/** A value guaranteed to differ from `pristine`, so survival after a reset is detectable. */
+function poisonValue(pristine: unknown): unknown {
+  if (pristine instanceof Set) return new Set([POISON]);
+  if (Array.isArray(pristine)) return [POISON];
+  if (typeof pristine === "string") return POISON;
+  if (typeof pristine === "boolean") return !pristine;
+  if (typeof pristine === "number") return pristine + 4242;
+  if (pristine === null || pristine === undefined) return POISON;
+  return { [POISON]: true };
+}
+
+/** Writes Patient A's fingerprints into every clinical field; returns the keys that took. */
+function poisonEveryClinicalField(): string[] {
+  const pristine = useWorkspace.getState() as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  const poisoned: string[] = [];
+  for (const key of CLINICAL_RESET_FIELDS) {
+    const before = pristine[key];
+    const after = poisonValue(before);
+    if (!sameValue(before, after)) {
+      patch[key] = after;
+      poisoned.push(key);
+    }
+  }
+  useWorkspace.setState(patch as never);
+  return poisoned;
+}
+
+describe("state classification — no store field may be left unclassified", () => {
+  it("puts every non-action store key in exactly one bucket", () => {
+    const classified = [
+      ...([...CLINICAL_RESET_FIELDS] as string[]),
+      ...([...IDENTITY_CONTEXT_KEYS] as string[]),
+      ...([...SESSION_SCOPE_KEYS] as string[]),
+    ];
+
+    const dupes = [...new Set(classified.filter((k, i) => classified.indexOf(k) !== i))];
+    expect(dupes, `field classified in two buckets: ${dupes.join(", ")}`).toEqual([]);
+
+    const keys = stateKeys();
+    const unclassified = keys.filter((k) => !classified.includes(k));
+    expect(
+      unclassified,
+      `unclassified store field(s): ${unclassified.join(", ")} — `
+        + `decide clinical (add to CLINICAL_RESET_FIELDS + emptyClinicalState), `
+        + `identity, or session for each. Leaving it out means it survives a study switch.`,
+    ).toEqual([]);
+
+    const stale = classified.filter((k) => !keys.includes(k));
+    expect(stale, `classified names that are not live store fields: ${stale.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("study switch — every clinical field must actually be cleared", () => {
+  it("PARTIAL reset (worklist navigate / URL sync) clears all of them", () => {
+    const poisoned = poisonEveryClinicalField();
+    // If a field could not be poisoned, nothing below proves anything about it.
+    expect(poisoned).toEqual([...CLINICAL_RESET_FIELDS]);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+    const empty = emptyClinicalState() as unknown as Record<string, unknown>;
+    const survived = poisoned.filter((k) => !sameValue(after[k], empty[k]));
+    expect(survived, `Patient A's state survived the switch: ${survived.join(", ")}`).toEqual([]);
+  });
+
+  it("FULL reset (selectStudy) clears all of them", () => {
+    vi.useFakeTimers();
+    try {
+      const poisoned = poisonEveryClinicalField();
+      useWorkspace.setState({
+        studies: [{ id: "study-B", studyInstanceUID: "1.2.840.B", clinicalHistory: "B: 61M, headache" }],
+      } as never);
+
+      useWorkspace.getState().selectStudy("study-B");
+
+      const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+      const empty = emptyClinicalState() as unknown as Record<string, unknown>;
+      const survived = poisoned.filter((k) => !sameValue(after[k], empty[k]));
+      expect(survived, `Patient A's state survived selectStudy: ${survived.join(", ")}`).toEqual([]);
+      // Identity comes from the study row, not the helper.
+      expect(after.activeStudyId).toBe("study-B");
+      expect(after.clinicalHistoryText).toBe("B: 61M, headache");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves session state intact while doing it", () => {
+    const markers: Record<string, unknown> = {
+      showCommandPalette: true,
+      fatigueCardDismissed: true,
+      criticalSlaMinutes: 30,
+      completedStudyIds: new Set(["study-Z"]),
+      parkedStudyIds: new Set(["study-Y"]),
+    };
+    poisonEveryClinicalField();
+    useWorkspace.setState(markers as never);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const after = useWorkspace.getState() as unknown as Record<string, unknown>;
+    for (const [key, value] of Object.entries(markers)) {
+      expect(sameValue(after[key], value), `session field clobbered by the reset: ${key}`).toBe(true);
+    }
+  });
+});
+
+/**
+ * A worklist row with a patient attached. `recomputeCopilot` returns early
+ * without one (`if (!st?.patient)`), so any test that needs the copilot to
+ * actually run has to build this rather than just setting activeStudyId.
+ */
+function criticalStudyRow() {
+  return {
+    id: "study-C",
+    accession: "ACC-C",
+    studyInstanceUID: "1.2.840.C",
+    patient: {
+      id: "pt-C",
+      name: "Patient C",
+      age: 52,
+      sex: "M",
+      uhid: "UHID-C",
+      referringDoctor: "Dr Ref",
+    },
+    modality: "CT",
+    bodyPart: "CHEST",
+    studyDescription: "CT chest",
+    clinicalHistory: "Sudden breathlessness",
+    status: "draft",
+    priority: "urgent",
+    receivedAt: new Date().toISOString(),
+    priorCount: 0,
+    criticalFlag: false,
+    aiDraftReady: false,
+    tatMinutes: 12,
+    slaMinutes: 30,
+    series: 1,
+    images: 240,
+  };
+}
+
+/**
+ * ─── The second-order consequence of an unlisted field ──────────────────────
+ *
+ * `notification` missing from CLINICAL_RESET_FIELDS did more than show Patient
+ * A's card over Patient B's report. `recomputeCopilot` raises the interrupt
+ * card AND starts the critical-result SLA clock from inside the same
+ * `!get().notification` branch, so a card already on screen suppressed both: an
+ * unacknowledged critical finding then ran with no elapsed time being measured
+ * at all, which is the half of the defect that reaches a medico-legal record.
+ *
+ * Resetting the field closes the cross-patient window. Decoupling the clock
+ * closes the rest of it — a format-overwrite card on the SAME study, or any
+ * future producer of `notification`, still occupies that one slot.
+ *
+ * Driven through the real `runCopilotAnalysis` ("pneumothorax" in Findings is
+ * one of the CRITICAL_PATTERNS in zai-workspace/types.ts) rather than a stub,
+ * so this fails if either the rule table or the gate changes.
+ */
+describe("critical-result SLA clock — must not depend on the interrupt card being renderable", () => {
+  /** A study row with a patient, so `recomputeCopilot` gets past its own guard. */
+  function openCriticalStudy(notification: WorkspaceStore["notification"]): void {
+    useWorkspace.setState({
+      studies: [criticalStudyRow()],
+      activeStudyId: "study-C",
+      activeStudyInstanceUID: "1.2.840.C",
+      findingsText: "Large right-sided pneumothorax.",
+      impressionText: "",
+      copilotItems: [],
+      acknowledgedCopilotIds: new Set<string>(),
+      criticalSlaStartedAt: null,
+      criticalSlaEscalated: false,
+      notification,
+    } as never);
+  }
+
+  it("starts the clock and raises the card when nothing else is on screen", () => {
+    openCriticalStudy(null);
+
+    useWorkspace.getState().recomputeCopilot();
+
+    const s = useWorkspace.getState();
+    expect(typeof s.criticalSlaStartedAt).toBe("number");
+    expect(s.notification?.kind).toBe("interrupt");
+    expect(s.notification?.text).toMatch(/pneumothorax/i);
+  });
+
+  it("still starts the clock when another card already occupies the slot", () => {
+    openCriticalStudy({ kind: "ledger", text: "A card from the previous study", id: "stale" });
+
+    useWorkspace.getState().recomputeCopilot();
+
+    // The regression: the clock used to live inside `!get().notification`.
+    expect(typeof useWorkspace.getState().criticalSlaStartedAt).toBe("number");
+  });
+
+  it("does not restart a clock that is already running", () => {
+    openCriticalStudy(null);
+    useWorkspace.setState({ criticalSlaStartedAt: 1_700_000_000_000 } as never);
+
+    useWorkspace.getState().recomputeCopilot();
+
+    expect(useWorkspace.getState().criticalSlaStartedAt).toBe(1_700_000_000_000);
+  });
+
+  it("takes the card, the items and the clock away on a study switch", () => {
+    openCriticalStudy(null);
+    useWorkspace.getState().recomputeCopilot();
+    expect(useWorkspace.getState().notification).not.toBeNull();
+    expect(useWorkspace.getState().copilotItems.length).toBeGreaterThan(0);
+
+    useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+
+    const s = useWorkspace.getState();
+    expect(s.notification).toBeNull();
+    expect(s.copilotItems).toEqual([]);
+    expect(s.criticalSlaStartedAt).toBeNull();
+    expect(s.criticalSlaEscalated).toBe(false);
+  });
+});
+
+/**
+ * ─── Clearing the rail is only half of it ───────────────────────────────────
+ *
+ * Draft hydration writes the new patient's report through `setEditorContent`,
+ * and that was the one content writer which never deferred `recomputeCopilot`
+ * — setField, mergeField, insertMeasurement, insertAllMeasurements,
+ * insertCopilotText and applyMacroWithValues all do. Before `copilotItems`
+ * entered CLINICAL_RESET_FIELDS the gap was invisible: the previous patient's
+ * items were still sitting in the rail, so it looked populated. Emptying the
+ * field exposed it — the rail would have stayed empty until the radiologist's
+ * first keystroke, on exactly the studies that have a saved draft.
+ */
+describe("study switch — the copilot rail is rebuilt for the study now open", () => {
+  const CRITICAL = {
+    findings: "Large right-sided pneumothorax.",
+    impression: "",
+    recommendation: "",
+    technique: "CT chest",
+    clinicalHistory: "Sudden breathlessness",
+  };
+
+  it("recomputes once hydration has written the new patient's report", () => {
+    vi.useFakeTimers();
+    try {
+      // Patient A is open and the rail is full of A's items.
+      useWorkspace.setState({
+        studies: [criticalStudyRow()],
+        activeStudyId: "study-A",
+        copilotItems: [
+          { id: "A-item", kind: "suggestion", title: "A", detail: "A", confidence: "high", source: "A" },
+        ],
+      } as never);
+
+      // The switch — the PARTIAL reset, exactly as useDraftPersistence performs it.
+      useWorkspace.setState({ ...emptyClinicalState(), clinicalHistoryText: "" } as never);
+      expect(useWorkspace.getState().copilotItems).toEqual([]);
+
+      // Hydration then writes Patient B's report, and B is the critical one.
+      useWorkspace.setState({ activeStudyId: "study-C", activeStudyInstanceUID: "1.2.840.C" } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+
+      // Deferred, like every other content writer — nothing has run yet.
+      expect(useWorkspace.getState().copilotItems).toEqual([]);
+
+      vi.runAllTimers();
+
+      const items = useWorkspace.getState().copilotItems;
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.some((i) => i.kind === "critical")).toBe(true);
+      expect(items.every((i) => i.id !== "A-item")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an identical write a genuine no-op — the recompute sits after the early return", () => {
+    vi.useFakeTimers();
+    try {
+      useWorkspace.setState({ studies: [criticalStudyRow()], activeStudyId: "study-C" } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+      vi.runAllTimers();
+      const firstPass = useWorkspace.getState().copilotItems;
+
+      // setFieldIdempotent.test.ts pins the no-op. Prove the early return is
+      // still taken by clearing isDirty first: a write that reached the `set`
+      // would put it straight back.
+      useWorkspace.setState({ isDirty: false } as never);
+      useWorkspace.getState().setEditorContent(CRITICAL);
+      vi.runAllTimers();
+
+      expect(useWorkspace.getState().isDirty).toBe(false);
+      expect(useWorkspace.getState().copilotItems).toEqual(firstPass);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
