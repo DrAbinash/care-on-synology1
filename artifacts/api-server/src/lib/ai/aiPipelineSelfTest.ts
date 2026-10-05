@@ -23,6 +23,7 @@ import {
   generateAiForTask,
   loadProviderConfig,
   probeOllamaReachable,
+  probeOpenAiCompatibleModels,
   resolveOllamaInferenceEndpoint,
   resolveTaskRoute,
 } from "@workspace/ai-providers";
@@ -1238,6 +1239,53 @@ async function executeSelfTest(
       status: "pass",
       detail: `Identical endpoint ${endpoint}`,
     });
+
+    // Provider-aware reachability for the provider the draft route actually
+    // uses. The /api/tags check below is Ollama-native and proves nothing about
+    // an OpenAI-wire local server, which answers GET <baseURL>/models instead.
+    if (technical.provider === "local_openai_compatible") {
+      upsertStep(job, {
+        id: "routed-provider-health",
+        group: "Runtime",
+        name: "Routed local provider (OpenAI-wire)",
+        status: "running",
+        detail: "GET <endpoint>/models…",
+      });
+      const routedBase = (prov?.endpointUrl ?? "").trim().replace(/\/$/, "");
+      // No key is read here: this step only asks whether the server answers.
+      const listing = await probeOpenAiCompatibleModels(routedBase, { apiKey: "" });
+      const servesModel = listing.models.includes(model);
+      technical.routedProviderHealth = {
+        endpoint: routedBase || null,
+        reachable: listing.reachable,
+        httpStatus: listing.httpStatus,
+        modelCount: listing.models.length,
+        servesRoutedModel: servesModel,
+        error: listing.error,
+      };
+      const status = !routedBase
+        ? "fail"
+        : listing.reachable
+          ? "pass"
+          : listing.httpStatus === 401 || listing.httpStatus === 403
+            ? "pass"
+            : "fail";
+      upsertStep(job, {
+        id: "routed-provider-health",
+        group: "Runtime",
+        name: "Routed local provider (OpenAI-wire)",
+        status: status as "pass" | "fail",
+        detail: !routedBase
+          ? "route points at local_openai_compatible but no endpoint URL is saved"
+          : !listing.reachable && (listing.httpStatus === 401 || listing.httpStatus === 403)
+            ? `alive — GET /models needs a key (${listing.error}); saved key is used by inference`
+            : !listing.reachable
+              ? `${listing.error} at ${routedBase}/models`
+              : servesModel
+                ? `${listing.models.length} model(s) served, ${model} present (${listing.latencyMs}ms)`
+                : `${listing.models.length} model(s) served, ${model} NOT listed`,
+      });
+    }
 
     upsertStep(job, {
       id: "ollama-health",

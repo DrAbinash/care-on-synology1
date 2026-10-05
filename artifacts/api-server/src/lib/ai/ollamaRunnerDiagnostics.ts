@@ -16,6 +16,15 @@ export interface OllamaRunnerSnapshot {
   contextLength: number | null;
   expiresAt: string | null;
   done: boolean | null;
+  /**
+   * Accelerator this runner sits on, ONLY when the server reports one.
+   * Ollama 0.35.0's GET /api/ps does not (verified against the v0.35.0
+   * ProcessModelResponse fields: name/model/size/digest/details/expires_at/
+   * size_vram/context_length), so on the clinic's 2× RTX 3050 host this is
+   * normally null and the VRAM figures below cannot be attributed per card.
+   * Read-if-present — never inferred.
+   */
+  device?: string | null;
 }
 
 export interface OllamaPsSnapshot {
@@ -40,7 +49,20 @@ type PsModel = {
   context_length?: number;
   options?: { num_ctx?: number };
   model_info?: Record<string, unknown>;
+  /** Read only if a future server reports it; absent on 0.35.0. */
+  device?: string;
+  devices?: string[];
 };
+
+function pickDevice(m: PsModel): string | null {
+  const single = typeof m.device === "string" ? m.device.trim() : "";
+  if (single) return single.slice(0, 60);
+  if (Array.isArray(m.devices)) {
+    const joined = m.devices.map((d) => String(d ?? "").trim()).filter(Boolean).join("+");
+    if (joined) return joined.slice(0, 60);
+  }
+  return null;
+}
 
 function pickContextLength(m: PsModel): number | null {
   if (typeof m.context_length === "number" && Number.isFinite(m.context_length)) {
@@ -90,6 +112,7 @@ export async function fetchOllamaPs(
       contextLength: pickContextLength(m),
       expiresAt: typeof m.expires_at === "string" ? m.expires_at : null,
       done: typeof m.done === "boolean" ? m.done : null,
+      device: pickDevice(m),
     }));
     const vramSum = runners.reduce((s, r) => s + (r.sizeVramBytes ?? 0), 0);
     return {
@@ -239,15 +262,23 @@ export async function unloadAndWaitUntilAbsent(opts: {
 export function formatPsSummary(ps: OllamaPsSnapshot): string {
   if (!ps.ok) return `ps=FAIL(${ps.error ?? "unknown"})`;
   if (ps.runnerCount === 0) return "ps=0 runners";
+  const anyDevice = ps.runners.some((r) => r.device);
   const parts = ps.runners.map((r) => {
     const vram =
       r.sizeVramBytes != null ? `${Math.round(r.sizeVramBytes / (1024 * 1024))}MiB` : "?MiB";
     const ctx = r.contextLength != null ? `ctx=${r.contextLength}` : "ctx=?";
-    return `${r.model}[${vram},${ctx}]`;
+    const dev = r.device ? `@${r.device}` : "";
+    return `${r.model}[${vram},${ctx}${dev}]`;
   });
   const total =
     ps.totalSizeVramBytes != null
-      ? ` totalVram=${Math.round(ps.totalSizeVramBytes / (1024 * 1024))}MiB`
+      ? ` sumVramAcrossRunners=${Math.round(ps.totalSizeVramBytes / (1024 * 1024))}MiB`
       : "";
-  return `ps=${ps.runnerCount} ${parts.join(" | ")}${total}`;
+  // Ollama gives no per-accumulator breakdown, so a two-card host must not read
+  // this total as one card's usage.
+  const splitNote =
+    ps.runners.length > 1 && !anyDevice
+      ? " (sum spans all runners; this server reports no per-GPU split)"
+      : "";
+  return `ps=${ps.runnerCount} ${parts.join(" | ")}${total}${splitNote}`;
 }

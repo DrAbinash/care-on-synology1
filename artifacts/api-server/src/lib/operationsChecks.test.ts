@@ -26,6 +26,7 @@ function ctx(overrides: Partial<OpsCtx> = {}): OpsCtx {
     poolStats: null,
     orthanc: { baseUrl: null, headers: {}, configured: false },
     ollama: { baseUrl: null, model: "qwen3-vl:8b", configured: false },
+    localOpenAi: { baseUrl: null, model: null, configured: false, enabled: true },
     ohifUrl: null,
     publicBaseUrl: null,
     displayToken: "tok",
@@ -257,6 +258,91 @@ describe("AI / radiology operational checks (§8 dashboard integration)", () => 
     expect(c.status).toBe("WARNING");
     expect(c.required).toBe(false);
   });
+
+  it("ai.ollama is NOT failed by an unreachable local OpenAI-compatible server", async () => {
+    const c = await run("ai.ollama", ctx({
+      ollama: { baseUrl: "http://172.16.1.140:11434", model: "qwen3-vl:8b", configured: true },
+      localOpenAi: { baseUrl: "http://192.168.1.250:8080/v1", model: "bonsai", configured: true, enabled: true },
+      probe: async (url) =>
+        url.includes("/models")
+          ? { ok: false, status: null, ms: 5 }
+          : { ok: true, status: 200, ms: 5, json: { models: [{ name: "qwen3-vl:8b" }] } },
+    }));
+    expect(c.status).toBe("PASS");
+  });
+
+  describe("ai.local_openai_compatible — the OpenAI-wire local server is asked its own way", () => {
+  const LOCAL = { baseUrl: "http://192.168.1.250:8080/v1", model: "bonsai", configured: true, enabled: true };
+
+  it("SKIPPED when the clinic never configured one", async () => {
+    const c = await run("ai.local_openai_compatible", ctx());
+    expect(c.status).toBe("SKIPPED");
+  });
+
+  it("SKIPPED, with the route consequence stated, when it is configured but switched off", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({ localOpenAi: { ...LOCAL, enabled: false } }));
+    expect(c.status).toBe("SKIPPED");
+    expect(c.message).toContain("switched off");
+  });
+
+  it("probes GET <endpoint>/models and never /api/tags", async () => {
+    const urls: string[] = [];
+    await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async (url) => {
+        urls.push(url);
+        return { ok: true, status: 200, ms: 3, json: { data: [{ id: "bonsai" }] } };
+      },
+    }));
+    expect(urls).toEqual(["http://192.168.1.250:8080/v1/models"]);
+    expect(urls.some((u) => u.includes("/api/tags"))).toBe(false);
+  });
+
+  it("PASS when reachable and the saved model is served", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async () => ({ ok: true, status: 200, ms: 4, json: { data: [{ id: "bonsai" }, { id: "other" }] } }),
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toContain("bonsai is served");
+  });
+
+  it("WARNING when the endpoint is down — and it is a warning, not a hard fail", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async () => ({ ok: false, status: null, ms: 4 }),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.recommendedAction).toContain("Model Routing");
+  });
+
+  it("PASS on 401 — the server is alive; the saved key is used by inference, not this probe", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async () => ({ ok: true, status: 401, ms: 4 }),
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.metadata).toMatchObject({ modelListing: "auth_required" });
+  });
+
+  it("WARNING on 404 — usually a base URL missing the /v1 suffix", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async () => ({ ok: true, status: 404, ms: 4 }),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.recommendedAction).toContain("/v1");
+  });
+
+  it("WARNING when reachable but the saved model is not the one served", async () => {
+    const c = await run("ai.local_openai_compatible", ctx({
+      localOpenAi: LOCAL,
+      probe: async () => ({ ok: true, status: 200, ms: 4, json: { models: [{ name: "something-else" }] } }),
+    }));
+    expect(c.status).toBe("WARNING");
+    expect(c.message).toContain("NOT served");
+  });
+});
 
   it("queue/lock checks WARN on failures and are UNKNOWN when the table is absent", async () => {
     const withFailures = ctx({ query: async () => [{ n: 3 }] });

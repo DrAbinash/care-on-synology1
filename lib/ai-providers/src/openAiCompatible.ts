@@ -275,3 +275,106 @@ export function isCompatibleProviderConfigured(provider: string): boolean {
   }
   return readEnvApiKey(provider) != null;
 }
+
+// ─── Local OpenAI-compatible reachability probe ──────────────────────────────
+// Ollama answers GET /api/tags; an OpenAI-compatible server (llama.cpp, vLLM,
+// LM Studio, PrismML …) answers GET <baseURL>/models. Nothing in this codebase
+// could ask the latter whether it was alive, so a down local-compat provider
+// looked identical to a loaded-but-slow one. Cheap, bounded, and never used on
+// the Ollama path — probeOllamaReachable() still owns that.
+
+export type OpenAiModelsProbeResult = {
+  reachable: boolean;
+  httpStatus: number | null;
+  latencyMs: number;
+  /** Served model ids, in server order. Empty when the server reports none. */
+  models: string[];
+  /** Safe to show an operator: never contains the API key or a response body. */
+  error: string | null;
+};
+
+function scrubProbeError(raw: string, apiKey: string): string {
+  const withoutKey = (apiKey ? raw.split(apiKey).join("[REDACTED]") : raw)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[^a-zA-Z0-9_.: /()-]/g, "");
+  return withoutKey.trim().slice(0, 160) || "request_failed";
+}
+
+/**
+ * GET <baseUrl>/models for an OpenAI-compatible server.
+ *
+ * `baseUrl` is the *versioned* base the SDK is given (…/v1), matching
+ * openAiCompatibleChat(). An empty API key is valid — local servers commonly
+ * require no auth, so the Authorization header is only sent when a key exists.
+ * Never throws: transport, timeout, HTTP and parse failures all come back as
+ * `reachable: false` with a safe `error`.
+ */
+export async function probeOpenAiCompatibleModels(
+  baseUrl: string | null | undefined,
+  opts: { apiKey?: string | null; timeoutMs?: number } = {},
+): Promise<OpenAiModelsProbeResult> {
+  const started = Date.now();
+  const base = (baseUrl ?? "").trim().replace(/\/$/, "");
+  const apiKey = (opts.apiKey ?? "").trim();
+  const timeoutMs = opts.timeoutMs ?? 3000;
+
+  if (!base) {
+    return {
+      reachable: false,
+      httpStatus: null,
+      latencyMs: 0,
+      models: [],
+      error: "endpoint_not_configured",
+    };
+  }
+
+  try {
+    const resp = await fetch(`${base}/models`, {
+      method: "GET",
+      headers: apiKey
+        ? { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }
+        : { Accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) {
+      return {
+        reachable: false,
+        httpStatus: resp.status,
+        latencyMs: Date.now() - started,
+        models: [],
+        error:
+          resp.status === 401 || resp.status === 403
+            ? `auth_required (HTTP ${resp.status})`
+            : `HTTP ${resp.status}`,
+      };
+    }
+    const data = (await resp.json().catch(() => null)) as {
+      data?: Array<{ id?: unknown; name?: unknown }>;
+      models?: Array<{ id?: unknown; name?: unknown }>;
+    } | null;
+    const rows = data?.data ?? data?.models ?? [];
+    const models = rows
+      .map((m) => String(m?.id ?? m?.name ?? "").trim())
+      .filter(Boolean);
+    return {
+      reachable: true,
+      httpStatus: resp.status,
+      latencyMs: Date.now() - started,
+      models,
+      error: null,
+    };
+  } catch (err: unknown) {
+    const aborted =
+      err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    return {
+      reachable: false,
+      httpStatus: null,
+      latencyMs: Date.now() - started,
+      models: [],
+      error: scrubProbeError(
+        aborted ? `timed_out_after_${timeoutMs}ms` : err instanceof Error ? err.message : String(err),
+        apiKey,
+      ),
+    };
+  }
+}

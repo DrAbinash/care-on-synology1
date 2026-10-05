@@ -62,6 +62,18 @@ export interface OpsCtx {
   orthanc: { baseUrl: string | null; headers: Record<string, string>; configured: boolean };
   /** On-prem Ollama LLM endpoint + the configured/default reporting model. */
   ollama: { baseUrl: string | null; model: string; configured: boolean };
+  /**
+   * Vendor-neutral local OpenAI-compatible server (Settings → AI Providers).
+   * Checked with GET <endpoint>/models — it is NOT an Ollama server and must
+   * never be probed with /api/tags. `configured` is false when no endpoint is
+   * saved, which is the normal state while every route points at Ollama.
+   */
+  localOpenAi: {
+    baseUrl: string | null;
+    model: string | null;
+    configured: boolean;
+    enabled: boolean;
+  };
   ohifUrl: string | null;
   publicBaseUrl: string | null;
   displayToken: string | null;
@@ -397,6 +409,78 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       return has
         ? { status: "PASS", message: `Ollama reachable; configured model ${ctx.ollama.model} available (${models.length} model(s))`, metadata: { model: ctx.ollama.model, modelCount: models.length } }
         : { status: "WARNING", message: `Ollama reachable but configured model ${ctx.ollama.model} is NOT pulled`, recommendedAction: `On the Ollama host run: ollama pull ${ctx.ollama.model}`, metadata: { model: ctx.ollama.model, available: models.slice(0, 5) } };
+    },
+  },
+  {
+    id: "ai.local_openai_compatible",
+    name: "Local OpenAI-compatible endpoint",
+    category: "radiology_pacs",
+    required: false,
+    optional: true,
+    run: async (ctx) => {
+      if (!ctx.localOpenAi.configured || !ctx.localOpenAi.baseUrl) {
+        return { status: "SKIPPED", message: "no local OpenAI-compatible server configured — Composer/OCR routes stay on Ollama" };
+      }
+      if (!ctx.localOpenAi.enabled) {
+        return {
+          status: "SKIPPED",
+          message: `${ctx.localOpenAi.baseUrl} is configured but switched off in Settings — any route pointing at it will fail`,
+          metadata: { baseUrl: ctx.localOpenAi.baseUrl },
+        };
+      }
+      // OpenAI wire format asks GET <baseURL>/models; /api/tags would 404 and be
+      // read as "AI down". The key is deliberately NOT sent here — an ops probe
+      // must not touch the decrypted secret (inference paths do), and many local
+      // servers require none at all.
+      const r = await ctx.probe(`${ctx.localOpenAi.baseUrl}/models`, { parseJson: true });
+      const endpoint = ctx.localOpenAi.baseUrl;
+      if (r.status == null) {
+        return {
+          status: "WARNING",
+          message: `${endpoint} unreachable — routes on this provider will fail (manual reporting unaffected)`,
+          recommendedAction: "Start the local server, or route the affected task back to Ollama in Settings → Model Routing.",
+          metadata: { baseUrl: endpoint },
+        };
+      }
+      if (r.status === 401 || r.status === 403) {
+        return {
+          status: "PASS",
+          message: `server alive; GET /models needs a key (${r.status}) — saved key is used by inference, not by this probe`,
+          metadata: { baseUrl: endpoint, httpStatus: r.status, modelListing: "auth_required" },
+        };
+      }
+      if (r.status >= 400) {
+        return {
+          status: "WARNING",
+          message: `GET /models returned ${r.status}${r.status === 404 ? " — server speaks /v1 but does not list models" : ""}`,
+          recommendedAction: "Confirm the endpoint URL includes the versioned base (…/v1) and that the server exposes GET /models.",
+          metadata: { baseUrl: endpoint, httpStatus: r.status },
+        };
+      }
+      const rows = (r.json as { data?: Array<{ id?: string; name?: string }>; models?: Array<{ id?: string; name?: string }> } | undefined)?.data
+        ?? (r.json as { models?: Array<{ id?: string; name?: string }> } | undefined)?.models
+        ?? [];
+      const served = rows.map((m) => String(m?.id ?? m?.name ?? "").trim()).filter(Boolean);
+      const wanted = (ctx.localOpenAi.model ?? "").trim();
+      if (!wanted || served.length === 0) {
+        return {
+          status: "PASS",
+          message: `reachable (${r.ms}ms), ${served.length} model(s) listed${wanted ? "" : "; no saved default model to match"}`,
+          metadata: { baseUrl: endpoint, modelCount: served.length, served: served.slice(0, 5) },
+        };
+      }
+      return served.includes(wanted)
+        ? {
+            status: "PASS",
+            message: `reachable; saved model ${wanted} is served (${served.length} model(s))`,
+            metadata: { baseUrl: endpoint, model: wanted, modelCount: served.length },
+          }
+        : {
+            status: "WARNING",
+            message: `reachable but saved model ${wanted} is NOT served (have: ${served.slice(0, 4).join(", ")}${served.length > 4 ? "…" : ""})`,
+            recommendedAction: `Load ${wanted} on the server, or save a served model id in Settings → AI Providers.`,
+            metadata: { baseUrl: endpoint, model: wanted, served: served.slice(0, 8) },
+          };
     },
   },
   {

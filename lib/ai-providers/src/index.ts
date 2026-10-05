@@ -14,13 +14,16 @@ import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { decryptSecret } from "@workspace/crypto";
 import { isLocalExecutionProvider } from "./openAiCompatible";
+import { CANONICAL_OLLAMA_ENDPOINT, CANONICAL_LOCAL_CHAT_VISION_MODEL } from "./canonicalLocalAi";
 
-// ─── Canonical on-prem Local AI (chat/vision) ───────────────────────────────
-// Keep in sync with artifacts/api-server/.../canonicalLocalAi.ts.
-// Embeddings (nomic-embed-text) and Paddle OCR are separate exceptions.
-
-export const CANONICAL_OLLAMA_ENDPOINT = "http://172.16.1.140:11434";
-export const CANONICAL_LOCAL_CHAT_VISION_MODEL = "qwen3-vl:8b";
+// Canonical on-prem Local AI (chat/vision) values live in ./canonicalLocalAi.ts —
+// the single definition the pipeline layer re-exports. Re-exported here so
+// existing `@workspace/ai-providers` importers keep working.
+export {
+  CANONICAL_OLLAMA_ENDPOINT,
+  CANONICAL_LOCAL_CHAT_VISION_MODEL,
+  CANONICAL_EMBEDDING_MODEL,
+} from "./canonicalLocalAi";
 
 // ─── Request deadlines ───────────────────────────────────────────────────────
 // Until now only Ollama honoured `timeoutMs`, and only when a caller happened
