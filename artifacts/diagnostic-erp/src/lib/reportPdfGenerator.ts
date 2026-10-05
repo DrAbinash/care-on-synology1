@@ -199,21 +199,53 @@ const CARE_LETTER_COLORS: Array<[number, number, number]> = [
   [249, 115, 22],  // E — orange
 ];
 
-function formatReportDateShort(raw: string | null | undefined): string {
-  if (!raw) return "";
+/**
+ * Read the three shapes a study date arrives in: `2026-10-04` from the ERP,
+ * `20261004` from DICOM, and `04/10/2026` typed into the Demography card at the top
+ * of the Reporting Workspace — which is a free-text field, and DD/MM/YYYY is how
+ * every report he reads displays the date. Returns null for anything that would
+ * have to be guessed, including a date that does not exist on the calendar.
+ */
+function readStudyDate(raw: string): { y: number; m: number; d: number } | null {
+  const typed = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+  if (typed) return asRealDate(Number(typed[3]), Number(typed[2]), Number(typed[1]));
+  // Slashed and not DD/MM/YYYY: refuse rather than pick an order.
+  if (raw.includes("/")) return null;
   const digits = raw.replace(/\D/g, "");
-  if (digits.length >= 8) {
-    return `${digits.slice(6, 8)}/${digits.slice(4, 6)}/${digits.slice(0, 4)}`;
-  }
-  try {
-    const d = new Date(raw);
-    if (!Number.isNaN(d.getTime())) {
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      return `${dd}/${mm}/${d.getFullYear()}`;
+  if (digits.length >= 8) return asRealDate(Number(digits.slice(0, 4)), Number(digits.slice(4, 6)), Number(digits.slice(6, 8)));
+  if (/[\s,-]/.test(raw)) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return { y: parsed.getFullYear(), m: parsed.getMonth() + 1, d: parsed.getDate() };
     }
-  } catch { /* fall through */ }
-  return raw;
+  }
+  return null;
+}
+
+/** Year/month/day as written, or null when no such day exists. */
+function asRealDate(y: number, m: number, d: number): { y: number; m: number; d: number } | null {
+  // A study date outside this window is a misread, not history.
+  if (y < 1900 || y > 2200 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const probe = new Date(y, m - 1, d);
+  if (probe.getFullYear() !== y || probe.getMonth() !== m - 1 || probe.getDate() !== d) return null;
+  return { y, m, d };
+}
+
+/**
+ * The DATE line of the letter-pad header, DD/MM/YYYY.
+ *
+ * The signed document renders its own copy server-side
+ * (`reportPresentation.formatReportDateShort`) and the two must agree —
+ * `reportStudyDate.test.ts` runs both over the same inputs, so an edit on one side
+ * fails on the other. Exported for that test and for nothing else.
+ */
+export function formatReportDateShort(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  const read = readStudyDate(trimmed);
+  if (!read) return trimmed;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(read.d)}/${pad(read.m)}/${read.y}`;
 }
 
 function ageSexLine(age?: string, sex?: string): string {

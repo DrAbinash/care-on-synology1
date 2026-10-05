@@ -236,52 +236,66 @@ export function resolvePresentationTemplate(id?: string | null): PresentationTem
     ?? PRESENTATION_TEMPLATES.find((t) => t.id === DEFAULT_TEMPLATE_ID)!;
 }
 
-/** Format YYYYMMDD or ISO dates for report headers. */
-export function formatReportDate(raw: string | null | undefined): string {
-  if (!raw) return "";
+/** Year/month/day as written, or null when no such day exists. */
+function asRealDate(y: number, m: number, d: number): { y: number; m: number; d: number } | null {
+  // A study date outside this window is a misread, not history.
+  if (y < 1900 || y > 2200 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const probe = new Date(y, m - 1, d);
+  if (probe.getFullYear() !== y || probe.getMonth() !== m - 1 || probe.getDate() !== d) return null;
+  return { y, m, d };
+}
+
+/**
+ * Read the three shapes a study date arrives in: `2026-10-04` from the ERP,
+ * `20261004` from DICOM, and `04/10/2026` typed into the Demography card in the
+ * Reporting Workspace — a free-text field, and DD/MM/YYYY is how every report the
+ * radiologist reads displays the date. Returns null for anything that would have to
+ * be guessed, including a day that does not exist on the calendar.
+ *
+ * `reportPdfGenerator.ts` carries the browser's copy of this reading;
+ * `reportStudyDate.test.ts` runs both over the same inputs so they cannot drift.
+ */
+function readStudyDate(raw: string): { y: number; m: number; d: number } | null {
+  const typed = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(raw);
+  if (typed) return asRealDate(Number(typed[3]), Number(typed[2]), Number(typed[1]));
+  // Slashed and not DD/MM/YYYY: refuse rather than pick an order.
+  if (raw.includes("/")) return null;
   const digits = raw.replace(/\D/g, "");
   if (digits.length >= 8) {
-    const y = digits.slice(0, 4);
-    const m = digits.slice(4, 6);
-    const day = digits.slice(6, 8);
-    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    const mi = parseInt(m, 10) - 1;
-    if (mi >= 0 && mi < 12) {
-      const d = new Date(parseInt(y, 10), mi, parseInt(day, 10));
-      if (!Number.isNaN(d.getTime())) {
-        const weekday = d.toLocaleDateString("en-IN", { weekday: "long" });
-        return `${weekday}, ${months[mi]} ${parseInt(day, 10)}, ${y}`;
-      }
-    }
-    return `${day}/${m}/${y}`;
+    return asRealDate(Number(digits.slice(0, 4)), Number(digits.slice(4, 6)), Number(digits.slice(6, 8)));
   }
-  try {
-    const d = new Date(raw);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  if (/[\s,-]/.test(raw)) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return { y: parsed.getFullYear(), m: parsed.getMonth() + 1, d: parsed.getDate() };
     }
-  } catch { /* fall through */ }
-  return raw;
+  }
+  return null;
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** Format a study date for report headers: "Sunday, October 4, 2026". */
+export function formatReportDate(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  const read = readStudyDate(trimmed);
+  if (!read) return trimmed;
+  const weekday = new Date(read.y, read.m - 1, read.d).toLocaleDateString("en-IN", { weekday: "long" });
+  return `${weekday}, ${MONTH_NAMES[read.m - 1]} ${read.d}, ${read.y}`;
 }
 
 /** Letter-pad DATE line: DD/MM/YYYY (matches generateReportPDF). */
 export function formatReportDateShort(raw: string | null | undefined): string {
-  if (!raw) return "";
-  const trimmed = raw.trim();
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
-  const digits = trimmed.replace(/\D/g, "");
-  if (digits.length >= 8) {
-    return `${digits.slice(6, 8)}/${digits.slice(4, 6)}/${digits.slice(0, 4)}`;
-  }
-  try {
-    const d = new Date(trimmed);
-    if (!Number.isNaN(d.getTime())) {
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      return `${dd}/${mm}/${d.getFullYear()}`;
-    }
-  } catch { /* fall through */ }
-  return trimmed;
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  const read = readStudyDate(trimmed);
+  if (!read) return trimmed;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(read.d)}/${pad(read.m)}/${read.y}`;
 }
 
 function rowByLabel(rows: ReportPatientRow[], ...labels: string[]): string {
