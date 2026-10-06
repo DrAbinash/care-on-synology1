@@ -29,7 +29,7 @@ export type FindingComposerProps = {
   disabled?: boolean;
   /** Optional banner (e.g. "From dictation — review before adding"). */
   banner?: string | null;
-  onApplied?: (status: "applied" | "pending" | "blocked") => void;
+  onApplied?: (status: "applied" | "pending" | "blocked" | "refused") => void;
 };
 
 export default function FindingComposer({
