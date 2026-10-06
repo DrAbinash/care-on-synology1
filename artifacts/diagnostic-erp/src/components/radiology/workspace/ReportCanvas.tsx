@@ -641,7 +641,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             </span>
                           )}
                         </button>
-                        {!isLocked && !isFinalized && appliedFormatName
+                        {!contentLocked && appliedFormatName
                           && appliedPathologyPatches.every((p) => p.stale || p.observation?.role === "baseline" || isSystemNormalPatch(p)) ? (
                           <Button
                             type="button"
@@ -801,7 +801,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection {...accordionProps("region")}>
                     <div className="space-y-2">
                     {/* One-click Start Report */}
-                    {false && !isLocked && !isFinalized && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
+                    {false && !contentLocked && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
                       <div
                         className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-amber-400/50 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-50/40 shadow-sm"
                         data-testid="start-report-banner"
@@ -829,7 +829,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       </div>
                     )}
 
-                    {canUndoStartReport && !bootstrapAppliedThisOpen && !isLocked && !isFinalized && (
+                    {canUndoStartReport && !bootstrapAppliedThisOpen && !contentLocked && (
                       <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50 border border-blue-200 text-blue-800 text-xs">
                         <span className="flex-1">Report bootstrapped — undo restores your previous text.</span>
                         <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={undoStartReport}>
@@ -839,7 +839,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     )}
 
                     {/* Single study-ready status strip (startup facts only) */}
-                    {studyReadyStatus.label && !isLocked && !isFinalized && (
+                    {studyReadyStatus.label && !contentLocked && (
                       <div
                         className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-[11px] ${
                           studyReadyStatus.kind === "normal_not_applied"
@@ -939,7 +939,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           hideQuickSelect
                         />
                       </div>
-                      {!isLocked && !isFinalized && (
+                      {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="clinicalHistory" />
                       )}
                     </div>
@@ -970,7 +970,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           onQuickSelectPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </div>
-                      {!isLocked && !isFinalized && (
+                      {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="technique" />
                       )}
                     </div>
@@ -1004,7 +1004,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           >
                             Tools
                           </Button>
-                          {!isLocked && !isFinalized && (
+                          {!contentLocked && (
                             <FieldCareMic voice={voiceSession} target="findings" />
                           )}
                         </div>
@@ -1474,7 +1474,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     Abnormal
                                   </button>
                                 </div>
-                                {!isLocked && !isFinalized && (
+                                {!contentLocked && (
                                   <button
                                     type="button"
                                     className="text-muted-foreground hover:text-destructive p-0.5 rounded"
@@ -1804,7 +1804,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <div className="flex-1 space-y-1.5">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[10px] font-semibold uppercase text-muted-foreground">Impression</span>
-                          {!isLocked && !isFinalized && (
+                          {!contentLocked && (
                             <div className="flex items-center gap-2">
                               {impressionNeedsRefresh && (
                                 <div className="flex items-center gap-1.5" data-testid="impression-needs-refresh">
@@ -1842,7 +1842,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             </div>
                           )}
                         </div>
-                        {!isLocked && !isFinalized && (
+                        {!contentLocked && (
                           <QuickSelectStrip
                             field="impression"
                             bodyPart={studySetup.matchedStudyRegion}
@@ -1855,7 +1855,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
                       </div>
-                      {!isLocked && !isFinalized && (
+                      {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="impression" />
                       )}
                     </div>
@@ -1881,7 +1881,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <ReportAccordionSection {...accordionProps("recommendation")}>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 space-y-1.5">
-                        {!isLocked && !isFinalized && (
+                        {!contentLocked && (
                           <QuickSelectStrip
                             field="recommendation"
                             bodyPart={studySetup.matchedStudyRegion}
@@ -1889,7 +1889,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
-                        {recommendationChips.length > 0 && !isLocked && !isFinalized && (
+                        {recommendationChips.length > 0 && !contentLocked && (
                           <div className="flex flex-wrap gap-1" data-testid="recommendation-chips">
                             {recommendationChips.map((chip, i) => {
                               const active = recommendationChipActive(recommendationText, chip);
@@ -1936,7 +1936,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         )}
                         <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
                       </div>
-                      {!isLocked && !isFinalized && (
+                      {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="recommendation" />
                       )}
                     </div>
