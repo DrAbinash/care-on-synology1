@@ -505,6 +505,23 @@ const GUARD_CASES: Array<{
     call: () => useWorkspace.getState().applyMacroWithValues({}),
     refusal: undefined,
   },
+  {
+    // The Quick Select strip is the highest-traffic control in the workspace and
+    // takes no `disabled` prop at all, so a findings or impression tile is still
+    // clickable after signing. `refusal: "applied"` is not a typo — this mutator
+    // reports success on refusal, because its declared return type is
+    // `"applied" | "pending"` and three internal callers branch on the value.
+    // Widening it is a behaviour change that belongs in its own PR; the point of
+    // pinning it here is that the refusal now goes through the shared predicate
+    // and is therefore both logged and announced.
+    action: "applyPathologyOverlay",
+    arm: () => {},
+    call: () => useWorkspace.getState().applyPathologyOverlay({
+      ...pendingFrom(OTHER_TILE, "qs-guard-case"),
+      force: true,
+    }),
+    refusal: "applied",
+  },
 ];
 
 function runGuardCase(c: (typeof GUARD_CASES)[number], signed: boolean) {
@@ -791,8 +808,6 @@ describe("the boundary cannot regress silently", () => {
    * first branch stayed open.
    */
   const LEGACY_IF_GUARD: Record<string, string> = {
-    applyPathologyOverlay:
-      'returns "applied" on refusal and two callers branch on that value; unifying it would change what XrayLsSpineCanvas and applyMultiLevelSpine do next',
     seedSystemNormalImpression: "one of three stacked safety refusals, the other two being clinical and not about signing",
     applyComposerFinding: 'already returns "blocked"; its guard is the first statement',
     setObservationImpressionParticipation: "its guard is the first statement",
@@ -895,7 +910,7 @@ describe("the boundary cannot regress silently", () => {
     expect(isGuarded({ name: "notAMethod", start: 0, end: 0 })).toBe(false);
     // And allowlist membership alone is not a pass — the entry still has to carry
     // its own isFinalized check in the body, or the allowlist becomes a hiding place.
-    expect(isGuarded({ name: "applyPathologyOverlay", start: 0, end: 0 })).toBe(false);
+    expect(isGuarded({ name: "applyComposerFinding", start: 0, end: 0 })).toBe(false);
   });
   it("the mutators this boundary guards are detected as guarded", () => {
     const writers = clinicalWriters();
@@ -905,7 +920,7 @@ describe("the boundary cannot regress silently", () => {
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
-      "relateralizePatches", "applyMacroWithValues",
+      "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
     ];
     for (const name of guardedByPredicate) {
       const w = writers.find((x) => x.name === name);
