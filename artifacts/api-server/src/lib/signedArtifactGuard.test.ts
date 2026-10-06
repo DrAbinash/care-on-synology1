@@ -74,8 +74,43 @@ describe("classifySignedReportPatch — signed content is immutable (Phase 5 #3)
     if (!d.allow) {
       expect(d.code).toBe("signed_report_immutable");
       expect(d.fields).toEqual([field]);
-      expect(d.message).toContain("Amend");
+      // This line used to read `expect(d.message).toContain("Amend")`, which
+      // made the defect unfixable by accident: it failed anyone who stopped
+      // offering a correction path that does not exist. Inverted, not deleted —
+      // the message still has to name a way back, and the test below says which.
+      expect(d.message).not.toContain("Amend");
     }
+  });
+
+  it("names a correction path that exists for an ordinary signed report", () => {
+    // POST /:id/amend answers 409 not_a_signed_structured_report for any row
+    // without a signed structured document, and has no ERP caller at all — the
+    // Report Hub has a read side for amendment chains but no way to start one.
+    // classifySignedReportPatch is handed `signed` and `body` only, so it cannot
+    // tell a structured-signed row from the legacy-signed majority; naming Amend
+    // therefore sends most radiologists to a door that shuts on them. Withdrawal
+    // is the path that exists, and since #847 it reopens the study for real.
+    const d = classifySignedReportPatch({ signed, body: { impression: "changed" } });
+    expect(d.allow).toBe(false);
+    if (d.allow) return;
+    // The snapshot. The assertions below it are the invariants, and they are
+    // stated even though the snapshot implies them: whoever re-words this
+    // sentence will paste their own string in here to make it pass, and it is
+    // these that stop the re-wording quietly dropping the place, the permission
+    // or the exception.
+    expect(d.message).toBe(
+      "A signed report cannot be edited in place. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can. A verified or delivered report cannot be withdrawn.",
+    );
+    // Under #855's measured eight-second reading budget, which is the ceiling
+    // every other signed refusal in the app is held to.
+    expect(d.message.length).toBeLessThanOrEqual(191);
+    // It must say where, and who, or the radiologist is left hunting.
+    expect(d.message).toContain("Report Hub");
+    expect(d.message).toContain("only the signer or an administrator can");
+    // And it must not promise withdrawal for the rows the withdrawal route
+    // itself refuses — `already_verified` before its transaction,
+    // `already_delivered` inside it.
+    expect(d.message).toContain("A verified or delivered report cannot be withdrawn.");
   });
 
   it("refuses several protected fields at once and names all of them", () => {

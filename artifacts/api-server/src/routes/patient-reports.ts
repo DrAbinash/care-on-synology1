@@ -2297,11 +2297,22 @@ patientReportsRouter.patch("/:id", async (req, res) => {
   // ── The signed-artifact guard ──────────────────────────────────────────────
   // A signed report is a medico-legal artifact: its content, its signer and its
   // signing time are the evidence. Ordinary updates may not touch any of them.
-  // Correction goes through POST /:id/amend (a new row on the chain, structured
-  // documents only) or, before verification, through POST /:id/withdraw-signature
-  // (an explicit, attributed un-signing — which clears the signature but does not
-  // by itself unlock the study's draft). Both leave an audit record; a PATCH
-  // leaves none.
+  // Both correction routes leave an audit record; a PATCH leaves none.
+  //
+  // POST /:id/amend adds a new row to the chain and requires a signed structured
+  // document — a shape this clinic's reporting workspace never produces, and one
+  // no ERP page calls for. POST /:id/withdraw-signature is an explicit,
+  // attributed un-signing, open to the signer or an administrator on a row that
+  // is neither verified nor delivered nor structured-signed, and since #847 it
+  // reopens the study for real: its transaction returns the report to "draft"
+  // and reverts the bound worklist row to REPORT_IN_PROGRESS with reportId and
+  // deliveryStatus cleared — the conditions assertDraftWritable reads.
+  //
+  // That asymmetry is why classifySignedReportPatch's refusal names withdrawal
+  // and not amend. It is handed `signed` and `body` only, so it cannot tell the
+  // amend-eligible minority from the legacy-signed majority, and the sentence it
+  // returns has to be true for both. Report Hub is named because that page reads
+  // the row and then says which of the two paths this one actually has.
   const signed = isSignedArtifact(existing);
   const decision = classifySignedReportPatch({
     signed,
@@ -2415,10 +2426,19 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
       error: "already_signed",
       // Reaching this branch means the row carries NO signed structured
       // document (that case is refused above), and POST /:id/amend refuses
-      // exactly such rows — so it must not be offered here. Withdrawal does
-      // clear the signature and is audited, but it leaves the worklist row
-      // REPORT_FINAL and the draft finalised, so the text is still not
-      // editable; say that rather than promise a way back to draft.
+      // exactly such rows — so it must not be offered here.
+      //
+      // This comment used to go on to say that withdrawal "leaves the worklist
+      // row REPORT_FINAL and the draft finalised, so the text is still not
+      // editable". That stopped being true when the withdrawal route began
+      // setting the report to "draft" and reverting the bound worklist row to
+      // REPORT_IN_PROGRESS with its reportId and deliveryStatus cleared — the
+      // conditions assertDraftWritable reads — so the study really is editable
+      // again. The message below is deliberately unchanged all the same: the
+      // radiologist here asked to SIGN, not to correct, and offering a way to
+      // un-sign is an invitation they did not ask for. Where a correction is
+      // what was attempted, classifySignedReportPatch's message is the one that
+      // has to name the path, and it now does.
       message:
         "This report is already signed, and signing again would overwrite the original signer and signing time. "
         + "POST /:id/withdraw-signature records an attributed withdrawal; amending a legacy-signed report is not available.",

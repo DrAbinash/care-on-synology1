@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, HttpError } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { useListPatients } from "@workspace/api-client-react";
 import PageHeader from "@/components/PageHeader";
@@ -764,7 +764,21 @@ function EditorDialog({
       const r = await api.get<ReportRow & { shares: ReportShare[] }>(`/api/patient-reports/${report.id}`);
       setReport(r);
     } catch (err) {
-      toast({ title: "Save failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+      // A 409 from this route is the signed-artifact guard declining by policy
+      // (signed_report_immutable or critical_state_immutable), not a save that
+      // was attempted and broke. "Save failed" reads as an invitation to retry,
+      // and retrying cannot succeed while the report stays signed — the confusion
+      // #859 removed from the workspace's own save path. Its title there is
+      // "Save refused — the report is signed"; this route refuses for two
+      // reasons, so one title has to state the outcome rather than name a cause
+      // it cannot know. The description is the server's own sentence, which now
+      // names a way back that exists.
+      const refused = err instanceof HttpError && err.status === 409;
+      toast({
+        title: refused ? "Nothing was saved" : "Save failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
     } finally { setBusy(false); }
   }
 

@@ -268,6 +268,39 @@ describe.skipIf(!dbReady)("signed-artifact trust model — request level", () =>
     expect(audits[0].reason).toBe("signed_report_immutable");
   });
 
+  it("#3 the refusal names a correction path this row can actually use", async () => {
+    // The message is the only part of this response a human reads: fetchApi's
+    // sanitizeApiErrorMessage skips the opaque `signed_report_immutable` token
+    // and returns this sentence, and Report Hub puts it straight into a toast.
+    // It used to read "Use Amend to create a corrected version, or withdraw the
+    // signature first" — but the sign route above produces a legacy-signed row
+    // with no structured document, and POST /:id/amend answers 409
+    // not_a_signed_structured_report for exactly that. The `already_signed` and
+    // `already_verified` refusals further down this file already assert their
+    // own messages stay off that route; this one asserted nothing about its
+    // message at all, and no other test read it over HTTP.
+    const id = await newDraft();
+    await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
+
+    const res = await request(app)
+      .patch(`/api/patient-reports/${id}`)
+      .set("Authorization", `Bearer ${signerToken}`)
+      .send({ impression: "REWRITTEN AFTER SIGNING" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("signed_report_immutable");
+
+    const message: string = res.body.message ?? "";
+    // Stricter than the siblings' `not.toContain("/:id/amend")`: this message
+    // names no route path, so the whole word has to be absent.
+    expect(message).not.toMatch(/amend/i);
+    expect(message).toContain("withdraw the signature from Report Hub");
+    expect(message).toContain("only the signer or an administrator can");
+    // Without this clause the message promises a button the withdrawal route
+    // itself refuses with `already_verified` — the state the verify test below
+    // drives an otherwise identical row into.
+    expect(message).toContain("A verified or delivered report cannot be withdrawn.");
+  });
+
   it("#3 every protected field is refused on a signed report, each naming itself", async () => {
     const id = await newDraft();
     await request(app).post(`/api/patient-reports/${id}/sign`).set("Authorization", `Bearer ${signerToken}`).send({});
