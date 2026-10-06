@@ -1268,17 +1268,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [voiceComposer.preview?.transcript, voiceSession.pending?.editableText]);
 
   const dictateAddAsNote = useCallback(() => {
-    if (isLocked || isFinalized) return;
+    if (contentLocked) return;
     const text = dictationTranscript();
     if (!text) return;
     useWorkspace.getState().mergeField("findings", text, "radiologist-voice");
     voiceComposer.discardPreview();
     voiceSession.cancel();
     setComposerBanner(null);
-  }, [dictationTranscript, isLocked, isFinalized, voiceComposer, voiceSession]);
+  }, [contentLocked, dictationTranscript, voiceComposer, voiceSession]);
 
   const dictateAddAsFinding = useCallback(() => {
-    if (isLocked || isFinalized) return;
+    if (contentLocked) return;
     const text = dictationTranscript();
     if (!text) return;
     const catalog = buildComposerCatalog(
@@ -1302,7 +1302,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     }
     activateReportSection("findings");
   }, [
-    dictationTranscript, isLocked, isFinalized, composerQuickFindings, composerRegion, activateReportSection,
+    contentLocked, dictationTranscript, composerQuickFindings, composerRegion, activateReportSection,
   ]);
 
   // Changing the live transcript must not leave a stale structured proposal ready to commit.
@@ -2027,9 +2027,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   }, [quickSide]);
 
   const handleEditBeforeInsert = useCallback((finding: QuickFinding) => {
-    if (isLocked || isFinalized) return;
+    if (contentLocked) return;
     setStudyLocalEdit(finding);
-  }, [isLocked, isFinalized]);
+  }, [contentLocked]);
 
   const applyStudyLocalEdit = useCallback((override: StudyLocalTextOverride) => {
     const f = studyLocalEdit;

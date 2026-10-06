@@ -536,7 +536,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                       quickSource={quickInsertSource}
                       onQuickSourceChange={setQuickInsertSource}
                       onClose={() => rightPanelRef.current?.collapse()}
-                      disabled={isLocked || isFinalized}
+                      disabled={contentLocked}
                       panes={{
                         "quick-insert": (
                           <div className="space-y-2" data-testid="quick-insert">
@@ -548,7 +548,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   selectedStudyTabName={studySetup.matchedStudyRegion}
                                   activeAnatomy={activeFindingsAnatomy}
                                   onAnatomyChange={setActiveFindingsAnatomy}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   sticky
                                 />
                                 <QuickSelectStrip
@@ -568,7 +568,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 onEditBeforeInsert={handleEditBeforeInsert}
                                 side={quickSide}
                                 onSideChange={setQuickSide}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 initialStudyHint={studySetup.studyHint || null}
                                 selectedRegions={studySetup.studyRegions}
                                 onRegionToggle={studySetup.handleRegionToggle}
@@ -593,7 +593,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <ChocolateBoxMacros
                                 setKey={studySetup.chocolateBoxSet.key}
                                 label={studySetup.chocolateBoxSet.label}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 onInsert={studySetup.applyChocolateTile}
                                 onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
                               />
@@ -613,7 +613,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   focusClinicalEditor(target);
                                 }}
                                 studyContext={studySetup.studyContext}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                               />
                             ) : null}
                             {quickInsertSource === "composer" ? (
@@ -625,7 +625,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   setComposerDraft(d);
                                   if (!d.editingId) setComposerBanner(null);
                                 }}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 banner={composerBanner}
                                 onApplied={(status) => {
                                   if (status === "applied") {
@@ -660,7 +660,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             <StructuredFormatPanel
                               sectionsJson={studySetup.selectedTemplate?.sectionsJson}
                               values={structuredValues}
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               onValuesChange={(next) => {
                                 structuredTouchedRef.current = true;
                                 setStructuredValues(next);
@@ -692,7 +692,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 <MriLumbarCanvas
                                   patches={appliedPathologyPatches}
                                   findingsText={findingsText}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   canalApByLevel={canalApByLevel}
                                   onFocusRegion={(key) => useWorkspace.getState().touchCoverageViewed(key)}
                                   onApplyLevel={(level, regionKey, sel) => {
@@ -721,10 +721,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   }}
                                 />
                                 <MriLumbarSubMasterPanel
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
                                 />
-                                <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} />
+                                <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriCervicalReportingContext({
@@ -739,7 +739,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 <MriCervicalCanvas
                                   patches={appliedPathologyPatches}
                                   findingsText={findingsText}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   canalApByLevel={canalApByLevel}
                                   onFocusRegion={(key) => useWorkspace.getState().touchCoverageViewed(key)}
                                   onApplyLevel={(level, regionKey, sel) => {
@@ -767,7 +767,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                     });
                                   }}
                                 />
-                                <SpineApCanalMeasurements segment="cervical" disabled={isLocked || isFinalized} />
+                                <SpineApCanalMeasurements segment="cervical" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriDorsalReportingContext({
@@ -781,7 +781,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <MriDorsalCanvas
                                 patches={appliedPathologyPatches}
                                 findingsText={findingsText}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 onFocusRegion={(key) => useWorkspace.getState().touchCoverageViewed(key)}
                                 onApplyLevel={(level, regionKey, sel) => {
                                   const { bundleId, observations } = buildDorsalLevelApplyBundle({
@@ -819,7 +819,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               studyDescription: workflow.currentRow?.studyDescription ?? null,
                             }) ? (
                               <XrayChestCanvas
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 region={studySetup.matchedStudyRegion ?? "Chest"}
                                 patientAge={workflow.currentRow?.age ?? null}
                               />
@@ -834,7 +834,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               studyDescription: workflow.currentRow?.studyDescription ?? null,
                             }) ? (
                               <XrayCervicalCanvas
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 region={studySetup.matchedStudyRegion ?? "Cervical Spine"}
                                 patientAge={workflow.currentRow?.age ?? null}
                               />
@@ -853,10 +853,10 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               <>
                                 {/* Dorsal V3 palettes sit on the same ledger as the level rows above. */}
                                 <MriDorsalSubMasterPanel
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? "Dorsal Spine"}
                                 />
-                                <SpineApCanalMeasurements segment="dorsal" disabled={isLocked || isFinalized} />
+                                <SpineApCanalMeasurements segment="dorsal" disabled={contentLocked} />
                               </>
                             ) : null}
                             {isMriDorsoLumbarReportingContext({
@@ -876,19 +876,19 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 */}
                                 <MriDorsoLumbarCanvas
                                   patches={appliedPathologyPatches}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   onSelectLevel={(level) => useWorkspace.getState().touchCoverageViewed(level)}
                                 />
                                 <MriDorsoLumbarSubMasterPanel
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   ledgerRegion={studySetup.matchedStudyRegion ?? undefined}
                                 />
-                                <DorsoLumbarApCanalMeasurements disabled={isLocked || isFinalized} />
+                                <DorsoLumbarApCanalMeasurements disabled={contentLocked} />
                               </>
                             ) : null}
                             {studySetup.studyContext?.family === "spine" ? (
                               <SpineScreeningPanel
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 ledgerRegion={studySetup.matchedStudyRegion ?? "LS Spine"}
                                 billed={{
                                   name: studySetup.testName ?? null,
@@ -909,7 +909,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               studyDescription: workflow.currentRow?.studyDescription ?? null,
                             }) ? (
                               <XrayLsSpineCanvas
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 region={studySetup.matchedStudyRegion ?? "LS Spine"}
                               />
                             ) : null}
@@ -919,7 +919,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               selectedId={selectedObservationId}
                               keyImageCounts={keyImageCounts}
                               measurementChips={measurementChips}
-                              impressionDisabled={isLocked || isFinalized}
+                              impressionDisabled={contentLocked}
                               onSelect={(id) => useWorkspace.getState().setSelectedObservationId(id)}
                               onEdit={openComposerForObservation}
                               onOpenKeyImages={(id) => {
@@ -938,7 +938,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             {workflow.currentRow?.studyInstanceUID ? (
                               <ViewerMeasurementsBanner
                                 studyInstanceUID={workflow.currentRow.studyInstanceUID}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 onInsertAll={(lines) => lines.forEach(appendFindings)}
                                 onOpenMeasureTab={() => setReportingToolsTab("measurements")}
                               />
@@ -948,26 +948,26 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               region: studySetup.matchedStudyRegion,
                               family: studySetup.studyContext?.family,
                               spineSegment: studySetup.studyContext?.spineSegment,
-                            }) ? <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} /> : null}
+                            }) ? <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} /> : null}
                             {draftId ? (
                               <>
                                 <ReportImagePicker
                                   draftId={draftId}
                                   studyId={studyId ?? null}
                                   studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   onEnsureDraft={isLocked ? undefined : () => saveDraft({ silent: true })}
                                   hideSelectedList
                                 />
                                 <ReportImagePanel
                                   draftId={draftId}
                                   dicomWebBase={BROWSER_DICOMWEB_BASE}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   layout="stack"
                                 />
                                 <PrintImagePicker
                                   studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                 />
                               </>
                             ) : <p className="text-xs text-muted-foreground">Save a draft to manage report images.</p>}
@@ -981,7 +981,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               modality={workflow.currentRow.modality ?? ""}
                               studyDescription={workflow.currentRow.studyDescription ?? ""}
                               comparisonMissing={false}
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               onInsertFindings={appendFindings}
                               onOpenPriorTab={() => setReportingToolsTab("priors")}
                             />
@@ -1017,7 +1017,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   studyInstanceUID={workflow.currentRow.studyInstanceUID}
                                   studyId={studyId ?? undefined}
                                   patientId={workflow.currentRow.patientId ?? undefined}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   templateSelected={studySetup.selectedTemplateId != null}
                                   protocolSelected={!!studySetup.activeProtocol}
                                   historyPresent={clinicalHistoryText.trim().length > 0}
@@ -1071,7 +1071,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             worklistId={studyId ?? null}
                             studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
                             regionHint={studySetup.matchedStudyRegion}
-                            measureDisabled={isLocked || isFinalized}
+                            measureDisabled={contentLocked}
                             aiDraftStudyInstanceUid={workflow.currentRow?.studyInstanceUID ?? null}
                             aiDraftModality={workflow.currentRow?.modality ?? null}
                             onStageAiProposal={stageAiProposal}
@@ -1154,7 +1154,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                               criticalMarked={isCritical}
                               criticalCommunicated={checklistComm.phoned}
                               isAdmin={isOwner}
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               currentUserId={myUserId}
                               onAppendFindings={appendFindings}
                               onAppendImpression={(text) => useWorkspace.getState().mergeField("impression", text, "template")}

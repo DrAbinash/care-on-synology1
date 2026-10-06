@@ -189,9 +189,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     isCritical,
     isCtModality,
     isDirty,
-    isFinalized,
     isLoadingExistingDraft,
-    isLocked,
     isMobile,
     isMriModality,
     isObUsg,
@@ -487,10 +485,10 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       captureBusy={captureBusy}
                       ohifAnnotatedCaptureBlocked={ohifUnavailable}
                       onRequestOhifAnnotatedCapture={
-                        isLocked || isFinalized || ohifUnavailable ? undefined : requestOhifAnnotatedCapture
+                        contentLocked || ohifUnavailable ? undefined : requestOhifAnnotatedCapture
                       }
                       onCaptureViewport={
-                        isLocked || isFinalized
+                        contentLocked
                           ? undefined
                           : async (payload) => {
                               setCaptureBusy(true);
@@ -558,7 +556,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                             }
                       }
                       onAddCurrentFrameToReport={
-                        isLocked || isFinalized
+                        contentLocked
                           ? undefined
                           : async (ref) => {
                               let id = draftId;
@@ -596,7 +594,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
                       <FrozenKeyImagesRail
                         draftId={draftId ?? null}
-                        disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
+                        disabled={contentLocked}
                         filterObservationId={keyImageFilterObsId}
                         observationLabels={observationLabels}
                         onFocusObservation={(id) => {
@@ -608,7 +606,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                         captureBusy={captureBusy}
                         captureBlockedTitle={ohifUnavailable ? "OHIF not reachable for this study" : undefined}
                         onCaptureRequest={
-                          isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL" || ohifUnavailable
+                          contentLocked || ohifUnavailable
                             ? undefined
                             : () => { void requestFrozenKeyImageCapture(); }
                         }
@@ -630,7 +628,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                     <div className="border-t border-border shrink-0">
                       <PrintImagePicker
                         studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                        disabled={isLocked || isFinalized || workflow.currentRow?.status === "REPORT_FINAL"}
+                        disabled={contentLocked}
                       />
                     </div>
                   )}
