@@ -3,7 +3,7 @@
  * Pure formatter — does not start timers or trigger saves.
  */
 
-export type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
+export type AutoSaveStatus = "idle" | "saving" | "saved" | "error" | "refused";
 
 export type HumanSaveTone = "neutral" | "green" | "amber" | "red";
 
@@ -36,14 +36,22 @@ function relativeSavedLabel(savedAtMs: number, nowMs: number): string {
 /**
  * Priority:
  * 1. Saving…
- * 2. Save failed (sticky until a later successful save clears autoSaveStatus)
- * 3. Offline copy saved
- * 4. Saved / Saved N sec ago
- * 5. empty (no status to show)
+ * 2. Edits not saved — signed (a policy, not a fault: nothing was attempted)
+ * 3. Save failed (sticky until a later successful save clears autoSaveStatus)
+ * 4. Offline copy saved
+ * 5. Saved / Saved N sec ago
+ * 6. empty (no status to show)
  */
 export function formatHumanSaveStatus(input: HumanSaveStatusInput): HumanSaveStatus | null {
   if (input.autoSaveStatus === "saving") {
     return { label: "Saving…", tone: "amber" };
+  }
+  // Amber and worded as a policy rather than a fault, because nothing was
+  // attempted. "Save failed" here would also be sticky: the only thing that
+  // clears it is a later successful save, and on a signed report there can never
+  // be one, so the radiologist would carry a red chip for the rest of the session.
+  if (input.autoSaveStatus === "refused") {
+    return { label: "Edits not saved — signed", tone: "amber" };
   }
   if (input.autoSaveStatus === "error") {
     return { label: "Save failed", tone: "red" };

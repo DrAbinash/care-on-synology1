@@ -18,6 +18,7 @@ import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
 import { draftSaveOutcome, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
+import type { AutoSaveStatus } from "@/lib/humanSaveStatus";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
 import {
   formatHasStructuredFields,
@@ -153,7 +154,7 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const leaveResolverRef = useRef<((choice: LeaveChoice) => void) | null>(null);
   const leavePromptReasonRef = useRef("This report has unsaved changes.");
-  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle"|"saving"|"saved"|"error">("idle");
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const saveDraftRef = useRef<(opts?: { silent?: boolean }) => Promise<number | null>>(async () => null);
   const draftIdRef = useRef<number | null>(null);
@@ -567,6 +568,22 @@ const discardLocalEditor = useCallback(() => {
 }, [existingDraft, workflow.currentRow]);
 
 const saveAndConfirmLeave = useCallback(async () => {
+  // "Save & leave" on a signed report has nothing to save. Without this, both
+  // calls below reach saveDraft's refusal, which returns null and — because it
+  // was passed `silent` — says nothing, so the `id == null` branch reported a
+  // policy as a failure and held the radiologist on the study with "Could not
+  // save before leaving", which reads as an invitation to try again.
+  if (signedContentLocked) {
+    setAutoSaveStatus("refused");
+    toast({
+      title: "Nothing to save — the report is signed",
+      description:
+        "Local edits cannot be added to a signed report. Choose Discard to leave, or withdraw the signature from Report Hub — only the signer or an administrator can.",
+      variant: "destructive",
+      duration: 8000,
+    });
+    return false;
+  }
   await ensureDraftOnce();
   const id = await saveDraft({ silent: true });
   if (id == null) {
@@ -578,7 +595,7 @@ const saveAndConfirmLeave = useCallback(async () => {
     return false;
   }
   return true;
-}, [ensureDraftOnce, saveDraft, toast]);
+}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);
 
 const requestLeaveThen = useCallback(
   async (navigateFn: () => void) => {
@@ -641,8 +658,14 @@ openStudyGuardedRef.current = (id: string | number) => {
 // ─── Debounced server auto-save (30 s after last keystroke) ─────────────────
 const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 useEffect(() => {
-  if (!isDirty || !isOnline || isFinalized || isMobile) {
+  if (!isDirty || !isOnline || signedContentLocked || isMobile) {
     if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null; }
+    // Guarding on `isFinalized` alone let a report signed in ANOTHER session arm
+    // this timer, fire it, and land in saveDraft's refusal — which was passed
+    // `silent`, so it returned null without saying why, and the `.then` below
+    // mapped that null onto setAutoSaveStatus("error"): a red, sticky "Save
+    // failed" for a save that was never attempted and never could be.
+    if (isDirty && signedContentLocked) setAutoSaveStatus("refused");
     return;
   }
   const live = readWorkspaceClinicalTexts();
@@ -677,7 +700,7 @@ useEffect(() => {
     });
   }, 30_000);
   return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-}, [isDirty, isOnline, draftId, isFinalized, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
+}, [isDirty, isOnline, draftId, signedContentLocked, isMobile, findingsText, impressionText, techniqueText, recommendationText, clinicalHistoryText, saveDraft, ensureDraftOnce]);
 
   return {
     saveDraft,
