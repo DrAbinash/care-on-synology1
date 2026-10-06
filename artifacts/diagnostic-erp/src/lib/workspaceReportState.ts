@@ -133,6 +133,65 @@ export function shouldOfferBackupRestore(
 }
 
 /**
+ * The localStorage key holding a study's rolling draft backup. One definition,
+ * shared by `useLocalDraftBackup`'s debounced write and the pre-redirect rescue
+ * flush — the flush used to build its own key for a different store entirely,
+ * so the two could drift apart silently and the rescued text was never found.
+ */
+export function radiologyReportBackupKey(studyId: number | string | null | undefined): string {
+  return `radiology_report_backup_${studyId ?? "new"}`;
+}
+
+/** The five clinical texts a rescue flush preserves. Deliberately narrower than
+ *  `WorkspaceClinicalTexts`: the provenance maps are editor-isolation state and
+ *  are never persisted anywhere, same rule as the draft save payload. */
+export type RescueBackupTexts = {
+  clinicalHistoryText: string;
+  techniqueText: string;
+  findingsText: string;
+  impressionText: string;
+  recommendationText: string;
+};
+
+/**
+ * Build the envelope a session-expiry rescue writes, or null when it must not
+ * write at all.
+ *
+ * Two refusals, both load-bearing:
+ *  - `signed` — `useStudyFinalize` calls `draftBackup.clear()` after signing
+ *    precisely so signed report text never lingers on a shared workstation, and
+ *    `useLocalDraftBackup` disables its own writes on the same condition. This
+ *    covers a report signed in another session too, where the local
+ *    `isFinalized` flag is still false but the text is equally not ours to copy.
+ *  - no content — the flush fires on a 401, which can land before hydration.
+ *    Writing five empty strings would clobber a backup that still holds real
+ *    work, and `shouldOfferBackupRestore` would then refuse to offer anything.
+ */
+export function rescueBackupEnvelope(
+  texts: RescueBackupTexts,
+  opts: { signed: boolean },
+  now: () => number = Date.now,
+): BackupEnvelope | null {
+  if (opts.signed) return null;
+  const hasContent = Boolean(
+    texts.clinicalHistoryText.trim()
+    || texts.techniqueText.trim()
+    || texts.findingsText.trim()
+    || texts.impressionText.trim()
+    || texts.recommendationText.trim(),
+  );
+  if (!hasContent) return null;
+  return {
+    at: now(),
+    clinicalHistory: texts.clinicalHistoryText,
+    technique: texts.techniqueText,
+    rawFindings: texts.findingsText,
+    impression: [texts.impressionText],
+    recommendation: texts.recommendationText,
+  };
+}
+
+/**
  * After a selection restore lands, fold the restored ids into an
  * already-captured saved-baseline snapshot so the workspace stays CLEAN
  * (the restored selections ARE the saved state, not an edit). Pure inverse
