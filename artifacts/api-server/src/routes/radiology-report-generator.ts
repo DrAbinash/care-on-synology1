@@ -107,14 +107,10 @@ import {
 } from "../lib/radiologyIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
-  persistCareStructuredFormatState,
-  persistCareObservationLedger,
-  persistCareViewerMeasurements,
-  persistCareReportFormatIdentity,
-  persistCareLinkedStudy,
-  persistCareAppliedPatterns,
+  persistCareStructuredJsonPatch,
 } from "../lib/persistCareStructuredFormatState";
 import {
+  buildCareStructuredJsonPatch,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
 } from "../lib/structuredJsonColumn";
 import {
@@ -1606,8 +1602,8 @@ const SaveDraftBody = z.object({
     }).passthrough(),
   ).nullish(),
   // P1 — radiologist structured-format field values. Namespaced inside
-  // structured_json via persistCareStructuredFormatState so A4's cache array
-  // is preserved (envelope) rather than overwritten.
+  // structured_json by persistCareStructuredJsonPatch so A4's cache array is
+  // preserved (envelope) rather than overwritten.
   structuredFormatState: z.object({
     kind: z.literal(CARE_STRUCTURED_FORMAT_STATE_KIND),
     formatId: z.number().int(),
@@ -1895,95 +1891,32 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
     }
   }
 
-  let formatStatePersistFailed = false;
-  if (draft?.id && rest.structuredFormatState != null) {
+  // Every envelope key this request carries goes into structured_json in ONE
+  // locked read-modify-write. These used to be six separate per-key writers,
+  // each doing its own SELECT → compose → UPDATE of the same column; two
+  // overlapping saves then composed against the same stale snapshot and the
+  // second silently discarded the first's keys. See persistCareStructuredJsonPatch.
+  let structuredJsonPersistFailed = false;
+  const structuredJsonPatch = buildCareStructuredJsonPatch(rest);
+  if (draft?.id && Object.keys(structuredJsonPatch).length > 0) {
     try {
-      await persistCareStructuredFormatState(draft.id, {
-        kind: CARE_STRUCTURED_FORMAT_STATE_KIND,
-        formatId: rest.structuredFormatState.formatId,
-        formatVersion: rest.structuredFormatState.formatVersion ?? 1,
-        values: rest.structuredFormatState.values,
-        updatedAt: rest.structuredFormatState.updatedAt ?? new Date().toISOString(),
-      });
+      await persistCareStructuredJsonPatch(draft.id, structuredJsonPatch);
     } catch (err) {
-      formatStatePersistFailed = true;
+      structuredJsonPersistFailed = true;
       console.error(
-        "[radiology-report-generator] structured format state persist failed:",
+        "[radiology-report-generator] structured_json persist failed:",
         err,
+        "keys:",
+        Object.keys(structuredJsonPatch).join(","),
       );
     }
   }
 
-  if (draft?.id && rest.observationLedger != null) {
-    try {
-      await persistCareObservationLedger(draft.id, rest.observationLedger);
-    } catch (err) {
-      console.error(
-        "[radiology-report-generator] observation ledger persist failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  if (
-    draft?.id
-    && (rest.viewerMeasurements != null || rest.canalApProvenance != null || rest.vascularTechnique != null)
-  ) {
-    try {
-      await persistCareViewerMeasurements(
-        draft.id,
-        rest.viewerMeasurements ?? undefined,
-        rest.canalApProvenance ?? undefined,
-        rest.vascularTechnique ?? undefined,
-      );
-    } catch (err) {
-      console.error(
-        "[radiology-report-generator] viewer measurements persist failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  if (draft?.id && rest.appliedPatterns !== undefined) {
-    try {
-      await persistCareAppliedPatterns(draft.id, rest.appliedPatterns ?? []);
-    } catch (err) {
-      console.error(
-        "[radiology-report-generator] applied patterns persist failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  if (draft?.id && rest.linkedStudy !== undefined) {
-    try {
-      await persistCareLinkedStudy(draft.id, rest.linkedStudy ?? null);
-    } catch (err) {
-      console.error(
-        "[radiology-report-generator] linked study persist failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  if (draft?.id && rest.reportFormatIdentity != null) {
-    try {
-      await persistCareReportFormatIdentity(
-        draft.id,
-        {
-          ...rest.reportFormatIdentity,
-          appliedAt: rest.reportFormatIdentity.appliedAt ?? new Date().toISOString(),
-        },
-      );
-    } catch (err) {
-      console.error(
-        "[radiology-report-generator] report format identity persist failed (non-fatal):",
-        err,
-      );
-    }
-  }
-
-  res.json({ success: true, draft, formatStatePersistFailed });
+  // success:true with this flag set means the narrative columns saved but the
+  // structured envelope did not. The client must keep its dirty flag on this
+  // response so the autosave retries — clearing it would make the loss
+  // permanent and invisible.
+  res.json({ success: true, draft, structuredJsonPersistFailed });
 });
 
 // GET /structured-json-drift — admin-only, read-only diagnostic (Ticket
