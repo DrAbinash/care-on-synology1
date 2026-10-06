@@ -24,9 +24,12 @@
  * and comments, because loosening the line pattern instead counts destructuring
  * READS as writes (`recomputeCopilot`, `applySelectedFormats`).
  *
- * Of the 25, eighteen now refuse through the shared predicate, four keep a named
- * one-off `isFinalized` check under an allowlist that has to state why, and three
- * are the reset/hydration paths a legitimate reopen depends on.
+ * Of the 28, twenty-one refuse through the shared predicate, three keep a named
+ * one-off `isFinalized` check under an allowlist that has to state why, and four
+ * are the reset/hydration paths a legitimate reopen depends on. That split used to
+ * read "of the 25, eighteen … four … three" while the lists beside it already held
+ * 19 and 3 — a prose count nobody re-measured when an entry moved between lists.
+ * All four numbers are now asserted, so the sentence cannot outlive the scanner.
  *
  * What this closes is the on-screen report diverging from the signed artifact: the
  * radiologist reads, prints or quotes a report that no longer says what was
@@ -104,6 +107,12 @@ function clinicalSnapshot() {
     recommendationText: s.recommendationText,
     fieldProvenance: JSON.parse(JSON.stringify(s.fieldProvenance)),
     appliedPathologyPatches: JSON.parse(JSON.stringify(s.appliedPathologyPatches)),
+    // Not prose, but its `inserted` flag is the claim the copilot rail renders its
+    // Insert button from. Leaving it out of the snapshot is what let
+    // insertMeasurement stamp a measurement as inserted while the Findings write
+    // beside it was refused: every assertion below compared equal because the only
+    // thing that had changed was the one field nobody was looking at.
+    measurements: JSON.parse(JSON.stringify(s.measurements)),
     undoDepth: s.patchUndoStack.length,
     isDirty: s.isDirty,
   };
@@ -330,6 +339,36 @@ const GUARD_CASES: Array<{
       source: "lint",
       studyId: useWorkspace.getState().activeStudyId,
     }),
+    refusal: undefined,
+  },
+  {
+    // The rail's per-measurement Insert button (copilot-rail.tsx:67) is rendered
+    // from `!m.inserted` and takes no lock prop, so this guard is the only thing
+    // behind the click. The Findings write it delegates to was already refused;
+    // what was not refused was the `inserted` stamp after it, which hid the button
+    // and greyed the row for a sentence that never arrived.
+    action: "insertMeasurement",
+    arm: () => {
+      useWorkspace.getState().setMeasurements([
+        { id: "m-canalsag", name: "Sagittal canal", value: 11, unit: "mm", source: "viewer", inserted: false },
+      ]);
+    },
+    call: () => useWorkspace.getState().insertMeasurement("m-canalsag"),
+    refusal: undefined,
+  },
+  {
+    // Same trailing stamp. Its one live caller is insertCopilotText's measurement
+    // branch, guarded above it, and viewer-panel.tsx — the other — is imported
+    // nowhere, so unlike its sibling this one is pinned rather than repaired: it is
+    // here because `measurements` is now a clinical key and every writer of it has
+    // to be classified.
+    action: "insertAllMeasurements",
+    arm: () => {
+      useWorkspace.getState().setMeasurements([
+        { id: "m-canalsag", name: "Sagittal canal", value: 11, unit: "mm", source: "viewer", inserted: false },
+      ]);
+    },
+    call: () => useWorkspace.getState().insertAllMeasurements(),
     refusal: undefined,
   },
   {
@@ -724,6 +763,14 @@ describe("the boundary cannot regress silently", () => {
     "clinicalHistoryText",
     "fieldProvenance",
     "appliedPathologyPatches",
+    // Not report prose, but its `inserted` flag is a claim that a measurement
+    // sentence is in Findings — and the copilot rail renders its Insert button
+    // from that flag alone. insertMeasurement wrote it unconditionally after a
+    // refused mergeField, so a signed report could end up asserting an insertion
+    // that never happened, invisible to this ratchet. Widening the list is what
+    // makes the next writer of it answerable; it costs one EXEMPT entry
+    // (setMeasurements, viewer hydration) and two guards.
+    "measurements",
   ];
   // A clinical write is one of those keys as a PROPERTY or a SHORTHAND property of
   // a set() payload, or a computed `[fieldTextKey(...)]` key.
@@ -828,6 +875,7 @@ describe("the boundary cannot regress silently", () => {
     selectStudy: "a reset path — it spreads emptyClinicalState, so isFinalized is already false",
     setEditorContent: "the hydration entry point; blocking it would blank a reopened signed report",
     hydrateObservationLedger: "restores the ledger when a signed study is reopened for reading or printing",
+    setMeasurements: "viewer measurement hydration — its only caller is the OHIF bridge effect, which returns early on isLocked || isFinalized (useOhifViewerBridge.ts:142); blocking it would empty the MEASURE rail on a reopened signed study",
   };
 
   /**
@@ -895,6 +943,7 @@ describe("the boundary cannot regress silently", () => {
       "clinicalHistoryText",
       "fieldProvenance",
       "appliedPathologyPatches",
+      "measurements",
     ];
     expect(CLINICAL_KEYS, "a clinical key left the scanner's list").toEqual(keys);
     expect(COMPUTED_KEY.test("[fieldTextKey(p.field)]: assembled,")).toBe(true);
@@ -916,12 +965,21 @@ describe("the boundary cannot regress silently", () => {
     const writers = clinicalWriters();
     const guardedByPredicate = [
       "setField", "mergeField", "removeObservation", "applyMergedResult",
-      "insertCopilotText", "confirmOverwriteAndApply", "cancelOverwrite",
+      "insertCopilotText", "insertMeasurement", "insertAllMeasurements",
+      "confirmOverwriteAndApply", "cancelOverwrite",
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
       "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
     ];
+    // The four numbers the header comment states, pinned because they were prose
+    // and prose drifted: the comment read "of the 25, eighteen … four … three"
+    // while these very lists held nineteen and three. A count a reviewer has to
+    // recompute by hand is a count that goes stale silently.
+    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(28);
+    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(21);
+    expect(Object.keys(LEGACY_IF_GUARD).length, "header comment: this many keep a one-off isFinalized check").toBe(3);
+    expect(Object.keys(EXEMPT).length, "header comment: this many are reset/hydration paths").toBe(4);
     for (const name of guardedByPredicate) {
       const w = writers.find((x) => x.name === name);
       expect(w, `${name} must still write clinical state`).toBeTruthy();

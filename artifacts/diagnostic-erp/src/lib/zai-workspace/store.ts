@@ -1129,6 +1129,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ measurements: m });
   }, setPriors: (p) => set({ priors: p }),
   insertMeasurement: (id) => {
+    // Guarded here rather than only through mergeField below. mergeField refuses
+    // the Findings write on a signed report, but the `set({ measurements: ms })`
+    // after it is unconditional and stamps `inserted: true` regardless — and the
+    // copilot rail renders its Insert button only for `!m.inserted`
+    // (copilot-rail.tsx:67) with no lock prop of its own. So a click on a signed
+    // report announced the refusal, then hid the button and greyed the row as
+    // inserted for a sentence that never reached Findings.
+    if (refuseSignedMutation(get(), "insertMeasurement")) return;
     const ms = get().measurements.map(m => m.id === id ? { ...m, inserted: true } : m);
     const m = ms.find(x => x.id === id);
     if (m) {
@@ -1140,6 +1148,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     setTimeout(() => get().recomputeCopilot(), 0);
   },
   insertAllMeasurements: () => {
+    // The same unconditional `inserted` stamp. Its one live caller — the
+    // measurement branch of insertCopilotText — is guarded above it, and the
+    // other, viewer-panel.tsx, is imported nowhere, so nothing reaches this today.
+    // It is guarded because `measurements` is now a clinical key and the boundary
+    // ratchet has to be able to say so about every writer of it.
+    if (refuseSignedMutation(get(), "insertAllMeasurements")) return;
     const ms = get().measurements.map(m => ({ ...m, inserted: true }));
     const t = ms.map(m => `${m.name}: ${m.value}${m.unit}${m.priorValue ? ` (prior ${m.priorValue}${m.unit})` : ""}`).join(", ");
     get().mergeField("findings", `Measurements: ${t}.`, "companion");
