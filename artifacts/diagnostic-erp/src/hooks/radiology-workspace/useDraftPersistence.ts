@@ -13,10 +13,8 @@ import {
   canHydrateDraftForPatient,
   shouldCommitAutosave,
 } from "@/lib/radiologyWorkspaceSafety";
-import {
-  registerDraftRescueSaver, deregisterDraftRescueSaver,
-  writeRescueDraft,
-} from "@/lib/draftRescue";
+import { registerDraftRescueSaver, deregisterDraftRescueSaver } from "@/lib/draftRescue";
+import { writeDraftBackupSnapshot } from "@/hooks/useLocalDraftBackup";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
 import { draftSaveOutcome, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
@@ -57,7 +55,9 @@ import {
 } from "@/lib/zai-workspace/normalBootstrap";
 import { reportFormatRevision } from "@/lib/zai-workspace/fullReportBaseline";
 import { reconstructStartingCanvasBaseline } from "@/lib/zai-workspace/startingCanvasHighlight";
-import { normalizeImpressionLines } from "@/lib/workspaceReportState";
+import {
+  normalizeImpressionLines, radiologyReportBackupKey, rescueBackupEnvelope,
+} from "@/lib/workspaceReportState";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
@@ -76,6 +76,13 @@ export type UseDraftPersistenceOptions = {
   isOnline: boolean;
   isDirty: boolean;
   isFinalized: boolean;
+  /**
+   * The gate `useLocalDraftBackup` applies to the same storage key. The rescue
+   * flush must obey it too: a report signed in ANOTHER session leaves
+   * `isFinalized` false here, and copying its text to localStorage on a shared
+   * workstation is exactly what `draftBackup.clear()` on finalize prevents.
+   */
+  backupEnabled: boolean;
   isMobile: boolean;
   useStructured: boolean;
   findingsMap: Record<string, { normal: boolean; text: string }>;
@@ -121,6 +128,7 @@ export type UseDraftPersistenceOptions = {
 export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   const {
     studyId, draftId, isOnline, isDirty, isFinalized, isMobile,
+    backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
     existingDraft, isLoadingExistingDraft, captureSavedDraftId, toast,
     openStudy, onStudySwitchPageReset, setStructuredValues, setSelectedQuickIds,
@@ -337,22 +345,24 @@ useEffect(() => {
   }
 }, [studyId, existingDraft, isLoadingExistingDraft, workflow.currentRow?.patientId, workflow.currentRow]);
 
-// ─── Draft rescue registration (pre-redirect save on 401) ──────────────────
+// ─── Draft rescue registration (pre-redirect flush on 401) ─────────────────
+// Writes the study's rolling backup key — the one WorkspaceOverlays' restore
+// banner already reads back through shouldOfferBackupRestore. This used to write
+// draftRescue's `rcc_rescue_draft`, which only the deprecated
+// RadiologyCommandCenter reads, and which that page matches on an
+// `accessionNumber` this payload never carried. So on the canonical workspace
+// the flush landed in a store nothing would ever look in, and the last few
+// seconds of dictation were lost anyway — the exact loss the flush exists to
+// prevent.
 useEffect(() => {
   registerDraftRescueSaver(() => {
-    const live = readWorkspaceClinicalTexts();
-    writeRescueDraft({
-      at: Date.now(),
-      studyId: studyId ?? null,
-      clinicalHistory: live.clinicalHistoryText,
-      technique: live.techniqueText,
-      rawFindings: live.findingsText,
-      impression: [live.impressionText],
-      recommendation: live.recommendationText,
-    } as any);
+    const envelope = rescueBackupEnvelope(readWorkspaceClinicalTexts(), {
+      signed: isFinalized || !backupEnabled,
+    });
+    if (envelope) writeDraftBackupSnapshot(radiologyReportBackupKey(studyId), envelope);
   });
   return () => deregisterDraftRescueSaver();
-}, [studyId]);
+}, [studyId, isFinalized, backupEnabled]);
 
 const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
   if (!studyId) return null;

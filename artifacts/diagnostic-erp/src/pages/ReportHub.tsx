@@ -20,8 +20,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   FileText, Plus, Printer, Download, Send, Mail, AlertTriangle, CheckCircle2,
-  Trash2, Upload, ShieldCheck, Stamp, Search, RefreshCw, Eye, X as XIcon,
+  Trash2, Upload, ShieldCheck, Stamp, Search, RefreshCw, Eye, X as XIcon, Undo2,
 } from "lucide-react";
+import {
+  canWithdrawSignature,
+  withdrawReportSignature,
+} from "@/lib/reportSignatureWithdrawal";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types (mirror server shapes)
@@ -199,6 +203,7 @@ export default function ReportHub() {
   const [createOpen, setCreateOpen] = useState(false);
   const [signOpen, setSignOpen] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [sigManagerOpen, setSigManagerOpen] = useState(false);
   const [selected, setSelected] = useState<ReportRow | null>(null);
@@ -240,6 +245,7 @@ export default function ReportHub() {
   function openEditor(r: ReportRow) { setEditorReport(r); setEditorOpen(true); }
   function openSign(r: ReportRow) { setSelected(r); setSignOpen(true); }
   function openVerify(r: ReportRow) { setSelected(r); setVerifyOpen(true); }
+  function openWithdraw(r: ReportRow) { setSelected(r); setWithdrawOpen(true); }
   function openShare(r: ReportRow) { setSelected(r); setShareOpen(true); }
   // R1.4 — these routes require the staff Bearer token (requireStaffAuth
   // only accepts it via the Authorization header, never a cookie); a raw
@@ -420,6 +426,7 @@ export default function ReportHub() {
                         <Button size="sm" variant="outline" onClick={() => openEditor(r)} data-testid={`btn-edit-${r.id}`}><Eye className="h-3.5 w-3.5 mr-1" /> Open</Button>
                         {r.status === "draft" && !isPendingStructuredVerify(r) && <Button size="sm" onClick={() => openSign(r)}><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Sign</Button>}
                         {(r.status === "pending_verification" || isPendingStructuredVerify(r)) && <Button size="sm" onClick={() => openVerify(r)}><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Verify</Button>}
+                        {canWithdrawSignature(r) && <Button size="sm" variant="outline" className="text-rose-600 border-rose-300" onClick={() => openWithdraw(r)} data-testid={`btn-withdraw-${r.id}`}><Undo2 className="h-3.5 w-3.5 mr-1" /> Withdraw</Button>}
                         {(r.status === "verified" || r.status === "delivered") && (
                           <>
                             <Button size="sm" variant="outline" onClick={() => openPrint(r)}><Printer className="h-3.5 w-3.5 mr-1" /> Print</Button>
@@ -442,9 +449,10 @@ export default function ReportHub() {
       </Tabs>
 
       {createOpen && <CreateReportDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(r) => { setCreateOpen(false); openEditor(r); refresh(); }} />}
-      {editorOpen && editorReport && <EditorDialog open={editorOpen} onOpenChange={(v) => { setEditorOpen(v); if (!v) refresh(); }} reportId={editorReport.id} signatures={signatures} onSign={openSign} onVerify={openVerify} onShare={openShare} onPrint={openPrint} onPdf={openPdf} />}
+      {editorOpen && editorReport && <EditorDialog open={editorOpen} onOpenChange={(v) => { setEditorOpen(v); if (!v) refresh(); }} reportId={editorReport.id} signatures={signatures} onSign={openSign} onVerify={openVerify} onWithdraw={openWithdraw} onShare={openShare} onPrint={openPrint} onPdf={openPdf} />}
       {signOpen && selected && <SignDialog open={signOpen} onOpenChange={setSignOpen} report={selected} signatures={signatures} onDone={() => { setSignOpen(false); refresh(); }} />}
       {verifyOpen && selected && <VerifyDialog open={verifyOpen} onOpenChange={setVerifyOpen} report={selected} signatures={signatures} onDone={() => { setVerifyOpen(false); refresh(); }} />}
+      {withdrawOpen && selected && <WithdrawSignatureDialog open={withdrawOpen} onOpenChange={setWithdrawOpen} report={selected} onDone={() => { setWithdrawOpen(false); refresh(); }} />}
       {shareOpen && selected && <ShareDialog open={shareOpen} onOpenChange={setShareOpen} report={selected} onDone={() => { setShareOpen(false); refresh(); }} />}
       {sigManagerOpen && <SignatureManagerDialog open={sigManagerOpen} onOpenChange={setSigManagerOpen} signatures={signatures} onChanged={refreshSignatures} />}
     </div>
@@ -694,10 +702,10 @@ function LifecycleBanner({ report, onVerify, onShare }: {
 type Template = { id: number; testId: number; name: string; content: string; format: string };
 
 function EditorDialog({
-  open, onOpenChange, reportId, signatures, onSign, onVerify, onShare, onPrint, onPdf,
+  open, onOpenChange, reportId, signatures, onSign, onVerify, onWithdraw, onShare, onPrint, onPdf,
 }: {
   open: boolean; onOpenChange: (v: boolean) => void; reportId: number; signatures: Signature[];
-  onSign: (r: ReportRow) => void; onVerify: (r: ReportRow) => void; onShare: (r: ReportRow) => void; onPrint: (r: ReportRow) => void; onPdf: (r: ReportRow) => void;
+  onSign: (r: ReportRow) => void; onVerify: (r: ReportRow) => void; onWithdraw: (r: ReportRow) => void; onShare: (r: ReportRow) => void; onPrint: (r: ReportRow) => void; onPdf: (r: ReportRow) => void;
 }) {
   const { toast } = useToast();
   const [report, setReport] = useState<(ReportRow & { shares: ReportShare[] }) | null>(null);
@@ -734,6 +742,16 @@ function EditorDialog({
   // and before the server guard existed, silently rewrote a signed report.
   const signed = !!report && (!!report.signedAt || !!report.lifecycle?.structuredSigned);
   const editable = report ? report.status === "draft" && !signed : false;
+  // One gate decides both the button and the wording below it, so the notice
+  // can never promise a withdrawal this row would be refused.
+  const withdrawable = report
+    ? canWithdrawSignature({
+        status: report.status,
+        signedAt: report.signedAt,
+        structuredJson: report.structuredJson,
+        structuredSigned: report.lifecycle?.structuredSigned,
+      })
+    : false;
 
   async function save() {
     if (!report) return;
@@ -922,6 +940,7 @@ function EditorDialog({
               {editable && <Button onClick={save} disabled={busy} className="w-full">{busy ? "Saving…" : "Save Draft"}</Button>}
               {report.status === "draft" && !signed && <Button onClick={() => onSign(report)} className="w-full" variant="default" data-testid="btn-sidebar-sign"><ShieldCheck className="h-4 w-4 mr-1" /> Sign</Button>}
               {(report.status === "pending_verification" || (report.lifecycle?.pendingVerification && report.lifecycle?.structuredSigned)) && <Button onClick={() => onVerify(report)} className="w-full"><CheckCircle2 className="h-4 w-4 mr-1" /> Verify</Button>}
+              {withdrawable && <Button onClick={() => onWithdraw(report)} variant="outline" className="w-full text-rose-600 border-rose-300" data-testid="btn-sidebar-withdraw"><Undo2 className="h-4 w-4 mr-1" /> Withdraw Signature</Button>}
               {(report.status === "verified" || report.status === "delivered") && (
                 <>
                   <Button onClick={() => onPrint(report)} variant="outline" className="w-full"><Printer className="h-4 w-4 mr-1" /> Print</Button>
@@ -934,7 +953,9 @@ function EditorDialog({
             {!editable && (
               <div className="border rounded-md p-3 text-[11px] bg-amber-50 text-amber-800">
                 {signed
-                  ? <>This report is signed{report.signedByName ? ` by ${report.signedByName}` : ""}. The server keeps the exact content that was signed, so body, impression and parameters are locked here. A correction has to be issued as an amendment, which preserves this version.</>
+                  ? <>This report is signed{report.signedByName ? ` by ${report.signedByName}` : ""}. The server keeps the exact content that was signed, so body, impression and parameters are locked here.{withdrawable
+                      ? " Withdrawing the signature puts the report back to draft and reopens its study for reporting. Only the signer of record or an administrator can do it, and the reason is recorded against the report."
+                      : " A correction has to be issued as an amendment, which preserves this version."}</>
                   : "This report is locked. Body and parameters can no longer be edited (verified or higher)."}
               </div>
             )}
@@ -1061,6 +1082,83 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy} data-testid="btn-confirm-verify">{busy ? "Verifying…" : "Verify"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Withdraw signature — the correction path for a report signed in error
+// ────────────────────────────────────────────────────────────────────────────
+function WithdrawSignatureDialog({ open, onOpenChange, report, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; onDone: () => void }) {
+  const { toast } = useToast();
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const signedAtText = (() => {
+    if (!report.signedAt) return null;
+    const d = new Date(report.signedAt);
+    return Number.isNaN(d.getTime()) ? report.signedAt : d.toLocaleString();
+  })();
+
+  async function submit() {
+    setBusy(true);
+    // Never throws: a refusal comes back as { withdrawn: false, error } carrying
+    // the server's own sentence, so the radiologist is told which rule stopped
+    // them rather than seeing an exception or a bare error token.
+    const outcome = await withdrawReportSignature(report.id, reason);
+    setBusy(false);
+    if (!outcome.withdrawn) {
+      toast({ title: "Withdrawal refused", description: outcome.error, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: "Signature withdrawn",
+      description: "The report is back to draft and its study is open for reporting again.",
+    });
+    onDone();
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Withdraw Signature — {report.reportNumber}</DialogTitle>
+          <DialogDescription>
+            Takes the signature off this report and puts it back to draft. Its study reopens for
+            reporting, and anything already handed to the patient stops being marked ready to send.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="text-xs text-muted-foreground">
+            Signed by: <strong>{report.signedByName ?? "—"}</strong>
+            {signedAtText ? <> on {signedAtText}</> : null}
+          </div>
+          <div>
+            <Label>Reason <span className="text-rose-600">*</span></Label>
+            <Textarea
+              rows={3}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Why is this signature being withdrawn?"
+              data-testid="input-withdraw-reason"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Recorded against the report with your name. Only the signer of record or an
+              administrator can withdraw it.
+            </p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            onClick={submit}
+            disabled={busy || !reason.trim()}
+            variant="destructive"
+            data-testid="btn-confirm-withdraw"
+          >
+            {busy ? "Withdrawing…" : "Withdraw Signature"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
