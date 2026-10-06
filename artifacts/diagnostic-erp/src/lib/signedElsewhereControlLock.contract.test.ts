@@ -87,14 +87,32 @@ const BLIND = "disabled={isLocked || isFinalized}";
 const PAIR = "isLocked || isFinalized";
 
 /**
+ * The same gate in its negated, render-guard spelling: `{!isLocked && !isFinalized && <Control/>}`.
+ *
+ * Banning `PAIR` outright did not catch this, because it is a different string — and the
+ * substitution `!contentLocked` is not something a reader would write by mistake, so nothing
+ * drew attention to it. Fourteen guards in ReportCanvas survived #861 in exactly this spelling,
+ * still rendering live on a report signed on another workstation. A ratchet that pins one spelling
+ * of a predicate has pinned the spelling, not the property.
+ *
+ * The reversed order `!isFinalized && !isLocked` does not occur anywhere in the tree; it is
+ * covered by the regex below rather than a second literal, so the ban is over the property.
+ */
+const NEGATED = "!isLocked && !isFinalized";
+const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)/;
+
+/**
  * Exact `contentLocked` occurrence counts after the substitution, so the zero
  * above cannot be satisfied by deleting the controls instead of re-gating them.
  * Deliberately tight: adding or removing a gated control in these files should
  * break this test and make whoever does it decide whether the new control is a
  * clinical writer, then update the number here.
+ *
+ * CANVAS is 55 because fourteen render guards moved from the negated pair to
+ * `!contentLocked`; each one adds exactly one occurrence.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  [CANVAS]: 41,
+  [CANVAS]: 55,
   [RAIL]: 33,
   [VIEWER]: 7,
 };
@@ -188,7 +206,18 @@ describe("a report signed in another session locks the tool controls", () => {
     // that supplies them.
     for (const rel of NO_PAIR) {
       expect(count(read(rel), PAIR), `${rel} still gates something on isLocked || isFinalized`).toBe(0);
+      // The negated render-guard spelling, both as the literal that actually
+      // occurred and as the property (either operand order) that a future one
+      // might take.
+      expect(count(read(rel), NEGATED), `${rel} still renders something behind !isLocked && !isFinalized`).toBe(0);
+      expect(
+        read(rel).match(NEGATED_RE),
+        `${rel} still gates a render on the two session-only flags in some order`,
+      ).toBeNull();
     }
+    // The count is pinned as well as the zero, so a sweep cannot satisfy both by
+    // deleting the fourteen guards rather than re-gating them.
+    expect(count(read(CANVAS), "!contentLocked"), "ReportCanvas render guards now gated on !contentLocked").toBe(14);
   });
 
   it("every handler guard in the hook that protects a clinical write reads contentLocked", () => {
@@ -285,6 +314,38 @@ describe("a report signed in another session locks the tool controls", () => {
       }
     }
     expect(regressions, `controls that were disabled and are now enabled: ${regressions.join(", ")}`).toEqual([]);
+  });
+
+  it("and, in the render-guard direction, can only ever hide more controls", () => {
+    // The fourteen ReportCanvas guards are the negation of the same pair, so the
+    // property that matters there is the mirror image: a control that was hidden
+    // must not become visible. Substituting `!contentLocked` for
+    // `!isLocked && !isFinalized` widens the lock, so it narrows what renders.
+    //
+    // Executed over the lifted initialiser for the same reason as above, and for
+    // the same scoping: allowEditSigned is pinned false by the next test.
+    const contentLocked = extractContentLocked();
+    const revealed: string[] = [];
+    for (const isLocked of [false, true]) {
+      for (const isFinalized of [false, true]) {
+        for (const studyIsSignedElsewhere of [false, true]) {
+          const shownBefore = !isLocked && !isFinalized;
+          const shownAfter = !contentLocked(isLocked, isFinalized, studyIsSignedElsewhere, false);
+          if (shownAfter && !shownBefore) {
+            revealed.push(
+              `{isLocked:${isLocked}, isFinalized:${isFinalized}, signedElsewhere:${studyIsSignedElsewhere}}`,
+            );
+          }
+          // The signed-elsewhere row is the whole point of the change: nothing
+          // locked before, something locked now, so the guard must have closed.
+          if (!isLocked && !isFinalized && studyIsSignedElsewhere) {
+            expect(shownBefore, "the old guard rendered this").toBe(true);
+            expect(shownAfter, "the new guard still renders it").toBe(false);
+          }
+        }
+      }
+    }
+    expect(revealed, `controls that were hidden and are now rendered: ${revealed.join(", ")}`).toEqual([]);
   });
 
   it("and the trial-phase unlock that would weaken it is still unreachable", () => {
