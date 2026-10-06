@@ -199,7 +199,7 @@ const MRI_BODY = {
   type: "radiology",
   studyId: 9,
   title: "MRI LS Spine",
-  body: "FINDINGS.",
+  body: "FINDINGS: Normal lumbar lordosis and alignment.",
   impression: "Impression.",
   createdBy: "Dr. Rao",
 };
@@ -217,7 +217,7 @@ beforeEach(() => {
   reportRow = {
     id: 101, type: "radiology", studyId: 9, status: "draft",
     structuredJson: null, signedAt: null, signedByName: null, signatureId: null,
-    body: "FINDINGS.", impression: "Impression.", title: "MRI LS Spine", patientId: 12,
+    body: "FINDINGS: Normal lumbar lordosis and alignment.", impression: "Impression.", title: "MRI LS Spine", patientId: 12,
   };
   guard.findUnreviewedAiDraft.mockResolvedValue(null);
 });

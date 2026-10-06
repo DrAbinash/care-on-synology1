@@ -654,14 +654,14 @@ export type WorkspaceStore = S & {
   setLinkedStudies: (primary: FindingsStudySection, linked: FindingsStudySection, opts?: { markDirty?: boolean }) => void;
   clearLinkedStudy: () => void;
   setActiveFindingsSection: (studyId: string | null) => void;
-  applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending";
+  applyMacroBundle: (opts: { bundleId?: string; observations: Array<PendingPathologyPatch & { force?: boolean }> }) => "applied" | "pending" | "blocked";
   /**
    * Bundle deselect: remove only this bundle's observations that are (a) not protected
    * and (b) not superseded by a newer QS/voice observation on the same slotKey.
    * Overridden slots keep the overriding observation's text and ownership.
    * Non-overridden slots restore replacedBaseline, same as removeObservation.
    */
-  removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing";
+  removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
@@ -787,13 +787,13 @@ export type WorkspaceStore = S & {
       laterality?: string;
       severity?: string;
     }>;
-  }) => "applied" | "pending";
+  }) => "applied" | "pending" | "blocked";
   /** Apply accepted AI composer plain text in one atomic undo snapshot (Guard 9). */
   applyAiComposerAccepted: (opts: {
     findings: string;
     impression: string;
     recommendation: string;
-  }) => "applied";
+  }) => "applied" | "blocked";
   clearVoiceComposerSession: () => void;
   relateralizePatches: (side: Side) => void;
   /** Host-injected hook for Ctrl+I / command palette — set by RadiologyReportingWorkspace. */
@@ -1148,6 +1148,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   acknowledgeCopilotItem: (id) => { const a = new Set(get().acknowledgedCopilotIds); a.add(id); set({ acknowledgedCopilotIds: a }); },
   setActiveCopilotItem: (i) => set({ activeCopilotItem: i }),
   insertCopilotText: (item) => {
+    // Before the study stamp check: a signed report is not writable whatever
+    // study the suggestion came from. The rail's Insert button is one of the few
+    // controls the canvas does NOT disable on a signed study (it receives only
+    // `measureDisabled`), so this is the only thing standing between that click
+    // and the signed Findings.
+    if (refuseSignedMutation(get(), "insertCopilotText")) return;
     // Defence in depth, on the same reasoning as undoLastPatch's cross-study
     // refusal: copilotItems, acknowledgedCopilotIds and activeCopilotItem are
     // all in CLINICAL_RESET_FIELDS, so the ordinary switch path has already
@@ -1300,6 +1306,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ reportFormats: nf });
   },
   confirmOverwriteAndApply: () => {
+    // Hoisted above BOTH branches. The format branch already refused on a signed
+    // study, but the `pendingPathologyPatch` branch returned before that check ran,
+    // so a same-slot overwrite dialog armed before signing still called
+    // undoLastPatch + applyPathologyOverlay after it. A ratchet that only asks
+    // whether the method mentions the guard cannot see that.
+    //
+    // The dialog is still dismissed: a modal that cannot be closed on a signed
+    // report is worse than one that closes having done nothing.
+    if (refuseSignedMutation(get(), "confirmOverwriteAndApply")) {
+      set({
+        confirmOverwriteOpen: false,
+        pendingFormatIds: [],
+        pendingFormatOverwrite: null,
+        pendingFormatRegion: null,
+        pendingPathologyPatch: null,
+      });
+      return;
+    }
     const pendingPatch = get().pendingPathologyPatch;
     if (pendingPatch) {
       const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim() || null;
@@ -1313,15 +1337,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }
       }
       set({ confirmOverwriteOpen: false, pendingPathologyPatch: null });
-      return;
-    }
-    if (get().isFinalized) {
-      set({
-        confirmOverwriteOpen: false,
-        pendingFormatIds: [],
-        pendingFormatOverwrite: null,
-        pendingFormatRegion: null,
-      });
       return;
     }
     const ids = get().pendingFormatIds.length ? get().pendingFormatIds : get().selectedFormatIds;
@@ -1425,7 +1440,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   },
   cancelOverwrite: () => {
     const pendingPatch = get().pendingPathologyPatch;
-    if (pendingPatch) {
+    // The pendingPatch branch is not a plain dismiss: it runs undoLastPatch and
+    // then re-inserts the vacated chip, which is a clinical write. On a signed
+    // report that is refused and control falls through to the shared clear below,
+    // so the dialog still closes — a modal that cannot be dismissed is worse than
+    // one that dismisses having changed nothing.
+    if (pendingPatch && !refuseSignedMutation(get(), "cancelOverwrite")) {
       get().undoLastPatch();
       const patchId = pendingPatch.id || `pending_${Date.now().toString(36)}`;
       const vacatedId = (pendingPatch.vacatedObservationId ?? "").trim();
@@ -1470,6 +1490,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   setLinkedStudies: (primary, linked, opts) => {
+    // Two callers, and only one of them is refused. The one that must stop is the
+    // same-session Link Study control in WorkspaceOverlays, whose
+    // `ensureSectionedFindings` would rewrite a signed report's Findings. The
+    // other is the draft restore in useDraftPersistence, which is not caught:
+    // that effect runs once per studyId and is declared after the study-switch
+    // effect that spreads emptyClinicalState, so isFinalized is already false by
+    // the time reopening a signed study reaches here.
+    if (refuseSignedMutation(get(), "setLinkedStudies")) return;
     if (!primary?.studyId || !linked?.studyId || primary.studyId === linked.studyId) return;
     const findingsText = ensureSectionedFindings(get().findingsText, primary, linked);
     const active = get().activeFindingsSectionId;
@@ -1483,6 +1511,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   clearLinkedStudy: () => {
+    // Unlinking flattens the two sectioned Findings back into one body, which is a
+    // rewrite of signed prose even though nothing is added or removed clinically.
+    if (refuseSignedMutation(get(), "clearLinkedStudy")) return;
     const primary = get().primaryFindingsSection;
     const linked = get().linkedStudy;
     const findingsText = primary && linked
@@ -1822,6 +1853,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return "applied";
   },
   applyMacroBundle: (opts) => {
+    // Not a clinical writer: every prose and ledger write below goes through
+    // applyPathologyOverlay, which already refused on a signed study before this
+    // guard existed. Guarded anyway because the trailing
+    // `set({ ...withPushedClinicalUndo(get(), snap), isDirty: true })` is a real
+    // mutation of a signed study — it grows the clinical undo stack and marks the
+    // report dirty. Autosave refuses while finalized, so neither could reach the
+    // server, but a signed report that shows as dirty misstates its own state.
+    if (refuseSignedMutation(get(), "applyMacroBundle")) return "blocked";
     const bundleId = opts.bundleId || `bundle_${Date.now().toString(36)}`;
     let status: "applied" | "pending" = "applied";
     const snap = captureClinicalSnapshot(get());
@@ -1868,6 +1907,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
    * required user confirmation (e.g. protected same-slot confirmation).
    */
   applyMultiLevelSpine: (opts) => {
+    // Same class as applyMacroBundle: delegates its writes to applyPathologyOverlay
+    // and pushes an undo frame of its own.
+    if (refuseSignedMutation(get(), "applyMultiLevelSpine")) return "blocked";
     const bundleId = opts.bundleId || `spine-bundle_${Date.now().toString(36)}`;
     let status: "applied" | "pending" = "applied";
     const snap = captureClinicalSnapshot(get());
@@ -1915,6 +1957,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
    * same as individual removeObservation. Never auto-deletes manual text.
    */
   removeMacroBundle: (bundleId) => {
+    // Same class as applyMacroBundle: its per-patch work goes through
+    // removeObservation, which refuses, and what is left is the undo frame.
+    if (refuseSignedMutation(get(), "removeMacroBundle")) return "blocked";
     const id = (bundleId ?? "").trim();
     if (!id) return "missing";
     const all = get().appliedPathologyPatches;
@@ -1945,6 +1990,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return "no-op-unproven";
   },
   refreshImpressionFromLedger: () => {
+    // Six callers. Four are already gated: two handlers in useWorkspaceClinicalUi
+    // open with `if (contentLocked) return`, ReportCanvas hands the warning strip
+    // `disabled={isLocked || isFinalized}`, and XrayLsSpineCanvas reaches it only
+    // when applyMacroBundle returned "applied" — which is now "blocked" on a signed
+    // study. The sign dialog's opener is disabled once signed too, but a dialog
+    // left open across signing still reaches this, and so does the derived-
+    // impression effect in useWorkspaceClinicalUi, which nothing gates at all.
+    // Those two are what this refuses: a silent rewrite of a signed Impression.
+    if (refuseSignedMutation(get(), "refreshImpressionFromLedger")) return;
     const patches = get().appliedPathologyPatches.map(toLedgerPatch);
     const remaining = generateLocalImpression(get().findingsText);
     const next = refreshImpressionFromObservations({
@@ -1969,6 +2023,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   orderImpressionByPriority: (proposed) => {
+    // A reorder is still a write: it replaces the signed Impression with a
+    // permutation of itself. This action was invisible to the boundary ratchet
+    // because its write is a single-line `set({ impressionText: … })`, which the
+    // line-anchored pattern could not see.
+    if (refuseSignedMutation(get(), "orderImpressionByPriority")) return false;
     if (get().impressionOrderFrozen) return false;
     const before = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
     if (before.length < 2) return false;
@@ -2043,6 +2102,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   withdrawSystemNormalImpression: () => {
+    if (refuseSignedMutation(get(), "withdrawSystemNormalImpression")) return;
     const existing = findSystemNormalPatch(get().appliedPathologyPatches);
     if (!existing) return;
     // Use removeLedgerObservation for atomic narrative + provenance cleanup.
@@ -2510,6 +2570,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return result.outcome;
   },
   undoLastPatch: () => {
+    // Checked before the pop so the frame stays on the stack: it is still the
+    // correct history for this study, and `useWorkspaceCommands` reads the top
+    // frame to tell "refused" apart from "nothing to undo" when it decides
+    // whether Ctrl+Shift+Z owes the radiologist an explanation.
+    if (refuseSignedMutation(get(), "undoLastPatch")) return false;
     const popped = popClinicalUndoSnapshot(get().patchUndoStack);
     if (!popped) return false;
     const { snapshot: snap, remaining } = popped;
@@ -2565,6 +2630,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return true;
   },
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
+    // `"blocked"` is the union's existing "nothing was applied" value, so
+    // `useVoiceComposer`'s applyPreview already treats this as a non-apply. That
+    // path is unreachable while signed anyway — `useVoiceReporting` refuses
+    // dictation on a finalized study — so this is defence in depth, not a message
+    // the radiologist can be shown.
+    if (refuseSignedMutation(get(), "applyVoiceComposerPlan")) return "blocked";
     const snap = captureClinicalSnapshot(get());
     const result = applyChangePlan({
       narrative: narrativeFromState(get()),
@@ -2704,6 +2775,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     //
     // This is the SAFEST non-destructive strategy: clinical truth is preserved,
     // AI wording is applied as presentation, and the radiologist has the final say.
+    if (refuseSignedMutation(get(), "applyAiComposerAccepted")) return "blocked";
     const snap = captureClinicalSnapshot(get());
     const markField = (field: "findings" | "impression" | "recommendation", text: string): FieldProvenanceMap => {
       const map: FieldProvenanceMap = { ...(get().fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE) };
@@ -2730,12 +2802,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
     return "applied";
   },
-  clearVoiceComposerSession: () => set({
-    voiceComposerObservations: [],
-    voiceComposerTranscriptHistory: [],
-    appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-")),
-  }),
+  clearVoiceComposerSession: () => {
+    // Drops every `voice-*` observation from the ledger. No caller reaches this
+    // today; the guard is here so a future one does not find an open door.
+    if (refuseSignedMutation(get(), "clearVoiceComposerSession")) return;
+    set({
+      voiceComposerObservations: [],
+      voiceComposerTranscriptHistory: [],
+      appliedPathologyPatches: get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-")),
+    });
+  },
   relateralizePatches: (side) => {
+    if (refuseSignedMutation(get(), "relateralizePatches")) return;
     const patches = get().appliedPathologyPatches;
     if (!patches.length) return;
     let findings = get().findingsText;
@@ -2940,6 +3018,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   deleteMacro: (id) => { const ms = get().snippetMacros.filter((m: SnippetMacro) => m.id !== id); saveMacros(ms); set({ snippetMacros: ms }); get().closeMacroEditor(); },
   setActiveMacroPrompt: (p) => set({ activeMacroPrompt: p }),
   applyMacroWithValues: (values: Record<string, string>) => {
+    // First statement, because the write below uses a COMPUTED clinical key
+    // (`[fieldTextKey(p.field)]`) that no line-anchored scan can see — this
+    // action was only ever in the inventory via its `fieldProvenance` write.
+    // The popover is still dismissed: a prompt armed before signing must not be
+    // left open on a report that can no longer answer it.
+    if (refuseSignedMutation(get(), "applyMacroWithValues")) {
+      set({ activeMacroPrompt: null });
+      return;
+    }
     const p = get().activeMacroPrompt;
     if (!p) return;
     const exp = expandMacro(p.macro, values);

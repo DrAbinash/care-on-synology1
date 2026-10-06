@@ -110,6 +110,8 @@ describe("public/sw.js — NETWORK_ONLY_PREFIXES excludes /api/my/* (shared-work
       // Admin viewing another staff member's live open window on My Daily
       // Summary — another person's cash totals, same class as the two above.
       "/api/day-close/staff-preview/SANJEEV%20KUMAR",
+      // Every staff drawer for the current window, plus the handover board.
+      "/api/day-close/staff-status",
       "/api/dashboard/my-daily-summary",
       "/api/radiology/user-item-usage",
       "/api/dicom-workflow/radiologist-queue",

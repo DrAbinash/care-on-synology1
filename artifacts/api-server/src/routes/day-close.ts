@@ -29,7 +29,12 @@ import {
 } from "../lib/dailySummaryCollectible";
 import { sendStaffDayCloseEmail, type StaffDayCloseEmailResult } from "../email";
 import { clinicSettingsTable } from "@workspace/db/schema";
-import { todayIST } from "../lib/istDate";
+import { todayIST, clinicDateOf, clinicDayBoundsIST } from "../lib/istDate";
+import {
+  buildHandoverBoard,
+  type BoardLiveRow,
+  type BoardSlipRow,
+} from "../lib/handoverBoard";
 
 // Inline super-admin gate that works on the regular ERP staff session
 // (req.staffSession.role === "super_admin"). The site-wide
@@ -1662,6 +1667,11 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
         approvedByName:   close.approvedByName ?? null,
         approvedAt:       close.approvedAt ?? null,
         handoverNote:     close.notes ?? null,
+        // Handover board: this drawer is shut, so the only cash they can be
+        // holding is what came in after `closedAt` — carried below as
+        // postClosure. `windowSince` is where their next slip starts.
+        livePaymentCount: 0,
+        windowSince:      close.closedAt ?? null,
       };
     }
 
@@ -1694,6 +1704,11 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
       approvedByName:   null,
       approvedAt:       null,
       handoverNote:     isReopened ? (close?.notes ?? null) : null,
+      // Handover board: everything in `totalCollected` is still physically with
+      // this person — they have not handed it in. Their window opened at their
+      // own close when reopened, otherwise with the clinic's last overall close.
+      livePaymentCount: live.count,
+      windowSince:      isReopened ? (close?.closedAt ?? null) : lastOverall,
     };
   }));
 
@@ -1767,12 +1782,55 @@ dayCloseRouter.get("/staff-status", async (req, res) => {
     };
   }));
 
+  // ── Handover board ───────────────────────────────────────────────────────
+  // The same rows, read in the one frame the clinic physically closes on: what
+  // has been handed to the owner, and what is still in a staff member's hand.
+  //
+  // This rides on `/staff-status` rather than getting its own endpoint because
+  // it is the same screen the owner already opens at 6 pm — a second page would
+  // have given him two places to look and a second definition of today to
+  // reconcile. Everything here reuses rows already fetched above; the only new
+  // query is the calendar-day figure, which exists purely to be shown *next to*
+  // the handover totals and never blended into them.
+  const slips: BoardSlipRow[] = todayCloseRows.map((c) => ({
+    id: c.id,
+    userName: c.userName,
+    closedAt: c.closedAt,
+    coveredFromTs: c.coveredFromTs,
+    totalExpected: n(c.totalExpected),
+    totalActual: n(c.totalActual),
+    variance: n(c.variance),
+    drawerStatus: c.drawerStatus ?? "closed",
+  }));
+
+  const handoverLive: BoardLiveRow[] = usersWithTodayCounts.map((u) => ({
+    userName: u.userName,
+    withStaff: u.isClosed && u.drawerStatus !== "reopened"
+      ? (u.postClosure?.paymentTotal ?? 0)
+      : u.totalCollected,
+    withStaffPayments: u.isClosed && u.drawerStatus !== "reopened"
+      ? (u.postClosure?.paymentCount ?? 0)
+      : u.livePaymentCount,
+    withStaffSinceIstDate: clinicDateOf(u.windowSince ?? lastOverall ?? now),
+  }));
+
+  const todayWindow = await summarizeWindow(clinicDayBoundsIST(now).startUtc, now);
+
   res.json({
     users: usersWithTodayCounts,
     lastOverallClose: lastOverall,
     todayIst: istToday,
     todayCloses,
     sameDayAfterPriorClose: liveWindow.sameDayAfterPriorClose,
+    handover: buildHandoverBoard({
+      now,
+      istToday,
+      todayStartIst: clinicDayBoundsIST(now).startUtc,
+      lastOverallClose: lastOverall,
+      collectedTodayCalendar: todayWindow.overall.total,
+      slips,
+      live: handoverLive,
+    }),
   });
 });
 
