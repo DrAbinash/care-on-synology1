@@ -976,15 +976,30 @@ describe("the boundary cannot regress silently", () => {
  */
 describe("Ctrl+Shift+Z on a signed report says it was refused", () => {
   const handlerAt = commandsSrc.indexOf('e.ctrlKey && e.shiftKey && (e.key === "z"');
-  // Comments stripped: the branch's own comment names the correction path it
-  // deliberately does not offer, and these assertions are about the wording the
-  // radiologist actually reads.
+  // Comments stripped: the branch's own comment names the server route and the
+  // draft-writability guard that make its correction path real, and these
+  // assertions are about the wording the radiologist actually reads. A way back
+  // promised only in a comment is not a way back.
+  //
+  // The window is deliberately generous, and it has to be: it is a RAW slice, so
+  // the comment the branch carries is charged against it before being stripped
+  // away. At the 2600 this block used to read, the longer wording and the
+  // evidence behind it pushed the branch's `duration: 8000,` past the end — the
+  // slice came back empty and every assertion below failed for a reason that had
+  // nothing to do with the copy. Hence the explicit anchor check.
   const handler = commandsSrc
-    .slice(handlerAt, handlerAt + 2600)
+    .slice(handlerAt, handlerAt + 4000)
     .replace(/\/\/[^\n]*/g, "");
   const SIGNED = "!undone && topFrame && ws.isFinalized";
   const signedAt = handler.indexOf(SIGNED);
-  const branch = handler.slice(signedAt, handler.indexOf("duration: 8000,", signedAt) + 20);
+  const branchEnd = handler.indexOf("duration: 8000,", signedAt);
+  const branch = handler.slice(signedAt, branchEnd + 20);
+
+  it("the branch being asserted on is the whole toast, not an empty slice", () => {
+    expect(branchEnd, "the signed branch's toast fell outside the window above").toBeGreaterThan(-1);
+    expect(branch).toContain("title:");
+    expect(branch).toContain("duration: 8000,");
+  });
 
   it("has a signed-report branch, and it comes after the cross-study one", () => {
     const crossStudy = handler.indexOf("topFrame.activeStudyId !== ws.activeStudyId");
@@ -1002,13 +1017,22 @@ describe("Ctrl+Shift+Z on a signed report says it was refused", () => {
     expect(handler).not.toMatch(/pushNotification/);
   });
 
-  it("does not promise a correction path this workspace cannot reach", () => {
+  it("names the one correction path that exists, and none of the three that do not", () => {
     const wording = branch.toLowerCase();
     expect(wording, "the branch must reach the radiologist").toMatch(/title:/);
     expect(wording, "the branch must carry the toast").toMatch(/description:/);
-    for (const word of ["amend", "reopen", "unlock", "withdraw"]) {
-      // PR-9 has to land a reachable correction path before any of these can be
-      // offered; until then the message must not imply one already exists.
+    // Withdrawal is reachable now: Report Hub renders the button in the list row
+    // (:429) and the sidebar (:943), gated on canWithdrawSignature so it is not
+    // offered for a row the route would refuse. Naming neither the action nor the
+    // place is what left this branch saying only "cannot be edited" — true, and
+    // useless to the person reading it.
+    expect(wording, "the refusal must name the action that exists").toContain("withdraw");
+    expect(wording, "the refusal must say where to find it").toContain("report hub");
+    for (const word of ["amend", "reopen", "unlock"]) {
+      // amend needs a signed structured document this clinic never produces, so
+      // POST /:id/amend answers 409 not_a_signed_structured_report for every row
+      // here; reopen and unlock are not affordances anywhere in the app. Offering
+      // one sends the radiologist to a dead end that looks like a next step.
       expect(wording, `the refusal must not offer a ${word} path`).not.toContain(word);
     }
   });
