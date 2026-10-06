@@ -190,6 +190,12 @@ export const RADIOLOGY_FLAG_REGISTRY: RadiologyFlagEntry[] = [
     rollbackEffect: "disable → the rollout profile is inert; per-flag enablement is unaffected; no data change",
     ownerSubsystem: "usg rollout",
   },
+  {
+    key: "ff_radiology_critical_result_comms", defaultValue: false, dependsOn: [], enableOrder: 20, wired: true,
+    purpose: "Critical-result communication workflow in the reporting workspace: the pre-sign acknowledgement block, the interrupt card, the 15-minute SLA timer, the copilot reminders, the Mark Critical Finding panel and the Critical Findings page",
+    rollbackEffect: "disable → the signing block, cards, timer and tracker page all disappear; no data is deleted, and re-enabling restores them",
+    ownerSubsystem: "radiology workspace",
+  },
 ];
 
 export interface FlagDependencyViolation {

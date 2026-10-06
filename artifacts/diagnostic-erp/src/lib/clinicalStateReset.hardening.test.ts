@@ -16,12 +16,14 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CLINICAL_RESET_FIELDS,
   emptyClinicalState,
 } from "@/lib/zai-workspace/clinicalStateReset";
+import { setServerFeatureFlags } from "@/lib/staffSession";
+import { CRITICAL_COMMS_FLAG } from "@/lib/criticalResultCommsFlag";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { WorkspaceStore } from "@/lib/zai-workspace/store";
 
@@ -751,8 +753,32 @@ function criticalStudyRow() {
  * Driven through the real `runCopilotAnalysis` ("pneumothorax" in Findings is
  * one of the CRITICAL_PATTERNS in zai-workspace/types.ts) rather than a stub,
  * so this fails if either the rule table or the gate changes.
+ *
+ * ─── Why this block switches a feature flag on ──────────────────────────────
+ * PR-5 made the whole critical-result COMMUNICATION workflow optional behind
+ * `ff_radiology_critical_result_comms`, default OFF. The SLA clock and the
+ * interrupt card ARE that workflow, so with the flag off `recomputeCopilot`
+ * produces neither — and three of these four tests would fail for a reason that
+ * has nothing to do with what they were written to prove. The fourth would fail
+ * silently in the opposite direction: "does not restart a clock that is already
+ * running" would keep passing even if the restart guard were deleted, because a
+ * gated-off workflow never starts a clock at all. A test that passes for the
+ * wrong reason is worse than one that fails, so all four are pinned here with
+ * the workflow explicitly ON, which is the only state in which the decoupling
+ * they describe can be observed. The OFF behaviour — no clock, no card, but the
+ * detector's rail item still present — is pinned separately and in both
+ * directions by lib/criticalResultCommsFlag.behaviour.test.ts.
  */
 describe("critical-result SLA clock — must not depend on the interrupt card being renderable", () => {
+  beforeEach(() => {
+    setServerFeatureFlags({ [CRITICAL_COMMS_FLAG]: true });
+  });
+
+  afterAll(() => {
+    // Drop the overlay so no later file inherits a switched-on workflow.
+    setServerFeatureFlags({});
+  });
+
   /** A study row with a patient, so `recomputeCopilot` gets past its own guard. */
   function openCriticalStudy(notification: WorkspaceStore["notification"]): void {
     useWorkspace.setState({

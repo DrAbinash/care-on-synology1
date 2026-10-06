@@ -9,7 +9,7 @@ import {
   ListChecks, Heart, Baby, CheckCircle2, ArrowRight, ChevronDown, ChevronUp,
   Layers, Server, Globe,
 } from "lucide-react";
-import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole } from "@/lib/staffSession";
+import { readStaffSession, FULL_ACCESS_ROLES, normalizeRole, isFeatureEnabled } from "@/lib/staffSession";
 
 type ToolItem = {
   name: string;
@@ -17,6 +17,11 @@ type ToolItem = {
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: "Daily" | "Specialty" | "Admin" | "Legacy";
+  /** When set, the card is offered only while this ff_* flag is enabled — the
+   *  same declarative gate Layout.tsx applies to nav leaves. Read at render
+   *  time, never at module load, because these arrays are built on import
+   *  before GET /api/feature-flags has hydrated. */
+  featureFlag?: string;
 };
 
 const DAILY: ToolItem[] = [
@@ -47,6 +52,10 @@ const DAILY: ToolItem[] = [
     description: "Urgent findings that need clinician call-out.",
     icon: ShieldAlert,
     badge: "Daily",
+    // Part of the optional critical-result COMMUNICATION workflow
+    // (lib/criticalResultCommsFlag.ts). Nav item and Ctrl+K entry carry the
+    // same flag, so all three surfaces agree.
+    featureFlag: "ff_radiology_critical_result_comms",
   },
   {
     name: "PACS Viewer",
@@ -141,7 +150,7 @@ function badgeClass(badge?: ToolItem["badge"]) {
 function ToolGrid({ items, onOpen }: { items: ToolItem[]; onOpen: (path: string) => void }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-      {items.map((item) => {
+      {items.filter((item) => !item.featureFlag || isFeatureEnabled(item.featureFlag)).map((item) => {
         const Icon = item.icon;
         return (
           <Card

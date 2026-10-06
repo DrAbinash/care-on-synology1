@@ -37,6 +37,7 @@ import {
 } from "@/lib/workspaceGuards";
 import { canPrintLikeFinal } from "@/components/radiology/ReportExportPanel";
 import { CriticalSlaTimer } from "@/components/radiology/zai-workspace/critical-sla-timer";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
@@ -613,7 +614,12 @@ export function WorkspaceTopBar({ vm }: { vm: RadiologyWorkspaceVm }) {
           </div>
         )}
         <div className="flex items-center gap-2 shrink-0 ml-3">
-          {criticalSlaStartedAt && <CriticalSlaTimer />}
+          {/* The SLA clock is part of the optional critical-result COMMUNICATION
+              workflow. The store already refuses to start it when
+              ff_radiology_critical_result_comms is off; this second gate covers
+              a clock that was started while the flag was on and is still
+              running when an admin turns the flag off mid-session. */}
+          {criticalCommsEnabled() && criticalSlaStartedAt && <CriticalSlaTimer />}
           <div className="flex items-center gap-1 text-[10px] text-emerald-700/80 px-2 py-1 rounded bg-emerald-50/70 border border-emerald-200/60">
             <Activity className="h-3 w-3" />
             <span className="font-mono">{Math.floor(sessionMin / 60)}h {sessionMin % 60}m</span>

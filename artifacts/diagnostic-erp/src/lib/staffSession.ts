@@ -429,6 +429,17 @@ const FEATURE_FLAG_DEFAULTS: Record<string, boolean> = {
   ff_radiology_multiwindow: false,
   ff_radiology_ai_assist: false,
   ff_radiology_scale_partition: false,
+  // Critical-result COMMUNICATION workflow in the canonical Reporting
+  // Workspace. Off by default: this centre does not currently follow a formal
+  // critical-result communication protocol, so the whole workflow ships
+  // switched off rather than being deleted. Off removes the pre-sign
+  // acknowledgement block, the interrupt card, the 15-minute SLA timer, the
+  // copilot critical reminders, the Mark Critical Finding panel, and the
+  // Critical Findings page/nav/route/command entry. It never touches the
+  // finding DETECTOR (lib/criticalResults.ts), the radiology_critical_findings
+  // table or its rows, the PACS critical alerts widget, or
+  // /api/radiology/critical-findings — those stay live either way.
+  ff_radiology_critical_result_comms: false,
   // Dedicated USG Companion Workspace (P0/P1). Off by default: the canonical
   // RadiologyReportingWorkspace continues to serve every USG study until this
   // is enabled, so there is no regression when the flag is off.

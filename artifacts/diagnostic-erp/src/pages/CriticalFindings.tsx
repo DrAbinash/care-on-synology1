@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { useToast } from "@/hooks/use-toast";
 import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,10 @@ export default function CriticalFindings() {
 
   const { data = [], isLoading } = useQuery({
     queryKey: ["criticalFindings", statusFilter],
+    // Never fire the request while the workflow is off: the endpoint returns
+    // 404 by design, and onError would toast a scary "Error" for a feature
+    // that is simply switched off.
+    enabled: criticalCommsEnabled(),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (statusFilter) params.set("status", statusFilter);
@@ -85,6 +90,31 @@ export default function CriticalFindings() {
     },
     onError: (e) => toast({ title: "Error", description: String(e), variant: "destructive" }),
   });
+
+  // Route deliberately left registered so an existing bookmark resolves here
+  // rather than to a dead link; the nav item, the radiology hub card and the
+  // Ctrl+K entry are all hidden by the same flag. Every hook above has already
+  // run, so this early return is safe.
+  if (!criticalCommsEnabled()) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Critical Finding Escalation" subtitle="Phase 21 — Auto-flag critical findings for immediate notification to referring physician." />
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground space-y-2">
+            <p className="font-medium text-foreground">This feature is switched off.</p>
+            <p>
+              The critical-result communication workflow is optional and is currently disabled at this
+              centre. No record has been deleted — anything already logged stays in the database.
+            </p>
+            <p>
+              An administrator can turn it back on from Settings → Feature Flags →
+              <span className="font-mono"> ff_radiology_critical_result_comms</span>.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

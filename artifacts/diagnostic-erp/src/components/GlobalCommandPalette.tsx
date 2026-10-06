@@ -28,6 +28,7 @@ import {
   GLOBAL_COMMANDS,
   commandSearchValue,
   globalCommandGroups,
+  isCommandActionVisible,
   type GlobalCommandAction,
 } from "@/lib/globalCommandCatalog";
 
@@ -88,7 +89,7 @@ export default function GlobalCommandPalette() {
           <CommandEmpty>No matching action.</CommandEmpty>
           {groups.map((group) => (
             <CommandGroup key={group} heading={group}>
-              {GLOBAL_COMMANDS.filter((a) => a.group === group).map((action) => {
+              {GLOBAL_COMMANDS.filter((a) => a.group === group && isCommandActionVisible(a)).map((action) => {
                 const Icon = actionIcon(action);
                 return (
                   <CommandItem
