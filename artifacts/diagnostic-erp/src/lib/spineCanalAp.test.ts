@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyCanalApValue,
+  applyCanalManualValue,
+  applyCanalViewerValue,
   canalApTableHtml,
   canalApToPdfRows,
+  canalApValue,
   canalSegmentFromSpine,
   canalTableTitle,
   discLevelFromLabel,
@@ -10,7 +12,6 @@ import {
   formatCanalApTableText,
   isLevelInSegment,
   levelsForCanalSegment,
-  markCanalApManualOverride,
   normalizeDiscLevel,
   parseCanalApNumber,
   pickPrintCanalSegment,
@@ -32,9 +33,12 @@ describe("spineCanalAp — common engine", () => {
 
   it("preserves lumbar and cervical level tables", () => {
     expect(levelsForCanalSegment("lumbar")).toEqual(["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
+    // C1-C2 is not a disc level — there is no intervertebral disc there — so it
+    // is not offered as a row of a disc-level canal table.
     expect(levelsForCanalSegment("cervical")).toEqual([
-      "C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
+      "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
     ]);
+    expect(levelsForCanalSegment("cervical")).not.toContain("C1-C2");
   });
 
   it("provides dorsal D1–D12 disc levels (CARE terminology)", () => {
@@ -101,24 +105,21 @@ describe("spineCanalAp — common engine", () => {
     expect(parseCanalApNumber("12,3")).toBe("12.3");
   });
 
-  it("manual override blocks later viewer update unless forceRefresh", () => {
-    const manual = markCanalApManualOverride(null, "L4-L5", "6.5", "lumbar");
+  it("a manual override keeps its number AND still accepts viewer updates", () => {
+    const bound = applyCanalViewerValue(null, { level: "L4-L5", viewerValue: 6.8 });
+    const manual = applyCanalManualValue(bound, "L4-L5", 6.5);
     expect(manual.manualOverride).toBe(true);
-    expect(manual.value).toBe("6.5");
-    const blocked = applyCanalApValue({
-      level: "L4-L5",
-      nextValue: "6.8",
-      provenance: manual,
-    });
-    expect(blocked).toEqual({ blocked: true });
-    const refreshed = applyCanalApValue({
-      level: "L4-L5",
-      nextValue: "6.8",
-      provenance: manual,
-      forceRefresh: true,
-    });
-    expect("value" in refreshed && refreshed.value).toBe("6.8");
-    expect("provenance" in refreshed && refreshed.provenance.manualOverride).toBe(false);
+    expect(canalApValue(manual)).toBe(6.5);
+
+    // This test used to pin the defect as expected behaviour: a typed number
+    // refused every later measurement for that level, and reported the refusal
+    // in a different panel. The radiologist still wins — by keeping their
+    // number, not by switching the viewer off.
+    const refreshed = applyCanalViewerValue(manual, { level: "L4-L5", viewerValue: 6.2 });
+    expect(refreshed.viewerValue).toBe(6.2);
+    expect(refreshed.reportValue).toBe(6.5);
+    expect(canalApValue(refreshed)).toBe(6.5);
+    expect(refreshed.staleReason).toBe("measurement_changed");
   });
 
   it("forceDorsal overrides lumbar/cervical inference", () => {
@@ -144,12 +145,11 @@ describe("spineCanalAp — common engine", () => {
     ).toBeNull();
   });
 
-  it("L4-L5 apply does not mutate L3-L4 value map", () => {
-    const values: Record<string, string> = { "L3-L4": "12.0" };
-    const r = applyCanalApValue({ level: "L4-L5", nextValue: "6.8" });
-    expect("value" in r && r.value).toBe("6.8");
-    if ("value" in r) values["L4-L5"] = r.value;
-    expect(values["L3-L4"]).toBe("12.0");
-    expect(values["L4-L5"]).toBe("6.8");
+  it("writing L4-L5 leaves the L3-L4 record alone", () => {
+    const values: Record<string, number | null> = { "L3-L4": 12.0 };
+    const rec = applyCanalViewerValue(null, { level: "L4-L5", viewerValue: 6.8 });
+    values[rec.level] = canalApValue(rec);
+    expect(values["L3-L4"]).toBe(12.0);
+    expect(values["L4-L5"]).toBe(6.8);
   });
 });

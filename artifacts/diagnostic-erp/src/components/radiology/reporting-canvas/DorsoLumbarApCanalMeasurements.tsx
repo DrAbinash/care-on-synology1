@@ -7,11 +7,11 @@
  * exactly once, so a junction measurement cannot be entered twice (once thinking
  * thoracic, once thinking lumbar).
  *
- * The provenance mechanism is the existing one: every cell is written through
- * `markCanalApManualOverride` + `setCanalApCellProvenance`, tagged with the
- * segment that measurement belongs to (thoracic and bridge rows are dorsal
- * lettering, lumbar rows lumbar). The report block is then formatted by the
- * shared `formatApMeasurements`, which is why there are two labelled groups
+ * The provenance mechanism is the canonical one: every cell is written through
+ * the store's single manual writer, tagged with the segment that measurement
+ * belongs to (thoracic and bridge rows are dorsal lettering, lumbar rows
+ * lumbar). The report block is then formatted by the shared
+ * `formatApMeasurements`, which is why there are two labelled groups
  * rather than a fourth invented segment: `canalSegmentFromSpine` deliberately
  * answers null for a Dorso-Lumbar study, because no single cervical / dorsal /
  * lumbar table describes a study that crosses the junction.
@@ -24,8 +24,7 @@ import { useCallback, useMemo, useRef } from "react";
 
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
-  markCanalApManualOverride,
-  parseCanalApNumber,
+  canalApValue,
   type CanalSegment,
 } from "@/lib/spineCanalAp";
 import {
@@ -46,7 +45,7 @@ function segmentOf(level: string): CanalSegment {
 
 export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolean }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
-  const setCanalApCellProvenance = useWorkspace((s) => s.setCanalApCellProvenance);
+  const recordCanalApManualValue = useWorkspace((s) => s.recordCanalApManualValue);
   const state = useWorkspace((s) => s.dorsoLumbarNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -54,16 +53,9 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
 
   const handleChange = useCallback(
     (level: string, rawValue: string) => {
-      const parsed = parseCanalApNumber(rawValue);
-      const prov = markCanalApManualOverride(
-        canalApProvenance[level] ?? null,
-        level,
-        parsed || rawValue,
-        segmentOf(level),
-      );
-      setCanalApCellProvenance(level, prov);
+      recordCanalApManualValue(level, rawValue, segmentOf(level));
     },
-    [canalApProvenance, setCanalApCellProvenance],
+    [recordCanalApManualValue],
   );
 
   const handleKeyDown = useCallback((idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -83,10 +75,7 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
     ];
     for (const level of levels) {
       const target = groups.find((g) => g.segment === segmentOf(level))!;
-      const prov = canalApProvenance[level];
-      const raw = prov?.value ?? "";
-      const n = raw === "" ? null : Number(raw);
-      target.set.levels.push({ level, value: n != null && Number.isFinite(n) ? n : null });
+      target.set.levels.push({ level, value: canalApValue(canalApProvenance[level]) });
     }
     return groups
       .map((g) => formatApMeasurements(g.set))
@@ -106,8 +95,8 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
       </div>
       <div className="mt-1 grid grid-cols-5 gap-1" data-testid="spine-ap-grid-dorsolumbar">
         {levels.map((level, idx) => {
-          const prov = canalApProvenance[level];
-          const value = prov?.value ?? "";
+          const shown = canalApValue(canalApProvenance[level]);
+          const value = shown == null ? "" : String(shown);
           return (
             <label key={level} className="flex flex-col gap-0.5" data-segment={segmentOf(level)}>
               <span className="text-[8px] font-bold text-slate-600">{level}</span>

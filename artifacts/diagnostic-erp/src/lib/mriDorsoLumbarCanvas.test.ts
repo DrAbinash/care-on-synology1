@@ -138,8 +138,8 @@ describe("the AP table (spec §13)", () => {
 
   it("provenance is the existing canal AP mechanism, tagged per row", () => {
     const src = read(AP_TABLE);
-    expect(src).toMatch(/markCanalApManualOverride/);
-    expect(src).toMatch(/setCanalApCellProvenance/);
+    expect(src).toMatch(/recordCanalApManualValue/);
+    expect(src).toMatch(/canalApValue/);
     expect(src).toMatch(/formatApMeasurements/);
     // the bridge is grouped with the dorsal lettering, never measured twice
     expect(src).toMatch(/domain === "lumbar" \? "lumbar" : "dorsal"/);

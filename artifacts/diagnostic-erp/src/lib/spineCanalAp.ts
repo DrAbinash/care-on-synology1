@@ -1,31 +1,53 @@
 /**
- * Disc-level spinal canal AP helpers — ONE common engine for:
+ * Disc-level spinal canal AP helpers — the ERP facade over the ONE authoritative
+ * level vocabulary and record shape, which live in @workspace/measurements
+ * because the server's print renderer has to agree with the client about them.
+ *
  *   Lumbar   L1-L2 … L5-S1
- *   Cervical C1-C2 … C7-T1
- *   Dorsal   D1-D2 … D11-D12  (CARE terminology; T* labels normalize to D*)
+ *   Cervical C2-C3 … C7-T1   (no C1-C2: there is no disc there)
+ *   Dorsal   D1-D2 … D11-D12, plus D12-L1 only at thoracolumbar coverage
  *
  * Tables are blank-by-default: never invent 0 / "normal".
  */
 
 import type { SpineSegment } from "@/lib/reportingStudyContext";
+import {
+  CERVICAL_CANAL_LEVELS as SHARED_CERVICAL_CANAL_LEVELS,
+  DORSAL_CANAL_LEVELS as SHARED_DORSAL_CANAL_LEVELS,
+  DORSAL_JUNCTION_LEVEL as SHARED_DORSAL_JUNCTION_LEVEL,
+  LUMBAR_CANAL_LEVELS as SHARED_LUMBAR_CANAL_LEVELS,
+  applyCanalViewerValue,
+  canalLevelsForSegment,
+  canonicalizeCanalLevel,
+  type CanalApMeasurement,
+} from "@workspace/measurements";
 
-export const LUMBAR_CANAL_LEVELS = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"] as const;
+/** What a viewer measurement carries when it lands on a level. */
+export type CanalViewerValueWrite = Parameters<typeof applyCanalViewerValue>[1];
 
-/** Seven cervical disc levels (C1–C2 through C7–T1) for canal AP tables. */
-export const CERVICAL_CANAL_LEVELS = [
-  "C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1",
-] as const;
+export {
+  applyCanalManualValue,
+  applyCanalViewerValue,
+  canalApValue,
+  canalSegmentForLevel,
+  canonicalizeCanalLevel,
+  canonicalizeCanalMap,
+  displayCanalLevel,
+  flagRenumberedCanalLevels,
+  parseCanalApMeasurement,
+} from "@workspace/measurements";
+export type { CanalApMeasurement, CanalApStaleReason, CanalAliasConflict } from "@workspace/measurements";
 
-/** Dorsal (thoracic) disc levels — CARE uses D1–D12, not T*. */
-export const DORSAL_CANAL_LEVELS = [
-  "D1-D2", "D2-D3", "D3-D4", "D4-D5", "D5-D6", "D6-D7",
-  "D7-D8", "D8-D9", "D9-D10", "D10-D11", "D11-D12",
-] as const;
+export const LUMBAR_CANAL_LEVELS = SHARED_LUMBAR_CANAL_LEVELS;
+export const CERVICAL_CANAL_LEVELS = SHARED_CERVICAL_CANAL_LEVELS;
+export const DORSAL_CANAL_LEVELS = SHARED_DORSAL_CANAL_LEVELS;
+export const DORSAL_JUNCTION_LEVEL = SHARED_DORSAL_JUNCTION_LEVEL;
 
 export type CanalDiscLevel =
   | (typeof LUMBAR_CANAL_LEVELS)[number]
   | (typeof CERVICAL_CANAL_LEVELS)[number]
-  | (typeof DORSAL_CANAL_LEVELS)[number];
+  | (typeof DORSAL_CANAL_LEVELS)[number]
+  | typeof DORSAL_JUNCTION_LEVEL;
 
 export type CanalSegment = "lumbar" | "cervical" | "dorsal";
 
@@ -94,16 +116,23 @@ export function resolveCanalSegment(haystack: string | null | undefined): CanalS
   return null;
 }
 
-export function levelsForCanalSegment(segment: CanalSegment): readonly CanalDiscLevel[] {
-  if (segment === "cervical") return CERVICAL_CANAL_LEVELS;
-  if (segment === "dorsal") return DORSAL_CANAL_LEVELS;
-  return LUMBAR_CANAL_LEVELS;
+export function levelsForCanalSegment(
+  segment: CanalSegment,
+  opts: { thoracolumbar?: boolean } = {},
+): readonly string[] {
+  return canalLevelsForSegment(segment, opts);
 }
 
+/**
+ * The printed table heading. Derived from the level list rather than written by
+ * hand, so a heading can no longer advertise a level the table cannot hold.
+ */
 export function canalTableTitle(segment: CanalSegment): string {
-  if (segment === "cervical") return "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS";
-  if (segment === "dorsal") return "DORSAL CANAL AP DIAMETER AT D1 TO D12 LEVELS";
-  return "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
+  const levels = levelsForCanalSegment(segment);
+  const first = (levels[0] ?? "").split("-")[0];
+  const last = (levels[levels.length - 1] ?? "").split("-").slice(1).join("-");
+  const label = segment === "cervical" ? "Cervical" : segment === "dorsal" ? "Dorsal" : "Lumbar";
+  return `${label.toUpperCase()} CANAL AP DIAMETER AT ${first} TO ${last} LEVELS`;
 }
 
 export function canalSegmentBadge(segment: CanalSegment): string {
@@ -114,24 +143,11 @@ export function canalSegmentBadge(segment: CanalSegment): string {
 
 /**
  * Normalize OHIF-style labels: "L4-5", "L4/5", "T4-T5", "D4-D5" → CARE disc form.
- * Thoracic T* is rewritten to CARE dorsal D*.
+ * Thoracic T* is rewritten to CARE dorsal D*, and the cervicothoracic junction
+ * is decided before that rewrite so C7-T1 cannot become C7-D1.
  */
 export function normalizeDiscLevel(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  let s = raw.trim().toUpperCase().replace(/[_/–—]/g, "-").replace(/\s+/g, "");
-  // Map thoracic T → CARE dorsal D (observation ledger already prefers D).
-  s = s.replace(/\bT(\d{1,2})\b/g, "D$1");
-  const m = s.match(/^([CDL])(\d{1,2})-([CDL])?(\d{1,2}|S1)$/);
-  if (!m) {
-    const full = s.match(/^([CDL]\d{1,2}|S1)-([CDL]\d{1,2}|S1)$/);
-    return full ? `${full[1]}-${full[2]}` : null;
-  }
-  const upper = m[1];
-  const uNum = m[2];
-  const lowerPrefix = m[3] || (m[4] === "S1" ? "S" : upper);
-  const lNum = m[4];
-  const lower = lNum === "S1" ? "S1" : `${lowerPrefix}${lNum}`;
-  return `${upper}${uNum}-${lower}`;
+  return canonicalizeCanalLevel(raw);
 }
 
 /** Extract a disc level from a free-form measurement label / type string. */
@@ -144,9 +160,10 @@ export function discLevelFromLabel(label: string | null | undefined): string | n
   return normalizeDiscLevel(`${m[1]}-${m[2]}`);
 }
 
-/** True when level belongs to the given canal segment's table. */
+/** True when level belongs to the given canal segment's table. Aliases resolve first. */
 export function isLevelInSegment(segment: CanalSegment, level: string): boolean {
-  return (levelsForCanalSegment(segment) as readonly string[]).includes(level);
+  const canonical = normalizeDiscLevel(level);
+  return canonical !== null && levelsForCanalSegment(segment).includes(canonical);
 }
 
 /**
@@ -221,26 +238,13 @@ export function parseCanalApNumber(raw: string | null | undefined): string {
 }
 
 /** Provenance attached to a canal cell (stored in structured_json / local state). */
-export type CanalApCellProvenance = {
-  region: CanalSegment;
-  level: string;
-  measurementType: "CANAL_AP";
-  value: string;
-  unit: "mm";
-  measurementId?: string | null;
-  /** True OHIF/Cornerstone annotation id (never the viewer_measurements DB row id). */
-  annotationId?: string | null;
-  /** viewer_measurements.id when the value came from a DB row. */
-  viewerMeasurementRowId?: number | null;
-  studyInstanceUID?: string | null;
-  seriesInstanceUID?: string | null;
-  sopInstanceUID?: string | null;
-  frameNumber?: number | null;
-  instanceNumber?: number | null;
-  viewer?: string | null;
-  capturedAt?: string | null;
-  manualOverride: boolean;
-};
+/**
+ * One AP-canal measurement at one level. This is the canonical record — the
+ * name is kept for call-site stability, not because the object is only
+ * provenance. The caliper's number and the radiologist's number live side by
+ * side here, so an override never destroys what the viewer measured.
+ */
+export type CanalApCellProvenance = CanalApMeasurement;
 
 /** Arm watermark so "next measurement" cannot consume pre-existing rows. */
 export type CanalCaptureArm = {
@@ -318,62 +322,9 @@ export function pickEligibleCanalCaptureRow(
 
 export type CanalApProvenanceMap = Record<string, CanalApCellProvenance>;
 
-/**
- * Apply a viewer-derived canal AP value with manual-override protection.
- * Returns null when blocked (manual override without forceRefresh).
- */
-export function applyCanalApValue(opts: {
-  level: string;
-  nextValue: string;
-  currentValue?: string;
-  provenance?: CanalApCellProvenance | null;
-  forceRefresh?: boolean;
-}): { value: string; provenance: CanalApCellProvenance } | { blocked: true } {
-  const num = parseCanalApNumber(opts.nextValue);
-  if (!num) return { blocked: true };
-  if (opts.provenance?.manualOverride && !opts.forceRefresh) {
-    return { blocked: true };
-  }
-  const base = opts.provenance ?? {
-    region: "lumbar" as CanalSegment,
-    level: opts.level,
-    measurementType: "CANAL_AP" as const,
-    value: num,
-    unit: "mm" as const,
-    manualOverride: false,
-  };
-  return {
-    value: num,
-    provenance: {
-      ...base,
-      level: opts.level,
-      value: num,
-      unit: "mm",
-      measurementType: "CANAL_AP",
-      manualOverride: false,
-    },
-  };
-}
-
-/** Mark a cell as manually overridden (radiologist wins). */
-export function markCanalApManualOverride(
-  provenance: CanalApCellProvenance | null | undefined,
-  level: string,
-  value: string,
-  region: CanalSegment,
-): CanalApCellProvenance {
-  return {
-    ...(provenance ?? {
-      region,
-      level,
-      measurementType: "CANAL_AP",
-      unit: "mm",
-    }),
-    region: provenance?.region ?? region,
-    level,
-    value: parseCanalApNumber(value) || value,
-    unit: "mm",
-    measurementType: "CANAL_AP",
-    manualOverride: true,
-  };
-}
+// `applyCanalApValue` and `markCanalApManualOverride` used to live here. They
+// were the two half-writers: one refused a viewer value outright because the
+// cell had been typed in, the other stamped every keystroke as an override.
+// Both are replaced by `applyCanalViewerValue` / `applyCanalManualValue` in
+// @workspace/measurements, reached only through the store's single writer, so a
+// manual number and a caliper number can no longer fight over one field.
