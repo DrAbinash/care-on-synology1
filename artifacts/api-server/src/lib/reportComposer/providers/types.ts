@@ -76,6 +76,8 @@ export type ComposerProviderResult =
       safeError: string;
       latencyMs: number;
       execution: AiExecution;
+      /** Actionable, non-PHI detail for provenance/UI. Never raw provider bodies. */
+      detail?: string;
       usage?: ComposerProviderUsage;
     };
 

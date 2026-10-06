@@ -16,6 +16,11 @@ export const ComposeObservationSchema = z.object({
   level: z.string().nullable().optional(),
   severity: z.string().nullable().optional(),
   laterality: z.string().nullable().optional(),
+  /** Numeric measurement recorded with the observation (e.g. AP canal diameter).
+   * Clinical CONTENT, so it participates in `inputHash`, but it is deliberately
+   * NOT part of observation identity — the same slot keeps one active row whether
+   * or not a value is present. Mirrored by the client adapter. */
+  measurement: z.string().nullable().optional(),
   findingsText: z.string().min(1),
   impressionText: z.string().optional(),
   /** Optional radiologist-supplied recommendation contribution for this observation. */

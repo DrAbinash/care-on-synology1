@@ -14,6 +14,10 @@ export type ComposeObservation = {
   level?: string | null;
   severity?: string | null;
   laterality?: string | null;
+  /** Numeric measurement recorded with the observation (e.g. AP canal diameter).
+   * Clinical content — mirrored by the server in both the composer prompt and
+   * `inputHash` — but NOT part of observation identity. */
+  measurement?: string | null;
   findingsText: string;
   impressionText?: string;
   /** Optional radiologist-supplied recommendation contribution for this observation. */
@@ -206,8 +210,8 @@ export function canonicalObservationKey(o: ComposeObservation): string {
 /**
  * Canonical observation payload used in snapshot hashing. Includes every field
  * that materially changes the clinical meaning of an observation:
- *   region, concept, level, laterality, severity, anatomicalSection,
- *   findingsText, impressionText
+ *   region, concept, level, laterality, severity, measurement,
+ *   anatomicalSection, findingsText, impressionText, recommendationText
  *
  * `id`, `source`, `conflictGroup`, `baselineReplaces` are intentionally
  * excluded — they are bookkeeping/provenance, not clinical content. Changing
@@ -215,7 +219,8 @@ export function canonicalObservationKey(o: ComposeObservation): string {
  * observation for a macro observation at the same clinical slot would mark
  * the prior READY draft STALE without any actual clinical change).
  *
- * MUST be mirrored verbatim by the server (api-server snapshot.ts).
+ * MUST be mirrored verbatim by the server (api-server snapshot.ts), including
+ * field ORDER.
  */
 export function canonicalObservationHashPayload(o: ComposeObservation): string {
   const norm = (s: string | null | undefined): string =>
@@ -226,6 +231,7 @@ export function canonicalObservationHashPayload(o: ComposeObservation): string {
     norm(o.level),
     norm(o.laterality),
     norm(o.severity),
+    norm(o.measurement),
     norm(o.anatomicalSection),
     norm(o.findingsText),
     norm(o.impressionText),

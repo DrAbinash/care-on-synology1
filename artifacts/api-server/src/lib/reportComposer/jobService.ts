@@ -382,6 +382,7 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.safeError === "vision_model_required" ||
       run.safeError === "vision_capability_unverified" ||
       run.safeError === "composer_num_ctx_insufficient" ||
+      run.safeError === "composer_context_budget_exceeded" ||
       run.safeError?.startsWith("selected_images_")
     ) {
       return { ok: true, detail: run.safeError };

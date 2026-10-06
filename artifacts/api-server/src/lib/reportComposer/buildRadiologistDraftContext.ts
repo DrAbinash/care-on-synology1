@@ -34,6 +34,8 @@ export type RadiologistDraftContext = {
     level?: string | null;
     laterality?: string | null;
     severity?: string | null;
+    /** Numeric measurement metadata, verbatim as the radiologist recorded it. */
+    measurement?: string | null;
     findingsText: string;
     impressionText?: string;
     recommendationText?: string;
@@ -96,10 +98,31 @@ function projectObservation(o: ComposeObservation) {
     level: o.level,
     laterality: o.laterality,
     severity: o.severity,
+    measurement: o.measurement,
     findingsText: o.findingsText,
     impressionText: o.impressionText,
     recommendationText: o.recommendationText,
   };
+}
+
+/**
+ * True when every number in `measurement` already appears in `text` as its own
+ * token — i.e. the rendered sentence states the value, so repeating it as
+ * metadata would only add prompt tokens.
+ *
+ * The token boundary matters: "12.6" must NOT be treated as stated just because
+ * the prose contains "112.6 mm", and "7" must not be satisfied by "17". A
+ * measurement that is only hidden inside a longer number still has to reach the
+ * model, because losing it silently is the failure this projection exists to
+ * prevent.
+ */
+export function measurementAlreadyInText(measurement: string, text: string): boolean {
+  const numbers: string[] = measurement.match(/\d+(?:\.\d+)?/g) ?? [];
+  if (numbers.length === 0) return false;
+  return numbers.every((n) => {
+    const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\d.])${escaped}(?![\\d])`).test(text);
+  });
 }
 
 /**
@@ -190,6 +213,12 @@ export function renderRadiologistDraftContextPrompt(
     if (o.severity) head.push(o.severity);
     const header = `- [${o.source ?? "obs"}] ${head.join(" | ")}`;
     const bits = [`${header}`, `  Findings: ${o.findingsText}`];
+    const measurement = o.measurement?.trim();
+    // Level + concept association comes from `header`, so the value never needs
+    // to be repeated when the sentence already states it.
+    if (measurement && !measurementAlreadyInText(measurement, o.findingsText)) {
+      bits.push(`  Measurement: ${measurement}`);
+    }
     if (o.impressionText?.trim()) bits.push(`  Impression contribution: ${o.impressionText.trim()}`);
     if (o.recommendationText?.trim()) {
       bits.push(`  Recommendation contribution: ${o.recommendationText.trim()}`);

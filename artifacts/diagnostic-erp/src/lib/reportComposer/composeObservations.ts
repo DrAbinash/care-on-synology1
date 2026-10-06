@@ -129,6 +129,11 @@ function patchToComposeObservation(patch: AppliedPathologyPatch): ComposeObserva
   if (observation?.level) obs.level = observation.level;
   if (observation?.laterality) obs.laterality = observation.laterality;
   if (observation?.severity) obs.severity = observation.severity;
+  // Numeric measurement metadata (AP canal diameter, listhesis translation,
+  // implant size…). It is clinical content the model needs even when the
+  // rendered prose does not repeat it, and it never affects slot identity —
+  // `canonicalObservationKey` deliberately ignores it.
+  if (observation?.measurement?.trim()) obs.measurement = observation.measurement.trim();
   if (observation?.anatomicalSection) obs.anatomicalSection = observation.anatomicalSection;
   if (observation?.conflictGroup) obs.conflictGroup = observation.conflictGroup;
   if (observation?.baselineReplaces) obs.baselineReplaces = observation.baselineReplaces;

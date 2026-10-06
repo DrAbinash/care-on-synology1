@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Command as Cmdk } from "cmdk";
-import { Search, ChevronRight, Sparkles, AlertTriangle, Brain, Mic, Save, Printer, Plus } from "lucide-react";
+import { Search, ChevronRight, AlertTriangle, Brain, Mic, Save, Printer, Plus } from "lucide-react";
 import { lookupMacrosForContext } from "@/lib/zai-workspace/snippet-macros-library";
 
 interface CommandItem {
@@ -48,7 +48,6 @@ export function CommandPalette({ onPrintReport }: { onPrintReport?: () => void }
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true })),
       shortcut: "⌃I",
     },
-    { id: "ai-ghost", label: "Suggest with AI at cursor", icon: Sparkles, group: "AI", action: () => ws.setGhostText("Findings concerning for acute abnormality.", "findings") },
     { id: "finalize", label: "Finalize & sign", icon: AlertTriangle, group: "Actions", action: () => ws.startFinalize(), shortcut: "⌃↵" },
     // Printing the workspace window would put the worklist, the viewer and every
     // other patient's row on paper, so this command exists only when the real
