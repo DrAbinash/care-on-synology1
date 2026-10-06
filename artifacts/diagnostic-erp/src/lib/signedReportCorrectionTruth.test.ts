@@ -242,7 +242,13 @@ describe("Report Hub does not call a refused save a failed one", () => {
     expect(start, "Report Hub's save() must still PATCH the report").toBeGreaterThan(-1);
     const catchAt = src.indexOf("} catch (err) {", start);
     expect(catchAt, "save() must still catch").toBeGreaterThan(-1);
-    return src.slice(catchAt, catchAt + 900);
+    // Bounded by the block's real end, not by a character budget. A fixed window
+    // here silently dropped the tail of the block when the comment above the
+    // toast grew, and two of the assertions below went red on a comment edit —
+    // the failure looked like a behaviour change and was neither.
+    const endAt = src.indexOf("} finally {", catchAt);
+    expect(endAt, "save() must still have a finally block").toBeGreaterThan(catchAt);
+    return src.slice(catchAt, endAt);
   }
 
   it("is the only caller of that PATCH, so this is the only toast the refusal reaches", () => {
