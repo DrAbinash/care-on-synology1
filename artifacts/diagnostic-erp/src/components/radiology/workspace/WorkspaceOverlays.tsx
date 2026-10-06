@@ -756,10 +756,25 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         },
       ) && (
         <div className="fixed top-4 right-4 z-30 w-80 rounded-lg border border-amber-300 bg-amber-50 p-3 shadow-xl">
-          <div className="text-xs font-semibold text-amber-800">Unsaved draft found</div>
-          <div className="text-[10px] text-amber-700 mt-1">A local backup is newer than the server draft.</div>
+          <div className="text-xs font-semibold text-amber-800">
+            {contentLocked ? "Local backup for a signed report" : "Unsaved draft found"}
+          </div>
+          <div className="text-[10px] text-amber-700 mt-1">
+            {contentLocked
+              ? "This report is signed, so the backup cannot be restored into it. Discard removes it from this workstation."
+              : "A local backup is newer than the server draft."}
+          </div>
           <div className="flex gap-1.5 mt-2">
-            <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
+            {/* Restore writes through setEditorContent, which the signed-report
+                boundary exempts because it is also how a signed report's own text
+                reaches the editor on open — so no refusal would fire here, for a
+                report signed in this session or in another one. The banner still
+                shows when locked: useStudyFinalize clears the backup after
+                signing, but a report signed on another workstation never runs
+                that, and Discard is the only path left that removes it. */}
+            {!contentLocked && (
+              <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent({ findings: r.rawFindings ?? "", impression: normalizeImpressionLines(r.impression).join("\n"), recommendation: r.recommendation ?? "", technique: r.technique ?? "", clinicalHistory: r.clinicalHistory ?? "" }); }}>Restore</Button>
+            )}
             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => draftBackup.discard()}>Discard</Button>
           </div>
         </div>
