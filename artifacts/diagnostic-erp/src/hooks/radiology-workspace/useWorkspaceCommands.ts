@@ -258,6 +258,18 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
             variant: "destructive",
             duration: 8000,
           });
+        } else if (!undone && topFrame && ws.isFinalized) {
+          // Same reasoning as the cross-study branch: the store refused and the
+          // frame is still there, so without this the shortcut does nothing at all
+          // and the radiologist keeps pressing it. The wording promises no amend
+          // path, because none is reachable from this workspace today.
+          toast({
+            title: "Undo refused — the report is signed",
+            description:
+              "Nothing was changed. A signed report cannot be edited from the reporting workspace.",
+            variant: "destructive",
+            duration: 8000,
+          });
         }
         return;
       }
