@@ -217,7 +217,9 @@ describe("through the store — a refused clinical write is something the radiol
     // bodyPart, compact, anatomyFilter and onAfterPick — so the tile is clickable
     // and `onPick` runs `incUsage` and `onAfterPick` whether or not the write
     // landed. This guard was a bare `if`, so it refused without even a console
-    // line, and it still returns "applied" while doing so.
+    // line. It reported that refusal as "applied" until the follow-up PR widened
+    // the return type; the assertion below is what makes the two states
+    // distinguishable, and it is the reason `onPick` can stop rewarding a refusal.
     sign();
     toastMock.mockClear();
 
@@ -239,7 +241,7 @@ describe("through the store — a refused clinical write is something the radiol
     });
 
     expect(useWorkspace.getState().appliedPathologyPatches.length).toBe(before);
-    expect(returned, "the false success value this PR deliberately does not change").toBe("applied");
+    expect(returned, "a refusal must not report success — the signal onPick gates its counter on").toBe("refused");
     expect(toastMock).toHaveBeenCalledTimes(1);
     expect(described()).toContain("Nothing was applied");
   });

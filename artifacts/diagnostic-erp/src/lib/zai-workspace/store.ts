@@ -635,8 +635,12 @@ interface S {
 export type WorkspaceStore = S & {
   setStudies: (s: unknown) => void; selectStudy: (id: string) => void; setNextStudy: (id: string | null) => void; markNextStudyPreloaded: () => void;
   setField: (f: EditorField, v: string, opts?: InsertSource | { source?: InsertSource; replaceProvenance?: boolean }) => void;
-  /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …). */
-  mergeField: (f: EditorField, incoming: string, source: InsertSource) => void;
+  /** Semantic merge + provenance update (Quick Select / Quick Findings / protocol / …).
+   *  Reports whether the write landed so a caller that rewards the action — the
+   *  Quick Select counter and its `onAfterPick` — can tell a refusal from a
+   *  success. Widened from `void`, so every existing caller that discards it is
+   *  unaffected. */
+  mergeField: (f: EditorField, incoming: string, source: InsertSource) => "applied" | "refused";
   /** Fill only when the field is empty; assigns provenance for the inserted block. */
   setFieldIfEmpty: (f: EditorField, v: string, source: InsertSource) => void;
   /** Wholesale replace with provenance for the new content. */
@@ -658,7 +662,10 @@ export type WorkspaceStore = S & {
   applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   ingestStructuredNormalFormats: (rows: StructuredNormalRow[]) => void;
   toggleFormatFavorite: (id: string) => void;
-  applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending";
+  /** `"refused"` is the signed-report boundary declining the write. Distinct from
+   *  `"pending"` (queued for confirmation) and from `"blocked"` used by the batch
+   *  entrypoints, so a caller that rewards the action can tell them apart. */
+  applyPathologyOverlay: (opts: PendingPathologyPatch & { force?: boolean }) => "applied" | "pending" | "refused";
   setLinkedStudies: (primary: FindingsStudySection, linked: FindingsStudySection, opts?: { markDirty?: boolean }) => void;
   clearLinkedStudy: () => void;
   setActiveFindingsSection: (studyId: string | null) => void;
@@ -676,11 +683,17 @@ export type WorkspaceStore = S & {
    * When editingId's clinical slot changes to an occupied sibling, updates that sibling
    * and removes the previous observation after remapping evidence onto the survivor.
    * Same-slot edits preserve observation id + evidence.
+   *
+   * `"refused"` is propagated from `applyPathologyOverlay` and is kept distinct
+   * from `"blocked"`, which this entrypoint already uses for provenance and
+   * ownership conflicts awaiting confirmation — a different reason, and the
+   * caller cannot tell the radiologist what to do about a signed report by
+   * reading "there is a conflict".
    */
   applyComposerFinding: (opts: PendingPathologyPatch & {
     editingId?: string | null;
     force?: boolean;
-  }) => "applied" | "pending" | "blocked";
+  }) => "applied" | "pending" | "blocked" | "refused";
   /**
    * Toggle Impression participation by clearing/setting lastRendered.impression
    * (existing CARE semantics — no parallel boolean). Marks impressionNeedsRefresh.
@@ -1010,7 +1023,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Subsumes the old voice-only guard. Dictation was the single source refused
     // on a signed report; every other source that reaches here — tile, template,
     // companion panel, measurement box, an accepted AI ghost — was let through.
-    if (refuseSignedMutation(get(), `mergeField:${source}`)) return;
+    if (refuseSignedMutation(get(), `mergeField:${source}`)) return "refused";
     const key = fieldTextKey(f);
     const existing = get()[key];
     const existingProvenance = get().fieldProvenance[f] ?? EMPTY_FIELD_PROVENANCE;
@@ -1025,7 +1038,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       result.text === existing
       && fieldProvenanceEqual(existingProvenance, result.provenance)
     ) {
-      return;
+      // Nothing to write, but nothing was refused either — the field already says
+      // this. Reported as applied so a caller rewards the action rather than
+      // treating a duplicate insert as a rejection.
+      return "applied";
     }
     set({
       isDirty: true,
@@ -1049,6 +1065,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const st = get().studies.find(s => s.id === get().activeStudyId);
     if (f === "findings" && st && shouldPreloadNext(result.text, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
     setTimeout(() => get().recomputeCopilot(), 0);
+    return "applied";
   },
   setFieldIfEmpty: (f, v, source) => {
     const existing = get()[fieldTextKey(f)];
@@ -1263,7 +1280,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   closeQuickSelectEditor: () => set({ quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null }),
   saveQuickSelectTile: (input) => { const e = input.id ? get().quickSelectTiles.find(t => t.id === input.id) : null; let tiles: QuickSelectTile[]; if (e) tiles = get().quickSelectTiles.map(t => t.id === e.id ? { ...t, ...input, updatedAt: new Date().toISOString() } : t); else tiles = [...get().quickSelectTiles, createTile(input)]; saveTiles(tiles); set({ quickSelectTiles: tiles }); get().closeQuickSelectEditor(); },
   deleteQuickSelectTile: (id) => { const t = get().quickSelectTiles.filter(t => t.id !== id); saveTiles(t); set({ quickSelectTiles: t }); get().closeQuickSelectEditor(); },
-  incrementTileUsage: (id) => set({ quickSelectTiles: get().quickSelectTiles.map(t => t.id === id ? { ...t, usageCount: (t.usageCount ?? 0) + 1 } : t) }),
+  // The only tile mutator that did not persist. Its three siblings all call
+  // saveTiles, so usage counts lived in memory and reset on every reload — which
+  // also partly concealed the refused-use bug below: the false increments did not
+  // survive long enough to be noticed. `updatedAt` is deliberately not bumped —
+  // a use is not an edit to the tile's content, and the library sorts on it.
+  incrementTileUsage: (id) => { const t = get().quickSelectTiles.map(x => x.id === id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveTiles(t); set({ quickSelectTiles: t }); },
   toggleTileFavorite: (id) => { const t = get().quickSelectTiles.map(x => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x); saveTiles(t); set({ quickSelectTiles: t }); },
   resetQuickSelectToDefaults: () => set({ quickSelectTiles: resetToDefaults() }),
   toggleReportFormatPicker: () => set({ reportFormatPickerOpen: !get().reportFormatPickerOpen }),
@@ -1571,11 +1593,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // feedbackAfterAbnormalApply highlights the most recent pre-existing patch —
     // positive feedback for a write that was refused.
     //
-    // Still returns "applied", which is a refusal reporting success. Its declared
-    // type is `"applied" | "pending"` and three internal callers branch on the
-    // value, so widening it is a behaviour change that belongs in its own PR.
-    // Nothing outside this file reads it: all nine external call sites discard it.
-    if (refuseSignedMutation(get(), "applyPathologyOverlay")) return "applied";
+    // Used to return "applied" here, which is a refusal reporting success. The
+    // comment that deferred it said widening was "a behaviour change that belongs
+    // in its own PR" — this is that PR. Measured propagation, so the claim is not
+    // left as prose: two internal callers branch on `=== "pending"` and are
+    // self-guarded at their own entry (`applyMacroBundle`, `applyMultiLevelSpine`
+    // both refuse before the loop), so their inner call can never reach this
+    // return; one branches on `=== "applied"` and now correctly stops firing on a
+    // refusal; one re-exports the union through `applyComposerFinding`, whose
+    // single live consumer reads it. All nine external call sites discard it.
+    if (refuseSignedMutation(get(), "applyPathologyOverlay")) return "refused";
 
     const templates = opts.templates ?? opts.incoming;
     const draftId = opts.id ?? `patch_${Date.now().toString(36)}`;

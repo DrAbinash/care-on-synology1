@@ -547,19 +547,18 @@ const GUARD_CASES: Array<{
   {
     // The Quick Select strip is the highest-traffic control in the workspace and
     // takes no `disabled` prop at all, so a findings or impression tile is still
-    // clickable after signing. `refusal: "applied"` is not a typo — this mutator
-    // reports success on refusal, because its declared return type is
-    // `"applied" | "pending"` and three internal callers branch on the value.
-    // Widening it is a behaviour change that belongs in its own PR; the point of
-    // pinning it here is that the refusal now goes through the shared predicate
-    // and is therefore both logged and announced.
+    // clickable after signing. This case used to read `refusal: "applied"` — not a
+    // typo but a pin on the defect, since the mutator reported success on refusal
+    // and widening its declared return type was deferred to its own PR. That PR
+    // landed: the refusal is now its own value, which is what lets the strip tell
+    // a refusal from a pick and stop rewarding one.
     action: "applyPathologyOverlay",
     arm: () => {},
     call: () => useWorkspace.getState().applyPathologyOverlay({
       ...pendingFrom(OTHER_TILE, "qs-guard-case"),
       force: true,
     }),
-    refusal: "applied",
+    refusal: "refused",
   },
 ];
 

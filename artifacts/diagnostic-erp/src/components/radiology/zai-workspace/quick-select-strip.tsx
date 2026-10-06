@@ -208,11 +208,23 @@ export function QuickSelectStrip({
             field={field}
             onPick={() => {
               const ws = useWorkspace.getState();
-              if (field === "findings" || field === "impression") {
-                ws.applyPathologyOverlay(quickSelectTilePatch(tile, field));
-              } else {
-                ws.mergeField(field, tile.sentence, "quick-select");
-              }
+              // Both writers now report whether the write landed. The strip takes
+              // no `disabled` prop — its five props are field, bodyPart, compact,
+              // anatomyFilter and onAfterPick — so this is the only place that can
+              // learn a tile was refused.
+              //
+              // Only a refusal stops the reward. "pending" is a real pick queued for
+              // same-slot confirmation, so it still counts and still runs the
+              // after-pick, exactly as before.
+              const result = field === "findings" || field === "impression"
+                ? ws.applyPathologyOverlay(quickSelectTilePatch(tile, field))
+                : ws.mergeField(field, tile.sentence, "quick-select");
+              if (result === "refused") return;
+              // Skipped on a refusal, and it matters twice over: `onAfterPick` is
+              // `feedbackAfterAbnormalApply()` at the findings strip — positive
+              // feedback for a write that did not happen — and `void saveDraft({
+              // silent: true })` at the impression and recommendation strips, so a
+              // refused tile click also fired a save the server is certain to refuse.
               incUsage(tile.id);
               onAfterPick?.(field);
             }}
