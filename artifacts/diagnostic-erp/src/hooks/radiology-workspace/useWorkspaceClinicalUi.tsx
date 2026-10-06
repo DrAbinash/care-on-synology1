@@ -127,7 +127,7 @@ import {
 } from "@/lib/draftRescue";
 import {
   shouldOfferBackupRestore, normalizeImpressionLines,
-  canVerifyReport,
+  canVerifyReport, radiologyReportBackupKey,
 } from "@/lib/workspaceReportState";
 import { type DispatchResult } from "@/lib/workspaceCommands";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
@@ -808,7 +808,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
 
   // 4. Local draft backup (30-snapshot localStorage)
   const draftBackup = useLocalDraftBackup({
-    storageKey: `radiology_report_backup_${studyId ?? "new"}`,
+    storageKey: radiologyReportBackupKey(studyId),
     snapshot: {
       at: Date.now(),
       clinicalHistory: clinicalHistoryText,
@@ -1133,6 +1133,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isOnline,
     isDirty,
     isFinalized,
+    // Same gate as draftBackup.enabled above — the rescue flush writes that
+    // hook's key, so it must obey that hook's rule about what may be copied to
+    // a shared workstation. isFinalized alone is narrower: a report signed in
+    // ANOTHER session leaves it false.
+    backupEnabled: allowEditSigned || !studyIsSignedElsewhere,
     isMobile,
     useStructured,
     findingsMap,

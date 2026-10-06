@@ -14,6 +14,19 @@ import { useEffect, useRef, useState } from "react";
  * Storage is per-browser localStorage only — nothing is sent anywhere.
  */
 
+/**
+ * Write one snapshot under `storageKey`. Exported because the session-expiry
+ * rescue flush has to write the SAME key synchronously from outside any React
+ * render, and the two must not be able to disagree about the format.
+ */
+export function writeDraftBackupSnapshot(storageKey: string, snapshot: unknown): void {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(snapshot));
+  } catch {
+    /* storage full/blocked — non-fatal */
+  }
+}
+
 export function useLocalDraftBackup<T extends object>(opts: {
   storageKey: string;
   snapshot: T;
@@ -52,11 +65,7 @@ export function useLocalDraftBackup<T extends object>(opts: {
   useEffect(() => {
     if (!enabled) return;
     const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(snapshot));
-      } catch {
-        /* storage full/blocked — non-fatal */
-      }
+      writeDraftBackupSnapshot(storageKey, snapshot);
     }, debounceMs);
     return () => clearTimeout(timer);
   }, [storageKey, snapshot, enabled, debounceMs]);
