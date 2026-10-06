@@ -2101,27 +2101,38 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     useWorkspace.getState().hydrateAbnormalPatternLibrary(pacsSettingsRows ?? null);
   }, [pacsSettingsRows]);
 
-  // Keep zustand activeStudyId aligned with the URL study.
-  // Do NOT call selectStudy() here — it wipes editor text / reportingContext and
-  // races draft hydration. The studyId effect above already clears fields.
+  // ─── A-02: the DICOM UID follows the authoritative route study, never ahead of it ─
+  // The route `studyId` is the canonical active reporting study, and
+  // `useDraftPersistence` now assigns `activeStudyId` inside the SAME setState as the
+  // clinical reset, so identity and content can no longer move separately. The separate
+  // mirror effect that used to live above this one is deleted: it bailed with
+  // `if (!studies.some(s => s.id === sid)) return;`, so a study that had not yet landed
+  // in the scoped queue left the PREVIOUS study authoritative while the screen showed
+  // the new one — and because `recomputeCopilot` stamped items from that same lagging
+  // value, #840's insert guard compared a value against itself and could never fire.
+  //
+  // `workflow.currentRow` is derived strictly from the route id
+  // (`useReportingWorkflow.ts:234-238` — fullQueue/queue.find(id === currentStudyId)),
+  // so a non-null row IS the open study. That is still asserted explicitly below rather
+  // than trusted, because the entire point of this change is that a UID must never be
+  // attributed to a study it was not read from. When the row is not loaded yet the UID is
+  // left null — genuinely unknown — instead of retaining the previous study's UID.
+  //
+  // `studyId` is in the dependency list on purpose: the reset effect has just nulled the
+  // UID, and if this study's row was ALREADY loaded (navigating Back to a previously
+  // opened study) the UID value would not have changed and this effect would otherwise
+  // never re-run, stripping the new study of its UID for the whole session.
   useEffect(() => {
-    if (!studyId) return;
-    const sid = String(studyId);
-    if (activeStudyId === sid) return;
-    if (!studies.some((s: Study) => s.id === sid)) return;
-    useWorkspace.setState({ activeStudyId: sid, railStage: "orient" });
-  }, [studyId, studies, activeStudyId]);
-
-  // Bind activeAnchor rejection to the open study's DICOM UID (study-switch safety).
-  useEffect(() => {
-    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const row = workflow.currentRow;
+    const ownsRow = Boolean(row) && Number(row?.id) === Number(studyId);
+    const uid = ownsRow ? (row?.studyInstanceUID ?? null) : null;
     const prev = useWorkspace.getState().activeStudyInstanceUID;
     if (prev === uid) return;
     useWorkspace.setState({
       activeStudyInstanceUID: uid,
       activeAnchor: null,
     });
-  }, [workflow.currentRow?.studyInstanceUID]);
+  }, [studyId, workflow.currentRow?.id, workflow.currentRow?.studyInstanceUID]);
 
   // ─── Auto-open first study when the workspace has no URL study ─────────────
   useEffect(() => {

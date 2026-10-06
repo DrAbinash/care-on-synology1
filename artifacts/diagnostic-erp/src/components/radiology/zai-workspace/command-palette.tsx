@@ -14,7 +14,14 @@ interface CommandItem {
   shortcut?: string;
 }
 
-export function CommandPalette({ onPrintReport }: { onPrintReport?: () => void }) {
+export function CommandPalette({
+  onPrintReport, onFinalize, onNextStudy, onParkStudy,
+}: {
+  onPrintReport?: () => void;
+  onFinalize?: () => void;
+  onNextStudy?: () => void;
+  onParkStudy?: () => void;
+}) {
   const open = useWorkspaceSelector((s) => s.showCommandPalette);
   const setOpen = useWorkspaceSelector((s) => s.setCommandPalette);
   const [query, setQuery] = useState("");
@@ -35,8 +42,22 @@ export function CommandPalette({ onPrintReport }: { onPrintReport?: () => void }
   const macros = lookupMacrosForContext(ws.snippetMacros, study?.modality, ws.reportingContext);
 
   const items: CommandItem[] = [
-    { id: "next", label: "Next study", icon: ChevronRight, group: "Navigate", action: () => ws.advanceToNextStudy(), shortcut: "N" },
-    { id: "park", label: "Park study", icon: Save, group: "Navigate", action: () => ws.parkStudy(), shortcut: "P" },
+    // A-03 — these two used to call the STORE's `advanceToNextStudy()` / `parkStudy()`.
+    // Those change which study the workspace holds without any navigation, because the
+    // store has no router access, so the route stayed on B while the store moved to C:
+    // the radiologist kept looking at B's worklist row and B's demographics over a canvas
+    // holding C's context, and an autosave initiated for the route study committed against
+    // B with C's content. They now run the workspace's own guarded commands — the same
+    // `commandDispatcher.next` / `.park` the keyboard uses, which go through
+    // `requestLeaveThen` → `beginTransition` → `openStudy` and therefore navigate, select
+    // and hydrate as one transition. Same convention as the print and finalize items:
+    // unwired means absent, never silently the unsafe path.
+    ...(onNextStudy
+      ? [{ id: "next", label: "Next study", icon: ChevronRight, group: "Navigate", action: () => onNextStudy(), shortcut: "N" } as CommandItem]
+      : []),
+    ...(onParkStudy
+      ? [{ id: "park", label: "Park study", icon: Save, group: "Navigate", action: () => onParkStudy(), shortcut: "P" } as CommandItem]
+      : []),
     {
       id: "ai-imp",
       label: "AI auto-impression",
@@ -48,7 +69,27 @@ export function CommandPalette({ onPrintReport }: { onPrintReport?: () => void }
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true })),
       shortcut: "⌃I",
     },
-    { id: "finalize", label: "Finalize & sign", icon: AlertTriangle, group: "Actions", action: () => ws.startFinalize(), shortcut: "⌃↵" },
+    // A-01 consequence, not cleanup. This command used to call `ws.startFinalize()` and
+    // nothing else — it armed the flag without ever running the gauntlet. That was
+    // harmless only because nothing read `isFinalizing`: the repository's sole
+    // `startFinalize()` caller set a flag that made the finalize dialog show a spinner
+    // while the report was never actually being signed. Now that the real finalize arms
+    // the flag and the leave guard honours it, a stuck `true` would wedge every study
+    // switch in the workspace. So the command runs what its label advertises, through the
+    // same callback-prop seam the print item below uses — and when no finalize route is
+    // wired the command is absent rather than misleading, exactly the rule the print item
+    // already follows. ⌃↵ on the keyboard was always the real path (it dispatches
+    // `commandDispatcher.finalize`); this item simply never joined it.
+    ...(onFinalize
+      ? [{
+        id: "finalize",
+        label: "Finalize & sign",
+        icon: AlertTriangle,
+        group: "Actions",
+        action: () => onFinalize(),
+        shortcut: "⌃↵",
+      } as CommandItem]
+      : []),
     // Printing the workspace window would put the worklist, the viewer and every
     // other patient's row on paper, so this command exists only when the real
     // print route is wired — and then it IS that route, not the browser's own.

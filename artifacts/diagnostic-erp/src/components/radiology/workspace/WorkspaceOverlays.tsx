@@ -617,7 +617,15 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           </div>
         </div>
       ) : null}
-      <ZaiCommandPalette onPrintReport={() => void handlePrintLikeFinal()} />
+      <ZaiCommandPalette
+        onPrintReport={() => void handlePrintLikeFinal()}
+        onFinalize={() => void finalizeReport()}
+        // A-03 — the palette's Navigate commands run the workspace dispatcher, exactly
+        // like ⌃↵ / N / Ctrl+Shift+P do, so a palette click and a keystroke cannot put
+        // the workspace into two different study states.
+        onNextStudy={() => _commandDispatcher?.next?.()}
+        onParkStudy={() => _commandDispatcher?.park?.()}
+      />
       <LinkStudyDialog
         open={linkStudyOpen}
         onOpenChange={setLinkStudyOpen}

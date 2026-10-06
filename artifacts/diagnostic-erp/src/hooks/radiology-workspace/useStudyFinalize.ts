@@ -17,6 +17,7 @@ import { detectCriticalFindings } from "@/lib/criticalResults";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { computeFinalizeSafety, formatFinalizeSafety, criticalFindingBlocksFinalize } from "@/lib/finalizeSafety";
 import { offlineBlockMessage } from "@/lib/reliability";
+import { isFinalizeStudyIdentityIntact } from "@/lib/radiologyWorkspaceSafety";
 import { clearRescueDraft } from "@/lib/draftRescue";
 import { collectCompositionFinalizeGate } from "@/lib/observationLedger";
 import { decideAiFinalizeGate } from "@/lib/aiFinalizeGate";
@@ -105,7 +106,12 @@ export function useStudyFinalize(opts: UseStudyFinalizeOptions) {
   const aiFinalizeBypassRef = useRef(false);
 
 // ─── Finalize (sign + archive + notify) ─────────────────────────────────────
-const finalizeReport = useCallback(async () => {
+// The gauntlet body below is behaviourally unchanged; it is named
+// `runFinalizeGauntlet` and wrapped by `finalizeReport` further down so the wrapper
+// can own the finalization lifecycle across every way out of a gauntlet that contains
+// five awaits, several early returns and throw sites — without re-indenting 400 lines
+// to hold a try/finally around them.
+const runFinalizeGauntlet = useCallback(async () => {
   // Guard, but never a silent one. This returned without a word, so pressing
   // Finalize & Sign looked like a busy system that had ignored the click — the
   // radiologist's only evidence was nothing happening.
@@ -145,6 +151,15 @@ const finalizeReport = useCallback(async () => {
   }
   aiFinalizeBypassRef.current = false;
   setAiFinalizeGate("idle");
+
+  // A-01 — arm the existing finalization lifecycle at the exact point the gauntlet
+  // becomes asynchronous. Everything above is synchronous pre-checks; from here on the
+  // study can change underneath us. `requestLeaveThen` reads this flag as
+  // `finalizing:` (useDraftPersistence.ts:606) and `canLeaveStudy` already has the rule
+  // "Finalize in progress — wait for it to finish" (reportingWorkflow.ts:266), so this
+  // is the guard working as designed rather than a new mechanism.
+  // `finalizeReport`'s wrapper clears it on every exit.
+  useWorkspace.getState().startFinalize();
 
   // 1. Save dirty state first (capture draft id for quality + validate-draft)
   let effectiveDraftId = draftId;
@@ -301,6 +316,33 @@ const finalizeReport = useCallback(async () => {
   });
 
   if (!result.confirmed) return;
+
+  // A-01 — assert the study before the clinical content is consumed.
+  //
+  // Everything above this line was asynchronous: a save, a server validation, an AI
+  // quality evaluation, the signature fetch and the sign dialog itself. The identity
+  // used below (`studyId`, `workflow.currentRow`) comes from the render closure and is
+  // therefore still the study finalize was started on, but `useWorkspace.getState()`
+  // immediately underneath is the module-scope singleton and is whatever the radiologist
+  // is now looking at. Without this check those two could name different patients, and
+  // the report signed would be the previous study's identity carrying the next patient's
+  // findings, impression, recommendation, clinical history, technique and linked study —
+  // straight through to the PDF, the WhatsApp link and the PACS archive. The server
+  // cannot catch it: it validates report ↔ worklist ↔ patient and trusts `htmlBody`.
+  //
+  // `activeStudyId` is authoritative because A-02 writes it in the same setState as the
+  // clinical reset, so matching it is exactly the proof needed: the narrative about to be
+  // read belongs to the study about to be signed.
+  if (!isFinalizeStudyIdentityIntact(studyId, useWorkspace.getState().activeStudyId)) {
+    toast({
+      title: "Not signed — the open study changed",
+      description:
+        "Another study was opened while this report was being finalized, so nothing was signed and nothing was written. Reopen the study you meant to sign and finalize it again.",
+      variant: "destructive",
+      duration: 10000,
+    });
+    return;
+  }
 
   // 7. Execute finalize — read narrative AFTER refresh/ack so the signed payload matches the gate.
   const signed = useWorkspace.getState();
@@ -533,6 +575,31 @@ const finalizeReport = useCallback(async () => {
     toast({ title: "Finalize failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
   }
 }, [studyId, workflow, isOnline, studySetup.checklistPercent, saveDraft, finalizeFlow, draftBackup, qc, toast, isCritical, criticalNote, checklistComm, draftId, session, reportComposer, sessionFresh, goNextStudy, getDemography, headingCase, impressionStyle, useStructured, findingsMap]);
+
+  // A-01 — the finalization lifecycle owner.
+  //
+  // Before this, `startFinalize()` had exactly one caller in the whole repository — the
+  // command-palette entry at command-palette.tsx:51 — and the path that actually signs a
+  // report never touched it. So `isFinalizing` was false during every real finalize:
+  // `requestLeaveThen` read false, `canLeaveStudy` returned "ok", and the radiologist who
+  // clicked a worklist row while the AI quality evaluation was still running navigated
+  // away with no prompt at all. The protection had been written and wired and simply was
+  // never armed.
+  //
+  // `cancelFinalize()` in `finally` is the single cleanup for every exit: a validation
+  // failure, a signature-fetch failure, the unreviewed-AI gate, the Form F gate, the
+  // radiologist pressing Cancel on the sign dialog, the identity assertion above refusing
+  // a moved study, and the catch below. It writes only `isFinalizing: false`, so the
+  // success path (where `completeFinalize()` has already cleared the flag and set
+  // `isFinalized: true`), the idempotent path (which calls `cancelFinalize()` itself) and
+  // the post-sign `goNextStudy()` auto-advance are all unaffected by it.
+  const finalizeReport = useCallback(async () => {
+    try {
+      await runFinalizeGauntlet();
+    } finally {
+      useWorkspace.getState().cancelFinalize();
+    }
+  }, [runFinalizeGauntlet]);
 
   return {
     finalizeReport,
