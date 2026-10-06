@@ -65,6 +65,7 @@ export function QuickSelectStrip({
   compact,
   anatomyFilter,
   onAfterPick,
+  disabled = false,
 }: {
   field: QuickSelectField;
   /**
@@ -81,6 +82,20 @@ export function QuickSelectStrip({
   anatomyFilter?: string | null;
   /** Fired after a tile is merged into the editor (e.g. silent draft save). */
   onAfterPick?: (field: QuickSelectField) => void;
+  /**
+   * Dim the tiles and stop a pick, for a report that cannot be written.
+   *
+   * Affordance, not safety: the store already refuses and since the counter PR
+   * the strip already stops rewarding a refusal. This is the part the radiologist
+   * can see — every other clinical control in the workspace dims on a signed
+   * report, and the strip was the one that stayed clickable, sitting directly
+   * below a sibling that does receive `disabled={contentLocked}`.
+   *
+   * Favouriting, adding and editing a tile stay live. Those write the personal
+   * library, not the report, and a signed report is no reason to stop someone
+   * reorganising their own tiles.
+   */
+  disabled?: boolean;
 }) {
   const tiles = useWorkspaceSelector((s) => s.quickSelectTiles);
   const study = useWorkspaceSelector((s) => s.studies.find((x) => x.id === s.activeStudyId));
@@ -206,6 +221,7 @@ export function QuickSelectStrip({
             key={tile.id}
             tile={tile}
             field={field}
+            disabled={disabled}
             onPick={() => {
               const ws = useWorkspace.getState();
               // Both writers now report whether the write landed. The strip takes
@@ -253,12 +269,14 @@ function QuickSelectTileBox({
   onPick,
   onFav,
   onEdit,
+  disabled = false,
 }: {
   tile: QuickSelectTile;
   field: QuickSelectField;
   onPick: () => void;
   onFav: () => void;
   onEdit: () => void;
+  disabled?: boolean;
 }) {
   const cat = tile.category in CAT_TILE ? tile.category : "normal";
   const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === `qs-${tile.id}`));
@@ -267,12 +285,15 @@ function QuickSelectTileBox({
   return (
     <div
       className={cn(
-        "group relative inline-flex cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
+        "group relative inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[10.5px] transition duration-150",
+        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
         CAT_TILE[cat],
         blockedChip && "ring-1 ring-amber-400",
       )}
-      onClick={onPick}
-      title={blockedChip ? `${tile.sentence} — manual kept` : tile.sentence}
+      onClick={disabled ? undefined : onPick}
+      title={disabled
+        ? `${tile.sentence} — this report is signed`
+        : blockedChip ? `${tile.sentence} — manual kept` : tile.sentence}
       data-testid={`qs-tile-${field}-${tile.id}`}
       data-chip-state={blockedChip ? "blocked-manual-kept" : patch ? "selected" : "idle"}
     >

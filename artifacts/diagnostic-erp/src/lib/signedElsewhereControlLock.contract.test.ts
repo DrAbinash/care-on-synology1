@@ -108,12 +108,17 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * break this test and make whoever does it decide whether the new control is a
  * clinical writer, then update the number here.
  *
- * CANVAS is 55 because fourteen render guards moved from the negated pair to
- * `!contentLocked`; each one adds exactly one occurrence.
+ * CANVAS 41 → 55 came from fourteen render guards moving off the negated pair to
+ * `!contentLocked`; 55 → 60 from the Quick Select strip finally getting a
+ * `disabled` prop — three direct renders plus two `FindingsEditor` sites whose
+ * strip stays visible. RAIL 33 → 34 is its own findings strip. One occurrence per
+ * gated control, so the two changes are additive rather than competing; the
+ * combined numbers were measured on the merged tree rather than summed from the
+ * two PRs, and they agreed.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  [CANVAS]: 55,
-  [RAIL]: 33,
+  [CANVAS]: 60,
+  [RAIL]: 34,
   [VIEWER]: 7,
 };
 

@@ -1606,6 +1606,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           field="findings"
                           bodyPart={studySetup.matchedStudyRegion}
                           anatomyFilter={activeFindingsAnatomy}
+                          disabled={contentLocked}
                           onAfterPick={() => { feedbackAfterAbnormalApply(); }}
                         />
                       </FindingsToolDrawer>
@@ -1847,10 +1848,12 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             field="impression"
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
+                            disabled={contentLocked}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
                         <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
+                        quickSelectDisabled={contentLocked}
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
@@ -1886,6 +1889,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             field="recommendation"
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
+                            disabled={contentLocked}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
@@ -1934,7 +1938,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             )}
                           </div>
                         )}
-                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
+                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost quickSelectDisabled={contentLocked} />
                       </div>
                       {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="recommendation" />
