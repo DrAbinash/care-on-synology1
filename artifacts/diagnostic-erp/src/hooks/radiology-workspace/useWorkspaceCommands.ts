@@ -261,12 +261,25 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
         } else if (!undone && topFrame && ws.isFinalized) {
           // Same reasoning as the cross-study branch: the store refused and the
           // frame is still there, so without this the shortcut does nothing at all
-          // and the radiologist keeps pressing it. The wording promises no amend
-          // path, because none is reachable from this workspace today.
+          // and the radiologist keeps pressing it.
+          //
+          // This branch used to stop at "cannot be edited", because at the time
+          // there was no way back from the app and naming one would have been a
+          // false promise. There is one now: Report Hub's Withdraw button calls
+          // POST /api/patient-reports/:id/withdraw-signature, which nulls the
+          // signature, puts the report back to "draft", sets the bound worklist
+          // row to REPORT_IN_PROGRESS and clears its reportId and deliveryStatus
+          // (patient-reports.ts:2838-2970). assertDraftWritable refuses on
+          // REPORT_FINAL || DELIVERED || reportId (radiologyIdentity.ts:291), so
+          // all three of its conditions go with the signature and the study
+          // really is editable again — the loop closes rather than being
+          // gestured at. The message still does not offer amend or unlock: amend
+          // needs a signed structured document this clinic never produces, and
+          // there is no unlock affordance anywhere.
           toast({
             title: "Undo refused — the report is signed",
             description:
-              "Nothing was changed. A signed report cannot be edited from the reporting workspace.",
+              "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can, and every withdrawal is attributed in the audit trail. The report returns to draft and this study goes back to the worklist as in progress, so it can be edited and signed again.",
             variant: "destructive",
             duration: 8000,
           });
