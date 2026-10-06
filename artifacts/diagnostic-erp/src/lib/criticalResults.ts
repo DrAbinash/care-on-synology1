@@ -3,10 +3,11 @@
  *
  * The workspace already has a MANUAL "Mark Critical Finding" toggle + the F5
  * communication checklist, and the DB already models critical findings
- * (radiology_critical_findings + /api/radiology/critical-findings). What was
- * missing is the safety net that READS the drafted report and notices that it
- * *describes* a critical finding — so the radiologist is reminded to flag and
- * communicate it before signing.
+ * (radiology_critical_findings, served by /api/radiology-workflow/critical-alerts
+ * — NOT /api/radiology/critical-findings, which is a different table belonging to
+ * the enterprise-PACS alert flow). What was missing is the safety net that READS
+ * the drafted report and notices that it *describes* a critical finding — so the
+ * radiologist is reminded to flag and communicate it before signing.
  *
  * This is pure detection only: it never marks, never communicates, never edits.
  * The curated term table covers the cross-modality emergencies; the per-study

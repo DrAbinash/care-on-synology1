@@ -12,11 +12,8 @@ import {
   radiologyPriorityRulesTable,
   radiologistAssignmentRulesTable,
   radiologistSubspecialtiesTable,
-  radiologistWorkloadsTable,
-  usersTable,
   doctorsTable,
   radiologyReportVerificationsTable,
-  radiologyCriticalFindingsTable,
   radiologyTatTrackingTable,
   radiologyStructuredTemplatesTable,
   radiologyAiEnhancementsTable,
@@ -49,7 +46,9 @@ import { getLockTtlSeconds } from "../lib/studyLocks";
 import { lockExpiresAt } from "../lib/studyLockRules";
 import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { createVerificationRecord, recordPrelimReport, recordPeerReview, verifyReport, finalizeReport, getVerificationQueue } from "../lib/peerReview";
-import { flagCriticalFinding, scanForCriticalFindings, getCriticalFindingsForStudy, acknowledgeFinding } from "../lib/criticalFindingsAlert";
+// Only the prelim-report auto-detect stays here. The list/flag/acknowledge HTTP
+// surface for radiology_critical_findings is radiologyWorkflow.ts (/critical-alerts).
+import { flagCriticalFinding, scanForCriticalFindings } from "../lib/criticalFindingsAlert";
 import { startTatTracking, recordPrelimCompleted, recordFinalCompleted, getTatStats, getTatForStudy } from "../lib/tatTracker";
 import { generateAiEnhancement, getAiEnhancement, acceptAiEnhancement, rejectAiEnhancement } from "../lib/aiReportEnhancer";
 import { syncStudyToSite, getMultiSiteWorklist, getSites } from "../lib/multiSiteWorklist";
@@ -2099,20 +2098,8 @@ radiologyRouter.delete("/assignment-rules/:id", async (req, res) => {
 // Phase 1 — Enterprise Radiology: Radiologist subspecialties & workload
 // ═════════════════════════════════════════════════════════════════════════════
 
-// GET /api/radiology/radiologists
-radiologyRouter.get("/radiologists", async (_req, res) => {
-  const users = await db.select({ id: usersTable.id, name: usersTable.name })
-    .from(usersTable)
-    .where(eq(usersTable.role, "radiologist"));
-  const workloads = await db.select().from(radiologistWorkloadsTable);
-  const subspecialties = await db.select().from(radiologistSubspecialtiesTable);
-  const out = users.map((u) => ({
-    ...u,
-    workload: workloads.find((w) => w.userId === u.id) ?? null,
-    subspecialties: subspecialties.filter((s) => s.userId === u.id).map((s) => s.subspecialty),
-  }));
-  res.json(out);
-});
+// GET /api/radiology/radiologists is served by radiology-worklist-assignments.ts,
+// which is mounted first and therefore already won this path.
 
 // GET /api/radiology/radiologists/:id/subspecialties
 radiologyRouter.get("/radiologists/:id/subspecialties", async (req, res) => {
@@ -2275,46 +2262,22 @@ radiologyRouter.post("/studies/:id/archive-retry", async (req, res) => {
 });
 
 // ── Phase 2 — Critical findings ──
-
-// GET /api/radiology/critical-findings
-radiologyRouter.get("/critical-findings", async (req, res) => {
-  const studyId = Number(req.query.studyId || "0");
-  if (studyId) {
-    const rows = await getCriticalFindingsForStudy(studyId);
-    res.json(rows);
-  } else {
-    const rows = await db
-      .select()
-      .from(radiologyCriticalFindingsTable)
-      .where(isNull(radiologyCriticalFindingsTable.acknowledgedAt))
-      .orderBy(desc(radiologyCriticalFindingsTable.createdAt))
-      .limit(100);
-    res.json(rows);
-  }
-});
-
-// POST /api/radiology/critical-findings
-radiologyRouter.post("/critical-findings", async (req, res) => {
-  const body = req.body as { studyId: number; finding: string; severity: "critical" | "urgent" | "significant"; category?: string };
-  if (!body.studyId || !body.finding || !body.severity) { res.status(400).json({ error: "studyId, finding, severity required" }); return; }
-  const row = await flagCriticalFinding(body);
-  res.status(201).json(row);
-});
-
-// PATCH /api/radiology/critical-findings/:id/acknowledge
-// PR 3: identity now comes from the authenticated session (client-supplied
-// clinicianName is accepted only as a legacy fallback when no session name
-// exists) and the shared engine makes the acknowledge idempotent.
-radiologyRouter.patch("/critical-findings/:id/acknowledge", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid finding id" }); return; }
-  const session = (req as StaffAuthRequest).staffSession;
-  const name = session?.subjectName?.trim() || String(req.body?.clinicianName || "").trim();
-  if (!name) { res.status(400).json({ error: "No authenticated identity available" }); return; }
-  const result = await acknowledgeFinding(id, { name, role: session?.role ?? "staff" });
-  if (result.outcome === "not_found") { res.status(404).json({ error: "Critical finding not found" }); return; }
-  res.json({ ok: true, outcome: result.outcome });
-});
+//
+// Nothing is served from here on purpose. This router is mounted at /radiology
+// AFTER pacsEnterprise.ts, so Express gave every GET/POST /critical-findings
+// request to that router (over the critical_findings_alerts table) and the
+// handlers that used to sit here were unreachable — including the study-scoped
+// lookup, which no client could ever reach.
+//
+// Where each capability actually lives:
+//   radiology_critical_findings  → radiologyWorkflow.ts /api/radiology-workflow/critical-alerts
+//                                  (zod-validated + requireRad on write, session identity and
+//                                   an audit_logs row on acknowledge/notify)
+//   critical_findings_alerts     → pacsEnterprise.ts /api/radiology/critical-findings
+//                                  (PacsDashboard)
+// Writes to radiology_critical_findings from this router survive: the prelim-report
+// keyword scan in POST /studies/:id/prelim still calls flagCriticalFinding().
+// routeCollisions.test.ts fails if a duplicate is reintroduced on any shared prefix.
 
 // ── Phase 2 — TAT tracking ──
 
