@@ -185,7 +185,7 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
 
   it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
     expect(workspace).toContain("hideQuickSelect");
-    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}");
+    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} disabled={quickSelectDisabled} />}");
     expect(workspace).toMatch(/<QuickSelectStrip[\s\S]*?field="findings"/);
   });
 
