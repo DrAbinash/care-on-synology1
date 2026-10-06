@@ -102,6 +102,12 @@ import { validateStructuredReport } from "../lib/structuredReport/validator";
 import { noFindingsCatalogPort } from "../lib/radiologyD1DraftWriter";
 import { UnavailableAiRulesRegistryPort } from "../lib/structuredReport/aiRulesRegistry";
 import { canonicalHashPayload, computeChainHash, auditLog } from "../lib/audit";
+import {
+  classifySignedReportBody,
+  readContentOverride,
+  signedContentRefusal,
+  type SignedReportContentClassification,
+} from "../lib/signedReportContentGuard";
 // BEND-1 — durable D10 re-delivery obligations + shared recipient masking.
 import { maskRecipient } from "../lib/redeliveryRules";
 import { createObligationsForAmendment, completeObligationsForDelivery, isRedeliveryAutoSendEnabled } from "../lib/redeliveryObligations";
@@ -552,6 +558,56 @@ async function auditLifecycleEvent(
     newValue: JSON.stringify(payload),
     reason,
   });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Signed-report content guard
+//
+// `patient_reports.body` is the authoritative signed artifact and is what
+// reportPresentation.ts renders into the print page, the PDF, the WhatsApp link
+// and the PACS archive. Nothing on the server inspected it: POST / defaults it
+// to "" and POST /:id/sign checked nine conditions, none of them about the text.
+// Report Hub reaches a blank signed report in three clicks — New Report sends no
+// `body` at all (ReportHub.tsx:490) and SignDialog then sends only
+// `{ signatureId }` (:970).
+//
+// The classifier is deliberately narrow: no minimum word count, no required
+// sections, no opinion on correctness. It asks only whether any authored
+// characters survive once markup and the template's unconditional labels are
+// removed. See lib/signedReportContentGuard.ts.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pathology keeps its content in `parameters`; radiology keeps it in `body`.
+ * The schema comment claiming radiology rows leave `parameters` null is out of
+ * date — radiologyReportLifecycle.ts writes modality/accession there — so the
+ * type column, not `parameters`, is what tells the two apart.
+ */
+function assessSignableContent(row: {
+  type: string;
+  body: string | null;
+  parameters: string | null;
+  testDepartment?: string | null;
+}): SignedReportContentClassification | null {
+  if (isRadiologyReportType(row.type, row.testDepartment)) {
+    const content = classifySignedReportBody(row.body);
+    return content.level === "ok" ? null : content;
+  }
+  if (typeof row.body === "string" && row.body.trim() !== "") return null;
+  if (hasParameterContent(row.parameters)) return null;
+  return classifySignedReportBody("");
+}
+
+/** Unparseable `parameters` counts as content: never refuse on a parse failure. */
+function hasParameterContent(parameters: string | null): boolean {
+  if (typeof parameters !== "string" || parameters.trim() === "") return false;
+  try {
+    const parsed: unknown = JSON.parse(parameters);
+    if (Array.isArray(parsed)) return parsed.length > 0;
+    return parsed !== null && typeof parsed === "object" && Object.keys(parsed).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -2028,6 +2084,51 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // Content guard — same placement rationale as the gate above: refuse BEFORE a
+  // patient_reports row exists. The canonical client deliberately swallows a
+  // /:id/sign failure (radiologyReportLifecycle.ts autoSignReport "Never throws:
+  // a failure here must not undo the report row that was already created or
+  // block the worklist flip") and then marks the study REPORT_FINAL anyway, so a
+  // blank report caught only at sign time leaves a FINAL study pointing at an
+  // unsigned blank draft — and re-finalizing cannot repair it, because POST /
+  // answers `idempotent: true` for an already-bound worklist and discards the new
+  // body. Refusing here makes the whole finalize abort while the study is still
+  // editable.
+  //
+  // Fires only when the caller actually supplied a body. Report Hub creates a
+  // draft with no `body` key at all and edits it afterwards (ReportHub.tsx:490);
+  // that flow must keep working, and with nothing supplied there is nothing to
+  // judge — POST /:id/sign guards it instead.
+  if (typeof b.body === "string") {
+    const createContent = assessSignableContent({
+      type,
+      body: b.body,
+      parameters: typeof b.parameters === "string" ? b.parameters : null,
+      testDepartment: test.department ?? null,
+    });
+    if (createContent && !readContentOverride(b)) {
+      const createSession = (req as StaffAuthRequest).staffSession;
+      await auditLog({
+        userId: createSession?.subjectId ?? null,
+        userName: createSession?.subjectName ?? "system",
+        role: createSession?.role ?? "system",
+        action: "report_content_finalize_rejected",
+        module: "radiology",
+        entityType: "patient_report",
+        entityId: String(bound?.worklistId ?? worklistIdIn ?? studyRef ?? patientId),
+        newValue: JSON.stringify({
+          level: createContent.level,
+          placeholders: createContent.placeholders,
+          bodyLength: b.body.length,
+          accessionNumber: bound?.worklist?.accessionNumber ?? null,
+        }),
+        reason: `report_content_${createContent.level}`,
+      });
+      res.status(409).json(signedContentRefusal(createContent));
+      return;
+    }
+  }
+
   let presetUsed = typeof b.stylePresetUsed === "string" ? b.stylePresetUsed : null;
   if (!presetUsed && type === "radiology") {
     try {
@@ -2331,6 +2432,57 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
       res.status(409).json(unreviewedAiFinalizeError(unreviewed));
       return;
     }
+  }
+  // Content guard — the last thing standing between an empty row and a signed,
+  // printable, deliverable blank report. Placed after every identity and
+  // lifecycle refusal so the more specific reason wins, and before the signer is
+  // resolved so a refusal never stamps authorship.
+  const contentProblem = assessSignableContent({
+    type: existing.type,
+    body: existing.body,
+    parameters: existing.parameters,
+  });
+  if (contentProblem) {
+    const overrideReason = readContentOverride(b);
+    if (!overrideReason) {
+      await auditLifecycleEvent(
+        "legacy_sign_rejected",
+        { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
+        String(id),
+        {
+          reportId: id,
+          level: contentProblem.level,
+          reasons: contentProblem.reasons,
+          placeholders: contentProblem.placeholders,
+          bodyLength: typeof existing.body === "string" ? existing.body.length : 0,
+          // Recorded so a too-short or missing reason is distinguishable from no
+          // override attempt at all.
+          overrideAttempted: b.contentOverride === true,
+        },
+        `report_content_${contentProblem.level}`,
+      );
+      res.status(409).json(signedContentRefusal(contentProblem));
+      return;
+    }
+    // Accepted override: the signer saw the warning and signed anyway. That is
+    // the deliberate act the guard exists to make attributable, so it gets its
+    // own audit row rather than riding inside legacy_sign's payload.
+    await auditLog({
+      userId: session?.subjectId ?? null,
+      userName: session?.subjectName ?? "system",
+      role: session?.role ?? "system",
+      action: "signed_content_override",
+      module: "radiology",
+      entityType: "patient_report",
+      entityId: String(id),
+      newValue: JSON.stringify({
+        reportId: id,
+        level: contentProblem.level,
+        placeholders: contentProblem.placeholders,
+        bodyLength: typeof existing.body === "string" ? existing.body.length : 0,
+      }),
+      reason: overrideReason,
+    });
   }
 
   // The signer of record comes from the server: the chosen signature block's

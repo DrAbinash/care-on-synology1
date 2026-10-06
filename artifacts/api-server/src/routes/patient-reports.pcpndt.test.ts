@@ -213,7 +213,7 @@ async function postCreate(body: Record<string, unknown>, staffSession?: Record<s
 
 const BASE_BODY = {
   patientId: 12, testId: 3, type: "radiology", studyId: 9,
-  title: "USG Report", body: "FINDINGS.", impression: "Normal.",
+  title: "USG Report", body: "FINDINGS: Normal abdominal study.", impression: "Normal.",
   createdBy: "Dr. Rao",
 };
 
