@@ -505,6 +505,23 @@ const GUARD_CASES: Array<{
     call: () => useWorkspace.getState().applyMacroWithValues({}),
     refusal: undefined,
   },
+  {
+    // The Quick Select strip is the highest-traffic control in the workspace and
+    // takes no `disabled` prop at all, so a findings or impression tile is still
+    // clickable after signing. `refusal: "applied"` is not a typo — this mutator
+    // reports success on refusal, because its declared return type is
+    // `"applied" | "pending"` and three internal callers branch on the value.
+    // Widening it is a behaviour change that belongs in its own PR; the point of
+    // pinning it here is that the refusal now goes through the shared predicate
+    // and is therefore both logged and announced.
+    action: "applyPathologyOverlay",
+    arm: () => {},
+    call: () => useWorkspace.getState().applyPathologyOverlay({
+      ...pendingFrom(OTHER_TILE, "qs-guard-case"),
+      force: true,
+    }),
+    refusal: "applied",
+  },
 ];
 
 function runGuardCase(c: (typeof GUARD_CASES)[number], signed: boolean) {
@@ -791,8 +808,6 @@ describe("the boundary cannot regress silently", () => {
    * first branch stayed open.
    */
   const LEGACY_IF_GUARD: Record<string, string> = {
-    applyPathologyOverlay:
-      'returns "applied" on refusal and two callers branch on that value; unifying it would change what XrayLsSpineCanvas and applyMultiLevelSpine do next',
     seedSystemNormalImpression: "one of three stacked safety refusals, the other two being clinical and not about signing",
     applyComposerFinding: 'already returns "blocked"; its guard is the first statement',
     setObservationImpressionParticipation: "its guard is the first statement",
@@ -895,7 +910,7 @@ describe("the boundary cannot regress silently", () => {
     expect(isGuarded({ name: "notAMethod", start: 0, end: 0 })).toBe(false);
     // And allowlist membership alone is not a pass — the entry still has to carry
     // its own isFinalized check in the body, or the allowlist becomes a hiding place.
-    expect(isGuarded({ name: "applyPathologyOverlay", start: 0, end: 0 })).toBe(false);
+    expect(isGuarded({ name: "applyComposerFinding", start: 0, end: 0 })).toBe(false);
   });
   it("the mutators this boundary guards are detected as guarded", () => {
     const writers = clinicalWriters();
@@ -905,7 +920,7 @@ describe("the boundary cannot regress silently", () => {
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
-      "relateralizePatches", "applyMacroWithValues",
+      "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
     ];
     for (const name of guardedByPredicate) {
       const w = writers.find((x) => x.name === name);
@@ -976,15 +991,30 @@ describe("the boundary cannot regress silently", () => {
  */
 describe("Ctrl+Shift+Z on a signed report says it was refused", () => {
   const handlerAt = commandsSrc.indexOf('e.ctrlKey && e.shiftKey && (e.key === "z"');
-  // Comments stripped: the branch's own comment names the correction path it
-  // deliberately does not offer, and these assertions are about the wording the
-  // radiologist actually reads.
+  // Comments stripped: the branch's own comment names the server route and the
+  // draft-writability guard that make its correction path real, and these
+  // assertions are about the wording the radiologist actually reads. A way back
+  // promised only in a comment is not a way back.
+  //
+  // The window is deliberately generous, and it has to be: it is a RAW slice, so
+  // the comment the branch carries is charged against it before being stripped
+  // away. At the 2600 this block used to read, the longer wording and the
+  // evidence behind it pushed the branch's `duration: 8000,` past the end — the
+  // slice came back empty and every assertion below failed for a reason that had
+  // nothing to do with the copy. Hence the explicit anchor check.
   const handler = commandsSrc
-    .slice(handlerAt, handlerAt + 2600)
+    .slice(handlerAt, handlerAt + 4000)
     .replace(/\/\/[^\n]*/g, "");
   const SIGNED = "!undone && topFrame && ws.isFinalized";
   const signedAt = handler.indexOf(SIGNED);
-  const branch = handler.slice(signedAt, handler.indexOf("duration: 8000,", signedAt) + 20);
+  const branchEnd = handler.indexOf("duration: 8000,", signedAt);
+  const branch = handler.slice(signedAt, branchEnd + 20);
+
+  it("the branch being asserted on is the whole toast, not an empty slice", () => {
+    expect(branchEnd, "the signed branch's toast fell outside the window above").toBeGreaterThan(-1);
+    expect(branch).toContain("title:");
+    expect(branch).toContain("duration: 8000,");
+  });
 
   it("has a signed-report branch, and it comes after the cross-study one", () => {
     const crossStudy = handler.indexOf("topFrame.activeStudyId !== ws.activeStudyId");
@@ -1002,13 +1032,22 @@ describe("Ctrl+Shift+Z on a signed report says it was refused", () => {
     expect(handler).not.toMatch(/pushNotification/);
   });
 
-  it("does not promise a correction path this workspace cannot reach", () => {
+  it("names the one correction path that exists, and none of the three that do not", () => {
     const wording = branch.toLowerCase();
     expect(wording, "the branch must reach the radiologist").toMatch(/title:/);
     expect(wording, "the branch must carry the toast").toMatch(/description:/);
-    for (const word of ["amend", "reopen", "unlock", "withdraw"]) {
-      // PR-9 has to land a reachable correction path before any of these can be
-      // offered; until then the message must not imply one already exists.
+    // Withdrawal is reachable now: Report Hub renders the button in the list row
+    // (:429) and the sidebar (:943), gated on canWithdrawSignature so it is not
+    // offered for a row the route would refuse. Naming neither the action nor the
+    // place is what left this branch saying only "cannot be edited" — true, and
+    // useless to the person reading it.
+    expect(wording, "the refusal must name the action that exists").toContain("withdraw");
+    expect(wording, "the refusal must say where to find it").toContain("report hub");
+    for (const word of ["amend", "reopen", "unlock"]) {
+      // amend needs a signed structured document this clinic never produces, so
+      // POST /:id/amend answers 409 not_a_signed_structured_report for every row
+      // here; reopen and unlock are not affordances anywhere in the app. Offering
+      // one sends the radiologist to a dead end that looks like a next step.
       expect(wording, `the refusal must not offer a ${word} path`).not.toContain(word);
     }
   });

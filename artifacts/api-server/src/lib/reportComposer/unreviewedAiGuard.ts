@@ -24,6 +24,13 @@
  *
  * No second review system is introduced: this reads the same
  * `ai_report_compose_jobs.tracked_changes_json` the review panel already writes.
+ *
+ * FAILURE POSTURE — fail CLOSED. If the check itself cannot run, CARE does not
+ * know whether unresolved AI proposals exist, and "we could not look" must never
+ * be reported as "there was nothing to review". A 503 costs one retry; signing
+ * an unreviewed AI draft is the failure that cannot be undone. This is safe with
+ * respect to availability because the same Postgres serves the report write
+ * anyway — if it is unreachable, finalize was going to fail regardless.
  */
 import { db } from "@workspace/db";
 import { aiReportComposeJobsTable } from "@workspace/db/schema";
@@ -81,10 +88,11 @@ export function firstUnreviewedJob(
 /**
  * Does this study have AI output the radiologist has not finished reviewing?
  *
- * On a query failure the finalize is allowed: this guard is defence in depth
- * behind "the server never writes draft text into the report", and refusing to
- * sign every report because the composer table was momentarily unreachable is
- * the worse clinical failure. The error is logged, never swallowed silently.
+ * Returns `null` only when the question was actually answered: nothing pending
+ * among the jobs found (including the case where the study has no composer job
+ * at all, or carries no study reference that a job could belong to). A database
+ * or query error is thrown, NOT swallowed — callers must use
+ * `checkUnreviewedAiFinalize`, which turns "could not look" into a refusal.
  */
 export async function findUnreviewedAiDraft(refs: {
   worklistId?: number | null;
@@ -99,39 +107,66 @@ export async function findUnreviewedAiDraft(refs: {
   const reportId = Number.isFinite(Number(refs.reportId)) ? Number(refs.reportId) : null;
   if (idRefs.length === 0 && reportId == null) return null;
 
+  const scopes = [
+    ...idRefs.map((id) => eq(aiReportComposeJobsTable.worklistId, id)),
+    ...idRefs.map((id) => eq(aiReportComposeJobsTable.studyId, id)),
+    ...(reportId != null ? [eq(aiReportComposeJobsTable.reportId, reportId)] : []),
+  ];
+  const rows = await db
+    .select({
+      id: aiReportComposeJobsTable.id,
+      status: aiReportComposeJobsTable.status,
+      trackedChangesJson: aiReportComposeJobsTable.trackedChangesJson,
+    })
+    .from(aiReportComposeJobsTable)
+    .where(
+      and(
+        inArray(aiReportComposeJobsTable.status, [...UNREVIEWED_AI_JOB_STATUSES]),
+        like(aiReportComposeJobsTable.trackedChangesJson, PENDING_MARKER_LIKE),
+        or(...scopes),
+      ),
+    )
+    .orderBy(desc(aiReportComposeJobsTable.updatedAt))
+    .limit(20);
+  return firstUnreviewedJob(rows);
+}
+
+/**
+ * The three answers a finalize/sign boundary can get, kept distinct because they
+ * must not be confused:
+ *  - `clear`     — looked, and there is nothing unreviewed. Finalize proceeds.
+ *  - `unreviewed`— looked, and proposals are waiting. Finalize refused (409).
+ *  - `unknown`   — the check itself failed. Finalize refused (503) and retried.
+ */
+export type UnreviewedAiFinalizeCheck =
+  | { state: "clear" }
+  | { state: "unreviewed"; draft: UnreviewedAiDraft }
+  | { state: "unknown"; reason: "query_failed" };
+
+export async function checkUnreviewedAiFinalize(refs: {
+  worklistId?: number | null;
+  studyId?: number | null;
+  reportId?: number | null;
+}): Promise<UnreviewedAiFinalizeCheck> {
   try {
-    const scopes = [
-      ...idRefs.map((id) => eq(aiReportComposeJobsTable.worklistId, id)),
-      ...idRefs.map((id) => eq(aiReportComposeJobsTable.studyId, id)),
-      ...(reportId != null ? [eq(aiReportComposeJobsTable.reportId, reportId)] : []),
-    ];
-    const rows = await db
-      .select({
-        id: aiReportComposeJobsTable.id,
-        status: aiReportComposeJobsTable.status,
-        trackedChangesJson: aiReportComposeJobsTable.trackedChangesJson,
-      })
-      .from(aiReportComposeJobsTable)
-      .where(
-        and(
-          inArray(aiReportComposeJobsTable.status, [...UNREVIEWED_AI_JOB_STATUSES]),
-          like(aiReportComposeJobsTable.trackedChangesJson, PENDING_MARKER_LIKE),
-          or(...scopes),
-        ),
-      )
-      .orderBy(desc(aiReportComposeJobsTable.updatedAt))
-      .limit(20);
-    return firstUnreviewedJob(rows);
+    const draft = await findUnreviewedAiDraft(refs);
+    return draft ? { state: "unreviewed", draft } : { state: "clear" };
   } catch (err) {
-    logger.warn({ err, refs }, "unreviewed-AI finalize guard could not read compose jobs");
-    return null;
+    logger.error(
+      { err, refs },
+      "unreviewed-AI finalize guard could not read compose jobs — finalize blocked (fail closed)",
+    );
+    return { state: "unknown", reason: "query_failed" };
   }
 }
 
 /**
  * The typed rejection every finalize/sign boundary returns. `error` is the
- * stable code; `message` is written for the radiologist, because it is what the
- * workspace toast shows.
+ * stable code for logs and clients; `message` is written for the radiologist.
+ * Note that the shared client shows the message only when the payload opts in
+ * with `retryable` (see `diagnostic-erp/src/lib/fetchApi.ts`), which the 503
+ * does and this 409 does not — for an unreviewed draft the workspace's own
+ * Guard 10 is what the radiologist normally sees first, with its own wording.
  */
 export function unreviewedAiFinalizeError(draft: UnreviewedAiDraft) {
   return {
@@ -142,5 +177,22 @@ export function unreviewedAiFinalizeError(draft: UnreviewedAiDraft) {
     jobId: draft.jobId,
     jobStatus: draft.status,
     pendingChangeCount: draft.pendingChangeCount,
+  };
+}
+
+/**
+ * Returned when CARE could not determine the review state at all. Deliberately
+ * not merged with the 409: "nothing to review" and "we could not look" are
+ * different clinical statements, and the radiologist's action differs — one is
+ * review the suggestions, the other is try again.
+ */
+export function aiReviewStateUnavailableError() {
+  return {
+    error: "ai_review_state_unavailable" as const,
+    message:
+      "CARE could not check whether this study still has unreviewed AI suggestions, so the report was "
+      + "NOT finalized and nothing was changed. Please try again in a moment. If it keeps failing, "
+      + "finalize after the AI suggestions have been reviewed, or ask the admin to check the database.",
+    retryable: true as const,
   };
 }

@@ -383,6 +383,68 @@ describe.skipIf(!dbReady)("signature withdrawal reopens the study — request le
     expect(audits.filter((a) => JSON.parse(a.newValue ?? "{}").outcome === "withdrawn")).toHaveLength(0);
   });
 
+  // ── Which of the three locked states the radiologist is actually in ────────
+  //
+  // assertDraftWritable refused DELIVERED, REPORT_FINAL and a set reportId with
+  // ONE sentence, so it could only be vague enough to be true of all three:
+  // "correcting a signed report is a separate, attributed action". That names no
+  // path, and it cannot — a delivered study has none, a final study still bound
+  // to a report has Report Hub's withdrawal, and a study marked final with no
+  // reportId has no signature behind it at all. These pin the three apart over
+  // real HTTP, because a source grep cannot prove which branch a row reaches.
+  it("a final study still bound to its report is told how to get back", async () => {
+    const { worklistId } = await signedOffStudy();
+
+    const res = await saveDraft(worklistId, "a correction nobody can save");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("REPORT_LOCKED");
+    const message = String(res.body.error ?? "");
+    expect(message, message).toMatch(/withdraw/i);
+    expect(message, message).toContain("Report Hub");
+    expect(message, message).toMatch(/signer or an administrator/i);
+    // The row this fixture builds is signed but not verified, so the button IS
+    // there — but the message must not promise it unconditionally, because the
+    // legacy verify route can change that without touching the worklist row.
+    expect(message, message).toMatch(/unless it has been verified or delivered/i);
+  });
+
+  it("a delivered study is told there is no way back, not sent looking for one", async () => {
+    const { worklistId } = await signedOffStudy("DELIVERED");
+
+    const res = await saveDraft(worklistId, "a correction nobody can save");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("REPORT_LOCKED");
+    const message = String(res.body.error ?? "");
+    expect(message, message).toMatch(/already been delivered/i);
+    expect(message, message).toMatch(/cannot be un-signed from the app/i);
+    // withdraw-signature refuses this row `already_delivered` (:2932), and
+    // Report Hub hides the button for the same reason. Naming either here sends
+    // staff on a trip that ends in a second refusal.
+    expect(message, message).not.toMatch(/withdraw/i);
+    expect(message, message).not.toContain("Report Hub");
+  });
+
+  it("a study marked final with no report behind it is not sent to a signature that does not exist", async () => {
+    const { worklistId } = await signedOffStudy();
+    // The state WorkspaceOverlays.tsx:700 renders as "Study marked final — NO
+    // report exists": REPORT_FINAL with reportId null. Reached here by unbinding
+    // the pointer rather than by skipping report creation, because that is the
+    // only part of the state assertDraftWritable reads.
+    await db
+      .update(radiologyWorklistTable)
+      .set({ reportId: null })
+      .where(eq(radiologyWorklistTable.id, worklistId));
+    expect((await worklist(worklistId)).status).toBe("REPORT_FINAL");
+
+    const res = await saveDraft(worklistId, "a correction nobody can save");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("REPORT_LOCKED");
+    const message = String(res.body.error ?? "");
+    expect(message, message).toMatch(/no report linked to it/i);
+    expect(message, message).not.toMatch(/withdraw/i);
+    expect(message, message).not.toContain("Report Hub");
+  });
+
   it("the audit row records which study was reopened, and from what", async () => {
     const { worklistId, reportId } = await signedOffStudy();
     expect((await withdraw(reportId)).status).toBe(200);

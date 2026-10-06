@@ -27,4 +27,25 @@ describe("sanitizeApiErrorMessage", () => {
     const long = "x".repeat(400);
     expect(sanitizeApiErrorMessage(long, 500, "Error").endsWith("…")).toBe(true);
   });
+
+  it("shows the instruction, not the code, when the server says the failure is retryable", () => {
+    const body = JSON.stringify({
+      error: "ai_review_state_unavailable",
+      message:
+        "CARE could not check whether this study still has unreviewed AI suggestions, so the report was NOT finalized and nothing was changed. Please try again in a moment.",
+      retryable: true,
+    });
+    const msg = sanitizeApiErrorMessage(body, 503, "Service Unavailable");
+    expect(msg).toMatch(/NOT finalized/i);
+    expect(msg).toMatch(/try again/i);
+    expect(msg).not.toMatch(/ai_review_state_unavailable/);
+  });
+
+  it("is opt-in: a coded 4xx still surfaces its code, unchanged", () => {
+    const body = JSON.stringify({
+      error: "unreviewed_ai_compose_changes",
+      message: "2 AI suggestion(s) for this study are still unreviewed.",
+    });
+    expect(sanitizeApiErrorMessage(body, 409, "Conflict")).toBe("unreviewed_ai_compose_changes");
+  });
 });

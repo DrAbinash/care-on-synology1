@@ -16,13 +16,16 @@
  *   Meanwhile the server's own signed-artifact refusal says the opposite:
  *   "Use Amend to create a corrected version, or withdraw the signature first."
  *
- *   So these tests guard three things that can each fail independently:
+ *   So these tests guard four things that can each fail independently:
  *     1. the client gate agrees with the server's refusals, so the button is
  *        not offered for a row that would be refused;
  *     2. a refusal reaches the radiologist as the server's sentence rather than
  *        as a machine token or a thrown exception;
  *     3. Report Hub actually renders the path — a perfect module nobody calls
- *        is exactly the defect this file exists for.
+ *        is exactly the defect this file exists for;
+ *     4. the caches the reporting workspace reads a signed status from are
+ *        dropped on success, so "its study is open for reporting again" is true
+ *        where the radiologist goes next rather than 60 seconds later.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -31,8 +34,11 @@ import { fileURLToPath } from "node:url";
 import { api, HttpError } from "./fetchApi";
 import {
   canWithdrawSignature,
+  invalidateWorklistCachesAfterWithdrawal,
   withdrawReportSignature,
   withdrawalRefusalText,
+  WORKLIST_CACHE_KEYS_AFTER_WITHDRAWAL,
+  type QueryCacheInvalidator,
   type WithdrawableReportRow,
 } from "./reportSignatureWithdrawal";
 
@@ -63,6 +69,8 @@ const LIB = read(resolve(HERE, "reportSignatureWithdrawal.ts"));
 const REPORT_HUB = read(resolve(ERP_SRC, "pages/ReportHub.tsx"));
 const REPORTS_ROUTE = read(resolve(REPO, "artifacts/api-server/src/routes/patient-reports.ts"));
 const SIGNED_GUARD = read(resolve(REPO, "artifacts/api-server/src/lib/signedArtifactGuard.ts"));
+const WORKSPACE_UI = read(resolve(ERP_SRC, "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx"));
+const STUDY_FINALIZE = read(resolve(ERP_SRC, "hooks/radiology-workspace/useStudyFinalize.ts"));
 
 /** The withdraw-signature handler only, so a token found here is found in the
  *  route these tests claim to mirror rather than somewhere else in a 3,000-line
@@ -75,6 +83,26 @@ function withdrawRoute(): string {
     REPORTS_ROUTE.indexOf("\nfunction ", at + 10),
   ].filter((n) => n > -1);
   return REPORTS_ROUTE.slice(at, ends.length ? Math.min(...ends) : at + 9000);
+}
+
+/** The withdrawal dialog only, so "called once, on the success path" is a claim
+ *  about that component and not about the whole 1,200-line page. */
+function withdrawDialog(): string {
+  const at = REPORT_HUB.indexOf("function WithdrawSignatureDialog(");
+  expect(at, "the withdrawal dialog must still exist").toBeGreaterThan(-1);
+  const ends = [
+    REPORT_HUB.indexOf("\nfunction ", at + 10),
+    REPORT_HUB.indexOf("\n// ─", at + 10),
+  ].filter((n) => n > -1);
+  return REPORT_HUB.slice(at, ends.length ? Math.min(...ends) : at + 4000);
+}
+
+/** A query client that only records, so the invalidation is exercised rather
+ *  than asserted as text. `QueryCacheInvalidator` is structural on purpose: a
+ *  real QueryClient satisfies it, and tsc checks that at the ReportHub call. */
+function recordingClient(): QueryCacheInvalidator & { calls: Array<readonly unknown[]> } {
+  const calls: Array<readonly unknown[]> = [];
+  return { calls, invalidateQueries: (filters) => { calls.push(filters.queryKey); } };
 }
 
 /** A signed legacy row awaiting counter-signature — the clinic's real case. */
@@ -248,7 +276,7 @@ describe("wiring — Report Hub renders the path, on both surfaces", () => {
     const imp = /import \{([^}]*)\} from "@\/lib\/reportSignatureWithdrawal";/.exec(REPORT_HUB);
     expect(imp, "ReportHub must import the withdrawal module").not.toBeNull();
     expect(imp![1].split(",").map((s) => s.trim()).filter(Boolean).sort())
-      .toEqual(["canWithdrawSignature", "withdrawReportSignature"]);
+      .toEqual(["canWithdrawSignature", "invalidateWorklistCachesAfterWithdrawal", "withdrawReportSignature"]);
     // The endpoint lives in the lib. A second copy in the page is how the two
     // surfaces start disagreeing about what a withdrawal does.
     expect(REPORT_HUB).not.toContain("/withdraw-signature");
@@ -290,5 +318,106 @@ describe("wiring — Report Hub renders the path, on both surfaces", () => {
     // Both are driven by the same `withdrawable` local, so the notice cannot
     // promise a withdrawal the button is not offering.
     expect(REPORT_HUB).toMatch(/\{withdrawable\s*\?\s*" Withdrawing the signature/);
+  });
+});
+
+describe("the withdrawal reaches the workspace, not just this page", () => {
+  it("drops both cached worklist views the workspace reads a signed status from", () => {
+    const qc = recordingClient();
+    invalidateWorklistCachesAfterWithdrawal(qc);
+    expect(qc.calls).toEqual([["pacs-worklist-detail"], ["radiology-pacs-worklist"]]);
+  });
+
+  it("records nothing until it is called, so the assertion above can fail", () => {
+    const qc = recordingClient();
+    expect(qc.calls).toEqual([]);
+    invalidateWorklistCachesAfterWithdrawal(qc);
+    expect(qc.calls).not.toEqual([]);
+  });
+
+  it("invalidates the per-study detail by prefix, because Report Hub has no studyId to name", () => {
+    // The pointer the route follows is radiology_worklist.report_id, which the
+    // list endpoint does not return. Naming a study here would mean guessing
+    // one; a prefix matches whichever study the radiologist opens next.
+    for (const key of WORKLIST_CACHE_KEYS_AFTER_WITHDRAWAL) {
+      expect(key.length, `key ${JSON.stringify(key)} must be a bare prefix`).toBe(1);
+      expect(typeof key[0]).toBe("string");
+    }
+  });
+
+  it("touches each key once, and only the two", () => {
+    const qc = recordingClient();
+    invalidateWorklistCachesAfterWithdrawal(qc);
+    invalidateWorklistCachesAfterWithdrawal(qc);
+    expect(qc.calls.length).toBe(4);
+    expect(new Set(qc.calls.map((k) => JSON.stringify(k))).size).toBe(2);
+    expect(WORKLIST_CACHE_KEYS_AFTER_WITHDRAWAL.length).toBe(2);
+  });
+
+  it("gets its query client inside the dialog that withdraws", () => {
+    expect(REPORT_HUB).toContain('import { useQueryClient } from "@tanstack/react-query";');
+    const dialog = withdrawDialog();
+    expect(dialog).toContain("const qc = useQueryClient();");
+    expect(dialog).toContain("invalidateWorklistCachesAfterWithdrawal(qc);");
+  });
+
+  it("invalidates on the success path only, and before the dialog hands control back", () => {
+    const dialog = withdrawDialog();
+    const refused = dialog.indexOf("if (!outcome.withdrawn) {");
+    const bail = dialog.indexOf("return;", refused);
+    const invalidated = dialog.indexOf("invalidateWorklistCachesAfterWithdrawal(qc);");
+    const done = dialog.indexOf("onDone();");
+    expect(refused).toBeGreaterThan(-1);
+    expect(bail).toBeGreaterThan(refused);
+    // After the refusal's `return`, or a refused withdrawal would refetch a row
+    // that still says signed and make the refusal look like a flicker.
+    expect(invalidated).toBeGreaterThan(bail);
+    // Before onDone, or the page can close and navigate away first.
+    expect(invalidated).toBeLessThan(done);
+    expect(done).toBeGreaterThan(-1);
+  });
+
+  it("is called from nowhere else in the page", () => {
+    const hits = REPORT_HUB.split("invalidateWorklistCachesAfterWithdrawal").length - 1;
+    expect(hits, "one import and one call").toBe(2);
+  });
+
+  it("mirrors what signing already does, in the same two keys", () => {
+    // useStudyFinalize invalidates both on the way IN and says why: without it
+    // the lock keeps reading the pre-sign row until its staleTime expires.
+    // Withdrawal is the same mechanism in the other direction.
+    expect(STUDY_FINALIZE).toContain('qc.invalidateQueries({ queryKey: ["radiology-pacs-worklist"] });');
+    expect(STUDY_FINALIZE).toContain('qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });');
+    expect(STUDY_FINALIZE).toContain("until its 60 s staleTime expires");
+  });
+
+  it("is the cache the workspace actually prefers, for 60 seconds", () => {
+    // Scoped to the detail query's own useQuery block. `staleTime: 60_000`
+    // appears five times in that file, so an unscoped assertion would still pass
+    // with this one changed — and this is the only one the workspace reads a
+    // signed status from.
+    const at = WORKSPACE_UI.indexOf('queryKey: ["pacs-worklist-detail", studyId],');
+    expect(at, "the per-study detail query must still exist").toBeGreaterThan(-1);
+    const block = WORKSPACE_UI.slice(at, at + 400);
+    expect(block).toContain("staleTime: 60_000,");
+    expect(block).toContain('api.get(`/api/radiology/pacs-worklist/${studyId}`)');
+    // Preferred over the queue row, so a fresh queue cannot outvote a stale
+    // detail entry — which is what makes invalidating the detail one necessary
+    // rather than merely tidy.
+    expect(WORKSPACE_UI).toContain(
+      "const authoritativeStatus = worklistDetailQ.data?.status ?? workflow.currentRow?.status ?? null;",
+    );
+    expect(WORKSPACE_UI).toContain(
+      'const studyIsSignedElsewhere = authoritativeStatus === "REPORT_FINAL" || authoritativeStatus === "DELIVERED";',
+    );
+  });
+
+  it("is stale about a row the server has genuinely reverted", () => {
+    const route = withdrawRoute();
+    expect(route).toContain('status: "REPORT_IN_PROGRESS",');
+    expect(route).toContain("reportId: null,");
+    // And the report row itself goes back to draft, which is what the dialog's
+    // success sentence claims.
+    expect(route).toContain('status: "draft",');
   });
 });

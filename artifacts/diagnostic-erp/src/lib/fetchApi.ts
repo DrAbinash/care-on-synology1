@@ -136,9 +136,14 @@ export function sanitizeApiErrorMessage(text: string, status: number, statusText
     return `Server error (${status}). The ERP returned a gateway page instead of data — reload or use LAN.`;
   }
   try {
-    const parsed = JSON.parse(trimmed) as { error?: string; message?: string };
+    const parsed = JSON.parse(trimmed) as { error?: string; message?: string; retryable?: boolean };
     const err = (parsed.error || "").trim();
     const detail = (parsed.message || "").trim();
+    // An error the server explicitly marks retryable carries the instruction the
+    // radiologist needs ("…nothing was changed, please try again…"). The stable
+    // code stays in the body for logs, but a snake_case code is not a sentence a
+    // clinician can act on, so the message wins here.
+    if (parsed.retryable === true && detail) return detail;
     // Many API routes return { error: "Internal server error", message: "<real cause>" }.
     // Prefer the real cause so staff/toasts are actionable instead of opaque.
     const generic =

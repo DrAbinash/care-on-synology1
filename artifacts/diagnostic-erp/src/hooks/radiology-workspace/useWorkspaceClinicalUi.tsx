@@ -799,9 +799,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const isLocked = studyLock.status === "locked-by-other";
   const lockLost = studyLock.status === "expired-lost" || studyLock.status === "connection-lost";
   /** Trial-phase unlock: edit a signed report in place (editors + draft save). */
-  const contentLocked =
-    isLocked
-    || ((isFinalized || studyIsSignedElsewhere) && !allowEditSigned);
+  const signedContentLocked = (isFinalized || studyIsSignedElsewhere) && !allowEditSigned;
+  const contentLocked = isLocked || signedContentLocked;
 
   // 3. Draft ID (server-side persistence)
   const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
@@ -1133,6 +1132,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     isOnline,
     isDirty,
     isFinalized,
+    // The signed half of `contentLocked`, passed composed so that the two
+    // expressions cannot drift apart. `isFinalized` alone is not enough: it is
+    // written only by `completeFinalize`, so a study signed on another
+    // workstation — or signed here and then reopened — leaves it false while
+    // `assertDraftWritable` still answers 409 REPORT_LOCKED.
+    signedContentLocked,
     // Same gate as draftBackup.enabled above — the rescue flush writes that
     // hook's key, so it must obey that hook's rule about what may be copied to
     // a shared workstation. isFinalized alone is narrower: a report signed in
