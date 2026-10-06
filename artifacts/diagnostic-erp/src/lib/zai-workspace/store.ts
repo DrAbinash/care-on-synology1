@@ -7,6 +7,7 @@ import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats,
 // this cannot introduce a cycle back into the store.
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
+import { announceSignedMutationRefusal } from "./signedMutationRefusalNotice";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
 import {
   DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
@@ -344,12 +345,19 @@ function withPushedClinicalUndo(s: S, snap: PatchSnapshot): Pick<S, "patchUndoSt
  * `hydrateObservationLedger`) — reopening a signed study to read or print it is
  * legitimate, and those are how its content reaches the screen.
  */
-function refuseSignedMutation(s: S, action: string): boolean {
+function refuseSignedMutation(s: S, action: string, announce = true): boolean {
   if (!s.isFinalized) return false;
   console.warn("[care.workspace_store] clinical mutation refused — the report is signed", {
     action,
     activeStudyId: s.activeStudyId,
   });
+  // That console line was the entire trace a refusal left, and nobody in a
+  // reporting room opens a console. `announce` is false for exactly one caller —
+  // `undoLastPatch`, whose refusal `useWorkspaceCommands` already explains with a
+  // more specific message: it reads the frame this guard deliberately leaves on
+  // the stack to tell "refused" apart from "nothing to undo", and with
+  // TOAST_LIMIT at 1 a second toast here would only flash underneath it.
+  if (announce) announceSignedMutationRefusal(action);
   return true;
 }
 
@@ -1539,7 +1547,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ activeFindingsSectionId: studyId });
   },
   applyPathologyOverlay: (opts) => {
-    if (get().isFinalized) return "applied";
+    // Was a one-off `if (get().isFinalized)`, which left the highest-traffic
+    // control in the workspace refusing with no trace at all: QuickSelectStrip
+    // has no `disabled` prop — its five are field, bodyPart, compact,
+    // anatomyFilter, onAfterPick — and ReportCanvas.tsx:1602 hands
+    // `disabled={isLocked || isFinalized}` to the sibling rendered directly above
+    // it, so a findings or impression tile stays clickable on a signed study.
+    // `onPick` then runs `incUsage` and `onAfterPick` either way, and
+    // feedbackAfterAbnormalApply highlights the most recent pre-existing patch —
+    // positive feedback for a write that was refused.
+    //
+    // Still returns "applied", which is a refusal reporting success. Its declared
+    // type is `"applied" | "pending"` and three internal callers branch on the
+    // value, so widening it is a behaviour change that belongs in its own PR.
+    // Nothing outside this file reads it: all nine external call sites discard it.
+    if (refuseSignedMutation(get(), "applyPathologyOverlay")) return "applied";
 
     const templates = opts.templates ?? opts.incoming;
     const draftId = opts.id ?? `patch_${Date.now().toString(36)}`;
@@ -2574,7 +2596,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // correct history for this study, and `useWorkspaceCommands` reads the top
     // frame to tell "refused" apart from "nothing to undo" when it decides
     // whether Ctrl+Shift+Z owes the radiologist an explanation.
-    if (refuseSignedMutation(get(), "undoLastPatch")) return false;
+    if (refuseSignedMutation(get(), "undoLastPatch", false)) return false;
     const popped = popClinicalUndoSnapshot(get().patchUndoStack);
     if (!popped) return false;
     const { snapshot: snap, remaining } = popped;
