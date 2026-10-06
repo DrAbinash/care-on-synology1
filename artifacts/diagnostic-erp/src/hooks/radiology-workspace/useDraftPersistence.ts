@@ -77,6 +77,14 @@ export type UseDraftPersistenceOptions = {
   isDirty: boolean;
   isFinalized: boolean;
   /**
+   * The signed half of the caller's `contentLocked`: true when the study is
+   * signed and the trial-phase in-place unlock is off. Passed composed rather
+   * than recomputed here so the two cannot drift. `isFinalized` on its own is
+   * narrower — only `completeFinalize` writes it — and a save it lets through is
+   * a save `assertDraftWritable` answers 409 REPORT_LOCKED for.
+   */
+  signedContentLocked: boolean;
+  /**
    * The gate `useLocalDraftBackup` applies to the same storage key. The rescue
    * flush must obey it too: a report signed in ANOTHER session leaves
    * `isFinalized` false here, and copying its text to localStorage on a shared
@@ -127,7 +135,7 @@ export type UseDraftPersistenceOptions = {
 
 export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
   const {
-    studyId, draftId, isOnline, isDirty, isFinalized, isMobile,
+    studyId, draftId, isOnline, isDirty, isFinalized, signedContentLocked, isMobile,
     backupEnabled,
     useStructured, findingsMap, structuredValues, studySetup, workflow,
     existingDraft, isLoadingExistingDraft, captureSavedDraftId, toast,
@@ -366,6 +374,33 @@ useEffect(() => {
 
 const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
   if (!studyId) return null;
+  // The auto-save effect below refuses a signed study, but it is not the only
+  // caller of this function: the top bar's Save button, the command palette's
+  // `save`, four Quick Select pick handlers, the structured-values debounce and
+  // the Word export all call it directly. On a signed study every one of those
+  // is a request the server is certain to refuse — `assertDraftWritable` throws
+  // 409 REPORT_LOCKED when the worklist row is REPORT_FINAL or DELIVERED, or
+  // when the draft is already finalized, and `radiologyHardening.request.test.ts`
+  // case 14 pins exactly that. The catch at the end of this callback then toasts
+  // "Save failed" whether or not `silent` was passed, because `silent` only ever
+  // suppressed the success toast — and with TOAST_LIMIT at 1 that red toast
+  // evicts whatever the refused action had just said about itself.
+  //
+  // Checked before the offline branch on purpose: a signed report cannot be
+  // saved from here online or offline, and "Offline" would promise that
+  // reconnecting helps.
+  if (signedContentLocked) {
+    if (!opts?.silent) {
+      toast({
+        title: "Save refused — the report is signed",
+        description:
+          "Nothing was saved. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can.",
+        variant: "destructive",
+        duration: 8000,
+      });
+    }
+    return null;
+  }
   const capturedStudyId = studyId;
   const capturedGeneration = saveGenerationRef.current;
   const capturedPatientId = workflow.currentRow?.patientId ?? null;
@@ -472,7 +507,7 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
   }
-}, [studyId, draftId, isOnline, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, draftHydratedStudyId]);
+}, [studyId, draftId, isOnline, signedContentLocked, captureSavedDraftId, toast, useStructured, findingsMap, structuredValues, studySetup.selectedTemplate, workflow.currentRow?.patientId, draftHydratedStudyId]);
 saveDraftRef.current = saveDraft;
   saveDraftRef.current = saveDraft;
 
