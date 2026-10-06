@@ -351,11 +351,23 @@ describe("D6 — PATCH defense-in-depth (signed structured bodies are immutable)
     return res;
   }
 
-  test("a row carrying a signed-final structured document rejects body edits (409, use Amend), even at status draft", async () => {
+  test("a row carrying a signed-final structured document rejects body edits (409, names withdrawal), even at status draft", async () => {
     const res = await patchBody("REWRITTEN BODY");
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toBe("signed_report_immutable");
-    expect(res.body.message).toContain("Amend");
+    // This line used to read `expect(res.body.message).toContain("Amend")`, and
+    // the test title used to advertise it. It was the second of two ratchets
+    // holding the defect in place (the other was signedArtifactGuard.test.ts):
+    // POST /:id/amend answers 409 not_a_signed_structured_report for any row
+    // without a signed structured document, and it has no ERP caller at all, so
+    // naming it sent the legacy-signed majority to a door that shuts on them.
+    //
+    // THIS fixture happens to be amend-eligible — it carries a signed structured
+    // document — and the assertion still inverts, because classifySignedReportPatch
+    // is handed `signed` and `body` only. It cannot tell this row from a
+    // legacy-signed one, so the one message it returns has to be true for both.
+    expect(res.body.message).not.toContain("Amend");
+    expect(res.body.message).toContain("withdraw the signature from Report Hub");
     expect(res.body.fields).toEqual(["body"]);
     expect(writeCalls.filter((w) => w.kind === "update")).toHaveLength(0); // nothing persisted
   });

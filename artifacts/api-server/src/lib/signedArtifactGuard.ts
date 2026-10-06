@@ -99,7 +99,28 @@ export function classifySignedReportPatch(opts: {
     return {
       allow: false,
       code: "signed_report_immutable",
-      message: "A signed report cannot be edited in place. Use Amend to create a corrected version, or withdraw the signature first.",
+      // This does not offer Amend, and the reason is the one patient-reports.ts
+      // states for its own sibling refusals and radiologyIdentity.ts states for
+      // REPORT_LOCKED: POST /:id/amend answers 409
+      // not_a_signed_structured_report for any row without a signed structured
+      // document, and it has no ERP caller at all. This function is handed
+      // `signed` and `body` only, so it cannot tell the amend-eligible minority
+      // from the legacy-signed majority — and one message has to be true for
+      // both. Withdrawal is the path that exists for the majority, and since
+      // #847 it really does reopen the study: the withdraw-signature transaction
+      // sets the report to "draft" and reverts the bound worklist row to
+      // REPORT_IN_PROGRESS, clearing its reportId and deliveryStatus — the
+      // conditions assertDraftWritable reads.
+      //
+      // The last sentence is the exception that route enforces itself
+      // (`already_verified` before the transaction, `already_delivered` inside
+      // it), said up front rather than left for the radiologist to discover by
+      // clicking a button that is not there. A structured-signed row is the one
+      // case where withdrawal is refused and amend is the answer; naming Report
+      // Hub rather than the action covers it, because that page reads the row
+      // and already states which of the two paths this one has.
+      message:
+        "A signed report cannot be edited in place. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can. A verified or delivered report cannot be withdrawn.",
       fields: touchedProtected,
     };
   }

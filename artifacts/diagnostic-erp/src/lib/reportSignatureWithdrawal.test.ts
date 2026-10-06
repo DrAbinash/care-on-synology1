@@ -10,11 +10,13 @@
  *   hand over, and writes an attributed audit event carrying the reason. What
  *   it never had was a caller. Nothing in diagnostic-erp invoked it, so the
  *   only way to take a signature back was to issue the request by hand — and
- *   Report Hub's own locked-report notice told the radiologist that "a
- *   correction has to be issued as an amendment", which for a legacy-signed row
- *   is a path the server refuses.
- *   Meanwhile the server's own signed-artifact refusal says the opposite:
- *   "Use Amend to create a corrected version, or withdraw the signature first."
+ *   the two notices a radiologist could read pointed in opposite directions.
+ *   Report Hub's locked-report notice said "a correction has to be issued as an
+ *   amendment", which for a legacy-signed row is a path the server refuses;
+ *   the server's own signed-artifact refusal said "Use Amend to create a
+ *   corrected version, or withdraw the signature first", leading with the same
+ *   dead end. Both now name withdrawal — the server's sentence is pinned by
+ *   signedArtifactGuard.test.ts, and this file guards the client half.
  *
  *   So these tests guard four things that can each fail independently:
  *     1. the client gate agrees with the server's refusals, so the button is

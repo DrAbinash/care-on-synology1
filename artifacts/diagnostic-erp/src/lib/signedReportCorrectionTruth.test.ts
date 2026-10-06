@@ -16,8 +16,8 @@
  * artifacts/api-server/src/routes/signedArtifactTrust.request.test.ts, which
  * runs against real HTTP and a real database in CI.
  */
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -36,6 +36,35 @@ function signedBanner(src: string): string {
   const start = src.indexOf("{(isFinalized || workflow.currentRow?.status === \"REPORT_FINAL\")");
   expect(start, "the signed-study banner must still exist").toBeGreaterThan(-1);
   return src.slice(start, start + 1800);
+}
+
+/**
+ * Non-test ERP sources matching `re`, as paths relative to `src/`.
+ *
+ * Used for claims about what the app can and cannot reach — a route with no
+ * caller, a caller with no route. Those are facts about the whole tree, so they
+ * are measured over the whole tree rather than asserted from a grep someone ran
+ * once. Test files are excluded: they quote routes to prove things about them,
+ * which is not calling them.
+ */
+function erpSourcesMatching(re: RegExp): string[] {
+  const root = join(here, "..");
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (/^(node_modules|dist|build|\.git)$/.test(entry.name)) continue;
+        walk(abs);
+        continue;
+      }
+      if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+      if (/\.test\.tsx?$/.test(entry.name)) continue;
+      if (re.test(readFileSync(abs, "utf8"))) found.push(abs.slice(root.length + 1).split(sep).join("/"));
+    }
+  };
+  walk(root);
+  return found.sort();
 }
 
 describe("the signed-report banner does not fake an editor unlock", () => {
@@ -144,5 +173,107 @@ describe("the draft lock tells the truth about what it refuses", () => {
     expect(deliveredAt, "the delivered branch must still exist").toBeGreaterThan(-1);
     expect(reportIdAt, "the linked-report branch must still exist").toBeGreaterThan(-1);
     expect(deliveredAt, "DELIVERED must be tested first").toBeLessThan(reportIdAt);
+  });
+});
+
+describe("every signed refusal names the same correction path, and it is one that exists", () => {
+  const guard = readFileSync(join(here, "../../../api-server/src/lib/signedArtifactGuard.ts"), "utf8");
+  const usgRoute = readFileSync(join(here, "../../../api-server/src/routes/usgReports.ts"), "utf8");
+  const usgPage = readFileSync(join(here, "../pages/UsgReporting.tsx"), "utf8");
+
+  /** The clause every refusal in the family ends its offer with. */
+  const SHARED = "withdraw the signature from Report Hub — only the signer or an administrator can.";
+
+  const FAMILY = [
+    "hooks/radiology-workspace/useDraftPersistence.ts", // #859 — saveDraft's own refusal
+    "hooks/radiology-workspace/useWorkspaceCommands.ts", // #855 — the undo refusal
+    "lib/zai-workspace/signedMutationRefusalNotice.ts", // #858 — the store's announcer
+  ].map((rel) => readFileSync(join(here, "..", rel), "utf8"));
+
+  it("the server's refusal joined the family instead of inventing a fifth voice", () => {
+    // Four refusals, four authors, one sentence. The server's was the odd one
+    // out until it stopped offering Amend; keeping it inside the shared clause
+    // is what stops the next change from forking the family again. Listed by
+    // file rather than counted, so a new refusal has to be added here on
+    // purpose rather than slipping in unnoticed.
+    for (const src of FAMILY) expect(src).toContain(SHARED);
+    expect(guard).toContain(SHARED);
+  });
+
+  it("the server's refusal does not name amend", () => {
+    // Same rule the identity guard is held to above, applied to the message
+    // classifySignedReportPatch returns over HTTP. Pinned here as well as in
+    // signedArtifactGuard.test.ts because this file is the one that states the
+    // doctrine, and a reader checking "does anything still say amend?" looks
+    // here.
+    const message = /code: "signed_report_immutable",[\s\S]*?message:\s*\n?\s*"([^"]+)"/.exec(guard);
+    expect(message, "the signed_report_immutable message must still exist").not.toBeNull();
+    expect(message![1]).not.toMatch(/amend/i);
+    expect(message![1]).toContain(SHARED);
+    expect(message![1].length).toBeLessThanOrEqual(191);
+  });
+
+  it("leaves the USG amend advice alone, because that amend really is reachable", () => {
+    // The positive control. /api/usg-reports/:id/amend is a different endpoint
+    // with a real caller, so "Use Amend instead" is correct there and stripping
+    // it would remove a working path — the over-application this rule invites.
+    expect(usgRoute).toContain("Cannot regenerate a finalized report. Use Amend instead.");
+    expect(usgRoute).toContain("Already finalized — cannot force finalize. Use Amend instead.");
+    expect(usgPage).toContain("/amend`");
+  });
+
+  it("still has no ERP caller for the patient-report amend route", () => {
+    // The premise the whole rule rests on: POST /api/patient-reports/:id/amend
+    // answers 409 not_a_signed_structured_report for a legacy-signed row AND
+    // nothing in the app can issue it. If someone wires up an amend button this
+    // fails, which is the point — the guard's message should then be allowed to
+    // name amend again, for the rows that can use it.
+    const callers = erpSourcesMatching(/patient-reports\/[^"'`\n]*\/amend/);
+    expect(callers, `unexpected ERP callers of patient-report amend: ${callers.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("Report Hub does not call a refused save a failed one", () => {
+  const hub = readFileSync(join(here, "../pages/ReportHub.tsx"), "utf8");
+
+  /** The whole `catch` block of Report Hub's save(), from its opening brace. */
+  function saveCatch(src: string): string {
+    const start = src.indexOf("await api.patch(`/api/patient-reports/${report.id}`");
+    expect(start, "Report Hub's save() must still PATCH the report").toBeGreaterThan(-1);
+    const catchAt = src.indexOf("} catch (err) {", start);
+    expect(catchAt, "save() must still catch").toBeGreaterThan(-1);
+    return src.slice(catchAt, catchAt + 900);
+  }
+
+  it("is the only caller of that PATCH, so this is the only toast the refusal reaches", () => {
+    expect(erpSourcesMatching(/api\.patch\(`\/api\/patient-reports\//)).toEqual(["pages/ReportHub.tsx"]);
+  });
+
+  it("tells a 409 apart from a save that was attempted and broke", () => {
+    // The route returns 409 for two policy refusals — signed_report_immutable
+    // and critical_state_immutable. Neither is a fault, and neither clears by
+    // retrying, which is exactly what "Save failed" invites the radiologist to
+    // do. One title has to be true for both codes, so it states the outcome
+    // rather than naming a cause it cannot know.
+    const caught = saveCatch(hub);
+    expect(caught).toContain("err instanceof HttpError && err.status === 409");
+    expect(caught).toContain('title: refused ? "Nothing was saved" : "Save failed"');
+  });
+
+  it("imports the class it tests against", () => {
+    // Without this the instanceof is a ReferenceError at the moment it matters,
+    // and the refusal surfaces as an unhandled exception instead of a toast.
+    expect(hub).toMatch(/import \{[^}]*\bHttpError\b[^}]*\} from "@\/lib\/fetchApi"/);
+  });
+
+  it("still shows the server's own sentence as the description", () => {
+    // The description is where the corrected message lands: fetchApi's
+    // sanitizeApiErrorMessage skips the opaque `signed_report_immutable` token
+    // and returns the sentence, so the toast carries the path that exists.
+    expect(saveCatch(hub)).toContain("err instanceof Error ? err.message : String(err)");
+  });
+
+  it("keeps the destructive styling, because nothing was saved either way", () => {
+    expect(saveCatch(hub)).toContain('variant: "destructive"');
   });
 });
