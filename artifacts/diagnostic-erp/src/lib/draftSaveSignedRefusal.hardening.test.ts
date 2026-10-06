@@ -231,8 +231,50 @@ describe("the predicate is the composed one, and both halves agree on it", () =>
 });
 
 describe("what this deliberately does not replace", () => {
-  it("the auto-save effect keeps its own guard", () => {
-    expect(persistence).toContain("if (!isDirty || !isOnline || isFinalized || isMobile) {");
+  it("the auto-save effect guards on the same composed predicate", () => {
+    // This used to read `expect(persistence).toContain("if (!isDirty || !isOnline
+    // || isFinalized || isMobile) {")` under the heading "the auto-save effect
+    // keeps its own guard". It did keep one, and that guard was blind to a
+    // signature made elsewhere — so the effect armed its 30 s timer, called
+    // `saveDraft({ silent: true })`, and the refusal above returned null without
+    // speaking, which the caller mapped onto `setAutoSaveStatus("error")`. That
+    // is the red sticky "Save failed" the test at "returns without saving and
+    // without claiming a failure" exists to prevent, arriving through the caller
+    // instead of through the guard. Narrowing the guard is not enough on its own:
+    // `"idle"|"saving"|"saved"|"error"` had no member that means *refused*, so
+    // the effect now sets one.
+    expect(persistence).toContain("if (!isDirty || !isOnline || signedContentLocked || isMobile) {");
+    expect(persistence).toContain('if (isDirty && signedContentLocked) setAutoSaveStatus("refused");');
+    // And the value cannot go stale the way `isFinalized` did.
+    const effectDeps = persistence.match(/\}, \[isDirty, isOnline, draftId, ([^\]]*)\]\);/);
+    expect(effectDeps, "the auto-save effect's dependency array must still be recognisable").toBeTruthy();
+    expect(effectDeps![1]).toContain("signedContentLocked");
+    expect(effectDeps![1]).not.toContain("isFinalized");
+  });
+
+  it("the leave gate no longer calls a refusal a failed save", () => {
+    // `saveAndConfirmLeave` passed `silent: true` to both of its calls, so on a
+    // signed report it reached the refusal twice, got null twice, and toasted
+    // "Save failed / Could not save before leaving. Stay on this study." — which
+    // reads as an invitation to retry, and left Discard as the only way out with
+    // nothing on screen to say that Discard was the right answer.
+    const start = persistence.indexOf("const saveAndConfirmLeave = useCallback(async () => {");
+    expect(start, "saveAndConfirmLeave must still be declared").toBeGreaterThan(-1);
+    const body = persistence.slice(start, persistence.indexOf("}, [ensureDraftOnce", start));
+    expect(body).toContain("if (signedContentLocked) {");
+    expect(body.indexOf("if (signedContentLocked) {")).toBeLessThan(body.indexOf("await ensureDraftOnce();"));
+    expect(body).toContain("Nothing to save — the report is signed");
+    expect(body).toContain("Choose Discard to leave");
+    // The exact wording, the reading budget and the shared "withdraw the
+    // signature from Report Hub" sentence are pinned in
+    // refusedSaveIsNotAFailedSave.test.ts, which is where a change to this toast
+    // should be argued. Kept here only so that someone editing saveDraft's guard
+    // finds out the leave gate depends on it.
+    expect(body).toContain("withdraw the signature from Report Hub — only the signer or an administrator can.");
+    // The genuine-failure branch below it must survive untouched.
+    expect(body).toContain('title: "Save failed"');
+    expect(body).toContain("Could not save before leaving. Stay on this study.");
+    expect(persistence).toContain("}, [ensureDraftOnce, saveDraft, toast, signedContentLocked]);");
   });
 
   it("a genuine save failure is still reported", () => {
