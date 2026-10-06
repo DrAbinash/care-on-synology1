@@ -16,6 +16,7 @@
 
 import { useMemo, useState } from "react";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useCanalApCell } from "./useCanalApCell";
 import {
   DORSAL_PRESETS,
   MRI_DORSAL_SUB_MASTERS,
@@ -541,10 +542,29 @@ function DorsalLevelDetailForm({
   const [detail, setDetail] = useState<DorsalLevelDetail>(fromLedger);
   const patch = (next: Partial<DorsalLevelDetail>) => setDetail((prev) => ({ ...prev, ...next }));
 
+  /**
+   * The AP canal diameter is the one field in this form that is not the form's
+   * own. It is the canonical measurement record for this level — the same record
+   * the dorsal canal table writes — so a number typed here appears in that table,
+   * in the draft, and in the printed measurement block, and a number in the
+   * table appears here. `detail.apMm` survives only as the prefill for a level
+   * whose number exists solely in an old report's prose.
+   *
+   * Everything downstream reads through `detailWithAp`, which is the record
+   * projected into the level detail at the moment of composition. Nothing writes
+   * back: the ledger observation is an output of this form, never a second store.
+   */
+  const apCell = useCanalApCell({
+    level: ctx.level,
+    segment: "dorsal",
+    legacy: detail.apMm ?? null,
+  });
+  const detailWithAp: DorsalLevelDetail = { ...detail, apMm: apCell.committed };
+
   const apply = () => {
     const built = buildDorsalLevelBundle({
       level: ctx.level,
-      detail,
+      detail: detailWithAp,
       numbering: ctx.numbering,
       sequences: ctx.sequences,
       region: ledgerRegion,
@@ -586,10 +606,11 @@ function DorsalLevelDetailForm({
           step="0.1"
           min="0"
           placeholder="AP mm"
-          value={detail.apMm ?? ""}
+          value={apCell.value}
           disabled={disabled}
           data-testid="dorsal-detail-ap-mm"
-          onChange={(e) => patch({ apMm: num(e.target.value) ?? null })}
+          onChange={(e) => apCell.onChange(e.target.value)}
+          onBlur={apCell.onBlur}
         />
         <span className="text-[8px] font-bold uppercase text-sky-800">Canal severity</span>
         <select
@@ -916,7 +937,7 @@ function DorsalLevelDetailForm({
 
       <button
         type="button"
-        disabled={disabled || !dorsalLevelDetailHasContent(detail)}
+        disabled={disabled || !dorsalLevelDetailHasContent(detailWithAp)}
         onClick={apply}
         className="h-7 rounded-md bg-sky-600 px-2 text-[10px] font-semibold text-white disabled:opacity-40"
         data-testid="dorsal-detail-apply"

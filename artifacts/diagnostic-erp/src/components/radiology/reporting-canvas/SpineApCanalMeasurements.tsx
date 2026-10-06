@@ -30,10 +30,9 @@
 import { useCallback, useMemo, useRef } from "react";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import {
-  canalApValue,
-  canonicalizeCanalLevel,
+  canalApValueAt,
+  canalRows,
   levelsForCanalSegment,
-  type CanalSegment,
 } from "@/lib/spineCanalAp";
 import {
   formatApMeasurements,
@@ -41,6 +40,7 @@ import {
 } from "@/lib/mriSpineCanvasRegions";
 import { lumbarApCanalLevels } from "@/lib/mriSpineNumbering";
 import { dorsalApCanalLevels } from "@/lib/mriDorsalNumbering";
+import { CanalApRow } from "./CanalApRow";
 
 export function SpineApCanalMeasurements({
   segment,
@@ -50,7 +50,6 @@ export function SpineApCanalMeasurements({
   disabled?: boolean;
 }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
-  const recordCanalApManualValue = useWorkspace((s) => s.recordCanalApManualValue);
   const lumbarNumbering = useWorkspace((s) => s.lumbarNumbering);
   const dorsalNumbering = useWorkspace((s) => s.dorsalNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
@@ -60,22 +59,18 @@ export function SpineApCanalMeasurements({
   // (spec §5). Dorsal rows come from the coverage resolver, so an AP value can
   // never be offered for a level the study did not acquire (dorsal spec §10).
   // Cervical keeps its routine list.
-  // Rows are keyed and labelled by the canonical level, so the table, the stored
-  // record and the report cannot disagree about which disc a number belongs to.
-  // The dorsal resolver still speaks T-form; the junction appears only when the
-  // numbering says the conus was acquired.
-  const levels = (segment === "cervical"
-    ? [...levelsForCanalSegment("cervical")]
-    : segment === "dorsal"
-      ? dorsalApCanalLevels(dorsalNumbering)
-      : lumbarApCanalLevels(lumbarNumbering)
-  ).map((level) => canonicalizeCanalLevel(level) ?? level);
-
-  const handleChange = useCallback(
-    (level: string, rawValue: string) => {
-      recordCanalApManualValue(level, rawValue, segment as CanalSegment);
-    },
-    [recordCanalApManualValue, segment],
+  // `canalRows` is what makes the row's read key and its write key one key: the
+  // dorsal resolver speaks T-form, the record is stored in canonical D-form, and
+  // the junction appears only when the numbering says the conus was acquired.
+  const levels = useMemo(
+    () => canalRows(
+      segment === "cervical"
+        ? levelsForCanalSegment("cervical")
+        : segment === "dorsal"
+          ? dorsalApCanalLevels(dorsalNumbering)
+          : lumbarApCanalLevels(lumbarNumbering),
+    ),
+    [segment, dorsalNumbering, lumbarNumbering],
   );
 
   const handleKeyDown = useCallback(
@@ -97,7 +92,7 @@ export function SpineApCanalMeasurements({
       levels: levels.map((level) => ({ level, value: null })),
     };
     levels.forEach((level, idx) => {
-      const n = canalApValue(canalApProvenance[level]);
+      const n = canalApValueAt(canalApProvenance, level);
       if (n == null) return;
       const row = set.levels[idx];
       if (row) row.value = n;
@@ -119,28 +114,17 @@ export function SpineApCanalMeasurements({
         <span className="text-[8px] text-muted-foreground">mm · Tab/Enter → next</span>
       </div>
       <div className="mt-1 grid grid-cols-5 gap-1">
-        {levels.map((level, idx) => {
-          const shown = canalApValue(canalApProvenance[level]);
-          const value = shown == null ? "" : String(shown);
-          return (
-            <label key={level} className="flex flex-col gap-0.5">
-              <span className="text-[8px] font-bold text-slate-600">{level}</span>
-              <input
-                ref={(el) => { inputsRef.current[idx] = el; }}
-                type="number"
-                step="0.1"
-                disabled={disabled}
-                value={value}
-                onChange={(e) => handleChange(level, e.target.value)}
-                onKeyDown={(e) => handleKeyDown(idx, e)}
-                placeholder="—"
-                className="h-6 w-full rounded border border-slate-200 px-1 text-[10px] tabular-nums"
-                data-testid={`spine-ap-input-${segment}-${level}`}
-              />
-              <span className="text-[7px] text-slate-400">mm</span>
-            </label>
-          );
-        })}
+        {levels.map((level, idx) => (
+          <CanalApRow
+            key={level}
+            level={level}
+            segment={segment}
+            testIdPrefix={`spine-ap-input-${segment}`}
+            disabled={disabled}
+            setInputRef={(el) => { inputsRef.current[idx] = el; }}
+            onKeyDown={(e) => handleKeyDown(idx, e)}
+          />
+        ))}
       </div>
       {reportBlock ? (
         <div className="mt-1.5 rounded border border-dashed border-slate-200 bg-white px-1.5 py-1">

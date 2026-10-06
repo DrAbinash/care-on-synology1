@@ -239,6 +239,18 @@ export function dorsolumbarLevelDomain(level: string): DorsoLumbarDomain | null 
   return first[1] === "L" || first[1] === "S" ? "lumbar" : "thoracic";
 }
 
+/**
+ * Which canal AP table a dorso-lumbar level's measurement belongs to.
+ *
+ * A Dorso-Lumbar examination crosses the junction, so no single segment table
+ * describes it: thoracic and bridge rows are dorsal lettering, lumbar rows are
+ * lumbar. Both the canal grid and the level-entry form ask this one function, so
+ * the same disc cannot be filed under two tables by two surfaces.
+ */
+export function dorsolumbarCanalSegment(level: string | null | undefined): "lumbar" | "dorsal" {
+  return dorsolumbarLevelDomain(level ?? "") === "lumbar" ? "lumbar" : "dorsal";
+}
+
 export type DorsoLumbarCanonicalLevel = {
   /** Canonical printed key. */
   key: string;

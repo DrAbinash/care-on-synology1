@@ -38,6 +38,7 @@ const read = (rel: string) => readFileSync(resolve(PKG_DIR, rel), "utf8");
 const CANVAS = "src/components/radiology/reporting-canvas/MriDorsoLumbarCanvas.tsx";
 const PANEL = "src/components/radiology/reporting-canvas/MriDorsoLumbarSubMasterPanel.tsx";
 const AP_TABLE = "src/components/radiology/reporting-canvas/DorsoLumbarApCanalMeasurements.tsx";
+const CANAL_CELL = "src/components/radiology/reporting-canvas/useCanalApCell.ts";
 const RAIL = "src/components/radiology/workspace/ReportingToolsRail.tsx";
 const HOOK = "src/hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
 
@@ -136,13 +137,21 @@ describe("the AP table (spec §13)", () => {
     expect(new Set(levels).size).toBe(levels.length);
   });
 
-  it("provenance is the existing canal AP mechanism, tagged per row", () => {
+  it("provenance is the canonical record, reached through one shared cell", () => {
     const src = read(AP_TABLE);
-    expect(src).toMatch(/recordCanalApManualValue/);
-    expect(src).toMatch(/canalApValue/);
+    // One row component, one writer, for every canal table in the product — so
+    // the Dorso-Lumbar table cannot drift into a second relationship with the
+    // record while the cervical / lumbar / dorsal one keeps another.
+    expect(src).toMatch(/<CanalApRow/);
+    expect(src).toMatch(/canalRows\(/);
+    expect(src).toMatch(/canalApValueAt\(/);
     expect(src).toMatch(/formatApMeasurements/);
-    // the bridge is grouped with the dorsal lettering, never measured twice
-    expect(src).toMatch(/domain === "lumbar" \? "lumbar" : "dorsal"/);
+    // the writer lives in the shared cell, not in the table
+    expect(read(CANAL_CELL)).toMatch(/recordCanalApManualValue/);
+    // the bridge is grouped with the dorsal lettering, never measured twice, and
+    // the level-entry form asks the same resolver the table does
+    expect(src).toMatch(/dorsolumbarCanalSegment\(level\)/);
+    expect(read(PANEL)).toMatch(/dorsolumbarCanalSegment\(ctx\.level\)/);
     // no measurement is compared against a hard-coded stenosis cut-off
     expect(src).not.toMatch(/[<>]=?\s*\d+(\.\d+)?\s*mm/);
     expect(src).toMatch(/no threshold converts a number into a severity/);
