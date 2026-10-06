@@ -114,3 +114,48 @@ export async function withdrawReportSignature(
     return { withdrawn: false, error: withdrawalRefusalText(err) };
   }
 }
+
+/**
+ * The narrowest shape of a React Query client this module needs, so the
+ * invalidation is testable here in node rather than only assertable as text in
+ * the page that renders the dialog. A real `QueryClient` satisfies it.
+ */
+export type QueryCacheInvalidator = {
+  invalidateQueries: (filters: { queryKey: readonly unknown[] }) => unknown;
+};
+
+/**
+ * What has to be dropped from the cache for a withdrawal to take effect in the
+ * reporting workspace.
+ *
+ * The workspace decides whether a study is signed from `["pacs-worklist-detail",
+ * studyId]`, cached with a 60-second `staleTime` and preferred over the queue row
+ * (useWorkspaceClinicalUi.tsx:789-790). The route reverts the worklist row to
+ * REPORT_IN_PROGRESS in the same transaction, but nothing on this side of it
+ * refetches — so the workspace keeps locking a report the signature has already
+ * come off, for up to a minute, with nothing on screen to say why.
+ *
+ * Signing already knew this: useStudyFinalize.ts:517-522 invalidates both keys
+ * and says so in a comment. Withdrawal is the mirror case and was missed.
+ *
+ * The detail key is invalidated by prefix rather than per study because a Report
+ * Hub row carries no studyId — the pointer the route follows is
+ * radiology_worklist.report_id, which the list endpoint does not return — and
+ * the withdrawn study is whichever one the radiologist opens next.
+ */
+export const WORKLIST_CACHE_KEYS_AFTER_WITHDRAWAL: ReadonlyArray<readonly unknown[]> = [
+  ["pacs-worklist-detail"],
+  ["radiology-pacs-worklist"],
+];
+
+/**
+ * Drops the cached worklist rows a withdrawal has just made wrong. Call it only
+ * after `withdrawReportSignature` returned `{ withdrawn: true }`: on a refusal
+ * the server changed nothing, and dropping the cache then would refetch a row
+ * that still says signed and make the refusal look like a flicker.
+ */
+export function invalidateWorklistCachesAfterWithdrawal(qc: QueryCacheInvalidator): void {
+  for (const queryKey of WORKLIST_CACHE_KEYS_AFTER_WITHDRAWAL) {
+    void qc.invalidateQueries({ queryKey });
+  }
+}
