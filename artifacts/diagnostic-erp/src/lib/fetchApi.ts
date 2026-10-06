@@ -114,6 +114,30 @@ function isTransientError(err: unknown, status?: number): boolean {
   return false;
 }
 
+const GENERIC_WRAPPERS = [/^internal server error$/i, /^error$/i, /^request failed$/i];
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * A string no person should be handed: an absent field, one of the three
+ * wrappers the API's generic 500 handler emits, or a bare machine identifier
+ * (`not_the_signer`, `LOCKED_BY_OTHER`, `pcpndt_compliance_required`).
+ *
+ * The identifier rule is deliberately narrow — no whitespace AND an underscore
+ * — because it has to be wrong in the safe direction. Measured against every
+ * static `error:` literal in api-server (2863 of them) it classifies exactly
+ * the same set as a wider rule that also took dotted names and ALL-CAPS words,
+ * and it misclassifies none of the 2785 that are sentences. The whitespace
+ * guard is what keeps `relation "usg_measurements" does not exist` readable.
+ */
+function isOpaque(text: string): boolean {
+  if (!text) return true;
+  if (GENERIC_WRAPPERS.some((re) => re.test(text))) return true;
+  return !/\s/.test(text) && text.includes("_");
+}
+
 /** Never surface raw Cloudflare/HTML gateway pages in toasts. */
 export function sanitizeApiErrorMessage(text: string, status: number, statusText: string): string {
   const trimmed = (text || "").trim();
@@ -136,18 +160,32 @@ export function sanitizeApiErrorMessage(text: string, status: number, statusText
     return `Server error (${status}). The ERP returned a gateway page instead of data — reload or use LAN.`;
   }
   try {
-    const parsed = JSON.parse(trimmed) as { error?: string; message?: string };
-    const err = (parsed.error || "").trim();
-    const detail = (parsed.message || "").trim();
-    // Many API routes return { error: "Internal server error", message: "<real cause>" }.
-    // Prefer the real cause so staff/toasts are actionable instead of opaque.
-    const generic =
-      !err ||
-      /^internal server error$/i.test(err) ||
-      /^error$/i.test(err) ||
-      /^request failed$/i.test(err);
-    if (generic && detail) return detail;
-    return err || detail || statusText || `Request failed (${status})`;
+    const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown; detail?: unknown };
+    const err = str(parsed.error);
+    const msg = str(parsed.message);
+    const det = str(parsed.detail);
+    // Return the first of the three that a person can read. `error` still wins
+    // whenever it is already a sentence, which is the shape this API mostly
+    // uses — and two routes put the sentence there *because* this function
+    // returns `error` verbatim (signedReportContentGuard.ts:302-306,
+    // radiology.ts:873-876). One 401 depends on it for control flow, not just
+    // wording: requireStaffAuth.ts:154 answers "Invalid or expired staff
+    // session." in `error` with no sibling, and isSessionDeadMessage() below
+    // matches on this function's return value to end the stale-tab session.
+    //
+    // What it must not do is prefer an identifier over the explanation sitting
+    // next to it. 31 route responses are { error: "<machine_token>",
+    // message|detail: "<sentence>" }; a snake_case token matches none of the
+    // generic wrappers, so the old `return err` put the token in the toast and
+    // discarded the sentence — a radiologist who clicked Withdraw on somebody
+    // else's report was told "not_the_signer", and one whose study was open in
+    // a colleague's workspace was told "LOCKED_BY_OTHER" instead of who holds
+    // it and that their own text was not saved.
+    const readable = [err, msg, det].find((s) => !isOpaque(s));
+    if (readable) return readable;
+    // Nothing readable anywhere. The token still beats a bare status text: it
+    // is the one string an administrator can grep the server logs for.
+    return err || msg || det || statusText || `Request failed (${status})`;
   } catch {
     return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
   }

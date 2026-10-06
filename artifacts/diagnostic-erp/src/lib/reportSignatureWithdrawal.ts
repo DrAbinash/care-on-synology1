@@ -74,8 +74,12 @@ export type WithdrawalOutcome =
  * This route family puts a machine token in `error` and the sentence in
  * `message` — except the refusals raised inside the transaction, which come
  * back as `{ error: <code>, detail: <sentence> }` (:2957). `sanitizeApiErrorMessage`
- * prefers `error` whenever it is non-generic, and a snake_case token is not in
- * its generic list, so without this the toast would read `not_the_signer`.
+ * used to prefer `error` whenever it was non-generic, and a snake_case token is
+ * not in its generic list, so without this the toast read `not_the_signer`; it
+ * now makes the same choice this function does. This stays anyway: it reads the
+ * response body directly, so a correction path does not lose its explanation
+ * because a shared piece of toast plumbing changed its mind about which field
+ * is the readable one.
  */
 export function withdrawalRefusalText(err: unknown): string {
   if (isHttpError(err)) {
