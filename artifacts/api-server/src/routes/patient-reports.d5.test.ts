@@ -68,6 +68,21 @@ vi.mock("@workspace/db/schema", () => ({
   reportFindingInstancesTable: TBL.rfi,
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
+  // Finalize consults the composer review state before writing (see
+  // reportComposer/unreviewedAiGuard). The table always exists in production and
+  // this harness returns [] for it, so the guard answers "clear" and the D5
+  // structured-finalize behaviour under test is untouched. Without this entry
+  // the guard could not run, and failing closed correctly turns that into a 503.
+  aiReportComposeJobsTable: {
+    __name: "ai_report_compose_jobs",
+    id: "id",
+    worklistId: "worklist_id",
+    studyId: "study_id",
+    reportId: "report_id",
+    status: "status",
+    trackedChangesJson: "tracked_changes_json",
+    updatedAt: "updated_at",
+  },
   patientReportAmendmentsTable: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number" },
 }));
 
