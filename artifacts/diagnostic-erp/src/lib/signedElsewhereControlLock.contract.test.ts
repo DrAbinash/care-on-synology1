@@ -53,6 +53,13 @@ const CANVAS = "components/radiology/workspace/ReportCanvas.tsx";
 const RAIL = "components/radiology/workspace/ReportingToolsRail.tsx";
 const VIEWER = "components/radiology/workspace/ViewerColumn.tsx";
 
+/**
+ * Not one of the three gated views, and deliberately not added to GATED: doing
+ * so would drag it into the REPORT_FINAL and blind-pair counts below, which are
+ * about tool controls. What this file needs is narrower and is pinned on its own.
+ */
+const OVERLAYS = "components/radiology/workspace/WorkspaceOverlays.tsx";
+
 /** The three files whose clinical tool controls were gated on the blind pair. */
 const GATED = [CANVAS, RAIL, VIEWER] as const;
 
@@ -107,6 +114,21 @@ const EXPECTED_REPORT_FINAL: Record<string, number> = {
 
 function count(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
+}
+
+/**
+ * The draft-restore banner, sliced between two of its own markers rather than a
+ * character budget. A fixed-width slice silently empties when a comment above it
+ * grows, and every assertion on an empty string passes — which is the one way
+ * this kind of ratchet fails without ever being seen to fail.
+ */
+function draftRestoreBanner(): string {
+  const src = read(OVERLAYS);
+  const start = src.indexOf("Draft restore banner");
+  expect(start, `${OVERLAYS} must still render the draft restore banner`).toBeGreaterThan(-1);
+  const end = src.indexOf("Discard</Button>", start);
+  expect(end, "the banner's Discard button must still follow its Restore button").toBeGreaterThan(start);
+  return src.slice(start, end);
 }
 
 /**
@@ -285,6 +307,50 @@ describe("a report signed in another session locks the tool controls", () => {
     expect(contentLocked(false, false, false, false)).toBe(false);
     // Locked by another user, nothing signed — disabled before and after.
     expect(contentLocked(true, false, false, false)).toBe(true);
+  });
+
+  it("the draft-restore banner does not offer to write over a signed report", () => {
+    // WorkspaceOverlays is in neither GATED nor NO_PAIR, so nothing above watched
+    // it — and it holds the one write in the workspace that goes AROUND the store
+    // guard rather than through it. The banner's Restore calls setEditorContent,
+    // which finalizedMutationBoundary exempts because it is also how a signed
+    // report's own text reaches the editor when the study is opened. Guarding it
+    // centrally is therefore not available, and no refusal fires at the call site
+    // for a report signed in this session either.
+    //
+    // It is reachable, not theoretical: useLocalDraftBackup's per-key localStorage
+    // read is not gated on `enabled` (only its two writers are), useStudyFinalize's
+    // clear() runs only when signing happens in this session, and
+    // shouldOfferBackupRestore has no notion of the lock.
+    // workspaceReportState.test.ts pins that premise against the real predicate.
+    const src = read(OVERLAYS);
+    // The call shape, not the bare identifier: the comment above the button names
+    // setEditorContent too, and a count over raw source would be counting prose.
+    expect(count(src, "getState().setEditorContent("), "the banner's Restore is this file's only setEditorContent call").toBe(1);
+    // Counted so the enclosure check below cannot be satisfied by an unrelated
+    // gate elsewhere in the file happening to precede the write.
+    expect(count(src, "!contentLocked"), "the Restore gate is the only negated lock check in this file").toBe(1);
+    expect(src, "WorkspaceOverlays must destructure contentLocked from the view-model")
+      .toMatch(/^\s{4}contentLocked,\s*$/m);
+
+    const banner = draftRestoreBanner();
+    // Whitespace-flattened so indentation and CRLF cannot break it, but exact
+    // enough that the gate, the button and the write are pinned as one unit.
+    // "The gate occurs somewhere before the write" is not sufficient: a
+    // `!contentLocked` that renders nothing, followed by an ungated Restore,
+    // would satisfy an ordering check while fixing nothing.
+    expect(banner.replace(/\s+/g, " ")).toContain(
+      '{!contentLocked && ( <Button size="sm" className="h-6 text-[10px]" onClick={() => { const r = draftBackup.peek(); if (r) useWorkspace.getState().setEditorContent(',
+    );
+
+    // Discard deliberately survives the lock. A report signed on another
+    // workstation never runs clear() here, and Discard is the only path left that
+    // removes the text it leaves behind — hiding the whole banner would make that
+    // residue permanent on a shared machine.
+    expect(banner).toContain("draftBackup.discard()");
+    // And the banner must not keep announcing "a local backup is newer than the
+    // server draft" while offering no way to act on it.
+    expect(src).toContain("This report is signed, so the backup cannot be restored into it.");
   });
 });
 

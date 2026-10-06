@@ -107,6 +107,40 @@ describe("shouldOfferBackupRestore (Phase 3 rule 7)", () => {
     };
     expect(shouldOfferBackupRestore(techniqueOnly, "2026-07-10T10:00:00Z", serverContent)).toBe(false);
   });
+
+  /**
+   * Reachability, not a rule change. This predicate has no notion of the lock and
+   * the banner's render condition in WorkspaceOverlays adds none, so the state a
+   * report signed on ANOTHER workstation produces satisfies it and the banner
+   * comes up: useLocalDraftBackup's per-key localStorage read is not gated on
+   * `enabled` (only its two writers are), and useStudyFinalize's `clear()` runs
+   * only when signing happens in this session. Pinning the premise is what stops
+   * the gate on the Restore button from reading as defence against a state that
+   * cannot occur.
+   */
+  it("offers the banner for a stale backup on a study whose editor holds signed text", () => {
+    // What hydration put into the store. WorkspaceOverlays passes these LIVE
+    // store texts as serverContent — not the server draft's own columns.
+    const signed = {
+      clinicalHistory: "Seizure disorder.",
+      rawFindings: "No acute intracranial abnormality.",
+      impression: ["Normal study."],
+      recommendation: "",
+    };
+    // Dictation from before the signature, still in this browser's localStorage.
+    const stale = {
+      at: new Date("2026-07-10T10:05:00Z").getTime(),
+      clinicalHistory: "Seizure disorder.",
+      rawFindings: "No acute intracranial abnormality. Incidental note only.",
+      impression: ["Normal study."],
+      recommendation: "",
+    };
+    // This workstation's last draft SAVE predates the backup — that gap is why
+    // the backup exists at all. Signing happened elsewhere, so it never advanced
+    // this row, and `serverUpdatedAt` stays the older of the two.
+    const lastLocalDraftSave = "2026-07-10T10:00:00Z";
+    expect(shouldOfferBackupRestore(stale, lastLocalDraftSave, signed)).toBe(true);
+  });
 });
 
 describe("restorableSelections / extractD1QuickSelections / toInstanceParams", () => {
