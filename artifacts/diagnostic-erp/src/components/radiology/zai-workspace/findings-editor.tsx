@@ -41,6 +41,8 @@ interface Props {
   hideQuickSelect?: boolean;
   /** After a Quick Select tile is applied (e.g. silent draft persist). */
   onQuickSelectPick?: (field: Props["field"]) => void;
+  /** Passed straight to the strip. See `QuickSelectStrip.disabled`. */
+  quickSelectDisabled?: boolean;
   /**
    * Transient display-only flash of an abnormal sentence after Quick Select /
    * Finding Composer. Never written into clinical text / PDF.
@@ -104,6 +106,7 @@ export function FindingsEditor({
   showGhost = false,
   hideQuickSelect = false,
   onQuickSelectPick,
+  quickSelectDisabled = false,
   transientHighlight = null,
   onClinicalFocus,
   enableDictationBreaks = false,
@@ -252,7 +255,7 @@ export function FindingsEditor({
           onClear={() => setField(field, "")}
         />
       )}
-      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} />}
+      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} disabled={quickSelectDisabled} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">

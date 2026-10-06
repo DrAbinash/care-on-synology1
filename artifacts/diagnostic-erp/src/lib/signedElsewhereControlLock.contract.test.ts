@@ -87,8 +87,15 @@ const PAIR = "isLocked || isFinalized";
  * clinical writer, then update the number here.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  [CANVAS]: 41,
-  [RAIL]: 33,
+  // CANVAS 41 → 46: the three direct `<QuickSelectStrip>` renders and the two
+  // `<FindingsEditor>` sites whose strip stays visible now thread the lock, so the
+  // strip is no longer the one clinical control that could not express it. RAIL 33
+  // → 34 is its own findings strip. Each adds exactly one occurrence.
+  //
+  // If the negated-render-guard PR (which takes CANVAS 41 → 55) lands after this
+  // one, the combined number is 60, not either of the two.
+  [CANVAS]: 46,
+  [RAIL]: 34,
   [VIEWER]: 7,
 };
 

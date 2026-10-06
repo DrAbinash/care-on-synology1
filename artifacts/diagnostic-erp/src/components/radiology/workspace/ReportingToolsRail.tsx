@@ -555,6 +555,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   field="findings"
                                   bodyPart={studySetup.matchedStudyRegion}
                                   anatomyFilter={activeFindingsAnatomy}
+                                  disabled={contentLocked}
                                   onAfterPick={() => feedbackAfterAbnormalApply()}
                                 />
                               </>
