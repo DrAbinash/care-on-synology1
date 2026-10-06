@@ -1551,9 +1551,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // control in the workspace refusing with no trace at all: QuickSelectStrip
     // has no `disabled` prop — its five are field, bodyPart, compact,
     // anatomyFilter, onAfterPick — and ReportCanvas.tsx:1602 hands
-    // `disabled={isLocked || isFinalized}` to the sibling rendered directly above
-    // it, so a findings or impression tile stays clickable on a signed study.
-    // `onPick` then runs `incUsage` and `onAfterPick` either way, and
+    // `disabled={contentLocked}` to the sibling rendered directly above it, not
+    // to the strip, so a findings or impression tile stays clickable on a signed
+    // study. `onPick` then runs `incUsage` and `onAfterPick` either way, and
     // feedbackAfterAbnormalApply highlights the most recent pre-existing patch —
     // positive feedback for a write that was refused.
     //
@@ -2014,7 +2014,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   refreshImpressionFromLedger: () => {
     // Six callers. Four are already gated: two handlers in useWorkspaceClinicalUi
     // open with `if (contentLocked) return`, ReportCanvas hands the warning strip
-    // `disabled={isLocked || isFinalized}`, and XrayLsSpineCanvas reaches it only
+    // `disabled={contentLocked}`, and XrayLsSpineCanvas reaches it only
     // when applyMacroBundle returned "applied" — which is now "blocked" on a signed
     // study. The sign dialog's opener is disabled once signed too, but a dialog
     // left open across signing still reaches this, and so does the derived-

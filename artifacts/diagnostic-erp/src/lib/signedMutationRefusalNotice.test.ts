@@ -213,7 +213,7 @@ describe("through the store — a refused clinical write is something the radiol
   it("announces a Quick Select tile, whose strip takes no disabled prop at all", () => {
     // The highest-traffic control in the workspace. `QuickSelectStrip` is
     // rendered at ReportCanvas.tsx:1605 directly below a sibling that does
-    // receive `disabled={isLocked || isFinalized}`, but its own props are field,
+    // receive `disabled={contentLocked}`, but its own props are field,
     // bodyPart, compact, anatomyFilter and onAfterPick — so the tile is clickable
     // and `onPick` runs `incUsage` and `onAfterPick` whether or not the write
     // landed. This guard was a bare `if`, so it refused without even a console

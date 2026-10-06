@@ -12,20 +12,20 @@ import { fileURLToPath } from "node:url";
  *
  *   - `isFinalized` (useWorkspaceClinicalUi.tsx:714) comes straight from the
  *     workspace store, whose only writer of `true` is `completeFinalize`
- *     (store.ts:1228). It is therefore true only for a report signed in this
- *     browser session. store.ts:329-333 says so outright.
+ *     (store.ts:1236). It is therefore true only for a report signed in this
+ *     browser session. store.ts:330-334 says so outright.
  *   - `isLocked` (useWorkspaceClinicalUi.tsx:799) is
  *     `studyLock.status === "locked-by-other"` — another user holding the study
  *     lock. Nothing to do with signedness at all.
  *
  * The file already knew this and had worked around it once, locally:
- * useWorkspaceClinicalUi.tsx:1136-1139 gates the rescue backup on
+ * useWorkspaceClinicalUi.tsx:1141-1144 gates the rescue backup on
  * `studyIsSignedElsewhere` with the comment "isFinalized alone is narrower: a
  * report signed in ANOTHER session leaves it false." The tool controls never
  * got the same treatment.
  *
  * What they should have read is `contentLocked`
- * (useWorkspaceClinicalUi.tsx:802-804), the one predicate that includes
+ * (useWorkspaceClinicalUi.tsx:802-803), the one predicate that includes
  * `studyIsSignedElsewhere` — which itself derives from `authoritativeStatus`
  * (:789), the per-study detail query preferred over the queue row. It was
  * already in the view-model, already pinned as an expression by
@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
  * control actually consulted it.
  *
  * The same file disagreed with itself about the guard shape too: four handler
- * guards already read `contentLocked` (:1790, :1862, :1886, :2158) while three
+ * guards already read `contentLocked` (:1795, :1867, :1891, :2163) while three
  * others — the two dictation writers and `handleEditBeforeInsert` — read the
  * blind pair. Both are covered below.
  *
@@ -110,29 +110,41 @@ function count(haystack: string, needle: string): number {
 }
 
 /**
- * Lifts the real `contentLocked` initialiser out of the hook and returns it as a
- * callable predicate, so the superset property is measured against the source
- * that ships rather than against a copy of it that could drift.
+ * Lifts the real lock declarations out of the hook and returns `contentLocked`
+ * as a callable predicate, so the superset property is measured against the
+ * source that ships rather than against a copy of it that could drift.
+ *
+ * Both declarations are lifted, not just the last one: the predicate is composed
+ * (`signedContentLocked` then `contentLocked = isLocked || signedContentLocked`),
+ * so evaluating the second alone would reference a name that does not exist in
+ * the generated scope. Taking the region verbatim also means this keeps working
+ * if the composition is split further, and fails loudly rather than silently if
+ * `contentLocked` ever stops being a plain const.
  */
+function lockDeclarations(): string {
+  const src = read(HOOK);
+  const at = src.indexOf("const signedContentLocked =");
+  expect(at, "the hook must still define signedContentLocked").toBeGreaterThan(-1);
+  const lockedAt = src.indexOf("const contentLocked =", at);
+  expect(lockedAt, "the hook must still define contentLocked after it").toBeGreaterThan(at);
+  const end = src.indexOf(";", lockedAt);
+  expect(end).toBeGreaterThan(lockedAt);
+  return src.slice(at, end + 1);
+}
+
 function extractContentLocked(): (
   isLocked: boolean,
   isFinalized: boolean,
   studyIsSignedElsewhere: boolean,
   allowEditSigned: boolean,
 ) => boolean {
-  const src = read(HOOK);
-  const at = src.indexOf("const contentLocked =");
-  expect(at, "the hook must still define contentLocked").toBeGreaterThan(-1);
-  const end = src.indexOf(";", at);
-  expect(end).toBeGreaterThan(at);
-  const expr = src.slice(at + "const contentLocked =".length, end).trim();
   // eslint-disable-next-line no-new-func -- evaluating the shipped expression is the point
   return new Function(
     "isLocked",
     "isFinalized",
     "studyIsSignedElsewhere",
     "allowEditSigned",
-    `return (${expr});`,
+    `${lockDeclarations()}\nreturn contentLocked;`,
   ) as (a: boolean, b: boolean, c: boolean, d: boolean) => boolean;
 }
 
@@ -159,7 +171,7 @@ describe("a report signed in another session locks the tool controls", () => {
 
   it("every handler guard in the hook that protects a clinical write reads contentLocked", () => {
     // Seven, not three. Four of these already read contentLocked before this PR
-    // (:1790, :1862, :1886, :2158) while three others in the same file — the two
+    // (:1795, :1867, :1891, :2163) while three others in the same file — the two
     // dictation writers and handleEditBeforeInsert — read the blind pair, so the
     // file disagreed with itself about what "locked" means. The count is what
     // stops it from splitting again; the three dep arrays are pinned so a guard
@@ -202,12 +214,13 @@ describe("a report signed in another session locks the tool controls", () => {
   });
 
   it("the predicate it now reads really does include the authoritative half", () => {
-    const src = read(HOOK);
-    const at = src.indexOf("const contentLocked =");
-    const block = src.slice(at, src.indexOf(";", at));
+    const block = lockDeclarations();
     expect(block).toContain("isLocked");
     expect(block).toContain("isFinalized");
     expect(block, "contentLocked must include the signed-elsewhere half").toContain("studyIsSignedElsewhere");
+    // The composition itself: contentLocked is the lock OR the signed half, so
+    // neither can be dropped without the executable loop below naming a row.
+    expect(block).toContain("const contentLocked = isLocked || signedContentLocked;");
   });
 
   it("and that half comes from the detail query the workspace prefers, not the queue row", () => {
@@ -230,7 +243,7 @@ describe("a report signed in another session locks the tool controls", () => {
     //
     // Scoped to allowEditSigned === false, which is the only value it can have:
     // the flag is `useState(false)` (useWorkspaceClinicalUi.tsx:574) and its one
-    // setter call passes false (:1936). With the trial unlock genuinely on,
+    // setter call passes false (:1941). With the trial unlock genuinely on,
     // contentLocked is *designed* to re-enable a signed report, so including
     // those rows here would assert against the predicate's own purpose. The next
     // test pins that the unlock is still unreachable.
@@ -311,12 +324,22 @@ describe("what this deliberately does not change", () => {
 
   it("does not touch the store guard, which stays same-session", () => {
     // refuseSignedMutation still reads only isFinalized, so it still does not
-    // fire for a report signed elsewhere. Teaching the store the authoritative
-    // status is a separate change and needs a refusal the radiologist can see;
-    // on this branch the guard's only output is a console.warn.
+    // fire for a report signed elsewhere. That is a structural limit, not an
+    // oversight: the store has no field carrying the server's status — it
+    // mentions REPORT_FINAL and studyIsSignedElsewhere only inside its own
+    // comment — so teaching the guard the authoritative status means a new state
+    // key plus a hydration path from the hook, not a substitution.
     const store = read("lib/zai-workspace/store.ts");
-    expect(store).toContain("function refuseSignedMutation(s: S, action: string): boolean {");
+    expect(store).toContain("function refuseSignedMutation(s: S, action: string, announce = true): boolean {");
     expect(store).toContain("if (!s.isFinalized) return false;");
+    // Pinned so the reason stays structural rather than "the refusal is silent":
+    // since #858 the guard does have a voice, and this test would need a
+    // different justification if that were ever reverted.
+    expect(store).toContain("if (announce) announceSignedMutationRefusal(action);");
+    const outsideComments = store
+      .split(/\r?\n/)
+      .filter((l) => (l.includes("REPORT_FINAL") || l.includes("studyIsSignedElsewhere")) && !l.trimStart().startsWith("*"));
+    expect(outsideComments, "the store gained a view of the server status — the guard can now be widened").toEqual([]);
   });
 
   it("leaves two known gaps open, counted so they cannot widen quietly", () => {
