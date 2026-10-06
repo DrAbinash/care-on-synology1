@@ -759,9 +759,18 @@ router.use("/dicom-agent", requireStaffAuth, requireStaffPermission("/dicom-node
 // MWL procedures, pulled-studies stats, failed-queue retry).
 // Mounted BEFORE radiologyRouter so its handlers (e.g. echo-test upgrade) win.
 router.use("/radiology", requireStaffAuth, requireStaffPermission("/radiology"), pacsEnterpriseRouter);
-// Orthanc storage purge — admin-only (destructive). Separate from /radiology
-// permission so non-admins cannot gain purge via Settings → Users toggles.
-router.use("/radiology", requireStaffAuth, requireAdminRole, orthancPurgeRouter);
+// Orthanc storage purge — admin-only (destructive), and deliberately NOT
+// gated by the /radiology permission so non-admins cannot gain purge via
+// Settings → Users toggles. The admin gate lives on the two purge routes
+// inside orthancPurge.ts, never here — the same shape as featureFlagsRouter
+// above, and for the same reason: this mount shares the bare "/radiology"
+// prefix with the rest of the namespace, and Express runs a mount-level
+// middleware for every request that matches the prefix, before the sub-router
+// gets to decline it. Gating here answered 403 "Admin access required" to
+// every non-admin request for /api/radiology/* — which is all of radiology
+// (worklist, study locks, report-generator, knowledge packs, presentation
+// templates), because radiologyRouter itself is mounted further down.
+router.use("/radiology", requireStaffAuth, orthancPurgeRouter);
 // Phase P3 — AI clinical workflow (scheduler/policy/preferences/draft). Every
 // endpoint is internally gated by the ff_radiology_ai master flag + per-scope
 // policy (default OFF), so mounting it exposes nothing until an admin enables it.
