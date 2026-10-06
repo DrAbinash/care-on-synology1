@@ -1,6 +1,15 @@
 /**
  * Admin Orthanc purge API — preview + execute by StudyDate period.
- * Mounted at /api/radiology with requireStaffAuth + requireAdminRole.
+ * Mounted at /api/radiology behind requireStaffAuth.
+ *
+ * requireAdminRole is attached PER ROUTE below, never as a router-wide
+ * `use()`. This router shares the bare "/radiology" mount prefix with the
+ * whole radiology namespace, and Express runs a router-wide middleware for
+ * every request that enters the router — before route matching decides this
+ * router does not handle it. As a blanket guard it answered 403 "Admin access
+ * required" to every non-admin request for /api/radiology/*, including the
+ * Reporting Workspace's own draft save. Route-scoped, it guards the two
+ * destructive endpoints and nothing else.
  */
 
 import { Router } from "express";
@@ -17,8 +26,6 @@ import {
 import { logger } from "../lib/logger";
 
 export const orthancPurgeRouter = Router();
-
-orthancPurgeRouter.use(requireAdminRole);
 
 function parseBody(req: StaffAuthRequest): {
   preset?: PurgePreset;
@@ -39,7 +46,7 @@ function parseBody(req: StaffAuthRequest): {
   };
 }
 
-orthancPurgeRouter.post("/orthanc/purge/preview", async (req, res) => {
+orthancPurgeRouter.post("/orthanc/purge/preview", requireAdminRole, async (req, res) => {
   try {
     const parsed = parseBody(req as StaffAuthRequest);
     const period = resolvePurgePeriod(parsed);
@@ -74,7 +81,7 @@ orthancPurgeRouter.post("/orthanc/purge/preview", async (req, res) => {
   }
 });
 
-orthancPurgeRouter.post("/orthanc/purge", async (req, res) => {
+orthancPurgeRouter.post("/orthanc/purge", requireAdminRole, async (req, res) => {
   const staffReq = req as StaffAuthRequest;
   try {
     const parsed = parseBody(staffReq);
