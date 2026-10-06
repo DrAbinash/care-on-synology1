@@ -18,6 +18,7 @@ import {
   writeRescueDraft,
 } from "@/lib/draftRescue";
 import { createEnsureDraftOnce, isMeaningfulReportEdit } from "@/lib/ensureDraftOnce";
+import { draftSaveOutcome, type DraftSaveResponse } from "@/lib/draftSaveOutcome";
 import { leaveDirtyStudy, type LeaveChoice } from "@/lib/leaveDirtyStudy";
 import { retryWithBackoff, isTransientError, offlineBlockMessage } from "@/lib/reliability";
 import {
@@ -369,7 +370,7 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     // Always persist the live store — never the debounced shell mirror.
     const live = readWorkspaceClinicalTexts();
     const res = await retryWithBackoff(
-      () => saveRadiologyDraft<{ success?: boolean; draft?: { id: number }; id?: number }>({
+      () => saveRadiologyDraft<DraftSaveResponse>({
         id: draftId ?? undefined,
         studyId: capturedStudyId,
         worklistId: capturedStudyId,
@@ -435,14 +436,26 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     if (!shouldCommitAutosave(capturedStudyId, studyIdRef.current, capturedGeneration, saveGenerationRef.current)) {
       return null;
     }
-    const id = res?.draft?.id ?? res?.id ?? null;
+    const outcome = draftSaveOutcome(res);
+    const id = outcome.id;
     if (id) {
+      // Remember the id even on a partial save — the draft row exists, and
+      // saving again without it would insert a second row for the same study.
       captureSavedDraftId(id);
-      useWorkspace.setState({ isDirty: false });
+      if (outcome.clearDirty) useWorkspace.setState({ isDirty: false });
     }
     setLastSavedAt(new Date());
-    setAutoSaveStatus("saved");
-    if (!opts?.silent) toast({ title: "Draft saved", duration: 1500 });
+    setAutoSaveStatus(outcome.status);
+    if (outcome.notice === "partial") {
+      toast({
+        title: "Report text saved, structured details did not",
+        description:
+          "Your findings, impression and technique are saved. Measurements, the observation ledger and the applied format may be missing if you reopen this study now. They are saved again when you next edit or leave this report.",
+        variant: "destructive",
+      });
+    } else if (!opts?.silent) {
+      toast({ title: "Draft saved", duration: 1500 });
+    }
     return id;
   } catch (err) {
     setAutoSaveStatus("error");

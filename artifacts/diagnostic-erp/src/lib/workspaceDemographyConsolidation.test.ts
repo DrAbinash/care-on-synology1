@@ -157,7 +157,10 @@ describe("Structured impression candidates stay in the tray", () => {
 
 describe("Save/finalize payloads — provenance never persisted", () => {
   it("saveDraft posts plain clinical fields only (no fieldProvenance)", () => {
-    const saveIdx = workspaceTree.indexOf("() => saveRadiologyDraft<{");
+    // Locator only — the assertions below are about the payload that follows.
+    // Stops short of the type argument so it keeps finding the call however the
+    // response type is written.
+    const saveIdx = workspaceTree.indexOf("() => saveRadiologyDraft<");
     expect(saveIdx).toBeGreaterThan(-1);
     const slice = workspaceTree.slice(saveIdx, saveIdx + 500);
     // Live store snapshot (editor-isolation) — plain strings, never provenance maps.
