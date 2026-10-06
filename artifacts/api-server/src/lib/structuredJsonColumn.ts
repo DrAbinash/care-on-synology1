@@ -248,3 +248,93 @@ export function composeStructuredJsonColumn(opts: {
   if (hasApplied) env.careAppliedPatterns = appliedPatterns;
   return env;
 }
+
+/** Every key composeStructuredJsonColumn accepts except the row it merges into. */
+export type StructuredJsonPatch = Omit<
+  Parameters<typeof composeStructuredJsonColumn>[0],
+  "existing"
+>;
+
+/** The save-draft request fields that land in the structured_json envelope. */
+export type StructuredJsonPatchInput = {
+  structuredFormatState?: {
+    formatId: number;
+    formatVersion?: number;
+    values: Record<string, unknown>;
+    updatedAt?: string;
+  } | null;
+  observationLedger?: unknown;
+  viewerMeasurements?: unknown;
+  canalApProvenance?: unknown;
+  vascularTechnique?: unknown;
+  appliedPatterns?: CareAppliedPattern[] | null;
+  linkedStudy?: CareLinkedStudy | null;
+  reportFormatIdentity?: Record<string, unknown> | null;
+};
+
+/**
+ * Which envelope keys one save-draft request intends to write, as a single
+ * patch for one composeStructuredJsonColumn call. Returns {} when the request
+ * carries none of them, so the caller can skip the write entirely.
+ *
+ * The `undefined`-vs-`null` distinctions below are the wire contract and are
+ * not interchangeable:
+ *
+ *   - `observationLedger` uses `!= null`, so a client that omits it or sends
+ *     null leaves the stored ledger alone.
+ *   - `appliedPatterns` and `linkedStudy` use `!== undefined`, so an explicit
+ *     null is a real instruction to CLEAR (deselect-everything, unlink the
+ *     second study). Treating null as "no signal" would leave stale markers
+ *     behind after a legitimate clear.
+ *   - the three measurement fields are copied individually with `?? undefined`
+ *     so an autosave carrying only one of them preserves the other two.
+ *
+ * `now` is injectable only so the timestamp defaults are assertable.
+ */
+export function buildCareStructuredJsonPatch(
+  input: StructuredJsonPatchInput,
+  now: () => string = () => new Date().toISOString(),
+): StructuredJsonPatch {
+  const patch: StructuredJsonPatch = {};
+
+  if (input.structuredFormatState != null) {
+    patch.formatState = {
+      kind: CARE_STRUCTURED_FORMAT_STATE_KIND,
+      formatId: input.structuredFormatState.formatId,
+      formatVersion: input.structuredFormatState.formatVersion ?? 1,
+      values: input.structuredFormatState.values,
+      updatedAt: input.structuredFormatState.updatedAt ?? now(),
+    };
+  }
+
+  if (input.observationLedger != null) {
+    patch.observationLedger = input.observationLedger;
+  }
+
+  if (
+    input.viewerMeasurements != null
+    || input.canalApProvenance != null
+    || input.vascularTechnique != null
+  ) {
+    patch.viewerMeasurements = input.viewerMeasurements ?? undefined;
+    patch.canalApProvenance = input.canalApProvenance ?? undefined;
+    patch.vascularTechnique = input.vascularTechnique ?? undefined;
+  }
+
+  if (input.appliedPatterns !== undefined) {
+    patch.appliedPatterns = input.appliedPatterns ?? [];
+  }
+
+  if (input.linkedStudy !== undefined) {
+    patch.linkedStudy = input.linkedStudy ?? null;
+  }
+
+  if (input.reportFormatIdentity != null) {
+    patch.reportFormatIdentity = {
+      ...input.reportFormatIdentity,
+      appliedAt: input.reportFormatIdentity.appliedAt ?? now(),
+    };
+  }
+
+  return patch;
+}

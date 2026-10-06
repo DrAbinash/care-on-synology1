@@ -1,146 +1,56 @@
 import { db } from "@workspace/db";
 import { radiologyReportDraftsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
-import { composeStructuredJsonColumn, type CareAppliedPattern, type CareLinkedStudy, type CareStructuredFormatState } from "./structuredJsonColumn";
-
-export async function persistCareStructuredFormatState(
-  draftId: number,
-  state: CareStructuredFormatState,
-): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    formatState: state,
-  });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
-}
-
-export async function persistCareObservationLedger(
-  draftId: number,
-  ledger: unknown,
-): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    observationLedger: ledger,
-  });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
-}
+import {
+  composeStructuredJsonColumn,
+  type StructuredJsonPatch,
+} from "./structuredJsonColumn";
 
 /**
- * Persist draft-scoped structured viewer measurements + optional canal provenance
- * + optional MRI Brain vascular acquisition state. One read-modify-write so an
- * autosave that carries all three still issues one UPDATE.
+ * Writes one save-draft request's envelope keys into
+ * radiology_report_drafts.structured_json as a SINGLE read-modify-write under a
+ * row lock.
+ *
+ * This replaces six per-key writers (format state, observation ledger, viewer
+ * measurements, applied patterns, linked study, report format identity), each of
+ * which did its own `SELECT structured_json` → compose → `UPDATE structured_json`
+ * against the same column. Sequentially within one request that was correct,
+ * because each read saw the previous write. Across two overlapping requests it
+ * was a lost update: both read the same snapshot, both composed against it, and
+ * the second write silently discarded every key the first had added — because
+ * composeStructuredJsonColumn merges into the `existing` value it was handed, and
+ * that value was already stale.
+ *
+ * Overlapping requests are not hypothetical here. useDraftPersistence has a
+ * first-save mutex (ensureDraftOnce) but saveDraft itself has none, so the 30s
+ * autosave and a save-on-leave can both be in flight; two browser tabs on the
+ * same study do it too.
+ *
+ * `SELECT … FOR UPDATE` inside the transaction is what actually serializes them —
+ * a bare transaction would not be enough under READ COMMITTED, since both
+ * transactions could still read the pre-write value. Same idiom as
+ * lib/studyLocks.ts's claimStudy.
  */
-export async function persistCareViewerMeasurements(
+export async function persistCareStructuredJsonPatch(
   draftId: number,
-  viewerMeasurements?: unknown,
-  canalApProvenance?: unknown,
-  vascularTechnique?: unknown,
+  patch: StructuredJsonPatch,
 ): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId))
+      .for("update")
+      .limit(1);
 
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    ...(viewerMeasurements !== undefined ? { viewerMeasurements } : {}),
-    ...(canalApProvenance !== undefined ? { canalApProvenance } : {}),
-    ...(vascularTechnique !== undefined ? { vascularTechnique } : {}),
+    const next = composeStructuredJsonColumn({
+      existing: row?.structuredJson ?? null,
+      ...patch,
+    });
+
+    await tx
+      .update(radiologyReportDraftsTable)
+      .set({ structuredJson: next })
+      .where(eq(radiologyReportDraftsTable.id, draftId));
   });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
-}
-
-/** Persist careAppliedPatterns. Empty array clears the markers. */
-export async function persistCareAppliedPatterns(
-  draftId: number,
-  appliedPatterns: CareAppliedPattern[],
-): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    appliedPatterns,
-  });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
-}
-
-/** Persist structuredJson.linkedStudyId for a combined multi-study draft. null clears it. */
-export async function persistCareLinkedStudy(
-  draftId: number,
-  linkedStudy: CareLinkedStudy | null,
-): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    linkedStudy,
-  });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
-}
-
-/**
- * Persist the applied whole-report format identity (baseline banner /
- * re-bootstrap guard) as an additive envelope key. Non-destructive: all other
- * envelope keys (A4 cache, format state, ledger, measurements) are preserved.
- */
-export async function persistCareReportFormatIdentity(
-  draftId: number,
-  reportFormatIdentity: unknown,
-): Promise<void> {
-  const [row] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
-
-  const next = composeStructuredJsonColumn({
-    existing: row?.structuredJson ?? null,
-    reportFormatIdentity,
-  });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
 }
