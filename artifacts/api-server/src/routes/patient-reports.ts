@@ -2803,8 +2803,7 @@ patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Withdraw a signature — an attributed un-signing, NOT a route back to an
-// editable draft
+// Withdraw a signature — an attributed un-signing that reopens the study
 // ────────────────────────────────────────────────────────────────────────────
 // A signed report's content is immutable, so this records who took the
 // signature off and why: the row keeps its content, the signature fields are
@@ -2812,13 +2811,27 @@ patientReportsRouter.post("/:id/acknowledge-critical", async (req, res) => {
 // who signed it, when, and who withdrew it.
 //
 // What it unlocks, precisely: the report ROW becomes editable again — PATCH
-// /:id then writes the corrected text and /:id/sign re-signs it, which is a
-// real correction loop and the one this clinic runs on today (the legacy path).
-// What it does NOT unlock: the worklist row stays REPORT_FINAL with reportId
-// still pointing here and the draft row keeps finalReportId, so
-// assertDraftWritable refuses every draft write. That is why the Reporting
-// Workspace offers no correction from this route — the editors there are
-// draft-backed, and reaching withdrawal from the UI is the missing half.
+// /:id then writes the corrected text and /:id/sign re-signs it — AND the study
+// becomes reportable again, because the worklist row finalize bound is reverted
+// in the same transaction (status back to REPORT_IN_PROGRESS, reportId and
+// deliveryStatus cleared). Both halves are needed. Un-signing the row alone left
+// the study permanently stuck: assertDraftWritable refuses on EITHER
+// worklist.status = REPORT_FINAL OR worklist.reportId being set, so every draft
+// save answered 409 REPORT_LOCKED, and POST /api/patient-reports answered
+// idempotent:true off that same stale reportId instead of creating the corrected
+// report. A signature removal with no correction loop behind it is not a
+// correction.
+//
+// Deliberately NOT reverted: radiology_report_drafts.finalReportId. The only
+// two writers are structuredFinalizeTransaction and POST /:id/amend, and both
+// produce a signed structured document, which this route refuses below — so no
+// row that reaches the transaction can have it set.
+//
+// Left inconsistent on purpose, and recorded in the audit row rather than
+// repaired: the PACS archive still holds the PDF archived at REPORT_FINAL, and
+// the signed-presentation freeze row survives. Re-finalizing re-archives the
+// newest version; the freeze is onConflictDoNothing and presentation-only.
+//
 // Once a report is verified or delivered the signature can no longer be
 // withdrawn; correction then goes through POST /:id/amend, which preserves the
 // superseded version — and that route exists only for structured documents.
@@ -2886,18 +2899,71 @@ patientReportsRouter.post("/:id/withdraw-signature", async (req, res) => {
     signedAt: existing.signedAt,
     signatureId: existing.signatureId,
   };
-  const [row] = await db.update(patientReportsTable).set({
-    signedByName: null,
-    signedAt: null,
-    signatureId: null,
-    status: "draft",
-  }).where(eq(patientReportsTable.id, id)).returning();
+
+  const outcome = await db.transaction(async (tx) => {
+    // Authoritative re-read — the checks above ran outside the transaction, so a
+    // second concurrent withdrawal would otherwise null an already-nulled
+    // signature and write a second audit row claiming it withdrew something.
+    const [current] = await tx.select().from(patientReportsTable).where(eq(patientReportsTable.id, id)).limit(1);
+    if (!current) throw new AmendError(404, "report_not_found");
+    if (!isSignedArtifact(current)) throw new AmendError(409, "not_signed");
+
+    const [updated] = await tx.update(patientReportsTable).set({
+      signedByName: null,
+      signedAt: null,
+      signatureId: null,
+      status: "draft",
+    }).where(eq(patientReportsTable.id, id)).returning();
+
+    // The worklist row finalize bound this report to, looked up by reportId
+    // because that pointer — not the report's studyId column — is what
+    // assertDraftWritable and the idempotent-create short-circuit read.
+    const [wl] = await tx
+      .select({
+        id: radiologyWorklistTable.id,
+        status: radiologyWorklistTable.status,
+        deliveryStatus: radiologyWorklistTable.deliveryStatus,
+      })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.reportId, id))
+      .limit(1);
+
+    if (!wl) return { row: updated, worklist: null };
+    if (wl.status === "DELIVERED") {
+      throw new AmendError(409, "already_delivered", "This study is marked delivered, so its report cannot be un-signed.");
+    }
+
+    await tx
+      .update(radiologyWorklistTable)
+      .set({
+        status: "REPORT_IN_PROGRESS",
+        reportId: null,
+        // Cleared with it: canonical finalize sets READY_TO_SEND, and leaving it
+        // would advertise an unsigned report as ready to hand to the patient.
+        deliveryStatus: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(radiologyWorklistTable.id, wl.id));
+
+    return {
+      row: updated,
+      worklist: { id: wl.id, statusFrom: wl.status, deliveryStatusFrom: wl.deliveryStatus },
+    };
+  }).catch((err: unknown) => {
+    if (err instanceof AmendError) return { refused: err };
+    throw err;
+  });
+  if ("refused" in outcome) {
+    res.status(outcome.refused.httpStatus).json({ error: outcome.refused.code, detail: outcome.refused.detail ?? null });
+    return;
+  }
+  const { row, worklist } = outcome;
 
   await auditLifecycleEvent(
     "signature_withdrawn",
     { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
     String(id),
-    { reportId: id, reason, withdrawn, outcome: "withdrawn" },
+    { reportId: id, reason, withdrawn, outcome: "withdrawn", reopenedWorklist: worklist },
     reason,
   );
   res.json(row);
