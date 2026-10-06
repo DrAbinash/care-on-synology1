@@ -279,7 +279,7 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
           toast({
             title: "Undo refused — the report is signed",
             description:
-              "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can, and every withdrawal is attributed in the audit trail. The report returns to draft and this study goes back to the worklist as in progress, so it can be edited and signed again.",
+              "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can. The report returns to draft and the study can be edited and signed again.",
             variant: "destructive",
             duration: 8000,
           });
