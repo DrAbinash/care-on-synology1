@@ -110,7 +110,10 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   useEffect(() => {
     if (!open || !input) return;
     setCriticalAck(false);
-    setNotifyReferring(input.criticalRequiresAck);
+    // Was pre-ticked from `input.criticalRequiresAck`, so a radiologist signing a
+    // critical report was shown an already-checked box they had never chosen. An
+    // attestation that starts true is not an attestation.
+    setNotifyReferring(false);
     setImpressionReviewedAnyway(false);
     setImpressionRefreshed(false);
     const remembered = loadSessionSignerId();
@@ -233,13 +236,15 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
             <label className="flex items-start gap-2 cursor-pointer">
               <Checkbox checked={criticalAck} onCheckedChange={(v) => setCriticalAck(v === true)} />
               <span className="text-xs leading-snug">
-                I have reviewed this critical finding and documented communication with the referring clinician (or will notify now).
+                I have communicated this critical result to the treating clinician. Recorded permanently
+                against your signed-in name; it cannot be cleared.
               </span>
             </label>
             <label className="flex items-start gap-2 cursor-pointer">
               <Checkbox checked={notifyReferring} onCheckedChange={(v) => setNotifyReferring(v === true)} />
               <span className="text-xs leading-snug">
-                Notify referring doctor after finalize (WhatsApp/email template when configured).
+                I will contact the referring doctor myself. Saved to this report&rsquo;s audit trail as your
+                intent — this screen sends no WhatsApp and no email.
               </span>
             </label>
           </div>

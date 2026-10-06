@@ -30,8 +30,17 @@ export type FinalizePromptInput = {
 export type FinalizePromptResult = {
   confirmed: boolean;
   signatureId: number | null;
+  /** The caller must act on this: it is the tick that gates Confirm, and the
+   *  report row carries criticalAcknowledgedAt/By for exactly this attestation. */
   criticalAcknowledged: boolean;
+  /** The caller must act on this. There is no outbound channel behind it (the
+   *  shipped /critical-alerts/:id/notify records attempts for the same reason),
+   *  so it is recorded as intent in the report's audit details. */
   notifyReferring: boolean;
+  /** Dialog-internal, reported for completeness only. Both are consumed inside
+   *  FinalizeSignDialog by compositionFinalizeAllowed before Confirm is enabled,
+   *  and onRefreshImpression already calls refreshImpressionFromLedger() — so the
+   *  caller correctly does nothing with them. Do not "fix" that. */
   impressionReviewedAnyway?: boolean;
   impressionRefreshed?: boolean;
   /** RIS throughput: open the next eligible study after finalize. */
