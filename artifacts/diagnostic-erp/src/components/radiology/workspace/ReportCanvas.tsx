@@ -683,7 +683,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             toast({ title: message.title, description: message.description });
                           }}
                           data-testid="quick-normal-fallback"
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                         >
                           Quick Normal
                         </Button>
@@ -699,7 +699,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             bodyPartFallback={studySetup.matchedStudyRegion}
                             studyDescription={billedNameFromWorklistRow(workflow.currentRow)}
                             hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
-                            disabled={isLocked || isFinalized}
+                            disabled={contentLocked}
                           />
                           <MriAbnormalFormatStrip
                             studyId={studyId ?? null}
@@ -719,7 +719,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             }
                             referringDoctorDegree={workflow.currentRow?.referringDoctorDegree ?? null}
                             doctorsCatalog={doctorsCatalogQ.data ?? []}
-                            disabled={isLocked || isFinalized}
+                            disabled={contentLocked}
                           />
                         </div>
                       ) : null}
@@ -759,7 +759,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <ReportDemographyCard
                           value={canonicalDemography}
                           onChange={(patch) => setDemographyOverrides((prev) => ({ ...prev, ...patch }))}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                         />
                       ) : (
                         <p className="py-2 text-xs text-muted-foreground">No study selected.</p>
@@ -776,7 +776,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         bodyPartFallback={studySetup.matchedStudyRegion}
                         studyDescription={workflow.currentRow?.studyDescription ?? null}
                         hasReportContent={Boolean(techniqueText.trim() || findingsText.trim() || impressionText.trim())}
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                       />
                     </div>}
 
@@ -878,7 +878,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         pendingMeasurements={0}
                         checklistPercent={studySetup.activeProtocol ? studySetup.checklistPercent : null}
                         qualityScore={qualityScore.score}
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                         onOpenTab={(tab) => {
                           if (tab === "measurements") openReportingTools("measurements");
                           else if (tab === "templates" || tab === "quickselect") openReportingTools("templates");
@@ -897,7 +897,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onSelectRegion={studySetup.selectPrimaryRegion}
                       onResetAutoRegion={studySetup.resetRegionOverrides}
                       modality={workflow.currentRow?.modality ?? null}
-                      disabled={isLocked || isFinalized}
+                      disabled={contentLocked}
                       testName={studyNameForExport || studySetup.testName}
                       regionMatchSource={
                         studySetup.regionOverrides != null
@@ -929,7 +929,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           clinicalHistoryText={clinicalHistoryText}
                           onClinicalHistoryChange={(next) => useWorkspace.getState().setField("clinicalHistory", next)}
                           isOwner={isOwner}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                         />
                         <FindingsEditor
                           field="clinicalHistory"
@@ -957,7 +957,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       techniqueMismatch={studySetup.techniqueMismatch}
                       onLoadCurrentDefault={studySetup.loadCurrentRegionDefaultTechnique}
                       isOwner={isOwner}
-                      disabled={isLocked || isFinalized}
+                      disabled={contentLocked}
                     />
                     <div className="flex items-center gap-2 mt-1.5" data-testid="canonical-technique-editor">
                       <div className="flex-1">
@@ -1022,7 +1022,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <ChocolateBoxMacros
                         setKey={studySetup.chocolateBoxSet.key}
                         label={studySetup.chocolateBoxSet.label}
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                         onInsert={studySetup.applyChocolateTile}
                         onRemoveBundle={(bundleId) => useWorkspace.getState().removeMacroBundle(bundleId)}
                       />
@@ -1050,13 +1050,13 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         }) ? (
                           <div data-testid="r2-brain-canvas-body">
                             <MriBrainCanvas
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               region={studySetup.matchedStudyRegion ?? "Brain"}
                             />
                           </div>
                         ) : null}
                         <BrainMeasuresStrip
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           region={studySetup.matchedStudyRegion ?? "Brain"}
                         />
                       </>
@@ -1086,7 +1086,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <MriLumbarCanvas
                           patches={appliedPathologyPatches}
                           findingsText={findingsText}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           canalApByLevel={canalApByLevel}
                           onFocusRegion={(key) => {
                             useWorkspace.getState().touchCoverageViewed(key);
@@ -1137,7 +1137,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             }).banner}
                           </div>
                         ) : null}
-                        <SpineApCanalMeasurements segment="lumbar" disabled={isLocked || isFinalized} />
+                        <SpineApCanalMeasurements segment="lumbar" disabled={contentLocked} />
                       </>
                     )}
 
@@ -1166,7 +1166,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <MriCervicalCanvas
                           patches={appliedPathologyPatches}
                           findingsText={findingsText}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           canalApByLevel={canalApByLevel}
                           onFocusRegion={(key) => {
                             useWorkspace.getState().touchCoverageViewed(key);
@@ -1201,7 +1201,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             useWorkspace.getState().setCoverageMark(regionKey, "partial");
                           }}
                         />
-                        <SpineApCanalMeasurements segment="cervical" disabled={isLocked || isFinalized} />
+                        <SpineApCanalMeasurements segment="cervical" disabled={contentLocked} />
                       </>
                     )}
 
@@ -1230,7 +1230,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <MriDorsalCanvas
                           patches={appliedPathologyPatches}
                           findingsText={findingsText}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           onFocusRegion={(key) => {
                             useWorkspace.getState().touchCoverageViewed(key);
                           }}
@@ -1275,7 +1275,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         setComposerDraft(d);
                         if (!d.editingId) setComposerBanner(null);
                       }}
-                      disabled={isLocked || isFinalized}
+                      disabled={contentLocked}
                       banner={composerBanner}
                       onApplied={(status) => {
                         if (status === "applied") {
@@ -1328,7 +1328,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       selectedId={selectedObservationId}
                       keyImageCounts={keyImageCounts}
                       measurementChips={measurementChips}
-                      impressionDisabled={isLocked || isFinalized}
+                      impressionDisabled={contentLocked}
                       onOpenKeyImages={(id) => {
                         setKeyImageFilterObsId(id);
                         useWorkspace.getState().setSelectedObservationId(id);
@@ -1398,7 +1398,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         blockedIds={blockedQuickFindingIds}
                         onToggle={handleQuickToggle}
                         onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                       />
                     )}
                     </div>
@@ -1416,7 +1416,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           size="sm"
                           variant="outline"
                           className="h-6 text-[10px] ml-auto"
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           onClick={() => {
                             pendingStructuredPopulateRef.current = true;
                             studySetup.loadCorrectTemplate();
@@ -1445,7 +1445,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 <div className="inline-flex rounded-lg border border-border overflow-hidden shrink-0 shadow-sm" role="group">
                                   <button
                                     type="button"
-                                    disabled={isLocked || isFinalized}
+                                    disabled={contentLocked}
                                     aria-pressed={item.normal}
                                     className={`h-7 px-2.5 text-[10px] font-bold transition-colors disabled:opacity-50 ${
                                       item.normal ? "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-inner" : "bg-white text-emerald-800 hover:bg-emerald-50"
@@ -1459,7 +1459,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   </button>
                                   <button
                                     type="button"
-                                    disabled={isLocked || isFinalized}
+                                    disabled={contentLocked}
                                     aria-pressed={!item.normal}
                                     className={`h-7 px-2.5 text-[10px] font-bold border-l border-border transition-colors disabled:opacity-50 ${
                                       !item.normal ? "bg-gradient-to-br from-rose-500 to-orange-600 text-white shadow-inner" : "bg-white text-rose-800 hover:bg-rose-50"
@@ -1499,7 +1499,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   }))}
                                   placeholder="Describe finding..."
                                   className="min-h-[48px] text-xs mt-1 resize-none"
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                   data-editor="findings-section"
                                 />
                               ) : (
@@ -1518,11 +1518,11 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <ConnectedFindingsHighlightEditor
                         placeholder="Type findings. Abnormal lines tint amber."
                         className="min-h-[50vh]"
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                         dataEditor="findings"
                       />
                     ) : linkedStudy && primaryFindingsSection ? (
-                      <MultiStudyFindingsEditors disabled={isLocked || isFinalized} />
+                      <MultiStudyFindingsEditors disabled={contentLocked} />
                     ) : (
                       /* B. The editor is the hero. Its Quick Select tile wall moves
                          to the Quick Select drawer below (same component). */
@@ -1599,7 +1599,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           selectedStudyTabName={studySetup.matchedStudyRegion}
                           activeAnatomy={activeFindingsAnatomy}
                           onAnatomyChange={setActiveFindingsAnatomy}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           sticky
                         />
                         <QuickSelectStrip
@@ -1628,7 +1628,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onEditBeforeInsert={handleEditBeforeInsert}
                             side={quickSide}
                             onSideChange={setQuickSide}
-                            disabled={isLocked || isFinalized}
+                            disabled={contentLocked}
                             initialStudyHint={studySetup.studyHint || null}
                             selectedRegions={studySetup.studyRegions}
                             onRegionToggle={studySetup.handleRegionToggle}
@@ -1658,7 +1658,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <StructuredFormatPanel
                           sectionsJson={studySetup.selectedTemplate?.sectionsJson}
                           values={structuredValues}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           onValuesChange={(next) => {
                             structuredTouchedRef.current = true;
                             setStructuredValues(next);
@@ -1697,7 +1697,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                               modality={workflow.currentRow!.modality ?? ""}
                               studyDescription={workflow.currentRow!.studyDescription ?? ""}
                               comparisonMissing={false}
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               onInsertFindings={appendFindings}
                               onOpenPriorTab={() => rightPanelRef.current?.expand()}
                             />
@@ -1705,7 +1705,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           {!isLocked && workflow.currentRow?.studyInstanceUID && (
                             <ViewerMeasurementsBanner
                               studyInstanceUID={workflow.currentRow!.studyInstanceUID!}
-                              disabled={isLocked || isFinalized}
+                              disabled={contentLocked}
                               onInsertAll={(lines) => {
                                 for (const line of lines) appendFindings(line);
                               }}
@@ -1724,7 +1724,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 studyInstanceUID={workflow.currentRow!.studyInstanceUID ?? ""}
                                 studyId={studyId ?? undefined}
                                 patientId={workflow.currentRow!.patientId ?? undefined}
-                                disabled={isLocked || isFinalized}
+                                disabled={contentLocked}
                                 templateSelected={studySetup.selectedTemplateId != null}
                                 protocolSelected={!!studySetup.activeProtocol}
                                 historyPresent={clinicalHistoryText.trim().length > 0}
@@ -1756,7 +1756,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 onSuggestHistory={
                                   clinicalHistoryChips.some((c) => c.studyType === studySetup.matchedStudyRegion)
                                     ? () => {
-                                        if (isLocked || isFinalized) return;
+                                        if (contentLocked) return;
                                         const state = useWorkspace.getState();
                                         const region = studySetup.matchedStudyRegion;
                                         state.setField(
@@ -1797,7 +1797,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       <ImpressionWarningStrip
                         showStale={impressionNeedsRefresh && impressionManuallyEdited}
                         warnings={impressionContradictionWarnings}
-                        disabled={isLocked || isFinalized}
+                        disabled={contentLocked}
                         onRefresh={() => useWorkspace.getState().refreshImpressionFromLedger()}
                       />
                     <div className="flex items-center gap-2">
@@ -1958,7 +1958,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           id="critical"
                           checked={isCritical}
                           onCheckedChange={setIsCritical}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                         />
                         <Label htmlFor="critical" className="text-sm font-semibold text-red-700 flex items-center gap-1 cursor-pointer">
                           <AlertTriangle size={13} /> Mark Critical Finding
@@ -1971,7 +1971,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onChange={(e) => setCriticalNote(e.target.value)}
                             placeholder="Describe critical finding (e.g. acute infarct, cord compression)..."
                             className="min-h-[50px] text-sm resize-none"
-                            disabled={isLocked || isFinalized}
+                            disabled={contentLocked}
                           />
                           <div className="flex flex-col gap-1.5 pt-1 border-t border-red-100">
                             <span className="text-[10px] font-semibold text-red-700 uppercase tracking-wide">Communication Checklist</span>
@@ -1984,7 +1984,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 <Checkbox
                                   checked={checklistComm[key]}
                                   onCheckedChange={(v) => setChecklistComm((prev) => ({ ...prev, [key]: !!v }))}
-                                  disabled={isLocked || isFinalized}
+                                  disabled={contentLocked}
                                 />
                                 {label}
                               </label>
@@ -2007,7 +2007,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       }) && (
                         <CoverageCockpit
                           marks={coverageMarks.length > 0 ? coverageMarks : defaultCoverageMarks()}
-                          disabled={isLocked || isFinalized}
+                          disabled={contentLocked}
                           onJump={(key) => {
                             useWorkspace.getState().touchCoverageViewed(key);
                             document.getElementById(`r2-region-${key}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
