@@ -11,23 +11,44 @@ let updateSetCalls: Record<string, unknown>[];
 let structuredFlagEnabled: boolean;
 let selectShouldThrow: boolean;
 let existingDraftStructuredJson: unknown;
+/** Which surface each DB operation ran on — "db" (no lock, no transaction) or
+ * "tx". A transaction that the reads and the write never actually use would
+ * still pass a count, so the surface is what pins the lock. */
+let opSurfaces: string[];
+let forModeCalls: string[];
+let transactionCount: number;
+let eqCalls: Array<[unknown, unknown]>;
 
 vi.mock("./featureFlags", () => ({
   isFeatureEnabledServer: async (_key: string) => structuredFlagEnabled,
 }));
 
-vi.mock("@workspace/db", () => ({
-  db: {
+/** Builds the query surface for either `db` or a transaction handle, so both
+ * shapes are identical and an operation that quietly stayed on `db` is caught
+ * by opSurfaces rather than by a missing method. */
+function querySurface(surface: string) {
+  return {
     select: (proj?: Record<string, unknown>) => {
       if (proj && Object.prototype.hasOwnProperty.call(proj, "structuredJson")) {
+        opSurfaces.push(`draft-read:${surface}`);
+        // Both chain shapes resolve, so dropping .for("update") fails an
+        // assertion about the lock instead of throwing a TypeError.
+        const tail = {
+          limit: async () => [{ structuredJson: existingDraftStructuredJson }],
+        };
         return {
           from: () => ({
             where: () => ({
-              limit: async () => [{ structuredJson: existingDraftStructuredJson }],
+              ...tail,
+              for: (mode: string) => {
+                forModeCalls.push(mode);
+                return tail;
+              },
             }),
           }),
         };
       }
+      opSurfaces.push(`findings-read:${surface}`);
       return {
         from: (table: unknown) => {
           selectFromCalls.push(table);
@@ -44,11 +65,37 @@ vi.mock("@workspace/db", () => ({
     },
     update: () => ({
       set: (v: Record<string, unknown>) => {
+        opSurfaces.push(`write:${surface}`);
         updateSetCalls.push(v);
         return { where: async () => undefined };
       },
     }),
+  };
+}
+
+vi.mock("@workspace/db", () => ({
+  db: {
+    ...querySurface("db"),
+    transaction: async (fn: (tx: unknown) => Promise<void>) => {
+      transactionCount++;
+      await fn(querySurface("tx"));
+    },
   },
+}));
+
+vi.mock("@workspace/db/schema", () => ({
+  radiologyReportDraftsTable: { id: "id", structuredJson: "structured_json" },
+  reportFindingInstancesTable: { id: "id", draftId: "draft_id" },
+}));
+
+// eq/asc are recorded rather than exercised: the point is which draft each
+// operation targeted, and a real drizzle SQL object hides its operands.
+vi.mock("drizzle-orm", () => ({
+  eq: (left: unknown, right: unknown) => {
+    eqCalls.push([left, right]);
+    return { eq: [left, right] };
+  },
+  asc: (col: unknown) => ({ asc: col }),
 }));
 
 function findingRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -110,6 +157,10 @@ describe("regenerateDraftStructuredJson", () => {
     structuredFlagEnabled = true;
     selectShouldThrow = false;
     existingDraftStructuredJson = null;
+    opSurfaces = [];
+    forModeCalls = [];
+    transactionCount = 0;
+    eqCalls = [];
   });
 
   test("flag OFF: no-op — does not query or update anything", async () => {
@@ -119,6 +170,31 @@ describe("regenerateDraftStructuredJson", () => {
 
     expect(selectFromCalls).toHaveLength(0);
     expect(updateSetCalls).toHaveLength(0);
+    // The flag check stays outside the transaction, so an OFF clinic never
+    // opens one and never takes a row lock on a draft save.
+    expect(transactionCount).toBe(0);
+    expect(forModeCalls).toHaveLength(0);
+  });
+
+  test("reads and writes the draft under a row lock, all three inside one transaction", async () => {
+    findingInstanceRows = [findingRow({ id: 1, findingId: 8842 })];
+    const { regenerateDraftStructuredJson } = await import("./radiologyStructuredJsonCache");
+    await regenerateDraftStructuredJson(42);
+
+    expect(transactionCount).toBe(1);
+    // FOR UPDATE is what serializes this writer against
+    // persistCareStructuredJsonPatch. A bare transaction is not enough under
+    // READ COMMITTED — both could still read the pre-write value — and a lock
+    // only one writer takes protects nothing at all.
+    expect(forModeCalls).toEqual(["update"]);
+    expect(opSurfaces).toEqual(["draft-read:tx", "findings-read:tx", "write:tx"]);
+    // Locks the draft it was given, reads that draft's findings, writes that
+    // draft — a mismatch here would corrupt a different study's cache.
+    expect(eqCalls).toEqual([
+      ["id", 42],
+      ["draft_id", 42],
+      ["id", 42],
+    ]);
   });
 
   test("structured_json matches the current FindingInstance rows for that draft", async () => {
@@ -184,5 +260,76 @@ describe("regenerateDraftStructuredJson", () => {
       a4Cache: buildStructuredJsonFromFindingInstances(findingInstanceRows as any),
       careStructuredFormat: formatState,
     });
+  });
+
+  // The regression this PR exists to prevent. composeStructuredJsonColumn
+  // merges into the `existing` value it is handed, so a regeneration that read
+  // the column without holding the row lock would compose against a snapshot a
+  // concurrent persistCareStructuredJsonPatch had already superseded, and its
+  // UPDATE would then drop every key that patch had written. This asserts each
+  // of them survives by reading the written column back through the same
+  // extractors the rest of the app uses — not by comparing a hand-copied
+  // envelope, which would keep passing if an extractor changed meaning.
+  test("regenerating the cache keeps every envelope key another writer put there", async () => {
+    findingInstanceRows = [findingRow({ id: 1, findingId: 8842 })];
+    const {
+      extractA4Cache,
+      extractCareAppliedPatterns,
+      extractCareCanalApProvenance,
+      extractCareLinkedStudy,
+      extractCareObservationLedger,
+      extractCareReportFormatIdentity,
+      extractCareStructuredFormat,
+      extractCareVascularTechnique,
+      extractCareViewerMeasurements,
+    } = await import("./structuredJsonColumn");
+    existingDraftStructuredJson = {
+      kind: "care.structured_json_envelope",
+      a4Cache: [{ findingId: 11111 }], // the stale cache being replaced
+      careStructuredFormat: {
+        kind: "care.structured_format_state",
+        formatId: 9,
+        formatVersion: 2,
+        values: { "discs::l4-5::morphology": "bulge" },
+        updatedAt: "2026-08-17T00:00:00.000Z",
+      },
+      careObservationLedger: { entries: [{ id: "e1", text: "L4-5 disc bulge." }] },
+      careViewerMeasurements: { items: [{ id: 1, label: "Canal AP", valueMm: 12 }] },
+      careCanalApProvenance: { "l4-5": { manualOverride: true } },
+      careVascularTechnique: { performed: ["mra"], overridden: false },
+      careReportFormatIdentity: {
+        kind: "care.report_format_identity.v1",
+        name: "MRI Lumbar Spine",
+        appliedAt: "2026-09-01T00:00:00.000Z",
+      },
+      linkedStudyId: 77,
+      careLinkedStudy: { studyId: 77, title: "MRI BRAIN", accessionNumber: "A-77" },
+      careAppliedPatterns: [
+        { patternId: "p1", version: 3, bundleId: "b1", appliedAt: "2026-09-02T00:00:00.000Z" },
+      ],
+    };
+
+    const { regenerateDraftStructuredJson, buildStructuredJsonFromFindingInstances } = await import(
+      "./radiologyStructuredJsonCache"
+    );
+    await regenerateDraftStructuredJson(42);
+
+    const written = updateSetCalls[0]!.structuredJson;
+    // Only the cache changed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(extractA4Cache(written)).toEqual(buildStructuredJsonFromFindingInstances(findingInstanceRows as any));
+    // Everything the other writer owns is still there, byte for byte.
+    expect(extractCareStructuredFormat(written)).toEqual(
+      (existingDraftStructuredJson as Record<string, unknown>).careStructuredFormat,
+    );
+    expect(extractCareObservationLedger(written)).toEqual({ entries: [{ id: "e1", text: "L4-5 disc bulge." }] });
+    expect(extractCareViewerMeasurements(written)).toEqual({ items: [{ id: 1, label: "Canal AP", valueMm: 12 }] });
+    expect(extractCareCanalApProvenance(written)).toEqual({ "l4-5": { manualOverride: true } });
+    expect(extractCareVascularTechnique(written)).toEqual({ performed: ["mra"], overridden: false });
+    expect(extractCareReportFormatIdentity(written)).toMatchObject({ name: "MRI Lumbar Spine" });
+    expect(extractCareLinkedStudy(written)).toMatchObject({ studyId: 77, title: "MRI BRAIN", accessionNumber: "A-77" });
+    expect(extractCareAppliedPatterns(written)).toEqual([
+      { patternId: "p1", version: 3, bundleId: "b1", appliedAt: "2026-09-02T00:00:00.000Z" },
+    ]);
   });
 });
