@@ -288,12 +288,46 @@ export async function assertDraftWritable(opts: {
     if (opts.patientId && worklist.patientId && Number(opts.patientId) !== worklist.patientId) {
       throw new RadiologyIdentityError(409, "DRAFT_PATIENT_MISMATCH", "Draft patient does not match the worklist patient.");
     }
-    if (worklist.status === "REPORT_FINAL" || worklist.status === "DELIVERED" || worklist.reportId) {
-      // Do not name a route that this row cannot use. POST /:id/amend refuses
-      // every report without a signed structured document, so pointing a
-      // legacy-signed study at it sent staff to an endpoint that answers 409
-      // not_a_signed_structured_report.
-      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study already has a final report, so its draft is locked. Nothing typed here can change the signed text; correcting a signed report is a separate, attributed action.");
+    // Do not name a route that this row cannot use. POST /:id/amend refuses
+    // every report without a signed structured document, so pointing a
+    // legacy-signed study at it sent staff to an endpoint that answers 409
+    // not_a_signed_structured_report.
+    //
+    // That rule cuts three ways, not one, and this row already says which. A
+    // DELIVERED study cannot be un-signed at all — withdraw-signature throws
+    // `already_delivered` inside its own transaction (patient-reports.ts:2932).
+    // A final study still pointing at a report CAN be, from Report Hub, which is
+    // the loop #847/#852 built and the single generic sentence below never
+    // named. And a study marked final with no reportId has no report behind it,
+    // so there is no signature to withdraw — WorkspaceOverlays.tsx:700 renders
+    // exactly that state as "Study marked final — NO report exists".
+    //
+    // One message covering all three had to be vague enough to be true of each,
+    // which is how it came to promise only "a separate, attributed action" — a
+    // dead end for the row that has a way out, and false comfort for the two
+    // that do not.
+    if (worklist.status === "DELIVERED") {
+      // "from the app" is the honest scope, and it is the whole of it: both UI
+      // callers of report-status only ever send REPORT_FINAL
+      // (radiologyReportLifecycle.ts:316, RadiologyWorklist.tsx:1045), so no
+      // affordance un-delivers a row, canWithdrawSignature returns false for a
+      // delivered report, and withdraw-signature itself throws
+      // `already_delivered`. An administrator issuing the status call by hand
+      // could un-deliver and then withdraw — which is precisely why the message
+      // does not claim the signature is immutable, only that nothing in the app
+      // will take it back.
+      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study's report has already been delivered, so its draft is locked. Nothing typed here can change the signed text, and a delivered report cannot be un-signed from the app.");
+    }
+    if (worklist.reportId) {
+      // "unless it has been verified or delivered" is not decoration: the legacy
+      // verify route sets patient_reports.status = "verified" with no structured
+      // document involved (patient-reports.ts:2622), and withdraw-signature
+      // refuses that row with `already_verified` (:2866). Without the clause this
+      // message would promise a button Report Hub is right to hide.
+      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study already has a final report, so its draft is locked; nothing typed here changes the signed text. The signer or an administrator can withdraw it in Report Hub to unlock this study — unless it has been verified or delivered.");
+    }
+    if (worklist.status === "REPORT_FINAL") {
+      throw new RadiologyIdentityError(409, "REPORT_LOCKED", "This study was marked final but has no report linked to it, so its draft is locked and there is no signature behind it to take back. Nothing typed here can change that.");
     }
   }
 
