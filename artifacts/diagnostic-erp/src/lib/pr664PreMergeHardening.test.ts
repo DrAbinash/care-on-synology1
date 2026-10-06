@@ -23,6 +23,7 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
 import { extractCareCanalApProvenance } from "@/lib/structuredViewerMeasurements";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import { canalApValue } from "@/lib/spineCanalAp";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
   buildCervicalLevelApplyBundle,
@@ -120,14 +121,7 @@ describe("BLOCKER 1 — AP measurement save/reopen via actual production seriali
 
   it("serializes canalApProvenance into structuredJson envelope and extracts it back (real production path)", () => {
     // ── STEP 1: Set a cervical AP measurement value via the workspace store ──
-    useWorkspace.getState().setCanalApCellProvenance("C5-C6", {
-      region: "cervical",
-      level: "C5-C6",
-      measurementType: "CANAL_AP",
-      value: "12.5",
-      unit: "mm",
-      manualOverride: true,
-    });
+    useWorkspace.getState().recordCanalApManualValue("C5-C6", "12.5", "cervical");
 
     // ── STEP 2: Serialize via the production structured_json envelope shape
     //    (mirrors composeStructuredJsonColumn in api-server/src/lib/structuredJsonColumn.ts) ──
@@ -152,14 +146,12 @@ describe("BLOCKER 1 — AP measurement save/reopen via actual production seriali
     // ── STEP 5: Hydrate a fresh workspace with the extracted provenance ──
     resetWorkspace("Cervical Spine");
     expect(useWorkspace.getState().canalApProvenance["C5-C6"]).toBeUndefined();
-    useWorkspace.getState().setCanalApProvenance(
-      extractedClient as ReturnType<typeof useWorkspace.getState>["canalApProvenance"],
-    );
+    useWorkspace.getState().hydrateCanalApRecords(extractedClient);
 
     // ── PROOF: C5-C6 = 12.5 mm survived the full round-trip ──
     const restored = useWorkspace.getState().canalApProvenance["C5-C6"];
     expect(restored).toBeDefined();
-    expect(restored.value).toBe("12.5");
+    expect(canalApValue(restored)).toBe(12.5);
     expect(restored.manualOverride).toBe(true);
     expect(restored.region).toBe("cervical");
     expect(restored.level).toBe("C5-C6");
@@ -167,14 +159,7 @@ describe("BLOCKER 1 — AP measurement save/reopen via actual production seriali
 
   it("lumbar AP measurements survive the same structuredJson round-trip", () => {
     resetWorkspace("LS Spine");
-    useWorkspace.getState().setCanalApCellProvenance("L4-L5", {
-      region: "lumbar",
-      level: "L4-L5",
-      measurementType: "CANAL_AP",
-      value: "10.2",
-      unit: "mm",
-      manualOverride: true,
-    });
+    useWorkspace.getState().recordCanalApManualValue("L4-L5", "10.2", "lumbar");
 
     const canalApProvenance = useWorkspace.getState().canalApProvenance;
     const column = composeStructuredJsonColumnWithCanal(canalApProvenance);
@@ -184,11 +169,10 @@ describe("BLOCKER 1 — AP measurement save/reopen via actual production seriali
     const extracted = extractCareCanalApProvenance(reloaded);
     expect(extracted).toBeDefined();
     expect(extracted!["L4-L5"]).toBeDefined();
-    expect(extracted!["L4-L5"]!.value).toBe("10.2");
 
     resetWorkspace("LS Spine");
-    useWorkspace.getState().setCanalApProvenance(extracted!);
-    expect(useWorkspace.getState().canalApProvenance["L4-L5"]!.value).toBe("10.2");
+    useWorkspace.getState().hydrateCanalApRecords(extracted);
+    expect(canalApValue(useWorkspace.getState().canalApProvenance["L4-L5"])).toBe(10.2);
   });
 
   it("AP measurement editing does NOT change observation slot identity (verified via real ledger)", () => {
@@ -207,10 +191,7 @@ describe("BLOCKER 1 — AP measurement save/reopen via actual production seriali
     const slotKeyBefore = bulgePatch!.observation!.slotKey;
 
     // Change the AP canal measurement
-    useWorkspace.getState().setCanalApCellProvenance("C5-C6", {
-      region: "cervical", level: "C5-C6", measurementType: "CANAL_AP",
-      value: "10.2", unit: "mm", manualOverride: true,
-    });
+    useWorkspace.getState().recordCanalApManualValue("C5-C6", "10.2", "cervical");
 
     // slotKey unchanged
     const patches2 = useWorkspace.getState().appliedPathologyPatches;

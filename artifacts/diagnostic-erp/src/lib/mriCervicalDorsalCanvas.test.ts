@@ -8,6 +8,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { emptyViewerMeasurementsState } from "@/lib/structuredViewerMeasurements";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import { canalApValue } from "@/lib/spineCanalAp";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
   isMriCervicalReportingContext,
@@ -253,33 +254,49 @@ describe("AP canal measurements — persistence (13–14)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("13. AP canal measurements persist through canalApProvenance (save/reopen)", () => {
-    // Set a canal AP value via the store's canalApProvenance persistence path
-    useWorkspace.getState().setCanalApCellProvenance("C5-C6", {
-      region: "cervical",
-      level: "C5-C6",
-      measurementType: "CANAL_AP",
-      value: "12.5",
-      unit: "mm",
-      manualOverride: true,
-    });
-    // Verify it's in the store
+    // Set a canal AP value through the store's single manual writer.
+    useWorkspace.getState().recordCanalApManualValue("C5-C6", "12.5", "cervical");
     const prov = useWorkspace.getState().canalApProvenance["C5-C6"];
     expect(prov).toBeDefined();
-    expect(prov.value).toBe("12.5");
+    expect(canalApValue(prov)).toBe(12.5);
+    expect(prov.manualOverride).toBe(true);
+    // A canal number that never dirtied the draft could be lost on close:
+    // autosave returns early while the draft is clean.
+    expect(useWorkspace.getState().isDirty).toBe(true);
 
-    // Simulate save: the workspace already serializes canalApProvenance into
-    // draft.structuredJson (line 2146 of RadiologyReportingWorkspace.tsx).
-    // Simulate reopen: extractCareCanalApProvenance restores it.
-    // We test the round-trip by saving the state, clearing, then restoring.
+    // Simulate the save → clear → reopen round-trip the draft persistence does.
     const savedProvenance = { ...useWorkspace.getState().canalApProvenance };
     useWorkspace.setState({ canalApProvenance: {} });
     expect(useWorkspace.getState().canalApProvenance["C5-C6"]).toBeUndefined();
-    // Restore (simulating extractCareCanalApProvenance + setCanalApProvenance)
-    useWorkspace.getState().setCanalApProvenance(savedProvenance);
+    useWorkspace.getState().hydrateCanalApRecords(savedProvenance);
     const restored = useWorkspace.getState().canalApProvenance["C5-C6"];
-    expect(restored).toBeDefined();
-    expect(restored.value).toBe("12.5");
+    expect(canalApValue(restored)).toBe(12.5);
     expect(restored.manualOverride).toBe(true);
+  });
+
+  it("13b. a draft holding one level under two spellings reopens as one record", () => {
+    // Legacy drafts could contain T8-T9 and D8-D9 as separate cells, because
+    // two writers spelled the same level differently. Reopening must not put
+    // both back.
+    useWorkspace.getState().hydrateCanalApRecords({
+      "T8-T9": { level: "T8-T9", value: "9.4" },
+      "D8-D9": { level: "D8-D9", value: "9.4", annotationId: "annot-3" },
+    });
+    const map = useWorkspace.getState().canalApProvenance;
+    expect(Object.keys(map)).toEqual(["D8-D9"]);
+    expect(map["D8-D9"].annotationId).toBe("annot-3");
+    expect(canalApValue(map["D8-D9"])).toBe(9.4);
+  });
+
+  it("13c. disagreeing aliases reopen flagged, never averaged or chosen", () => {
+    useWorkspace.getState().hydrateCanalApRecords({
+      "T8-T9": { level: "T8-T9", value: "9.4" },
+      "D8-D9": { level: "D8-D9", value: "7.1" },
+    });
+    const rec = useWorkspace.getState().canalApProvenance["D8-D9"];
+    expect(rec.aliasConflict?.values).toEqual([7.1, 9.4]);
+    // Nothing reportable until a human decides which one is the measurement.
+    expect(canalApValue(rec)).toBeNull();
   });
 
   it("14. Measurement editing does not change observation slot identity", () => {
@@ -294,14 +311,7 @@ describe("AP canal measurements — persistence (13–14)", () => {
     const slotKeyBefore = bulgePatch!.observation!.slotKey;
 
     // Change the AP canal measurement at C5-C6
-    useWorkspace.getState().setCanalApCellProvenance("C5-C6", {
-      region: "cervical",
-      level: "C5-C6",
-      measurementType: "CANAL_AP",
-      value: "10.2",
-      unit: "mm",
-      manualOverride: true,
-    });
+    useWorkspace.getState().recordCanalApManualValue("C5-C6", "10.2", "cervical");
 
     // The slotKey must NOT have changed
     const patches2 = useWorkspace.getState().appliedPathologyPatches;

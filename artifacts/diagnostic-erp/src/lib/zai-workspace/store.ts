@@ -65,10 +65,12 @@ import {
 import type { Side } from "@/lib/sideSwap";
 import {
   defaultLumbarNumbering,
+  lumbarApCanalLevels,
   type LumbarNumberingState,
 } from "@/lib/mriSpineNumbering";
 import {
   defaultDorsalNumbering,
+  dorsalApCanalLevels,
   type DorsalNumberingState,
 } from "@/lib/mriDorsalNumbering";
 import type {
@@ -175,7 +177,19 @@ import {
   type ViewerMeasurementsState,
   type StructuredMeasurement,
 } from "@/lib/structuredViewerMeasurements";
-import type { CanalApProvenanceMap, CanalApCellProvenance } from "@/lib/spineCanalAp";
+import {
+  applyCanalManualValue,
+  applyCanalViewerValue,
+  canalSegmentForLevel,
+  canonicalizeCanalMap,
+  flagRenumberedCanalLevels,
+  normalizeDiscLevel,
+  parseCanalApNumber,
+  type CanalApCellProvenance,
+  type CanalApProvenanceMap,
+  type CanalSegment,
+  type CanalViewerValueWrite,
+} from "@/lib/spineCanalAp";
 import {
   defaultVascularTechnique,
   markVascularTechniqueManual,
@@ -345,6 +359,28 @@ function withPushedClinicalUndo(s: S, snap: PatchSnapshot): Pick<S, "patchUndoSt
  * `hydrateObservationLedger`) — reopening a signed study to read or print it is
  * legitimate, and those are how its content reaches the screen.
  */
+/**
+ * Changing vertebral numbering must never move a stored measurement onto a
+ * different disc. Levels the new numbering no longer offers are flagged for
+ * review and stop reporting a number; nothing is renamed and nothing deleted,
+ * because relabelling "L5-S1: 8.2 mm" to whatever the new count calls that
+ * position is exactly how a measurement changes anatomy in silence.
+ */
+function reconcileCanalLevels(
+  records: CanalApProvenanceMap,
+  segment: CanalSegment,
+  offered: readonly string[],
+): CanalApProvenanceMap {
+  const valid = new Set(
+    offered.map((level) => normalizeDiscLevel(level) ?? level).filter(Boolean) as string[],
+  );
+  const { records: next } = flagRenumberedCanalLevels(records, (level) => {
+    const owner = records[level]?.region ?? canalSegmentForLevel(level);
+    return owner !== segment || valid.has(level);
+  });
+  return next;
+}
+
 function refuseSignedMutation(s: S, action: string, announce = true): boolean {
   if (!s.isFinalized) return false;
   console.warn("[care.workspace_store] clinical mutation refused — the report is signed", {
@@ -741,8 +777,16 @@ export type WorkspaceStore = S & {
     },
   ) => void;
   setDorsalCanalForced: (v: boolean) => void;
-  setCanalApProvenance: (m: CanalApProvenanceMap) => void;
-  setCanalApCellProvenance: (level: string, p: CanalApCellProvenance | null) => void;
+  /**
+   * Draft hydration. Folds alias spellings ("T8-T9" and "D8-D9") onto one
+   * canonical record before anything reads the map, so a reopen cannot restore
+   * the duplicate. Returns the levels left in conflict — never resolved here.
+   */
+  hydrateCanalApRecords: (raw: Record<string, unknown> | null | undefined) => string[];
+  /** The only writer of a caliper's number. Returns the canonical level written. */
+  recordCanalApViewerValue: (write: CanalViewerValueWrite) => string | null;
+  /** The only writer of the radiologist's own number. Keeps the caliper's. */
+  recordCanalApManualValue: (level: string, raw: string, region?: CanalSegment | null) => string | null;
   /** Wholesale write — used by draft hydration and by "revert to derived technique". */
   setVascularTechnique: (s: VascularTechniqueState) => void;
   /** A radiologist-stated acquisition answer. Wins over every later text derivation. */
@@ -2292,12 +2336,36 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   setDorsalCanalForced: (v) => set({ dorsalCanalForced: v }),
-  setCanalApProvenance: (m) => set({ canalApProvenance: m }),
-  setCanalApCellProvenance: (level, p) => {
-    const next = { ...get().canalApProvenance };
-    if (!p) delete next[level];
-    else next[level] = p;
-    set({ canalApProvenance: next });
+  hydrateCanalApRecords: (raw) => {
+    const { records, conflictedLevels } = canonicalizeCanalMap(raw);
+    set({ canalApProvenance: records });
+    return conflictedLevels;
+  },
+  recordCanalApViewerValue: (write) => {
+    const level = normalizeDiscLevel(write.level);
+    if (!level) return null;
+    const s = get();
+    if (refuseSignedMutation(s, "canalAp:viewer")) return null;
+    const next = applyCanalViewerValue(s.canalApProvenance[level] ?? null, { ...write, level });
+    // isDirty is not decoration: autosave returns early while the draft is
+    // clean, so a measurement that never dirtied it could be lost on close.
+    set({ canalApProvenance: { ...s.canalApProvenance, [level]: next }, isDirty: true });
+    return level;
+  },
+  recordCanalApManualValue: (levelRaw, raw, region) => {
+    const level = normalizeDiscLevel(levelRaw);
+    if (!level) return null;
+    const s = get();
+    if (refuseSignedMutation(s, "canalAp:manual")) return null;
+    const parsed = parseCanalApNumber(raw);
+    const next = applyCanalManualValue(
+      s.canalApProvenance[level] ?? null,
+      level,
+      parsed ? Number(parsed) : null,
+      region,
+    );
+    set({ canalApProvenance: { ...s.canalApProvenance, [level]: next }, isDirty: true });
+    return level;
   },
   setVascularTechnique: (s) => set({ vascularTechnique: s }),
   setVascularTechniqueManual: (key, on) => {
@@ -2347,8 +2415,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     });
   },
   serializeCoverageMarks: () => get().coverageMarks,
-  setLumbarNumbering: (patch) => set((s) => ({ lumbarNumbering: { ...s.lumbarNumbering, ...patch } })),
-  setDorsalNumbering: (patch) => set((s) => ({ dorsalNumbering: { ...s.dorsalNumbering, ...patch } })),
+  setLumbarNumbering: (patch) => set((s) => {
+    const lumbarNumbering = { ...s.lumbarNumbering, ...patch };
+    return {
+      lumbarNumbering,
+      canalApProvenance: reconcileCanalLevels(
+        s.canalApProvenance, "lumbar", lumbarApCanalLevels(lumbarNumbering),
+      ),
+    };
+  }),
+  setDorsalNumbering: (patch) => set((s) => {
+    const dorsalNumbering = { ...s.dorsalNumbering, ...patch };
+    return {
+      dorsalNumbering,
+      canalApProvenance: reconcileCanalLevels(
+        s.canalApProvenance, "dorsal", dorsalApCanalLevels(dorsalNumbering),
+      ),
+    };
+  }),
   setDorsoLumbarNumbering: (patch) => set((s) => ({ dorsoLumbarNumbering: { ...s.dorsoLumbarNumbering, ...patch } })),
   setStudyComposition: (composition, provenance = "none", manual = false) => set((s) => ({
     studyComposition: composition,

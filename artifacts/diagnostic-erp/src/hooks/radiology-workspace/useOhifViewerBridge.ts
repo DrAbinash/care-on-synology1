@@ -37,7 +37,7 @@ import {
   type FrozenKeyImage,
 } from "@/components/radiology/FrozenKeyImagesRail";
 import { buildObservationKeyImageCaption, maybeRefreshCaption } from "@/lib/keyImageCaption";
-import { discLevelFromLabel, parseCanalApNumber } from "@/lib/spineCanalAp";
+import { canalApValue, discLevelFromLabel, parseCanalApNumber } from "@/lib/spineCanalAp";
 import type { EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import type { WorkspaceLayoutMode } from "@/lib/workspaceLayoutPrefs";
 
@@ -87,7 +87,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
 
   const qc = useQueryClient();
   const [ohifUnavailable, setOhifUnavailable] = useState(false);
-  const workspaceMeasurements = useWorkspace((s) => s.measurements);
+  const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
 
   // Detach frozen key images when an observation is removed (preserve evidence).
   useEffect(() => {
@@ -214,18 +214,23 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     workflow.currentRow?.studyInstanceUID,
   ]);
 
+  /**
+   * The level blocks' view of the canal numbers — a READ of the canonical
+   * record, keyed by canonical level.
+   *
+   * This used to parse a disc level out of each measurement's NAME text, which
+   * meant the number that reached the report came from a different place than
+   * the number in the canal table, and only existed at all if somebody had
+   * typed "L4-L5" into the OHIF caliper label.
+   */
   const canalApByLevel = useMemo(() => {
     const out: Record<string, number | null> = {};
-    for (const m of workspaceMeasurements) {
-      const level =
-        discLevelFromLabel(m.name)
-        ?? discLevelFromLabel(String(m.id ?? ""));
-      if (!level) continue;
-      const raw = typeof m.value === "number" ? m.value : Number(parseCanalApNumber(String(m.value ?? "")) || m.value);
-      if (Number.isFinite(raw)) out[level] = raw;
+    for (const [level, rec] of Object.entries(canalApProvenance)) {
+      const value = canalApValue(rec);
+      if (value != null) out[level] = value;
     }
     return out;
-  }, [workspaceMeasurements]);
+  }, [canalApProvenance]);
 
   // OHIF postMessage → viewer_measurements / report image-references / capture
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());

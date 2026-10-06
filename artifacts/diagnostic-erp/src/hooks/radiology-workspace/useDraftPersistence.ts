@@ -265,7 +265,9 @@ useEffect(() => {
     }
     const restoredCanal = extractCareCanalApProvenance(draft.structuredJson);
     if (restoredCanal) {
-      useWorkspace.getState().setCanalApProvenance(restoredCanal as CanalApProvenanceMap);
+      useWorkspace.getState().hydrateCanalApRecords(
+        restoredCanal as Record<string, unknown> | null,
+      );
     }
     // Spine V3: numbering / sequences / screening selections are restored so
     // the canvas rebuilds the same structured state (prose stays ledger-owned).

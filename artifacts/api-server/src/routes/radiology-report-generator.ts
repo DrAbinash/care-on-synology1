@@ -27,6 +27,11 @@ import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  DORSAL_JUNCTION_LEVEL,
+  canalLevelsForSegment,
+  canonicalizeCanalLevel,
+} from "@workspace/measurements";
+import {
   radiologyReportDraftsTable,
   radiologyVoiceLogsTable,
   radiologyReportKeyImagesTable,
@@ -2243,35 +2248,36 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
         })
         .from(spinalMeasurementsTable)
         .where(eq(spinalMeasurementsTable.studyId, spinalStudyKey));
-      const LUMBAR = ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"];
-      const CERVICAL = ["C1-C2", "C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"];
-      const DORSAL = [
-        "D1-D2", "D2-D3", "D3-D4", "D4-D5", "D5-D6", "D6-D7",
-        "D7-D8", "D8-D9", "D9-D10", "D10-D11", "D11-D12",
-      ];
-      const byLevel = new Map(
-        spinalRows
-          .filter((r) => r.canalAP?.trim())
-          .map((r) => [r.vertebraLevel, r.canalAP!.trim()] as const),
-      );
-      const count = (levels: string[]) => levels.filter((l) => byLevel.has(l)).length;
-      const lumbarHit = count(LUMBAR);
-      const cervicalHit = count(CERVICAL);
-      const dorsalHit = count(DORSAL);
-      let levels: string[] = [];
-      let title = "";
-      if (lumbarHit === 0 && cervicalHit === 0 && dorsalHit === 0) {
-        levels = [];
-      } else if (lumbarHit >= cervicalHit && lumbarHit >= dorsalHit) {
-        levels = LUMBAR;
-        title = "LUMBAR CANAL AP DIAMETER AT L1 TO L5 LEVELS";
-      } else if (cervicalHit >= dorsalHit) {
-        levels = CERVICAL;
-        title = "CERVICAL CANAL AP DIAMETER AT C1 TO C7 LEVELS";
-      } else {
-        levels = DORSAL;
-        title = "DORSAL CANAL AP DIAMETER AT D1 TO D12 LEVELS";
+      // The level vocabulary comes from @workspace/measurements — the same list
+      // the reporting workspace renders. This used to carry its own copy, which
+      // is how the printed sheet kept offering a C1-C2 column that no table
+      // upstream could ever fill.
+      const canonOf = (raw: string) => canonicalizeCanalLevel(raw) ?? raw;
+      const byLevel = new Map<string, string>();
+      for (const r of spinalRows) {
+        const value = r.canalAP?.trim();
+        if (!value) continue;
+        byLevel.set(canonOf(r.vertebraLevel ?? ""), value);
       }
+      const levelsFor = (segment: "lumbar" | "cervical" | "dorsal") => {
+        const base = [...canalLevelsForSegment(segment)];
+        if (segment === "dorsal" && byLevel.has(DORSAL_JUNCTION_LEVEL)) {
+          base.push(DORSAL_JUNCTION_LEVEL);
+        }
+        return base;
+      };
+      const segments = ["lumbar", "cervical", "dorsal"] as const;
+      const filled = (segment: (typeof segments)[number]) =>
+        levelsFor(segment).filter((l) => byLevel.has(l)).length;
+      const counts = segments.map(filled);
+      const best = segments[counts.indexOf(Math.max(...counts))];
+      const levels = counts[Math.max(...counts)] > 0 ? levelsFor(best) : [];
+      const title = levels.length
+        ? `${best.toUpperCase()} CANAL AP DIAMETER AT ${levels[0]?.split("-")[0]} TO ${levels[levels.length - 1]
+            ?.split("-")
+            .slice(1)
+            .join("-")} LEVELS`
+        : "";
       if (levels.some((l) => byLevel.has(l))) {
         const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
         const td = levels
