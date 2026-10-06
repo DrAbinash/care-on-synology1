@@ -326,6 +326,28 @@ const finalizeReport = useCallback(async () => {
     useStructured,
     findingsMap,
   });
+
+  // The sign dialog returns seven values. Three were read here (confirmed,
+  // signatureId, advanceToNext); two are correctly consumed inside the dialog
+  // itself (impressionReviewedAnyway / impressionRefreshed gate canConfirm there
+  // and onRefreshImpression really calls refreshImpressionFromLedger). The last
+  // two existed only to travel outward and were dropped, which is what made the
+  // dialog's second checkbox a promise nothing kept. internal-radiology.ts
+  // spreads auditDetails into the REPORT_STATUS_UPDATED audit row's `details`,
+  // so that row is where an attestation with no outbound channel belongs.
+  const signingAuditDetails: Record<string, unknown> = qualityGate
+    ? {
+        qualityEvaluationId: qualityGate.textEvaluationId,
+        structuredQualityEvaluationId: qualityGate.structuredEvaluationId,
+        qualityScore: qualityGate.score,
+        qualityBlockingCount: qualityGate.blockingCount,
+        qualityWarningCount: qualityGate.warningCount,
+        qualitySource: "workspace-finalize",
+      }
+    : {};
+  if (result.criticalAcknowledged) signingAuditDetails.criticalAcknowledgedAtSigning = true;
+  if (result.notifyReferring) signingAuditDetails.referringDoctorNotifyIntent = true;
+
   try {
     const finalizeResult = await finalizeRadiologyReport(
       ({
@@ -356,16 +378,7 @@ const finalizeReport = useCallback(async () => {
         createdBy: sessionFresh?.user?.name ?? undefined,
         actor: sessionFresh?.user?.name ?? undefined,
         signatureId: result.signatureId,
-        auditDetails: qualityGate
-          ? {
-              qualityEvaluationId: qualityGate.textEvaluationId,
-              structuredQualityEvaluationId: qualityGate.structuredEvaluationId,
-              qualityScore: qualityGate.score,
-              qualityBlockingCount: qualityGate.blockingCount,
-              qualityWarningCount: qualityGate.warningCount,
-              qualitySource: "workspace-finalize",
-            }
-          : undefined,
+        auditDetails: Object.keys(signingAuditDetails).length > 0 ? signingAuditDetails : undefined,
       } as any,
     );
 
@@ -439,6 +452,44 @@ const finalizeReport = useCallback(async () => {
           }
         })
         .catch(() => { /* no Hope referral / integration off — silent */ });
+    }
+
+    // 7c. Record the critical-finding tick the radiologist made IN THE SIGN
+    // DIALOG against the report row, through the same audited endpoint Report
+    // Hub uses. Before this, the dialog gated Confirm on that tick and this hook
+    // then discarded it, so a critical report was signed with
+    // criticalAcknowledgedAt = NULL: Report Hub kept showing its Ack button
+    // (pages/ReportHub.tsx renders it on `isCritical && !criticalAcknowledgedAt`)
+    // and the radiologist had to give the same acknowledgement a second time,
+    // from a different screen, with nothing to say they had already given it.
+    // The endpoint derives the acknowledger from the session, never from this
+    // payload, and writes its own audit row.
+    //
+    // Gated on `criticalMarked` as well as on the tick. From this call site the
+    // two cannot disagree — criticalRequiresAck needs gatedCriticalHits.length>0,
+    // which needs criticalCommsOn, which makes criticalMarked true whenever
+    // criticalHits is non-empty — so the term is redundant today. It stays
+    // because the endpoint answers 409 not_a_critical_report for a report saved
+    // with isCritical=false, and that answer must never become a destructive
+    // "not recorded" toast if the gating above is ever widened.
+    //
+    // Skipped on the idempotent path for the same reason as 7b: nothing was
+    // written by this call, so nothing about it should be recorded.
+    if (!finalizeResult.idempotent && finalizeResult.signed && result.criticalAcknowledged && criticalMarked && finalizeResult.reportId) {
+      void api
+        .post(`/api/patient-reports/${finalizeResult.reportId}/acknowledge-critical`, {})
+        .catch((err) => {
+          // Not silent: an unrecorded acknowledgement is the exact thing the
+          // badge in Report Hub exists to surface, so say where to finish it.
+          toast({
+            title: "Critical acknowledgement was not recorded",
+            description:
+              "The report is signed, but Report Hub will still show this critical result as "
+              + `unacknowledged. Acknowledge it there. (${err instanceof Error ? err.message : "unknown error"})`,
+            variant: "destructive",
+            duration: 12000,
+          });
+        });
     }
 
     // 8. Post-finalize cleanup
