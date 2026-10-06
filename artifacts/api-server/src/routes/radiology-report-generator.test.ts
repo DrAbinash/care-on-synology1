@@ -36,6 +36,16 @@ let txCallCount: number;
 let txDeleteWhereCalls: unknown[];
 let txInsertValuesCalls: Record<string, unknown>[][];
 let txShouldThrow: boolean;
+/** Transactions that actually performed A3.2's delete. A save-draft opens more
+ *  than one transaction now that A4 regenerates the cache under a row lock, so
+ *  the raw transaction count no longer identifies A3.2's on its own. */
+let a32TxCount: number;
+/** Every `.for(mode)` served, labelled with the surface it was called on: A4's
+ *  `SELECT … FOR UPDATE` must read `tx:update`, never `db:update` — a lock taken
+ *  outside the transaction that writes protects nothing. */
+let forModeCalls: string[];
+/** Which surface each structured_json cache UPDATE was issued on. */
+let cacheUpdateSurfaces: string[];
 
 // Ticket A4 coverage state — the structured_json cache regeneration that
 // runs after A3.2's dual-write. `cacheFindingRows` stands in for what a
@@ -69,120 +79,149 @@ vi.mock("../lib/featureFlags", () => ({
     key === "ff_radiology_structured_d1_draft" ? d1DraftFlagEnabled : structuredFlagEnabled,
 }));
 
-vi.mock("@workspace/db", () => ({
-  db: {
-    select: (proj?: Record<string, unknown>) => {
-      if (proj && Object.prototype.hasOwnProperty.call(proj, "structuredJson")) {
-        // A5 single-draft cache lookup: select({structuredJson}).from(drafts).where().limit(1)
-        return {
-          from: () => ({
-            where: () => ({
-              limit: async () => (driftCacheRow === undefined ? [] : [driftCacheRow]),
-            }),
-          }),
-        };
-      }
-      if (proj && Object.prototype.hasOwnProperty.call(proj, "id")) {
-        // A5 batch-scan cached-ids query: select({id}).from(drafts).where(isNotNull(...)) — awaited directly.
-        return {
-          from: () => ({
-            where: async () => driftCachedDraftIds,
-          }),
-        };
-      }
+vi.mock("@workspace/db", () => {
+  /** Shared by `db` and by a transaction handle, so A4's regeneration is
+   *  modelled on whichever surface it actually uses. `surface` is recorded
+   *  rather than assumed: the whole point of the row lock is that the read and
+   *  the write happen on the transaction handle, and a mock that served both
+   *  identically without saying which one was used could not tell the
+   *  difference. */
+  const selectImpl = (surface: string) => (proj?: Record<string, unknown>) => {
+    if (proj && Object.prototype.hasOwnProperty.call(proj, "structuredJson")) {
+      // A5 single-draft cache lookup AND A4's locked read of the row it is
+      // about to regenerate: select({structuredJson}).from(drafts).where().limit(1)
+      const tail = {
+        limit: async () => (driftCacheRow === undefined ? [] : [driftCacheRow]),
+      };
       return {
         from: () => ({
-          where: () => {
-            // Thenable for callers that await .where() directly; also expose
-            // .limit / .orderBy for identity helpers and GET /drafts.
-            const findingRows = () =>
-              cacheRegenShouldThrow
-                ? Promise.reject(new Error("simulated structured_json cache regeneration failure"))
-                : Promise.resolve(cacheFindingRows);
-            return {
+          where: () => ({
+            ...tail,
+            for: (mode: string) => {
+              forModeCalls.push(`${surface}:${mode}`);
+              return tail;
+            },
+          }),
+        }),
+      };
+    }
+    if (proj && Object.prototype.hasOwnProperty.call(proj, "id")) {
+      // A5 batch-scan cached-ids query: select({id}).from(drafts).where(isNotNull(...)) — awaited directly.
+      return {
+        from: () => ({
+          where: async () => driftCachedDraftIds,
+        }),
+      };
+    }
+    return {
+      from: () => ({
+        where: () => {
+          // Thenable for callers that await .where() directly; also expose
+          // .limit / .orderBy for identity helpers and GET /drafts.
+          const findingRows = () =>
+            cacheRegenShouldThrow
+              ? Promise.reject(new Error("simulated structured_json cache regeneration failure"))
+              : Promise.resolve(cacheFindingRows);
+          return {
+            then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
+              findingRows().then(resolve, reject),
+            // radiologyIdentity assertDraftWritable / resolveWorklistFromStudyRef.
+            // Empty worklist → treat as writable. When an update target is
+            // staged, return a DRAFT row so ownership checks pass.
+            limit: async () =>
+              updateResult
+                ? [{
+                    id: updateResult.id ?? 42,
+                    status: "DRAFT",
+                    finalReportId: null,
+                    worklistId: null,
+                    patientId: null,
+                    studyId: null,
+                  }]
+                : [],
+            orderBy: () => ({
               then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
                 findingRows().then(resolve, reject),
-              // radiologyIdentity assertDraftWritable / resolveWorklistFromStudyRef.
-              // Empty worklist → treat as writable. When an update target is
-              // staged, return a DRAFT row so ownership checks pass.
-              limit: async () =>
-                updateResult
-                  ? [{
-                      id: updateResult.id ?? 42,
-                      status: "DRAFT",
-                      finalReportId: null,
-                      worklistId: null,
-                      patientId: null,
-                      studyId: null,
-                    }]
-                  : [],
-              orderBy: () => ({
-                then: (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
-                  findingRows().then(resolve, reject),
-                limit: async () => selectDraftsResult,
-              }),
-            };
-          },
-        }),
-      };
-    },
-    selectDistinct: () => ({
-      from: () => ({
-        where: async () => driftDistinctFindingDraftIds,
+              limit: async () => selectDraftsResult,
+            }),
+          };
+        },
       }),
-    }),
-    insert: () => ({
-      values: (v: Record<string, unknown>) => {
-        insertValuesCalls.push(v);
-        const row = { id: 101, ...v };
-        insertedRows.push(row);
-        return { returning: async () => [row] };
-      },
-    }),
-    update: () => ({
-      set: (v: Record<string, unknown>) => {
-        // A4's cache regeneration issues its own UPDATE with exactly one
-        // key ({ structuredJson }); the legacy draft-fields UPDATE always
-        // sets many fields. Shape, not table identity, tells them apart.
-        if (Object.keys(v).length === 1 && Object.prototype.hasOwnProperty.call(v, "structuredJson")) {
-          cacheUpdateSetCalls.push(v);
-          return { where: () => Promise.resolve() };
-        }
-        updateSetCalls.push(v);
-        return {
-          where: () => ({
-            returning: async () => (updateResult ? [{ ...updateResult, ...v }] : []),
-          }),
-        };
-      },
-    }),
-    transaction: async (fn: (tx: unknown) => Promise<void>) => {
-      txCallCount++;
-      if (txShouldThrow) throw new Error("simulated structured write failure");
-      const tx = {
-        delete: () => ({
-          where: (cond: unknown) => {
-            txDeleteWhereCalls.push(cond);
-            return Promise.resolve();
-          },
-        }),
-        insert: () => ({
-          values: (rows: Record<string, unknown>[]) => {
-            txInsertValuesCalls.push(rows);
-            return Promise.resolve();
-          },
+    };
+  };
+
+  const updateImpl = (surface: string) => () => ({
+    set: (v: Record<string, unknown>) => {
+      // A4's cache regeneration issues its own UPDATE with exactly one
+      // key ({ structuredJson }); the legacy draft-fields UPDATE always
+      // sets many fields. Shape, not table identity, tells them apart.
+      if (Object.keys(v).length === 1 && Object.prototype.hasOwnProperty.call(v, "structuredJson")) {
+        cacheUpdateSetCalls.push(v);
+        cacheUpdateSurfaces.push(surface);
+        return { where: () => Promise.resolve() };
+      }
+      updateSetCalls.push(v);
+      return {
+        where: () => ({
+          returning: async () => (updateResult ? [{ ...updateResult, ...v }] : []),
         }),
       };
-      await fn(tx);
     },
-  },
-  radiologyReportDraftsTable: {
-    id: "id", studyId: "study_id", patientId: "patient_id", updatedAt: "updated_at",
-  },
-  reportFindingInstancesTable: {
-    id: "id", draftId: "draft_id", findingId: "finding_id",
-  },
-}));
+  });
+
+  return {
+    db: {
+      select: selectImpl("db"),
+      selectDistinct: () => ({
+        from: () => ({
+          where: async () => driftDistinctFindingDraftIds,
+        }),
+      }),
+      insert: () => ({
+        values: (v: Record<string, unknown>) => {
+          insertValuesCalls.push(v);
+          const row = { id: 101, ...v };
+          insertedRows.push(row);
+          return { returning: async () => [row] };
+        },
+      }),
+      update: updateImpl("db"),
+      transaction: async (fn: (tx: unknown) => Promise<void>) => {
+        txCallCount++;
+        if (txShouldThrow) throw new Error("simulated structured write failure");
+        let didDelete = false;
+        const tx = {
+          delete: () => ({
+            where: (cond: unknown) => {
+              didDelete = true;
+              txDeleteWhereCalls.push(cond);
+              return Promise.resolve();
+            },
+          }),
+          insert: () => ({
+            values: (rows: Record<string, unknown>[]) => {
+              txInsertValuesCalls.push(rows);
+              return Promise.resolve();
+            },
+          }),
+          select: selectImpl("tx"),
+          update: updateImpl("tx"),
+        };
+        await fn(tx);
+        // A save-draft opens more than one transaction now (A3.2's replace,
+        // then A4's locked regeneration), so counting transactions no longer
+        // identifies A3.2's. Count the ones that actually did its delete.
+        if (didDelete) a32TxCount++;
+      },
+    },
+    radiologyReportDraftsTable: {
+      id: "id", studyId: "study_id", patientId: "patient_id", updatedAt: "updated_at",
+    },
+    reportFindingInstancesTable: {
+      id: "id", draftId: "draft_id", findingId: "finding_id",
+    },
+  };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getRouteHandler(router: any, method: "get" | "post", path: string) {
@@ -214,6 +253,9 @@ describe("POST /save-draft — first save creates, second save updates (pre-exis
     updateResult = { id: 42, studyId: 7 };
     structuredFlagEnabled = false;
     txCallCount = 0;
+    a32TxCount = 0;
+    forModeCalls = [];
+    cacheUpdateSurfaces = [];
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
@@ -288,6 +330,9 @@ describe("POST /save-draft — findings[] (Ticket A3.1): accepted, validated, ig
     // (flag ON) is covered separately below in the A3.2 suite.
     structuredFlagEnabled = false;
     txCallCount = 0;
+    a32TxCount = 0;
+    forModeCalls = [];
+    cacheUpdateSurfaces = [];
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
@@ -362,6 +407,9 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
     updateResult = { id: 42, studyId: 7 };
     structuredFlagEnabled = true;
     txCallCount = 0;
+    a32TxCount = 0;
+    forModeCalls = [];
+    cacheUpdateSurfaces = [];
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
@@ -391,6 +439,9 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
 
     expect(res.statusCode).toBe(200);
     expect(txCallCount).toBe(0);
+    // An OFF clinic opens no transaction and takes no row lock on a draft save.
+    // A4's flag check stays outside its transaction for exactly this reason.
+    expect(forModeCalls).toEqual([]);
   });
 
   test("flag ON, first save (insert, no id): replaces FindingInstance rows for the newly-created draft's id", async () => {
@@ -402,9 +453,15 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
 
     expect(res.statusCode).toBe(200);
     expect(res.body.draft.id).toBe(101); // the inserted row's id, from the insert mock
-    expect(txCallCount).toBe(1);
+    // A3.2 opened exactly one transaction and did exactly one delete+insert.
+    expect(a32TxCount).toBe(1);
     expect(txDeleteWhereCalls).toHaveLength(1);
     expect(txInsertValuesCalls).toHaveLength(1);
+    // The second transaction is A4's cache regeneration, which now runs under
+    // its own row lock. Pinned as a total so a third transaction cannot appear
+    // unnoticed, and pinned as A4's by the lock it takes.
+    expect(txCallCount).toBe(2);
+    expect(forModeCalls).toEqual(["tx:update"]);
     expect(txInsertValuesCalls[0]).toEqual([
       { draftId: 101, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
       { draftId: 101, findingId: 9001, structuredJson: TWO_FINDINGS[1]!.params, source: "quickselect" },
@@ -420,7 +477,8 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
 
     expect(res.statusCode).toBe(200);
     expect(res.body.draft.id).toBe(42);
-    expect(txCallCount).toBe(1);
+    expect(a32TxCount).toBe(1);
+    expect(txCallCount).toBe(2); // A3.2's replace + A4's locked regeneration
     expect(txInsertValuesCalls[0]).toEqual([
       { draftId: 42, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
       { draftId: 42, findingId: 9001, structuredJson: TWO_FINDINGS[1]!.params, source: "quickselect" },
@@ -435,7 +493,8 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
     await handler(req, res);
 
     expect(res.statusCode).toBe(200);
-    expect(txCallCount).toBe(1);
+    expect(a32TxCount).toBe(1);
+    expect(txCallCount).toBe(2); // A3.2's replace + A4's locked regeneration
     expect(txDeleteWhereCalls).toHaveLength(1);
     expect(txInsertValuesCalls).toHaveLength(0); // no insert call at all for an empty replace
   });
@@ -458,7 +517,8 @@ describe("POST /save-draft — structured findings dual-write (Ticket A3.2)", ()
     await handler({ body: { id: 42, studyId: 7, findings: [TWO_FINDINGS[0]] }, staffSession: {} }, makeRes());
     await handler({ body: { id: 42, studyId: 7, findings: [TWO_FINDINGS[1]] }, staffSession: {} }, makeRes());
 
-    expect(txCallCount).toBe(2);
+    expect(a32TxCount).toBe(2); // one A3.2 replace per save
+    expect(txCallCount).toBe(4); // plus one A4 locked regeneration per save
     expect(txDeleteWhereCalls).toHaveLength(2); // one delete per save — each save's transaction clears before inserting
     expect(txInsertValuesCalls[0]).toEqual([
       { draftId: 42, findingId: 8842, structuredJson: TWO_FINDINGS[0]!.params, source: "quickselect" },
@@ -491,6 +551,9 @@ describe("POST /save-draft — structured_json cache regeneration (Ticket A4)", 
     updateResult = { id: 42, studyId: 7 };
     structuredFlagEnabled = true;
     txCallCount = 0;
+    a32TxCount = 0;
+    forModeCalls = [];
+    cacheUpdateSurfaces = [];
     txDeleteWhereCalls = [];
     txInsertValuesCalls = [];
     txShouldThrow = false;
@@ -532,6 +595,12 @@ describe("POST /save-draft — structured_json cache regeneration (Ticket A4)", 
         structuredJson: ONE_FINDING.params, catalogVersion: "0", source: "quickselect", confirmed: false,
       },
     ]);
+    // Route-level proof of the lock: a real save-draft regenerates the cache
+    // under SELECT … FOR UPDATE and writes through the transaction handle, not
+    // through `db`. Both halves matter — a lock taken on `db` is not held by the
+    // transaction that writes, so it would serialize nothing.
+    expect(forModeCalls).toEqual(["tx:update"]);
+    expect(cacheUpdateSurfaces).toEqual(["tx"]);
   });
 
   test("empty findings[] (deselect-all) clears the structured_json cache to null", async () => {
