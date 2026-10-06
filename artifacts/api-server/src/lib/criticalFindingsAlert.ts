@@ -104,14 +104,6 @@ export async function acknowledgeFinding(
   return { outcome: "already_acknowledged", row: existing };
 }
 
-export async function getCriticalFindingsForStudy(studyId: number): Promise<typeof radiologyCriticalFindingsTable.$inferSelect[]> {
-  return db
-    .select()
-    .from(radiologyCriticalFindingsTable)
-    .where(eq(radiologyCriticalFindingsTable.studyId, studyId))
-    .orderBy(desc(radiologyCriticalFindingsTable.createdAt));
-}
-
 export async function getUnacknowledgedFindings(): Promise<typeof radiologyCriticalFindingsTable.$inferSelect[]> {
   return db
     .select()
