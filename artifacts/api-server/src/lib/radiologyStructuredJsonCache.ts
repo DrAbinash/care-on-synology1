@@ -70,30 +70,43 @@ export function buildStructuredJsonFromFindingInstances(
  * save from a regeneration failure is the caller's responsibility (see
  * radiology-report-generator.ts's save-draft handler, which wraps this call
  * in its own try/catch, matching how it isolates A3.2's dual-write).
+ *
+ * The whole read-modify-write runs under `SELECT … FOR UPDATE` on the draft
+ * row, the same lock persistCareStructuredJsonPatch takes. That is not
+ * redundant: composeStructuredJsonColumn merges into the `existing` value it
+ * is handed, so a writer that reads that value without holding the lock
+ * composes against a snapshot another writer may already have superseded, and
+ * its UPDATE then discards every envelope key the other one added — format
+ * state, observation ledger, viewer measurements, linked study. FOR UPDATE
+ * only serializes against transactions that also lock, so the two writers of
+ * this column have to take it together or neither is protected.
  */
 export async function regenerateDraftStructuredJson(draftId: number): Promise<void> {
   if (!(await isFeatureEnabledServer("ff_radiology_structured_core"))) return;
 
-  const [draftRow] = await db
-    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
-    .from(radiologyReportDraftsTable)
-    .where(eq(radiologyReportDraftsTable.id, draftId))
-    .limit(1);
+  await db.transaction(async (tx) => {
+    const [draftRow] = await tx
+      .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId))
+      .for("update")
+      .limit(1);
 
-  const rows = await db
-    .select()
-    .from(reportFindingInstancesTable)
-    .where(eq(reportFindingInstancesTable.draftId, draftId))
-    .orderBy(asc(reportFindingInstancesTable.id));
+    const rows = await tx
+      .select()
+      .from(reportFindingInstancesTable)
+      .where(eq(reportFindingInstancesTable.draftId, draftId))
+      .orderBy(asc(reportFindingInstancesTable.id));
 
-  const cache = buildStructuredJsonFromFindingInstances(rows);
-  const next = composeStructuredJsonColumn({
-    existing: draftRow?.structuredJson ?? null,
-    a4Cache: cache,
+    const cache = buildStructuredJsonFromFindingInstances(rows);
+    const next = composeStructuredJsonColumn({
+      existing: draftRow?.structuredJson ?? null,
+      a4Cache: cache,
+    });
+
+    await tx
+      .update(radiologyReportDraftsTable)
+      .set({ structuredJson: next })
+      .where(eq(radiologyReportDraftsTable.id, draftId));
   });
-
-  await db
-    .update(radiologyReportDraftsTable)
-    .set({ structuredJson: next })
-    .where(eq(radiologyReportDraftsTable.id, draftId));
 }

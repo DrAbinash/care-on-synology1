@@ -49,6 +49,21 @@ const TBL = {
   rfi: { __name: "report_finding_instances", id: "id", draftId: "draft_id" },
   quickFindings: { __name: "radiology_quick_findings", id: "id", label: "label" },
   auditLogs: { __name: "audit_logs", id: "id", chainHash: "chain_hash" },
+  // Finalize now consults the composer review state before it writes, and in
+  // production this table always exists. The select chain below returns [] for
+  // any table it has no fixture for, so the guard answers "clear" and PCPNDT
+  // behaviour is exactly as before — this entry is what keeps "no composer job"
+  // distinct from "the guard could not run" (which would be a 503).
+  composeJobs: {
+    __name: "ai_report_compose_jobs",
+    id: "id",
+    worklistId: "worklist_id",
+    studyId: "study_id",
+    reportId: "report_id",
+    status: "status",
+    trackedChangesJson: "tracked_changes_json",
+    updatedAt: "updated_at",
+  },
 } as const;
 
 vi.mock("@workspace/db/schema", () => ({
@@ -68,6 +83,7 @@ vi.mock("@workspace/db/schema", () => ({
   reportFindingInstancesTable: TBL.rfi,
   radiologyQuickFindingsTable: TBL.quickFindings,
   auditLogsTable: TBL.auditLogs,
+  aiReportComposeJobsTable: TBL.composeJobs,
   patientReportAmendmentsTable: { __name: "patient_report_amendments", originalReportId: "original_report_id", amendedReportId: "amended_report_id", rootReportId: "root_report_id", sequenceNumber: "sequence_number" },
   formFRecordsTable: { __name: "form_f_records", patientId: "patient_id", createdAt: "created_at" },
 }));

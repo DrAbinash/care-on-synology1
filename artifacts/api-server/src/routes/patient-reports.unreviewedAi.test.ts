@@ -1,22 +1,31 @@
 /**
  * Case G of the brief: a direct API finalize/sign attempt cannot walk past the
  * unreviewed-AI guard, and a study that never used the composer is byte-identical
- * to today.
+ * to today. Plus the failure posture: when the guard cannot determine the review
+ * state, the boundary refuses with a retryable 503 and writes nothing.
  *
  * Mock scaffold mirrors patient-reports.pcpndt.test.ts (the proven harness for
  * this route). The guard module itself is unit-tested separately; here the
- * question is only whether the route consults it and honours the refusal.
+ * question is only whether the route consults it and honours every refusal.
  */
 import { describe, expect, test, vi, beforeEach } from "vitest";
 
 const guard = vi.hoisted(() => ({
-  findUnreviewedAiDraft: vi.fn(),
+  checkUnreviewedAiFinalize: vi.fn(),
   unreviewedAiFinalizeError: vi.fn((draft: { jobId: number; status: string; pendingChangeCount: number }) => ({
     error: "unreviewed_ai_compose_changes",
     message: `${draft.pendingChangeCount} AI suggestion(s) for this study are still unreviewed.`,
     jobId: draft.jobId,
     jobStatus: draft.status,
     pendingChangeCount: draft.pendingChangeCount,
+  })),
+  aiReviewStateUnavailableError: vi.fn(() => ({
+    error: "ai_review_state_unavailable",
+    message:
+      "CARE could not check whether this study still has unreviewed AI suggestions, so the report was "
+      + "NOT finalized and nothing was changed. Please try again in a moment. If it keeps failing, "
+      + "finalize after the AI suggestions have been reviewed, or ask the admin to check the database.",
+    retryable: true,
   })),
 }));
 
@@ -219,12 +228,12 @@ beforeEach(() => {
     structuredJson: null, signedAt: null, signedByName: null, signatureId: null,
     body: "FINDINGS: Normal lumbar lordosis and alignment.", impression: "Impression.", title: "MRI LS Spine", patientId: 12,
   };
-  guard.findUnreviewedAiDraft.mockResolvedValue(null);
+  guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "clear" });
 });
 
 describe("unreviewed-AI guard at the finalize/sign boundary", () => {
   test("G. POST /api/patient-reports is refused while AI changes are unreviewed — no row is written", async () => {
-    guard.findUnreviewedAiDraft.mockResolvedValue({ jobId: 44, status: "READY", pendingChangeCount: 2 });
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unreviewed", draft: { jobId: 44, status: "READY", pendingChangeCount: 2 } });
     const { patientReportsRouter } = await import("./patient-reports");
     const handler = getRouteHandler(patientReportsRouter, "post", "/");
     const res = makeRes();
@@ -242,7 +251,7 @@ describe("unreviewed-AI guard at the finalize/sign boundary", () => {
     const { patientReportsRouter } = await import("./patient-reports");
     const handler = getRouteHandler(patientReportsRouter, "post", "/");
     await handler(makeReq(MRI_BODY), makeRes());
-    expect(guard.findUnreviewedAiDraft).toHaveBeenCalledWith(
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledWith(
       expect.objectContaining({ worklistId: 9, studyId: 9 }),
     );
   });
@@ -261,12 +270,12 @@ describe("unreviewed-AI guard at the finalize/sign boundary", () => {
     const handler = getRouteHandler(patientReportsRouter, "post", "/");
     const res = makeRes();
     await handler(makeReq({ ...MRI_BODY, type: "pathology" }), res);
-    expect(guard.findUnreviewedAiDraft).not.toHaveBeenCalled();
+    expect(guard.checkUnreviewedAiFinalize).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(201);
   });
 
   test("G. POST /api/patient-reports/:id/sign is refused too, and stamps nothing", async () => {
-    guard.findUnreviewedAiDraft.mockResolvedValue({ jobId: 45, status: "STALE_READY", pendingChangeCount: 1 });
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unreviewed", draft: { jobId: 45, status: "STALE_READY", pendingChangeCount: 1 } });
     const { patientReportsRouter } = await import("./patient-reports");
     const handler = getRouteHandler(patientReportsRouter, "post", "/:id/sign");
     const res = makeRes();
@@ -275,7 +284,7 @@ describe("unreviewed-AI guard at the finalize/sign boundary", () => {
     expect(res.statusCode).toBe(409);
     expect(res.body.error).toBe("unreviewed_ai_compose_changes");
     expect(updateCount).toBe(0);
-    expect(guard.findUnreviewedAiDraft).toHaveBeenCalledWith(
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledWith(
       expect.objectContaining({ studyId: 9, reportId: 101 }),
     );
   });
@@ -286,6 +295,62 @@ describe("unreviewed-AI guard at the finalize/sign boundary", () => {
     const res = makeRes();
     await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
     expect(res.statusCode).not.toBe(409);
-    expect(guard.findUnreviewedAiDraft).toHaveBeenCalledTimes(1);
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledTimes(1);
+  });
+
+  test("D+E. POST / cannot finalize when the review state is undeterminable — 503, no row written", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/");
+    const res = makeRes();
+    await handler(makeReq(MRI_BODY), res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe("ai_review_state_unavailable");
+    expect(res.body.retryable).toBe(true);
+    expect(res.body.message).toMatch(/NOT finalized/i);
+    expect(res.body.message).toMatch(/try again/i);
+    // The whole point of failing closed: nothing was mutated on the way out.
+    expect(insertValues).toHaveLength(0);
+    expect(updateCount).toBe(0);
+  });
+
+  test("D+E. POST /:id/sign cannot stamp a signature when the review state is undeterminable", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/:id/sign");
+    const res = makeRes();
+    await handler(makeReq({ signatureId: 7 }, { id: "101" }), res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe("ai_review_state_unavailable");
+    expect(updateCount).toBe(0);
+    expect(guard.checkUnreviewedAiFinalize).toHaveBeenCalledWith(
+      expect.objectContaining({ studyId: 9, reportId: 101 }),
+    );
+  });
+
+  test("undeterminable review state is never reported as an unreviewed draft", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/");
+    const res = makeRes();
+    await handler(makeReq(MRI_BODY), res);
+
+    // Two different clinical statements, two different codes — "nothing to
+    // review" (201), "waiting for you" (409), "we could not look" (503).
+    expect(res.body.error).not.toBe("unreviewed_ai_compose_changes");
+    expect(guard.unreviewedAiFinalizeError).not.toHaveBeenCalled();
+    expect(guard.aiReviewStateUnavailableError).toHaveBeenCalledTimes(1);
+  });
+
+  test("pathology still ignores the guard entirely, even a broken one", async () => {
+    guard.checkUnreviewedAiFinalize.mockResolvedValue({ state: "unknown", reason: "query_failed" });
+    const { patientReportsRouter } = await import("./patient-reports");
+    const handler = getRouteHandler(patientReportsRouter, "post", "/");
+    const res = makeRes();
+    await handler(makeReq({ ...MRI_BODY, type: "pathology" }), res);
+    expect(guard.checkUnreviewedAiFinalize).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
   });
 });

@@ -124,4 +124,34 @@ describe("sanitizeApiErrorMessage", () => {
     expect(sanitizeApiErrorMessage(body, 500, "Internal Server Error")).toBe("The readable one.");
     expect(sanitizeApiErrorMessage(JSON.stringify({ error: 42 }), 500, "Server Error")).toBe("Server Error");
   });
+
+  // Regression fence for the unreviewed-AI finalize guard (#854). Its two refusals
+  // were written before this rule existed, when `retryable: true` needed a special
+  // case and a coded 4xx deliberately surfaced its code. Both are now covered by
+  // the opaque-token rule above — pinned here so neither refusal can degrade back
+  // into a machine token in front of a radiologist.
+  it("the finalize guard's retryable 503 reaches the radiologist as a sentence", () => {
+    const body = JSON.stringify({
+      error: "ai_review_state_unavailable",
+      message:
+        "CARE could not check whether this study still has unreviewed AI suggestions, so the report was NOT finalized and nothing was changed. Please try again in a moment.",
+      retryable: true,
+    });
+    const msg = sanitizeApiErrorMessage(body, 503, "Service Unavailable");
+    expect(msg).toMatch(/NOT finalized/i);
+    expect(msg).toMatch(/try again/i);
+    expect(msg).not.toMatch(/ai_review_state_unavailable/);
+  });
+
+  it("the finalize guard's 409 names the review action, not the code", () => {
+    const body = JSON.stringify({
+      error: "unreviewed_ai_compose_changes",
+      message: "2 AI suggestion(s) for this study are still unreviewed. Review them in Reporting Tools → AI & Copilot.",
+      jobId: 44,
+      pendingChangeCount: 2,
+    });
+    const msg = sanitizeApiErrorMessage(body, 409, "Conflict");
+    expect(msg).toMatch(/2 AI suggestion\(s\)/);
+    expect(msg).not.toMatch(/unreviewed_ai_compose_changes/);
+  });
 });

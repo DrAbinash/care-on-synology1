@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { useToast } from "@/hooks/use-toast";
 import { useListPatients } from "@workspace/api-client-react";
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import {
   canWithdrawSignature,
+  invalidateWorklistCachesAfterWithdrawal,
   withdrawReportSignature,
 } from "@/lib/reportSignatureWithdrawal";
 
@@ -1093,6 +1095,7 @@ function VerifyDialog({ open, onOpenChange, report, signatures, onDone }: { open
 // ────────────────────────────────────────────────────────────────────────────
 function WithdrawSignatureDialog({ open, onOpenChange, report, onDone }: { open: boolean; onOpenChange: (v: boolean) => void; report: ReportRow; onDone: () => void }) {
   const { toast } = useToast();
+  const qc = useQueryClient();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const signedAtText = (() => {
@@ -1116,6 +1119,14 @@ function WithdrawSignatureDialog({ open, onOpenChange, report, onDone }: { open:
       title: "Signature withdrawn",
       description: "The report is back to draft and its study is open for reporting again.",
     });
+    // Only on success. On a refusal the server changed nothing, and dropping the
+    // cache then would refetch a row that still says signed.
+    //
+    // Without this the sentence above is not true in the reporting workspace for
+    // up to 60 seconds: the study it calls open is the one the workspace reads as
+    // REPORT_FINAL out of a cached per-study query it prefers over the queue row,
+    // so the editors stay locked and nothing says why.
+    invalidateWorklistCachesAfterWithdrawal(qc);
     onDone();
   }
 

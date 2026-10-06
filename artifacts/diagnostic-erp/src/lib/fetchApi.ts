@@ -186,6 +186,9 @@ export function sanitizeApiErrorMessage(text: string, status: number, statusText
     // Nothing readable anywhere. The token still beats a bare status text: it
     // is the one string an administrator can grep the server logs for.
     return err || msg || det || statusText || `Request failed (${status})`;
+    // (A payload that also carries retryable: true — the unreviewed-AI finalize 503 does —
+    // needs no special case here: its code is opaque, so the rule above already returns
+    // the sentence. Do not re-add a retryable branch.)
   } catch {
     return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
   }
