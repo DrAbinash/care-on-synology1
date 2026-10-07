@@ -128,13 +128,55 @@ vi.mock("../lib/aiPipeline/runtimeConfig", () => ({
   resolveLocalAiRuntime: async () => ({ ollamaBaseUrl: "http://127.0.0.1:11434", ollamaNumCtx: 8192 }),
 }));
 
-const generateAiResponse = vi.fn(async (_provider: string, _prompt: string, _images: string[], _opts: { model?: string }) => ({
-  success: true,
-  text: "AI DRAFT RESPONSE",
-  error: undefined as string | undefined,
-}));
+/**
+ * C1 — the identity a real provider arm reports back after it answers.
+ *
+ * Every arm of `generateAiResponse` now returns which provider and model opened
+ * the socket, whether the call left the clinic, and which deadline governed it.
+ * The routes refuse to record an answer that cannot be attributed, so a fixture
+ * returning bare `{success, text}` would describe an execution layer that had
+ * lost track of its own calls — and the handler under test would (correctly)
+ * refuse every one of them.
+ *
+ * Built when a call happens, never at factory time: the mock factory below is
+ * hoisted above these bindings.
+ */
+interface AdapterIdentity {
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  timeoutMs: number;
+  attempted: boolean;
+}
 
-// POST /draft goes out through generateAiForTask, not generateAiResponse.
+function identityFor(provider: string, model?: string | null): AdapterIdentity {
+  return {
+    provider,
+    model: model ?? null,
+    locality: provider === "ollama" || provider === "local_openai_compatible" ? "local" : "cloud",
+    timeoutMs: 300_000,
+    attempted: true,
+  };
+}
+
+const generateAiResponse = vi.fn(
+  async (
+    provider: string,
+    _prompt: string,
+    _images: string[],
+    opts: { model?: string } = {},
+  ) => ({
+    success: true,
+    text: "AI DRAFT RESPONSE",
+    error: undefined as string | undefined,
+    execution: identityFor(provider, opts?.model),
+  }),
+);
+
+// POST /draft used to go out through generateAiForTask, which resolved a provider
+// of its own. C1 routes it through the gateway, which calls the one function that
+// talks to a model with the provider already chosen — so `/draft` is now asserted
+// against `generateAiResponse`, exactly like `/query`.
 const generateAiForTask = vi.fn(
   async (
     _task: string,
@@ -145,8 +187,29 @@ const generateAiForTask = vi.fn(
     success: true,
     text: "FINDINGS: unremarkable.\nIMPRESSION: No acute intracranial abnormality.",
     error: undefined as string | undefined,
+    execution: identityFor("gemini", _opts?.model),
   }),
 );
+
+/**
+ * Queue one model answer on the adapter, tagged with the identity of whatever is
+ * answering. The provider is taken from the call itself — the same rule the real
+ * arms follow — so a fixture can never claim an identity the route did not ask for.
+ */
+function nextAnswer(
+  mock: typeof generateAiResponse,
+  text: string,
+  over: { success?: boolean; error?: string; execution?: Partial<ReturnType<typeof identityFor>> } = {},
+) {
+  mock.mockImplementationOnce(
+    async (provider: string, _prompt: string, _images: string[], opts: { model?: string } = {}) => ({
+      success: over.success ?? true,
+      text,
+      error: over.error,
+      execution: { ...identityFor(provider, opts?.model), ...(over.execution ?? {}) },
+    }),
+  );
+}
 
 vi.mock("@workspace/ai-providers", () => ({
   BUILTIN_PROVIDER_NAMES: ["gemini", "openai", "ollama"],
@@ -177,6 +240,41 @@ vi.mock("@workspace/ai-providers", () => ({
     removedCategories: ["name"],
     removedCount: 1,
   }),
+  // C1 — the failure normalizer and the secret redactor the gateway and the
+  // routes call. Both are pure functions of the result object, and their real
+  // behaviour (nine codes, PHI-vs-image precedence, bounded secret-free messages)
+  // is pinned in lib/ai-providers/src/aiFailureContract.test.ts. They are mirrored
+  // here at the same depth as `detectPhiCategories` above, because this file mocks
+  // the whole module: every fixture in this file succeeds, so what the route needs
+  // from the normalizer is "no failure" — and the identity of what answered.
+  normalizeAiFailure: (result: {
+    success?: boolean;
+    text?: string;
+    error?: string;
+    execution?: { provider: string; model: string | null; locality: "local" | "cloud"; timeoutMs: number; attempted: boolean };
+    diagnostics?: { httpStatus?: number | null; errorCode?: string | null; errorMessage?: string | null; provider?: string };
+  }, override?: { code: string; message?: string; detailCode?: string | null }) => {
+    // The caller's override is what only the caller can know — the provider
+    // answered correctly and the answer cannot be read as the section asked for.
+    if (!override && result?.success && String(result.text ?? "").trim()) return null;
+    const httpStatus = result?.diagnostics?.httpStatus ?? 0;
+    return {
+      code: override?.code
+        ?? (result?.success ? "EMPTY_RESPONSE" : httpStatus >= 400 ? "PROVIDER_HTTP_ERROR" : "UNKNOWN"),
+      message:
+        override?.message
+        ?? result?.diagnostics?.errorMessage
+        ?? result?.error
+        ?? "The AI request failed for an unclassified reason.",
+      provider: result?.execution?.provider ?? result?.diagnostics?.provider ?? "unknown",
+      model: result?.execution?.model ?? null,
+      locality: result?.execution?.locality ?? "cloud",
+      attempted: result?.execution?.attempted ?? true,
+      timeoutMs: result?.execution?.timeoutMs ?? 0,
+      detailCode: override ? (override.detailCode ?? null) : (result?.diagnostics?.errorCode ?? null),
+    };
+  },
+  redactAiSecrets: (t: string) => String(t ?? "").replace(/\bsk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]"),
 }));
 
 import { aiReportingRouter as router } from "./aiReporting";
@@ -433,8 +531,8 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     await draftHandler(makeReq({ reportBody: body, modality: "CT", provider: "gemini" }), res);
 
     expect(res.statusCode).toBe(200);
-    expect(generateAiForTask).toHaveBeenCalledTimes(1);
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("Current Findings:");
     expect(prompt).toContain(body);
   });
@@ -448,7 +546,7 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     await draftHandler(makeReq({ findings: body, modality: "CT", provider: "gemini" }), res);
 
     expect(res.statusCode).toBe(200);
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("Current Findings:");
     expect(prompt).toContain(body);
   });
@@ -461,7 +559,7 @@ describe("POST /api/ai-reporting/draft — the report body must reach the model"
     const res = makeRes();
     await draftHandler(makeReq({ reportBody: "CANONICAL BODY", findings: "LEGACY BODY", provider: "gemini" }), res);
 
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toContain("CANONICAL BODY");
     expect(prompt).not.toContain("LEGACY BODY");
   });
@@ -475,8 +573,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
   // them under `findings`/`draft` for any surface to offer as a replacement of
   // text the radiologist had already typed.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
   test("field:impression asks for an impression only and returns no findings", async () => {
     aiText("IMPRESSION: Mild disc bulge at L4-L5.");
@@ -490,22 +587,35 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
     expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
     expect(res.body.findings).toBe("");
     expect(res.body.draft).toBe("");
-    const prompt = String(generateAiForTask.mock.calls[0][1]);
+    const prompt = String(generateAiResponse.mock.calls[0][1]);
     expect(prompt).toMatch(/Write ONLY the IMPRESSION/);
     expect(prompt).not.toContain("FINDINGS: (structured findings)");
   });
 
-  test("REGRESSION: a response with no IMPRESSION marker cannot leak into findings", async () => {
-    // The two-section parser falls back to `aiResponse.trim()` for findings when
-    // it finds no `FINDINGS:` marker. On the impression-only branch that
-    // fallback would hand the impression back AS the findings — the exact silent
-    // substitution the branch exists to prevent.
+  test("REGRESSION: an answer with no IMPRESSION marker becomes nothing, not an impression", async () => {
+    // One line of code carried two defects. The impression branch was
+    // `match(/IMPRESSION:/)?.[1] ?? aiResponse`, so unmarked prose came back as
+    // THE IMPRESSION with `parserSuccess: true`, and the `full` branch's
+    // `?? aiResponse.trim()` could hand prose back as findings — the silent
+    // substitution the `field` branch exists to prevent. Until C1 this test
+    // asserted the first of those as expected behaviour.
+    //
+    // The contract is now the requested section, or nothing, with a visible
+    // reason: `draftOutputContract.test.ts` pins the parser, this proves the
+    // route refuses to pass the blob through and refuses to store it.
     aiText("Mild disc bulge at L4-L5.");
     const res = makeRes();
     await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), res);
 
-    expect(res.body.impression).toBe("Mild disc bulge at L4-L5.");
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("");
     expect(res.body.findings).toBe("");
+    expect(res.body.draft).toBe("");
+    expect(res.body.failure).toMatchObject({ code: "MALFORMED_RESPONSE", provider: "gemini", attempted: true });
+    expect(String(res.body.failure.message)).toContain("IMPRESSION:");
+    // A refused answer is not a draft: nothing may land in ai_reporting_drafts for
+    // whoever opens this study next.
+    expect(draftInserts).toHaveLength(0);
   });
 
   test("without `field` the two-section parse is unchanged", async () => {
@@ -527,7 +637,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
     await draftHandler(makeReq({ reportBody: "L4-L5 mild disc bulge.", field: "impression", provider: "gemini" }), impOnly);
 
     for (const call of [0, 1]) {
-      const prompt = String(generateAiForTask.mock.calls[call][1]);
+      const prompt = String(generateAiResponse.mock.calls[call][1]);
       // RW-03: /draft carried no anti-hallucination, measurement-preservation or
       // laterality-preservation clause at all, while the background composer's
       // prompt carried all three.
@@ -544,7 +654,7 @@ describe("POST /api/ai-reporting/draft — the `field` the workstation sends is 
 
     expect(res.statusCode).toBe(400);
     expect(String(res.body.error)).toMatch(/worklistId/);
-    expect(generateAiForTask).not.toHaveBeenCalled();
+    expect(generateAiResponse).not.toHaveBeenCalled();
   });
 });
 
@@ -555,8 +665,7 @@ describe("POST /api/ai-reporting/draft — output is grounded by the composer's 
   // byte-identical on the wire to one the radiologist's own findings supported.
   // The fix calls that same validator — it does not reimplement it.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
   test("a draft that stays inside the supplied findings is reported ok", async () => {
     aiText("FINDINGS: L4-L5 mild disc bulge indenting the thecal sac.\nIMPRESSION: Mild disc bulge at L4-L5.");
@@ -641,8 +750,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
   // so an invented, image-only draft became retrievable by whoever opened that
   // study next and looked like an ordinary AI draft.
 
-  const aiText = (text: string) =>
-    generateAiForTask.mockImplementationOnce(async () => ({ success: true, text, error: undefined }));
+  const aiText = (text: string) => nextAnswer(generateAiResponse, text);
 
   test("warmUpOnly still loads and exercises the model — that is the point of the call", async () => {
     aiText("FINDINGS: unremarkable.\nIMPRESSION: No acute abnormality.");
@@ -653,7 +761,7 @@ describe("POST /api/ai-reporting/draft — a provider warm-up leaves no clinical
     );
 
     expect(res.statusCode).toBe(200);
-    expect(generateAiForTask).toHaveBeenCalledTimes(1);
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
   });
 
   test("warmUpOnly persists no ai_reporting_drafts row and returns draftId: null", async () => {
@@ -773,5 +881,105 @@ describe("POST /api/ai-reporting/egress-preview — say what would actually leav
 
     expect(res.statusCode).toBe(400);
     expect(pacsSettingsQueries).toBe(0);
+  });
+});
+
+describe("execution identity — the record follows the provider that answered (C1)", () => {
+  // Audit C / C1: the artefacts that outlive the request are the HTTP body, the
+  // `ai_reporting_drafts` row and the `ai_reporting_audit_logs` row. Before C1 all
+  // three repeated whatever the handler had resolved, so a request that ran on a
+  // different provider — or that no provider could be attributed to — still filed a
+  // clean record naming the provider nobody asked for. An audit trail that cannot
+  // answer "which model wrote this sentence?" is the failure this PR exists to close,
+  // and it is only visible at the point where the route writes.
+  //
+  // The identity below comes from the adapter, exactly as in production: the
+  // execution layer states who ran. These tests change WHO THE ADAPTER REPORTS, not
+  // what the route asked for, which is the only way to prove the route listens.
+
+  const draftReq = () => makeReq({
+    reportBody: "L4-L5 mild disc bulge indenting the thecal sac.",
+    field: "impression",
+    provider: "gemini",
+  });
+
+  test("a provider that cannot be attributed is refused, and the audit row names the one that answered", async () => {
+    // The caller asked for Gemini. Something else answered. The draft must not be
+    // handed over, nothing may be stored for the next radiologist, and the audit
+    // row must say what actually ran rather than preserve the request's label.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.", {
+      execution: { provider: "ollama", model: "qwen3-vl:8b", locality: "local" },
+    });
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.failure).toMatchObject({
+      detailCode: "PROVIDER_IDENTITY_MISMATCH",
+      provider: "ollama",
+    });
+    expect(res.body.impression ?? "").toBe("");
+    expect(draftInserts).toHaveLength(0);
+    expect(auditInserts).toHaveLength(1);
+    expect(auditInserts[0]["provider"]).toBe("ollama");
+    expect(auditInserts[0]["model"]).toBe("qwen3-vl:8b");
+    expect(auditInserts[0]["success"]).toBe(false);
+  });
+
+  test("the response, the draft row and the audit row all name the executed model", async () => {
+    // No model was requested, so the route resolved one; the adapter then reports
+    // the model it actually sent. Every artefact must carry that one value.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.", {
+      execution: { model: "gemini-2.5-pro", timeoutMs: 120_000 },
+    });
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.failure).toBeNull();
+    expect(res.body.provider).toBe("gemini");
+    expect(res.body.model).toBe("gemini-2.5-pro");
+    expect(res.body.executed).toMatchObject({
+      provider: "gemini", model: "gemini-2.5-pro", locality: "cloud", attempted: true, timeoutMs: 120_000,
+    });
+    expect(res.body.resolution).toMatchObject({ provider: "gemini", providerSource: "request" });
+
+    expect(draftInserts).toHaveLength(1);
+    expect(draftInserts[0]["provider"]).toBe("gemini");
+    expect(draftInserts[0]["model"]).toBe("gemini-2.5-pro");
+    expect(auditInserts[0]["provider"]).toBe("gemini");
+    expect(auditInserts[0]["model"]).toBe("gemini-2.5-pro");
+    expect(auditInserts[0]["success"]).toBe(true);
+  });
+
+  test("control: when the adapter confirms the provider that was asked for, nothing is refused", async () => {
+    // Without this, the two tests above could pass on a route that refuses
+    // everything. The same request with a matching identity succeeds and stores.
+    nextAnswer(generateAiResponse, "IMPRESSION: No acute abnormality.");
+    const res = makeRes();
+    await draftHandler(draftReq(), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.impression).toBe("No acute abnormality.");
+    expect(res.body.failure).toBeNull();
+    expect(draftInserts).toHaveLength(1);
+    expect(auditInserts[0]["success"]).toBe(true);
+  });
+
+  test("/query reports the executor too — one answer for both interactive surfaces", async () => {
+    // `/query` never had the double-resolution bug: it passed its resolved provider
+    // straight to the execution layer. What it lacked was the reported identity, so
+    // its body and audit row described the request rather than the answer.
+    nextAnswer(generateAiResponse, "AI ANSWER", {
+      execution: { provider: "ollama", model: "qwen3-vl:8b", locality: "local" },
+    });
+    const res = makeRes();
+    await queryHandler(makeReq({ promptText: "Summarise the findings", provider: "gemini", maxImages: 0 }), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body.aiResponse ?? "").toBe("");
+    expect(res.body.failure).toMatchObject({ provider: "ollama" });
+    expect(auditInserts[0]["provider"]).toBe("ollama");
+    expect(auditInserts[0]["success"]).toBe(false);
   });
 });

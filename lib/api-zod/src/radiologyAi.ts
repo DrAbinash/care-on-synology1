@@ -137,6 +137,52 @@ export interface AiReportingQueryResponse {
   /** Debug metadata (no prompt content): source + length of effective prompt. */
   promptSource: AiPromptSource;
   promptChars: number;
+  /** C1 — mirror of the fields below, see `AiExecutedIdentity`. */
+  executed?: AiExecutedIdentity;
+  failure?: AiNormalizedFailure | null;
+}
+
+/**
+ * C1 wire mirror of `AiExecutionIdentity` in `@workspace/ai-providers`.
+ *
+ * Declared here rather than imported because this package is the leaf contract
+ * the browser also compiles against — it must not pull provider SDKs into a
+ * client bundle. `aiFailureContract` / `interactiveAiGateway` are the authority;
+ * the two lists are pinned equal by
+ * `lib/ai-providers/src/aiFailureContract.test.ts`, because a mirrored union that
+ * is allowed to drift is worse than no union at all.
+ */
+export interface AiExecutedIdentity {
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  timeoutMs: number;
+  attempted: boolean;
+}
+
+export type AiFailureWireCode =
+  | "DISABLED"
+  | "NOT_CONFIGURED"
+  | "TIMEOUT"
+  | "PROVIDER_HTTP_ERROR"
+  | "MALFORMED_RESPONSE"
+  | "PHI_POLICY_BLOCK"
+  | "IMAGE_EGRESS_BLOCK"
+  | "EMPTY_RESPONSE"
+  | "UNKNOWN";
+
+/** C1 — the one small stable answer to "why did the model not answer?". */
+export interface AiNormalizedFailure {
+  code: AiFailureWireCode;
+  /** Secret-free, bounded to 240 characters. */
+  message: string;
+  provider: string;
+  model: string | null;
+  locality: "local" | "cloud";
+  attempted: boolean;
+  timeoutMs: number;
+  /** The provider layer's own code/class, preserved so nothing is lost. */
+  detailCode: string | null;
 }
 
 /**

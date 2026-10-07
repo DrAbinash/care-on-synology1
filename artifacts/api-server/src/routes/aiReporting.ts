@@ -55,6 +55,8 @@ import {
   generateAiForTask,
   getDefaultProviderName,
   isLocalExecutionProvider,
+  normalizeAiFailure,
+  type AiFailure,
   cloudTextPhiAllowed,
   detectPhiCategories,
   scrubPhiText,
@@ -80,7 +82,16 @@ import {
   newAiRequestId,
 } from "../lib/ai/aiReportingRequestDiagnostics";
 import { resolveInteractiveDraftNumCtx } from "../lib/ai/contextBudget";
-import { DRAFT_SAFETY_CLAUSES } from "../lib/ai/draftPromptSafety";
+import {
+  draftInstructionBlock,
+  draftParseFailureMessage,
+  parseDraftOutput,
+} from "../lib/ai/draftOutputContract";
+import {
+  executeInteractiveAiCall,
+  resolveInteractiveTarget,
+  type InteractiveTarget,
+} from "../lib/ai/interactiveAiGateway";
 import { resolveLocalAiRuntime } from "../lib/aiPipeline/runtimeConfig";
 import {
   impressionMatchesStudyContext,
@@ -757,8 +768,12 @@ router.post("/query", async (req, res): Promise<void> => {
     try {
       const pt = await db
         .select({
-          firstName: patientsTable.firstName,
-          lastName: patientsTable.lastName,
+          // C1 — deliberately NOT selecting the name. Age and sex change what a
+          // finding means ("post-menopausal", "at this level of degeneration");
+          // a patient's name helps a model summarise a scan in no way at all, and
+          // it is the one identifier here that cannot be defended in a prompt
+          // heading for a cloud provider. `includeDemographics` now means clinical
+          // demographics, not identity — so the name is never fetched either.
           ageValue: patientsTable.ageValue,
           gender: patientsTable.gender,
         })
@@ -766,8 +781,7 @@ router.post("/query", async (req, res): Promise<void> => {
         .where(eq(patientsTable.id, patientId))
         .limit(1);
       if (pt[0]) {
-        const name = [pt[0].firstName, pt[0].lastName].filter(Boolean).join(" ");
-        finalPrompt += `\n\nPatient: ${name || "Unknown"}, Age: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
+        finalPrompt += `\n\nAge: ${pt[0].ageValue ?? "Unknown"}, Gender: ${pt[0].gender ?? "Unknown"}`;
       }
     } catch {
       // non-critical
@@ -797,9 +811,31 @@ router.post("/query", async (req, res): Promise<void> => {
 
   // Call AI provider via unified abstraction
   const aiResult = await generateAiResponse(providerName, finalPrompt, images, { model });
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
-  const errorMsg = aiResult.error;
+  // C1 — `/query` already passed its resolved provider to the execution layer, so
+  // there was never a second resolution to disagree with the first. What it lacked
+  // was the identity the layer reports back: the audit row and the response said
+  // what had been ASKED FOR. Now they say what ran, and a provider that cannot be
+  // confirmed is not a success.
+  const executedIdentity = aiResult.execution ?? null;
+  // An answer from a provider that cannot be confirmed needs the same code the
+  // gateway raises on `/draft`. Without this branch `/query` answered a refusal
+  // with `failure: null` — the one shape a radiologist-facing screen cannot
+  // explain, because "the model answered but I cannot attribute it" looks like
+  // "nothing happened" on the wire.
+  const queryIdentityMismatch = aiResult.success && executedIdentity?.provider !== providerName;
+  const queryFailure = queryIdentityMismatch
+    ? normalizeAiFailure(aiResult, {
+        code: "UNKNOWN",
+        detailCode: "PROVIDER_IDENTITY_MISMATCH",
+        message:
+          `The AI execution layer reported ${executedIdentity?.provider ?? "no provider"} for a request sent to `
+          + `${providerName}, so the answer was discarded rather than recorded under a provider that cannot be `
+          + "confirmed to have produced it.",
+      })
+    : normalizeAiFailure(aiResult);
+  const success = aiResult.success && executedIdentity?.provider === providerName;
+  const aiResponse = success ? aiResult.text : "";
+  const errorMsg = queryFailure?.message ?? aiResult.error;
 
   // Audit log (non-critical)
   await db.insert(aiReportingAuditLogsTable).values({
@@ -808,8 +844,8 @@ router.post("/query", async (req, res): Promise<void> => {
     patientId: patientId ?? null,
     studyInstanceUID: studyInstanceUID ?? null,
     accessionNumber: accessionNumber ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: executedIdentity?.provider ?? providerName,
+    model: executedIdentity?.model ?? (model || null),
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
@@ -819,13 +855,19 @@ router.post("/query", async (req, res): Promise<void> => {
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: errorMsg ?? "AI provider error" }); return;
+    // The sentence stays exactly as clients have always received it; `failure` is
+    // the additive, stable code the UI can branch on. `/query` previously returned
+    // a bare 502 while `/draft` returned a full diagnostics object, so the same
+    // provider outage looked different depending on which screen asked.
+    res.status(502).json({ error: errorMsg ?? "AI provider error", failure: queryFailure ?? null }); return;
   }
 
   const response: AiReportingQueryResponse = {
     aiResponse: aiResponse ?? "",
-    provider: providerName,
-    model: model || null,
+    provider: executedIdentity?.provider ?? providerName,
+    model: executedIdentity?.model ?? (model || null),
+    executed: executedIdentity ?? undefined,
+    failure: queryFailure ?? null,
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     promptSource,
@@ -1132,17 +1174,29 @@ router.post("/draft", async (req, res): Promise<void> => {
     }
   }
 
-  // Resolve provider via task routing
-  const taskRoute = providerReq ? null : await resolveTaskRoute("radiology_draft");
-  const providerName = providerReq ?? taskRoute?.provider ?? globalSettings.defaultProvider;
-  if (!BUILTIN_PROVIDER_NAMES.includes(providerName)) {
-    res.status(400).json({ error: "Invalid provider." }); return;
+  // C1 — ONE resolution for the whole request.
+  //
+  // `/draft` used to resolve a provider here, check that provider's enablement,
+  // and then call `generateAiForTask(taskKey, prompt, images, { model })` without
+  // the provider — which made the gateway resolve it again from the task route or
+  // the global default. The enablement checked below therefore belonged to a
+  // provider that might never run, while the draft row, the audit row and the
+  // response all reported the checked one anyway. Reproduced in
+  // `lib/ai-providers/src/interactiveExecutionContract.test.ts`.
+  //
+  // Now: the provider resolved and validated here is the provider handed to
+  // execution, and what execution reports back is what gets recorded.
+  const target: InteractiveTarget = await resolveInteractiveTarget({
+    taskKey: "radiology_draft",
+    requestedProvider: providerReq,
+    defaultProvider: globalSettings.defaultProvider,
+  });
+  if (!target.ok) {
+    res.status(target.httpStatus).json({ error: target.error });
+    return;
   }
-  const provConfig = await loadProviderConfig(providerName);
-  if (!provConfig || !provConfig.isEnabled) {
-    res.status(400).json({ error: `${providerName} provider is disabled or not configured.` }); return;
-  }
-  const model = taskRoute?.model ?? provConfig.defaultModel ?? "";
+  const providerName = target.provider;
+  const model = target.model ?? "";
 
   // Build prompt: prefer study-specific templates. NEVER pick the first active
   // row for bare modality alone — that silently applied CT Chest prompts to
@@ -1207,26 +1261,11 @@ router.post("/draft", async (req, res): Promise<void> => {
   if (modality?.trim()) {
     finalPrompt += `\nModality: ${modality.trim()}`;
   }
-  const crossModalityClause =
-    "Do NOT use wording from a different modality or body region " +
-    "(e.g. never write 'chest radiograph' for a CT/MRI brain).\n";
-  finalPrompt += wantsImpressionOnly
-    ? "\n\n=== INSTRUCTION ===\n" +
-      "Write ONLY the IMPRESSION for THIS study, summarising the Current Findings above.\n" +
-      "Do NOT restate or rewrite the findings, and do NOT add any finding that is not already in them.\n" +
-      crossModalityClause +
-      DRAFT_SAFETY_CLAUSES +
-      "\nReturn ONLY:\n" +
-      "IMPRESSION: (concise impression)\n" +
-      "Do not include any other text or explanations."
-    : "\n\n=== INSTRUCTION ===\n" +
-      "Generate a refined radiology report for THIS study only.\n" +
-      crossModalityClause +
-      DRAFT_SAFETY_CLAUSES +
-      "\nReturn ONLY two sections:\n" +
-      "FINDINGS: (structured findings)\n" +
-      "IMPRESSION: (concise impression)\n" +
-      "Do not include any other text or explanations.";
+  // C1 — the section markers this prompt demands and the parser that enforces
+  // them are now one contract (`lib/ai/draftOutputContract.ts`), so the handler
+  // cannot ask for a format the reader has quietly stopped honouring. The
+  // instruction text itself is unchanged.
+  finalPrompt += draftInstructionBlock(wantsImpressionOnly ? "impression" : "full");
 
   // Clinic Local AI timeout (used by radiology-ollama — NOT applied on this path today).
   let clinicOllamaTimeoutSeconds: number | null = null;
@@ -1278,47 +1317,79 @@ router.post("/draft", async (req, res): Promise<void> => {
     imageCount: images.length,
     draftNumCtxOverride: Number.isFinite(draftOverride) ? draftOverride : null,
   });
-  const ollamaOpts =
-    providerName === "ollama"
-      ? {
-          model,
-          numCtx: draftCtx.requestedNumCtx,
-          endpointUrl: runtime.ollamaBaseUrl,
-          think: false,
-        }
-      : { model };
-  const aiResult = await generateAiForTask("radiology_draft", finalPrompt, images, ollamaOpts);
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
-  const errorMsg = aiResult.error;
+  // C1 — the options object used to travel WITHOUT a provider, which is exactly
+  // what let the gateway pick a different one. The resolved target's provider is
+  // now handed to execution, and the identity execution reports is the identity
+  // everything below records. A response that cannot be attributed to the
+  // provider this request was validated against is not a draft: it is refused.
+  const call = await executeInteractiveAiCall({
+    target,
+    prompt: finalPrompt,
+    images,
+    options: {
+      numCtx: draftCtx.requestedNumCtx,
+      think: false,
+      endpointUrl: runtime.ollamaBaseUrl,
+    },
+  });
+  const aiResult = call.result;
+  const identityMismatch = !call.identityVerified;
+  const success = aiResult.success && !identityMismatch;
+  const aiResponse = identityMismatch ? "" : aiResult.text;
+  const errorMsg = call.failure?.message ?? aiResult.error;
 
-  // Parse findings + impression from AI response
+  // Parse findings + impression from the AI response. C1: this FAILS CLOSED.
+  //
+  // The impression branch used to be `match(/IMPRESSION:/)?.[1] ?? aiResponse`,
+  // so a model that answered in prose without the marker it was told to emit had
+  // its ENTIRE response returned as the Impression — with `parserSuccess: true`.
+  // That text then reached the radiologist's Impression ghost layer, one Tab from
+  // becoming report content, carrying no evidence that it had ever been identified
+  // as an impression. The rule is now: the requested section, or nothing.
   let draftFindings = "";
   let draftImpression = "";
   let parser = null as ReturnType<typeof buildParserMeta> | null;
+  let parseFailure: AiFailure | null = null;
   if (success && aiResponse) {
-    if (wantsImpressionOnly) {
-      // Only an impression was asked for, so only an impression is parsed.
-      // Running the two-section parser here would find no `FINDINGS:` marker and
-      // fall through to `aiResponse.trim()` — handing the impression back AS the
-      // findings, which is precisely the silent substitution the `field` branch
-      // exists to prevent.
-      draftImpression = (aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i)?.[1] ?? aiResponse).trim();
-    } else {
-      const findingsMatch = aiResponse.match(/FINDINGS:?\s*([\s\S]*?)(?=IMPRESSION:|$)/i);
-      const impressionMatch = aiResponse.match(/IMPRESSION:?\s*([\s\S]*?)$/i);
-      draftFindings = findingsMatch?.[1]?.trim() ?? aiResponse.trim();
-      draftImpression = impressionMatch?.[1]?.trim() ?? "";
+    const parsed = parseDraftOutput({
+      aiResponse,
+      field: wantsImpressionOnly ? "impression" : "full",
+    });
+    draftFindings = parsed.findings;
+    draftImpression = parsed.impression;
+    if (!parsed.ok) {
+      // Normalized through the same helper as every provider failure, so a
+      // refused parse carries the executed provider/model/deadline like any other
+      // `failure` — a client must never see two shapes for one field.
+      parseFailure = normalizeAiFailure(aiResult, {
+        code: "MALFORMED_RESPONSE",
+        message: draftParseFailureMessage(parsed.reason),
+      });
     }
-    // Drop cross-modality garbage (chest radiograph on CT Brain, etc.)
+    // Drop cross-modality garbage (chest radiograph on CT Brain, etc.) — and say
+    // that is what happened, rather than returning a silently empty impression.
     if (
-      draftImpression
+      !parseFailure
+      && draftImpression
       && !impressionMatchesStudyContext(draftImpression, { modality, studyDescription })
     ) {
       draftImpression = "";
+      parseFailure = normalizeAiFailure(aiResult, {
+        code: "EMPTY_RESPONSE",
+        message:
+          "The draft was discarded because it described a different modality or body region than this study.",
+      });
     }
     parser = buildParserMeta(aiResponse, draftFindings, draftImpression);
   }
+
+  /**
+   * The one failure object this request answers with. `call.failure` covers what
+   * the execution layer saw (policy, configuration, deadline, HTTP, an
+   * unattributable provider); `parseFailure` covers the only thing it could not
+   * see — the answer arrived and cannot be read as the section requested.
+   */
+  const draftFailure = call.failure ?? parseFailure;
 
   // Grounding verdict from the composer's own validator. Advisory — nothing here
   // withholds the draft; it labels it, so ungrounded model prose cannot arrive
@@ -1338,8 +1409,11 @@ router.post("/draft", async (req, res): Promise<void> => {
   const diag = buildAiReportingDraftDiagnostics({
     requestId,
     worklistId: worklistId ?? null,
-    providerName,
-    model: model || null,
+    // C1 — the identity that executed. The builder already prefers the provider
+    // layer's own figures; passing the confirmed identity as well means the
+    // fallback can no longer describe a provider that never ran.
+    providerName: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
     promptLength: finalPrompt.length,
     startedAt: routeStartedAt,
     imageMeta,
@@ -1360,7 +1434,9 @@ router.post("/draft", async (req, res): Promise<void> => {
   // it. That draft would have been written from a prompt carrying no findings
   // at all — pure image-plus-template invention with no radiologist input.
   let draftId: number | null = null;
-  if (success && !warmUpOnly) {
+  // A refused answer is not a stored draft: `GET /drafts/:studyInstanceUID` hands
+  // these rows to whoever opens the study next, so nothing unusable may land here.
+  if (success && !draftFailure && !warmUpOnly) {
     const inserted = await db.insert(aiReportingDraftsTable)
       .values({
         studyInstanceUID: studyInstanceUID ?? null,
@@ -1368,8 +1444,8 @@ router.post("/draft", async (req, res): Promise<void> => {
         patientId: patientId ?? null,
         userId: user.subjectId,
         userName: user.subjectName,
-        provider: providerName,
-        model: model || null,
+        provider: call.executedProvider ?? providerName,
+        model: call.executedModel ?? (model || null),
         promptText: finalPrompt.substring(0, 2000),
         templateName: null,
         aiResponse: aiResponse.substring(0, 4000),
@@ -1380,23 +1456,26 @@ router.post("/draft", async (req, res): Promise<void> => {
     draftId = inserted[0]?.id ?? null;
   }
 
-  // Audit log (non-critical)
+  // Audit log (non-critical). C1: the provider and model written here are the ones
+  // the EXECUTION layer reported, so an audit row can no longer describe a request
+  // as handled by a provider that never received it. `success` means "the
+  // radiologist was given usable text", which is what an auditor asks.
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
     patientId: patientId ?? null,
     studyInstanceUID: studyInstanceUID ?? null,
     accessionNumber: accessionNumber ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
     promptText: finalPrompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     includedDemographics: false,
     wasInsertedToReport: false,
     draftId,
-    success,
-    errorMessage: errorMsg ?? null,
+    success: success && !draftFailure,
+    errorMessage: draftFailure?.message ?? errorMsg ?? null,
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
@@ -1405,6 +1484,17 @@ router.post("/draft", async (req, res): Promise<void> => {
     res.status(502).json({
       error: errorMsg ?? "AI provider error",
       requestId,
+      // C1 — one small stable code alongside the sentence the UI has always been
+      // given. `error` is deliberately untouched: surfaces match on its wording,
+      // and an infrastructure PR does not get to rename a clinician-visible
+      // message as a side effect.
+      failure: draftFailure ?? null,
+      executed: aiResult.execution ?? null,
+      resolution: {
+        provider: target.provider,
+        providerSource: target.providerSource,
+        modelSource: target.modelSource,
+      },
       diagnostics: {
         provider: diag.provider,
         resolvedEndpoint: diag.resolvedEndpoint,
@@ -1443,12 +1533,22 @@ router.post("/draft", async (req, res): Promise<void> => {
     // `findings` is the workspace autofill key; `draft` kept for older clients.
     // Both are empty when the caller asked for an impression only, so no surface
     // can offer model-invented findings as a replacement for text the
-    // radiologist already typed.
+    // radiologist already typed. A refused parse (see `failure`) leaves them empty
+    // too — the whole response is never substituted for a requested section.
     findings: draftFindings,
     draft: draftFindings,
     impression: draftImpression,
-    provider: providerName,
-    model: model || null,
+    // C1 — the provider and model that ACTUALLY produced this text, as reported by
+    // the execution layer, matching the audit row written above.
+    provider: call.executedProvider ?? providerName,
+    model: call.executedModel ?? (model || null),
+    executed: aiResult.execution ?? null,
+    resolution: {
+      provider: target.provider,
+      providerSource: target.providerSource,
+      modelSource: target.modelSource,
+    },
+    failure: draftFailure ?? null,
     draftId,
     requestId,
     validation,
@@ -1478,35 +1578,58 @@ router.post("/polish", async (req, res): Promise<void> => {
     res.status(400).json({ error: "No text provided." }); return;
   }
 
-  const providerName = await getDefaultProviderName();
+  // C1 — this handler used to label its audit row with `getDefaultProviderName()`
+  // while `generateAiForTask("report_enhancement", …, {})` resolved the provider
+  // for real, from the task route. Two answers to one question, and the audit row
+  // held the wrong one. One resolution now, and the label is whatever executed.
+  const polishTarget = await resolveInteractiveTarget({
+    taskKey: "report_enhancement",
+    defaultProvider: globalSettings.defaultProvider,
+  });
+  if (!polishTarget.ok) {
+    res.status(polishTarget.httpStatus).json({ error: polishTarget.error });
+    return;
+  }
+
   const prompt =
     "You are a medical language editor. Refine the following radiology report text for grammar, clarity, and professional formatting. " +
     "Do NOT change any medical facts, measurements, or findings. Only improve language.\n\n" +
     text.trim() +
     "\n\nReturn ONLY the polished text with no additional commentary.";
 
-  const aiResult = await generateAiForTask("report_enhancement", prompt, [], {});
-  const success = aiResult.success;
-  const polished = aiResult.text;
+  const polishCall = await executeInteractiveAiCall({ target: polishTarget, prompt, images: [] });
+  const aiResult = polishCall.result;
+  const success = aiResult.success && polishCall.identityVerified;
+  const polished = success ? aiResult.text : "";
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
-    provider: providerName,
-    model: null,
+    provider: polishCall.executedProvider ?? polishTarget.provider,
+    model: polishCall.executedModel,
     promptText: prompt.substring(0, 2000),
     numImages: 0,
     anonymized: DICOM_REDACTION_PERFORMED,
     success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    errorMessage: success ? null : (polishCall.failure?.message ?? aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: polishCall.failure ?? null,
+    });
+    return;
   }
 
-  res.json({ polished: polished.trim(), aiSafetyLabel: "AI Draft – Requires Radiologist Review" });
+  res.json({
+    polished: polished.trim(),
+    aiSafetyLabel: "AI Draft – Requires Radiologist Review",
+    provider: polishCall.executedProvider ?? polishTarget.provider,
+    model: polishCall.executedModel,
+    executed: aiResult.execution ?? null,
+  });
 });
 
 /**
@@ -1545,14 +1668,20 @@ router.post("/image-review", async (req, res): Promise<void> => {
     throw err;
   }
 
-  // Resolve provider — prefer vision-capable models
-  const taskRoute = await resolveTaskRoute("radiology_draft");
-  const providerName = taskRoute?.provider ?? globalSettings.defaultProvider;
-  const provConfig = await loadProviderConfig(providerName);
-  if (!provConfig || !provConfig.isEnabled) {
-    res.status(400).json({ error: `${providerName} provider is disabled or not configured.` }); return;
+  // C1 — one resolution with the same precedence this handler always used (task
+  // route, then the AI Reporting default), and the resolved provider is now the
+  // provider handed to execution. `provConfig` is no longer reachable here, which
+  // is the point: nothing downstream can re-resolve and disagree.
+  const reviewTarget = await resolveInteractiveTarget({
+    taskKey: "radiology_draft",
+    defaultProvider: globalSettings.defaultProvider,
+  });
+  if (!reviewTarget.ok) {
+    res.status(reviewTarget.httpStatus).json({ error: reviewTarget.error });
+    return;
   }
-  const model = taskRoute?.model ?? provConfig.defaultModel ?? "";
+  const providerName = reviewTarget.provider;
+  const model = reviewTarget.model ?? "";
 
   // Build vision prompt
   const prompt =
@@ -1574,33 +1703,43 @@ router.post("/image-review", async (req, res): Promise<void> => {
     res.status(400).json({ error: "No images available for this study." }); return;
   }
 
-  // Call AI with images
-  const aiResult = await generateAiForTask("radiology_draft", prompt, images, { model });
-  const success = aiResult.success;
-  const aiResponse = aiResult.text;
+  // Call AI with images. C1: through the same single-owner execution boundary as
+  // `/draft`, so the provider whose images these are allowed to reach is the
+  // provider the audit row names.
+  const reviewCall = await executeInteractiveAiCall({ target: reviewTarget, prompt, images });
+  const aiResult = reviewCall.result;
+  const success = aiResult.success && reviewCall.identityVerified;
+  const aiResponse = success ? aiResult.text : "";
 
   // Audit log
   await db.insert(aiReportingAuditLogsTable).values({
     userId: user.subjectId,
     userName: user.subjectName,
     studyInstanceUID: studyInstanceUID ?? null,
-    provider: providerName,
-    model: model || null,
+    provider: reviewCall.executedProvider ?? providerName,
+    model: reviewCall.executedModel ?? (model || null),
     promptText: prompt.substring(0, 2000),
     numImages: images.length,
     anonymized: DICOM_REDACTION_PERFORMED,
     success,
-    errorMessage: success ? null : (aiResult.error ?? null),
+    errorMessage: success ? null : (reviewCall.failure?.message ?? aiResult.error ?? null),
   }).catch(() => { /* non-critical */ });
 
   if (!success) {
-    res.status(502).json({ error: aiResult.error ?? "AI provider error" }); return;
+    // `IMAGE_EGRESS_BLOCK` in here is the answer to "why did the vision review
+    // fail on a cloud provider?" — which previously surfaced only as a sentence.
+    res.status(502).json({
+      error: aiResult.error ?? "AI provider error",
+      failure: reviewCall.failure ?? null,
+    });
+    return;
   }
 
   res.json({
     aiResponse: aiResponse.trim(),
-    provider: providerName,
-    model: model || null,
+    provider: reviewCall.executedProvider ?? providerName,
+    model: reviewCall.executedModel ?? (model || null),
+    executed: aiResult.execution ?? null,
     numImages: images.length,
     aiSafetyLabel: "AI Draft – Requires Radiologist Review",
   });
