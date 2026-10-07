@@ -78,6 +78,13 @@ export const CLINICAL_RESET_FIELDS = [
   "railStage",
   "ghostText",
   "ghostTextTarget",
+  // C2 — the binding travels with the suggestion it describes. Leaving it out
+  // would leave Patient A's context digest sitting on Patient B's screen, and an
+  // unmatched digest is what makes the proposal stale, not what makes it safe.
+  // `ghostRequestSeq` is deliberately NOT here: it is a monotonic ordering
+  // counter, not clinical state, and resetting it would let a response still in
+  // flight from the previous study arrive as the newest one.
+  "ghostProposal",
   "copilotItems",
   "notification",
   "acknowledgedCopilotIds",
@@ -162,6 +169,7 @@ export function emptyClinicalState(): ClinicalResetState {
     railStage: "orient",
     ghostText: null,
     ghostTextTarget: null,
+    ghostProposal: null,
     copilotItems: [],
     notification: null,
     acknowledgedCopilotIds: new Set(),

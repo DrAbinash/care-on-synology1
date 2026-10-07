@@ -1,5 +1,7 @@
 import { useEffect, useRef, useMemo, useState } from "react";
-import { useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
+import { useWorkspace, useWorkspaceSelector, EMPTY_FIELD_PROVENANCE } from "@/lib/zai-workspace/store";
+import { COPILOT_TARGET_FIELDS } from "@/lib/zai-workspace/copilotAcceptanceContract";
+import { aiProposalBindingForField } from "@/lib/zai-workspace/aiProposalContext";
 import { runLintRules, type LintIssue } from "@/lib/zai-workspace/types";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
@@ -125,6 +127,11 @@ export function FindingsEditor({
   const gTarget = useWorkspaceSelector(s => showGhost ? s.ghostTextTarget : null);
   const accept = useWorkspaceSelector(s => s.acceptGhostText);
   const setGhost = useWorkspaceSelector(s => s.setGhostText);
+  // C2 — read the verdict, do not compute one: this is the same call
+  // `acceptGhostText` makes, so the colour on screen and the answer at acceptance
+  // cannot disagree. Recomputed per render rather than stored, so it cannot itself
+  // go out of date.
+  const ghostStale = useWorkspaceSelector(s => (showGhost ? s.ghostProposalStale() : false));
   const sid = useWorkspaceSelector(s => s.activeStudyId);
   const studies = useWorkspaceSelector(s => s.studies);
   const startingCanvasBaseline = useWorkspaceSelector((s) => s.startingCanvasBaseline);
@@ -236,7 +243,19 @@ export function FindingsEditor({
     if (field === "impression") s = /mass|lesion|tumor/.test(value) ? "Findings are concerning for malignancy. Recommend tissue diagnosis." : /normal|unremarkable/.test(value) ? "No acute abnormality. Clinical correlation advised." : "Clinical correlation and follow-up.";
     else if (field === "findings") s = /measur/.test(value) ? "measuring approximately ___ × ___ × ___ cm." : /normal$/.test(value) ? "in size and configuration. No acute abnormality." : /mass|lesion|tumor/.test(value) ? "with irregular margins and heterogeneous enhancement." : "No evidence of acute infarct, hemorrhage, or mass lesion.";
     else if (field === "recommendation") s = "Clinical correlation advised. Follow-up as clinically indicated.";
-    setGhost(s, s ? field : null);
+    if (!s) { setGhost(null, null); return; }
+    // C2 — this completion is deterministic (no model involved), but it is still a
+    // suggestion resting on text the radiologist may change before pressing Tab, so
+    // it carries the same binding as a model's: generated FROM this field's text
+    // now, destined for this field. A field outside the narrative set gets no
+    // binding, and an unbound suggestion fails closed at acceptance.
+    const narrative = (COPILOT_TARGET_FIELDS as readonly string[]).includes(field)
+      ? (field as (typeof COPILOT_TARGET_FIELDS)[number])
+      : null;
+    const binding = narrative
+      ? aiProposalBindingForField(useWorkspace.getState(), narrative, narrative)
+      : null;
+    setGhost(s, narrative, binding);
   };
   const lines = (typeof value === "string" ? value : "").split("\n");
 
@@ -419,8 +438,16 @@ export function FindingsEditor({
           {gt && gTarget === field && (
             <div className="pointer-events-none col-start-1 row-start-1 relative z-[1] px-3 py-2.5 text-sm leading-[1.6] whitespace-pre-wrap">
               <span className="invisible">{value}{value.endsWith("\n") ? "" : " "}</span>
-              <span className="italic text-emerald-600/60">{gt}</span>
-              <span className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-mono text-emerald-700 not-italic">Tab</span>
+              <span className={ghostStale ? "italic text-amber-700/70" : "italic text-emerald-600/60"}>{gt}</span>
+              <span
+                className={cn(
+                  "ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-mono not-italic",
+                  ghostStale ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-700",
+                )}
+                data-testid={ghostStale ? `ghost-stale-${field}` : undefined}
+              >
+                {ghostStale ? "out of date" : "Tab"}
+              </span>
             </div>
           )}
         </div>

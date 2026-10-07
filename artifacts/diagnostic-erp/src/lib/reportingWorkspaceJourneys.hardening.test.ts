@@ -161,8 +161,31 @@ describe("Journey 11 — Ctrl+I on Study A, answer arrives on Study B", () => {
     // write has to come from the state that the guard just cleared.
     const src = read(AI_IMPRESSION_SRC);
     expect(src).toContain("const now = useWorkspace.getState();");
-    expect(src).toContain("now.setGhostText(res.impression, \"impression\")");
+    // Matched on the call's shape rather than its exact text: C2 added the context
+    // binding as a third argument, and this test is about WHICH store the write
+    // comes from, not about how many arguments `setGhostText` takes.
+    expect(src).toMatch(/now\.setGhostText\(\s*res\.impression,\s*"impression",\s*binding\s*\)/);
     expect(src).not.toContain("atRequest.setGhostText");
+  });
+
+  it("WIRED: the Ctrl+I binding is taken from the pre-await state, not the response", () => {
+    // C2's whole claim is that a proposal records the state it was generated from.
+    // Read after the await it would describe whatever the radiologist had typed in
+    // the meantime, and the proposal would arrive already looking current — the
+    // in-flight drift case, pinned here by ordering rather than by behaviour,
+    // because behaviour alone cannot tell the two readings apart until the moment
+    // a response lands late.
+    const src = read(AI_IMPRESSION_SRC);
+    expectOrder(
+      src,
+      "const atRequest = useWorkspace.getState()",
+      "const requestSeq = atRequest.beginAiProposalRequest()",
+      "aiProposalBindingForImpression(",
+      "await api.post<AiDraftResponse>(\"/api/ai-reporting/draft\"",
+      "now.setGhostText(res.impression, \"impression\", binding)",
+    );
+    expect(src).toContain("const verdict = evaluateAiProposal(");
+    expect(src).toContain("AI impression is already out of date");
   });
 });
 

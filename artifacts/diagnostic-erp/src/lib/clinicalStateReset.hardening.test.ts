@@ -576,6 +576,10 @@ const SESSION_SCOPE_KEYS = [
   "parkedStudyIds",
   "sessionStartedAt",
   "lastSignAt",
+  // C2: a monotonic request counter, not clinical content. It must survive a
+  // study switch — resetting it to zero would let a response still in flight
+  // from the previous study arrive as the newest one and win the ordering check.
+  "ghostRequestSeq",
   "fatigueCardDismissed",
   "criticalSlaMinutes",
   "quickSelectTiles",
