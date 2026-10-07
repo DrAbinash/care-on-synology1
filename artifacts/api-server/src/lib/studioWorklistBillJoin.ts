@@ -7,6 +7,9 @@
  *   3. worklistId     — worklist.study_id → radiology_studies.bill_id
  *   4. singleHit      — patientName + studyDate ±1 day + modality (exactly one bill)
  *
+ * Then, for whichever bill resolved, the order's own test list supplies
+ * testName / testCode (lane 5) — demographics never come from a test line.
+ *
  * Never synthesizes "Self/Walk-in". Referring doctor / age / sex come from
  * bill → order → doctor / patient rows only.
  */
@@ -14,12 +17,21 @@ import { db } from "@workspace/db";
 import {
   billsTable,
   doctorsTable,
+  orderTestsTable,
   ordersTable,
   patientsTable,
   radiologyStudiesTable,
+  testsTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { normalizeModality } from "./usgModality";
+
+/**
+ * The ultrasound department label, as the catalog stores it. Measured on the
+ * NAS 2026-10-07: `USG` is the only department any ultrasound procedure is
+ * filed under (43 tests; Pathology 195, MRI 87, X-Ray 64, CT 46 …).
+ */
+export const ULTRASOUND_DEPARTMENT = "usg";
 
 export type BillMatchKey =
   | "billNumber"
@@ -38,7 +50,68 @@ export type BillDeskResolution = {
   patientId: number | null;
   patientPhone: string;
   patientAddress: string;
+  /** The bill's ultrasound procedure, or "" when the bill doesn't name one. */
+  testName: string;
+  /** Its catalog code (`USG023`), which survives a rename of the display name. */
+  testCode: string;
 };
+
+/** One active ordered test, as needed to decide the bill's ultrasound line. */
+export type BilledTestRow = {
+  billId: number;
+  department: string;
+  code: string;
+  name: string;
+  /** `order_tests.display_name` — what the printed bill actually shows. */
+  displayName: string | null;
+};
+
+/**
+ * The bill desk names the study, so the ultrasound line is the study's test —
+ * whichever position reception added it in.
+ *
+ * This is the SECOND source for a worklist row's procedure. The first is the
+ * row's own `radiology_studies` link, which already carries `test_id` and so
+ * names the exact sub-category (USG THYROID, not "USG"). This function only
+ * matters for a study that reached PACS before that link existed — the scanner
+ * sends no worklist and no accession, so the bill's own test list is the only
+ * place the procedure is written down.
+ *
+ * Position is not information: `order_tests.id` order reflects clicking, not
+ * clinical priority, so it is deliberately never consulted.
+ *
+ * Exactly one ultrasound test resolves. None means the bill has no scan on it;
+ * two or more (79 of 4,841 ultrasound bills measured 2026-10-07) cannot be told
+ * apart by anything the DICOM carries, so they stay blank rather than guess —
+ * a wrong name here opens the wrong report format on a real patient.
+ *
+ * The department label is enough to find the line, because USG is the only
+ * department any ultrasound procedure is filed under. What a sub-category
+ * resolves TO is the Studio's decision, and its `usg_billing_procedure_map`
+ * covers 41 of the 43 USG catalog rows (FIBROSCAN and a bank trial entry are
+ * the two it deliberately refuses) — measured 2026-10-07 against the live
+ * catalog export.
+ */
+export function pickSoleUltrasoundTest(
+  rows: BilledTestRow[],
+): Map<number, { testName: string; testCode: string }> {
+  const byBill = new Map<number, BilledTestRow[]>();
+  for (const r of rows) {
+    if ((r.department ?? "").trim().toLowerCase() !== ULTRASOUND_DEPARTMENT) continue;
+    const list = byBill.get(r.billId);
+    if (list) list.push(r);
+    else byBill.set(r.billId, [r]);
+  }
+  const out = new Map<number, { testName: string; testCode: string }>();
+  for (const [billId, list] of byBill) {
+    if (list.length !== 1) continue;
+    const t = list[0]!;
+    const name = (t.displayName ?? "").trim() || (t.name ?? "").trim();
+    if (!name && !t.code) continue;
+    out.set(billId, { testName: name, testCode: (t.code ?? "").trim() });
+  }
+  return out;
+}
 
 export type WorklistBillJoinInput = {
   worklistId: number;
@@ -181,6 +254,10 @@ function toResolution(row: BillDeskRow, matchedKey: BillMatchKey): BillDeskResol
     patientId: row.patientId,
     patientPhone: row.patientPhone ?? "",
     patientAddress: row.patientAddress ?? "",
+    // Filled by the second pass in resolveBillDeskForWorklistRows, which is
+    // where the bill's own test list is read.
+    testName: "",
+    testCode: "",
   };
 }
 
@@ -195,6 +272,8 @@ function emptyResolution(): BillDeskResolution {
     patientId: null,
     patientPhone: "",
     patientAddress: "",
+    testName: "",
+    testCode: "",
   };
 }
 
@@ -497,7 +576,57 @@ export async function resolveBillDeskForWorklistRows(
     );
   }
 
+  // ── 5. the bill's own ultrasound line (name + catalog code) ──────────────
+  // Every lane above resolves a bill; the procedure the scan is FOR lives on the
+  // order's test list, which none of them read. Without it a worklist row that
+  // has no radiology_studies link reports no test name at all — and the Studio
+  // then has nothing to choose a report format from.
+  const billsWithResolution = [
+    ...new Set(
+      [...result.values()]
+        .map((r) => r.billId)
+        .filter((id): id is number => typeof id === "number" && id > 0),
+    ),
+  ];
+  const soleTests = pickSoleUltrasoundTest(await loadUltrasoundTestsForBills(billsWithResolution));
+  for (const r of result.values()) {
+    if (r.matchedKey == null || r.billId == null) continue;
+    const t = soleTests.get(r.billId);
+    if (!t) continue;
+    r.testName = t.testName;
+    r.testCode = t.testCode;
+  }
+
   return result;
+}
+
+/**
+ * Every active ordered test on these bills, with the department label needed
+ * to pick the ultrasound one. Cancelled lines are excluded because a cancelled
+ * test is not what was scanned.
+ */
+async function loadUltrasoundTestsForBills(billIds: number[]): Promise<BilledTestRow[]> {
+  if (billIds.length === 0) return [];
+  const rows = await db
+    .select({
+      billId: billsTable.id,
+      department: testsTable.department,
+      code: testsTable.code,
+      name: testsTable.name,
+      displayName: orderTestsTable.displayName,
+    })
+    .from(billsTable)
+    .innerJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .innerJoin(testsTable, eq(testsTable.id, orderTestsTable.testId))
+    .where(and(inArray(billsTable.id, billIds), eq(orderTestsTable.status, "active")));
+  return rows.map((r) => ({
+    billId: r.billId,
+    department: r.department ?? "",
+    code: r.code ?? "",
+    name: r.name ?? "",
+    displayName: r.displayName ?? null,
+  }));
 }
 
 /** Pure helper for stamp/backfill: name-only matches are refused. */

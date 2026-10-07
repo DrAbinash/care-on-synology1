@@ -4,6 +4,7 @@ import {
   emptyMatchKeyCounters,
   isSingleHitExact,
   parseStudyDate,
+  pickSoleUltrasoundTest,
   referringDoctorFromBillDesk,
   sanitizePatientAge,
   sanitizePatientSex,
@@ -73,5 +74,77 @@ describe("match key counters", () => {
       singleHit: 1,
       unmatched: 1,
     });
+  });
+});
+
+const usgTest = (billId: number, over: Partial<Parameters<typeof pickSoleUltrasoundTest>[0][number]> = {}) => ({
+  billId,
+  department: "USG",
+  code: "USG023",
+  name: "USG THYROID",
+  displayName: null,
+  ...over,
+});
+
+describe("pickSoleUltrasoundTest — the bill's scan is the study's test", () => {
+  it("finds the ultrasound line among unrelated tests", () => {
+    const m = pickSoleUltrasoundTest([
+      usgTest(7, { billId: 7 }),
+      { ...usgTest(7), billId: 7, department: "Pathology", code: "CBC", name: "COMPLETE BLOOD COUNT" },
+      { ...usgTest(7), billId: 7, department: "X-Ray", code: "XRAYKUB", name: "X-RAY KUB" },
+    ]);
+    expect(m.get(7)).toEqual({ testName: "USG THYROID", testCode: "USG023" });
+    expect(m.size).toBe(1);
+  });
+
+  it("ignores the serial the tests were added in", () => {
+    const a = pickSoleUltrasoundTest([
+      { ...usgTest(3), department: "Pathology", code: "TSH", name: "THYROID STIMULATING HORMONE" },
+      usgTest(3),
+    ]);
+    const b = pickSoleUltrasoundTest([usgTest(3), { ...usgTest(3), department: "Pathology", code: "TSH", name: "THYROID STIMULATING HORMONE" }]);
+    expect(a.get(3)).toEqual(b.get(3));
+    expect(a.get(3)?.testCode).toBe("USG023");
+  });
+
+  it("refuses a bill carrying two ultrasound tests — nothing can separate them", () => {
+    const m = pickSoleUltrasoundTest([
+      usgTest(9),
+      usgTest(9, { code: "USG024", name: "USG UPPER ABDOMEN" }),
+    ]);
+    expect(m.has(9)).toBe(false);
+  });
+
+  it("refuses a scan billed beside an ultrasound-guided procedure — same department, different study", () => {
+    const m = pickSoleUltrasoundTest([
+      usgTest(8, { code: "USG W", name: "USG WHOLE ABDOMEN" }),
+      usgTest(8, { code: "USGFNAC", name: "USG GUIDED FNAC" }),
+    ]);
+    expect(m.has(8)).toBe(false);
+  });
+
+  it("names a bill whose only ultrasound line is a guided procedure — the Studio owns that mapping", () => {
+    const m = pickSoleUltrasoundTest([usgTest(10, { code: "USGFNAC", name: "USG GUIDED FNAC" })]);
+    expect(m.get(10)).toEqual({ testName: "USG GUIDED FNAC", testCode: "USGFNAC" });
+  });
+
+  it("prefers the bill's own display name over the catalog name", () => {
+    const m = pickSoleUltrasoundTest([usgTest(11, { displayName: "  USG Thyroid (Dr Rao)  " })]);
+    expect(m.get(11)?.testName).toBe("USG Thyroid (Dr Rao)");
+  });
+
+  it("falls back to the catalog name when the override is blank", () => {
+    const m = pickSoleUltrasoundTest([usgTest(12, { displayName: "   " })]);
+    expect(m.get(12)?.testName).toBe("USG THYROID");
+  });
+
+  it("is the only ultrasound department label, matched case-insensitively", () => {
+    expect(pickSoleUltrasoundTest([usgTest(13, { department: "usg" })]).get(13)?.testCode).toBe("USG023");
+    expect(pickSoleUltrasoundTest([usgTest(14, { department: "Cardiology", code: "ECHO", name: "ECHO" })]).size).toBe(0);
+  });
+
+  it("never invents a name from a bill with no ultrasound line", () => {
+    expect(pickSoleUltrasoundTest([]).size).toBe(0);
+    expect(pickSoleUltrasoundTest([{ ...usgTest(15), department: "MRI" }]).size).toBe(0);
   });
 });

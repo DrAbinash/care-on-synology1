@@ -339,6 +339,7 @@ router.get("/worklist", async (req, res) => {
         studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
         studyId: radiologyWorklistTable.studyId,
         testName: testsTable.name,
+        testCode: testsTable.code,
         billId: radiologyStudiesTable.billId,
         billNumber: billsTable.billNumber,
         billedTestName: testsTable.name,
@@ -403,6 +404,9 @@ router.get("/worklist", async (req, res) => {
 
     const sourceId = studioSourceId(req);
     let validationFailures = 0;
+    let testNamesFromStudy = 0;
+    let testNamesFromBillDesk = 0;
+    let testNamesBlank = 0;
     let sentinels = emptySentinelCounters();
     let matchKeys = emptyMatchKeyCounters();
 
@@ -426,6 +430,17 @@ router.get("/worklist", async (req, res) => {
       const billId = desk?.billId ?? r.billId ?? null;
       const billNumber = desk?.billNumber || r.billNumber || "";
 
+      // The study row's own test is the exact answer for THIS scan and names
+      // its sub-category (USG THYROID, not just "USG"), so it wins. The bill's
+      // single ultrasound line is next — the only place the procedure is
+      // written down for a study that reached PACS before its
+      // radiology_studies link existed. A bill carrying two ultrasound lines
+      // supplies nothing there instead of guessing, and the DICOM description
+      // is the last resort.
+      const testName =
+        r.testName || (desk?.matchedKey ? desk.testName : "") || r.studyDescription || "";
+      const testCode = r.testCode || (desk?.matchedKey ? desk.testCode : "") || "";
+
       const mapped = {
         worklistId: String(r.id),
         accessionNumber: r.accessionNumber ?? "",
@@ -440,7 +455,9 @@ router.get("/worklist", async (req, res) => {
         /** Additive: Bill Desk join key used for this row (null = unmatched). */
         matchedKey: desk?.matchedKey ?? null,
         referringDoctor,
-        testName: r.testName ?? r.studyDescription ?? "",
+        testName,
+        /** Catalog code of that same test (`USG023`), which survives a rename. */
+        testCode,
         modality: r.modality,
         studyDate: toIsoStudyDate(r.studyDate),
         studyInstanceUid: r.studyInstanceUID ?? null,
@@ -448,6 +465,9 @@ router.get("/worklist", async (req, res) => {
       };
 
       const validated = validateStudioWorklistRow(mapped);
+      if (r.testName) testNamesFromStudy += 1;
+      else if (desk?.matchedKey && desk.testName) testNamesFromBillDesk += 1;
+      if (!testName) testNamesBlank += 1;
       if (!validated.ok) {
         validationFailures += 1;
         for (const issue of validated.issues) {
@@ -500,6 +520,9 @@ router.get("/worklist", async (req, res) => {
         sourceId,
         rowsServed: dedupedRows.length,
         ghostsSuppressed: ghostsSuppressed.length,
+        testNamesFromStudy,
+        testNamesFromBillDesk,
+        testNamesBlank,
         rowsByModality,
         validationFailures,
         sentinels,
