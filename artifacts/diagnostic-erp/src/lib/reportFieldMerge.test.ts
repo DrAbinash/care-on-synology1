@@ -64,12 +64,19 @@ describe("mergeSentences (findings/impression)", () => {
     expect(mergeSentences(a, a)).toBe(a);
   });
 
-  it("prefers more informative finding when safe", () => {
+  it("B-02: a longer restatement is kept as its own sentence; the existing one is never rewritten", () => {
+    // This test used to assert the opposite — one line, the "more informative"
+    // sentence winning — which is the merge engine deciding that "Disc
+    // desiccation at L4-L5." implies "Disc desiccation with diffuse bulge at
+    // L4-L5.". It does not: the second claims a bulge nobody stated. Subset
+    // containment is not identity, so both statements now stand, each with its
+    // own source, and the radiologist (or the QC layer) reconciles them.
     const existing = "Disc desiccation at L4-L5.";
     const incoming = "Disc desiccation with diffuse bulge at L4-L5.";
     const out = mergeSentences(existing, incoming);
-    expect(out).toContain("diffuse bulge");
-    expect(out.split("\n").length).toBe(1);
+    expect(out.split("\n")).toContain(existing);
+    expect(out.split("\n")).toContain(incoming);
+    expect(out.split("\n").length).toBe(2);
   });
 
   it("preserves laterality differences", () => {
@@ -138,17 +145,19 @@ describe("mergeSentences — measurement precision is clinical detail", () => {
     expect(out).toContain("L5-S1");
   });
 
-  it("never downgrades precision when a sentence carries two measurements", () => {
-    // hasConflictingClinicalDetail compares only the FIRST match of each guard
-    // regex, and the first mm/cm match here is identical in both sentences. The
-    // sentence still does not merge, because the word-level subsequence test
-    // fails on 4.1 vs 4 — so the precise figure survives and the rounded one is
-    // discarded rather than replacing it.
+  it("never downgrades precision: the measured figure is never replaced by a rounded restatement", () => {
+    // The clinical point of this test has always been "12.6 mm must not become
+    // 12 mm". B-02 changes how that is guaranteed. Before, the rounded sentence
+    // was quietly DISCARDED by the subsequence fold; now nothing is discarded and
+    // nothing is rewritten — the precise line stays exactly as written and the
+    // rounded restatement arrives as its own visible sentence, which is the safe
+    // direction: a duplicate is reviewable, a silently chosen number is not.
     const existing = "Canal 12.6 mm and foramen 4.1 mm at L4-L5.";
     const incoming = "Canal 12.6 mm and foramen 4 mm at L4-L5.";
     const out = mergeSentences(existing, incoming);
+    expect(out.split("\n")).toContain(existing);
     expect(out).toContain("4.1 mm");
-    expect(out).not.toContain("foramen 4 mm");
+    expect(out.split("\n")).toHaveLength(2);
   });
 });
 
@@ -260,7 +269,12 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
     expect(second.provenance[key]).toContain("quick-findings");
   });
 
-  it("near-merge keeps unioned provenance on the informative sentence", () => {
+  it("B-02: a near-merge keeps each sentence's own provenance instead of laundering it", () => {
+    // Before, the longer sentence replaced the shorter one and the two sources
+    // were unioned onto it — so a Quick Select insert could end up attributed to
+    // a manual sentence it had merely resembled. Provenance may be unioned only
+    // over text that is provably the same statement (the exact-duplicate case
+    // above still does that), so each sentence now carries its own source.
     const first = mergeReportFieldContentWithProvenance({
       field: "findings",
       existing: "",
@@ -274,10 +288,13 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
       source: "quick-findings",
       existingProvenance: first.provenance,
     });
-    expect(second.text.split("\n").length).toBe(1);
-    expect(second.text).toContain("diffuse bulge");
-    const key = normalizeForDedupe(second.text);
-    expect(second.provenance[key]).toEqual(["quick-select", "quick-findings"]);
+    expect(second.text.split("\n")).toHaveLength(2);
+    expect(second.provenance[normalizeForDedupe("Disc desiccation at L4-L5.")])
+      .toEqual(["quick-select"]);
+    expect(second.provenance[normalizeForDedupe("Disc desiccation with diffuse bulge at L4-L5.")])
+      .toEqual(["quick-findings"]);
+    expect(formatProvenanceHover(second.provenance[normalizeForDedupe("Disc desiccation at L4-L5.")!]!))
+      .toBe("Source: Quick Select");
   });
 });
 
