@@ -8,6 +8,12 @@ import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats,
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
 import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
 import { announceSignedMutationRefusal } from "./signedMutationRefusalNotice";
+import {
+  announceQuickSelectParameterRefusal,
+  isQuickSelectSource,
+  resolvedQuickSelectSeverity,
+  unresolvedQuickSelectParameters,
+} from "./quickSelectParameterContract";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
 import {
   DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
@@ -1668,10 +1674,52 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().activeAnchor,
       get().studyComposition,
     );
-    const incoming = applySideToIncoming(
-      templates,
-      observation.supportsLaterality ? (opts.side ?? "") : "",
-    );
+    // The values the substitution path below can actually resolve. `side` was
+    // already gated on the observation declaring laterality; `severity` is new
+    // and gated further to the Quick Select sources, so the structured-format and
+    // macro surfaces keep getting exactly the two-argument behaviour they were
+    // written against (they fill `{level}` / `{value}` themselves, upstream).
+    const sideForWrite: Side | "" = observation.supportsLaterality ? (opts.side ?? "") : "";
+    const severityForWrite = isQuickSelectSource(opts.source)
+      ? resolvedQuickSelectSeverity(opts.severity)
+      : "";
+
+    // B-09 — a Quick Select tile may write a resolved clinical statement, or it
+    // may write nothing.
+    //
+    // Ten shipped tiles carry `{side}` in their sentence and one carries
+    // `{severity}`. The strip had a substitution path (`applySideToIncoming`) but
+    // never passed a value through it, so `applySideToIncoming` hit its
+    // `if (!side) return incoming` guard and the template reached the page as
+    // authored: Findings "Restricted diffusion in the {side} MCA territory…",
+    // Impression "Acute {side} MCA territory infarct.", the same braces in the
+    // ledger's rendered copy — on three `category: "critical"` tiles — and the
+    // click still returned "applied", so usage counted, feedback fired and a
+    // silent draft save followed.
+    //
+    // Refusing here, before the first write, is the only honest option at this
+    // boundary. Deleting the token is what `fillTemplate` already does to an
+    // unfilled `{severity}` and produces a fluent, unfounded sentence; replacing
+    // it with "unspecified" invents a finding; defaulting to "left" is exactly the
+    // guess the contract forbids. Nothing below this line runs on a refusal, so
+    // the system-normal yield, the same-slot plan, the ledger row, the prose, the
+    // provenance, the undo frame and the dirty flag all stay untouched — and a
+    // tile that resolved both parameters applies exactly as it did before.
+    if (isQuickSelectSource(opts.source)) {
+      const unresolved = unresolvedQuickSelectParameters(
+        templates,
+        { side: sideForWrite, severity: severityForWrite },
+      );
+      if (unresolved.length > 0) {
+        console.warn(
+          `[care] applyPathologyOverlay refused: "${opts.label ?? opts.id}" needs ${unresolved.join(", ")}`,
+        );
+        announceQuickSelectParameterRefusal(unresolved);
+        return "refused";
+      }
+    }
+
+    const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite);
 
     // PR #662 §2 — System normal auto-yield.
     //
@@ -2981,7 +3029,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     let recommendation = get().recommendationText;
     const nextPatches = patches.map((p) => {
       if (p.observation && !p.observation.supportsLaterality) return p;
-      const next = applySideToIncoming(p.templates, side);
+      // Re-rendered from the template, so every parameter the template asks for
+      // has to be re-supplied — not just the side. Before B-09 a Quick Select row
+      // could never carry a severity, so passing only `side` cost nothing; now a
+      // "moderate left foraminal stenosis" would re-render as "right foraminal
+      // stenosis", the qualifier silently deleted by `fillTemplate` while the
+      // ledger still recorded severity = moderate. Same source gate as the apply
+      // path, so the structured-format and macro templates re-render exactly as
+      // they always did.
+      const next = applySideToIncoming(
+        p.templates,
+        side,
+        isQuickSelectSource(p.source) ? resolvedQuickSelectSeverity(p.observation?.severity) : "",
+      );
       findings = relateralizeOwnedText(findings, p.lastRendered.findings ?? "", next.findings ?? "");
       impression = relateralizeOwnedText(impression, p.lastRendered.impression ?? "", next.impression ?? "");
       technique = relateralizeOwnedText(technique, p.lastRendered.technique ?? "", next.technique ?? "");

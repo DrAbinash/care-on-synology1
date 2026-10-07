@@ -213,15 +213,34 @@ export function isProtectedManualSentence(
   return src.every((s) => s === "manual" || s === "radiologist-voice");
 }
 
-export function applySideToIncoming(incoming: PathologyIncoming, side: Side | ""): PathologyIncoming {
-  if (!side) return incoming;
+/**
+ * Resolves a template's parameters against values the radiologist chose.
+ *
+ * `severity` joins `side` here because the substitution path used to hard-code
+ * `severity: ""` into the instance it renders with: a tile that asked
+ * "how severe?" could never be answered, so the only two outcomes were literal
+ * `{severity}` in the report (when no side was supplied and `fillTemplate` never
+ * ran) or the token silently deleted (when a side was supplied and it did). Both
+ * are refused at the boundary now — see
+ * `zai-workspace/quickSelectParameterContract`.
+ *
+ * Callers that pass no severity keep the previous behaviour exactly: the early
+ * return means their templates are untouched, which is what the structured-format
+ * and macro surfaces rely on to fill `{level}` / `{value}` themselves.
+ */
+export function applySideToIncoming(
+  incoming: PathologyIncoming,
+  side: Side | "",
+  severity: AbnormalityInstance["severity"] = "",
+): PathologyIncoming {
+  if (!side && !severity) return incoming;
   const inst: AbnormalityInstance = {
-    side, severity: "", chronicity: "", level: "", value: "",
+    side, severity, chronicity: "", level: "", value: "",
   };
   const fill = (t?: string) => {
     if (!t) return t;
-    if (t.includes("{side}")) return fillTemplate(t, inst);
-    return applySide(t, side);
+    if (t.includes("{side}") || t.includes("{severity}")) return fillTemplate(t, inst);
+    return side ? applySide(t, side) : t;
   };
   return {
     findings: fill(incoming.findings),
