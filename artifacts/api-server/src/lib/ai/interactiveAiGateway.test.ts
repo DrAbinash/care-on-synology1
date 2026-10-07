@@ -455,4 +455,30 @@ describe("source contracts — the shape C1 must not regress into", () => {
     expect(handler).toMatch(/defaultProvider:\s*globalSettings\.defaultProvider/);
     expect(handler).not.toMatch(/getDefaultProviderName\(\)/);
   });
+
+  it("only a route that validated the AI Reporting default may inherit it", () => {
+    // `/draft` and `/image-review` have always checked that row's enablement and
+    // configuration, so on those paths the provider whose config was checked is the
+    // provider that runs. `/polish` never validated it — it only ever printed
+    // `getDefaultProviderName()` as a label — so letting it inherit the clinic
+    // default would change which model an editorial screen talks to as a side
+    // effect of an infrastructure change. Its precedence stays task route → global.
+    const src = read(ROUTE);
+    const slice = (marker: string) => {
+      const start = src.indexOf(marker);
+      expect(start, marker).toBeGreaterThan(-1);
+      const end = src.indexOf("router.", start + 1);
+      const out = src.slice(start, end === -1 ? undefined : end);
+      // Non-vacuity, before any negative assertion can be satisfied by nothing.
+      expect(out.length).toBeGreaterThan(400);
+      return out;
+    };
+
+    expect(slice('router.post("/image-review"')).toMatch(/defaultProvider:\s*globalSettings\.defaultProvider/);
+
+    const polish = slice('router.post("/polish"');
+    expect(polish).toContain("resolveInteractiveTarget(");
+    expect(polish).toMatch(/taskKey:\s*"report_enhancement"/);
+    expect(polish).not.toMatch(/defaultProvider:/);
+  });
 });

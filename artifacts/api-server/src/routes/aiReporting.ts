@@ -1582,9 +1582,15 @@ router.post("/polish", async (req, res): Promise<void> => {
   // while `generateAiForTask("report_enhancement", …, {})` resolved the provider
   // for real, from the task route. Two answers to one question, and the audit row
   // held the wrong one. One resolution now, and the label is whatever executed.
+  //
+  // Note what is deliberately NOT passed: `globalSettings.defaultProvider`. `/draft`
+  // has always validated that row, so on that path the checked provider is the
+  // provider that runs. `/polish` never validated it, so inheriting it here would
+  // silently move an editorial call onto a different provider than the one it used
+  // to reach — an infrastructure PR does not get to change which model a screen
+  // talks to as a side effect. Precedence stays task route → global default.
   const polishTarget = await resolveInteractiveTarget({
     taskKey: "report_enhancement",
-    defaultProvider: globalSettings.defaultProvider,
   });
   if (!polishTarget.ok) {
     res.status(polishTarget.httpStatus).json({ error: polishTarget.error });
