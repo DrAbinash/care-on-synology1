@@ -21,6 +21,7 @@
 import { useMemo, useState } from "react";
 
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { useCanalApCell } from "./useCanalApCell";
 import {
   DORSOLUMBAR_PRESETS,
   DORSOLUMBAR_SUBMASTER_IDS,
@@ -43,6 +44,7 @@ import {
 } from "@/lib/mriSpineNumbering";
 import {
   DORSOLUMBAR_NUMBERING_MODES,
+  dorsolumbarCanalSegment,
   dorsolumbarFullLevelSequence,
   dorsolumbarLevelKeyStrings,
   type DorsoLumbarNumberingMode,
@@ -560,10 +562,21 @@ function DorsoLumbarLevelEntryForm({
   const [canalSeverity, setCanalSeverity] = useState("");
   const [discSeverity, setDiscSeverity] = useState("");
   const [neuralEffect, setNeuralEffect] = useState("");
-  const [apMm, setApMm] = useState("");
+  /**
+   * The AP canal diameter is not this form's own: it is the canonical record for
+   * the level in scope — the same record the dorso-lumbar canal table writes. A
+   * number typed here therefore appears in the table and the printed measurement
+   * block, and a number measured in the table appears here. With no level in
+   * scope there is nothing to measure, and the writer refuses the keystroke rather
+   * than buffering a number that would be silently dropped at Apply.
+   */
+  const apCell = useCanalApCell({
+    level: ctx.level,
+    segment: dorsolumbarCanalSegment(ctx.level),
+  });
 
   const apply = () => {
-    const mm = num(apMm);
+    const mm = apCell.committed;
     const dorsal: DorsalLevelDetail = {
       ...(canalSeverity ? { canalSeverity: canalSeverity as never } : {}),
       ...(discSeverity ? { discSeverity: discSeverity as never } : {}),
@@ -613,8 +626,8 @@ function DorsoLumbarLevelEntryForm({
           <option value="flattened">flattened</option>
           <option value="compressed">compressed</option>
         </select>
-        <input className={MINI} style={{ width: "3.4rem" }} inputMode="decimal" placeholder="AP mm" value={apMm} disabled={disabled}
-          onChange={(e) => setApMm(e.target.value)} data-testid="dorsolumbar-detail-ap" />
+        <input className={MINI} style={{ width: "3.4rem" }} inputMode="decimal" placeholder="AP mm" value={apCell.value} disabled={disabled}
+          onChange={(e) => apCell.onChange(e.target.value)} onBlur={apCell.onBlur} data-testid="dorsolumbar-detail-ap" />
         <button type="button" className="h-5 rounded bg-sky-700 px-1.5 text-[8px] font-semibold text-white disabled:opacity-40"
           disabled={disabled || !ctx.level} onClick={apply} data-testid="dorsolumbar-detail-apply">
           Apply level entry

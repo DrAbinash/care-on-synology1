@@ -23,40 +23,28 @@
 import { useCallback, useMemo, useRef } from "react";
 
 import { useWorkspace } from "@/lib/zai-workspace/store";
-import {
-  canalApValue,
-  type CanalSegment,
-} from "@/lib/spineCanalAp";
+import { canalApValueAt, canalRows } from "@/lib/spineCanalAp";
 import {
   formatApMeasurements,
   type SpineApMeasurementSet,
 } from "@/lib/mriSpineCanvasRegions";
 import {
-  canonicalDorsoLumbarLevel,
   dorsolumbarApLevels,
-  dorsolumbarLevelDomain,
+  dorsolumbarCanalSegment,
 } from "@/lib/mriDorsoLumbarCoverage";
-
-/** Which measurement group a level belongs to — the domain, not the panel. */
-function segmentOf(level: string): CanalSegment {
-  const domain = dorsolumbarLevelDomain(canonicalDorsoLumbarLevel(level)?.key ?? level);
-  return domain === "lumbar" ? "lumbar" : "dorsal";
-}
+import { CanalApRow } from "./CanalApRow";
 
 export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolean }) {
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
-  const recordCanalApManualValue = useWorkspace((s) => s.recordCanalApManualValue);
   const state = useWorkspace((s) => s.dorsoLumbarNumbering);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
-  const levels = useMemo(() => dorsolumbarApLevels(state), [state]);
-
-  const handleChange = useCallback(
-    (level: string, rawValue: string) => {
-      recordCanalApManualValue(level, rawValue, segmentOf(level));
-    },
-    [recordCanalApManualValue],
-  );
+  // `canalRows` puts the rows in the same lettering the record is stored under.
+  // The dorso-lumbar resolver speaks the report's letters (T-form, and T12-L1 at
+  // the bridge) while every writer canonicalises to D-form, so a row that was not
+  // canonicalised would save under D8-D9 and read back from T8-T9 — a cell that
+  // clears itself as you type, and a report block that prints nothing.
+  const levels = useMemo(() => canalRows(dorsolumbarApLevels(state)), [state]);
 
   const handleKeyDown = useCallback((idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
@@ -74,8 +62,8 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
       { segment: "lumbar", set: { segment: "lumbar", levels: [] } },
     ];
     for (const level of levels) {
-      const target = groups.find((g) => g.segment === segmentOf(level))!;
-      target.set.levels.push({ level, value: canalApValue(canalApProvenance[level]) });
+      const target = groups.find((g) => g.segment === dorsolumbarCanalSegment(level))!;
+      target.set.levels.push({ level, value: canalApValueAt(canalApProvenance, level) });
     }
     return groups
       .map((g) => formatApMeasurements(g.set))
@@ -95,25 +83,18 @@ export function DorsoLumbarApCanalMeasurements({ disabled }: { disabled?: boolea
       </div>
       <div className="mt-1 grid grid-cols-5 gap-1" data-testid="spine-ap-grid-dorsolumbar">
         {levels.map((level, idx) => {
-          const shown = canalApValue(canalApProvenance[level]);
-          const value = shown == null ? "" : String(shown);
+          const rowSegment = dorsolumbarCanalSegment(level);
           return (
-            <label key={level} className="flex flex-col gap-0.5" data-segment={segmentOf(level)}>
-              <span className="text-[8px] font-bold text-slate-600">{level}</span>
-              <input
-                ref={(el) => { inputsRef.current[idx] = el; }}
-                type="number"
-                step="0.1"
-                disabled={disabled}
-                value={value}
-                onChange={(e) => handleChange(level, e.target.value)}
-                onKeyDown={(e) => handleKeyDown(idx, e)}
-                placeholder="—"
-                className="h-6 w-full rounded border border-slate-200 px-1 text-[10px] tabular-nums"
-                data-testid={`spine-ap-input-dorsolumbar-${level}`}
-              />
-              <span className="text-[7px] text-slate-400">mm</span>
-            </label>
+            <CanalApRow
+              key={level}
+              level={level}
+              segment={rowSegment}
+              segmentTag={rowSegment}
+              testIdPrefix="spine-ap-input-dorsolumbar"
+              disabled={disabled}
+              setInputRef={(el) => { inputsRef.current[idx] = el; }}
+              onKeyDown={(e) => handleKeyDown(idx, e)}
+            />
           );
         })}
       </div>

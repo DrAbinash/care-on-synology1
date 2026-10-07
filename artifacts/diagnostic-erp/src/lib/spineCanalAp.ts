@@ -17,6 +17,7 @@ import {
   DORSAL_JUNCTION_LEVEL as SHARED_DORSAL_JUNCTION_LEVEL,
   LUMBAR_CANAL_LEVELS as SHARED_LUMBAR_CANAL_LEVELS,
   applyCanalViewerValue,
+  canalApValue,
   canalLevelsForSegment,
   canonicalizeCanalLevel,
   type CanalApMeasurement,
@@ -148,6 +149,44 @@ export function canalSegmentBadge(segment: CanalSegment): string {
  */
 export function normalizeDiscLevel(raw: string | null | undefined): string | null {
   return canonicalizeCanalLevel(raw);
+}
+
+/**
+ * The rows an AP canal table offers, in the form the record stores them under.
+ *
+ * A table's level list comes from a numbering / coverage resolver, and those
+ * resolvers still speak the report's letters: the dorsal resolver says "T8-T9"
+ * while the canonical record says "D8-D9". Canonicalising the row list is what
+ * makes a cell's READ key and its WRITE key the same key — without it a table
+ * can store a measurement it then never displays, and print a blank beside a
+ * number the radiologist typed. Deduped, because two spellings of one disc are
+ * one row, not two cells competing for the same record.
+ */
+export function canalRows(levels: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const level of levels) {
+    const canonical = normalizeDiscLevel(level);
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    out.push(canonical);
+  }
+  return out;
+}
+
+/**
+ * The reportable number for one row, whichever lettering the caller holds.
+ * `null` when the level is unmeasured, conflicted or renumbered — the caller
+ * shows an empty cell, never a guess.
+ */
+export function canalApValueAt(
+  records: Record<string, CanalApMeasurement | undefined> | null | undefined,
+  level: string | null | undefined,
+): number | null {
+  if (!records) return null;
+  const canonical = normalizeDiscLevel(level);
+  if (!canonical) return null;
+  return canalApValue(records[canonical]);
 }
 
 /** Extract a disc level from a free-form measurement label / type string. */

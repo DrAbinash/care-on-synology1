@@ -36,6 +36,7 @@ import {
   cervicalExitingRootHint,
 } from "@/lib/mriCervicalLevelState";
 import type { MriCervicalRegionDef } from "@/lib/mriSpineCanvasRegions";
+import { useCanalApCell } from "./useCanalApCell";
 import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
 
 export function MriCervicalLevelBlock({
@@ -80,18 +81,22 @@ export function MriCervicalLevelBlock({
 
   useEffect(() => {
     if (!open) {
-      setSel({
-        ...ledgerSel,
-        canalApMm: ledgerSel.canalApMm ?? canalApMm ?? null,
-      });
+      setSel({ ...ledgerSel });
     }
-  }, [ledgerSel, open, canalApMm]);
+  }, [ledgerSel, open]);
 
-  useEffect(() => {
-    if (open && canalApMm != null && sel.canalApMm == null) {
-      setSel((s) => ({ ...s, canalApMm }));
-    }
-  }, [open, canalApMm, sel.canalApMm]);
+  /**
+   * Not this block's state: the AP canal diameter is a read of the canonical
+   * measurement record, and typing here writes that record. See
+   * MriLumbarLevelBlock for the same rule and the legacy-prose fallback.
+   */
+  const apCell = useCanalApCell({
+    level: region.label,
+    segment: "cervical",
+    legacy: canalApMm ?? ledgerSel.canalApMm ?? null,
+  });
+  const apMm = apCell.committed;
+  const selForLevel = useMemo(() => ({ ...sel, canalApMm: apMm }), [sel, apMm]);
 
   const exitingRootHint = useMemo(
     () => region.kind === "disc-level" ? cervicalExitingRootHint(region.label) : null,
@@ -280,24 +285,13 @@ export function MriCervicalLevelBlock({
               type="number"
               step="0.1"
               className="h-6 w-20 rounded border border-slate-200 px-1 text-[10px]"
-              value={sel.canalApMm ?? ""}
+              value={apCell.value}
               disabled={disabled}
-              placeholder={canalApMm != null ? String(canalApMm) : "—"}
-              onChange={(e) => {
-                const v = e.target.value;
-                setSel((s) => ({ ...s, canalApMm: v === "" ? null : Number(v) }));
-              }}
+              placeholder="—"
+              onChange={(e) => apCell.onChange(e.target.value)}
+              onBlur={apCell.onBlur}
               data-testid={`mri-cerv-level-ap-${region.key}`}
             />
-            {canalApMm != null && sel.canalApMm == null ? (
-              <button
-                type="button"
-                className="text-[9px] text-sky-700 underline"
-                onClick={() => setSel((s) => ({ ...s, canalApMm }))}
-              >
-                Use {canalApMm} mm
-              </button>
-            ) : null}
           </label>
           <SpineNeuroGradingControls
             testIdPrefix={`mri-cerv-grade-${region.key}`}
@@ -327,9 +321,9 @@ export function MriCervicalLevelBlock({
           />
           <button
             type="button"
-            disabled={disabled || !cervicalLevelApplyHasContent(sel)}
+            disabled={disabled || !cervicalLevelApplyHasContent(selForLevel)}
             className="h-7 rounded-md bg-emerald-600 px-2 text-[10px] font-semibold text-white disabled:opacity-40"
-            onClick={() => onApply(sel)}
+            onClick={() => onApply(selForLevel)}
             data-testid={`mri-cerv-level-apply-${region.key}`}
           >
             Apply to report

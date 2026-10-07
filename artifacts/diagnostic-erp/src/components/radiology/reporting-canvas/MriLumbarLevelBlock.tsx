@@ -20,6 +20,7 @@ import {
   lumbarLevelApplyHasContent,
 } from "@/lib/mriLumbarLevelState";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
+import { useCanalApCell } from "./useCanalApCell";
 import { formatAnchorChip } from "@/lib/observationAnchor";
 import { SpineNeuroGradingControls } from "./SpineNeuroGradingControls";
 import { legacyModicFromGrade } from "@/lib/mriSpineGrading";
@@ -111,19 +112,37 @@ export function MriLumbarLevelBlock({
     if (!open) {
       setSel({
         ...ledgerSel,
-        canalApMm: ledgerSel.canalApMm ?? canalApMm ?? null,
         rootLevel: ledgerSel.rootLevel || inferTraversingRoot(region.label),
       });
     }
-  }, [ledgerSel, open, canalApMm, region.label]);
+  }, [ledgerSel, open, region.label]);
 
-  useEffect(() => {
-    if (open && canalApMm != null && sel.canalApMm == null) {
-      setSel((s) => ({ ...s, canalApMm }));
-    }
-  }, [open, canalApMm, sel.canalApMm]);
+  /**
+   * The AP canal diameter is deliberately NOT part of this block's editable
+   * state. It is a read of the canonical measurement record — the same record
+   * the grid, the rail capture box, the ledger and the printed table all use —
+   * so a number can no longer exist in the level block and not in the record,
+   * or the other way round. Typing here writes that record through the store's
+   * only manual writer, which marks the draft dirty and refuses on a signed
+   * report.
+   *
+   * `canalApMm` (the viewer bridge) and `ledgerSel.canalApMm` (a number that
+   * only exists in prose, from a report written before the record) survive as
+   * fallbacks for a level the record has nothing about. The canonical value
+   * always wins when both are present.
+   */
+  const apCell = useCanalApCell({
+    level: region.label,
+    segment: "lumbar",
+    legacy: canalApMm ?? ledgerSel.canalApMm ?? null,
+  });
+  const apMm = apCell.committed;
+  const selForLevel = useMemo(() => ({ ...sel, canalApMm: apMm }), [sel, apMm]);
 
-  const preview = useMemo(() => composeLumbarLevelNarrative(region.label, sel), [region.label, sel]);
+  const preview = useMemo(
+    () => composeLumbarLevelNarrative(region.label, selForLevel),
+    [region.label, selForLevel],
+  );
 
   if (region.kind !== "disc-level") {
     const phrases = regionQuickPhrases(region.key);
@@ -370,27 +389,13 @@ export function MriLumbarLevelBlock({
               type="number"
               step="0.1"
               className="h-6 w-20 rounded border border-slate-200 px-1 text-[10px]"
-              value={sel.canalApMm ?? ""}
+              value={apCell.value}
               disabled={disabled}
-              placeholder={canalApMm != null ? String(canalApMm) : "—"}
-              onChange={(e) => {
-                const v = e.target.value;
-                setSel((s) => ({
-                  ...s,
-                  canalApMm: v === "" ? null : Number(v),
-                }));
-              }}
+              placeholder="—"
+              onChange={(e) => apCell.onChange(e.target.value)}
+              onBlur={apCell.onBlur}
               data-testid={`mri-level-ap-${region.key}`}
             />
-            {canalApMm != null && sel.canalApMm == null ? (
-              <button
-                type="button"
-                className="text-[9px] text-sky-700 underline"
-                onClick={() => setSel((s) => ({ ...s, canalApMm }))}
-              >
-                Use {canalApMm} mm
-              </button>
-            ) : null}
           </label>
           <SpineNeuroGradingControls
             testIdPrefix={`mri-ls-grade-${region.key}`}
@@ -422,10 +427,10 @@ export function MriLumbarLevelBlock({
           </div>
           <button
             type="button"
-            disabled={disabled || !lumbarLevelApplyHasContent(sel)}
+            disabled={disabled || !lumbarLevelApplyHasContent(selForLevel)}
             className="h-7 rounded-md bg-amber-600 px-2 text-[10px] font-semibold text-white disabled:opacity-40"
             onClick={() => {
-              onApply(sel, preview);
+              onApply(selForLevel, preview);
               // After Apply, local state reconciles from ledger on next close/open;
               // keep current sel until ledger updates.
             }}
