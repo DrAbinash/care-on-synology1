@@ -55,6 +55,12 @@ import {
 } from "@/lib/reportFieldMerge";
 import { resolveCopilotAcceptance } from "@/lib/zai-workspace/copilotAcceptanceContract";
 import {
+  currentAiProposalContext,
+  evaluateAiProposal,
+  type AiProposalBinding,
+  type AiProposalStaleReason,
+} from "@/lib/zai-workspace/aiProposalContext";
+import {
   EMPTY_REPORTING_STUDY_CONTEXT,
   canonicalContentRegion,
   reportingContextEqual,
@@ -540,6 +546,14 @@ interface S {
   isDirty: boolean; isFinalizing: boolean; isFinalized: boolean; railStage: RailStage;
   showCommandPalette: boolean; showVoiceBar: boolean; voiceListening: boolean; voiceTranscript: string; voiceProvider: string | null;
   ghostText: string | null; ghostTextTarget: EditorField | null;
+  /** C2 — the report state `ghostText` was generated FROM (digest + identities,
+   *  never the text itself). Null means the suggestion carries no provenance of
+   *  its own, which acceptance treats as unbound rather than as current. */
+  ghostProposal: AiProposalBinding | null;
+  /** C2 — monotonic ordering of generation requests, so a late response from an
+   *  older Ctrl+I cannot overwrite a newer proposal. Session state, not clinical:
+   *  it is deliberately NOT reset on a study switch. */
+  ghostRequestSeq: number;
   copilotItems: CopilotItem[]; acknowledgedCopilotIds: Set<string>; activeCopilotItem: CopilotItem | null;
   completedStudyIds: Set<string>; parkedStudyIds: Set<string>;
   sessionStartedAt: number; lastSignAt: number | null; fatigueCardDismissed: boolean;
@@ -691,7 +705,16 @@ export type WorkspaceStore = S & {
   setEditorContent: (c: { findings: string; impression: string; recommendation: string; technique: string; clinicalHistory: string }) => void;
   setMeasurements: (m: MeasurementRow[]) => void; setPriors: (p: PriorStudy[]) => void;
   insertMeasurement: (id: string) => void; insertAllMeasurements: () => void;
-  setGhostText: (t: string | null, target: EditorField | null) => void; acceptGhostText: () => void;
+  /** `binding` is the C2 context the proposal was generated from. Optional only
+   *  for the two callers that cannot know it (dismiss, and a producer that has no
+   *  clinical source at all); a suggestion stored without one is `unbound` and
+   *  acceptance refuses it, so omitting it fails closed rather than open. */
+  setGhostText: (t: string | null, target: EditorField | null, binding?: AiProposalBinding | null) => void;
+  acceptGhostText: () => void;
+  /** Call before firing a generation request; returns the sequence number to bind. */
+  beginAiProposalRequest: () => number;
+  /** Recomputed on every read — never a stored flag, so it cannot go stale itself. */
+  ghostProposalStale: () => boolean; ghostProposalStaleReason: () => AiProposalStaleReason | null;
   acknowledgeCopilotItem: (id: string) => void; setActiveCopilotItem: (i: CopilotItem | null) => void; insertCopilotText: (i: CopilotItem) => void; recomputeCopilot: () => void;
   setRailStage: (s: RailStage) => void; toggleCommandPalette: () => void; setCommandPalette: (o: boolean) => void;
   toggleVoiceBar: () => void; setVoiceListening: (o: boolean) => void; setVoiceTranscript: (t: string) => void; setVoiceProvider: (p: string | null) => void;
@@ -902,7 +925,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   measurements: [], priors: [], criticalFindings: [],
   isDirty: false, isFinalizing: false, isFinalized: false, railStage: "orient",
   showCommandPalette: false, showVoiceBar: false, voiceListening: false, voiceTranscript: "", voiceProvider: null,
-  ghostText: null, ghostTextTarget: null,
+  ghostText: null, ghostTextTarget: null, ghostProposal: null, ghostRequestSeq: 0,
   copilotItems: [], acknowledgedCopilotIds: new Set(), activeCopilotItem: null,
   completedStudyIds: new Set(), parkedStudyIds: new Set(),
   sessionStartedAt: Date.now(), lastSignAt: null, fatigueCardDismissed: false,
@@ -1242,12 +1265,47 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ measurements: ms });
     setTimeout(() => get().recomputeCopilot(), 0);
   },
-  setGhostText: (t, target) => set({ ghostText: t, ghostTextTarget: target }),
+  setGhostText: (t, target, binding) => {
+    // Clearing is always allowed: dismissal must never be blocked by a staleness
+    // or ordering question, and Discard has no clinical effect to get wrong.
+    if (!t || !target) { set({ ghostText: null, ghostTextTarget: null, ghostProposal: null }); return; }
+    const seq = typeof binding?.requestSeq === "number" ? binding.requestSeq : null;
+    // Ordering, enforced here rather than in the hook, so no producer can bypass
+    // it: two rapid Ctrl+I presses can answer out of order, and the older sentence
+    // must not replace the newer one the radiologist is already looking at.
+    if (seq !== null && seq < get().ghostRequestSeq) return;
+    set({ ghostText: t, ghostTextTarget: target, ghostProposal: binding ?? null });
+  },
+  beginAiProposalRequest: () => { const seq = get().ghostRequestSeq + 1; set({ ghostRequestSeq: seq }); return seq; },
+  ghostProposalStale: () => !evaluateAiProposal(
+    get().ghostProposal, currentAiProposalContext(get()),
+  ).fresh,
+  ghostProposalStaleReason: () => evaluateAiProposal(
+    get().ghostProposal, currentAiProposalContext(get()),
+  ).reason,
   acceptGhostText: () => {
     const { ghostText, ghostTextTarget } = get();
     if (!ghostText || !ghostTextTarget) return;
+    // C2 — the trust boundary is here, not in the UI. GhostLayer's banner uses the
+    // same pure call to decide what to show, but a disabled button is UX: Tab, the
+    // command palette and any future caller arrive at this line, so freshness is
+    // re-checked at acceptance rather than trusted from the last render.
+    const verdict = evaluateAiProposal(get().ghostProposal, currentAiProposalContext(get()));
+    if (!verdict.fresh) {
+      // The proposal stays on screen, visibly stale, rather than vanishing on a
+      // click that did nothing. Regenerate or Discard are the only ways out; there
+      // is deliberately no "accept anyway" that reaches this line.
+      get().pushNotification({
+        kind: "interrupt",
+        text: `Out-of-date AI suggestion not inserted — ${verdict.detail}`,
+      });
+      return;
+    }
+    // The one write, into the one boundary #880 owns. Everything after this —
+    // how the sentence joins the field, what provenance it carries, whether the
+    // Impression still needs reconciling — is decided there, not here.
     get().mergeField(ghostTextTarget, ghostText, "ai-draft");
-    set({ ghostText: null, ghostTextTarget: null });
+    set({ ghostText: null, ghostTextTarget: null, ghostProposal: null });
   },
   acknowledgeCopilotItem: (id) => { const a = new Set(get().acknowledgedCopilotIds); a.add(id); set({ acknowledgedCopilotIds: a }); },
   setActiveCopilotItem: (i) => set({ activeCopilotItem: i }),

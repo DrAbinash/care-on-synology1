@@ -70,6 +70,7 @@ import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-lib
 import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { aiProposalBindingForImpression } from "@/lib/zai-workspace/aiProposalContext";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -333,7 +334,16 @@ describe("M16 — an accepted AI suggestion appends; it never rewrites the radio
   it("manual findings + accepted ghost text keeps the manual sentence whole", () => {
     resetStore();
     useWorkspace.getState().setField("findings", "No acute infarct.", { source: "manual" });
-    useWorkspace.getState().setGhostText("No acute infarct or haemorrhage.", "findings");
+    // C2: a ghost suggestion now carries the state it was generated from, so the
+    // fixture binds it to the findings above (what the live producer would send).
+    // The question this test asks is what happens to the manual sentence on
+    // ACCEPT, and that is unchanged — freshness and authorship are separate gates,
+    // both of which have to pass.
+    useWorkspace.getState().setGhostText(
+      "No acute infarct or haemorrhage.",
+      "findings",
+      aiProposalBindingForImpression(useWorkspace.getState(), "findings"),
+    );
     useWorkspace.getState().acceptGhostText();
     const lines = useWorkspace.getState().findingsText.split("\n");
     expect(lines).toContain("No acute infarct.");

@@ -150,7 +150,14 @@ export type ComposeJobView = {
   appliedAt: string | null;
 };
 
-function normalizeForHash(text: string): string {
+/**
+ * Exported for reuse (C2): the workspace's AI-proposal fingerprint hashes the same
+ * narrative text, and this is the normalisation the Composer already applies on
+ * both sides of its own wire — so a trailing space or a CRLF is not a change,
+ * and there is exactly one rule in the repo that says so. Semantics unchanged;
+ * only the visibility moved.
+ */
+export function normalizeForHash(text: string): string {
   return (text ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
 }
 

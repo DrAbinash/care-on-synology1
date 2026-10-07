@@ -82,6 +82,7 @@ vi.mock("@/hooks/use-toast", () => ({
 }));
 
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { aiProposalBindingForImpression } from "@/lib/zai-workspace/aiProposalContext";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { runCopilotAnalysis, type CopilotItem } from "@/lib/zai-workspace/types";
@@ -328,7 +329,15 @@ describe("A4/A5/A6 — freshness follows the existing semantics", () => {
     // the flag to "fresh" while the findings that made it stale stay put.
     useWorkspace.getState().mergeField("findings", "New oedema around the infarct.", "manual");
     expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
-    useWorkspace.getState().setGhostText("Acute infarct with surrounding oedema.", "impression");
+    // C2 gave the ghost channel a binding: a suggestion now has to say what state
+    // it was generated from, so this fixture builds one from the findings it was
+    // actually summarising — the same call the live Ctrl+I hook makes. Which field
+    // is STALE is the point of the test; whose staleness it is, is not.
+    useWorkspace.getState().setGhostText(
+      "Acute infarct with surrounding oedema.",
+      "impression",
+      aiProposalBindingForImpression(useWorkspace.getState()),
+    );
     useWorkspace.getState().acceptGhostText();
     const s = useWorkspace.getState();
     expect(s.impressionText).toContain("Acute infarct with surrounding oedema.");
@@ -529,7 +538,14 @@ describe("A9/A10/A11/A12 — the guards an acceptance must still pass", () => {
     expect(clinical()).toEqual(before);
 
     // The ghost layer: the response is held out of the report until Accept.
-    useWorkspace.getState().setGhostText("Model impression line.", "impression");
+    // (C2: it also carries the state it was generated from, which for this path
+    // is the findings the request was built from — unchanged here, so the
+    // proposal is fresh and the rest of this test is about authorship, not age.)
+    useWorkspace.getState().setGhostText(
+      "Model impression line.",
+      "impression",
+      aiProposalBindingForImpression(useWorkspace.getState()),
+    );
     expect(clinical()).toEqual(before);
     expect(useWorkspace.getState().ghostText).toBe("Model impression line.");
     expect(useWorkspace.getState().ghostTextTarget).toBe("impression");

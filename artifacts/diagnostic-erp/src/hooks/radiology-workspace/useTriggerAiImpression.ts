@@ -16,6 +16,18 @@
  * impression summarising Patient A's findings appears in Patient B's ghost
  * layer one keystroke from being accepted into B's report.
  *
+ * C2 adds the other half of that sentence: the request also records WHICH
+ * findings it was built from, as a context binding carried with the returned
+ * suggestion. The study-switch guard above says "this is still the same
+ * patient"; it cannot say "this is still the same report", so a radiologist who
+ * keeps typing while the model thinks used to be handed a summary of text that
+ * no longer exists, with nothing marking it as out of date. The binding is built
+ * before the await, from the same `cur` that is posted — never from whatever the
+ * store says when the response arrives — and the arrival is classified with it,
+ * so the proposal is already marked stale the moment it lands rather than being
+ * discovered later. Acceptance re-checks independently in the store; what this
+ * hook decides is only what the radiologist is told.
+ *
  * Registers the callback on the zai workspace store so the command palette /
  * host bridge can invoke it. useWorkspaceCommands closes over the same
  * returned callback for the keyboard path.
@@ -28,6 +40,11 @@ import { draftValidationNotice } from "@/lib/aiDraftValidation";
 import { shouldApplyAsyncStudyKey } from "@/lib/radiologyWorkspaceSafety";
 import { useToast } from "@/hooks/use-toast";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import {
+  aiProposalBindingForImpression,
+  currentAiProposalContext,
+  evaluateAiProposal,
+} from "@/lib/zai-workspace/aiProposalContext";
 
 export type UseTriggerAiImpressionOptions = {
   studyInstanceUID: string | null | undefined;
@@ -57,6 +74,19 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
       studyId: atRequest.activeStudyId,
       studyInstanceUID: atRequest.activeStudyInstanceUID ?? studyInstanceUID ?? null,
     };
+    // C2 — the request claims an ordering number and a context binding from the
+    // text actually being sent (`cur`, the Findings at request time), not from
+    // whatever the store holds when the response lands. `requested.studyInstanceUID`
+    // is folded into the state the binding is read from so a study identified by
+    // its row rather than by the live mirror cannot look like a study switch.
+    const requestSeq = atRequest.beginAiProposalRequest();
+    const binding = {
+      ...aiProposalBindingForImpression(
+        { ...atRequest, activeStudyInstanceUID: requested.studyInstanceUID },
+        "impression",
+      ),
+      requestSeq,
+    };
     try {
       const body: AiReportingDraftRequest = {
         studyInstanceUID,
@@ -79,7 +109,28 @@ export function useTriggerAiImpression(opts: UseTriggerAiImpressionOptions) {
         return;
       }
       if (res.impression) {
-        now.setGhostText(res.impression, "impression");
+        now.setGhostText(res.impression, "impression", binding);
+        // The proposal is shown whatever the report looks like now, because
+        // hiding it would be a silent loss of work the radiologist asked for.
+        // What it is not allowed to do is pretend to be current: the store
+        // re-reads the binding on every render, and acceptance re-checks it
+        // independently of anything said here.
+        const verdict = evaluateAiProposal(
+          binding,
+          currentAiProposalContext(useWorkspace.getState()),
+        );
+        if (!verdict.fresh) {
+          toast({
+            title: "AI impression is already out of date",
+            description: verdict.reason === "source-changed"
+              ? "The Findings changed while the model was working, so this sentence summarises text "
+                + "that is no longer in the report. It cannot be accepted — press Regenerate."
+              : "This suggestion cannot be shown to belong to the report open now, so it is not "
+                + "acceptable — press Regenerate.",
+            variant: "destructive",
+            duration: 12000,
+          });
+        }
         const notice = draftValidationNotice(res.validation, { impressionOnly: true });
         if (notice) {
           toast({
