@@ -40,6 +40,11 @@ export const studioWorklistRowSchema = z.object({
     .enum(["billNumber", "accessionNumber", "worklistId", "singleHit"])
     .nullable()
     .optional(),
+  /** Catalog code of the procedure this scan is (`USG023`), paired with
+   *  testName and resolved the same way: the study row's own test first, then
+   *  the bill's single ultrasound line. Additive — studios that resolve by code
+   *  use it, and blank means neither source named one. */
+  testCode: z.string().optional(),
 });
 
 export type StudioWorklistRow = z.infer<typeof studioWorklistRowSchema>;
