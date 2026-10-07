@@ -33,19 +33,32 @@ describe("mergeTechnique", () => {
     expect(mergeTechnique(a, b)).toBe(a);
   });
 
-  it("merges equivalent 3T wording without duplication", () => {
+  it("B-02A: paraphrased 3T wording is kept as a second statement, not folded", () => {
+    // This test asserted the opposite — one line, "same concepts, no new line" —
+    // which is the merge engine deciding that two sentences describing the same
+    // scanner are the same acquisition record. They are not provably the same
+    // wording, and the field it writes is read back by
+    // `deriveSpineSequencesAvailable`, so a fold here is a derived-state change.
+    // Dedupe now needs identity under normalization; near-misses both stand.
     const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
     const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
     const out = mergeTechnique(existing, incoming);
-    expect(out).toBe(existing); // same concepts, no new line
+    expect(out.split("\n")).toHaveLength(2);
+    expect(out).toContain(existing);
+    expect(out).toContain(incoming);
   });
 
-  it("collapses two paraphrased MRI technique paragraphs into one", () => {
+  it("B-02A: two paraphrased MRI technique paragraphs both survive, T1/T2/STIR included", () => {
     const a = "Multiplanar, multisequence MRI of the lumbosacral spine was performed including T1, T2 and STIR sequences.";
     const b = "MRI of the lumbosacral spine was performed using multiplanar multisequence acquisition with T1, T2, and STIR.";
     const out = mergeTechnique(a, b);
-    expect(out.split(/[.!?]\s+/).filter(Boolean).length).toBe(1);
-    expect(out.toLowerCase()).toMatch(/lumbosacral|ls spine|t1/);
+    const sentences = out.split(/(?<=[.!?])\s+/).filter(Boolean);
+    expect(sentences).toHaveLength(2);
+    expect(out).toContain(a);
+    expect(out).toContain(b);
+    // Neither wording was edited into the other: STIR appears twice because both
+    // producers said STIR, which is exactly what the old rule "collapsed".
+    expect(out.match(/STIR/g)).toHaveLength(2);
   });
 
   it("retains complementary technique information", () => {
@@ -247,7 +260,14 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
     expect(provenanceVisualKind(second.provenance[key]!)).toBe("merged");
   });
 
-  it("deduplication does not lose source attribution (technique concept near-dup)", () => {
+  it("B-02A: technique attribution is unioned only over provably identical sentences", () => {
+    // The intent of the old "technique concept near-dup" test was that dropping a
+    // duplicate must not lose its source. It proved that by folding a paraphrase
+    // onto the existing sentence and unioning the two sources onto text its
+    // producer never wrote — Quick Findings ended up owning a Quick Select
+    // sentence because the two used similar words. Attribution can only follow
+    // identity, so the paraphrase keeps its own source and the genuine duplicate
+    // case (below) is the one that unions.
     const existing = "MRI study performed on a 3T scanner using multiplanar multisequence acquisition.";
     const incoming = "Multiplanar multisequence MRI was performed on a 3 Tesla scanner.";
     const first = mergeReportFieldContentWithProvenance({
@@ -263,10 +283,22 @@ describe("provenance — Quick Select / Quick Findings / merged", () => {
       source: "quick-findings",
       existingProvenance: first.provenance,
     });
-    expect(second.text).toBe(existing);
-    const key = normalizeForDedupe(existing);
-    expect(second.provenance[key]).toContain("quick-select");
-    expect(second.provenance[key]).toContain("quick-findings");
+    expect(second.provenance[normalizeForDedupe(existing)]).toEqual(["quick-select"]);
+    expect(second.provenance[normalizeForDedupe(incoming)]).toEqual(["quick-findings"]);
+    expect(formatProvenanceHover(second.provenance[normalizeForDedupe(existing)]!))
+      .toBe("Source: Quick Select");
+
+    const dup = mergeReportFieldContentWithProvenance({
+      field: "technique",
+      existing,
+      incoming: existing.replace("3T", "3t"),
+      source: "quick-findings",
+      existingProvenance: first.provenance,
+    });
+    expect(dup.text).toBe(existing);
+    expect(dup.provenance[normalizeForDedupe(existing)]).toEqual(["quick-select", "quick-findings"]);
+    expect(formatProvenanceHover(dup.provenance[normalizeForDedupe(existing)]!))
+      .toBe("Merged: Quick Select + Quick Findings");
   });
 
   it("B-02: a near-merge keeps each sentence's own provenance instead of laundering it", () => {
