@@ -53,6 +53,7 @@ import {
   type InsertSource,
   type ReportFieldKey,
 } from "@/lib/reportFieldMerge";
+import { resolveCopilotAcceptance } from "@/lib/zai-workspace/copilotAcceptanceContract";
 import {
   EMPTY_REPORTING_STUDY_CONTEXT,
   canonicalContentRegion,
@@ -1105,7 +1106,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // through here, and before this they all left the Impression unflagged
       // while a hand-typed Findings edit did flag it.
       ...(f === "findings" ? { impressionNeedsRefresh: true } : {}),
-      ...(f === "impression" && source !== "manual" ? { impressionNeedsRefresh: false } : {}),
+      // B-04 (narrow) — clearing the flag is a claim that the Impression now
+      // matches the Findings, so only a source that owns BOTH sides may make it.
+      // A Quick Select tile writes the finding and its impression line in one
+      // action; a template or protocol is applied whole; dictation is the
+      // radiologist concluding. An accepted AI proposal owns neither: it changes
+      // the Impression's words, which proves nothing about the findings behind
+      // them, and the model summarised a snapshot that may already have moved.
+      // So `ai-draft` is treated like `manual` here — the flag keeps whatever the
+      // Findings edits decided — which is what Ctrl+I → Accept was always
+      // supposed to leave true when the findings had changed. No new flag, no
+      // auto-regeneration, no reconciliation proof invented, and the sign gate
+      // that reads this is unchanged.
+      ...(f === "impression" && source !== "manual" && source !== "ai-draft"
+        ? { impressionNeedsRefresh: false }
+        : {}),
     });
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(result.text, scopedSnippetMacros(get));
@@ -1284,18 +1299,40 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       set({ activeCopilotItem: item });
       return;
     }
-    if (item.id === "missing-comparison") {
+    // B-03 — the suggestion's own declared destination and authorship are
+    // authoritative. This boundary used to end in
+    // `mergeField("findings", item.insertText, "companion")` for every item, so
+    // an AI impression line landed in Findings next to the radiologist's "No
+    // acute infarct." (a Findings section asserting a thing and its negation,
+    // with the Impression still empty) and accepted AI prose was attributed to
+    // the companion panel. Both questions are answered by one contract module
+    // now, and an unknown target — or AI prose with no target at all — refuses
+    // rather than guesses. Resolved AFTER the signed-report and study-stamp
+    // guards above, so a refusal is never the thing that mutates a report.
+    const acceptance = resolveCopilotAcceptance(item);
+    if (!acceptance.accepted) {
+      console.warn("[care.workspace_store] copilot insert refused — the suggestion declared no destination, or an unknown one", {
+        itemId: item.id,
+        insertTarget: item.insertTarget ?? null,
+        reason: acceptance.reason,
+        detail: acceptance.detail,
+      });
+      return;
+    }
+    const targetField = acceptance.field;
+    const targetSource = acceptance.source;
+    if (item.id === "missing-comparison" && targetField === "findings") {
       const insert = item.insertText.trim();
       const c = get().findingsText;
       if (!c.trim()) {
-        get().mergeField("findings", insert, "companion");
+        get().mergeField("findings", insert, targetSource);
       } else if (c.startsWith("Comparison")) {
-        get().mergeField("findings", insert, "companion");
+        get().mergeField("findings", insert, targetSource);
       } else {
         const combined = `${insert} ${c}`;
         const prevProv = get().fieldProvenance.findings ?? EMPTY_FIELD_PROVENANCE;
         const nextProv = reconcileProvenanceAfterManualEdit(c, combined, prevProv);
-        for (const [k, sources] of Object.entries(provenanceFromText(insert, "companion"))) {
+        for (const [k, sources] of Object.entries(provenanceFromText(insert, targetSource))) {
           nextProv[k] = sources;
         }
         set({
@@ -1308,7 +1345,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     } else if (item.kind === "measurement") {
       get().insertAllMeasurements();
     } else {
-      get().mergeField("findings", item.insertText, "companion");
+      get().mergeField(targetField, item.insertText, targetSource);
     }
     get().acknowledgeCopilotItem(item.id);
   },
