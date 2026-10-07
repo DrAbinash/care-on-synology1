@@ -25,6 +25,16 @@ export {
   CANONICAL_EMBEDDING_MODEL,
 } from "./canonicalLocalAi";
 
+// C1 — the single failure vocabulary and the execution identity that accompanies
+// it. Re-exported so an interactive route needs exactly one import to record
+// truthfully what ran and why it did not.
+export {
+  normalizeAiFailure,
+  redactAiSecrets,
+  type AiFailure,
+  type AiFailureCode,
+} from "./aiFailureContract";
+
 // ─── Request deadlines ───────────────────────────────────────────────────────
 // Until now only Ollama honoured `timeoutMs`, and only when a caller happened
 // to pass one — so a wedged model, or a cloud endpoint that accepts the socket
@@ -318,6 +328,33 @@ export interface AiQueryResult {
   error?: string;
   /** PHI-safe call metadata for structured server logs. */
   diagnostics?: AiQueryDiagnostics;
+  /**
+   * C1 — what ACTUALLY executed.
+   *
+   * Callers used to record the provider THEY resolved, while this layer resolved
+   * again from the task route or the global default. `execution` closes that gap:
+   * it is written by the code that opened the socket, so an audit row, a response
+   * body or a log line can state which provider and which model answered, whether
+   * the call left the clinic, which deadline governed it, and whether a request
+   * was ever attempted at all. Present on every result returned by
+   * `generateAiResponse` / `generateAiForTask`; absent on a raw
+   * `AiProvider.query()` result, which has not been through this boundary.
+   */
+  execution?: AiExecutionIdentity;
+}
+
+/** The identity of one executed AI call, as reported by the execution layer. */
+export interface AiExecutionIdentity {
+  /** The provider whose client issued (or refused to issue) the request. */
+  provider: string;
+  /** The model name actually sent. Null when no request left the process. */
+  model: string | null;
+  /** Whether this call stayed on-premises or crossed the clinic boundary. */
+  locality: "local" | "cloud";
+  /** The canonical deadline that governed the call, in ms. */
+  timeoutMs: number;
+  /** False when policy or configuration stopped the call before any socket. */
+  attempted: boolean;
 }
 
 export interface AiProvider {
@@ -1196,6 +1233,25 @@ export async function generateAiResponse(
   const startedAt = new Date().toISOString();
   const totalImageBytes = imgs.reduce((sum, img) => sum + estimateBase64DecodedBytes(img), 0);
 
+  // C1 — one deadline, resolved once, handed to the provider AND reported back.
+  // Each arm already calls `resolveRequestTimeoutMs(opts.timeoutMs)`; passing the
+  // resolved value keeps that call a no-op instead of a second opinion, so what a
+  // caller sees in `execution.timeoutMs` is the number that armed the abort.
+  const timeoutMs = resolveRequestTimeoutMs(options?.timeoutMs);
+  const locality: AiExecutionIdentity["locality"] = isLocalExecutionProvider(providerName)
+    ? "local"
+    : "cloud";
+  /** Identity as the execution layer knows it — not as the caller described it. */
+  const identity = (model: string | null, attempted: boolean): AiExecutionIdentity => ({
+    provider: providerName,
+    model,
+    locality,
+    timeoutMs,
+    attempted,
+  });
+  /** The model the caller asked for, before this layer resolved a default. */
+  const requestedModel = options?.model?.trim() || null;
+
   // ─── Central privacy gate — DEFAULT DENY for anything leaving the clinic ───
   // The image gate below has always existed. The text beside it did not: the
   // only check ran when at least one image was attached, so a text-only prompt
@@ -1216,6 +1272,7 @@ export async function generateAiResponse(
           text: "",
           success: false,
           error: `PHI_TEXT_CLOUD_BLOCKED: ${reason} (${categories.join(", ")}). Nothing was sent to ${providerName}. Keep this task on a local model, or enable "Allow identifiers in cloud text requests" in AI Reporting Settings to send it with those fields redacted.`,
+          execution: identity(requestedModel, false),
           diagnostics: {
             provider: providerName,
             resolvedEndpoint: null,
@@ -1258,6 +1315,7 @@ export async function generateAiResponse(
         text: "",
         success: false,
         error: egress.error,
+        execution: identity(requestedModel, false),
         diagnostics: {
           provider: providerName,
           resolvedEndpoint: null,
@@ -1320,6 +1378,7 @@ export async function generateAiResponse(
       text: "",
       success: false,
       error: `Provider ${providerName} is not configured.`,
+      execution: identity(requestedModel, false),
       diagnostics: {
         provider: providerName,
         resolvedEndpoint,
@@ -1361,7 +1420,9 @@ export async function generateAiResponse(
     numCtx: options?.numCtx,
     think: options?.think,
     temperature: options?.temperature,
-    timeoutMs: options?.timeoutMs,
+    // The already-resolved deadline, so the arm cannot resolve a different one
+    // from the number this function reports in `execution.timeoutMs`.
+    timeoutMs,
   });
   // Ensure diagnostics always carry the resolved endpoint/model for this call.
   if (!result.diagnostics) {
@@ -1388,6 +1449,9 @@ export async function generateAiResponse(
     result.diagnostics.resolvedEndpoint = result.diagnostics.resolvedEndpoint ?? resolvedEndpoint;
     result.diagnostics.model = result.diagnostics.model ?? model;
   }
+  // A socket was opened for this provider — report exactly which provider and
+  // which model it was given. This is the value callers must record.
+  result.execution = identity(model || null, true);
   return result;
 }
 
@@ -1546,6 +1610,12 @@ export async function resolveTaskRoute(
  *   explicit option override → configured task route → global default provider.
  * With no route and no override this is identical to the previous behavior, so
  * it is safe to swap existing callers over to it.
+ *
+ * C1 CONTRACT FOR INTERACTIVE RADIOLOGY: a caller that has already resolved and
+ * validated a provider MUST pass `options.provider`. Leaving it out hands this
+ * function the decision a second time, and the task route then answers for a
+ * provider whose configuration — and enablement — nobody checked. `/draft` did
+ * exactly that; see `interactiveExecutionContract.test.ts` for the reproduction.
  */
 export async function generateAiForTask(
   taskKey: string,
