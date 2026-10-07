@@ -49,7 +49,6 @@ export function WorklistStrip({
   const activeId = useWorkspaceSelector(s => s.activeStudyId);
   const completed = useWorkspaceSelector(s => s.completedStudyIds);
   const parked = useWorkspaceSelector(s => s.parkedStudyIds);
-  const select = useWorkspaceSelector(s => s.selectStudy);
   const MAX_VISIBLE = 50;
   const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE);
 
@@ -84,8 +83,11 @@ export function WorklistStrip({
             type="button"
             data-testid="reading-queue-next"
             onClick={() => {
+              // A-03: no fallback to the store's advanceToNextStudy(). It changes the
+              // active study without navigating (the store has no router), which is the
+              // defect itself. The only production render site, WorklistPanel.tsx:456,
+              // always passes onNextStudy={goNextStudy}, which is guarded and navigates.
               if (onNextStudy) onNextStudy();
-              else useWorkspace.getState().advanceToNextStudy();
             }}
             className="inline-flex items-center gap-1 rounded-md bg-gradient-to-b from-emerald-500 to-emerald-600 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white hover:from-emerald-600 hover:to-emerald-700 shadow-sm shadow-emerald-500/30"
           >
@@ -165,7 +167,15 @@ export function WorklistStrip({
               <button
                 key={s.id}
                 onClick={() => {
-                  select(s.id);
+                  // A-04 — do NOT selectStudy() here. `onSelectStudy` is
+                  // `openStudyGuarded`, whose leave check reads
+                  // `useWorkspace.getState().isDirty` AFTER it has been asked, and
+                  // `openStudy` performs the selection itself once the answer is to
+                  // proceed. Selecting first wiped the outgoing study's clinical state
+                  // and set `isDirty: false`, so the guard was always told "clean":
+                  // one click on a queue row silently destroyed the unsaved report you
+                  // were on, with no prompt, and cancelling left the store on the new
+                  // study while the route stayed on the old one.
                   onSelectStudy?.(s.id);
                 }}
                 className={cn(

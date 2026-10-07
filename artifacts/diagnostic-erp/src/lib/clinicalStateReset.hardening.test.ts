@@ -376,10 +376,29 @@ describe("reset-path source contracts — the three call sites cannot drift back
 
   it("has the PARTIAL study-switch reset spread the shared helper", () => {
     const src = read(DRAFT_SRC);
-    expect(src).toMatch(/import \{ emptyClinicalState \} from "@\/lib\/zai-workspace\/clinicalStateReset";/);
-    expect(src).toMatch(/useWorkspace\.setState\(\{\s*\.\.\.emptyClinicalState\(\),\s*clinicalHistoryText: "",\s*\}\);/);
+    // A-02: the transition payload now comes from `studyTransitionReset`, which spreads
+    // `emptyClinicalState()` itself and adds the authoritative route identity. The
+    // property this test exists to protect — one shared definition, no hand-maintained
+    // list — is therefore still asserted, just through the helper, and the helper is
+    // checked here so the indirection cannot quietly become a second list.
+    expect(src).toMatch(/import \{ studyTransitionReset \} from "@\/lib\/zai-workspace\/clinicalStateReset";/);
+    expect(src).toMatch(/useWorkspace\.setState\(studyTransitionReset\(studyId\)\);/);
+    const helper = read(RESET_SRC);
+    expect(helper).toMatch(/export function studyTransitionReset\(/);
+    expect(helper).toMatch(/\.\.\.emptyClinicalState\(\),/);
+    expect(helper).toMatch(/activeStudyId: hasStudy \? String\(routeStudyId\) : null,/);
+    // A UID is never carried across a transition; "unknown" is null, not the old study's.
+    expect(helper).toMatch(/activeStudyInstanceUID: null,/);
     // The old hand-maintained list must be gone, not merely added to.
     expect(src).not.toMatch(/abnormalPatternConfirm:\s*null,\s*\.\.\.\(useWorkspace\.getState\(\)/);
+  });
+
+  it("has no mirror effect that can leave the previous study authoritative", () => {
+    // A-02: this is the bail-out that made `activeStudyId` lag the route study, and with
+    // it the Copilot study stamp compare a value against itself.
+    const src = read(CLINICAL_UI_SRC);
+    expect(src).not.toMatch(/if \(!studies\.some\(\(s: Study\) => s\.id === sid\)\) return;/);
+    expect(src).not.toMatch(/setState\(\{ activeStudyId: sid, railStage: "orient" \}\)/);
   });
 
   it("stamps every undo frame with the study it was captured against", () => {

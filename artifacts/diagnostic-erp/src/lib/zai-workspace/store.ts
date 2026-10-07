@@ -1253,6 +1253,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // ordering means it cannot be revived unguarded.
     //
     // An unstamped item is refused as well: see CopilotItem.studyId.
+    //
+    // A-02 — what makes this comparison mean anything. `recomputeCopilot` stamps items
+    // with `st.id`, resolved from `get().activeStudyId`, so a guard that also reads
+    // `activeStudyId` was self-referential for as long as that field could lag the route
+    // study: an item computed against the PREVIOUS study's modality, sex and priors —
+    // while reading the current study's narrative — was stamped with the previous study's
+    // id and then waved through by comparing that id with itself. It is now a real check
+    // because `activeStudyId` is written inside the same setState as the clinical reset in
+    // `useDraftPersistence`, from the authoritative route `studyId`, and the mirror effect
+    // that used to leave it stale when a study had not yet landed in `studies` is gone.
+    // Required invariant: an item generated for A cannot insert while route study B is
+    // active, even if stale store state or a stale click handler survives.
     if (item.studyId !== get().activeStudyId) {
       console.warn("[care.workspace_store] copilot insert refused — the suggestion belongs to a different study", {
         itemId: item.id,

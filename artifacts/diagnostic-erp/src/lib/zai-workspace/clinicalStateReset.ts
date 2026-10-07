@@ -21,6 +21,16 @@
  *
  *   activeStudyId, activeStudyInstanceUID, clinicalHistoryText, reportingContext
  *
+ * A-02 note: `activeStudyId` is no longer free to be owned by anybody. The route
+ * `studyId` (the radiology_worklist row) is the authoritative active reporting
+ * study, and the transition in `useDraftPersistence` writes it in the same setState
+ * as this reset, so content and identity can never be observed disagreeing. It is
+ * kept out of the list itself because `emptyClinicalState()` means "no clinical
+ * content", not "no study": the end-of-queue caller deliberately passes
+ * `activeStudyId: null`, while a study transition passes the incoming id.
+ * `activeStudyInstanceUID` is likewise caller-owned and must be nulled — never
+ * carried over — when the incoming study's UID is not yet resolved.
+ *
  * Some entries look like UI chrome rather than clinical state and are still
  * here on purpose. `notification` is the one that matters: it is the critical
  * interrupt card, and `recomputeCopilot` raises a new one only when the slot is
@@ -208,5 +218,43 @@ export function emptyClinicalState(): ClinicalResetState {
     mergePreviewOpen: false,
     lastMergeResult: null,
     lastMergeFormats: null,
+  };
+}
+
+/**
+ * The complete store patch for ONE study transition, keyed on the authoritative route
+ * study. A-02 hoisted it out of the `useDraftPersistence` effect so the contract that
+ * actually matters — content reset and identity move together, from one write — can be
+ * executed by a test instead of only being asserted about by reading the effect.
+ *
+ * `emptyClinicalState()` deliberately does not contain `activeStudyId`: "no clinical
+ * content" is not "no study". This is the one place that says which study the emptied
+ * content now belongs to.
+ *
+ * @param routeStudyId the URL study id (the radiology_worklist row), or null when no
+ *   study is open. Never read the previous study's identity from anywhere here.
+ */
+export type StudyTransitionPatch = ClinicalResetState & {
+  clinicalHistoryText: string;
+  activeStudyId: string | null;
+  activeStudyInstanceUID: string | null;
+};
+
+export function studyTransitionReset(
+  routeStudyId: number | string | null | undefined,
+): StudyTransitionPatch {
+  const hasStudy = routeStudyId != null && routeStudyId !== "";
+  return {
+    ...emptyClinicalState(),
+    // Identity field the helper leaves to the caller; reseeded from the study row by
+    // selectStudy, and cleared here for a route-only transition.
+    clinicalHistoryText: "",
+    // The authoritative identity, moved atomically with the content reset above. A study
+    // that has not yet landed in the scoped `studies` array still becomes the active
+    // study — that is what the radiologist is looking at.
+    activeStudyId: hasStudy ? String(routeStudyId) : null,
+    // Not knowable synchronously. Null means "unknown", never "the previous study's":
+    // a UID is only written by the effect that has verified it belongs to this route id.
+    activeStudyInstanceUID: null,
   };
 }

@@ -59,7 +59,7 @@ import { reconstructStartingCanvasBaseline } from "@/lib/zai-workspace/startingC
 import {
   normalizeImpressionLines, radiologyReportBackupKey, rescueBackupEnvelope,
 } from "@/lib/workspaceReportState";
-import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
+import { studyTransitionReset } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 
@@ -172,7 +172,10 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     openStudyGuardedRef.current(id);
   }, []);
 
-  // Reset patient-specific editor state when switching studies
+  // Reset patient-specific editor state when switching studies.
+  // This transition is FULL for clinical content AND for active-study identity
+  // (see the A-02 note below); it is PARTIAL only in that it preserves
+  // `reportingContext`, which the hydrate effect repopulates for the incoming study.
   useEffect(() => {
     saveGenerationRef.current += 1;
     studyIdRef.current = studyId;
@@ -189,10 +192,25 @@ export function useDraftPersistence(opts: UseDraftPersistenceOptions) {
     // state setter, so this effect re-fires only when `studyId` genuinely
     // changes. `clinicalHistoryText` is an identity field the helper leaves to
     // the caller — cleared here, reseeded from the study row in selectStudy.
-    useWorkspace.setState({
-      ...emptyClinicalState(),
-      clinicalHistoryText: "",
-    });
+    //
+    // A-02 — the active-study IDENTITY now moves in this same setState.
+    // `studyId` is the route param, i.e. the radiology_worklist row, and it is the
+    // only authoritative reporting-study identity in the workspace. Before this,
+    // `activeStudyId` was written by a separate mirror effect in
+    // `useWorkspaceClinicalUi` that bailed out when the study had not yet landed in
+    // the scoped `studies` array, so a worklist navigate / deep link / Back could
+    // leave the store convinced it was still on Patient A while the screen showed
+    // Patient B — and about twenty consumers, the Copilot study stamp among them,
+    // read that lagging value as if it were the truth. Resetting content and moving
+    // identity are one lifecycle transition, so they are now one atomic write and
+    // cannot be observed in between.
+    //
+    // `activeStudyInstanceUID` is set to null rather than carried over: the DICOM UID
+    // of the incoming study is genuinely not known at this instant, and null means
+    // "unknown" (anchor rejection fails safe, Ctrl+I refuses to apply). The effect in
+    // `useWorkspaceClinicalUi` that binds it only writes a UID it has verified belongs
+    // to this exact route study.
+    useWorkspace.setState(studyTransitionReset(studyId));
     // Draft identity resets inside useRadiologyDraftId on studyId change —
     // do not call captureSavedDraftId(null) here (that pattern caused React #185).
   }, [studyId, onStudySwitchPageReset]);
