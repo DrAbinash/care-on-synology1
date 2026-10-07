@@ -22,15 +22,17 @@
  *    Explicit "replace format" remains a user action (replaceField).
  *
  * 3. structured-template vs quick-findings / quick-select / macro / companion
- *    Same mergeSentencesWithProvenance rules (exact → Jaccard/subsequence with
- *    clinical guards for laterality, levels, severity, measurements).
- *    Union sources on kept sentence. Structured does not delete unmatched
+ *    Same mergeSentencesWithProvenance rules: an exact normalized duplicate
+ *    collapses and unions sources, and since B-02 nothing else does — the
+ *    Jaccard/subsequence fold and its clinical guards are gone, because a
+ *    sentence whose words are a subset of another's is not the same statement.
+ *    Structured does not delete unmatched
  *    Quick Findings sentences.
  *
  * 4. structured-template vs ai-draft
  *    AI overnight/ghost uses setFieldIfEmpty / mergeField("ai-draft").
  *    If structured findings already occupy the field, AI does not overwrite
- *    (fill-empty). If AI landed first, later structured merge DEDUPES overlapping
+ *    (fill-empty). If AI landed first, later structured merge DEDUPES identical
  *    wording and unions sources; AI-only sentences stay.
  *    P1 does NOT change the AI prompt to "see" structured selections — avoidance
  *    of duplicate lordosis is merge/canonicalKey, not an AI rewrite.

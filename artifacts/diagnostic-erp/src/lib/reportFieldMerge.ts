@@ -1,9 +1,19 @@
 /**
- * reportFieldMerge.ts — canonical semantic-aware merge for report fields.
+ * reportFieldMerge.ts — the shared text merge for report fields.
  *
  * ONE shared entry point for Quick Select, Quick Findings, protocol, template,
  * macro and companion insertions into technique / findings / impression /
  * recommendation. No external AI calls — deterministic, conservative rules.
+ *
+ * "Conservative" is the whole contract, and since B-02 the findings/impression/
+ * recommendation path means exactly that: an incoming sentence collapses onto an
+ * existing one only when the two are the same text under normalization. The merge
+ * layer is a composition tool, not a clinical reasoner — it never decides that a
+ * sentence implies another sentence, which one of two conflicting statements is
+ * better, or that a restatement may be dropped. Where a clinical statement really
+ * does supersede another, that is proved by structured ownership
+ * (`pathologyPatch.ts` / the Observation Ledger), not here. Technique keeps its
+ * own concept-aware merge, which is a separate concern and out of B-02's scope.
  *
  * Clinical report text stays plain strings. Provenance is a parallel map keyed
  * by normalizeForDedupe(sentence) — never duplicated into stored/preview text.
@@ -398,26 +408,65 @@ export function mergeTechnique(existing: string, incoming: string): string {
 
 // ─── Findings / impression / recommendation ─────────────────────────────────
 
-/** Clinical tokens that make two findings materially different — never merge across these. */
-const CLINICAL_GUARDS = [
-  /\b(left|right|bilateral)\b/i,
-  /\b(l[1-5]|c[1-7]|t[1-12]|s[1-5])\b/i,
-  /\b(mild|moderate|severe|grade\s*[1-4])\b/i,
-  /\b\d+(\.\d+)?\s*(mm|cm)\b/i,
-];
-
-function hasConflictingClinicalDetail(a: string, b: string): boolean {
-  for (const re of CLINICAL_GUARDS) {
-    const ma = a.match(re);
-    const mb = b.match(re);
-    if (ma && mb && ma[0].toLowerCase() !== mb[0].toLowerCase()) return true;
-  }
-  return false;
-}
+/*
+ * B-02 removed `CLINICAL_GUARDS` / `hasConflictingClinicalDetail` here. They
+ * existed to stop the word-subset fold from merging sentences whose laterality,
+ * level, severity or measurement disagreed — a set of exceptions bolted onto an
+ * equivalence test that was itself unsound, which is why "Mild canal stenosis."
+ * + "Moderate canal stenosis." survived while "No acute infarct." + "No acute
+ * infarct or haemorrhage." silently broadened. With the fold gone there is
+ * nothing left to guard: no merge happens unless the normalized sentences are
+ * identical, and identical sentences cannot disagree about a modifier.
+ */
 
 /**
  * Merge free-text findings/impression/recommendation with provenance.
- * Deduped/near-merged sentences union their sources.
+ *
+ * One equivalence rule, and it is a textual one: two sentences are the same
+ * statement when their normalized forms are IDENTICAL (case, punctuation and
+ * whitespace stripped — `normalizeForDedupe`). Then, and only then, does an
+ * incoming sentence collapse onto an existing one, unioning its source.
+ * Everything else is appended as its own statement.
+ *
+ * B-02 — what used to happen instead, and why it is gone. This function also
+ * folded any sentence whose word set was a **subset** of another's, and when it
+ * did it could REPLACE the existing sentence with the longer one. Word overlap
+ * is not identity, and the two operations together let a text-composition layer
+ * answer clinical questions nobody asked it. Executed at `f65aeb1b`, with the
+ * existing sentence owned by `manual`:
+ *
+ *   "No acute infarct."        + "No acute infarct or haemorrhage."
+ *     → "No acute infarct or haemorrhage."        (the report now also denies haemorrhage)
+ *   "Acute infarct."           + "No acute infarct."
+ *     → "No acute infarct."                       (polarity flipped by a merge)
+ *   "No restricted diffusion to suggest acute infarct." + "Acute infarct."
+ *     → the affirmative finding disappears, and the negative line is relabelled
+ *       ["manual", "quick-select"] — provenance laundering on top of the rewrite
+ *
+ * The subset test could not see "no", could not see a severity, and could not
+ * see that a sentence describing one thing does not imply a sentence describing
+ * two. `CLINICAL_GUARDS` (laterality / level / severity / measurement) was a
+ * patch over that: it blocked some merges whose modifiers disagreed, which is
+ * why "Mild canal stenosis." + "Moderate canal stenosis." already survived, while
+ * "No acute infarct." + "No acute infarct or haemorrhage." — no disagreeing
+ * modifier at all — silently broadened. Guards on top of an unsound equivalence
+ * test only make the rule inconsistently unsound, so the test goes, not the
+ * guards' most alarming cases.
+ *
+ * Replacing a clinical statement is not this function's job. When a statement
+ * genuinely supersedes another, that is proved by structured ownership —
+ * `planSameSlotReplacement`, `replacedBaseline`, `lastRendered` reconciliation in
+ * `pathologyPatch.ts` / the Observation Ledger — which identifies the claim by
+ * (region, concept, level, laterality) rather than by shared vocabulary, and it
+ * keeps working untouched. What remains here is a composition rule, and a
+ * composition rule is allowed to do only what it can see.
+ *
+ * Consequence, and it is deliberate: a report can now read "No acute infarct."
+ * followed by "Acute infarct." That is a contradiction the radiologist can see
+ * and the QC/contradiction layer can flag. A silently chosen sentence can be
+ * neither. Nothing here decides which one wins, whether the newer text is more
+ * informative, or that a rounded restatement of a measurement may be dropped —
+ * `mergeSentencesWithProvenance` no longer rewrites text it was handed at all.
  */
 export function mergeSentencesWithProvenance(
   existing: string,
@@ -442,41 +491,15 @@ export function mergeSentencesWithProvenance(
 
     const dupIdx = normSeen.get(n);
     if (dupIdx !== undefined) {
+      // Provably the same sentence: one copy, sources unioned.
       out[dupIdx]!.sources.add(source);
       continue;
     }
 
-    let merged = false;
-    for (let i = 0; i < out.length; i++) {
-      const o = out[i]!;
-      // A `|`-row is a measurement table row, and dedupe strips its pipes, so
-      // "| L4-L5 | — |" normalises to the level alone — which made the incoming
-      // "…at L4-L5…" sentence look like a longer version of the row and
-      // overwrite it. Rows hold numbers, not prose: never a merge target.
-      if (o.text.trim().startsWith("|") || s.trim().startsWith("|")) continue;
-      const on = normalizeForDedupe(o.text);
-      if (hasConflictingClinicalDetail(o.text, s)) continue;
-      const shorter = on.length <= n.length ? on : n;
-      const longer = on.length <= n.length ? n : on;
-      const shorterWords = shorter.split(" ").filter(Boolean);
-      const longerWords = longer.split(" ").filter(Boolean);
-      const isSubsequence = shorterWords.every((w) => longerWords.includes(w));
-      if (isSubsequence && shorterWords.length >= 2) {
-        if (s.length > o.text.length) {
-          // Keep longer text; union sources (clinical text already chosen by merge rules).
-          o.text = s;
-          normSeen.delete(on);
-          normSeen.set(n, i);
-        }
-        o.sources.add(source);
-        merged = true;
-        break;
-      }
-    }
-    if (!merged) {
-      out.push({ text: s, sources: new Set([source]) });
-      normSeen.set(n, out.length - 1);
-    }
+    // Not provably the same sentence, so it is a separate clinical statement —
+    // appended verbatim, with its own source, and no existing sentence touched.
+    out.push({ text: s, sources: new Set([source]) });
+    normSeen.set(n, out.length - 1);
   }
 
   return segmentsToResult(out, "\n");
