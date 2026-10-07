@@ -1,4 +1,6 @@
 import { mergeTwoFormatsBySlot } from "@/lib/formatSlotMerge";
+import type { InsertSource } from "@/lib/reportFieldMerge";
+import type { CopilotTargetField } from "@/lib/zai-workspace/copilotAcceptanceContract";
 
 export type Modality = "XR" | "CT" | "MR" | "US" | "MG" | "DX" | "NM" | "PT" | "DOPPLER" | "ECHO" | "USG_OB";
 export type StudyStatus = "received" | "in_progress" | "draft" | "prelim" | "final" | "amended";
@@ -97,8 +99,16 @@ export async function fetchStudyAiRules(modality?: string, bodyPart?: string): P
  * stamp does not equal the open study, an unstamped item included. A future
  * producer that forgets to stamp therefore gets a dead Insert button rather
  * than a cross-patient write.
+ *
+ * `insertTarget` and `provenance` are the other half of the same promise
+ * (B-03): the producer says where the accepted text belongs and who authored it,
+ * and `insertCopilotText` obeys both — see
+ * `zai-workspace/copilotAcceptanceContract.ts`. Before that, the boundary wrote
+ * every accepted item into Findings as `companion`, which mis-filed a suggestion
+ * whose own button reads "Insert → recommendation" and hid AI authorship behind
+ * the companion panel's label.
  */
-export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; studyId?: string; }
+export interface CopilotItem { id: string; kind: "critical" | "contradiction" | "suggestion" | "missing" | "measurement" | "recommendation" | "differential" | "ai-draft"; title: string; detail: string; insertText?: string; confidence: "low" | "medium" | "high"; band?: "routine" | "worth-a-look" | "attention"; source: string; studyId?: string; insertTarget?: CopilotTargetField; provenance?: InsertSource; }
 export interface PriorStudy { id: string; date: string; modality: Modality; description: string; impression: string; compatibilityScore: number; }
 export interface MeasurementRow { id: string; name: string; value: number; unit: string; priorValue?: number; delta?: number; source: "viewer" | "manual" | "ai"; inserted: boolean; }
 export interface CriticalFinding { id: string; studyId: string; phrase: string; severity: Criticality; detectedAt: string; acknowledgedBy?: string; acknowledgedAt?: string; notifiedRecipient?: string; notifiedMethod?: "phone" | "whatsapp" | "in-person" | "email"; }
