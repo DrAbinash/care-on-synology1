@@ -376,6 +376,89 @@ describe("§10 — re-choosing the side does not quietly drop the severity", () 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Scope boundary — the second Quick Select source is covered; the surfaces that
+// resolve their own parameters upstream are deliberately NOT.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("scope — what this contract owns, and what it stops short of", () => {
+  /**
+   * The chocolate-box macro tile, sent exactly as `useReportingStudySetup.applyChocolateTile`
+   * builds it: `side: ownership.supportsLaterality ? undefined : ""` — no side for a tile
+   * whose own text demands one. Executed at HEAD this wrote
+   * "Acute intraparenchymal hemorrhage in the {side} basal ganglia…" into Findings and
+   * Impression. It is a Quick Select surface (Settings → Radiology → Quick Select edits
+   * these boxes), so it refuses now. Pinned because it is a named behaviour change on a
+   * surface this PR did not add controls to.
+   */
+  const CHOCO_HEMORRHAGE = {
+    incoming: {
+      findings: "Acute intraparenchymal hemorrhage in the {side} basal ganglia with surrounding edema. Mass effect with midline shift of ___ mm.",
+      impression: "Acute {side} basal ganglia hemorrhage.",
+    },
+    templates: {
+      findings: "Acute intraparenchymal hemorrhage in the {side} basal ganglia with surrounding edema. Mass effect with midline shift of ___ mm.",
+      impression: "Acute {side} basal ganglia hemorrhage.",
+    },
+    ownership: {
+      anatomicalSection: "basal ganglia",
+      conflictGroup: "hemorrhage",
+      baselineReplaces: "Basal ganglia are normal",
+    },
+    source: "macro" as const,
+    side: undefined,
+    id: "choco-brain-basal-ganglia-hemorrhage",
+    region: "Brain",
+    label: "Basal Ganglia Hemorrhage",
+    findingsText: "Acute intraparenchymal hemorrhage in the {side} basal ganglia with surrounding edema. Mass effect with midline shift of ___ mm.",
+    supportsLaterality: true,
+  };
+
+  it("refuses the chocolate-box tile that asks for a side it never supplies", () => {
+    const before = clinicalState();
+    expect(useWorkspace.getState().applyPathologyOverlay(CHOCO_HEMORRHAGE)).toBe("refused");
+    expect(clinicalState()).toEqual(before);
+    for (const text of textsNow()) expect(text).not.toContain("{side}");
+  });
+
+  it("applies the same chocolate-box tile once a side is supplied", () => {
+    const r = useWorkspace.getState().applyPathologyOverlay({ ...CHOCO_HEMORRHAGE, side: "right" });
+    expect(r).toBe("applied");
+    expect(useWorkspace.getState().findingsText).toContain("right basal ganglia");
+    expect(useWorkspace.getState().impressionText).toContain("Acute right basal ganglia hemorrhage.");
+    expect(useWorkspace.getState().findingsText).toContain("___ mm");
+  });
+
+  /**
+   * The Structured Reporting surface hands this boundary the raw `outputSentence`
+   * templates from the format document (`"Disc desiccation is seen at {level}."`),
+   * because its own narrative comes from `generateFromValues()`, which does fill them.
+   * Its ledger rows are not this contract's parameters, and refusing them would change
+   * what a different feature writes — so they are reported as still unresolved, not
+   * silently guarded here. This test exists so that decision is visible and so a future
+   * change to it cannot be accidental.
+   */
+  it("does not take over the structured-format surface", () => {
+    const r = useWorkspace.getState().applyMacroBundle({
+      bundleId: "structured-template-format",
+      observations: [{
+        incoming: { findings: "Disc desiccation is seen at {level}.", impression: "{level} disc desiccation." },
+        templates: { findings: "Disc desiccation is seen at {level}.", impression: "{level} disc desiccation." },
+        ownership: { conflictGroup: "disc_desiccation", concept: "disc_desiccation" },
+        source: "structured-template",
+        region: "LS Spine",
+        concept: "disc_desiccation",
+        level: "L4-L5",
+        findingsText: "Disc desiccation is seen at {level}.",
+        supportsLaterality: false,
+        id: "structured-LS Spine-disc_desiccation-L4-L5-",
+      }],
+    });
+    expect(r).toBe("applied");
+    expect(useWorkspace.getState().appliedPathologyPatches).toHaveLength(1);
+    expect(toastMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // T7 — the radiologist's own text stays first-class, braces included (§12).
 // ─────────────────────────────────────────────────────────────────────────────
 describe("T7 — manual prose is never refused for containing a placeholder", () => {
