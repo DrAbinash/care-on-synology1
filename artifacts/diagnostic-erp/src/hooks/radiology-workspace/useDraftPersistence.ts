@@ -30,6 +30,7 @@ import {
 } from "@/lib/structuredFormat";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { extractCareObservationLedger } from "@/lib/observationLedger";
+import { resolveDraftTechnique } from "@/lib/draftTechniqueRoundTrip";
 import {
   extractCareViewerMeasurements,
   extractCareCanalApProvenance,
@@ -267,7 +268,17 @@ useEffect(() => {
       findings: normStr(draft.findings ?? draft.rawFindings),
       impression: normalizeImpressionLines(draft.impression).join("\n"),
       recommendation: normStr(draft.recommendation),
-      technique: normStr(draft.technique),
+      // B-01 — `draft.technique` is read by nothing here any more, and it never
+      // could be: `radiology_report_drafts` has no technique column, so GET /drafts
+      // (a full-row select) has no such key to return. The value is persisted by
+      // save-draft inside the `findings_sections` JSON column as the `Technique`
+      // section — which is also what the server's own print path renders. Reading
+      // the missing key restored "" on every reopen, and because this save body is
+      // built from the live store, the next autosave rewrote findings_sections
+      // WITHOUT the section: the stored Technique was destroyed, not just hidden.
+      // Technique also feeds `sequencesAvailable` (acquisition gating), so the loss
+      // silently changed what the rest of the report was allowed to assert.
+      technique: resolveDraftTechnique(draft),
       clinicalHistory: normStr(draft.clinicalHistory) || (workflow.currentRow as any)?.clinicalHistory || "",
     });
     const restored = extractCareStructuredFormatState(draft.structuredJson);
@@ -569,7 +580,10 @@ const discardLocalEditor = useCallback(() => {
       findings: normStr(draft.findings ?? draft.rawFindings),
       impression: normalizeImpressionLines(draft.impression).join("\n"),
       recommendation: normStr(draft.recommendation),
-      technique: normStr(draft.technique),
+      // B-01 — same reader as the hydrate path. "Discard my local edits" returns
+      // the editor to the SERVER draft; reading the key that does not exist made
+      // discarding silently blank the Technique the stored draft still has.
+      technique: resolveDraftTechnique(draft),
       clinicalHistory:
         normStr(draft.clinicalHistory) ||
         (workflow.currentRow as { clinicalHistory?: string } | null)?.clinicalHistory ||

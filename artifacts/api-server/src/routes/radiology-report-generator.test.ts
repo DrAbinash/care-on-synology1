@@ -703,6 +703,134 @@ describe("GET /drafts — page reload loads an existing draft, or starts blank",
   });
 });
 
+describe("POST /save-draft — B-01 where the Technique actually persists", () => {
+  // The workspace restores its editor from the row this endpoint returns, and
+  // `radiology_report_drafts` has no technique column: save-draft composes the
+  // Technique into the `findings_sections` JSON. These tests pin that shape —
+  // including the absence of a `technique` key, which is what made hydration
+  // restore an empty string and then autosave the blank back over the stored
+  // value. The reader that consumes this shape is
+  // artifacts/diagnostic-erp/src/lib/draftTechniqueRoundTrip(.test).ts.
+  const TECHNIQUE =
+    "Multiplanar multisequence MRI performed including T1, T2 and STIR sequences.";
+
+  beforeEach(() => {
+    insertedRows = [];
+    insertValuesCalls = [];
+    updateSetCalls = [];
+    updateResult = { id: 42, studyId: 7 };
+    structuredFlagEnabled = false;
+    txCallCount = 0;
+    a32TxCount = 0;
+    forModeCalls = [];
+    cacheUpdateSurfaces = [];
+    txDeleteWhereCalls = [];
+    txInsertValuesCalls = [];
+    txShouldThrow = false;
+    cacheFindingRows = [];
+    cacheUpdateSetCalls = [];
+    cacheRegenShouldThrow = false;
+    driftCacheRow = undefined;
+    driftDistinctFindingDraftIds = [];
+    driftCachedDraftIds = [];
+    selectDraftsResult = [];
+  });
+
+  test("a non-empty Technique is stored as the Technique section of findings_sections", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    const res = makeRes();
+    await handler(
+      { body: { studyId: 7, rawFindings: "Findings text", technique: TECHNIQUE }, staffSession: {} },
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    const stored = JSON.parse(insertValuesCalls[0]!.findingsSections as string) as Record<string, string>;
+    expect(stored.Technique).toBe(TECHNIQUE);
+  });
+
+  test("the Technique is stored trimmed, so a reload cannot drift on whitespace", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    await handler(
+      { body: { studyId: 7, technique: `  ${TECHNIQUE}  ` }, staffSession: {} },
+      makeRes(),
+    );
+    const stored = JSON.parse(insertValuesCalls[0]!.findingsSections as string) as Record<string, string>;
+    expect(stored.Technique).toBe(TECHNIQUE);
+  });
+
+  test("GET /drafts hands that section back — and hands back no technique key at all", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const save = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    await save(
+      { body: { studyId: 7, rawFindings: "Findings text", technique: TECHNIQUE }, staffSession: {} },
+      makeRes(),
+    );
+    const written = insertValuesCalls[0]!;
+
+    // Exactly what the full-column select would return for that row.
+    selectDraftsResult = [
+      { id: 101, studyId: 7, rawFindings: written.rawFindings, findingsSections: written.findingsSections },
+    ];
+    const list = getRouteHandler(radiologyReportGeneratorRouter, "get", "/drafts");
+    const res = makeRes();
+    await list({ query: { studyId: "7" } }, res);
+
+    const draft = res.body.drafts[0];
+    expect(JSON.parse(draft.findingsSections).Technique).toBe(TECHNIQUE);
+    // The hole. `draft.technique` is undefined for every draft that has ever
+    // existed, which is why hydrating from it produced an empty Technique.
+    expect(draft.technique).toBeUndefined();
+  });
+
+  test("a blank Technique stores no Technique section and invents no text", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    await handler({ body: { studyId: 7, technique: "   " }, staffSession: {} }, makeRes());
+
+    expect(insertValuesCalls[0]!.findingsSections).toBeNull();
+  });
+
+  test("re-saving the value read back is byte-stable — a reload-then-autosave cannot erase it", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    await handler(
+      { body: { studyId: 7, technique: TECHNIQUE }, staffSession: {} },
+      makeRes(),
+    );
+    const first = JSON.parse(insertValuesCalls[0]!.findingsSections as string) as Record<string, string>;
+
+    // Simulate the reopened workspace: it saves whatever it restored.
+    await handler(
+      { body: { id: 42, studyId: 7, technique: first.Technique }, staffSession: {} },
+      makeRes(),
+    );
+    const second = JSON.parse(updateSetCalls[0]!.findingsSections as string) as Record<string, string>;
+    expect(second).toEqual(first);
+  });
+
+  test("a structured save keeps both its section map and the Technique section", async () => {
+    const { radiologyReportGeneratorRouter } = await import("./radiology-report-generator");
+    const handler = getRouteHandler(radiologyReportGeneratorRouter, "post", "/save-draft");
+    await handler(
+      {
+        body: {
+          studyId: 7,
+          technique: TECHNIQUE,
+          findingsSections: { "Lumbar spine": "Discs preserved." },
+        },
+        staffSession: {},
+      },
+      makeRes(),
+    );
+    const stored = JSON.parse(insertValuesCalls[0]!.findingsSections as string) as Record<string, string>;
+    expect(stored["Lumbar spine"]).toBe("Discs preserved.");
+    expect(stored.Technique).toBe(TECHNIQUE);
+  });
+});
+
 describe("GET /structured-json-drift (Ticket A5) — wiring only; classification/dedup logic is covered in radiologyStructuredJsonDrift.test.ts", () => {
   beforeEach(() => {
     structuredFlagEnabled = true;
