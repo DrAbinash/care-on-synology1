@@ -12,8 +12,8 @@
  * sentence implies another sentence, which one of two conflicting statements is
  * better, or that a restatement may be dropped. Where a clinical statement really
  * does supersede another, that is proved by structured ownership
- * (`pathologyPatch.ts` / the Observation Ledger), not here. Technique keeps its
- * own concept-aware merge, which is a separate concern and out of B-02's scope.
+ * (`pathologyPatch.ts` / the Observation Ledger), not here. Since B-02A the
+ * Technique path follows the same rule: see `mergeTechniqueWithProvenance`.
  *
  * Clinical report text stays plain strings. Provenance is a parallel map keyed
  * by normalizeForDedupe(sentence) — never duplicated into stored/preview text.
@@ -227,30 +227,33 @@ function segmentsToResult(segments: AnnotatedSentence[], joinWith: "\n" | " "): 
   return { text, provenance };
 }
 
-// ─── Technique concept extraction (deterministic, no AI) ────────────────────
+// ─── Sentence similarity (provenance attribution only, never text) ──────────
 
-const TECHNIQUE_CONCEPTS: Array<{ key: string; pattern: RegExp }> = [
-  { key: "scanner-3t", pattern: /\b(3\s*t|3\s*tesla|3t)\b/i },
-  { key: "scanner-1.5t", pattern: /\b(1\.5\s*t|1\.5\s*tesla)\b/i },
-  { key: "contrast", pattern: /\b(contrast|gadolinium|post[- ]contrast)\b/i },
-  { key: "multiplanar", pattern: /\b(multiplanar|multi[- ]planar)\b/i },
-  { key: "multisequence", pattern: /\b(multisequence|multi[- ]sequence)\b/i },
-  { key: "t1", pattern: /\bt1w?\b/i },
-  { key: "t2", pattern: /\bt2w?\b/i },
-  { key: "flair", pattern: /\bflair\b/i },
-  { key: "dwi", pattern: /\b(dwi|diffusion)\b/i },
-  { key: "swi", pattern: /\bswi\b/i },
-  { key: "adc", pattern: /\badc\b/i },
-];
-
-function techniqueConcepts(text: string): Set<string> {
-  const out = new Set<string>();
-  const norm = normalizeForDedupe(text);
-  for (const c of TECHNIQUE_CONCEPTS) {
-    if (c.pattern.test(text) || c.pattern.test(norm)) out.add(c.key);
-  }
-  return out;
-}
+/*
+ * B-02A removed `TECHNIQUE_CONCEPTS` / `techniqueConcepts` /
+ * `findTechniqueParaphraseIndex` from this file. They powered two rules that
+ * deleted acquisition facts from the Technique field:
+ *
+ *   - a Jaccard score ≥ 0.55 folded an incoming sentence onto an existing one and
+ *     let the LONGER of the two stand, so
+ *     "MRI of the brain was performed on a 1.5T scanner." + "Multiplanar
+ *     multisequence MRI of the brain was performed." printed one line, without
+ *     the field strength — in either arrival order;
+ *   - if every concept the eleven hard-coded patterns could see was already
+ *     present, the incoming sentence was dropped whole. STIR, the plane
+ *     descriptors, slice thickness, MRA/MRV, spectroscopy, fat saturation,
+ *     screening wording and technical limitations were invisible to that list, so
+ *     a real fact could be discarded as "already covered". Cross-pairwise over
+ *     every shipped Technique text, the old rule lost at least one acquisition
+ *     fact in 1338 of 5700 ordered pairs.
+ *
+ * Similar wording is not proof of an equivalent acquisition. Both rules are gone
+ * rather than retuned: raising the threshold or extending the concept list only
+ * changes which facts get deleted. What `jaccard` / `tokenSet` still do here is
+ * answer a different question — when a radiologist lightly rewords an owned
+ * sentence, which producer should the new wording be attributed to — and they
+ * only ever influence `findFuzzyProvenanceMatch`, never the text.
+ */
 
 function tokenSet(text: string): Set<string> {
   return new Set(normalizeForDedupe(text).split(" ").filter((t) => t.length > 2));
@@ -305,25 +308,15 @@ export function findFuzzyProvenanceMatch(
   return best;
 }
 
-/** Two MRI technique paragraphs that paraphrase the same scan → keep one. */
-function findTechniqueParaphraseIndex(segments: AnnotatedSentence[], incoming: string): number {
-  const incTokens = tokenSet(incoming);
-  if (incTokens.size < 4) return -1;
-  let best = -1;
-  let bestScore = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const score = jaccard(incTokens, tokenSet(segments[i]!.text));
-    if (score > bestScore) {
-      bestScore = score;
-      best = i;
-    }
-  }
-  return bestScore >= 0.55 ? best : -1;
-}
-
 /**
- * Technique merge: exact/normalized dedupe + concept-aware merging.
+ * Technique merge: an incoming sentence joins the existing one when the two are
+ * the same text under normalization, and is kept as its own statement otherwise.
  * When a duplicate is dropped, its source is unioned onto the kept sentence.
+ *
+ * Line layout is preserved as before (existing block, then the new sentences
+ * space-joined), because the print template reads Technique as a block; the
+ * decision about *what survives* no longer consults similarity, concept coverage
+ * or sentence length (B-02A).
  */
 export function mergeTechniqueWithProvenance(
   existing: string,
@@ -337,13 +330,12 @@ export function mergeTechniqueWithProvenance(
   }
 
   const segments = annotateExisting(existing, existingProvenance);
-  const existingNorm = new Map<string, number>();
-  const existingConcepts = new Set<string>();
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i]!;
-    existingNorm.set(normalizeForDedupe(seg.text), i);
-    for (const c of techniqueConcepts(seg.text)) existingConcepts.add(c);
-  }
+  // Keyed on the sentence object, not an index: the removed concept-aware version
+  // recorded incoming sentences under `segments.length + …` and then read them
+  // back through `segments[…]`, so a block that repeated one of its own sentences
+  // looked an empty slot up and threw `Cannot read properties of undefined`.
+  const seen = new Map<string, AnnotatedSentence>();
+  for (const seg of segments) seen.set(normalizeForDedupe(seg.text), seg);
 
   const incomingSentences = splitToSentences(inc);
   const keptIncoming: AnnotatedSentence[] = [];
@@ -352,34 +344,19 @@ export function mergeTechniqueWithProvenance(
     const n = normalizeForDedupe(s);
     if (!n) continue;
 
-    const dupIdx = existingNorm.get(n);
-    if (dupIdx !== undefined) {
-      segments[dupIdx]!.sources.add(source);
+    const dup = seen.get(n);
+    if (dup) {
+      // Provably the same sentence: one copy, sources unioned.
+      dup.sources.add(source);
       continue;
     }
 
-    const paraphraseIdx = findTechniqueParaphraseIndex(segments, s);
-    if (paraphraseIdx >= 0) {
-      const kept = segments[paraphraseIdx]!;
-      if (s.length > kept.text.length) kept.text = s;
-      kept.sources.add(source);
-      continue;
-    }
-
-    const sConcepts = techniqueConcepts(s);
-    const newConcepts = [...sConcepts].filter((c) => !existingConcepts.has(c));
-    if (sConcepts.size > 0 && newConcepts.length === 0) {
-      // Concept-covered near-duplicate — attribute onto covering segments.
-      for (const seg of segments) {
-        const shared = [...techniqueConcepts(seg.text)].some((c) => sConcepts.has(c));
-        if (shared) seg.sources.add(source);
-      }
-      continue;
-    }
-
-    keptIncoming.push({ text: s, sources: new Set([source]) });
-    for (const c of sConcepts) existingConcepts.add(c);
-    existingNorm.set(n, segments.length + keptIncoming.length - 1);
+    // Not provably the same wording, so it is a separate statement about the
+    // acquisition — appended verbatim, with its own source, and no existing
+    // sentence touched.
+    const kept: AnnotatedSentence = { text: s, sources: new Set([source]) };
+    seen.set(n, kept);
+    keptIncoming.push(kept);
   }
 
   const all = [...segments, ...keptIncoming];
