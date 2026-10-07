@@ -12,16 +12,27 @@
  */
 import type { QuickSelectField, QuickSelectTile } from "./types";
 import type { PendingPathologyPatch } from "./store";
+import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
 const opt = (v: string | undefined) => (v ?? "").trim() || undefined;
 
 /**
  * The overlay payload one click sends. `incoming` and `templates` are the same
  * object because a Quick Select contribution has no separate "display" wording.
+ *
+ * `params` carries what the radiologist picked in the strip for this tile's
+ * parameters. It was never passed before, which is how ten shipped tiles came to
+ * write a literal `{side}` into Findings, Impression and the Observation Ledger:
+ * the substitution path the store runs (`applySideToIncoming`) resolves the
+ * template from `opts.side`, got `undefined`, and returned the template as
+ * written. Omitting a parameter here is not a default — the store refuses the
+ * write when the tile asks for a value nobody chose
+ * (`quickSelectParameterContract`).
  */
 export function quickSelectTilePatch(
   tile: QuickSelectTile,
   field: QuickSelectField,
+  params: QuickSelectParameterValues = {},
 ): PendingPathologyPatch {
   const templates = field === "findings"
     ? {
@@ -46,6 +57,8 @@ export function quickSelectTilePatch(
     label: tile.label,
     findingsText: tile.sentence,
     supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
+    ...(params.side ? { side: params.side } : {}),
+    ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
   };
 }
 

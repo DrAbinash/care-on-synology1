@@ -1,7 +1,16 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import {
+  QUICK_SELECT_SEVERITIES,
+  announceQuickSelectParameterRefusal,
+  quickSelectParametersIn,
+  unresolvedQuickSelectParameters,
+  type QuickSelectParameterName,
+  type QuickSelectSeverity,
+} from "@/lib/zai-workspace/quickSelectParameterContract";
 import { lookupTilesForContext } from "@/lib/zai-workspace/quick-select-library";
 import type { QuickSelectField, QuickSelectTile } from "@/lib/zai-workspace/types";
+import type { Side } from "@/lib/sideSwap";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { Plus, Pencil, Star, Search, X, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -129,6 +138,32 @@ export function QuickSelectStrip({
     if (showSearch) setTimeout(() => ref.current?.focus(), 50);
   }, [showSearch]);
 
+  // B-09 — the clinical parameters these tiles ask for, and the values chosen for
+  // them. Neither has a default: an unset side does not mean "left", it means the
+  // parameterized tiles refuse until someone chooses. The store enforces that at
+  // the shared boundary; these chips are what make a refusal answerable from the
+  // drawer the tile was clicked in, rather than from the Clinic Quick Select panel
+  // that lives in a different drawer and owns a separate side control.
+  const requiredParameters = useMemo(() => {
+    const names = new Set<QuickSelectParameterName>();
+    for (const t of filtered) {
+      const written = field === "findings"
+        ? [t.sentence, t.impressionSentence, t.recommendationSentence].join(" ")
+        : t.sentence;
+      for (const name of quickSelectParametersIn(written)) names.add(name);
+    }
+    return names;
+  }, [filtered, field]);
+  const [qsSide, setQsSide] = useState<Side | "">("");
+  const [qsSeverity, setQsSeverity] = useState<QuickSelectSeverity | "">("");
+  const qsParams = { side: qsSide, severity: qsSeverity };
+  const paramChip = (active: boolean) =>
+    `text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
+      active
+        ? "bg-primary text-primary-foreground border-primary"
+        : "bg-background text-muted-foreground hover:bg-muted/50"
+    }`;
+
   if (!study) {
     return (
       <div
@@ -215,6 +250,40 @@ export function QuickSelectStrip({
           )}
         </div>
       </div>
+      {requiredParameters.size > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-1 pb-1.5"
+          data-testid={`qs-parameters-${field}`}
+        >
+          <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {field === "findings" ? "These tiles need" : "This tile needs"}
+          </span>
+          {requiredParameters.has("side") && (["left", "right", "bilateral"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={paramChip(qsSide === s)}
+              disabled={disabled}
+              data-testid={`qs-side-${s}`}
+              onClick={() => setQsSide(qsSide === s ? "" : s)}
+            >
+              {s === "bilateral" ? "B/L" : s[0].toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+          {requiredParameters.has("severity") && QUICK_SELECT_SEVERITIES.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={paramChip(qsSeverity === s)}
+              disabled={disabled}
+              data-testid={`qs-severity-${s}`}
+              onClick={() => setQsSeverity(qsSeverity === s ? "" : s)}
+            >
+              {s[0].toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className={cn("flex flex-wrap gap-1 overflow-y-auto pr-1", compact ? "max-h-[72px]" : "max-h-[104px] gap-1.5")}>
         {filtered.map((tile) => (
           <QuickSelectTileBox
@@ -224,16 +293,31 @@ export function QuickSelectStrip({
             disabled={disabled}
             onPick={() => {
               const ws = useWorkspace.getState();
-              // Both writers now report whether the write landed. The strip takes
-              // no `disabled` prop — its five props are field, bodyPart, compact,
-              // anatomyFilter and onAfterPick — so this is the only place that can
-              // learn a tile was refused.
+              // Both writers now report whether the write landed, so the strip is
+              // the one place that can learn a tile was refused — the store refuses
+              // on a signed report and, since B-09, on a tile whose clinical
+              // parameter was never chosen.
               //
               // Only a refusal stops the reward. "pending" is a real pick queued for
               // same-slot confirmation, so it still counts and still runs the
               // after-pick, exactly as before.
+              //
+              // A tile whose field is not Findings or Impression goes to
+              // `mergeField`, which has no parameter path at all and must keep none
+              // (that is where the radiologist's own typed prose lands). So the same
+              // contract is checked here, on the way in, before anything is merged.
+              if (field !== "findings" && field !== "impression") {
+                const unresolved = unresolvedQuickSelectParameters(
+                  { [field]: tile.sentence },
+                  qsParams,
+                );
+                if (unresolved.length > 0) {
+                  announceQuickSelectParameterRefusal(unresolved);
+                  return;
+                }
+              }
               const result = field === "findings" || field === "impression"
-                ? ws.applyPathologyOverlay(quickSelectTilePatch(tile, field))
+                ? ws.applyPathologyOverlay(quickSelectTilePatch(tile, field, { side: qsSide, severity: qsSeverity }))
                 : ws.mergeField(field, tile.sentence, "quick-select");
               if (result === "refused") return;
               // Skipped on a refusal, and it matters twice over: `onAfterPick` is
