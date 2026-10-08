@@ -89,6 +89,7 @@ type DailySummaryData = {
   suspensePayments?: {
     id: number;
     billId: number | null;
+    billNumber: string | null;
     amount: number;
     rawMethod: string;
     recordedByName: string | null;
@@ -118,10 +119,15 @@ type DailySummaryData = {
   refunds: {
     id: number;
     billId: number;
+    billNumber: string | null;
     amount: number;
     method: string;
     notes: string | null;
+    /** The note with its `REFUND: `-style prefix removed — what actually justified the refund. */
+    reason: string | null;
     recordedByName: string | null;
+    patientName: string | null;
+    referringDoctor: string | null;
     createdAt: string;
   }[];
   cancelledBillsDetail: {
@@ -564,7 +570,7 @@ export default function DailySummary() {
                       {data.suspensePayments.map((p) => (
                         <tr key={p.id} className="border-t border-amber-200 dark:border-amber-800/60">
                           <td className="px-2 py-1">
-                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">#{p.billId}</Link> : "—"}
+                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">{p.billNumber || `#${p.billId}`}</Link> : "—"}
                           </td>
                           <td className="px-2 py-1 tabular-nums">{inr(p.amount)}</td>
                           <td className="px-2 py-1 font-mono">{p.rawMethod || "(blank)"}</td>
@@ -739,11 +745,11 @@ export default function DailySummary() {
                     <div className="overflow-x-auto">
                       <div className="px-4 py-2 text-xs font-semibold text-rose-700 bg-rose-50 dark:bg-rose-950/20">Refunds ({refundRows.length})</div>
                       <table className="w-full text-xs">
-                        <thead className="bg-muted/40"><tr><th className="px-3 py-2 text-left font-semibold">Time</th><th className="px-3 py-2 text-left font-semibold">Bill ID</th><th className="px-3 py-2 text-left font-semibold">Method</th><th className="px-3 py-2 text-right font-semibold">Refunded</th><th className="px-3 py-2 text-left font-semibold">Notes</th><th className="px-3 py-2 text-left font-semibold">By</th></tr></thead>
+                        <thead className="bg-muted/40"><tr><th className="px-3 py-2 text-left font-semibold">Time</th><th className="px-3 py-2 text-left font-semibold">Bill #</th><th className="px-3 py-2 text-left font-semibold">Patient</th><th className="px-3 py-2 text-left font-semibold">Referral doctor</th><th className="px-3 py-2 text-left font-semibold">Method</th><th className="px-3 py-2 text-right font-semibold">Refunded</th><th className="px-3 py-2 text-left font-semibold">Reason</th><th className="px-3 py-2 text-left font-semibold">By</th></tr></thead>
                         <tbody className="divide-y divide-card-border">
-                          {refundRows.map((r) => (<tr key={r.id} className="hover:bg-muted/20"><td className="px-3 py-1.5 text-muted-foreground">{new Date(r.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}</td><td className="px-3 py-1.5 font-mono">#{r.billId}</td><td className="px-3 py-1.5 uppercase">{r.method}</td><td className="px-3 py-1.5 text-right font-semibold text-rose-600">−{inr(r.amount)}</td><td className="px-3 py-1.5 text-muted-foreground">{r.notes || "—"}</td><td className="px-3 py-1.5 text-muted-foreground">{r.recordedByName || "—"}</td></tr>))}
+                          {refundRows.map((r) => (<tr key={r.id} className="hover:bg-muted/20"><td className="px-3 py-1.5 text-muted-foreground">{new Date(r.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}</td><td className="px-3 py-1.5 font-mono">{r.billNumber || `#${r.billId}`}</td><td className="px-3 py-1.5">{r.patientName || "—"}</td><td className="px-3 py-1.5">{r.referringDoctor || "No referral"}</td><td className="px-3 py-1.5 uppercase">{r.method}</td><td className="px-3 py-1.5 text-right font-semibold text-rose-600">−{inr(r.amount)}</td><td className="px-3 py-1.5 text-muted-foreground">{r.reason || r.notes || "no reason recorded"}</td><td className="px-3 py-1.5 text-muted-foreground">{r.recordedByName || "—"}</td></tr>))}
                         </tbody>
-                        <tfoot className="bg-muted/30 border-t-2 border-card-border"><tr><td colSpan={3} className="px-3 py-2 font-semibold text-xs">Total Refunded</td><td className="px-3 py-2 text-right font-bold text-rose-600">−{inr(refundRows.reduce((s, r) => s + r.amount, 0))}</td><td colSpan={2} /></tr></tfoot>
+                        <tfoot className="bg-muted/30 border-t-2 border-card-border"><tr><td colSpan={5} className="px-3 py-2 font-semibold text-xs">Total Refunded</td><td className="px-3 py-2 text-right font-bold text-rose-600">−{inr(refundRows.reduce((s, r) => s + r.amount, 0))}</td><td colSpan={2} /></tr></tfoot>
                       </table>
                     </div>
                   )}

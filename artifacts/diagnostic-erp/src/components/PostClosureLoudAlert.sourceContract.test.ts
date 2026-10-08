@@ -56,4 +56,20 @@ describe("post-closure billing visibility (source contract)", () => {
     expect(src).toContain('data-testid="post-closure-loud-alert-body"');
     expect(src).toContain("{open && (");
   });
+
+  it("the payments-after-close row names its bill, patient and referral", () => {
+    const src = readFileSync(join(root, "components/PostClosureLoudAlert.tsx"), "utf8");
+    expect(src).toMatch(/\{p\.billNumber \|\| `Bill #\$\{p\.billId\}`\}/);
+    expect(src).toContain("p.patientName");
+    expect(src).toContain("p.referringDoctor");
+    expect(src).toContain("No referral");
+    // Positive control: the cell used to be this line on its own, and the ban below
+    // is only a ban because it would fire on it.
+    const oldCell = "                          Bill #{p.billId}\n";
+    expect(oldCell).toMatch(/^\s*Bill #\{p\.billId\}\s*$/m);
+    expect(src).not.toMatch(/^\s*Bill #\{p\.billId\}\s*$/m);
+    // The bills half of this same component already printed the real number; the
+    // payments half did not. Asserting both keeps the two halves from drifting.
+    expect(src).toContain("{b.billNumber}");
+  });
 });

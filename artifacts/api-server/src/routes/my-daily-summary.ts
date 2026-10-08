@@ -781,8 +781,13 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     payments: paymentItems.map((p) => ({
       id: p.id,
       billId: p.billId,
+      billNumber: p.billNumber ?? `#${p.billId}`,
       amount: Number(p.amount),
       method: formatMethod(p.method),
+      patientName: p.patientFirstName
+        ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+        : null,
+      referringDoctor: p.referringDoctor ?? null,
       createdAt:
         p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
       billCreatedAt:
@@ -794,6 +799,7 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
     suspensePayments: [...unknownPaymentItems, ...unknownRefundItems].map((p) => ({
       id: p.id,
       billId: p.billId,
+      billNumber: p.billNumber ?? null,
       amount: Number(p.amount),
       rawMethod: p.method,
       recordedByName: p.recordedByName,

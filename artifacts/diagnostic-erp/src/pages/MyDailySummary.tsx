@@ -18,6 +18,7 @@ import type { ModalityBillingSummary } from "@/components/ModalityBillingKpi";
 import LowStockKpi from "@/components/LowStockKpi";
 import { FINANCIAL_QUERY_OPTIONS } from "@/lib/queryConfig";
 import { PostClosureLoudAlert, SameDayAfterCloseBadge } from "@/components/PostClosureLoudAlert";
+import { RefundActivityTable, billRaisedOnAnotherDay } from "@/components/RefundActivityTable";
 import {
   IndianRupee, Wallet, Banknote, Smartphone, TrendingDown, RotateCcw,
   XCircle, FileEdit, Clock, Calendar, RefreshCw, Tag, CheckCircle2,
@@ -112,14 +113,18 @@ type MyDailySummaryData = {
   payments: {
     id: number;
     billId: number;
+    billNumber: string;
     amount: number;
     method: string;
+    patientName: string | null;
+    referringDoctor: string | null;
     createdAt: string;
     billCreatedAt: string;
   }[];
   suspensePayments?: {
     id: number;
     billId: number;
+    billNumber: string | null;
     amount: number;
     rawMethod: string;
     recordedByName: string | null;
@@ -263,7 +268,7 @@ type PostClosureActivity = {
   closedAt: string | null;
   closureId?: number;
   bills: { id: number; billNumber: string; totalAmount: number; paidAmount: number; status: string; createdAt: string; sameDayAfterClose?: boolean }[];
-  payments: { id: number; billId: number; amount: number; method: string; createdAt: string; sameDayAfterClose?: boolean }[];
+  payments: { id: number; billId: number; billNumber?: string | null; amount: number; method: string; patientName?: string | null; referringDoctor?: string | null; createdAt: string; sameDayAfterClose?: boolean }[];
   billTotal: number;
   paymentTotal: number;
   sameDayBillCount?: number;
@@ -1674,43 +1679,6 @@ function PostClosureActivityBox({ data, scopeLabel }: { data: PostClosureActivit
 
 type ActivityTab = "bill-edits" | "referral-edits" | "voucher-edits" | "cancellations" | "refunds";
 
-type RefundRow = MyDailySummaryData["refunds"][number];
-
-/**
- * What the money going out was, in words. The server reads this out of the
- * payment's own note, which every refund writer prefixes — see
- * `describeRefundNote` in api-server/src/lib/dailySummaryCollectible.ts.
- */
-const REFUND_KIND_LABEL: Record<NonNullable<RefundRow["refundKind"]>, string> = {
-  cancellation: "full cancellation",
-  "test-cancel": "test cancelled",
-  "test-swap": "test swapped",
-  refund: "refund",
-  other: "refund · unclassified",
-};
-
-/**
- * "of 5 Oct" when the refund is against a bill raised on a different day than the
- * one it is being refunded on. That is the row worth reading twice — the cash left
- * today for a transaction booked earlier — and the log used to show it as nothing
- * but a bill number. Returns null when either date is missing or they agree.
- *
- * Exported for tests: this package has no DOM harness, so what can be decided
- * outside JSX is decided here where it can actually be called.
- */
-export function billRaisedOnAnotherDay(billCreatedAt: string, refundedAt: string): string | null {
-  const dayKey = (iso: string) => {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-  };
-  const billDay = dayKey(billCreatedAt);
-  const refundDay = dayKey(refundedAt);
-  if (!billDay || !refundDay || billDay === refundDay) return null;
-  return new Date(billCreatedAt).toLocaleDateString("en-IN", {
-    day: "numeric", month: "short", timeZone: "Asia/Kolkata",
-  });
-}
-
 function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
   const [tab, setTab] = useState<ActivityTab>("bill-edits");
   if (!data) return null;
@@ -1906,69 +1874,12 @@ function MyActivityLog({ data }: { data: MyDailySummaryData | undefined }) {
             </div>
           )
         )}
-        {/* Refunds — rich table: which bill, for whom, and why the money went out */}
+        {/* Refunds — the shared table, the same one the Dashboard control logs use */}
         {tab === "refunds" && (
           refunds.length === 0 ? (
             <p className="px-4 py-6 text-sm text-gray-500 text-center">No refunds in this period.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs" data-testid="activity-refunds-table">
-                <thead className="bg-gray-50 dark:bg-muted/30 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Bill #</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Patient</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Referral doctor</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">Refunded</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300">Reason</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap">When · by</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-card-border">
-                  {refunds.map((r) => {
-                    const oldBillDay = billRaisedOnAnotherDay(r.billCreatedAt, r.createdAt);
-                    return (
-                      <tr key={r.id} className="hover:bg-amber-50/50 dark:hover:bg-muted/20">
-                        <td className="px-3 py-2 font-semibold whitespace-nowrap">
-                          <Link href={`/billing/${r.billId}`} className="text-primary hover:underline">
-                            {r.billNumber || `#${r.billId}`}
-                          </Link>
-                          {oldBillDay && (
-                            <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-gray-100 text-gray-600 dark:bg-muted dark:text-gray-300" title={`Bill raised on ${oldBillDay}`}>
-                              of {oldBillDay}
-                            </span>
-                          )}
-                          {r.billStatus === "cancelled" && (
-                            <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300">
-                              bill cancelled
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[150px] truncate">{r.patientName || "—"}</td>
-                        <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[150px] truncate">
-                          {r.referringDoctor || <span className="text-gray-400">No referral</span>}
-                        </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <span className="font-semibold text-amber-700 dark:text-amber-400">{fmt(Math.abs(Number(r.amount)))}</span>
-                          <span className="text-gray-500"> via {r.method}</span>
-                          <span className="block text-[9px] font-semibold uppercase tracking-wide text-gray-500">
-                            {REFUND_KIND_LABEL[r.refundKind ?? "refund"]}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[260px]">
-                          {r.reason
-                            ? <span className="line-clamp-2">{r.reason}</span>
-                            : <span className="text-gray-400 italic" data-testid="activity-refund-no-reason">no reason recorded</span>}
-                        </td>
-                        <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
-                          <span className="flex items-center gap-1"><Clock size={10} />{fmtTime(r.createdAt)}</span>
-                          <span className="block text-[10px] text-gray-500">{r.recordedBy ?? "Unknown"}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <RefundActivityTable refunds={refunds} testId="activity-refunds-table" />
           )
         )}
       </div>
@@ -2722,7 +2633,7 @@ export default function MyDailySummary() {
                       {data.suspensePayments.map((p) => (
                         <tr key={p.id} className="border-t border-amber-200 dark:border-amber-800/60">
                           <td className="px-2 py-1">
-                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">#{p.billId}</Link> : "—"}
+                            {p.billId ? <Link href={`/billing/${p.billId}`} className="underline">{p.billNumber || `#${p.billId}`}</Link> : "—"}
                           </td>
                           <td className="px-2 py-1 tabular-nums">{fmt(p.amount)}</td>
                           <td className="px-2 py-1 font-mono">{p.rawMethod || "(blank)"}</td>
@@ -3402,11 +3313,27 @@ export default function MyDailySummary() {
           <div className="divide-y divide-gray-100 dark:divide-card-border">
             {data.payments.map((p) => (
               <div key={p.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-muted/20">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   <Banknote size={13} className="text-green-500 flex-shrink-0" />
-                  <div>
-                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{p.billId}</Link>
-                    <p className="text-[10px] text-gray-500">{fmtTime(p.createdAt)}</p>
+                  <div className="min-w-0">
+                    <Link href={`/billing/${p.billId}`} className="text-xs font-semibold text-primary hover:underline">{p.billNumber}</Link>
+                    {(() => {
+                      const oldBillDay = billRaisedOnAnotherDay(p.billCreatedAt, p.createdAt);
+                      return oldBillDay ? (
+                        <span
+                          className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-gray-100 text-gray-600 dark:bg-muted dark:text-gray-300"
+                          title={`Bill raised on ${oldBillDay}`}
+                        >
+                          of {oldBillDay}
+                        </span>
+                      ) : null;
+                    })()}
+                    <p className="text-[10px] text-gray-500 truncate">
+                      {p.patientName || "Unknown"}
+                      {p.referringDoctor ? ` · ${p.referringDoctor}` : " · No referral"}
+                      {" · "}
+                      {fmtTime(p.createdAt)}
+                    </p>
                   </div>
                 </div>
                 <div className="text-right">

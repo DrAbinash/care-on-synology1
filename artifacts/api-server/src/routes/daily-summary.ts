@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
-  billsTable, paymentsTable, ordersTable, billAuditsTable, voucherAuditsTable,
+  billsTable, paymentsTable, ordersTable, doctorsTable, billAuditsTable, voucherAuditsTable,
   orderTestsTable, testsTable,
 } from "@workspace/db/schema";
 import { sql, and, eq, gte, lt, ne, isNull, or, isNotNull, notInArray } from "drizzle-orm";
@@ -11,6 +11,7 @@ import { todayIST } from "../lib/istDate";
 import { classifyPaymentMethod, isDigitalSettlement, isPhysicalCash } from "../lib/paymentMethodClassifier";
 import { BILL_AUDIT_OPERATIONAL_CHANGE_TYPES } from "../lib/staffActivityAttribution";
 import { isCollectiblePayment } from "../lib/financialIntegrity";
+import { describeRefundNote } from "../lib/dailySummaryCollectible";
 
 export const dailySummaryRouter: IRouter = Router();
 
@@ -58,10 +59,15 @@ dailySummaryRouter.get("/", async (req, res) => {
   const paymentFilters = [gte(paymentsTable.createdAt, dayStart), lt(paymentsTable.createdAt, dayEnd)];
   if (staffName) paymentFilters.push(eq(paymentsTable.recordedByName, staffName));
 
+  // This row set drives every cash/digital total on the page, so the joins below
+  // are LEFT joins onto primary keys: each payment matches at most one bill and
+  // at most one patient/order/doctor, and an unmatched one is kept with NULLs.
+  // Row count — and therefore every amount computed from it — is unchanged.
   const allPaymentItems = await db
     .select({
       id: paymentsTable.id,
       billId: paymentsTable.billId,
+      billNumber: billsTable.billNumber,
       amount: paymentsTable.amount,
       method: paymentsTable.method,
       referenceNumber: paymentsTable.referenceNumber,
@@ -69,8 +75,17 @@ dailySummaryRouter.get("/", async (req, res) => {
       notes: paymentsTable.notes,
       createdAt: paymentsTable.createdAt,
       settlementStatus: paymentsTable.settlementStatus,
+      billCreatedAt: billsTable.createdAt,
+      billStatus: billsTable.status,
+      patientFirstName: patientsTable.firstName,
+      patientLastName: patientsTable.lastName,
+      referringDoctor: doctorsTable.name,
     })
     .from(paymentsTable)
+    .leftJoin(billsTable, eq(paymentsTable.billId, billsTable.id))
+    .leftJoin(patientsTable, eq(billsTable.patientId, patientsTable.id))
+    .leftJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .leftJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
     .where(and(...paymentFilters))
     .orderBy(sql`${paymentsTable.createdAt} DESC`)
     .limit(500);
@@ -374,6 +389,7 @@ dailySummaryRouter.get("/", async (req, res) => {
     suspensePayments: [...suspensePaymentItems, ...suspenseRefundItems].map((p) => ({
       id: p.id,
       billId: p.billId,
+      billNumber: p.billNumber ?? null,
       amount: Number(p.amount),
       rawMethod: p.method,
       recordedByName: p.recordedByName,
@@ -400,15 +416,30 @@ dailySummaryRouter.get("/", async (req, res) => {
       recordedByName: p.recordedByName,
       createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
     })),
-    refunds: refundItems.map((p) => ({
-      id: p.id,
-      billId: p.billId,
-      amount: Math.abs(Number(p.amount)),
-      method: p.method ?? "cash",
-      notes: p.notes,
-      recordedByName: p.recordedByName,
-      createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
-    })),
+    refunds: refundItems.map((p) => {
+      // The payment note IS the reason this refund was given; describeRefundNote
+      // is the single owner of that note's vocabulary (see my-daily-summary).
+      const note = describeRefundNote(p.notes);
+      return {
+        id: p.id,
+        billId: p.billId,
+        billNumber: p.billNumber ?? `#${p.billId}`,
+        amount: Math.abs(Number(p.amount)),
+        method: p.method ?? "cash",
+        notes: p.notes,
+        recordedByName: p.recordedByName,
+        patientName: p.patientFirstName
+          ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+          : null,
+        referringDoctor: p.referringDoctor ?? null,
+        billStatus: p.billStatus ?? null,
+        refundKind: note.kind,
+        reason: note.reason,
+        createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+        billCreatedAt:
+          p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
+      };
+    }),
     cancelledBillsDetail: cancelledBills.map((r) => ({
       id: r.id,
       billNumber: r.billNumber,

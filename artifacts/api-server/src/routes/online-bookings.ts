@@ -427,11 +427,11 @@ export async function confirmBookingInternal(
   bookingId: number,
   staffName: string = "Super Admin",
   opts?: { autoConfirm?: boolean },
-): Promise<{ booking: any; billId: number; patientId: number; dueAtCentre: boolean }> {
+): Promise<{ booking: any; billId: number; billNumber: string | null; patientId: number; dueAtCentre: boolean }> {
   const [booking] = await db.select().from(onlineBookingsTable).where(eq(onlineBookingsTable.id, bookingId)).limit(1);
   if (!booking) throw new Error("Booking not found");
   if (booking.status === "confirmed") {
-    return { booking, billId: booking.billId || 0, patientId: booking.patientId || 0, dueAtCentre: false };
+    return { booking, billId: booking.billId || 0, billNumber: null, patientId: booking.patientId || 0, dueAtCentre: false };
   }
 
   // Parse test and package IDs
@@ -561,6 +561,8 @@ export async function confirmBookingInternal(
   return {
     booking: updated,
     billId: result.billId,
+    // The desk needs the number it can read, not the row id, to collect payment.
+    billNumber: result.billNumber ?? null,
     patientId: result.patientDbId,
     dueAtCentre: payAtCentre,
   };

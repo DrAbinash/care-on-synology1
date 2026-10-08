@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-client-react";
 import PageHeader from "@/components/PageHeader";
 import StatusBadge from "@/components/StatusBadge";
+import { RefundActivityTable, type RefundKind } from "@/components/RefundActivityTable";
 import {
   Users,
   ClipboardList,
@@ -32,7 +33,6 @@ import {
   Wallet,
   Banknote,
   Smartphone,
-  RotateCcw,
   XCircle,
   FileEdit,
   ShieldAlert,
@@ -146,7 +146,12 @@ type DailySummaryData = {
   }[];
   billEdits: DailySummaryBillEdit[];
   voucherEdits: { id: number; editedBy: string; reason: string; createdAt: string }[];
-  refunds: { id: number; billId: number; amount: number; method: string; createdAt: string; recordedByName: string }[];
+  refunds: {
+    id: number; billId: number; billNumber: string | null; amount: number; method: string;
+    notes: string | null; recordedByName: string | null; patientName: string | null;
+    referringDoctor: string | null; billStatus: string | null; refundKind: RefundKind;
+    reason: string | null; createdAt: string; billCreatedAt: string | null;
+  }[];
   cancelledBillsDetail: { id: number; billNumber: string; patientName: string; totalAmount: number; createdByName: string; cancelledAt: string }[];
 };
 
@@ -661,7 +666,7 @@ function ControlLogs({ data }: { data: DailySummaryData | undefined }) {
     ...voucherEdits.map((e) => ({ id: e.id, billId: 0, billNumber: "—", editedBy: e.editedBy, reason: e.reason, changeType: "", oldValue: null as null, newValue: null as null, createdAt: e.createdAt, source: "Voucher" as const })),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const cancellations = data.cancelledBillsDetail ?? [];
-  const refunds = data.refunds ?? [];
+  const refunds = (data.refunds ?? []).map((r) => ({ ...r, recordedBy: r.recordedByName }));
   const totalLogs = allEdits.length + cancellations.length + refunds.length;
 
   if (totalLogs === 0) return (
@@ -735,19 +740,7 @@ function ControlLogs({ data }: { data: DailySummaryData | undefined }) {
         )}
         {tab === "refunds" && (refunds.length === 0
           ? <p className="px-4 py-6 text-sm text-gray-500 text-center">No refunds today.</p>
-          : refunds.map((r, i) => (
-            <div key={i} className="px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 dark:hover:bg-muted/20">
-              <RotateCcw size={13} className="text-amber-500 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Link href={`/billing/${r.billId}`} className="text-xs font-semibold text-primary hover:underline">Bill #{r.billId}</Link>
-                  <span className="text-xs text-gray-500">by {r.recordedByName}</span>
-                  <span className="text-[10px] text-gray-500">{fmtTime(r.createdAt)}</span>
-                </div>
-                <p className="text-xs text-amber-700 dark:text-amber-400 font-semibold">{fmt(Math.abs(r.amount))} via {r.method}</p>
-              </div>
-            </div>
-          ))
+          : <RefundActivityTable refunds={refunds} testId="dashboard-refunds-table" />
         )}
       </div>
     </div>
