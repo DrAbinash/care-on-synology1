@@ -154,8 +154,7 @@ async function consumeFefoTx(
       eq(inventoryBatchesTable.status, "active"),
       gt(inventoryBatchesTable.qtyRemaining, "0"),
     ))
-    .orderBy(asc(inventoryBatchesTable.expiryDate), asc(inventoryBatchesTable.id))
-    .for("update");
+    .orderBy(asc(inventoryBatchesTable.expiryDate), asc(inventoryBatchesTable.id));
   const [item] = await tx
     .select()
     .from(inventoryItemsTable)
