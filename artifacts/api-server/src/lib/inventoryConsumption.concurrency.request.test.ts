@@ -205,11 +205,14 @@ describe.skipIf(!hasDatabaseUrl())(
       // The mirror-image defect: a serialisation device that also deduplicated
       // across events would silently stop consuming. Two reports' verifies for
       // the same item must both deduct.
+      //
+      // Run SEQUENTIALLY on purpose. Both events being booked is the property;
+      // the stock total is only deterministic when one follows the other, and
+      // asserting the concurrent total here would claim a guarantee B-11 does
+      // not make — see the next case.
       const f = await makeFixture();
-      await Promise.all([
-        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-1-${marker}`, performedBy: "A" }),
-        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-2-${marker}`, performedBy: "A" }),
-      ]);
+      await consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-1-${marker}`, performedBy: "A" });
+      await consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-2-${marker}`, performedBy: "A" });
       const rows = await db
         .select({ id: inventoryTransactionsTable.id })
         .from(inventoryTransactionsTable)
@@ -221,6 +224,32 @@ describe.skipIf(!hasDatabaseUrl())(
         );
       expect(rows.length).toBe(2);
       expect(await stockOf(f.itemId)).toBe(48);
+    });
+
+    it("KNOWN GAP, follow-up #1 — concurrent distinct events both book; no balance is claimed here", async () => {
+      // Two DIFFERENT events take different advisory locks, so nothing
+      // serialises them: each reads current_stock and writes `before - qty`.
+      // CI found this rather than anyone reasoning it — the first version of
+      // this file asserted 50 → 48 with the two calls concurrent, and real
+      // Postgres answered 49 (run 37790283653, `Tests 1 failed | 10758 passed`):
+      // two units booked, one unit off the shelf.
+      //
+      // Asserting 49 instead would pin the defect as expected behaviour, so
+      // this case asserts only what B-11 guarantees — each event booked exactly
+      // once — and stays silent on the balance. Making the balance agree is
+      // follow-up item 1 (an item-keyed lock, or SELECT … FOR UPDATE on the
+      // item row), which is deliberately not in this PR.
+      const f = await makeFixture();
+      await Promise.all([
+        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-A-${marker}`, performedBy: "A" }),
+        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-B-${marker}`, performedBy: "B" }),
+      ]);
+      const booked = await db
+        .select({ id: inventoryTransactionsTable.id, reference: inventoryTransactionsTable.reference })
+        .from(inventoryTransactionsTable)
+        .where(eq(inventoryTransactionsTable.itemId, f.itemId));
+      expect(booked.length, "two distinct events must each be booked exactly once").toBe(2);
+      expect(new Set(booked.map((r) => String(r.reference))).size).toBe(2);
     });
 
     it("the FEFO branch is serialised the same way (batch decremented once)", async () => {

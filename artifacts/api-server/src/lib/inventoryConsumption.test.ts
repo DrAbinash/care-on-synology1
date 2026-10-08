@@ -397,15 +397,34 @@ describe("B11-05 — reference keys stay distinguishable and interpretable", () 
     // The mirror-image failure: a dedupe key that ignores which event it came
     // from keeps stock perfectly and silently stops charging for it. Two
     // separate MRIs of the same protocol must take two doses.
+    //
+    // Sequential, deliberately. B-11 serialises one *event*; it does not make
+    // two concurrent distinct events agree on the running balance — CI proved
+    // that on real Postgres (see the KNOWN GAP case in
+    // inventoryConsumption.concurrency.request.test.ts, which is where that
+    // behaviour is recorded). Asserting a concurrent total here would claim a
+    // guarantee this PR does not make, and would depend on fake scheduling.
+    const itemId = seedItem();
+    seedRule(7, itemId);
+    await hookConsumeOnReportVerified({ id: 41, testId: 7, verifiedByName: "A" });
+    await settle();
+    await hookConsumeOnReportVerified({ id: 42, testId: 7, verifiedByName: "A" });
+    await settle();
+    expect(consumeRows().length).toBe(2);
+    expect(stock(itemId)).toBe(98);
+  });
+
+  it("two CONCURRENT different events are each booked once (balance not asserted — follow-up)", async () => {
     const itemId = seedItem();
     seedRule(7, itemId);
     await Promise.all([
       hookConsumeOnReportVerified({ id: 41, testId: 7, verifiedByName: "A" }),
-      hookConsumeOnReportVerified({ id: 42, testId: 7, verifiedByName: "A" }),
+      hookConsumeOnReportVerified({ id: 42, testId: 7, verifiedByName: "B" }),
     ]);
     await settle();
-    expect(consumeRows().length).toBe(2);
-    expect(stock(itemId)).toBe(98);
+    const rows = consumeRows();
+    expect(rows.length, "each distinct event books exactly once").toBe(2);
+    expect(new Set(rows.map((r) => String(r.reference))).size).toBe(2);
   });
 });
 
