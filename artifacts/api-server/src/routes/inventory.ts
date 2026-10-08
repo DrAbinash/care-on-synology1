@@ -9,7 +9,6 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, lte, and, inArray, sql, or } from "drizzle-orm";
 import { buildLowStockSummary } from "../lib/inventoryLowStockSummary";
-import { lockItemForStockTx } from "../lib/inventoryStockLock";
 import {
   ListInventoryItemsByVendorParams,
   CreateInventoryItemBody,
@@ -195,19 +194,21 @@ router.post("/:id/stock-in", async (req, res) => {
     res.status(400).json({ error: "quantity must be > 0" });
     return;
   }
+  const [existing] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Item not found" });
+    return;
+  }
+
   const vid = vendorId == null || vendorId === "" ? null : Number(vendorId);
   const uc = unitCost == null || unitCost === "" ? null : Number(unitCost);
   const idate = typeof invoiceDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(invoiceDate) ? invoiceDate : null;
 
+  const before = Number(existing.currentStock);
+  const after = before + qty;
   // Wrap stock update + transaction insert in one tx so we never log a purchase
-  // that didn't actually adjust stock (or vice versa) under errors. The item row
-  // is locked by the SAME statement that reads the balance, so a concurrent
-  // withdrawal cannot have already replaced the `before` this addition uses.
-  const result = await db.transaction(async (tx) => {
-    const existing = await lockItemForStockTx(tx, id);
-    if (!existing) return { found: false as const };
-    const before = Number(existing.currentStock);
-    const after = before + qty;
+  // that didn't actually adjust stock (or vice versa) under errors.
+  const txn = await db.transaction(async (tx) => {
     await tx.update(inventoryItemsTable).set({ currentStock: after.toString() }).where(eq(inventoryItemsTable.id, id));
     const [inserted] = await tx.insert(inventoryTransactionsTable).values({
       itemId: id, type: "in", quantity: qty.toString(), stockBefore: before.toString(), stockAfter: after.toString(),
@@ -217,13 +218,9 @@ router.post("/:id/stock-in", async (req, res) => {
       invoiceDate: idate,
       unitCost: Number.isFinite(uc as number) ? (uc as number).toString() : null,
     }).returning();
-    return { found: true as const, transaction: inserted, newStock: after };
+    return inserted;
   });
-  if (!result.found) {
-    res.status(404).json({ error: "Item not found" });
-    return;
-  }
-  res.status(201).json({ transaction: result.transaction, newStock: result.newStock });
+  res.status(201).json({ transaction: txn, newStock: after });
 });
 
 // Stock out
@@ -244,34 +241,27 @@ router.post("/:id/stock-out", async (req: StaffAuthRequest, res) => {
   const { quantity, reason, reference, performedBy } = bodyParsed.data;
   const qty = Number(quantity);
   const actor = req.staffSession?.subjectName ?? performedBy ?? null;
-  const result = await db.transaction(async (tx) => {
-    // The stock check runs on the LOCKED row, inside the transaction that
-    // spends it. Read unlocked, "there are 50 on the shelf" is a statement about
-    // a moment that has already gone: two counters each drawing 40 both passed
-    // this guard, both deducted from their own copy of the balance, and the item
-    // ended up 30 short of what the ledger says left the building.
-    const existing = await lockItemForStockTx(tx, id);
-    if (!existing) return { outcome: "missing" as const };
-    const before = Number(existing.currentStock);
-    if (before < qty) return { outcome: "short" as const };
-    const after = Math.round((before - qty) * 100) / 100;
+  const [existing] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, id));
+  if (!existing) {
+    res.status(404).json({ error: "Item not found" });
+    return;
+  }
+  const before = Number(existing.currentStock);
+  if (before < qty) {
+    res.status(400).json({ error: "Insufficient stock" });
+    return;
+  }
+  const after = Math.round((before - qty) * 100) / 100;
+  const txn = await db.transaction(async (tx) => {
     await tx.update(inventoryItemsTable).set({ currentStock: after.toString() }).where(eq(inventoryItemsTable.id, id));
     const [inserted] = await tx.insert(inventoryTransactionsTable).values({
       itemId: id, type: "out", quantity: qty.toString(), stockBefore: before.toString(), stockAfter: after.toString(),
       reason: reason ?? null, reference: reference ?? null, performedBy: actor,
     }).returning();
-    return { outcome: "ok" as const, transaction: inserted, newStock: after };
+    return inserted;
   });
-  if (result.outcome === "missing") {
-    res.status(404).json({ error: "Item not found" });
-    return;
-  }
-  if (result.outcome === "short") {
-    res.status(400).json({ error: "Insufficient stock" });
-    return;
-  }
   void import("../lib/inventoryLowStockAlerts").then((m) => m.maybeSendLowStockAlerts("stock-out"));
-  res.status(201).json({ transaction: result.transaction, newStock: result.newStock });
+  res.status(201).json({ transaction: txn, newStock: after });
 });
 
 // Stock adjustment
@@ -291,30 +281,18 @@ router.post("/:id/adjust", async (req, res) => {
   const id = paramsParsed.data.id;
   const { newQuantity, reason, performedBy } = bodyParsed.data;
   const target = Number(newQuantity);
-  // An adjustment means "the physical count is now `target`", and that semantics
-  // is kept deliberately: it is NOT converted into a delta, so a competing
-  // mutation is serialised ahead of the count rather than absorbed by it. What
-  // was wrong was the mechanism — the balance was read unlocked, and setting the
-  // stock and inserting its ledger row were two separate bare statements with no
-  // transaction between them. A failure in the gap moved the balance and left no
-  // record of it, and a concurrent movement was overwritten in the shelf while
-  // its own ledger row stayed behind claiming it had landed.
-  const result = await db.transaction(async (tx) => {
-    const existing = await lockItemForStockTx(tx, id);
-    if (!existing) return { found: false as const };
-    const before = Number(existing.currentStock);
-    await tx.update(inventoryItemsTable).set({ currentStock: target.toString() }).where(eq(inventoryItemsTable.id, id));
-    await tx.insert(inventoryTransactionsTable).values({
-      itemId: id, type: "adjustment", quantity: (target - before).toString(),
-      stockBefore: before.toString(), stockAfter: target.toString(),
-      reason: reason ?? null, performedBy: performedBy ?? null,
-    });
-    return { found: true as const };
-  });
-  if (!result.found) {
+  const [existing] = await db.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, id));
+  if (!existing) {
     res.status(404).json({ error: "Item not found" });
     return;
   }
+  const before = Number(existing.currentStock);
+  await db.update(inventoryItemsTable).set({ currentStock: target.toString() }).where(eq(inventoryItemsTable.id, id));
+  await db.insert(inventoryTransactionsTable).values({
+    itemId: id, type: "adjustment", quantity: (target - before).toString(),
+    stockBefore: before.toString(), stockAfter: target.toString(),
+    reason: reason ?? null, performedBy: performedBy ?? null,
+  });
   res.json({ newStock: target });
 });
 

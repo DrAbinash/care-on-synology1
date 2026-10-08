@@ -30,7 +30,7 @@ import {
   inventoryItemsTable,
   vendorsTable,
 } from "@workspace/db/schema";
-import { asc, eq, desc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { preprocessScanImage } from "../lib/ocr/idCardPipeline";
 import { ocrInvoice } from "../lib/ocr/localDocumentOcr";
 import { matchInvoiceLineToCatalog, AUTO_MATCH_THRESHOLD } from "../lib/invoiceLineMatching";
@@ -258,34 +258,11 @@ router.post("/:id/post", async (req: StaffAuthRequest, res) => {
 
   try {
     const result = await db.transaction(async (tx) => {
-      // The invoice row is this writer's document key, so it is locked BEFORE
-      // `status` is read. Checked against an unlocked read, "this is a draft" is
-      // only a description of a moment: a double-clicked Post, or a client retry
-      // after a timeout, ran the whole line loop twice and the same purchase
-      // arrived on the shelf twice with two lots and two ledger rows for one
-      // invoice. Locked first, the second attempt waits for the first commit and
-      // then sees `posted` and is refused.
-      const [invoice] = await tx
-        .select()
-        .from(purchaseInvoicesTable)
-        .where(eq(purchaseInvoicesTable.id, id))
-        .for("update")
-        .limit(1);
+      const [invoice] = await tx.select().from(purchaseInvoicesTable).where(eq(purchaseInvoicesTable.id, id)).limit(1);
       if (!invoice) throw new Error("NOT_FOUND");
       if (invoice.status !== "draft") throw new Error("NOT_DRAFT");
 
-      const lines = await tx
-        .select()
-        .from(purchaseInvoiceLineItemsTable)
-        .where(eq(purchaseInvoiceLineItemsTable.invoiceId, id))
-        // This loop takes an item row lock per matched line inside ONE
-        // transaction, which makes it the only multi-item writer in the module.
-        // Ascending itemId is the deterministic order every inventory writer uses
-        // (see lib/inventoryStockLock.ts); without it two invoices carrying the
-        // same reagents in opposite catalog order lock the same two rows in
-        // opposite orders and Postgres kills one of them. `id` breaks ties inside
-        // a single item so the order is total, not partial.
-        .orderBy(asc(purchaseInvoiceLineItemsTable.itemId), asc(purchaseInvoiceLineItemsTable.id));
+      const lines = await tx.select().from(purchaseInvoiceLineItemsTable).where(eq(purchaseInvoiceLineItemsTable.invoiceId, id));
 
       const posted: number[] = [];
       const skipped: { lineItemId: number; descriptionRaw: string; reason: string }[] = [];

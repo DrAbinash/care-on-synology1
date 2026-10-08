@@ -18,9 +18,8 @@ import {
   inventoryReorderRequestsTable,
   vendorsTable,
 } from "@workspace/db/schema";
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { fefoAllocate, classifyExpiry, needsReorder, suggestedReorderQty, type BatchLite } from "../lib/inventoryReagentLogic";
-import { lockItemForStockTx } from "../lib/inventoryStockLock";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
 const router = Router();
@@ -53,14 +52,7 @@ export interface ReceiveBatchParams {
  * for the stock math instead of two copies drifting apart.
  */
 export async function receiveBatchTx(tx: DbTx, b: ReceiveBatchParams): Promise<{ batch: typeof inventoryBatchesTable.$inferSelect; stock: number }> {
-  // The item row is locked by the statement that reads the balance being added
-  // to. This helper runs for the single-lot receive endpoint AND for every
-  // matched line of a posted purchase invoice, so before this it was the widest
-  // unlocked read-compute-write on current_stock in the module: a receipt and a
-  // withdrawal in the same second each wrote `before + qty` / `before - qty`
-  // computed from the same stale figure, and one of the two silently vanished
-  // from the shelf while both rows stayed in the ledger.
-  const item = await lockItemForStockTx(tx, b.itemId);
+  const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, b.itemId)).limit(1);
   if (!item) throw new Error("ITEM_NOT_FOUND");
   const before = n(item.currentStock);
   const after = Math.round((before + b.quantity + Number.EPSILON) * 100) / 100;
@@ -154,20 +146,10 @@ router.post("/items/:id/consume-fefo", async (req: StaffAuthRequest, res) => {
   const { quantity, reason, reference } = parsed.data;
   try {
     const out = await db.transaction(async (tx) => {
-      // Same acquisition order as the automatic FEFO deduction in
-      // lib/inventoryConsumption.ts — lots in (expiry_date, id) order, then the
-      // item — which is spelled out in lib/inventoryStockLock.ts. `fefoAllocate`
-      // sorts in memory, but rows are LOCKED in the order the executor reads
-      // them, so without this ORDER BY the two FEFO paths would take the same
-      // lot set in different orders and a manual consume racing an auto-consume
-      // could deadlock. Taking the item first would invert against the shipped
-      // path outright.
-      const batches = await tx.select().from(inventoryBatchesTable)
-        .where(and(eq(inventoryBatchesTable.itemId, itemId), eq(inventoryBatchesTable.status, "active"), gt(inventoryBatchesTable.qtyRemaining, "0")))
-        .orderBy(asc(inventoryBatchesTable.expiryDate), asc(inventoryBatchesTable.id))
-        .for("update");
-      const item = await lockItemForStockTx(tx, itemId);
+      const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, itemId)).limit(1);
       if (!item) throw new Error("ITEM_NOT_FOUND");
+      const batches = await tx.select().from(inventoryBatchesTable)
+        .where(and(eq(inventoryBatchesTable.itemId, itemId), eq(inventoryBatchesTable.status, "active"), gt(inventoryBatchesTable.qtyRemaining, "0")));
       const lite: BatchLite[] = batches.map((b) => ({ id: b.id, expiryDate: b.expiryDate, qtyRemaining: n(b.qtyRemaining), status: b.status }));
       const plan = fefoAllocate(lite, quantity);
       if (plan.shortfall > 0) return { ok: false as const, plan };
