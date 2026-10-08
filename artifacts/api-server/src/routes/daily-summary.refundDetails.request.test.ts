@@ -222,7 +222,10 @@ describe.skipIf(!hasDatabaseUrl())(
     test("each refund row names the bill, the patient, the referral and the reason", async () => {
       const body = await getSummary();
       const mine = body.refunds as any[];
-      expect(mine).toHaveLength(4);
+      // Three refunds were written (two on today's bill, one on the older one) and
+      // this list is scoped to this recorder, so four rows would mean a join
+      // duplicated one — the count is the money-safety check, not a nicety.
+      expect(mine).toHaveLength(3);
 
       const byBill = new Map(mine.map((r) => [`${r.billId}:${r.amount}`, r]));
       const first = byBill.get(`${billA}:${refundA1}`);
