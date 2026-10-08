@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildSectionTableData,
+  buildSimplePdf,
   buildSummaryPdf,
   logoRasterTargetPx,
   type ExportConfig,
@@ -35,7 +36,7 @@ const config: ExportConfig = {
 };
 
 /** jsPDF writes compressed page streams; inflate every stream so the page content is readable. */
-function pageText(doc: { output: (t: string) => unknown }): string {
+function inflateStreams(doc: { output: (t: string) => unknown }): { buf: Buffer; text: string } {
   const buf = Buffer.from(doc.output("arraybuffer") as ArrayBuffer);
   const raw = buf.toString("latin1");
   const parts: string[] = [];
@@ -54,7 +55,11 @@ function pageText(doc: { output: (t: string) => unknown }): string {
     }
     i = end + 9;
   }
-  const text = parts.join("\n");
+  return { buf, text: parts.join("\n") };
+}
+
+function pageText(doc: { output: (t: string) => unknown }): string {
+  const { buf, text } = inflateStreams(doc);
   expect(buf.subarray(0, 5).toString()).toBe("%PDF-");
   expect(text.length).toBeGreaterThan(2000);
   expect(buf.byteLength).toBeLessThan(text.length);
@@ -90,13 +95,10 @@ describe("the PDF is a compressed document, not a dump", () => {
     // The document is drawn in mm but jsPDF writes stroke widths in points, so the
     // comparison has to be converted back: 0.12 / 0.55 / 0.9 mm are the three weights the
     // renderer defines, and a report where every rule is one hairline cannot pass this.
-    const PT_PER_MM = 2.8346456692913388;
-    const widthsMm = new Set(
-      [...text.matchAll(/([0-9.]+)\s+w\b/g)].map((m) => Math.round((Number(m[1]) / PT_PER_MM) * 100) / 100),
-    );
-    expect(widthsMm.has(0.12)).toBe(true);
-    expect(widthsMm.has(0.55)).toBe(true);
-    expect(widthsMm.has(0.9)).toBe(true);
+    const widthsMm = strokeWidthsMm(text);
+    expect(widthsMm.includes(0.12)).toBe(true);
+    expect(widthsMm.includes(0.55)).toBe(true);
+    expect(widthsMm.includes(0.9)).toBe(true);
     expect(Math.max(...widthsMm)).toBe(0.9);
   });
 });
@@ -155,5 +157,103 @@ describe("the logo cannot bloat the page again", () => {
     expect(src).toContain("doc.addImage(logo.url");
     expect(src).not.toMatch(/addImage\(\s*(smallDataUrl|config\.logoDataUrl)\s*,/);
     expect((src.match(/compress: true/g) ?? []).length).toBe(2);
+  });
+});
+
+const PT_PER_MM = 2.8346456692913388;
+
+/** The one page the counter prints at the end of a shift. */
+const simpleConfig: ExportConfig = {
+  title: "Daily Financial Reconciliation",
+  subtitle: "Today - All Staff",
+  clinicName: "Care Diagnostics",
+  logoDataUrl: null,
+  sections: [],
+  tables: [],
+  simpleLedger: [
+    { label: "Date / Period", value: "Today", kind: "meta" },
+    { label: "Total Bills Generated (after discount)", value: "Rs.1,20,000", kind: "line" },
+    { label: "+ Old Dues Collected", value: "Rs.2,000", kind: "add" },
+    { label: "TOTAL", value: "Rs.1,22,000", kind: "subtotal" },
+    {
+      label: "− Cancels / Refunds / Outstanding",
+      value: "Rs.7,000",
+      kind: "subtract",
+      detail: "Cancel Rs.1,000 + Refund Rs.4,000 + Dues Rs.2,000",
+    },
+    { label: "COLLECTIBLE", value: "Rs.1,15,000", kind: "subtotal" },
+    { label: "− UPI / Digital (net)", value: "Rs.40,000", kind: "subtract" },
+    { label: "CASH IN COUNTER", value: "Rs.73,000", kind: "total" },
+    { label: "Variance", value: "Rs.2,000 mismatch", kind: "note" },
+  ],
+};
+
+function strokeWidthsMm(text: string): number[] {
+  return [...new Set([...text.matchAll(/([0-9.]+)\s+w\b/g)].map((m) => Math.round((Number(m[1]) / PT_PER_MM) * 100) / 100))];
+}
+
+function strokeCountsMm(text: string): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const m of text.matchAll(/([0-9.]+)\s+w\b/g)) {
+    const mm = Math.round((Number(m[1]) / PT_PER_MM) * 100) / 100;
+    out.set(mm, (out.get(mm) ?? 0) + 1);
+  }
+  return out;
+}
+
+function paintsColor(text: string, rgb: [number, number, number]): boolean {
+  return [...text.matchAll(/([0-9.]+) ([0-9.]+) ([0-9.]+) rg/g)].some((m) =>
+    rgb.every((c, i) => Math.abs(Number(m[i + 1]) - c / 255) < 0.01),
+  );
+}
+
+describe("the Simple one-page ledger PDF", () => {
+  it("is compressed, so the shift handover is not two megabytes", async () => {
+    const doc = await buildSimplePdf(simpleConfig, "portrait");
+    const { buf, text } = inflateStreams(doc);
+    expect(doc.getNumberOfPages()).toBe(1);
+    expect(buf.toString("latin1")).toContain("/FlateDecode");
+    // Measured 2026-10-09 on the operator's own Daily_Financial_Reconciliation_Simple (4).pdf:
+    // 2,000,094 bytes for one page, with no compressed stream in it at all.
+    expect(buf.byteLength).toBeLessThan(40_000);
+    expect(text.length).toBeGreaterThan(buf.byteLength);
+  });
+
+  it("keeps the orientation the toolbar remembered", async () => {
+    const portrait = await buildSimplePdf(simpleConfig, "portrait");
+    const landscape = await buildSimplePdf(simpleConfig, "landscape");
+    expect(portrait.internal.pageSize.getHeight()).toBeGreaterThan(portrait.internal.pageSize.getWidth());
+    expect(landscape.internal.pageSize.getWidth()).toBeGreaterThan(landscape.internal.pageSize.getHeight());
+  });
+
+  it("stands the final answer out from the subtotals", async () => {
+    const text = inflateStreams(await buildSimplePdf(simpleConfig, "portrait")).text;
+    const widths = strokeWidthsMm(text);
+    expect(widths).toContain(0.15);
+    expect(widths).toContain(0.6);
+    expect(widths).toContain(1);
+    expect(Math.max(...widths)).toBe(1);
+    // The heaviest stroke has to be the answer row's own box, not just the rectangle drawn
+    // around the card: two cells ruled top and bottom put it well past the single card edge.
+    const counts = strokeCountsMm(text);
+    expect(counts.get(0.15)).toBeGreaterThan(20);
+    expect(counts.get(0.6) ?? 0).toBeGreaterThanOrEqual(2);
+    expect(counts.get(1) ?? 0).toBeGreaterThanOrEqual(3);
+  });
+
+  it("paints CASH IN COUNTER navy with a green figure, and the deduction in red", async () => {
+    const text = inflateStreams(await buildSimplePdf(simpleConfig, "portrait")).text;
+    expect(paintsColor(text, [15, 23, 42])).toBe(true);
+    expect(paintsColor(text, [134, 239, 172])).toBe(true);
+    expect(paintsColor(text, [254, 226, 226])).toBe(true);
+    expect(paintsColor(text, [185, 28, 28])).toBe(true);
+  });
+
+  it("writes the identity the cashier is argued with, and numbers the page", async () => {
+    const doc = await buildSimplePdf(simpleConfig, "portrait");
+    // PDF string literals escape ( and ), which is syntax rather than content.
+    const text = inflateStreams(doc).text.replace(/\\/g, "");
+    expect(text).toContain("Bills + Old Dues - (Cancel+Refund+Outstanding) - Digital = Cash in counter");
+    expect(text).toContain("(Page 1 of 1)");
   });
 });

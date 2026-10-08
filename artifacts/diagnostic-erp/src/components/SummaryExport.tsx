@@ -955,7 +955,7 @@ export async function buildSummaryPdf(config: ExportConfig, orientation: PaperOr
   return doc;
 }
 
-async function downloadSimplePDF(config: ExportConfig, orientation: PaperOrientation = "portrait"): Promise<void> {
+export async function buildSimplePdf(config: ExportConfig, orientation: PaperOrientation = "portrait"): Promise<jsPDF> {
   const doc = new jsPDF({ orientation, unit: "mm", format: "a4", compress: true });
   doc.setProperties({
     title: `${config.title} (Simple)`,
@@ -1085,7 +1085,13 @@ async function downloadSimplePDF(config: ExportConfig, orientation: PaperOrienta
     drawPdfFooter(doc, ts, i, totalPages);
   }
 
-  doc.save(sanitizeFilename(config.title) + "_Simple.pdf");
+  return doc;
+}
+
+async function downloadSimplePDF(config: ExportConfig, orientation: PaperOrientation = "portrait"): Promise<void> {
+  (await buildSimplePdf(config, orientation)).save(
+    sanitizeFilename(config.title) + "_Simple.pdf"
+  );
 }
 
 // ─── Excel ────────────────────────────────────────────────────────────────────
