@@ -5,9 +5,10 @@ import {
   webhookLogsTable, bankAuditLogsTable,
   reconciliationLogsTable, fraudAlertsTable, gatewayTransactionsTable,
   refundRequestsTable, shiftClosuresTable,
+  billsTable, paymentsTable,
   BANK_PROVIDERS, BANK_ENVIRONMENTS, BANK_ACCOUNT_STATUS,
 } from "@workspace/db/schema";
-import { eq, desc, and, gte, sql } from "drizzle-orm";
+import { eq, desc, and, gte, sql, getTableColumns } from "drizzle-orm";
 import { z } from "zod/v4";
 import { apiError, apiErrorFromZod } from "../lib/api-error";
 import { requireStaffAuth, requireStaffPermission } from "../middleware/requireStaffAuth";
@@ -452,7 +453,22 @@ router.get("/fraud/alerts", requireStaffAuth, async (req, res) => {
   if (status) conditions.push(eq(fraudAlertsTable.status, status));
   if (severity) conditions.push(eq(fraudAlertsTable.severity, severity));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
-  const rows = await db.select().from(fraudAlertsTable).where(where).orderBy(desc(fraudAlertsTable.createdAt)).limit(limit);
+  // Bill number, not bill row id: an alert that says "Bill #4127" cannot be read
+  // as anything except a database key. Only the number is joined — this is a
+  // banking screen, and patient names would be new PHI on a surface that never
+  // carried it. Alerts reference a bill directly, or reference the payment they
+  // flagged and take their bill from that payment; COALESCE covers both in one join.
+  const rows = await db
+    .select({
+      ...getTableColumns(fraudAlertsTable),
+      billNumber: billsTable.billNumber,
+    })
+    .from(fraudAlertsTable)
+    .leftJoin(paymentsTable, eq(fraudAlertsTable.paymentId, paymentsTable.id))
+    .leftJoin(billsTable, sql`${billsTable.id} = COALESCE(${fraudAlertsTable.billId}, ${paymentsTable.billId})`)
+    .where(where)
+    .orderBy(desc(fraudAlertsTable.createdAt))
+    .limit(limit);
   res.json(rows);
 });
 
@@ -498,7 +514,16 @@ router.get("/refunds", requireStaffAuth, async (req, res) => {
   const conditions = [];
   if (status) conditions.push(eq(refundRequestsTable.status, status));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
-  const rows = await db.select().from(refundRequestsTable).where(where).orderBy(desc(refundRequestsTable.createdAt)).limit(limit);
+  const rows = await db
+    .select({
+      ...getTableColumns(refundRequestsTable),
+      billNumber: billsTable.billNumber,
+    })
+    .from(refundRequestsTable)
+    .leftJoin(billsTable, eq(refundRequestsTable.billId, billsTable.id))
+    .where(where)
+    .orderBy(desc(refundRequestsTable.createdAt))
+    .limit(limit);
   res.json(rows);
 });
 

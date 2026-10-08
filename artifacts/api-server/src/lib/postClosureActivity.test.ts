@@ -2,28 +2,20 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 
 const selectResults: unknown[][] = [];
 
-function chainable(limitResult: unknown[]) {
-  const chain = {
-    from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
-    limit: async () => limitResult,
-  };
+// The builder chain a drizzle select goes through. `leftJoin` is part of it
+// because the payments query joins bills → patients → orders → doctors to name
+// the bill and the patient instead of printing a row id.
+function chainable() {
+  const chain: Record<string, unknown> = {};
+  for (const step of ["from", "leftJoin", "innerJoin", "where", "orderBy", "groupBy"]) {
+    chain[step] = () => chain;
+  }
+  chain.limit = async () => selectResults.shift() ?? [];
   return chain;
 }
 
 vi.mock("@workspace/db", () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: async () => selectResults.shift() ?? [],
-          }),
-        }),
-      }),
-    }),
-  },
+  db: { select: () => chainable() },
   billsTable: {},
   paymentsTable: {},
   userDayClosuresTable: {},
@@ -33,6 +25,9 @@ vi.mock("@workspace/db/schema", () => ({
   billsTable: {},
   paymentsTable: {},
   userDayClosuresTable: {},
+  ordersTable: {},
+  doctorsTable: {},
+  patientsTable: {},
 }));
 
 vi.mock("./financialIntegrity", () => ({
@@ -80,10 +75,14 @@ describe("loadPostClosureActivity", () => {
       {
         id: 201,
         billId: 101,
+        billNumber: "B-101",
         amount: "500",
         method: "cash",
         createdAt: new Date("2026-08-21T19:00:00Z"),
         settlementStatus: "settled",
+        patientFirstName: "Vijay",
+        patientLastName: "Kumar",
+        referringDoctor: "Dr Rao",
       },
     ]);
 
@@ -93,6 +92,37 @@ describe("loadPostClosureActivity", () => {
     expect(result.bills).toHaveLength(1);
     expect(result.billTotal).toBe(500);
     expect(result.paymentTotal).toBe(500);
+    // The alert used to render `Bill #${billId}`. The row id is not a bill number,
+    // and a card that names neither the patient nor the referral forces a click.
+    expect(result.payments[0]).toMatchObject({
+      billNumber: "B-101",
+      patientName: "Vijay Kumar",
+      referringDoctor: "Dr Rao",
+    });
+  });
+
+  test("a payment whose bill row is gone keeps its amount and says so", async () => {
+    selectResults.push([{ id: 7, closedAt: new Date("2026-08-21T14:00:00Z"), drawerStatus: "balanced" }]);
+    selectResults.push([]);
+    selectResults.push([
+      {
+        id: 301,
+        billId: 999,
+        billNumber: null,
+        amount: "700",
+        method: "cash",
+        createdAt: new Date("2026-08-22T09:00:00Z"),
+        settlementStatus: "settled",
+        patientFirstName: null,
+        patientLastName: null,
+        referringDoctor: null,
+      },
+    ]);
+
+    const result = await loadPostClosureActivity("Carol");
+    expect(result.paymentTotal).toBe(700);
+    expect(result.payments[0].billNumber).toBeNull();
+    expect(result.payments[0].patientName).toBeNull();
   });
 
   test("detects post-close activity after balanced close", async () => {
