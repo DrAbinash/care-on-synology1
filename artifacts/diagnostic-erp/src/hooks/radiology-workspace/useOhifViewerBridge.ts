@@ -20,6 +20,7 @@ import {
   subscribeCareOhifBridge,
   captureResultToBlob,
   requestOhifViewportCapture,
+  requestOhifDisplayedAnchor,
   deriveOhifAllowedOrigins,
   resolveOhifTargetOrigin,
 } from "@/lib/ohifViewerBridge";
@@ -199,7 +200,6 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         liveIntent: isNewEvent ? store.measurementIntent : null,
         liveCanalLevel: isNewEvent ? store.canalIntentLevel : null,
         liveSelectedObservationId: isNewEvent ? store.selectedObservationId : null,
-        liveActiveAnchor: isNewEvent ? store.activeAnchor : null,
         prior: prior ?? null,
       });
       store.upsertStructuredViewerMeasurement(payload);
@@ -234,8 +234,29 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
 
   // OHIF postMessage → viewer_measurements / report image-references / capture
   const ohifCapturePendingRef = useRef<Set<string>>(new Set());
+  const ohifAnchorPendingRef = useRef<Set<string>>(new Set());
   const ohifTargetOriginRef = useRef<string | null>(null);
   const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
+
+  /**
+   * D2 Phase 6 — ask the viewer which image it is showing *now*, at the moment
+   * CARE needs to know, instead of trusting an anchor cached from an earlier
+   * push. Returns false when there is no viewer to ask (Frames mode, OHIF not
+   * loaded, or no resolved origin to send to) and the caller keeps the anchor it
+   * already has rather than inventing one.
+   */
+  const requestFreshDisplayedAnchor = useCallback(() => {
+    const requestId = `anc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const ok = requestOhifDisplayedAnchor({
+      target: embeddedViewerRef.current?.getOhifWindow?.(),
+      requestId,
+      targetOrigin: ohifTargetOriginRef.current,
+    });
+    if (!ok) return false;
+    ohifAnchorPendingRef.current.add(requestId);
+    window.setTimeout(() => ohifAnchorPendingRef.current.delete(requestId), 15_000);
+    return true;
+  }, [embeddedViewerRef]);
 
   const requestOhifAnnotatedCapture = useCallback(() => {
     if (isLocked || isFinalized || ohifUnavailable) return;
@@ -343,6 +364,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       draftId: draftId ?? null,
       getImageRefs: () => imageRefs,
       pendingCaptureRequestIds: ohifCapturePendingRef.current,
+      pendingAnchorRequestIds: ohifAnchorPendingRef.current,
       mutationsAllowed,
       allowedOrigins: ohifOrigins,
       getExpectedSourceWindow: () => embeddedViewerRef.current?.getOhifWindow?.() ?? null,
@@ -357,6 +379,14 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       },
       onActiveAnchor: (ctx) => {
         useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
+      },
+      onActiveAnchorUnavailable: () => {
+        // D2-I6: the viewer could not name the image it is showing. Say so and
+        // leave the previous anchor alone — nothing here touches report text.
+        toast({
+          title: "Image identity unavailable",
+          description: "The viewer could not identify the displayed image, so nothing was anchored to it.",
+        });
       },
       onMeasurementDeleted: (annotationId) => {
         if (!mutationsAllowed) return;
@@ -492,6 +522,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     viewerMeasurementsQ,
     canalApByLevel,
     requestOhifAnnotatedCapture,
+    requestFreshDisplayedAnchor,
     requestFrozenKeyImageCapture,
     ohifCapturePendingRef,
     ohifTargetOriginRef,

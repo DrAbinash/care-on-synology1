@@ -110,6 +110,11 @@ import {
   imageRefsLocked as draftImageRefsLocked,
   resolveWorklistFromStudyRef,
 } from "../lib/radiologyIdentity";
+import {
+  verifyImageIdentityClaim,
+  type VerifiedIdentity,
+  type IdentityVerdict,
+} from "../lib/imageIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
 import {
   persistCareStructuredJsonPatch,
@@ -2536,6 +2541,41 @@ radiologyReportGeneratorRouter.post(
       }
     }
 
+    // D2 — the format check above only proves the string looks like a UID. A
+    // captured image also has to be the image the viewer says it is, or it is
+    // not stored as an identity at all. See lib/imageIdentity.ts.
+    const captureClaimsImage = Boolean(seriesUid && sopUid);
+    let captureIdentity: VerifiedIdentity | null = null;
+    let captureIdentityWarning: { code: string; message: string } | null = null;
+    if (captureClaimsImage) {
+      let verdict: IdentityVerdict;
+      try {
+        verdict = await verifyImageIdentityClaim({
+          draftId,
+          claim: {
+            studyInstanceUID: studyUid,
+            seriesInstanceUID: seriesUid,
+            sopInstanceUID: sopUid,
+            frameNumber: req.body.frameNumber ? Number(req.body.frameNumber) : null,
+          },
+        });
+      } catch (err) {
+        await cleanupOrphans();
+        if (err instanceof RadiologyIdentityError) {
+          res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+          return;
+        }
+        throw err;
+      }
+      if (verdict.status === "contradicted") {
+        await cleanupOrphans();
+        res.status(409).json({ success: false, error: verdict.message, code: verdict.code });
+        return;
+      }
+      if (verdict.status === "verified") captureIdentity = verdict.identity;
+      else captureIdentityWarning = { code: verdict.code, message: verdict.message };
+    }
+
     const snap = parseViewportSnapshotJson(req.body.viewportSnapshotJson);
     if (!snap.ok) {
       await cleanupOrphans();
@@ -2634,10 +2674,18 @@ radiologyReportGeneratorRouter.post(
           includeInReport,
           sourceType,
           observationId,
-          studyInstanceUid: studyUid ? String(studyUid).slice(0, 128) : null,
-          seriesInstanceUid: seriesUid ? String(seriesUid).slice(0, 128) : null,
-          sopInstanceUid: sopUid ? String(sopUid).slice(0, 128) : null,
-          frameNumber: Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null,
+          studyInstanceUid: captureClaimsImage
+            ? captureIdentity?.studyInstanceUID ?? null
+            : (studyUid ? String(studyUid).slice(0, 128) : null),
+          seriesInstanceUid: captureClaimsImage
+            ? captureIdentity?.seriesInstanceUID ?? null
+            : (seriesUid ? String(seriesUid).slice(0, 128) : null),
+          sopInstanceUid: captureClaimsImage
+            ? captureIdentity?.sopInstanceUID ?? null
+            : (sopUid ? String(sopUid).slice(0, 128) : null),
+          frameNumber: captureClaimsImage
+            ? captureIdentity?.frameNumber ?? null
+            : (Number.isFinite(frameNumber as number) && (frameNumber as number) >= 1 ? Math.floor(frameNumber as number) : null),
           instanceNumber: Number.isFinite(instanceNumber as number) ? Math.floor(instanceNumber as number) : null,
           seriesDescription: req.body.seriesDescription ? String(req.body.seriesDescription).slice(0, 200) : null,
           modality: parseModality(req.body.modality),
@@ -2649,7 +2697,13 @@ radiologyReportGeneratorRouter.post(
         })
         .returning();
 
-      res.status(201).json({ success: true, item: row });
+      res.status(201).json({
+        success: true,
+        item: row,
+        ...(captureIdentityWarning
+          ? { warningCode: captureIdentityWarning.code, warning: captureIdentityWarning.message }
+          : {}),
+      });
     } catch (err) {
       await cleanupOrphans();
       throw err;
@@ -3192,6 +3246,34 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
     }
     throw err;
   }
+
+  // D2 — a reference that claims a specific image is only as good as the PACS's
+  // answer about it. A complete claim (study + series + SOP) is verified before
+  // any of it is stored; a contradicted claim is refused; a claim CARE could not
+  // check is stored with no DICOM identity at all rather than as an unverified
+  // one. A study-level note (no series/SOP) is not an image anchor and keeps its
+  // existing meaning.
+  const claimsImage = Boolean(parsed.data.seriesInstanceUid && parsed.data.sopInstanceUid);
+  let verifiedIdentity: VerifiedIdentity | null = null;
+  let identityWarning: { code: string; message: string } | null = null;
+  if (claimsImage) {
+    const verdict = await verifyImageIdentityClaim({
+      draftId: parsed.data.draftId,
+      claim: {
+        studyInstanceUID: parsed.data.studyInstanceUid,
+        seriesInstanceUID: parsed.data.seriesInstanceUid,
+        sopInstanceUID: parsed.data.sopInstanceUid,
+        frameNumber: parsed.data.frameNumber,
+      },
+    });
+    if (verdict.status === "contradicted") {
+      res.status(409).json({ error: verdict.message, code: verdict.code });
+      return;
+    }
+    if (verdict.status === "verified") verifiedIdentity = verdict.identity;
+    else identityWarning = { code: verdict.code, message: verdict.message };
+  }
+
   try {
     // Cap check + duplicate pre-check + insert run atomically under the same
     // per-draft advisory lock the reorder route takes, so concurrent POSTs
@@ -3209,8 +3291,14 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         .from(radiologyImageReferencesTable)
         .where(eq(radiologyImageReferencesTable.draftId, parsed.data.draftId));
       if (existing.length >= MAX_REFS_PER_DRAFT) return { error: 400 as const };
-      const wantSop = parsed.data.sopInstanceUid ?? null;
-      const wantFrame = parsed.data.frameNumber ?? null;
+      const storedStudy = verifiedIdentity?.studyInstanceUID ?? parsed.data.studyInstanceUid ?? null;
+      const storedSeries = verifiedIdentity?.seriesInstanceUID ?? (claimsImage ? null : parsed.data.seriesInstanceUid ?? null);
+      const storedSop = verifiedIdentity?.sopInstanceUID ?? (claimsImage ? null : parsed.data.sopInstanceUid ?? null);
+      const storedFrame = verifiedIdentity
+        ? verifiedIdentity.frameNumber
+        : (claimsImage ? null : parsed.data.frameNumber ?? null);
+      const wantSop = storedSop;
+      const wantFrame = storedFrame;
       if (wantSop && existing.some((r) => r.sopInstanceUid === wantSop && (r.frameNumber ?? null) === wantFrame)) {
         return { error: 409 as const };
       }
@@ -3220,10 +3308,10 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
         seriesNumber: parsed.data.seriesNumber ?? null,
         imageNumber: parsed.data.imageNumber ?? null,
         description: parsed.data.description,
-        studyInstanceUid: parsed.data.studyInstanceUid ?? null,
-        seriesInstanceUid: parsed.data.seriesInstanceUid ?? null,
-        sopInstanceUid: parsed.data.sopInstanceUid ?? null,
-        frameNumber: parsed.data.frameNumber ?? null,
+        studyInstanceUid: storedStudy,
+        seriesInstanceUid: storedSeries,
+        sopInstanceUid: storedSop,
+        frameNumber: storedFrame,
         displayOrder: parsed.data.displayOrder ?? 0,
         isKeyImage: parsed.data.isKeyImage ?? false,
         createdBy: req.staffSession?.subjectName ?? null,
@@ -3235,7 +3323,7 @@ radiologyReportGeneratorRouter.post("/image-references", async (req: StaffAuthRe
       else res.status(409).json({ error: "This image is already attached to the report" });
       return;
     }
-    res.status(201).json(row.inserted);
+    res.status(201).json(identityWarning ? { ...row.inserted, warningCode: identityWarning.code, warning: identityWarning.message } : row.inserted);
   } catch (err) {
     if (isUniqueViolation(err)) {
       res.status(409).json({ error: "This image is already attached to the report" });

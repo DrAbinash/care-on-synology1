@@ -2,6 +2,12 @@
  * ObservationAnchor — creation-time image provenance snapshot.
  * FRAMES-first; OHIF secondary; Weasis may be unavailable.
  * Anchor ≠ proof of diagnostic review.
+ *
+ * D2 semantics, because these fields end up in the report's image records:
+ * `sopInstanceUID` is the identity of the image; `frameNumber` is a DICOM frame
+ * **of a multi-frame instance and nothing else** — never a stack position, never
+ * an InstanceNumber, and absent means unknown rather than 1. A viewer that can
+ * only say which instance it shows must leave the frame out.
  */
 
 export type ObservationViewerKind = "frames" | "ohif" | "weasis";

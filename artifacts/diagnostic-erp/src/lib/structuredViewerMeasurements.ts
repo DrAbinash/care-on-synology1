@@ -369,7 +369,7 @@ export function rowDerivedAnchor(row: ViewerMeasurementApiRow): ObservationAncho
  * Build a structured measurement upsert payload from a viewer_measurements API row.
  *
  * mode=historical: never uses live Measure toolbar / selected observation / activeAnchor.
- * mode=new_event: may stamp live intent/level/observation; activeAnchor only if row lacks SOP/series.
+ * mode=new_event: may stamp live intent/level/observation — never a live image.
  */
 export function structuredFromViewerRow(opts: {
   row: ViewerMeasurementApiRow;
@@ -380,8 +380,6 @@ export function structuredFromViewerRow(opts: {
   liveCanalLevel?: string | null;
   /** Live selected observation — new_event only. */
   liveSelectedObservationId?: string | null;
-  /** Live viewport — new_event fallback only when row has no image UIDs. */
-  liveActiveAnchor?: ObservationAnchor | null;
   /** Prior structured row when updating an already-known measurement. */
   prior?: StructuredMeasurement | null;
 }): Omit<StructuredMeasurement, "id" | "createdAt" | "updatedAt"> & {
@@ -419,20 +417,11 @@ export function structuredFromViewerRow(opts: {
     ?? (attach ? liveObs : null);
 
   const fromRow = rowDerivedAnchor(opts.row);
-  let anchor: ObservationAnchor | null = fromRow;
-  if (
-    !fromRow
-    && opts.mode === "new_event"
-    && opts.liveActiveAnchor
-    && (!opts.liveActiveAnchor.studyInstanceUID
-      || !opts.row.studyInstanceUID
-      || opts.liveActiveAnchor.studyInstanceUID === opts.row.studyInstanceUID)
-  ) {
-    // Proven new event with no row SOP/series — allow live viewport fallback.
-    if (!opts.row.sopInstanceUID && !opts.row.seriesInstanceUID) {
-      anchor = opts.liveActiveAnchor;
-    }
-  }
+  // D2-I2: a measurement row that names no series and no SOP has an unknown
+  // image, and it stays unknown. It used to borrow whatever image happened to be
+  // on screen when the row arrived, which attached one caliper's provenance to a
+  // different picture — the row's own UIDs are the only evidence here.
+  const anchor: ObservationAnchor | null = fromRow;
 
   return {
     concept: opts.prior?.concept ?? concept,
