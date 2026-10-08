@@ -1,10 +1,11 @@
 /**
- * B-11 — the idempotency boundary of auto-consumption.
+ * The consumption boundary, modelled: B-11's event idempotency and B-12's
+ * ledger-vs-balance agreement.
  *
  * inventoryConsumption.ts imports `db` from @workspace/db, which builds a pg
  * Pool at import time and therefore throws on a machine with no DATABASE_URL.
- * `db` is replaced here by an in-memory Postgres stand-in that models the two
- * things this ticket is about:
+ * `db` is replaced here by an in-memory Postgres stand-in that models the three
+ * things these tickets are about:
  *
  *   1. READ COMMITTED interleaving — every read, update and insert awaits, so
  *      a second concurrent transaction can run its existence check between the
@@ -14,11 +15,22 @@
  *      the transaction, waiters queued FIFO, released on commit AND on
  *      rollback. Same convention as lib/audit.ts (AUDIT_CHAIN_XACT_LOCK), whose
  *      suite models the lock the same way.
+ *   3. SELECT … FOR UPDATE — a locking read holds the row for the life of its
+ *      transaction, keyed on the row the predicate names, and locks are per
+ *      key: one advisory lock per reference value, one row lock per item or lot
+ *      set. That per-key detail is the whole of B-12, because two DIFFERENT
+ *      references must not serialise on the reference and must still serialise
+ *      on the shelf.
  *
  * Query targets are resolved by drizzle table name, and bind values are read
  * through drizzle's own SQL compiler. A predicate whose bind value cannot be
- * extracted THROWS — the fake can never answer "nothing found" and let a test
- * pass by accident.
+ * extracted THROWS, an unmodelled lock strength or SKIP LOCKED THROWS, and a
+ * FOR UPDATE on a table the stand-in cannot key THROWS — the fake can never
+ * answer "nothing found" and let a test pass by accident.
+ *
+ * This file is a model, so it is not the decisive proof of anything: the real
+ * concurrency claims are made against PostgreSQL in
+ * inventoryConsumption.concurrency.request.test.ts, which runs in CI.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -30,8 +42,12 @@ const h = vi.hoisted(() => {
     rules: [] as Row[],
     transactions: [] as Row[],
     honorLock: true,
-    locked: false,
-    queue: [] as Array<() => void>,
+    honorResourceLock: true,
+    // Locks are keyed, the way Postgres keys them: one advisory lock per
+    // reference value, one row lock per (table, row). A single global flag here
+    // would serialise two UNRELATED events and make the cross-event race look
+    // impossible in the very place it is supposed to be reproducible.
+    locks: new Map<string, { held: boolean; queue: Array<() => void> }>(),
     ops: [] as string[],
     warns: [] as Array<Record<string, unknown>>,
     nextId: 1,
@@ -41,25 +57,26 @@ const h = vi.hoisted(() => {
   // interleave here the way two Postgres sessions would.
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
-  async function acquire(key: string): Promise<() => void> {
-    if (!store.honorLock) {
-      store.ops.push("lock-ignored:" + key);
-      return () => {};
+  async function acquire(key: string, kind: string): Promise<() => void> {
+    let slot = store.locks.get(key);
+    if (!slot) {
+      slot = { held: false, queue: [] };
+      store.locks.set(key, slot);
     }
-    if (store.locked) {
-      store.ops.push("lock-wait:" + key);
-      await new Promise<void>((resolve) => store.queue.push(resolve));
+    if (slot.held) {
+      store.ops.push(`${kind}-wait:${key}`);
+      await new Promise<void>((resolve) => slot!.queue.push(resolve));
     } else {
-      store.locked = true;
+      slot.held = true;
     }
-    store.ops.push("lock-held:" + key);
+    store.ops.push(`${kind}-held:${key}`);
     let done = false;
     return () => {
       if (done) return;
       done = true;
-      const next = store.queue.shift();
+      const next = slot!.queue.shift();
       if (next) next();
-      else store.locked = false;
+      else slot!.held = false;
     };
   }
 
@@ -101,42 +118,86 @@ const h = vi.hoisted(() => {
     return { name, rows: f() };
   };
 
-  function makeApi(): Record<string, unknown> {
+  function makeApi(releases: Array<() => void> | null): Record<string, unknown> {
     return {
       select: () => ({
         from: (table: unknown) => {
           const { name, rows } = rowsOf(table);
-          const resolve = async (where?: unknown): Promise<Row[]> => {
+          const spec = { where: undefined as unknown, locking: false, limitN: 0, sorted: false };
+          // Built lazily, when the caller awaits: `.where(a).for("update").limit(1)`
+          // mutates one spec and runs ONE statement. Building eagerly would also
+          // have taken the row lock in a wrapper that the caller throws away.
+          const build = async (): Promise<Row[]> => {
             await tick();
-            if (!where) return rows.slice();
-            const { sql } = await compiled(where);
-            store.ops.push("select:" + name + ":" + sql);
-            if (name === "inventory_transactions") {
-              const ref = await refBind(where);
-              return rows.filter((r) => String(r.reference) === ref);
+            let out = rows.slice();
+            if (spec.where !== undefined) {
+              const { sql } = await compiled(spec.where);
+              store.ops.push("select:" + name + ":" + sql);
+              if (name === "inventory_transactions") {
+                const ref = await refBind(spec.where);
+                out = rows.filter((r) => String(r.reference) === ref);
+              } else if (name === "inventory_items") {
+                const id = await numBind(spec.where);
+                out = rows.filter((r) => Number(r.id) === id);
+              } else if (name === "inventory_consumption_rules") {
+                const id = await numBind(spec.where);
+                out = rows.filter((r) => Number(r.testId) === id);
+              } else if (name === "inventory_batches") {
+                const id = await numBind(spec.where);
+                out = rows.filter(
+                  (r) => Number(r.itemId) === id && String(r.status) === "active" && Number(r.qtyRemaining) > 0,
+                );
+              } else {
+                out = rows.slice();
+              }
+              if (spec.sorted) store.ops.push("orderby:" + name);
+              if (spec.locking) {
+                // A FOR UPDATE read is the point of B-12, so the stand-in models
+                // it as a held lock keyed on the row the predicate names. An
+                // unmodelled lock strength or a locking read whose key cannot be
+                // extracted THROWS rather than quietly answering.
+                if (name === "inventory_items") {
+                  const key = "item:" + (await numBind(spec.where));
+                  if (store.honorResourceLock) releases?.push(await acquire(key, "resource"));
+                  else store.ops.push("resource-ignored:" + key);
+                } else if (name === "inventory_batches") {
+                  const key = "lots:" + (await numBind(spec.where));
+                  if (store.honorResourceLock) releases?.push(await acquire(key, "resource"));
+                  else store.ops.push("resource-ignored:" + key);
+                } else {
+                  throw new Error("FAKE-DB: FOR UPDATE on an unmodelled table (" + name + ")");
+                }
+              }
             }
-            if (name === "inventory_items") {
-              const id = await numBind(where);
-              return rows.filter((r) => Number(r.id) === id);
-            }
-            if (name === "inventory_consumption_rules") {
-              const id = await numBind(where);
-              return rows.filter((r) => Number(r.testId) === id);
-            }
-            if (name === "inventory_batches") {
-              const id = await numBind(where);
-              return rows.filter((r) => Number(r.itemId) === id && String(r.status) === "active" && Number(r.qtyRemaining) > 0);
-            }
-            return rows.slice();
+            if (spec.limitN) out = out.slice(0, spec.limitN);
+            return out;
           };
-          const wrap = (p: Promise<Row[]>) => ({
-            then: (onF?: (v: unknown) => unknown) => p.then(onF),
-            catch: (onR?: (e: unknown) => unknown) => p.catch(onR),
-            where: (w: unknown) => wrap(resolve(w)),
-            innerJoin: () => wrap(p),
-            limit: (n: number) => wrap(p.then((r) => r.slice(0, n))),
+          const wrap = () => ({
+            then: (onF?: (v: unknown) => unknown, onR?: (e: unknown) => unknown) => build().then(onF, onR),
+            catch: (onR?: (e: unknown) => unknown) => build().catch(onR),
+            where: (w: unknown) => {
+              spec.where = w;
+              return wrap();
+            },
+            innerJoin: () => wrap(),
+            orderBy: () => {
+              spec.sorted = true;
+              return wrap();
+            },
+            limit: (n: number) => {
+              spec.limitN = n;
+              return wrap();
+            },
+            for: (strength: string, opts?: { skipLocked?: boolean }) => {
+              if (strength !== "update") {
+                throw new Error("FAKE-DB: unexpected lock strength " + strength);
+              }
+              if (opts?.skipLocked) throw new Error("FAKE-DB: SKIP LOCKED is not modelled");
+              spec.locking = true;
+              return wrap();
+            },
           });
-          return wrap(resolve());
+          return wrap();
         },
       }),
       update: (table: unknown) => ({
@@ -168,9 +229,13 @@ const h = vi.hoisted(() => {
         },
       }),
       transaction: async (cb: (tx: unknown) => Promise<unknown>) => {
-        let release: () => void = () => {};
+        // Every lock this transaction took — the advisory reference lock and any
+        // FOR UPDATE read — is released together, on commit AND on rollback,
+        // which is the property `pg_advisory_xact_lock` and row locks actually
+        // have. A release list, not one slot: a FEFO line holds two keys.
+        const held: Array<() => void> = [];
         const tx = {
-          ...makeApi(),
+          ...makeApi(held),
           execute: async (expr: unknown) => {
             const { sql, params } = await compiled(expr);
             // Transaction-scoped is the load-bearing word: a session-scoped
@@ -186,20 +251,25 @@ const h = vi.hoisted(() => {
             const literal = sql.match(/hashtext\('([^']*)'\)/);
             const key = String(params[0] ?? (literal ? literal[1] : "") ?? "");
             if (!key) throw new Error("FAKE-DB: advisory lock taken with no key");
-            release = await acquire(key);
+            if (!store.honorLock) {
+              store.ops.push("lock-ignored:" + key);
+              return [];
+            }
+            held.push(await acquire("ref:" + key, "lock"));
             return [];
           },
         };
         try {
           return await cb(tx);
         } finally {
-          release();
+          for (const release of held.splice(0)) release();
         }
       },
     };
   }
 
-  const db = makeApi();
+  const db = makeApi(null);
+
   return { store, tick, db, mod: { db } };
 });
 
@@ -259,8 +329,8 @@ beforeEach(() => {
   store.ops = [];
   store.warns = [];
   store.honorLock = true;
-  store.locked = false;
-  store.queue = [];
+  store.honorResourceLock = true;
+  store.locks = new Map();
   store.nextId = 1;
 });
 
@@ -347,17 +417,18 @@ describe("B11-03 — concurrent execution cannot double-consume", () => {
       consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
       consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "B" }),
     ]);
-    // Two ledger rows for one physical event: the dedupe failed. And the stock
-    // is worse than double-booked — both transactions read current_stock=100
-    // and wrote 99, so the second UPDATE overwrote the first (a lost update).
-    // Two units are recorded as gone and only one came off the shelf: the
-    // ledger and the stock figure now disagree, which is the failure this
-    // ticket exists to prevent.
+    // Two ledger rows for one physical event: the dedupe failed, which is what
+    // this control exists to show. Note what no longer follows from it: before
+    // B-12 this control ALSO saw the balance move by only one unit, because the
+    // same unserialised read produced both the double-book and the lost update.
+    // The FOR UPDATE read now holds the balance even when the reference lock is
+    // ignored, so the two mechanisms are separately observable — see the B12
+    // controls, which disable the other one.
     const rows = consumeRows();
     expect(rows.length, "the stand-in must really interleave").toBe(2);
     const booked = rows.reduce((s, r) => s + Number(r.quantity), 0);
     expect(booked).toBe(2);
-    expect(100 - stock(itemId), "stock moved by less than the ledger booked").toBe(1);
+    expect(100 - stock(itemId), "the row lock still serialises the two writes").toBe(booked);
   });
 });
 
@@ -512,5 +583,170 @@ describe("B11-08 — the FEFO branch is under the same discipline", () => {
     expect(stock(good)).toBe(99);
     expect(consumeRows(`CONSUME-REPORT-41-ITEM-${good}`)).toHaveLength(1);
     expect(consumeRows(`CONSUME-REPORT-41-ITEM-${short}`)).toHaveLength(0);
+  });
+});
+
+describe("B12-N1 — two different events spending one shelf", () => {
+  it("concurrent distinct references each deduct, and the balance moves by the SUM", async () => {
+    // The B-11 gap: REPORT-41 and REPORT-42 hash to different advisory keys, so
+    // nothing made them wait for each other. Both read current_stock = 100 and
+    // both wrote 99. The ledger said 2 units gone, the shelf said 1.
+    const itemId = seedItem();
+    seedRule(7, itemId);
+    const results = await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toEqual([]);
+    const rows = consumeRows();
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => String(r.reference))).size).toBe(2);
+    expect(stock(itemId)).toBe(98);
+  });
+
+  it("NEGATIVE CONTROL — with the row lock disabled the lost update returns", async () => {
+    store.honorResourceLock = false;
+    const itemId = seedItem();
+    seedRule(7, itemId);
+    await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    const rows = consumeRows();
+    const booked = rows.reduce((s, r) => s + Number(r.quantity), 0);
+    expect(rows).toHaveLength(2);
+    expect(booked).toBe(2);
+    expect(100 - stock(itemId), "ledger booked 2 units but the shelf lost this many").toBe(1);
+  });
+
+  it("five concurrent events on a two-unit rule leave the exact summed balance", async () => {
+    const itemId = seedItem();
+    seedRule(7, itemId, "2");
+    const results = await Promise.all(
+      [1, 2, 3, 4, 5].map((i) => consumeInventoryForTest({ testId: 7, referenceKey: `REPORT-${i}`, performedBy: "A" })),
+    );
+    expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toEqual([]);
+    expect(consumeRows()).toHaveLength(5);
+    expect(stock(itemId)).toBe(90);
+  });
+
+  it("one available unit is spent once, whoever asks first", async () => {
+    const itemId = seedItem({ currentStock: "1" });
+    seedRule(7, itemId);
+    const results = await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    const rows = consumeRows();
+    expect(rows).toHaveLength(1);
+    expect(stock(itemId)).toBe(0);
+    const errors = results.flatMap((r) => r.map((l) => l.error).filter(Boolean));
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain("INSUFFICIENT_STOCK");
+  });
+
+  it("a FEFO lot cannot be allocated twice by two concurrent events", async () => {
+    const itemId = seedItem({ trackExpiry: true, currentStock: "50" });
+    store.batches.push({ id: 1, itemId, qtyRemaining: "50", status: "active", expiryDate: new Date("2030-01-01") });
+    seedRule(7, itemId, "30");
+    const results = await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    // 50 in the lot, 30 wanted twice: only one of them fits. Without the lot
+    // lock both would read 50, both would allocate, and the lot would end at 20
+    // having issued 60 units.
+    expect(consumeRows()).toHaveLength(1);
+    expect(Number(store.batches[0].qtyRemaining)).toBe(20);
+    expect(stock(itemId)).toBe(20);
+    expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toHaveLength(1);
+  });
+});
+
+describe("B12-N2 — the acquisition order is the deadlock analysis, so it is pinned", () => {
+  it("advisory(reference) → lot → item, with the lots read in consumption order", async () => {
+    const itemId = seedItem({ trackExpiry: true, currentStock: "50" });
+    store.batches.push({ id: 1, itemId, qtyRemaining: "30", status: "active", expiryDate: new Date("2029-01-01") });
+    store.batches.push({ id: 2, itemId, qtyRemaining: "30", status: "active", expiryDate: new Date("2030-01-01") });
+    seedRule(7, itemId, "5");
+    await consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" });
+
+    const at = (prefix: string): number => store.ops.findIndex((o) => o.startsWith(prefix));
+    const ref = at("lock-held:ref:");
+    const order = store.ops.indexOf("orderby:inventory_batches");
+    const lots = at("resource-held:lots:");
+    const item = at("resource-held:item:");
+    // Every one of these four must exist and be ordered. This is the property
+    // that makes the design deadlock-free rather than merely working, so it is
+    // asserted as an order and not as a count: an index that moved past its
+    // neighbour fails, which a "was FOR UPDATE called" count would not catch.
+    expect(ref, "the reference advisory lock is taken").toBeGreaterThanOrEqual(0);
+    expect(order, "the lot read that takes the lock is ordered by consumption sequence").toBeGreaterThanOrEqual(0);
+    expect(lots, "the lots are locked before they are allocated").toBeGreaterThanOrEqual(0);
+    expect(item, "the item balance is locked too").toBeGreaterThanOrEqual(0);
+    expect(lots).toBeGreaterThan(ref);
+    expect(order).toBeLessThan(lots);
+    expect(item).toBeGreaterThan(lots);
+  });
+
+  it("the non-batch path locks the item under the reference lock and never touches lots", async () => {
+    const itemId = seedItem();
+    seedRule(7, itemId);
+    await consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" });
+    const ops = store.ops;
+    const ref = ops.findIndex((o) => o.startsWith("lock-held:ref:"));
+    const item = ops.findIndex((o) => o.startsWith("resource-held:item:"));
+    expect(ref).toBeGreaterThanOrEqual(0);
+    expect(item).toBeGreaterThan(ref);
+    expect(ops.some((o) => o.startsWith("resource-held:lots:")), "simple stock has no lot lock").toBe(false);
+  });
+
+  it("a line that fails after taking both locks releases them both", async () => {
+    const itemId = seedItem({ trackExpiry: true, currentStock: "50" });
+    store.batches.push({ id: 1, itemId, qtyRemaining: "2", status: "active", expiryDate: new Date("2030-01-01") });
+    seedRule(7, itemId, "9");
+    const failed = await consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" });
+    expect(String(failed[0].error)).toContain("INSUFFICIENT_USABLE_STOCK");
+    // Nothing is still held: the next event on the same item and the same
+    // reference must both run to completion rather than queue forever.
+    expect(store.locks.size, "every lock key this transaction touched").toBeGreaterThan(0);
+    for (const [, slot] of store.locks) expect(slot.held, "a rolled-back line must not keep a lock").toBe(false);
+    store.batches[0].qtyRemaining = "20";
+    const retry = await consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" });
+    expect(retry[0].error).toBeUndefined();
+    expect(retry[0].skipped, "a rolled-back event is not marked as already consumed").toBeFalsy();
+    expect(stock(itemId)).toBe(41);
+    expect(Number(store.batches[0].qtyRemaining)).toBe(11);
+    const other = await consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" });
+    expect(other[0].error).toBeUndefined();
+    expect(stock(itemId)).toBe(32);
+  });
+});
+
+describe("B12-N3 — what this PR decides and what it does not", () => {
+  it("the balance keeps tracking the ledger even where the item total and its lots already disagree", async () => {
+    // `consumeFefoTx` validates the LOTS — a shortfall throws — and then writes
+    // the item balance without comparing it to the quantity, because the schema
+    // treats `current_stock` as the rollup of the lots
+    // (lib/db/src/schema/inventory.ts:29-31). Where a clinic's two numbers
+    // already disagree, the deduction is real and the rollup can fall below
+    // zero. B-12 deliberately does not choose which number is authoritative:
+    // that is an inventory-model question, and it is reported, not absorbed.
+    // What IS asserted here is the invariant this PR owns — the balance moves by
+    // exactly what the ledger booked, so the disagreement is visible instead of
+    // being masked by a lost update.
+    const itemId = seedItem({ trackExpiry: true, currentStock: "1" });
+    store.batches.push({ id: 1, itemId, qtyRemaining: "10", status: "active", expiryDate: new Date("2030-01-01") });
+    seedRule(7, itemId, "4");
+    const results = await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toEqual([]);
+    const rows = consumeRows();
+    expect(rows).toHaveLength(2);
+    expect(Number(store.batches[0].qtyRemaining), "10 in the lot, 8 issued").toBe(2);
+    const booked = rows.reduce((s, r) => s + Number(r.quantity), 0);
+    expect(1 - stock(itemId), "the shelf moved by precisely what the ledger booked").toBe(booked);
   });
 });

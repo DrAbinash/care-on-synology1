@@ -1,11 +1,32 @@
 /**
  * Auto-deduct inventory from consumption rules (test → items).
  *
- * Idempotent per (event, item) by transaction reference key, and now serialised
- * on that key: the check-then-insert below runs inside a pg_advisory_xact_lock
- * on the reference, so concurrent firing of the same event (double-click,
- * client retry, Verify + countersign, two staff on one report) books the
- * deduction once instead of booking it twice against one stock figure.
+ * Two separate races live here and they need two separate mechanisms.
+ *
+ * 1. ONE EVENT REPLAYED (B-11). The dedupe below is a read-then-insert on
+ *    `inventory_transactions.reference`, a column that can never carry a unique
+ *    index because the manual stock-in/stock-out routes let staff type any text
+ *    into it. A transaction-scoped `pg_advisory_xact_lock(hashtext(reference))`
+ *    is taken before the check, so a double-clicked Verify, a client retry, or
+ *    two staff on one report book the deduction once.
+ *
+ * 2. TWO DIFFERENT EVENTS SPENDING ONE SHELF (B-12). Different references hash
+ *    apart, so mechanism (1) never makes `REPORT-41` wait for `REPORT-42`. Both
+ *    read `current_stock`, both write `before - qty`, and the second write
+ *    silently discards the first: two units booked in the ledger, one unit off
+ *    the shelf, permanently. The authoritative balance is therefore read under
+ *    `FOR UPDATE` — the read that produces `before` IS the locked read, because
+ *    a lock acquired after the value is already in hand would serialise the
+ *    writer without serialising the number it writes.
+ *
+ * Lock order in every path here is: advisory(reference) → lots → item. Lots are
+ * locked before the item because that is the order the writes already left this
+ * function in, and the order the other batch-touching writer in the repository
+ * uses (`routes/inventoryBatches.ts` updates lots at :160, then the item at
+ * :166), so adding row locks introduces no inversion that could deadlock. Each
+ * consumption rule runs in its own transaction, so no transaction ever holds two
+ * item locks. A Postgres-detected deadlock would abort one line and surface as
+ * `error` on that line — never as a silently missing deduction.
  *
  * A failed line is logged with its reference (see logger.warn below). The hooks
  * still swallow the outcome, deliberately: short stock is a purchasing
@@ -18,7 +39,7 @@ import {
   inventoryItemsTable,
   inventoryTransactionsTable,
 } from "@workspace/db/schema";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { fefoAllocate, type BatchLite } from "./inventoryReagentLogic";
 import { maybeSendLowStockAlerts } from "./inventoryLowStockAlerts";
 import { logger } from "./logger";
@@ -82,7 +103,17 @@ async function consumeSimpleTx(
   performedBy: string,
   reason: string,
 ): Promise<void> {
-  const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, itemId)).limit(1);
+  // FOR UPDATE on the same statement that reads the balance. A second event on
+  // this item waits here until this transaction commits, then re-reads and sees
+  // the deducted figure, so `before - quantity` is computed from a balance no
+  // one else is touching. This is what makes the ledger and `current_stock`
+  // agree; the advisory lock above only ever made one event agree with itself.
+  const [item] = await tx
+    .select()
+    .from(inventoryItemsTable)
+    .where(eq(inventoryItemsTable.id, itemId))
+    .for("update")
+    .limit(1);
   if (!item) throw new Error("ITEM_NOT_FOUND");
   const before = n(item.currentStock);
   if (before < quantity) throw new Error("INSUFFICIENT_STOCK");
@@ -108,8 +139,13 @@ async function consumeFefoTx(
   performedBy: string,
   reason: string,
 ): Promise<void> {
-  const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, itemId)).limit(1);
-  if (!item) throw new Error("ITEM_NOT_FOUND");
+  // Lots before the item, in the order they are consumed in. `fefoAllocate`
+  // takes earliest expiry first with an id tiebreak, so the ORDER BY here is not
+  // cosmetic: two concurrent FEFO events queue on the same lots in the same
+  // order, which is what keeps a row lock from becoming a deadlock. Waiting
+  // transactions re-read the committed `qty_remaining`, so a lot that the first
+  // event just depleted drops out of the second one's candidate set instead of
+  // being spent twice.
   const batches = await tx
     .select()
     .from(inventoryBatchesTable)
@@ -117,7 +153,16 @@ async function consumeFefoTx(
       eq(inventoryBatchesTable.itemId, itemId),
       eq(inventoryBatchesTable.status, "active"),
       gt(inventoryBatchesTable.qtyRemaining, "0"),
-    ));
+    ))
+    .orderBy(asc(inventoryBatchesTable.expiryDate), asc(inventoryBatchesTable.id))
+    .for("update");
+  const [item] = await tx
+    .select()
+    .from(inventoryItemsTable)
+    .where(eq(inventoryItemsTable.id, itemId))
+    .for("update")
+    .limit(1);
+  if (!item) throw new Error("ITEM_NOT_FOUND");
   const lite: BatchLite[] = batches.map((b) => ({
     id: b.id,
     expiryDate: b.expiryDate,
@@ -181,25 +226,32 @@ export async function consumeInventoryForTest(
     try {
       let consumed = false;
       await db.transaction(async (tx) => {
-        // The dedupe below is a read-then-insert, and `reference` has no unique
-        // index (nor can it have one: the manual stock-in/stock-out routes let
-        // staff type any reference into the same column). Under READ COMMITTED
-        // two sessions for one reference both read "no row" and both deduct —
-        // a double-clicked Verify, a client retry after a timeout, two staff on
-        // the report at once, and the legacy-verify vs structured-countersign
-        // pair all reach this line together. Worse than deducting twice, both
-        // write current_stock from the same stale `before`, so the ledger books
-        // two units and the shelf loses one.
+        // Two races, two mechanisms, one acquisition order.
         //
-        // A transaction-scoped advisory lock on the reference serialises them:
-        // the second waiter resumes only after the first commits, then sees the
-        // row and skips. Postgres releases it on commit AND rollback, so a
-        // failed consumption cannot leak the lock. Same hashtext() convention
-        // as AUDIT_CHAIN_XACT_LOCK in lib/audit.ts.
+        // (a) ONE EVENT REPLAYED. The dedupe below is a read-then-insert, and
+        // `reference` has no unique index (nor can it have one: the manual
+        // stock-in/stock-out routes let staff type any reference into the same
+        // column). Under READ COMMITTED two sessions for one reference both read
+        // "no row" and both deduct — a double-clicked Verify, a client retry
+        // after a timeout, two staff on the report at once, and the
+        // legacy-verify vs structured-countersign pair all reach here together.
+        // The advisory lock on the reference serialises them: the second waiter
+        // resumes only after the first commits, then sees the row and skips.
+        // Postgres releases it on commit AND rollback, so a failed consumption
+        // cannot leak the lock. Same hashtext() convention as
+        // AUDIT_CHAIN_XACT_LOCK in lib/audit.ts.
         //
-        // The lock is only a serialisation device. A 32-bit hashtext collision
-        // makes two unrelated consumptions wait for each other; it cannot make
-        // either skip the check that decides, because the check runs inside it.
+        // (b) TWO DIFFERENT EVENTS ON ONE SHELF. Different references hash
+        // apart, so (a) never makes them wait. That race is closed by the
+        // FOR UPDATE reads inside consumeSimpleTx/consumeFefoTx below, which are
+        // the same statements that read `current_stock` and the lot quantities —
+        // the balance the ledger is written against cannot be stale.
+        //
+        // The advisory lock is only a serialisation device. A 32-bit hashtext
+        // collision makes two unrelated consumptions wait for each other; it
+        // cannot make either skip the check that decides, because the check runs
+        // inside it. It is taken BEFORE any row lock and nothing here takes a
+        // reference lock after touching a row, so the hierarchy cannot cycle.
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${reference}))`);
         if (await referenceExists(tx, reference)) return;
         const reason = input.reason ?? `Auto-consumed for test completion (${input.referenceKey})`;
