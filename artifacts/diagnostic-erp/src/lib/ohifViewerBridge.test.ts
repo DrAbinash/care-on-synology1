@@ -397,6 +397,37 @@ describe("D2 identity gates on the receiving side", () => {
     expect(pending.has("anc-1")).toBe(false); // consumed, so it cannot be replayed
   });
 
+  it("a refusal from the viewer ends the request instead of leaving it to expire", async () => {
+    // The viewer says "nothing addressable is on screen". Silently dropping that
+    // would leave the ERP waiting for its timeout, so the refusal is consumed by
+    // requestId — and it is still not an anchor.
+    const pending = new Set(["anc-1"]);
+    let unavailable = 0;
+    let applied = 0;
+    const ctx = {
+      ...baseCtx,
+      pendingAnchorRequestIds: pending,
+      onActiveAnchor: () => { applied += 1; },
+      onActiveAnchorUnavailable: () => { unavailable += 1; },
+    };
+    const refusal = {
+      source: CARE_OHIF_SOURCE,
+      type: "displayed-anchor-unavailable",
+      version: 1,
+      error: "no_displayed_image",
+      requestId: "anc-1",
+    } as const;
+
+    expect(await handleCareOhifMessage(refusal as never, ctx)).toBe("ok");
+    expect(unavailable).toBe(1);
+    expect(applied).toBe(0);
+    expect(pending.has("anc-1")).toBe(false);
+
+    // A refusal for a request nobody made is silence, not a warning.
+    expect(await handleCareOhifMessage({ ...refusal, requestId: "anc-old" } as never, ctx)).toBe("ignored");
+    expect(unavailable).toBe(1);
+  });
+
   it("an anchor that cannot identify an image says so instead of anchoring the study", async () => {
     let unavailable = 0;
     let applied = 0;

@@ -6,11 +6,13 @@
  *   { source: "care-ohif", type: "measurement", … annotationId?, intent? }
  *   { source: "care-ohif", type: "key-image", … }
  *   { source: "care-ohif", type: "active-anchor", … }
+ *   { source: "care-ohif", type: "displayed-anchor-unavailable", error, requestId }
  *   { source: "care-ohif", type: "viewport-capture-result", … }  // annotated freeze
  *   { source: "care-ohif", type: "measurement-deleted", annotationId }
  *
  * CARE → OHIF (outbound, when iframe same-policy allows):
  *   { source: "care-reporting", type: "viewport-capture-request", version: 1, requestId }
+ *   { source: "care-reporting", type: "displayed-anchor-request", version: 1, requestId }
  *   { source: "care-reporting", type: "navigate-to-anchor", version: 1, …UIDs }
  *
  * Security: validate event.origin against allowlist; validate event.source against
@@ -94,12 +96,25 @@ export type CareOhifMeasurementDeleted = {
   studyInstanceUID?: string;
 };
 
+/**
+ * The viewer's honest "I cannot name the image on screen" — no identity fields,
+ * only a reason and the requestId of the request it answers.
+ */
+export type CareOhifDisplayedAnchorUnavailable = {
+  source: typeof CARE_OHIF_SOURCE;
+  type: "displayed-anchor-unavailable";
+  version?: number;
+  error?: string;
+  requestId?: string;
+};
+
 export type CareOhifMessage =
   | CareOhifMeasurementMessage
   | CareOhifKeyImageMessage
   | CareOhifActiveAnchorMessage
   | CareOhifViewportCaptureResult
-  | CareOhifMeasurementDeleted;
+  | CareOhifMeasurementDeleted
+  | CareOhifDisplayedAnchorUnavailable;
 
 export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
   if (!data || typeof data !== "object") return false;
@@ -111,6 +126,7 @@ export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
     || d.type === "active-anchor"
     || d.type === "viewport-capture-result"
     || d.type === "measurement-deleted"
+    || d.type === "displayed-anchor-unavailable"
   );
 }
 
@@ -257,6 +273,18 @@ export async function handleCareOhifMessage(
     ) {
       return "ignored";
     }
+  }
+
+  // The viewer's refusal names no image and no study, so it is matched before the
+  // identity gate below — and it only means anything for the request that asked.
+  // Without this the ERP would sit until its own timeout for an answer it already
+  // has, which is a slower "unknown", not a wrong one.
+  if (msg.type === "displayed-anchor-unavailable") {
+    const rid = String(msg.requestId ?? "").trim();
+    if (!rid || !ctx.pendingAnchorRequestIds?.has(rid)) return "ignored";
+    ctx.pendingAnchorRequestIds.delete(rid);
+    ctx.onActiveAnchorUnavailable?.();
+    return "ok";
   }
 
   // D2-I1: an identity-bearing event has to name the study it belongs to. An
