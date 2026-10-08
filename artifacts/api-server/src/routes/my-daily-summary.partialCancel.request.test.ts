@@ -22,6 +22,7 @@ import {
   paymentsTable,
   billAuditsTable,
   vouchersTable,
+  doctorsTable,
 } from "@workspace/db/schema";
 import { eq, inArray, like } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,8 @@ describe.skipIf(!dbAvailable)("partial test-cancel attribution — my-daily-summ
   let vijayName = "";
   let abinashName = "";
   let patientId = 0;
+  let doctorId = 0;
+  let doctorName = "";
   let testKeepId = 0;
   let testCancelId = 0;
   let billId = 0;
@@ -108,6 +111,15 @@ describe.skipIf(!dbAvailable)("partial test-cancel attribution — my-daily-summ
       .returning();
     patientId = patient.id;
 
+    // A referring doctor on the order, so the refund row can be checked for the
+    // name the activity log is supposed to show without opening the bill.
+    doctorName = `Dr Referral ${marker}`;
+    const [doctor] = await db
+      .insert(doctorsTable)
+      .values({ name: doctorName, specialization: "General Medicine" })
+      .returning();
+    doctorId = doctor.id;
+
     const [tKeep] = await db
       .insert(testsTable)
       .values({
@@ -138,6 +150,7 @@ describe.skipIf(!dbAvailable)("partial test-cancel attribution — my-daily-summ
       .values({
         orderNumber: `ORD-${marker}`,
         patientId,
+        doctorId,
         status: "completed",
         totalAmount: String(totalPrice),
       })
@@ -205,6 +218,7 @@ describe.skipIf(!dbAvailable)("partial test-cancel attribution — my-daily-summ
       await db.delete(ordersTable).where(eq(ordersTable.id, orderId)).catch(() => {});
     }
     if (patientId) await db.delete(patientsTable).where(eq(patientsTable.id, patientId)).catch(() => {});
+    if (doctorId) await db.delete(doctorsTable).where(eq(doctorsTable.id, doctorId)).catch(() => {});
     if (testKeepId) await db.delete(testsTable).where(eq(testsTable.id, testKeepId)).catch(() => {});
     if (testCancelId) await db.delete(testsTable).where(eq(testsTable.id, testCancelId)).catch(() => {});
     await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, vijayToken)).catch(() => {});
@@ -262,5 +276,23 @@ describe.skipIf(!dbAvailable)("partial test-cancel attribution — my-daily-summ
     const abinashExpectedCash =
       Number(as.collectible) - (Number(as.digitalIn) - Number(as.digitalRefunded)) - Number(as.cashExpenses);
     expect(Math.abs(abinashExpectedCash - Number(as.physicalCashInHand))).toBeLessThanOrEqual(0.01);
+
+    // The Refunds tab of My Activity Log is judged by what this payload carries:
+    // which bill (its own number, not a row id), whose study it was, and why money
+    // went back — so the owner never has to open the bill to read a refund.
+    const refundRow = (afterAbinash.body.refunds as Array<Record<string, unknown>>).find(
+      (r) => Number(r.billId) === billId,
+    );
+    expect(refundRow, "the test-cancel auto-refund must be listed in refunds").toBeTruthy();
+    expect(refundRow!.billNumber).toBe(`BILL-${marker}`);
+    expect(refundRow!.referringDoctor).toBe(doctorName);
+    expect(String(refundRow!.patientName)).toContain("Vitest");
+    expect(Number(refundRow!.amount)).toBeCloseTo(-cancelPrice, 2);
+    expect(refundRow!.refundKind).toBe("test-cancel");
+    expect(String(refundRow!.reason)).toContain(marker);
+    // The reason is the sentence the canceller typed, not the note's own label —
+    // the kind badge says "test cancelled", and repeating the prefix in the text
+    // is how a reason column turns into unreadable noise.
+    expect(String(refundRow!.reason)).not.toMatch(/^REFUND/);
   }, 90_000);
 });
