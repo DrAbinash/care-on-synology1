@@ -82,11 +82,15 @@ describe.skipIf(!dbAvailable)(
     }, 60_000);
 
     async function makeRow(fields: Partial<{
-      accessionNumber: string | null;
+      accessionNumber: string;
       studyInstanceUID: string | null;
       studyUidProvenance: string | null;
       dicomPatientId: string | null;
     }>) {
+      // accession_number is NOT NULL in the shipped DDL
+      // (lib/db/drizzle/0000_dear_forge.sql:1545, and CI/bootstrap enforce it)
+      // even though the Drizzle model declares it nullable — so an
+      // "accession-less" row is the empty string, never SQL NULL.
       const [row] = await db
         .insert(radiologyWorklistTable)
         .values({
@@ -115,7 +119,25 @@ describe.skipIf(!dbAvailable)(
     };
 
     test("a row with no accession is left unbound — no name search, no write", async () => {
-      const row = await makeRow({ accessionNumber: null, studyInstanceUID: null });
+      const row = await makeRow({ accessionNumber: "", studyInstanceUID: null });
+      const res = await resolve(row.id);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("unresolved");
+      expect(res.body.reason).toBe("no-strong-identifier");
+      expect(res.body.studyInstanceUID).toBeNull();
+      expect(res.body.updated).toBe(false);
+
+      const after = await readRow(row.id);
+      expect(after.studyInstanceUID).toBeNull();
+      expect(after.studyUidProvenance).toBeNull();
+    });
+
+    test("a whitespace-only accession is the same no-identifier row, not a searchable one", async () => {
+      // A modality or a manual booking can leave "   " behind. The resolver must
+      // not treat that as an accession worth querying: a blank query degenerates
+      // into the name/date search this change removed.
+      const row = await makeRow({ accessionNumber: "   ", studyInstanceUID: null });
       const res = await resolve(row.id);
 
       expect(res.status).toBe(200);
