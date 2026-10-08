@@ -27,6 +27,7 @@ import {
   radiologyUserReportPreferencesTable,
   radiologyUserItemUsageLogsTable,
   radiologyInstitutionalStylesTable,
+  patientReportsTable,
 } from "@workspace/db/schema";
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -34,6 +35,7 @@ import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
 import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
 import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
+import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
 import {
@@ -1267,6 +1269,14 @@ radiologyRouter.get("/templates/:testId", async (req, res) => {
 });
 
 // GET /api/radiology/studies/:id — single study with full detail
+//
+// `worklistId` is added for B-10 handoff only: the Reporting Workspace route
+// takes a `radiology_worklist.id`, NOT a `radiology_studies.id` (see
+// internal-radiology.ts `/radiology/worklist/:id`, which selects on the
+// worklist PK and 404s otherwise). A caller holding a study row therefore
+// cannot build a workspace URL without this resolution. null means "this study
+// is not in the modern pipeline yet" — which is a real state, not a failure:
+// pacsArchive.ts documents legacy free-text-only studies as an expected case.
 radiologyRouter.get("/studies/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1275,7 +1285,12 @@ radiologyRouter.get("/studies/:id", async (req, res) => {
     .from(radiologyStudiesTable)
     .where(eq(radiologyStudiesTable.id, id));
   if (!row) { res.status(404).json({ error: "Study not found" }); return; }
-  res.json(row);
+  const [worklistLink] = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, id))
+    .limit(1);
+  res.json({ ...row, worklistId: worklistLink?.id ?? null });
 });
 
 // POST /api/radiology/studies — manual create (walk-in / external referral)
@@ -1467,8 +1482,18 @@ radiologyRouter.patch("/:id", async (req, res) => {
   res.json(row);
 });
 
-// POST /api/radiology/studies/:id/report — save preliminary or final report.
+// POST /api/radiology/:id/report — the LEGACY free-text report write.
 // Body: { stage: "preliminary"|"final", body: string, reportedBy?: string, templateId?: number }
+//
+// B-10: this is no longer an authoring boundary. `lib/legacyReportAuthority.ts`
+// owns the rule; the route only gathers the three facts it needs. In short: a
+// study that the Reporting Workspace can reach (a `radiology_worklist` row
+// carries its id) or that already has a `patient_reports` artifact is closed to
+// this route entirely, and a study with no text in the target column cannot get
+// its first report here. Correcting a pre-existing legacy free-text document on
+// a study the modern pipeline never touched still works, unchanged — including
+// the inventory consumption below, which is the only remaining caller of
+// hookConsumeOnStudyFinalized.
 //
 // Saving a preliminary advances status to reported_preliminary; saving a final
 // advances to reported_final. We never downgrade — if a final already exists,
@@ -1506,6 +1531,39 @@ radiologyRouter.post("/:id/report", async (req, res) => {
 
   const [existing] = await db.select().from(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id));
   if (!existing) { res.status(404).json({ error: "Study not found" }); return; }
+
+  // B-10 — one authoritative reporting surface. Facts first, then the pure rule.
+  //
+  // NOT resolveWorklistFromStudyRef() from lib/radiologyIdentity.ts, on purpose:
+  // that helper exists to disambiguate a REFERENCE that may be either a
+  // radiology_worklist.id or a radiology_studies.id, and it tries the worklist PK
+  // first. Here the id is known to be a radiology_studies.id, so trying the
+  // worklist PK would let an unrelated worklist row whose id happens to collide
+  // answer for this study. pacsArchive.ts:113-118 is the precedent for the
+  // patient_reports lookup: a report may be keyed on the worklist id (canonical
+  // finalize) or the study id, so both are checked.
+  const [worklistLink] = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, id))
+    .limit(1);
+  const reportKeys = worklistLink ? [worklistLink.id, id] : [id];
+  const [patientReport] = await db
+    .select({ id: patientReportsTable.id })
+    .from(patientReportsTable)
+    .where(inArray(patientReportsTable.studyId, reportKeys))
+    .limit(1);
+
+  const authority = decideLegacyReportWrite({
+    stage: body.stage as "preliminary" | "final",
+    existingColumn: body.stage === "final" ? existing.finalReport : existing.prelimReport,
+    hasWorklistRow: Boolean(worklistLink),
+    hasPatientReport: Boolean(patientReport),
+  });
+  if (!authority.allowed) {
+    res.status(authority.httpStatus).json({ error: authority.error, code: authority.code });
+    return;
+  }
 
   const updates: Partial<typeof radiologyStudiesTable.$inferInsert> = {};
   if (body.templateId !== undefined) updates.templateId = body.templateId;

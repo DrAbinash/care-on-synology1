@@ -8,13 +8,19 @@ import {
 } from "./signedReportContentGuard";
 
 /**
- * Every fixture below is built the way a real producer builds it, not invented.
+ * Every fixture below is built the way its producer builds it, not invented.
  * The point of this file is that it runs with NO database — the classifier is
- * pure — so the five body shapes that reach POST /api/patient-reports/:id/sign
- * are pinned on a laptop and not only in CI.
+ * pure — so the body shapes that reach POST /api/patient-reports/:id/sign are
+ * pinned on a laptop and not only in CI.
+ *
+ * Two of the producers have since been deleted (B-10 removed the Command
+ * Center's second editor and the standalone USG shell, and closed the legacy
+ * free-text write). Their shapes stay here because patient_reports rows already
+ * signed with that markup are in the clinic's database and the guard must keep
+ * recognising them — they are historical producers, not live ones.
  */
 
-/** Mirrors RadiologyCommandCenter.tsx:842-855 exactly, including its escaper. */
+/** The htmlBody RadiologyCommandCenter.tsx assembled before B-10 deleted it. */
 function commandCenterBody(input: {
   title: string;
   patientName: string;
@@ -52,7 +58,7 @@ const emptyCommandCenter = commandCenterBody({
   recommendation: "",
 });
 
-/** Mirrors UsgCompanionWorkspace.tsx:231-237. */
+/** The htmlBody pages/UsgCompanionWorkspace.tsx signed before B-10 deleted it. */
 function usgBody(studyDescription: string, sections: Array<{ label: string; text: string }>, impression: string[]): string {
   const escHtml = (v: string) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return [

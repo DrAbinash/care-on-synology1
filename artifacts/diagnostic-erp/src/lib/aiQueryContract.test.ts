@@ -138,7 +138,24 @@ describe("Prior-studies wiring", () => {
         .map((n) => read(resolve(ERP_SRC, "components/radiology/workspace", n))),
     ].join("\n");
     expect(workspaceChunks).toMatch(/excludeStudyId=\{(studyId|entry\?\.studyId)/);
-    expect(read(resolve(ERP_SRC, "pages/UsgCompanionWorkspace.tsx"))).toMatch(/excludeStudyId=\{studyId/);
+    // B-10: the standalone USG shell used to be the second mount of this panel
+    // (`excludeStudyId={studyId}` in pages/UsgCompanionWorkspace.tsx). The page is
+    // deleted, so the contract is now "exactly one mount, and it self-excludes".
+    // Counting mounts is what keeps this from being vacuously true if the panel
+    // disappears along with the attribute.
+    //
+    // relPath() normalises separators deliberately: this file has two older
+    // assertions that build display paths with `ERP_SRC + "/"`, which cannot match
+    // a backslashed Windows path — the reason this suite is one of the six that
+    // fail locally and pass in CI. A new assertion must not inherit that.
+    const relPath = (p: string) => p.slice(ERP_SRC.length + 1).split("\\").join("/");
+    const mounts: string[] = [];
+    for (const file of ["pages", "hooks", "components"].flatMap((d) => walk(resolve(ERP_SRC, d)))) {
+      for (const h of read(file).match(/<ComparisonPanel[\s\S]{0,400}/g) ?? []) {
+        mounts.push(`${relPath(file)}:${/excludeStudyId=/.test(h) ? "excludes" : "NO excludeStudyId"}`);
+      }
+    }
+    expect(mounts).toEqual(["components/radiology/workspace/ReportingToolsRail.tsx:excludes"]);
   });
 });
 
