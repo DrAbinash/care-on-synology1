@@ -32,6 +32,8 @@ import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } fro
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
+import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
+import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
 import { todayIST } from "../lib/istDate";
 import { omitHeavyPacsWorklistRows } from "../lib/pacsWorklistListFields.js";
 import {
@@ -702,14 +704,15 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
         limit: 100,
       });
       if (orthancForBackfill.rows.length > 0) {
-        const byAcc = new Map(
-          orthancForBackfill.rows
-            .filter((o) => o.accessionNumber.trim())
-            .map((o) => [o.accessionNumber.trim().toUpperCase(), o.studyInstanceUID]),
-        );
+        // Exact-accession display backfill. A repeated accession pointing at
+        // DIFFERENT studies is ambiguity, not a pick-one: the previous
+        // Map(...) build let the last row win silently, and this UID reaches
+        // the client as currentRow.studyInstanceUID — which is what
+        // EmbeddedWadoViewer launches OHIF on. Same rule as the resolver.
+        const byAcc = accessionUidMap(orthancForBackfill.rows);
         filtered = filtered.map((r) => {
           if (r.studyInstanceUID?.trim()) return r;
-          const acc = (r.accessionNumber ?? "").trim().toUpperCase();
+          const acc = identityKey(r.accessionNumber);
           const uid = acc ? byAcc.get(acc) : undefined;
           if (!uid) return r;
           return { ...r, studyInstanceUID: uid };
@@ -880,8 +883,25 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
 
 /**
  * POST /api/radiology/pacs-worklist/:id/resolve-study-uid
- * When a worklist row lacks StudyInstanceUID, look it up in Orthanc by accession
- * or patient name + study date, persist on the row, and return the UID.
+ * When a worklist row lacks a StudyInstanceUID, look it up in Orthanc and bind
+ * it ONLY if the search proves identity. See
+ * lib/pacs/studyUidBinding.ts for the rule; the summary is:
+ *
+ *   exactly one candidate AND exact agreement on a strong identifier
+ *   (accession, or external DICOM PatientID where available).
+ *
+ * Patient name, study date and modality are not identity evidence and are not
+ * sent to the decision. In particular the search no longer runs on patient name:
+ * a `*name*` substring search plus "first row back" was how a different
+ * patient's study could be persisted onto this row and then launch the viewer.
+ * A row with no accession therefore stays unresolved. That is the intended
+ * trade — a missing study is recoverable by a human, a wrong study is already
+ * in the report.
+ *
+ * Responses carry `status` (resolved | unresolved | ambiguous | conflict) plus
+ * `provenance`. `studyInstanceUID` is non-null only for a safe binding, so
+ * existing consumers that key off it (EmbeddedWadoViewer) need no change to
+ * stay safe.
  */
 radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) => {
   const id = Number(req.params.id);
@@ -894,10 +914,9 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
     .select({
       id: radiologyWorklistTable.id,
       studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+      studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
       accessionNumber: radiologyWorklistTable.accessionNumber,
-      patientName: radiologyWorklistTable.patientName,
-      studyDate: radiologyWorklistTable.studyDate,
-      modality: radiologyWorklistTable.modality,
+      dicomPatientId: radiologyWorklistTable.dicomPatientId,
     })
     .from(radiologyWorklistTable)
     .where(eq(radiologyWorklistTable.id, id))
@@ -910,20 +929,39 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
 
   const existing = (row.studyInstanceUID ?? "").trim();
   if (existing) {
-    res.json({ studyInstanceUID: existing, source: "worklist", updated: false });
+    res.json({
+      status: "resolved",
+      studyInstanceUID: existing,
+      // NULL here means "bound before provenance was recorded" — reported as
+      // unknown rather than upgraded to something reassuring.
+      provenance: row.studyUidProvenance ?? null,
+      candidateCount: 0,
+      reason: "already-bound",
+      source: "worklist",
+      updated: false,
+    });
     return;
   }
 
-  const studyDateIso = row.studyDate?.match(/^(\d{4})(\d{2})(\d{2})$/)
-    ? `${row.studyDate.slice(0, 4)}-${row.studyDate.slice(4, 6)}-${row.studyDate.slice(6, 8)}`
-    : undefined;
+  const accession = (row.accessionNumber ?? "").trim();
+  if (!accession) {
+    // No strong identifier to prove anything against, and name-based search is
+    // no longer used to bind. Fail closed without querying the archive.
+    res.json({
+      status: "unresolved",
+      studyInstanceUID: null,
+      provenance: null,
+      candidateCount: 0,
+      reason: "no-strong-identifier",
+      source: "orthanc",
+      updated: false,
+    });
+    return;
+  }
 
   const orthanc = await findOrthancStudies({
-    accessionNumber: row.accessionNumber?.trim() || undefined,
-    patientName: !row.accessionNumber?.trim() ? (row.patientName?.trim() || undefined) : undefined,
-    dateExact: studyDateIso,
-    modality: row.modality?.trim() || undefined,
-    limit: 5,
+    accessionNumber: accession,
+    limit: 20,
   });
 
   if (orthanc.error && orthanc.rows.length === 0) {
@@ -931,24 +969,107 @@ radiologyRouter.post("/pacs-worklist/:id/resolve-study-uid", async (req, res) =>
     return;
   }
 
-  let hit = orthanc.rows[0];
-  if (row.accessionNumber?.trim()) {
-    const acc = row.accessionNumber.trim().toUpperCase();
-    hit = orthanc.rows.find((r) => r.accessionNumber.trim().toUpperCase() === acc) ?? hit;
-  }
+  const decision = decideStudyUidBinding(
+    {
+      accessionNumber: accession,
+      dicomPatientId: row.dicomPatientId,
+    },
+    orthanc.rows,
+  );
 
-  const uid = hit?.studyInstanceUID?.trim();
-  if (!uid) {
-    res.status(404).json({ error: "Study not found in Orthanc archive", studyInstanceUID: null });
+  if (decision.status !== "resolved" || !decision.studyInstanceUID || !decision.provenance) {
+    // Ambiguous, conflicting or simply not proven: nothing is written and the
+    // row stays visibly unbound.
+    res.json({
+      status: decision.status,
+      studyInstanceUID: null,
+      provenance: null,
+      candidateCount: decision.candidateCount,
+      reason: decision.reason,
+      source: "orthanc",
+      updated: false,
+    });
     return;
   }
 
-  await db
-    .update(radiologyWorklistTable)
-    .set({ studyInstanceUID: uid, updatedAt: new Date() })
-    .where(eq(radiologyWorklistTable.id, id));
+  const uid = decision.studyInstanceUID;
 
-  res.json({ studyInstanceUID: uid, source: "orthanc", updated: true });
+  try {
+    // Single conditional statement: the UID and its provenance land together,
+    // and only while the row is still unbound (or already holds this exact
+    // UID). A concurrent resolve that bound a different study first makes this
+    // match zero rows instead of overwriting it.
+    const [updated] = await db
+      .update(radiologyWorklistTable)
+      .set({ studyInstanceUID: uid, studyUidProvenance: decision.provenance, updatedAt: new Date() })
+      .where(and(
+        eq(radiologyWorklistTable.id, id),
+        or(
+          isNull(radiologyWorklistTable.studyInstanceUID),
+          eq(radiologyWorklistTable.studyInstanceUID, ""),
+          eq(radiologyWorklistTable.studyInstanceUID, uid),
+        ),
+      ))
+      .returning({
+        studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+        studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
+      });
+
+    if (!updated) {
+      const [now] = await db
+        .select({
+          studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+          studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
+        })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.id, id))
+        .limit(1);
+      const current = (now?.studyInstanceUID ?? "").trim();
+      const recheck = canBindUidToRow(current, uid);
+      // Already holds this same study — nothing was lost, report it bound.
+      // Holds a DIFFERENT study: refuse and do not retry. One request must
+      // never flip-flop a binding, and there are now two claims for a human to
+      // look at, which is exactly what an ambiguous binding should produce.
+      res.json({
+        status: recheck.alreadyBound ? "resolved" : "conflict",
+        studyInstanceUID: recheck.alreadyBound ? current : null,
+        provenance: now?.studyUidProvenance ?? null,
+        candidateCount: decision.candidateCount,
+        reason: recheck.reason,
+        boundTo: current || null,
+        source: "worklist",
+        updated: false,
+      });
+      return;
+    }
+
+    res.json({
+      status: "resolved",
+      studyInstanceUID: updated.studyInstanceUID,
+      provenance: updated.studyUidProvenance,
+      matchedOn: decision.matchedOn,
+      candidateCount: decision.candidateCount,
+      reason: decision.reason,
+      source: "orthanc",
+      updated: true,
+    });
+  } catch (err: any) {
+    // radiology_worklist_uid_uq: another worklist row already owns this study.
+    // Two rows claiming one study is a conflict for a human, not a 500.
+    if (isWorklistUidRaceViolation(err, uid)) {
+      res.json({
+        status: "conflict",
+        studyInstanceUID: null,
+        provenance: null,
+        candidateCount: decision.candidateCount,
+        reason: "uid-owned-by-another-worklist-row",
+        source: "orthanc",
+        updated: false,
+      });
+      return;
+    }
+    throw err;
+  }
 });
 
 

@@ -50,6 +50,7 @@ import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
 import { formatDicomPersonNameForDisplay, reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormalize";
 import { shouldFallbackToAccessionLookup, isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup";
+import { STUDY_UID_PROVENANCE } from "../lib/pacs/studyUidBinding";
 import { radiologyOpenFallbackPath, resolveRadiologyOpen } from "../lib/resolveRadiologyOpen";
 import { runDicomIntakeAutomation } from "../lib/pacs/dicomIntakeAutomation";
 import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyFromMwl";
@@ -813,6 +814,11 @@ router.post("/radiology/studies", requireInternalApiKey, async (req, res) => {
       studyDate,
       accessionNumber,
       studyInstanceUID,
+      // D1: a UID that arrives inside the pushed DICOM study is the strongest
+      // provenance there is — the identifier came with the pixels, not from a
+      // search. Set in the same object as studyInstanceUID so the two can never
+      // be written apart; null when the push carried no UID.
+      studyUidProvenance: studyInstanceUID ? STUDY_UID_PROVENANCE.pacsIntake : null,
       aeTitle,
       ipAddress,
       port,

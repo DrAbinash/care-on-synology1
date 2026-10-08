@@ -165,7 +165,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   const { data: resolved, isFetching: resolving, isError: resolveFailed } = useQuery({
     queryKey: ["resolve-study-uid", worklistId],
     enabled: canResolve,
-    queryFn: () => api.post<{ studyInstanceUID: string | null; error?: string }>(
+    queryFn: () => api.post<{
+      studyInstanceUID: string | null;
+      status?: "resolved" | "unresolved" | "ambiguous" | "conflict";
+      provenance?: string | null;
+      reason?: string;
+      candidateCount?: number;
+      error?: string;
+    }>(
       `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
       {},
     ),
@@ -173,7 +180,13 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
     staleTime: 60_000,
   });
 
-  const effectiveUid = initialUid || (resolved?.studyInstanceUID ?? "").trim();
+  // The server returns a UID only for a proven binding, but the consumer checks
+  // the status too and requires it: "the response happened to contain an
+  // identifier" must never be enough to launch a study. A missing status means
+  // an unexpected payload, so nothing is shown rather than something guessed.
+  const boundUid =
+    resolved?.status === "resolved" ? (resolved?.studyInstanceUID ?? "").trim() : "";
+  const effectiveUid = initialUid || boundUid;
 
   if (!effectiveUid) {
     return (
@@ -184,6 +197,21 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
           <p className="text-xs">Looking up study in Orthanc archive…</p>
         ) : canResolve && resolveFailed ? (
           <p className="text-xs">Orthanc lookup failed. Try Search Orthanc archive on the worklist with the scan date.</p>
+        ) : resolved?.status === "ambiguous" ? (
+          <p className="text-xs">
+            {resolved.candidateCount ?? 0} Orthanc studies match this accession — the scan is
+            deliberately not opened until the ambiguity is resolved.
+          </p>
+        ) : resolved?.status === "conflict" ? (
+          <p className="text-xs">
+            The Orthanc study found for this accession disagrees with the patient identifiers on
+            the order, so it was not linked.
+          </p>
+        ) : resolved?.reason === "no-strong-identifier" ? (
+          <p className="text-xs">
+            This entry has no accession number to match on, so images are not linked
+            automatically. A name or date match is not treated as the same study.
+          </p>
         ) : accessionNumber ? (
           <p className="text-xs">Accession {accessionNumber} — images may exist in Orthanc but are not linked yet.</p>
         ) : null}

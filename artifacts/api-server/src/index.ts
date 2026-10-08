@@ -565,6 +565,10 @@ async function runStartupMigrations(): Promise<void> {
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_by TEXT;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_approved_at TIMESTAMPTZ;
       ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS match_override_reason TEXT;
+      -- D1 study-UID provenance (migrations/zzzzzzzzzz_study_uid_provenance.sql).
+      -- Additive + nullable with no default: existing rows stay NULL ("unknown"),
+      -- never backfilled, so a historical binding cannot be relabelled as verified.
+      ALTER TABLE radiology_worklist ADD COLUMN IF NOT EXISTS study_uid_provenance TEXT;
 
       -- ── Fix: bad/duplicate DICOM accession numbers crashing intake ──────
       -- radiology_worklist.accession_number was NOT NULL + globally UNIQUE.
