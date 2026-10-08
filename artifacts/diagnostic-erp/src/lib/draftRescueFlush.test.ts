@@ -199,10 +199,13 @@ describe("wiring — no React harness exists, so the plumbing is pinned by contr
       .toEqual(["registerDraftRescueSaver", "deregisterDraftRescueSaver"]);
     expect(draftPersistence).not.toContain("writeRescueDraft");
     expect(draftPersistence).not.toMatch(/as any\);/);
-    // draftRescue itself is untouched: RadiologyCommandCenter is deprecated but
-    // still routed, and its own saver + banner remain a working pair.
+    // draftRescue itself is untouched. Since B-10 the Command Center no longer
+    // registers a saver or renders the rescue banner — it holds no draft text to
+    // rescue — so useDraftPersistence is the only consumer of the slot, and the
+    // module keeps its shape for it.
     expect(draftRescue).toContain('const RESCUE_KEY = "rcc_rescue_draft"');
     expect(draftRescue).toContain("accessionNumber: string;");
+    expect(read("pages/RadiologyCommandCenter.tsx")).not.toContain("@/lib/draftRescue");
   });
 
   it("the reader that recovers it is the existing banner — no new UI", () => {
