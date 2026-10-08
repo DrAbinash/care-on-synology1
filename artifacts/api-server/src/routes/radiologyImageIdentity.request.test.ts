@@ -30,6 +30,7 @@ import {
   radiologyReportDraftsTable,
   radiologyReportKeyImagesTable,
   radiologyImageReferencesTable,
+  radiologyAnnotationsTable,
   viewerMeasurementsTable,
 } from "@workspace/db/schema";
 import { eq, inArray, sql } from "drizzle-orm";
@@ -79,6 +80,7 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
   const cleanupKeyImageIds: number[] = [];
   const cleanupRefIds: number[] = [];
   const cleanupMeasurementIds: number[] = [];
+  const cleanupAnnotationIds: number[] = [];
 
   const auth = { Authorization: `Bearer ${token}` };
 
@@ -201,6 +203,11 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
       await db
         .delete(viewerMeasurementsTable)
         .where(inArray(viewerMeasurementsTable.id, cleanupMeasurementIds));
+    }
+    if (cleanupAnnotationIds.length) {
+      await db
+        .delete(radiologyAnnotationsTable)
+        .where(inArray(radiologyAnnotationsTable.id, cleanupAnnotationIds));
     }
     if (draftId) {
       await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, draftId));
@@ -573,5 +580,142 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
     expect(
       hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A2}/instances/${INST_A_CINE}`),
     ).toBe(true);
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // /radiology-annotations — the fourth durable writer of study/series/sop/frame.
+  // An annotation is a record over an image, not the report itself, so a denied
+  // chain has to take away the chain and keep the annotation; an unverifiable one
+  // keeps both and stores no DICOM identity.
+  // ────────────────────────────────────────────────────────────────────────────
+  async function annotationPost(body: Record<string, unknown>) {
+    return request(app)
+      .post("/api/radiology-annotations")
+      .set(auth)
+      .send({ annotationType: "arrow", labelText: `${marker} annotation`, ...body });
+  }
+
+  it("D2-I5 (annotations): a SOP the study does not contain is refused", async () => {
+    const res = await annotationPost({
+      studyInstanceUid: STUDY_A,
+      seriesInstanceUid: SERIES_A1,
+      sopInstanceUid: INST_B1, // lives in STUDY_B
+    });
+    expectStatus(res, 409);
+    expect(res.body.code).toBe("IMAGE_SOP_NOT_IN_STUDY");
+    const rows = await db
+      .select({ id: radiologyAnnotationsTable.id })
+      .from(radiologyAnnotationsTable)
+      .where(eq(radiologyAnnotationsTable.sopInstanceUid, INST_B1));
+    expect(rows.length).toBe(0);
+  });
+
+  it("D2-I5 (annotations, positive control): a verified chain is kept and the PACS was asked", async () => {
+    const before = pacs?.hits().length ?? 0;
+    const res = await annotationPost({
+      studyInstanceUid: STUDY_A,
+      seriesInstanceUid: SERIES_A1,
+      sopInstanceUid: INST_A_SINGLE,
+    });
+    expectStatus(res, 201);
+    const id = res.body?.annotation?.id;
+    expect(id).toBeTruthy();
+    cleanupAnnotationIds.push(id);
+    const hits = (pacs?.hits() ?? []).slice(before);
+    expect(
+      hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A1}/instances/${INST_A_SINGLE}`),
+    ).toBe(true);
+    const [row] = await db
+      .select()
+      .from(radiologyAnnotationsTable)
+      .where(eq(radiologyAnnotationsTable.id, id))
+      .limit(1);
+    expect(row.studyInstanceUid).toBe(STUDY_A);
+    expect(row.seriesInstanceUid).toBe(SERIES_A1);
+    expect(row.sopInstanceUid).toBe(INST_A_SINGLE);
+    expect(row.frameNumber).toBeNull();
+  });
+
+  it("D2-R2 (annotations): a frame claimed on a single-frame image is not stored", async () => {
+    const res = await annotationPost({
+      studyInstanceUid: STUDY_A,
+      seriesInstanceUid: SERIES_A1,
+      sopInstanceUid: INST_A_ONEFRAME, // (0028,0008) = 1
+      frameNumber: 1, // what the WADO-RS URL says for every single-frame slice
+    });
+    expectStatus(res, 201);
+    cleanupAnnotationIds.push(res.body?.annotation?.id);
+    const [row] = await db
+      .select()
+      .from(radiologyAnnotationsTable)
+      .where(eq(radiologyAnnotationsTable.id, res.body.annotation.id))
+      .limit(1);
+    expect(row.frameNumber).toBeNull();
+    expect(row.sopInstanceUid).toBe(INST_A_ONEFRAME);
+  });
+
+  it("D2-R8 (annotations): a frame beyond the instance's frame count is refused", async () => {
+    const res = await annotationPost({
+      studyInstanceUid: STUDY_A,
+      seriesInstanceUid: SERIES_A2,
+      sopInstanceUid: INST_A_CINE, // 60 frames
+      frameNumber: 500,
+    });
+    expectStatus(res, 409);
+    expect(res.body.code).toBe("IMAGE_FRAME_OUT_OF_RANGE");
+  });
+
+  it("D2-I1 (annotations): a study id of record that names another study is refused", async () => {
+    const res = await annotationPost({
+      studyInstanceUid: STUDY_B,
+      seriesInstanceUid: SERIES_B1,
+      sopInstanceUid: INST_B1, // real, inside STUDY_B — only the CARE binding makes it wrong
+      studyId: worklistId,
+    });
+    expectStatus(res, 409);
+    expect(res.body.code).toBe("IMAGE_STUDY_MISMATCH");
+  });
+
+  it("D2-I6 (annotations): when the PACS cannot answer the annotation survives without identity", async () => {
+    pacs?.setMode("down");
+    try {
+      const res = await annotationPost({
+        studyInstanceUid: STUDY_A,
+        seriesInstanceUid: SERIES_A1,
+        sopInstanceUid: INST_A_SINGLE,
+      });
+      expectStatus(res, 201);
+      cleanupAnnotationIds.push(res.body?.annotation?.id);
+      const [row] = await db
+        .select()
+        .from(radiologyAnnotationsTable)
+        .where(eq(radiologyAnnotationsTable.id, res.body.annotation.id))
+        .limit(1);
+      // No DICOM identity from an unanswered question — but the annotation stands.
+      expect(row.seriesInstanceUid).toBeNull();
+      expect(row.sopInstanceUid).toBeNull();
+      expect(row.frameNumber).toBeNull();
+      expect(row.studyInstanceUid).toBe(STUDY_A);
+      expect(row.labelText).toBe(`${marker} annotation`);
+      expect(String(res.body.warningCode)).toBe("IMAGE_PACS_UNREACHABLE");
+    } finally {
+      pacs?.setMode("serve");
+    }
+  });
+
+  it("D2-I7 (annotations): a study-level annotation keeps working and stores no image", async () => {
+    const before = pacs?.hits().length ?? 0;
+    const res = await annotationPost({ studyInstanceUid: STUDY_A });
+    expectStatus(res, 201);
+    cleanupAnnotationIds.push(res.body?.annotation?.id);
+    const [row] = await db
+      .select()
+      .from(radiologyAnnotationsTable)
+      .where(eq(radiologyAnnotationsTable.id, res.body.annotation.id))
+      .limit(1);
+    expect(row.seriesInstanceUid).toBeNull();
+    expect(row.sopInstanceUid).toBeNull();
+    // Nothing was claimed about an image, so there was nothing to ask the PACS.
+    expect((pacs?.hits() ?? []).slice(before).length).toBe(0);
   });
 });

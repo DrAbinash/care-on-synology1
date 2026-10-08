@@ -77,7 +77,8 @@ export type InstanceLookupResult =
 export type InstanceLookup = (args: {
   studyInstanceUID: string;
   seriesInstanceUID: string;
-  sopInstanceUID: string;
+  /** Null asks whether the series itself is in this study, with no image named. */
+  sopInstanceUID: string | null;
 }) => Promise<InstanceLookupResult>;
 
 /**
@@ -108,6 +109,8 @@ export function decideFrame(
  * ownership question — a 200 for
  * `/studies/{S}/series/{SE}/instances/{I}` can only mean that SOP is in that
  * series of that study, which is stronger than "this SOP exists somewhere".
+ * With no SOP named, the same path one level up asks the only question that is
+ * still answerable: is this series in this study.
  */
 export function createOrthancInstanceLookup(opts: {
   timeoutMs?: number;
@@ -131,7 +134,7 @@ export function createOrthancInstanceLookup(opts: {
     const url =
       `${base}/dicom-web/studies/${encodeURIComponent(studyInstanceUID)}`
       + `/series/${encodeURIComponent(seriesInstanceUID)}`
-      + `/instances/${encodeURIComponent(sopInstanceUID)}`;
+      + (sopInstanceUID ? `/instances/${encodeURIComponent(sopInstanceUID)}` : "");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -231,4 +234,151 @@ export async function verifyImageIdentityClaim(args: {
  */
 export function identityColumnsFor(verdict: IdentityVerdict): VerifiedIdentity | null {
   return verdict.status === "verified" ? verdict.identity : null;
+}
+
+/**
+ * A writer that is not a report draft — an image annotation carries its own study
+ * key and may legitimately name no image at all (a study-level teaching note).
+ *
+ * Same rule as a draft claim, different question set:
+ *   no image claimed        nothing to ask, nothing to store beyond the study
+ *   series with no SOP      the SOP is the authoritative element (D2-I3), so the
+ *                           series is confirmed against the study and stored alone
+ *   full chain              verified by the single-instance QIDO, as above
+ *
+ * `expectedStudyInstanceUID` is CARE's own record of the study when the caller
+ * binds one; it wins over the claim, and a claim that disagrees is contradicted
+ * rather than stored.
+ */
+export type InstanceChainVerdict =
+  | { status: "no_image"; studyInstanceUID: string }
+  | { status: "series_only"; studyInstanceUID: string; seriesInstanceUID: string }
+  | { status: "verified"; identity: VerifiedIdentity }
+  | {
+      status: "unverifiable";
+      studyInstanceUID: string;
+      code: string;
+      message: string;
+    }
+  | { status: "contradicted"; code: string; message: string };
+
+export async function verifyInstanceChain(args: {
+  studyInstanceUID: string | null | undefined;
+  seriesInstanceUID?: string | null;
+  sopInstanceUID?: string | null;
+  frameNumber?: number | null;
+  expectedStudyInstanceUID?: string | null;
+  lookup?: InstanceLookup;
+}): Promise<InstanceChainVerdict> {
+  const claim = (args.studyInstanceUID ?? "").trim();
+  const expected = (args.expectedStudyInstanceUID ?? "").trim();
+  const study = expected || claim;
+  const series = (args.seriesInstanceUID ?? "").trim();
+  const sop = (args.sopInstanceUID ?? "").trim();
+
+  if (expected && claim !== expected) {
+    return {
+      status: "contradicted",
+      code: "IMAGE_STUDY_MISMATCH",
+      message: "Selected image belongs to a different DICOM study than this record.",
+    };
+  }
+
+  if (!series && !sop) return { status: "no_image", studyInstanceUID: study };
+
+  if (!isDicomUid(study)) {
+    return {
+      status: "contradicted",
+      code: "IMAGE_STUDY_UID_INVALID",
+      message: "The study named for this image is not a DICOM StudyInstanceUID.",
+    };
+  }
+  if (!isDicomUid(series) || (sop && !isDicomUid(sop))) {
+    return {
+      status: "contradicted",
+      code: "IMAGE_IDENTITY_INCOMPLETE",
+      message: "An image anchor needs a SeriesInstanceUID, and the SOPInstanceUID when one is named.",
+    };
+  }
+
+  const lookup = args.lookup ?? createOrthancInstanceLookup();
+  const found = await lookup({
+    studyInstanceUID: study,
+    seriesInstanceUID: series,
+    sopInstanceUID: sop || null,
+  });
+  if (!found.ok) {
+    if (found.reason === "not-found") {
+      return {
+        status: "contradicted",
+        code: sop ? "IMAGE_SOP_NOT_IN_STUDY" : "IMAGE_SERIES_NOT_IN_STUDY",
+        message: sop
+          ? "The PACS has no such image in this study and series, so it cannot be attached as one."
+          : "The PACS has no such series in this study, so it cannot be attached as one.",
+      };
+    }
+    return {
+      status: "unverifiable",
+      studyInstanceUID: study,
+      code: "IMAGE_PACS_UNREACHABLE",
+      message: "The PACS could not be asked whether this image belongs to the study.",
+    };
+  }
+
+  if (!sop) return { status: "series_only", studyInstanceUID: study, seriesInstanceUID: series };
+
+  const frame = decideFrame(args.frameNumber, found.numberOfFrames);
+  if (frame.outOfRange) {
+    return {
+      status: "contradicted",
+      code: "IMAGE_FRAME_OUT_OF_RANGE",
+      message: `That frame does not exist in this image (it holds ${found.numberOfFrames}).`,
+    };
+  }
+  return {
+    status: "verified",
+    identity: {
+      studyInstanceUID: study,
+      seriesInstanceUID: series,
+      sopInstanceUID: sop,
+      frameNumber: frame.frameNumber,
+    },
+  };
+}
+
+/**
+ * The four DICOM columns a kept chain verdict writes. The caller has already
+ * refused a contradicted verdict; every remaining status keeps the artefact, and
+ * only what the PACS confirmed is stored.
+ */
+export function chainColumnsFor(
+  verdict: Exclude<InstanceChainVerdict, { status: "contradicted" }>,
+): {
+  studyInstanceUid: string;
+  seriesInstanceUid: string | null;
+  sopInstanceUid: string | null;
+  frameNumber: number | null;
+} {
+  if (verdict.status === "verified") {
+    return {
+      studyInstanceUid: verdict.identity.studyInstanceUID,
+      seriesInstanceUid: verdict.identity.seriesInstanceUID,
+      sopInstanceUid: verdict.identity.sopInstanceUID,
+      frameNumber: verdict.identity.frameNumber,
+    };
+  }
+  if (verdict.status === "series_only") {
+    return {
+      studyInstanceUid: verdict.studyInstanceUID,
+      seriesInstanceUid: verdict.seriesInstanceUID,
+      sopInstanceUid: null,
+      frameNumber: null,
+    };
+  }
+  return {
+    studyInstanceUid: verdict.studyInstanceUID,
+    seriesInstanceUid: null,
+    sopInstanceUid: null,
+    frameNumber: null,
+  };
 }

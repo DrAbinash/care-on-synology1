@@ -1,5 +1,6 @@
 /**
- * A real HTTP server that answers Orthanc's single-instance QIDO query.
+ * A real HTTP server that answers Orthanc's single-instance and single-series
+ * QIDO queries.
  *
  * D2's identity check asks the PACS "does this SOPInstanceUID live in this
  * SeriesInstanceUID of this StudyInstanceUID, and how many frames does the
@@ -69,6 +70,18 @@ export async function startMockDicomWeb(
       const series = Object.keys(manifest[list[1]] || {});
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(series.map(seriesEntry)));
+      return;
+    }
+    const seriesOne = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)$/.exec(url);
+    if (seriesOne) {
+      const [, study, series] = seriesOne;
+      if (!manifest[study] || !manifest[study][series]) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end("[]");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify([seriesEntry(series)]));
       return;
     }
     const insts = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances$/.exec(url);

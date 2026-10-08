@@ -9,7 +9,16 @@
  * the clinic has a URL that says `frames/1` without that meaning anything.
  */
 import { describe, expect, it } from "vitest";
-import { decideFrame, identityColumnsFor, isDicomUid } from "./imageIdentity";
+import {
+  chainColumnsFor,
+  decideFrame,
+  identityColumnsFor,
+  isDicomUid,
+  verifyInstanceChain,
+  type InstanceChainVerdict,
+  type InstanceLookup,
+  type InstanceLookupResult,
+} from "./imageIdentity";
 
 describe("D2 frame policy — absent is not 1", () => {
   it("drops a frame claimed for a single-frame instance", () => {
@@ -98,5 +107,118 @@ describe("D2 verdict → stored columns", () => {
     expect(
       identityColumnsFor({ status: "unverifiable", code: "IMAGE_PACS_UNREACHABLE", message: "x" }),
     ).toBeNull();
+  });
+});
+
+// The route-level suite proves the PACS is really asked over HTTP; this table pins
+// the decisions themselves, including the shapes no current caller sends.
+describe("D2 instance chain — a writer that is not a report draft", () => {
+  const STUDY = "1.2.840.1";
+  const SERIES = "1.2.840.1.1";
+  const SOP = "1.2.840.1.1.1";
+
+  function stubLookup(answer: InstanceLookupResult) {
+    const asked: Array<string | null> = [];
+    const lookup: InstanceLookup = async (args) => {
+      asked.push(args.sopInstanceUID);
+      return answer;
+    };
+    return { asked, lookup };
+  }
+
+  // A contradicted verdict where the test expects columns is the failure itself,
+  // and `chainColumnsFor` deliberately refuses to accept one.
+  function columnsOf(verdict: InstanceChainVerdict) {
+    if (verdict.status === "contradicted") throw new Error(`contradicted: ${verdict.code}`);
+    return chainColumnsFor(verdict);
+  }
+
+  it("an artefact that names no image asks nothing and stores no image", async () => {
+    const { lookup, asked } = stubLookup({ ok: true, numberOfFrames: 60 });
+    const verdict = await verifyInstanceChain({ studyInstanceUID: STUDY, lookup });
+    expect(verdict).toEqual({ status: "no_image", studyInstanceUID: STUDY });
+    expect(asked.length).toBe(0);
+    expect(columnsOf(verdict)).toEqual({
+      studyInstanceUid: STUDY, seriesInstanceUid: null, sopInstanceUid: null, frameNumber: null,
+    });
+  });
+
+  it("a series with no SOP is confirmed one level up and keeps no image identity", async () => {
+    const { lookup, asked } = stubLookup({ ok: true, numberOfFrames: null });
+    const verdict = await verifyInstanceChain({
+      studyInstanceUID: STUDY, seriesInstanceUID: SERIES, frameNumber: 12, lookup,
+    });
+    expect(asked).toEqual([null]); // the series question, not an instance question
+    expect(verdict.status).toBe("series_only");
+    // No SOP means no authoritative image, so a frame claim has nothing to point at.
+    expect(columnsOf(verdict)).toEqual({
+      studyInstanceUid: STUDY, seriesInstanceUid: SERIES, sopInstanceUid: null, frameNumber: null,
+    });
+  });
+
+  it("a series the study does not hold is contradicted, not stored", async () => {
+    const { lookup } = stubLookup({ ok: false, reason: "not-found" });
+    const verdict = await verifyInstanceChain({
+      studyInstanceUID: STUDY, seriesInstanceUID: SERIES, lookup,
+    });
+    expect(verdict).toMatchObject({ status: "contradicted", code: "IMAGE_SERIES_NOT_IN_STUDY" });
+  });
+
+  it("CARE's own record of the study outranks the claim", async () => {
+    const { lookup, asked } = stubLookup({ ok: true, numberOfFrames: 60 });
+    const mismatch = await verifyInstanceChain({
+      studyInstanceUID: "1.2.840.999",
+      expectedStudyInstanceUID: STUDY,
+      seriesInstanceUID: SERIES,
+      sopInstanceUID: SOP,
+      lookup,
+    });
+    expect(mismatch).toMatchObject({ status: "contradicted", code: "IMAGE_STUDY_MISMATCH" });
+    expect(asked.length).toBe(0); // refused before the PACS was disturbed
+
+    const ok = await verifyInstanceChain({
+      studyInstanceUID: STUDY,
+      expectedStudyInstanceUID: STUDY,
+      seriesInstanceUID: SERIES,
+      sopInstanceUID: SOP,
+      frameNumber: 4,
+      lookup,
+    });
+    expect(columnsOf(ok)).toEqual({
+      studyInstanceUid: STUDY, seriesInstanceUid: SERIES, sopInstanceUid: SOP, frameNumber: 4,
+    });
+  });
+
+  it("an unreachable PACS costs the identity and not the artefact", async () => {
+    const { lookup } = stubLookup({ ok: false, reason: "unreachable" });
+    const verdict = await verifyInstanceChain({
+      studyInstanceUID: STUDY, seriesInstanceUID: SERIES, sopInstanceUID: SOP, lookup,
+    });
+    expect(verdict.status).toBe("unverifiable");
+    if (verdict.status !== "unverifiable") return;
+    expect(verdict.studyInstanceUID).toBe(STUDY);
+    expect(columnsOf(verdict)).toEqual({
+      studyInstanceUid: STUDY, seriesInstanceUid: null, sopInstanceUid: null, frameNumber: null,
+    });
+  });
+
+  it("a chain built on a non-UID study never reaches the PACS", async () => {
+    for (const bad of ["orthanc-uuid-1234", "1.2.3/", ""]) {
+      const { lookup, asked } = stubLookup({ ok: true, numberOfFrames: 60 });
+      const verdict = await verifyInstanceChain({
+        studyInstanceUID: bad, seriesInstanceUID: SERIES, sopInstanceUID: SOP, lookup,
+      });
+      expect(verdict, bad).toMatchObject({ status: "contradicted", code: "IMAGE_STUDY_UID_INVALID" });
+      expect(asked.length, bad).toBe(0);
+    }
+  });
+
+  it("an SOP with no series is incomplete, not half-verified", async () => {
+    const { lookup, asked } = stubLookup({ ok: true, numberOfFrames: 60 });
+    const verdict = await verifyInstanceChain({
+      studyInstanceUID: STUDY, sopInstanceUID: SOP, lookup,
+    });
+    expect(verdict).toMatchObject({ status: "contradicted", code: "IMAGE_IDENTITY_INCOMPLETE" });
+    expect(asked.length).toBe(0);
   });
 });

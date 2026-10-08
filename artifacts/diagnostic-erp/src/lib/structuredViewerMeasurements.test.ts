@@ -237,6 +237,35 @@ describe("structuredViewerMeasurements", () => {
     expect(row.anchor?.frameNumber).toBeUndefined();
   });
 
+  it("D2-I2: a row that names no study at all cannot adopt the live viewport", () => {
+    // The deleted fallback keyed on exactly this shape — no row UIDs, so no study
+    // to compare against, and the image on screen became the measurement's
+    // provenance. liveActiveAnchor is no longer an option; it is re-attached here
+    // so this test goes red if the borrow is ever revived.
+    const opts = {
+      row: {
+        id: 22,
+        value: "9",
+        unit: "mm",
+        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ annotationId: "no-study-1" }),
+      },
+      mode: "new_event",
+      liveIntent: "LESION",
+      liveActiveAnchor: {
+        studyInstanceUID: "1.2.840.live",
+        seriesInstanceUID: "1.2.840.live.s",
+        sopInstanceUID: "1.2.840.live.i",
+        frameNumber: 7,
+        viewer: "ohif",
+        capturedAt: new Date().toISOString(),
+      },
+    } as unknown as Parameters<typeof structuredFromViewerRow>[0];
+    const row = structuredFromViewerRow(opts);
+    expect(row.anchor).toBeNull();
+    expect(row.concept).toBe("LESION");
+  });
+
   it("new_event may stamp live intent/level/observation", () => {
     const row = structuredFromViewerRow({
       row: {
