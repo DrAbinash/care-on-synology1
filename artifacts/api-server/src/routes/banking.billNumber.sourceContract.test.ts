@@ -29,12 +29,15 @@ function routeBody(marker: string): string {
 describe("GET /fraud/alerts", () => {
   const body = routeBody('router.get("/fraud/alerts"');
 
-  it("reads the bill number, and reaches it through the payment when needed", () => {
+  it("reads the bill number and the patient, and reaches the bill through the payment when needed", () => {
     expect(body).toContain("billNumber: billsTable.billNumber");
+    expect(body).toContain("patientFirstName: patientsTable.firstName");
+    expect(body).toContain("patientName: patientFirstName");
     // Alerts name a bill OR the payment they flagged; COALESCE is the whole point.
     expect(body).toMatch(/COALESCE\(\s*\$\{fraudAlertsTable\.billId\},\s*\$\{paymentsTable\.billId\}\s*\)/);
     expect(body).toMatch(/leftJoin\(\s*paymentsTable,\s*eq\(fraudAlertsTable\.paymentId,\s*paymentsTable\.id\)\s*\)/);
     expect(body).toMatch(/leftJoin\(\s*billsTable,/);
+    expect(body).toMatch(/leftJoin\(\s*patientsTable,\s*eq\(billsTable\.patientId,\s*patientsTable\.id\)\s*\)/);
     expect(body).not.toMatch(/innerJoin\(/);
     // Positive control for the two bans above: the defective shapes really do match.
     expect('await db.select().from(t).innerJoin(billsTable, eq(t.billId, billsTable.id))').toMatch(/innerJoin\(/);
@@ -42,13 +45,20 @@ describe("GET /fraud/alerts", () => {
       .toMatch(/COALESCE\(\s*\$\{fraudAlertsTable\.billId\},\s*\$\{paymentsTable\.billId\}\s*\)/);
   });
 
-  it("keeps every alert column while adding one", () => {
+  it("keeps every alert column while adding two", () => {
     // Without the spread, `db.select({ billNumber })` would return only that field
     // and the table would render blank rows.
     expect(body).toMatch(/\.\.\.getTableColumns\(fraudAlertsTable\)/);
     expect(
       /\.\.\.getTableColumns\(fraudAlertsTable\)/.test('db.select({ billNumber: billsTable.billNumber })'),
     ).toBe(false);
+  });
+
+  it("never sends a patient identifier that the alert cannot be tied to a bill for", () => {
+    // The name comes from bills → patients, so an alert with no bill must yield null
+    // rather than a name invented from some other row. Reading the join order is the
+    // only way to check this without a database.
+    expect(body).toMatch(/patientName: patientFirstName\s*\?\s*`\$\{patientFirstName\} \$\{patientLastName \?\? ""\}`\.trim\(\)\s*:\s*null/);
   });
 });
 

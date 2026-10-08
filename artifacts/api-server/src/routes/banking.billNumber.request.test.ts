@@ -194,7 +194,7 @@ describe.skipIf(!hasDatabaseUrl())("banking alerts and refund requests name thei
     await db.delete(usersTable).where(like(usersTable.email, `%${marker}@vitest.invalid`)).catch(() => {});
   }, 60_000);
 
-  test("an alert resolves its bill whether it names the bill or only the payment", async () => {
+  test("an alert resolves its bill and its patient whether it names the bill or only the payment", async () => {
     const res = await request(app)
       .get("/api/banking/fraud/alerts?limit=200")
       .set("Authorization", `Bearer ${token}`);
@@ -203,11 +203,15 @@ describe.skipIf(!hasDatabaseUrl())("banking alerts and refund requests name thei
 
     expect(byId.get(alertByBill)?.billNumber).toBe(billNumber);
     expect(byId.get(alertByPayment)?.billNumber).toBe(billNumber);
+    // The name reaches the investigator by both routes too — through the payment as well.
+    expect(byId.get(alertByBill)?.patientName).toBe(`Vitest Bank ${marker}`);
+    expect(byId.get(alertByPayment)?.patientName).toBe(`Vitest Bank ${marker}`);
     // Nothing to invent a number from: NULL, not the row id dressed up as one.
     expect(byId.get(alertOrphan)?.billNumber).toBeNull();
+    expect(byId.get(alertOrphan)?.patientName).toBeNull();
   });
 
-  test("the explicit column list kept every column the screen reads", async () => {
+  test("the explicit column list kept every column the screen reads, and added only two", async () => {
     const res = await request(app)
       .get("/api/banking/fraud/alerts?limit=200")
       .set("Authorization", `Bearer ${token}`);
@@ -221,6 +225,11 @@ describe.skipIf(!hasDatabaseUrl())("banking alerts and refund requests name thei
     }
     expect(alert.alertType).toBe("duplicate_utr");
     expect(alert.description).toContain(marker);
+    // The name is composed server-side; its two parts are the join's mechanics and
+    // must not leak into the payload as a second way to say the same thing.
+    expect(alert).toHaveProperty("patientName");
+    expect(alert).not.toHaveProperty("patientFirstName");
+    expect(alert).not.toHaveProperty("patientLastName");
   });
 
   test("a requested refund names the bill it is against", async () => {
