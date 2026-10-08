@@ -27,6 +27,49 @@ export function isTestCancelRefund(notes: string | null | undefined): boolean {
   return (notes ?? "").startsWith(TEST_CANCEL_REFUND_NOTES_PREFIX);
 }
 
+/**
+ * The refund reason, read back out of the payment note.
+ *
+ * Every refund in the system is a `payments` row with a negative amount, and the
+ * four writers in `routes/bills.ts` all state what happened in the note:
+ *
+ *   REFUND on cancellation: <reason>          POST /bills/:id/cancel
+ *   REFUND (test cancel): <reason>            POST /bills/:id/cancel-refund-tests
+ *   REFUND: <reason>                          POST /bills/:id/refund
+ *   Refund for test swap: <old> → <new>       POST /bills/:id/swap-test
+ *
+ * The note is the only refund field that is per-refund rather than per-bill, so it
+ * is what the activity log can attribute to one line. The matching `bill_audits`
+ * row carries the same reason but has no payment id, so joining one to the other
+ * would mean matching on amount and timestamp — a guess about money. This table is
+ * the reason the note prefixes are read here rather than re-derived per caller.
+ */
+export type RefundKind = "cancellation" | "test-cancel" | "test-swap" | "refund" | "other";
+
+const REFUND_NOTE_PREFIXES: Array<[prefix: string, kind: RefundKind]> = [
+  [`REFUND on cancellation:`, "cancellation"],
+  [`${TEST_CANCEL_REFUND_NOTES_PREFIX}:`, "test-cancel"],
+  [`Refund for test swap:`, "test-swap"],
+  [`REFUND:`, "refund"],
+];
+
+export function describeRefundNote(notes: string | null | undefined): {
+  kind: RefundKind;
+  reason: string | null;
+} {
+  const raw = (notes ?? "").trim();
+  if (!raw) return { kind: "refund", reason: null };
+  for (const [prefix, kind] of REFUND_NOTE_PREFIXES) {
+    if (raw.startsWith(prefix)) {
+      const rest = raw.slice(prefix.length).trim();
+      return { kind, reason: rest || null };
+    }
+  }
+  // A note that is not one of the four shapes is still the radiologist-facing
+  // explanation of that refund — show it, and say we could not classify it.
+  return { kind: "other", reason: raw };
+}
+
 export type CollectibleRefundRow = {
   amount: number | string;
   billId?: number | null;

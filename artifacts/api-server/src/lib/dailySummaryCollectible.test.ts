@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   computeCollectibleForReconciliation,
@@ -6,6 +8,7 @@ import {
   computeRefundsOnBillsCancelledByMe,
   computeRefundsOnCancelledBillsCreatedInPeriod,
   computeTestCancelRefundsAmount,
+  describeRefundNote,
   isTestCancelRefund,
 } from "./dailySummaryCollectible";
 
@@ -247,5 +250,45 @@ describe("computeCollectibleForReconciliation", () => {
       outstanding: 0,
     });
     expect(originalCreator).toBe(0);
+  });
+});
+
+describe("describeRefundNote — the reason is read out of the refund's own note", () => {
+  it("classifies each shape a refund can be written as", () => {
+    expect(describeRefundNote("REFUND: Overcharge of Rs 200")).toEqual({ kind: "refund", reason: "Overcharge of Rs 200" });
+    expect(describeRefundNote("REFUND on cancellation: Patient left")).toEqual({ kind: "cancellation", reason: "Patient left" });
+    expect(describeRefundNote("REFUND (test cancel): Wrong test booked")).toEqual({ kind: "test-cancel", reason: "Wrong test booked" });
+    expect(describeRefundNote("Refund for test swap: CT Brain → MRI Brain")).toEqual({ kind: "test-swap", reason: "CT Brain → MRI Brain" });
+  });
+
+  it("keeps a note it cannot classify instead of dropping it", () => {
+    expect(describeRefundNote("Manual correction by owner")).toEqual({
+      kind: "other",
+      reason: "Manual correction by owner",
+    });
+  });
+
+  it("says there is no reason rather than inventing one", () => {
+    expect(describeRefundNote(null).reason).toBeNull();
+    expect(describeRefundNote("   ").reason).toBeNull();
+    // A refund written with an empty reason still says so; the log must not show
+    // the bare word "REFUND" as if it were an explanation.
+    expect(describeRefundNote("REFUND:")).toEqual({ kind: "refund", reason: null });
+  });
+
+  it("covers every refund note the bill routes actually write", () => {
+    // The four prefixes are only true while routes/bills.ts keeps writing them. A
+    // reworded note would classify a real refund as "other" — or, worse, leave the
+    // activity log saying "no reason recorded" about a reason that exists.
+    const src = readFileSync(resolve(__dirname, "../routes/bills.ts"), "utf8");
+    const templates = [...src.matchAll(/notes:\s*`([^`]+)`/g)].map((m) => m[1]);
+    const refundTemplates = templates.filter((t) => /^(REFUND|Refund)/.test(t));
+    expect(refundTemplates.length).toBeGreaterThanOrEqual(4);
+    for (const template of refundTemplates) {
+      const sample = template.replace(/\$\{[^}]*\}/g, "X");
+      const described = describeRefundNote(sample);
+      expect(described.kind, `note written as "${template}" must be classified`).not.toBe("other");
+      expect(described.reason, `note written as "${template}" must yield a reason`).toBeTruthy();
+    }
   });
 });

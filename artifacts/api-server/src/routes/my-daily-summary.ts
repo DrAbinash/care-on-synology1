@@ -12,6 +12,7 @@ import {
   computeGrossRestoreForTestCancelRefunds,
   computeRefundsExcludedFromCollectible,
   computeTestCancelRefundsAmount,
+  describeRefundNote,
   isTestCancelRefund,
   TEST_CANCEL_REFUND_NOTES_PREFIX,
 } from "../lib/dailySummaryCollectible";
@@ -887,23 +888,31 @@ myDailySummaryRouter.get("/", async (req: StaffAuthRequest, res) => {
       createdAt:
         r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
     })),
-    refunds: refundItems.slice(0, 100).map((p) => ({
-      id: p.id,
-      billId: p.billId,
-      billNumber: p.billNumber ?? `#${p.billId}`,
-      amount: Number(p.amount),
-      method: formatMethod(p.method),
-      recordedBy: p.recordedByName ?? null,
-      patientName: p.patientFirstName
-        ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
-        : "Unknown",
-      referringDoctor: p.referringDoctor ?? null,
-      billStatus: p.billStatus ?? null,
-      createdAt:
-        p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
-      billCreatedAt:
-        p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
-    })),
+    refunds: refundItems.slice(0, 100).map((p) => {
+      // The note is this refund's own reason — see describeRefundNote. Sent with
+      // the bill number, patient and referral doctor so the activity log needs no
+      // second lookup to answer "which bill, for whom, and why was money back".
+      const note = describeRefundNote(p.notes);
+      return {
+        id: p.id,
+        billId: p.billId,
+        billNumber: p.billNumber ?? `#${p.billId}`,
+        amount: Number(p.amount),
+        method: formatMethod(p.method),
+        recordedBy: p.recordedByName ?? null,
+        patientName: p.patientFirstName
+          ? `${p.patientFirstName} ${p.patientLastName ?? ""}`.trim()
+          : "Unknown",
+        referringDoctor: p.referringDoctor ?? null,
+        billStatus: p.billStatus ?? null,
+        refundKind: note.kind,
+        reason: note.reason,
+        createdAt:
+          p.createdAt instanceof Date ? p.createdAt.toISOString() : String(p.createdAt),
+        billCreatedAt:
+          p.billCreatedAt instanceof Date ? p.billCreatedAt.toISOString() : String(p.billCreatedAt),
+      };
+    }),
     cashExpenseItems: cashExpenseRows.rows.map((r) => ({
       expenseId: r.expense_id,
       category: r.category,
