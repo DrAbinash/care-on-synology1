@@ -501,6 +501,32 @@ describe.skipIf(!hasDatabaseUrl())(
       await assertLedgerAgreesWithBalance(f, 2);
     });
 
+    it("B12-07b two events that fit in two different lots are both honoured, and neither lot is spent twice", async () => {
+      // The other half of the FEFO question: the lots must not collide either.
+      // Lot A (earliest expiry) holds exactly one event's dose and lot B holds
+      // exactly the other's, so the only correct outcome is two deductions and
+      // both lots empty. Without the lot lock both events allocated from A,
+      // wrote its zero twice, left B's four units untouched, and moved the
+      // balance by four of the eight units the ledger booked.
+      const f = await makeFixture({
+        batches: [
+          { qty: "4", expiry: "2029-01-01" },
+          { qty: "4", expiry: "2030-01-01" },
+        ],
+        stock: "8",
+        qty: "4",
+      });
+      const results = await Promise.all([
+        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-L-${marker}`, performedBy: "A" }),
+        consumeInventoryForTest({ testId: f.testId, referenceKey: `REPORT-M-${marker}`, performedBy: "B" }),
+      ]);
+      expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean)), "each event fits a whole lot").toEqual([]);
+      expect((await batchState(f.batchIds[0])).qty, "first-expiry lot issued its whole quantity once").toBe(0);
+      expect((await batchState(f.batchIds[1])).qty, "the second lot issued its whole quantity once").toBe(0);
+      expect(await stockOf(f.itemId)).toBe(0);
+      await assertLedgerAgreesWithBalance(f, 2);
+    });
+
     it("B12-08 FEFO lots stay internally consistent with the item balance across a concurrent sweep", async () => {
       // Earliest-expiry-first across two lots (3 + 5 = 8, and the item balance
       // starts equal to that sum). Three events want 4 each = 12 against 8

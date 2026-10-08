@@ -661,6 +661,24 @@ describe("B12-N1 — two different events spending one shelf", () => {
     expect(stock(itemId)).toBe(20);
     expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toHaveLength(1);
   });
+  it("two concurrent FEFO events on two different lots are both honoured", async () => {
+    // The over-serialisation mirror: a lock that also collapsed distinct events
+    // would leave the balance perfect and the reagents uncounted. Two doses, two
+    // lots, two events — both must be booked and both lots must empty.
+    const itemId = seedItem({ trackExpiry: true, currentStock: "8" });
+    store.batches.push({ id: 1, itemId, qtyRemaining: "4", status: "active", expiryDate: new Date("2029-01-01") });
+    store.batches.push({ id: 2, itemId, qtyRemaining: "4", status: "active", expiryDate: new Date("2030-01-01") });
+    seedRule(7, itemId, "4");
+    const results = await Promise.all([
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-41", performedBy: "A" }),
+      consumeInventoryForTest({ testId: 7, referenceKey: "REPORT-42", performedBy: "B" }),
+    ]);
+    expect(results.flatMap((r) => r.map((l) => l.error).filter(Boolean))).toEqual([]);
+    expect(consumeRows()).toHaveLength(2);
+    expect(Number(store.batches[0].qtyRemaining)).toBe(0);
+    expect(Number(store.batches[1].qtyRemaining)).toBe(0);
+    expect(stock(itemId)).toBe(0);
+  });
 });
 
 describe("B12-N2 — the acquisition order is the deadlock analysis, so it is pinned", () => {
