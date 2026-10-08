@@ -84,6 +84,12 @@ describe("ff_radiology_critical_result_comms — gate closure", () => {
   });
 
   it("the imperative gate set is exactly the enumerated workflow surfaces", () => {
+    // B-10 deleted the Command Center's parallel copy of this workflow: it was a
+    // second authoring surface, and a critical-result checklist that can flip a
+    // flag and write a note into a signed report is authoring. The console keeps
+    // no copy, so it needs no gate — and the flag now governs one workflow, not
+    // two. See "the command center holds no copy to gate" below, which is the
+    // assertion that stops this shrinking list from being read as an achievement.
     expect(IMPERATIVE_GATE_FILES).toEqual([
       "components/radiology/workspace/ReportCanvas.tsx",
       "components/radiology/workspace/WorkspaceOverlays.tsx",
@@ -92,7 +98,6 @@ describe("ff_radiology_critical_result_comms — gate closure", () => {
       "lib/copilotCriticalModule.ts",
       "lib/zai-workspace/store.ts",
       "pages/CriticalFindings.tsx",
-      "pages/RadiologyCommandCenter.tsx",
     ]);
   });
 
@@ -165,21 +170,6 @@ describe("ff_radiology_critical_result_comms — each gate point still present",
       what: "a bookmarked URL resolves to a 'switched off' notice, not a dead link",
     },
     {
-      file: "pages/RadiologyCommandCenter.tsx",
-      needle: "const criticalCommsOn = criticalCommsEnabled();",
-      what: "the owner-only legacy page's parallel copy of the workflow",
-    },
-    {
-      file: "pages/RadiologyCommandCenter.tsx",
-      needle: "if (criticalCommsOn && hasCritical && !isCritical) {",
-      what: "no auto-flag, no 'complete the communication checklist' toast, no audit row",
-    },
-    {
-      file: "pages/RadiologyCommandCenter.tsx",
-      needle: '{criticalCommsOn && isCritical && (',
-      what: "the legacy Critical Communication Checklist",
-    },
-    {
       file: "components/Layout.tsx",
       needle: `path: "/radiology/critical-findings"`,
       what: "the sidebar leaf still points at the tracker route",
@@ -196,6 +186,23 @@ describe("ff_radiology_critical_result_comms — each gate point still present",
       expect(read(c.file)).toContain(c.needle);
     });
   }
+
+  it("the command center holds no copy to gate", () => {
+    // Shrinking IMPERATIVE_GATE_FILES above proves nothing on its own: a deleted
+    // control satisfies an empty list as well as a gated one does. So the
+    // removal is asserted as a property of the file that is still routed here —
+    // no flag read, no auto-detect, no checklist, no note that could reach a
+    // signed report. If the workflow is ever copied back onto this console, the
+    // gate-set test fails AND this one does.
+    const cc = read("pages/RadiologyCommandCenter.tsx");
+    expect(cc).not.toContain("criticalCommsEnabled");
+    expect(cc).not.toContain("criticalCommsOn");
+    expect(cc).not.toContain("Critical Communication Checklist");
+    expect(cc).not.toContain("checklistComm");
+    expect(cc).not.toContain("setIsCritical");
+    expect(cc).not.toContain("criticalNote");
+    expect(cc).toContain("@deprecated");
+  });
 
   it("the sidebar, palette and hub card all carry the same flag literal", () => {
     expect(read("components/Layout.tsx")).toContain(

@@ -17,6 +17,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { reportingWorkspacePath } from "@/lib/reportingWorkspaceRoute";
 import {
   ScanSearch, RefreshCw, ExternalLink, Sparkles, FileEdit, CheckCircle2,
   Search, Filter, Clock, CheckCheck, AlertCircle, MonitorPlay, Tv2,
@@ -702,18 +703,9 @@ const SENTINEL_ROW: WorklistEntry = {
   updatedAt: new Date().toISOString(),
 };
 
-/** Single open-report path — Reporting Workspace for every modality (USG Companion is embedded there). */
-function reportingWorkspacePath(
-  entry: Pick<WorklistEntry, "id">,
-  opts: { focus?: boolean; ai?: boolean } = {},
-): string {
-  const base = `/radiology/report/${entry.id}`;
-  const params = new URLSearchParams();
-  if (opts.focus) params.set("focus", "1");
-  if (opts.ai) params.set("ai", "1");
-  const qs = params.toString();
-  return qs ? `${base}?${qs}` : base;
-}
+// Single open-report path lives in lib/reportingWorkspaceRoute — the Command
+// Center hands off through the same builder, so no screen invents its own route
+// into the authoritative workspace.
 
 export default function RadiologyWorklist() {
   const [, navigate] = useLocation();
@@ -1264,7 +1256,7 @@ export default function RadiologyWorklist() {
       }>(`/api/radiology/pacs-worklist/${id}/ai-draft`);
       const viewed = normalizeWorklistAiDraftViewer(result.draft);
       if (viewed.usable) {
-        navigate(reportingWorkspacePath({ id }, { ai: true }));
+        navigate(reportingWorkspacePath(id, { ai: true }));
         return;
       }
       setDraftViewer({ id, draft: result.draft });
@@ -2153,7 +2145,7 @@ export default function RadiologyWorklist() {
                                     label="Focus"
                                     tone="report"
                                     title="Open Reporting Workspace in focus mode (maximized editor)"
-                                    onClick={() => navigate(reportingWorkspacePath(entry, { focus: true }))}
+                                    onClick={() => navigate(reportingWorkspacePath(entry.id, { focus: true }))}
                                   />
                                 )}
                                 <WorklistActionBtn
@@ -2194,7 +2186,7 @@ export default function RadiologyWorklist() {
                                 label="Report"
                                 tone="report"
                                 title="Open in the Reporting Workspace"
-                                onClick={() => navigate(reportingWorkspacePath(entry))}
+                                onClick={() => navigate(reportingWorkspacePath(entry.id))}
                               />
                             )}
 
@@ -2350,7 +2342,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath(draftViewer.id));
                         }}
                       >
                         Open Reporting Workspace (manual draft)
@@ -2382,7 +2374,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }));
+                          navigate(reportingWorkspacePath(draftViewer.id));
                         }}
                       >
                         Open Reporting Workspace (manual draft)
@@ -2447,7 +2439,7 @@ export default function RadiologyWorklist() {
                         className="h-7 text-xs"
                         onClick={() => {
                           setDraftViewer(null);
-                          navigate(reportingWorkspacePath({ id: draftViewer.id }, { ai: true }));
+                          navigate(reportingWorkspacePath(draftViewer.id, { ai: true }));
                         }}
                       >
                         Accept into Reporting Workspace

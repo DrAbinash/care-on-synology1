@@ -69,8 +69,15 @@ describe("USG shell — flag gating & routing", () => {
     // P0: one open-report path. USG Companion stays at /radiology/usg/:studyId
     // behind the flag for deep links, but Start Report from the worklist always
     // goes to Reporting Workspace — Companion widgets live there when needed.
-    expect(worklist).toContain("function reportingWorkspacePath");
-    expect(worklist).toContain("`/radiology/report/${entry.id}`");
+    //
+    // B-10 moved that single builder into lib/reportingWorkspaceRoute so the
+    // Command Center hands off through it too instead of growing a second one.
+    const route = readFileSync(join(SRC, "lib/reportingWorkspaceRoute.ts"), "utf8");
+    expect(route).toContain("export function reportingWorkspacePath(");
+    expect(route).toContain("`/radiology/report/${studyId}`");
+    expect(worklist).toContain('from "@/lib/reportingWorkspaceRoute"');
+    expect(worklist).toContain("reportingWorkspacePath(entry.id");
+    expect(worklist).not.toContain("function reportingWorkspacePath");
     expect(worklist).not.toContain('isFeatureEnabled("ff_radiology_usg_workspace")');
     expect(worklist).not.toContain("`/radiology/usg/${entry.id}`");
   });

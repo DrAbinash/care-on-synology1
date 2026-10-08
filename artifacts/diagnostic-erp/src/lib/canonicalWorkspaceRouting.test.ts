@@ -122,7 +122,6 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
       "hooks/radiology-workspace/useDraftPersistence.ts",
       "hooks/radiology-workspace/useStudyFinalize.ts",
-      "pages/RadiologyCommandCenter.tsx",
     ]) {
       const src = read(rel);
       expect(src, `${rel} must not inline the finalize status POST`).not.toContain(
@@ -130,6 +129,14 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
       );
       expect(src).toContain('from "@/lib/radiologyReportLifecycle"');
     }
+    // B-10: the Command Center used to satisfy the loop above by importing the
+    // shared transport. Delegating was the right answer while it kept its own
+    // editor; the right answer now is that it has no reach into report content
+    // or status at all, so it must not import the transport either.
+    const cc = read("pages/RadiologyCommandCenter.tsx");
+    expect(cc).not.toContain('from "@/lib/radiologyReportLifecycle"');
+    expect(cc).not.toContain("saveRadiologyDraft");
+    expect(cc).not.toContain("finalizeRadiologyReport");
     expect(workspacePage).not.toContain('"/api/internal/radiology/report-status"');
     expect(workspacePage).not.toContain('"/api/radiology/report-generator/save-draft"');
     const lifecycle = read("lib/radiologyReportLifecycle.ts");

@@ -54,14 +54,19 @@ describe("AI query endpoint — single typed entry point", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("every former promptText call site now uses the typed client", () => {
+  it("every remaining promptText call site uses the typed client", () => {
     for (const rel of [
-      "pages/RadiologyCommandCenter.tsx",
       "pages/DicomViewer.tsx",
       "components/NeuroPromptPanel.tsx",
     ]) {
       expect(read(resolve(ERP_SRC, rel))).toContain("queryAiReporting");
     }
+    // B-10 removed the Command Center from this register: it no longer calls the
+    // AI query at all, because the only thing it could do with the answer was
+    // write it into a second set of report fields.
+    const cc = read(resolve(ERP_SRC, "pages/RadiologyCommandCenter.tsx"));
+    expect(cc).not.toContain("queryAiReporting");
+    expect(cc).toContain("Open in Reporting Workspace");
   });
 
   it("the client sends the canonical promptText field (typed request)", () => {
@@ -138,9 +143,21 @@ describe("Prior-studies wiring", () => {
 });
 
 describe("AI output stays advisory (draft-only safety)", () => {
-  it("command center never silently overwrites typed findings with the AI draft", () => {
+  it("the command center has no findings to overwrite, so nothing can overwrite them", () => {
+    // This used to pin a confirm-before-overwrite guard inside the Command
+    // Center's own AI generator. B-10 removed the generator along with the
+    // findings field it wrote, so the stronger statement is that the surface
+    // holds no narrative state at all: an AI answer cannot land here because
+    // there is no "here" for report text to land in.
     const src = read(resolve(ERP_SRC, "pages/RadiologyCommandCenter.tsx"));
-    const guarded = /!rawFindings\.trim\(\)\s*\|\|\s*\n?\s*window\.confirm/.test(src.replace(/\s+/g, " "));
-    expect(guarded).toBe(true);
+    expect(src).not.toContain("rawFindings");
+    expect(src).not.toContain("generateSmartReport");
+    expect(src).not.toContain("generateImpressionText");
+  });
+
+  it("positive control: acceptance is still an explicit, re-checked act in the workspace", () => {
+    const store = read(resolve(ERP_SRC, "lib/zai-workspace/store.ts"));
+    expect(store).toContain("acceptGhostText: () => {");
+    expect(store).toContain("re-checked at acceptance");
   });
 });

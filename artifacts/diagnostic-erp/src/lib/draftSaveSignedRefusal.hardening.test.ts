@@ -304,8 +304,8 @@ describe("what this deliberately does not replace", () => {
   });
 });
 
-describe("the other four callers of the same endpoint are named, not fixed", () => {
-  it("saveRadiologyDraft is called from exactly five places in four files", () => {
+describe("the other callers of the same endpoint are named, not fixed", () => {
+  it("saveRadiologyDraft is called from exactly four places in three files", () => {
     const callers: string[] = [];
     for (const file of sources) {
       const text = readFileSync(file, "utf8");
@@ -325,9 +325,13 @@ describe("the other four callers of the same endpoint are named, not fixed", () 
     // File names rather than line numbers on purpose: a line pin would fail on
     // any edit above it and would say nothing about the invariant, which is that
     // no new surface grew a path to this endpoint.
+    //
+    // B-10 removed the Command Center from this register. It is a real
+    // reduction, not a relabelling: the page no longer contains a draft-save
+    // call, so the count cannot come back down by adding a client-side guard —
+    // it can only go up if a surface grows an authoring path again.
     expect(callers.sort()).toEqual([
       "hooks/radiology-workspace/useDraftPersistence.ts",
-      "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
       "pages/RadiologyReportGenerator.tsx",
       "pages/UsgCompanionWorkspace.tsx",
@@ -335,13 +339,12 @@ describe("the other four callers of the same endpoint are named, not fixed", () 
   });
 
   it("only the workspace one has a client-side signed check", () => {
-    // Pinned as a register, not as an achievement. Each of these three surfaces
+    // Pinned as a register, not as an achievement. Each of these two surfaces
     // posts to the same endpoint and relies entirely on the server's 409; none
     // contains `isFinalized` or a REPORT_FINAL gate around its save. If one grows
-    // a guard this list should shrink, and if a fourth surface appears the test
+    // a guard this list should shrink, and if a third surface appears the test
     // above fails first.
     for (const rel of [
-      "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",
       "pages/UsgCompanionWorkspace.tsx",
     ]) {
@@ -349,6 +352,13 @@ describe("the other four callers of the same endpoint are named, not fixed", () 
       expect(text, `${rel} must not mention isFinalized yet`).not.toContain("isFinalized");
       expect(text, `${rel} must not mention signedContentLocked yet`).not.toContain("signedContentLocked");
     }
+  });
+
+  it("the command center is not in either register because it cannot save at all", () => {
+    const text = readFileSync(resolve(ERP, "pages/RadiologyCommandCenter.tsx"), "utf8");
+    expect(text).not.toContain("saveRadiologyDraft");
+    expect(text).not.toContain("writeRescueDraft");
+    expect(text).not.toContain("report-status");
   });
 });
 
