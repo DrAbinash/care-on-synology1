@@ -18,7 +18,9 @@ const config: ExportConfig = {
     title: i === 2 ? "Cash Reconciliation" : `Section ${i}`,
     layout: i === 2 ? ("full" as const) : ("half" as const),
     metrics: Array.from({ length: 12 }, (_, j) =>
-      j === 11 ? ["Expected Physical Cash", `Rs.${1000 + j}`] : [`Line ${j}`, `Rs.${1000 + j}`] as [string, string]),
+      j === 10 ? ["Total Deductions", `Rs.${900 + j}`]
+        : j === 11 ? ["Expected Physical Cash", `Rs.${1000 + j}`]
+          : [`Line ${j}`, `Rs.${1000 + j}`] as [string, string]),
   })),
   tables: [
     {
@@ -85,11 +87,17 @@ describe("the PDF is a compressed document, not a dump", () => {
   it("rules a total heavier than the formula above it", async () => {
     const doc = await buildSummaryPdf(config, "landscape");
     const text = pageText(doc);
-    const widths = [...text.matchAll(/([0-9.]+)\s+w\b/g)].map((m) => Number(m[1]));
-    expect(widths.length).toBeGreaterThan(10);
-    expect(Math.max(...widths)).toBeGreaterThanOrEqual(0.9);
-    expect(widths.filter((w) => w >= 0.5).length).toBeGreaterThan(0);
-    expect(widths.filter((w) => w <= 0.2).length).toBeGreaterThan(0);
+    // The document is drawn in mm but jsPDF writes stroke widths in points, so the
+    // comparison has to be converted back: 0.12 / 0.55 / 0.9 mm are the three weights the
+    // renderer defines, and a report where every rule is one hairline cannot pass this.
+    const PT_PER_MM = 2.8346456692913388;
+    const widthsMm = new Set(
+      [...text.matchAll(/([0-9.]+)\s+w\b/g)].map((m) => Math.round((Number(m[1]) / PT_PER_MM) * 100) / 100),
+    );
+    expect(widthsMm.has(0.12)).toBe(true);
+    expect(widthsMm.has(0.55)).toBe(true);
+    expect(widthsMm.has(0.9)).toBe(true);
+    expect(Math.max(...widthsMm)).toBe(0.9);
   });
 });
 
