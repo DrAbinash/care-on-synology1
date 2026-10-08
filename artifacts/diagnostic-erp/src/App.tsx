@@ -143,7 +143,6 @@ const RadiologyReportGen = lazy(() => import("@/pages/RadiologyReportGenerator")
 const RadiologyReportBuilder = lazy(() => import("@/pages/RadiologyReportBuilder"));
 const RadiologyFindingsManager = lazy(() => import("@/pages/RadiologyFindingsManager"));
 const RadiologyReportingWorkspace = lazy(() => import("@/pages/RadiologyReportingWorkspace"));
-const UsgCompanionWorkspace = lazy(() => import("@/pages/UsgCompanionWorkspace"));
 const PacsDashboard         = lazy(() => import("@/pages/PacsDashboard"));
 const RadiologySettingsCenter = lazy(() => import("@/pages/RadiologySettingsCenter"));
 const RadiologyFlightDeck = lazy(() => import("@/pages/RadiologyFlightDeck"));
@@ -494,12 +493,20 @@ function Router() {
               <Route path="/radiology/report/:studyId">
                 {(params) => <RadiologyReportingWorkspace studyId={Number(params.studyId)} />}
               </Route>
-              {/* Dedicated USG Companion Workspace (P0/P1), behind
-                  ff_radiology_usg_workspace. The page itself redirects to the
-                  canonical /radiology/report route when the flag is off, so this
-                  surface is safely unavailable by default. */}
+              {/* B-10: the standalone USG shell is retired. It saved and
+                  finalized through the canonical transport but held none of
+                  the protections that live at the authoritative boundary (no
+                  #880 acceptance target, no #882 proposal fingerprint, no
+                  #859/#862 signed refusal, no isFinalized), and its panels fed
+                  AI prose straight into the HTML it signed. Nothing in the
+                  product linked here — ff_radiology_usg_workspace defaulted
+                  OFF, which made the route redirect on its own — and the USG
+                  companion work stays available inside the canonical
+                  workspace via UsgCompanionPanel. The URL is kept as a
+                  redirect so hand-typed and bookmarked deep links still land
+                  on the one authoritative surface with the same study. */}
               <Route path="/radiology/usg/:studyId">
-                {(params) => <UsgCompanionWorkspace studyId={Number(params.studyId)} />}
+                {(params) => <RedirectToReportWorkspace studyId={params.studyId} />}
               </Route>
               {/* DEPRECATED: /radiology/report-legacy/:studyId now redirects to canonical workspace */}
               <Route path="/radiology/report-legacy/:studyId">
