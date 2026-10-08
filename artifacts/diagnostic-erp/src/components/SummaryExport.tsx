@@ -1,7 +1,7 @@
 import { useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import { loadSummaryPdfOrientation, persistSummaryPdfOrientation, type PaperOrientation } from "@/lib/paperSize";
 import type { SimpleLedgerRow } from "@/lib/reconciliationLedger";
 import { api } from "@/lib/fetchApi";
@@ -101,6 +101,43 @@ function isMismatchRow(label: string, value: string) {
   return label === "Variance" && !value.includes("Balanced");
 }
 
+/**
+ * One ladder decides what a ledger row *means*, and the PDF, the .doc and the .xlsx all
+ * read it from here. They used to each carry their own copy of the same `if` chain, which
+ * is how a total could be heavy-ruled on paper and plain in the spreadsheet.
+ * Precedence is deliberate: the answer row beats a balanced/mismatch colour, a deduction
+ * beats a total, and both beat an info row.
+ */
+export type LedgerRowKind =
+  | "blank" | "divider" | "final" | "balanced" | "mismatch" | "deduct" | "info" | "total" | "plain";
+
+export function classifyLedgerRow(label: string, value: string): LedgerRowKind {
+  if (isBlankRow(label, value)) return "blank";
+  if (isSectionHeader(label)) return "divider";
+  if (label === "Expected Physical Cash") return "final";
+  if (isBalancedRow(label, value)) return "balanced";
+  if (isMismatchRow(label, value)) return "mismatch";
+  if (isDeductRow(label)) return "deduct";
+  if (isInfoRow(label)) return "info";
+  if (isTotalRow(label)) return "total";
+  return "plain";
+}
+
+/** The little operator on the left of a ledger row: - for a deduction, = for an answer. */
+export function ledgerRowSign(kind: LedgerRowKind): string {
+  if (kind === "deduct") return "-";
+  if (kind === "total" || kind === "final") return "=";
+  if (kind === "info") return "i";
+  return "";
+}
+
+/** Rule weight for a row: only `total` and `final` separate a formula from its answer. */
+export function ledgerRowRule(kind: LedgerRowKind): "none" | "total" | "final" {
+  if (kind === "final") return "final";
+  if (kind === "total") return "total";
+  return "none";
+}
+
 /** Compact ledger columns — label + value adjacent inside each box. */
 const LEDGER_SIGN_MM = 3.5;
 const LEDGER_VALUE_MM = 26;
@@ -147,49 +184,39 @@ const HTML_LOGO_PX = 32;
 function renderLogoImg(dataUrl: string, px = HTML_LOGO_PX): string {
   const src = escHtml(dataUrl);
   return `<img src="${src}" alt="" width="${px}" height="${px}"
-    style="display:block;width:${px}px;height:${px}px;max-width:${px}px;max-height:${px}px;object-fit:contain;border-radius:3px;background:#fff;padding:1px" />`;
+    style="display:block;width:${px}px;height:${px}px;max-width:${px}px;max-height:${px}px;object-fit:contain;border:0" />`;
 }
 
 function renderReportHeader(config: ExportConfig, ts: string, compact = false): string {
-  const logoPx = compact ? 28 : HTML_LOGO_PX;
+  const logoPx = compact ? 26 : 30;
   const logoCell = config.logoDataUrl
-    ? `<td style="width:${logoPx + 4}px;vertical-align:middle;padding:0 6px 0 0">
+    ? `<td valign="middle" style="width:${logoPx + 6}px;padding:0 0 0 ${compact ? 8 : 10}px;vertical-align:middle">
         ${renderLogoImg(config.logoDataUrl, logoPx)}
       </td>`
     : "";
   const brand = escHtml(config.clinicName ?? "Care Diagnostics ERP");
-  const titleSize = compact ? "13px" : "15px";
-  const pad = compact ? "8px 10px" : "10px 12px";
-  return `
-  <!--[if mso]><table cellpadding="0" cellspacing="0" width="100%"><tr><td><![endif]-->
-  <div style="background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);color:white;padding:${pad};border-radius:6px 6px 0 0;border:2px solid #0f172a;border-bottom:none">
-    <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse">
-      <tr>
-        ${logoCell}
-        <td style="vertical-align:middle">
-          <div style="font-size:${titleSize};font-weight:900;letter-spacing:.2px;line-height:1.2">${escHtml(config.title)}</div>
-          <div style="font-size:9px;opacity:.95;margin-top:2px;font-weight:700">${escHtml(config.subtitle)}</div>
-        </td>
-        <td style="text-align:right;vertical-align:middle;white-space:nowrap;padding-left:8px;opacity:.9;font-size:7px;line-height:1.35;font-weight:600">
-          <div>${brand}</div>
-          <div>${escHtml(ts)}</div>
-        </td>
-      </tr>
-    </table>
-  </div>
-  <!--[if mso]></td></tr></table><![endif]-->`;
+  const pad = compact ? "4pt 6pt" : "5pt 7pt";
+  // Flat navy, not a gradient: Word and every email client drop `linear-gradient`
+  // and leave the header unstyled, and the PDF already draws this band flat.
+  return `<table cellpadding="0" cellspacing="0" width="100%" style="width:100%;border-collapse:collapse;border-spacing:0;background:#0f172a;color:#ffffff;margin:0;padding:0">
+    <tr>
+      ${logoCell}
+      <td valign="middle" style="padding:${pad};vertical-align:middle">
+        <div style="font-size:${compact ? "10.5pt" : "12pt"};font-weight:700;color:#ffffff;line-height:1.25">${escHtml(config.title)}</div>
+        <div style="font-size:${compact ? "6.5pt" : "7.5pt"};font-weight:700;color:#cbd5e1;margin-top:1pt">${escHtml(config.subtitle)}</div>
+      </td>
+      <td valign="middle" align="right" style="padding:${pad};text-align:right;vertical-align:middle;white-space:nowrap;font-size:6pt;line-height:1.4;color:#e2e8f0">
+        <div>${brand}</div>
+        <div>${escHtml(ts)}</div>
+      </td>
+    </tr>
+  </table>`;
 }
 
-type LogoImageMeta = { width: number; height: number; format: "PNG" | "JPEG" };
-
-function loadLogoMeta(dataUrl: string): Promise<LogoImageMeta | null> {
+function loadLogoImage(dataUrl: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.onload = () => {
-      const format: "PNG" | "JPEG" =
-        /^data:image\/jpe?g/i.test(dataUrl) ? "JPEG" : "PNG";
-      resolve({ width: img.naturalWidth, height: img.naturalHeight, format });
-    };
+    img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
@@ -201,217 +228,400 @@ function fitLogoMm(naturalW: number, naturalH: number, maxW: number, maxH: numbe
   return { w: naturalW * scale, h: naturalH * scale };
 }
 
-async function drawPdfLogo(
-  doc: jsPDF,
-  dataUrl: string,
-  x: number,
-  y: number,
-  maxW: number,
-  maxH: number,
-): Promise<{ w: number; h: number } | null> {
-  const meta = await loadLogoMeta(dataUrl);
-  if (!meta) return null;
-  const { w, h } = fitLogoMm(meta.width, meta.height, maxW, maxH);
+const PDF_LOGO_MAX_W_MM = 22;
+const PDF_LOGO_MAX_H_MM = 11;
+
+/**
+ * px per mm of the size the logo is *drawn* at. The clinic's logo is a 512-1024 px file
+ * that lands in a 22 mm box, so embedding it verbatim put ~2 MB of image in a one-page
+ * PDF — measured on the operator's own Daily_Financial_Reconciliation_Simple.pdf:
+ * 2,000,094 bytes for one page and one image. At ~100 dpi the eye cannot tell, and the
+ * file is a fraction of the size.
+ */
+const PDF_LOGO_PX_PER_MM = 4;
+const PDF_LOGO_MAX_PX = 160;
+
+export function logoRasterTargetPx(drawnWmm: number, drawnHmm: number, pxPerMm = PDF_LOGO_PX_PER_MM): { w: number; h: number } {
+  const rawW = Math.max(1, Math.round(drawnWmm * pxPerMm));
+  const rawH = Math.max(1, Math.round(drawnHmm * pxPerMm));
+  const cap = PDF_LOGO_MAX_PX / Math.max(rawW, rawH);
+  if (cap >= 1) return { w: rawW, h: rawH };
+  return { w: Math.max(1, Math.round(rawW * cap)), h: Math.max(1, Math.round(rawH * cap)) };
+}
+
+/** Downscales through a canvas. Returns null when there is no canvas (node), so the caller keeps the original. */
+function rasteriseLogo(img: HTMLImageElement, w: number, h: number, format: "PNG" | "JPEG"): string | null {
   try {
-    doc.addImage(dataUrl, meta.format, x, y + (maxH - h) / 2, w, h);
-    return { w, h };
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return format === "JPEG" ? canvas.toDataURL("image/jpeg", 0.92) : canvas.toDataURL("image/png");
   } catch {
     return null;
   }
 }
 
-function simpleRowStyle(kind: SimpleLedgerRow["kind"]): { bg: string; border: string; labelWeight: string; valueWeight: string; valueSize: string } {
-  switch (kind) {
-    case "meta": return { bg: "#f8fafc", border: "1px solid #e2e8f0", labelWeight: "600", valueWeight: "700", valueSize: "9px" };
-    case "add": return { bg: "#ecfdf5", border: "1px solid #a7f3d0", labelWeight: "600", valueWeight: "700", valueSize: "9.5px" };
-    case "subtract": return { bg: "#fef2f2", border: "1px solid #fecaca", labelWeight: "600", valueWeight: "700", valueSize: "9.5px" };
-    case "subtotal": return { bg: "#e2e8f0", border: "2px solid #64748b", labelWeight: "800", valueWeight: "800", valueSize: "10px" };
-    case "total": return { bg: "#0f172a", border: "3px solid #0f172a", labelWeight: "900", valueWeight: "900", valueSize: "12px" };
-    case "note": return { bg: "#fffbeb", border: "1px solid #fde68a", labelWeight: "600", valueWeight: "600", valueSize: "8px" };
-    default: return { bg: "#fff", border: "1px solid #e2e8f0", labelWeight: "500", valueWeight: "700", valueSize: "9.5px" };
+type PlacedPdfLogo = { url: string; format: "PNG" | "JPEG"; w: number; h: number };
+
+async function preparePdfLogo(dataUrl: string): Promise<PlacedPdfLogo | null> {
+  const img = await loadLogoImage(dataUrl);
+  if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+  const format: "PNG" | "JPEG" = /^data:image\/jpe?g/i.test(dataUrl) ? "JPEG" : "PNG";
+  const { w, h } = fitLogoMm(img.naturalWidth, img.naturalHeight, PDF_LOGO_MAX_W_MM, PDF_LOGO_MAX_H_MM);
+  const target = logoRasterTargetPx(w, h);
+  const needsScale = img.naturalWidth > target.w * 1.25 || img.naturalHeight > target.h * 1.25;
+  const small = needsScale ? rasteriseLogo(img, target.w, target.h, format) : null;
+  return { url: small ?? dataUrl, format, w, h };
+}
+
+function placePdfLogo(doc: jsPDF, logo: PlacedPdfLogo | null, x: number, bandH: number): number {
+  if (!logo) return x;
+  try {
+    doc.addImage(logo.url, logo.format, x, (bandH - logo.h) / 2, logo.w, logo.h);
+    return x + logo.w + 3;
+  } catch {
+    return x;
   }
 }
 
-function buildSimpleHTML(config: ExportConfig): string {
-  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  const rows = config.simpleLedger ?? [];
+/**
+ * A4 header band. The tall one is page 1; the short one is redrawn on every continuation
+ * page so a stacked printout never loses which day and which report it is.
+ */
+function drawPdfBand(
+  doc: jsPDF,
+  config: ExportConfig,
+  ts: string,
+  bandH: number,
+  logo: PlacedPdfLogo | null,
+): void {
+  const pageW = doc.internal.pageSize.getWidth();
+  doc.setFillColor(...PDF_NAVY);
+  doc.rect(0, 0, pageW, bandH, "F");
+  doc.setFillColor(37, 99, 235);
+  doc.rect(0, bandH, pageW, 1.2, "F");
+
+  const titleX = placePdfLogo(doc, logo, PDF_MARGIN, bandH);
+  const tall = bandH > 16;
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(tall ? 13.5 : 10);
+  doc.text(pdfSafeText(config.title), titleX, tall ? 10 : 6);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(tall ? 8.5 : 7);
+  doc.text(pdfSafeText(config.subtitle), titleX, tall ? 15.5 : 10);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(tall ? 7.5 : 6.5);
+  doc.text(pdfSafeText(config.clinicName ?? "Care Diagnostics ERP"), pageW - PDF_MARGIN, tall ? 9 : 5.5, { align: "right" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(tall ? 7 : 6.5);
+  doc.text(pdfSafeText(ts), pageW - PDF_MARGIN, tall ? 14 : 10, { align: "right" });
+}
+
+function drawPdfFooter(doc: jsPDF, ts: string, page: number, total: number): void {
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const ruleY = pageH - PDF_BOTTOM_BAND + 1.5;
+  doc.setDrawColor(...PDF_RULE_LIGHT);
+  doc.setLineWidth(0.3);
+  doc.line(PDF_MARGIN, ruleY, pageW - PDF_MARGIN, ruleY);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.5);
+  doc.setTextColor(...PDF_GRY);
+  doc.text(pdfSafeText(`Care Diagnostics ERP  |  Confidential  |  ${ts}`), PDF_MARGIN, pageH - 5);
+  doc.setFontSize(6.5);
+  doc.text(pdfSafeText(`Page ${page} of ${total}`), pageW - PDF_MARGIN, pageH - 5, { align: "right" });
+}
+
+/** A row whose first cell is a total label, in any of the detail tables. */
+const TABLE_TOTAL_ROW_RE = /^(total|net\b|grand total|expected)/i;
+
+function isTableTotalRow(table: ExportTable, rowIndex: number): boolean {
+  if (rowIndex !== table.rows.length - 1) return false;
+  return TABLE_TOTAL_ROW_RE.test(String(table.rows[rowIndex]?.[0] ?? "").trim());
+}
+
+type SimpleRowLook = {
+  bg: string; border: string; labelColor: string; valueColor: string;
+  labelWeight: string; valueWeight: string; valueSize: string; detailColor: string;
+};
+
+/** pt, not px: the simple ledger is read in Word and on paper, where px is a screen unit. */
+function simpleRowStyle(kind: SimpleLedgerRow["kind"]): SimpleRowLook {
+  switch (kind) {
+    case "meta":
+      return { bg: "#f8fafc", border: "0.5pt solid #cbd5e1", labelColor: "#334155", valueColor: "#0f172a",
+        labelWeight: "700", valueWeight: "700", valueSize: "7.5pt", detailColor: "#64748b" };
+    case "add":
+      return { bg: "#ecfdf5", border: "0.5pt solid #86efac", labelColor: "#065f46", valueColor: "#15803d",
+        labelWeight: "600", valueWeight: "700", valueSize: "8pt", detailColor: "#047857" };
+    case "subtract":
+      return { bg: "#fef2f2", border: "0.5pt solid #fecaca", labelColor: "#991b1b", valueColor: "#b91c1c",
+        labelWeight: "600", valueWeight: "700", valueSize: "8pt", detailColor: "#b91c1c" };
+    case "subtotal":
+      return { bg: "#e2e8f0", border: "1.25pt solid #64748b", labelColor: "#0f172a", valueColor: "#0f172a",
+        labelWeight: "800", valueWeight: "800", valueSize: "8.5pt", detailColor: "#475569" };
+    case "total":
+      return { bg: "#0f172a", border: "2pt solid #0f172a", labelColor: "#ffffff", valueColor: "#86efac",
+        labelWeight: "800", valueWeight: "800", valueSize: "11pt", detailColor: "#cbd5e1" };
+    case "note":
+      return { bg: "#fffbeb", border: "0.5pt solid #fde68a", labelColor: "#92400e", valueColor: "#92400e",
+        labelWeight: "600", valueWeight: "600", valueSize: "7pt", detailColor: "#b45309" };
+    default:
+      return { bg: "#ffffff", border: "0.5pt solid #cbd5e1", labelColor: "#1e293b", valueColor: "#0f172a",
+        labelWeight: "600", valueWeight: "700", valueSize: "8pt", detailColor: "#64748b" };
+  }
+}
+
+/**
+ * Word, Print and Email share one renderer. Word is the binding constraint: it drops
+ * `display:grid`, `linear-gradient`, `border-radius` and `overflow`, flattens every grid
+ * cell into a stacked block, and inserts its own paragraph gap between them — that is the
+ * blank space between tables in the .doc. Everything here is tables and inline styles, so
+ * all three draw the same document, and the gaps below are the only ones any of them see.
+ */
+
+/** `tableTag` carries the reset Word needs; per-table styles are added on top of it. */
+function tableTag(style = "", width = "100%"): string {
+  return `<table cellpadding="0" cellspacing="0" border="0" width="${width}" `
+    + `style="width:${width};border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0;padding:0;${style}">`;
+}
+
+function gapRow(pt: number): string {
+  return `<tr><td colspan="2" style="height:${pt}pt;line-height:${pt}pt;font-size:1pt;border:0;padding:0;color:#ffffff">&nbsp;</td></tr>`;
+}
+
+/** Between top-level tables, where Word collapses a div margin but honours a row height. */
+function spacerBlock(pt: number): string {
+  return `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;border-spacing:0;margin:0;padding:0">`
+    + `<tr><td style="height:${pt}pt;line-height:${pt}pt;font-size:1pt;border:0;padding:0;color:#ffffff">&nbsp;</td></tr></table>`;
+}
+
+function renderSimpleLedgerTable(rows: SimpleLedgerRow[]): string {
   const body = rows.map((row) => {
-    if (row.kind === "blank") {
-      return `<tr><td colspan="2" style="height:4px;border:none;padding:0"></td></tr>`;
-    }
+    if (row.kind === "blank") return gapRow(2.5);
     const st = simpleRowStyle(row.kind);
-    const isTotal = row.kind === "total";
     const detail = row.detail
-      ? `<div style="font-size:7px;color:${isTotal ? "#cbd5e1" : "#92400e"};margin-top:1px">${escHtml(pdfSafeText(row.detail))}</div>`
+      ? `<div style="font-size:6pt;color:${st.detailColor};margin-top:0.5pt">${escHtml(pdfSafeText(row.detail))}</div>`
       : "";
-    return `<tr style="background:${st.bg}">
-      <td style="padding:3px 8px;border:${st.border};color:${isTotal ? "#fff" : "#1e293b"};font-weight:${st.labelWeight};font-size:9px;vertical-align:middle;width:62%">${escHtml(pdfSafeText(row.label))}${detail}</td>
-      <td style="padding:3px 8px;border:${st.border};color:${isTotal ? "#86efac" : "#0f172a"};font-weight:${st.valueWeight};font-size:${st.valueSize};text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;vertical-align:middle">${escHtml(pdfSafeText(row.value))}</td>
+    return `<tr>
+      <td style="background:${st.bg};border:${st.border};color:${st.labelColor};font-weight:${st.labelWeight};font-size:7.5pt;padding:2.5pt 5pt;vertical-align:middle;width:62%">${escHtml(pdfSafeText(row.label))}${detail}</td>
+      <td align="right" style="background:${st.bg};border:${st.border};color:${st.valueColor};font-weight:${st.valueWeight};font-size:${st.valueSize};text-align:right;padding:2.5pt 5pt;white-space:nowrap;vertical-align:middle">${escHtml(pdfSafeText(row.value))}</td>
     </tr>`;
   }).join("");
 
+  return tableTag(`border:1.5pt solid #0f172a;page-break-inside:avoid`, "100%")
+    + `<tbody>${body}`
+    + `<tr><td colspan="2" style="border:0;padding:3pt 4pt;font-size:6pt;color:#64748b;text-align:center">`
+    +   `Bills + Old Dues - (Cancel+Refund+Outstanding) - Digital = Cash in counter</td></tr>`
+    + `</tbody></table>`;
+}
+
+function renderReportFooter(config: ExportConfig, ts: string): string {
+  return tableTag(`border-top:1pt solid #94a3b8`)
+    + `<tr><td style="padding:2.5pt 0 0;font-size:6pt;color:#64748b;border:0">Care Diagnostics ERP - Confidential</td>`
+    + `<td align="right" style="padding:2.5pt 0 0;font-size:6pt;color:#64748b;text-align:right;border:0">${escHtml(config.clinicName ?? "Care Diagnostics ERP")} | ${escHtml(ts)}</td></tr></table>`;
+}
+
+function renderLedgerRow([label, value]: [string, string]): string {
+  const safeLabel = escHtml(pdfSafeText(label));
+  const safeValue = escHtml(pdfSafeText(value));
+  const kind = classifyLedgerRow(label, value);
+
+  if (kind === "blank") return gapRow(2);
+
+  if (kind === "divider") {
+    const title = pdfSafeText(label.replace(/^--\s*/, "").replace(/\s*--$/, "").trim());
+    return `<tr><td colspan="3" style="background:${sectionAccent(title)};color:#ffffff;font-size:6.5pt;font-weight:700;letter-spacing:.3pt;padding:2pt 5pt;border:0;text-align:left">${escHtml(title.toUpperCase())}</td></tr>`;
+  }
+
+  // The rule above a total is what separates the formula from its answer. It is heavier
+  // than every hairline around it, and the same weight in the PDF, the .doc and the .xlsx.
+  // The answer row is a navy band — what the Simple ledger already does, so both modes
+  // agree, and the pink/red tints now mean what they say (only Variance can be one).
+  const rule = ledgerRowRule(kind);
+  const onNavy = kind === "final";
+  const emphasised = rule !== "none";
+
+  const topRule    = rule === "final" ? "1.75pt solid #0f172a" : rule === "total" ? "1pt solid #334155" : "0.5pt solid #cbd5e1";
+  const bottomRule = rule === "final" ? "1.75pt solid #0f172a" : "0.5pt solid #e2e8f0";
+
+  const rowBg = onNavy         ? "#0f172a"
+              : kind === "balanced" ? "#dcfce7"
+              : kind === "mismatch" ? "#fee2e2"
+              : kind === "total"    ? "#e2e8f0"
+              : kind === "info"     ? "#fef3c7"
+              : "#ffffff";
+
+  const sign = ledgerRowSign(kind);
+  const signColor = onNavy          ? "#ffffff"
+    : kind === "deduct" ? "#b91c1c"
+    : kind === "total"  ? "#0f172a"
+    : kind === "info"   ? "#b45309"
+    : "#64748b";
+
+  const labelColor = onNavy          ? "#ffffff"
+    : kind === "info"    ? "#92400e"
+    : kind === "deduct"  ? "#991b1b"
+    : kind === "total"   ? "#0f172a"
+    : "#1f2937";
+
+  const valueColor = onNavy          ? "#86efac"
+    : kind === "balanced" ? "#15803d"
+    : kind === "mismatch" ? "#b91c1c"
+    : kind === "deduct"   ? "#b91c1c"
+    : kind === "info"     ? "#92400e"
+    : "#111827";
+
+  return `<tr style="background:${rowBg}">
+    <td valign="middle" style="width:9pt;background:${rowBg};text-align:center;color:${signColor};font-size:7pt;font-weight:700;padding:1.5pt 1pt;border-top:${topRule};border-bottom:${bottomRule};border-left:0;border-right:0;vertical-align:middle">${sign}</td>
+    <td valign="middle" style="background:${rowBg};color:${labelColor};
+      font-size:${onNavy ? "8.5pt" : "7.5pt"};font-weight:${emphasised ? "700" : "600"};padding:1.5pt 3pt;vertical-align:middle;line-height:1.25;
+      border-top:${topRule};border-bottom:${bottomRule};border-left:0;border-right:0.5pt solid ${onNavy ? "#334155" : "#cbd5e1"}">${safeLabel}</td>
+    <td valign="middle" align="right" style="background:${rowBg};font-size:${onNavy ? "9.5pt" : emphasised ? "8.5pt" : "8pt"};font-weight:700;color:${valueColor};
+      text-align:right;padding:1.5pt 4pt 1.5pt 3pt;white-space:nowrap;vertical-align:middle;
+      border-top:${topRule};border-bottom:${bottomRule};border-left:0;border-right:0">${safeValue}</td>
+  </tr>`;
+}
+
+function renderSectionBox(sec: ExportSection): string {
+  const accent = sectionAccent(sec.title);
+  return tableTag(`border:1.25pt solid ${accent};page-break-inside:avoid;background:#ffffff`)
+    + `<tbody>`
+    + `<tr><td colspan="3" style="background:${accent};color:#ffffff;font-size:7pt;font-weight:700;letter-spacing:.3pt;padding:2.5pt 5pt;border:0;text-align:left">${escHtml(sec.title.toUpperCase())}</td></tr>`
+    + sec.metrics.map((m) => renderLedgerRow(m)).join("")
+    + `</tbody></table>`;
+}
+
+/** Two half-width boxes per row, paired exactly as the PDF pairs them. */
+function renderSectionStack(sections: ExportSection[]): string {
+  const halfRow = (left: ExportSection, right: ExportSection | null): string =>
+      `<tr>`
+    + `<td valign="top" width="50%" style="width:50%;padding:0 2pt 0 0;border:0;vertical-align:top">${renderSectionBox(left)}</td>`
+    + `<td valign="top" width="50%" style="width:50%;padding:0 0 0 2pt;border:0;vertical-align:top">${right ? renderSectionBox(right) : "&nbsp;"}</td>`
+    + `</tr>`;
+
+  const rows: string[] = [];
+  let pending: ExportSection | null = null;
+
+  for (const sec of sections) {
+    if (isFullWidthSection(sec)) {
+      if (pending) { rows.push(halfRow(pending, null)); rows.push(gapRow(4)); pending = null; }
+      rows.push(`<tr><td colspan="2" valign="top" style="padding:0;border:0;vertical-align:top">${renderSectionBox(sec)}</td></tr>`);
+      rows.push(gapRow(4));
+      continue;
+    }
+    if (!pending) { pending = sec; continue; }
+    rows.push(halfRow(pending, sec));
+    rows.push(gapRow(4));
+    pending = null;
+  }
+  if (pending) { rows.push(halfRow(pending, null)); }
+
+  return tableTag(`table-layout:fixed`) + `<tbody>${rows.join("")}</tbody></table>`;
+}
+
+function renderDataTable(table: ExportTable): string {
+  const colCount = table.headers.length;
+  const headerCells = table.headers.map((h) =>
+    `<th style="padding:2.5pt 3pt;background:#1e293b;color:#ffffff;text-align:left;font-size:6.5pt;font-weight:700;border:0.5pt solid #0f172a;white-space:nowrap">${escHtml(pdfSafeText(h))}</th>`
+  ).join("");
+
+  const bodyRows = table.rows.map((row, i) => {
+    const cells = row.map((cell, ci) => {
+      const raw = pdfSafeText(String(cell));
+      const isAmt = /^-?Rs\./.test(raw);
+      return `<td valign="top" style="padding:1.5pt 3pt;font-size:7pt;background:${i % 2 === 0 ? "#f8fafc" : "#ffffff"};
+        border:0.5pt solid #e2e8f0;text-align:${isAmt ? "right" : "left"};white-space:${isAmt ? "nowrap" : "normal"}">${escHtml(raw)}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  return tableTag(`border:1.25pt solid #0f172a`)
+    + `<thead>`
+    + `<tr><td colspan="${colCount}" style="background:#0f172a;color:#ffffff;font-size:7.5pt;font-weight:700;letter-spacing:.3pt;padding:2.5pt 5pt;border:0;text-align:left">${escHtml(pdfSafeText(table.title).toUpperCase())}</td></tr>`
+    + `<tr>${headerCells}</tr>`
+    + `</thead>`
+    + `<tbody>${bodyRows}</tbody></table>`;
+}
+
+/** The report content, without any document shell — Print, Word and Email all use this. */
+export function bodyHTML(config: ExportConfig, mode: ExportMode = "full"): string {
+  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const header = renderReportHeader(config, ts, mode === "simple");
+
+  if (mode === "simple") {
+    return header + spacerBlock(5)
+      + tableTag("", "460") + `<tr><td style="padding:0;border:0">` + renderSimpleLedgerTable(config.simpleLedger ?? []) + `</td></tr></table>`
+      + spacerBlock(4) + renderReportFooter(config, ts);
+  }
+
+  const tables = config.tables.map((t) => renderDataTable(t)).join(spacerBlock(5));
+  return header + spacerBlock(5)
+    + renderSectionStack(config.sections)
+    + spacerBlock(6)
+    + tables
+    + spacerBlock(4)
+    + renderReportFooter(config, ts);
+}
+
+export function buildHTML(config: ExportConfig, mode: ExportMode = "full"): string {
+  const title = escHtml(config.title) + (mode === "simple" ? " — Simple" : "");
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>${escHtml(config.title)} — Simple</title>
+  <title>${title}</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: Georgia, 'Times New Roman', serif; margin: 0; padding: 12px; color: #111827; background: #fff; }
+    body { font-family: 'Segoe UI', Calibri, Arial, sans-serif; margin: 0; padding: 8pt 10pt; color: #111827; font-size: 7.5pt; background: #fff; }
+    table { border-collapse: collapse; }
     @media print {
       body { padding: 0; }
-      @page { margin: 8mm; size: A4 portrait; }
+      @page { margin: 6mm 8mm; size: A4 ${mode === "simple" ? "portrait" : "landscape"}; }
+      .no-print { display: none !important; }
     }
   </style>
 </head>
 <body>
-  ${renderReportHeader(config, ts, true)}
-  <div style="border:2px solid #0f172a;border-top:none;padding:10px;border-radius:0 0 6px 6px;max-width:520px;margin:0 auto">
-    <table style="width:100%;border-collapse:collapse">${body}</table>
-  </div>
-  <p style="text-align:center;font-size:7px;color:#64748b;margin-top:8px">Formula: Bills + Old Dues − (Cancel+Refund+Outstanding) − Digital = Cash in counter</p>
+  ${bodyHTML(config, mode)}
 </body>
 </html>`;
 }
 
-// ─── Smart HTML builder (Print / Word / Email) ────────────────────────────────
-
-function buildHTML(config: ExportConfig, mode: ExportMode = "full"): string {
-  if (mode === "simple") return buildSimpleHTML(config);
-  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-
-  const renderSectionRows = (sec: ExportSection): string => {
-    return sec.metrics.map(([label, value]) => {
-      const safeLabel = escHtml(pdfSafeText(label));
-      const safeValue = escHtml(pdfSafeText(value));
-
-      if (isBlankRow(label, value)) {
-        return `<tr><td colspan="3" style="height:1px;padding:0;border:none"></td></tr>`;
-      }
-      if (isSectionHeader(label)) {
-        const title = pdfSafeText(label.replace(/^--\s*/, "").replace(/\s*--$/, "").trim());
-        const bg = sectionAccent(title);
-        return `<tr>
-          <td colspan="3" style="background:${bg};color:#fff;font-size:7.5px;font-weight:800;
-            text-transform:uppercase;padding:2px 5px;border:none;letter-spacing:.3px">${escHtml(title)}</td>
-        </tr>`;
-      }
-
-      const balanced = isBalancedRow(label, value);
-      const mismatch = isMismatchRow(label, value);
-      const total    = isTotalRow(label);
-      const deduct   = isDeductRow(label);
-      const info     = isInfoRow(label);
-      const finalRow = label === "Expected Physical Cash";
-
-      const rowBg = finalRow ? (balanced ? "#dcfce7" : "#fee2e2")
-                  : balanced ? "#dcfce7"
-                  : mismatch ? "#fee2e2"
-                  : total    ? "#e2e8f0"
-                  : info     ? "#fef3c7"
-                  : "transparent";
-
-      const sign = deduct ? "-" : total || finalRow ? "=" : info ? "i" : "";
-      const signColor = deduct ? "#b91c1c" : total ? "#0f172a" : info ? "#b45309" : "#64748b";
-
-      const valueColor = finalRow
-        ? (balanced ? "#15803d" : mismatch ? "#b91c1c" : "#0f172a")
-        : balanced ? "#15803d"
-        : mismatch ? "#b91c1c"
-        : deduct    ? "#b91c1c"
-        : info      ? "#92400e"
-        : "#111827";
-
-      return `<tr style="background:${rowBg};border-bottom:1px solid #cbd5e1">
-        <td style="width:10px;text-align:center;color:${signColor};font-size:7.5px;font-weight:800;padding:1px 2px;border:none;vertical-align:middle">${sign}</td>
-        <td style="font-size:8px;color:${info ? "#92400e" : deduct ? "#991b1b" : total || finalRow ? "#0f172a" : "#1f2937"};
-          font-weight:${total || finalRow ? "700" : "500"};padding:1.5px 4px;vertical-align:middle;line-height:1.2">${safeLabel}</td>
-        <td style="font-size:${finalRow ? "9.5" : "8"}px;font-weight:700;color:${valueColor};
-          text-align:right;font-variant-numeric:tabular-nums;padding:1.5px 4px 1.5px 2px;
-          white-space:nowrap;vertical-align:middle">${safeValue}</td>
-      </tr>`;
-    }).join("");
-  };
-
-  const renderSectionBox = (sec: ExportSection, fullSpan = false): string => {
-    const accent = sectionAccent(sec.title);
-    const span = fullSpan ? "grid-column:1/-1;" : "";
-    return `
-    <div style="${span}border:2px solid ${accent};border-radius:5px;overflow:hidden;margin:0;break-inside:avoid;background:#fff">
-      <div style="background:${accent};color:#fff;padding:4px 8px;font-size:8.5px;font-weight:800;letter-spacing:.4px;text-transform:uppercase">${escHtml(sec.title)}</div>
-      <table style="width:100%;border-collapse:collapse;table-layout:fixed">
-        <colgroup>
-          <col style="width:12px">
-          <col style="width:auto">
-          <col style="width:88px">
-        </colgroup>
-        <tbody>${renderSectionRows(sec)}</tbody>
-      </table>
-    </div>`;
-  };
-
-  const sectionsHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:start">
-    ${config.sections.map((sec) => renderSectionBox(sec, isFullWidthSection(sec))).join("")}
-  </div>`;
-
-  const tablesHTML = config.tables.map((t) => {
-    const colCount = t.headers.length;
-    const headerCells = t.headers.map((h) =>
-      `<th style="padding:3px 4px;background:#1e293b;color:white;text-align:left;font-size:7px;font-weight:700;white-space:nowrap">${escHtml(pdfSafeText(h))}</th>`
-    ).join("");
-
-    const bodyRows = t.rows.map((row, i) => {
-      const cells = row.map((cell, ci) => {
-        const raw = pdfSafeText(String(cell));
-        const isAmt = /^-?Rs\./.test(raw);
-        const isNumCol = ci >= colCount - 4 && isAmt;
-        return `<td style="padding:2px 4px;font-size:7.5px;border-bottom:1px solid #e2e8f0;
-          text-align:${isAmt ? "right" : "left"};font-variant-numeric:${isAmt ? "tabular-nums" : "normal"};
-          max-width:${isNumCol ? "72px" : "none"};overflow:hidden;text-overflow:ellipsis;white-space:${isAmt ? "nowrap" : "normal"}">${escHtml(raw)}</td>`;
-      }).join("");
-      return `<tr style="background:${i % 2 === 0 ? "#f8fafc" : "#fff"}">${cells}</tr>`;
-    }).join("");
-
-    return `
-      <div style="border:2px solid #1e293b;border-radius:5px;overflow:hidden;margin-bottom:8px;break-inside:avoid">
-        <div style="background:#1e293b;color:#fff;padding:4px 8px;font-size:8.5px;font-weight:800">${escHtml(t.title)}</div>
-        <div style="overflow-x:auto">
-          <table style="width:100%;border-collapse:collapse;table-layout:auto;font-size:7.5px">
-            <thead><tr>${headerCells}</tr></thead>
-            <tbody>${bodyRows}</tbody>
-          </table>
-        </div>
-      </div>`;
-  }).join("");
-
-  return `<!DOCTYPE html>
-<html lang="en">
+/**
+ * Word's own document envelope. Without the `WordSection1` page block a .doc opens in
+ * Web Layout at the browser's margins, which is what made the exported report look like a
+ * web page rather than a document; with it Word paginates A4 in Print Layout and repeats
+ * table header rows across pages.
+ */
+export function buildWordDocument(config: ExportConfig, mode: ExportMode = "full"): string {
+  const title = escHtml(config.title) + (mode === "simple" ? " — Simple" : "");
+  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head>
   <meta charset="utf-8">
-  <title>${escHtml(config.title)}</title>
+  <meta name=ProgId content=Word.Document>
+  <meta name=Generator content="Microsoft Word 15">
+  <title>${title}</title>
+  <!--[if gte mso 9]><xml>
+    <o:DocumentSettings><o:RelyOnHTML/></o:DocumentSettings>
+    <w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument>
+  </xml><![endif]-->
   <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-      margin: 0; padding: 10px 12px; color: #111827; font-size: 9px; background: #fff;
-    }
-    @media print {
-      body { padding: 0; }
-      @page { margin: 6mm 8mm; size: A4 portrait; }
-      .no-print { display: none !important; }
-      div[style*="break-inside:avoid"] { page-break-inside: avoid; }
-    }
+    @page WordSection1 { size:595.3pt 841.9pt; margin:34pt 22.7pt 28pt 22.7pt; mso-header-margin:14pt; mso-footer-margin:14pt; }
+    div.WordSection1 { page:WordSection1; }
+    body, td, th, div, p { font-family:Calibri, Arial, sans-serif; font-size:7.5pt; color:#111827; margin:0; padding:0; }
+    table { border-collapse:collapse; mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    tr { page-break-inside:avoid; }
   </style>
 </head>
 <body>
-  ${renderReportHeader(config, ts)}
-  <div style="border:2px solid #0f172a;border-top:none;padding:8px;border-radius:0 0 6px 6px;margin-bottom:8px;background:#f1f5f9">
-    ${sectionsHTML}
-  </div>
-  ${tablesHTML}
-  <div style="margin-top:6px;padding-top:4px;border-top:1px solid #cbd5e1;font-size:7px;color:#94a3b8;display:flex;justify-content:space-between">
-    <span>Care Diagnostics ERP - Confidential</span>
-    <span>${escHtml(ts)}</span>
+  <div class="WordSection1">
+  ${bodyHTML(config, mode)}
   </div>
 </body>
 </html>`;
@@ -436,64 +646,79 @@ const PDF_NAVY: [number, number, number] = [15, 23, 42];
 const PDF_DARK: [number, number, number] = [15, 23, 42];
 const PDF_RED:  [number, number, number] = [185, 28, 28];
 const PDF_GRN:  [number, number, number] = [21, 128, 61];
+const PDF_MINT: [number, number, number] = [134, 239, 172];
 const PDF_AMB:  [number, number, number] = [180, 83, 9];
 const PDF_GRY:  [number, number, number] = [100, 116, 139];
+const PDF_RULE_LIGHT: [number, number, number] = [203, 213, 225];
+const PDF_RULE_TOTAL: [number, number, number] = [51, 65, 85];
 
+/** mm. Wider gutters than before so the page reads as a document, not a spreadsheet dump. */
+const PDF_MARGIN = 10;
+const PDF_GAP = 5;
+const PDF_TOP_BAND = 20;
+const PDF_BOTTOM_BAND = 14;
+
+/**
+ * Rules carry the hierarchy in every output: a hairline is a formula row, a heavy rule
+ * above a line means that line is an answer. `totalRuleMm`/`finalRow` are what the PDF
+ * draws; the HTML and xlsx renderers use the same two weights (1pt / 1.75pt).
+ */
 type PdfRowStyle = {
   fillColor?: [number, number, number];
   textColor?: [number, number, number];
+  /** The answer column on a navy band reads green, not white — same as the on-screen ledger. */
+  valueColor?: [number, number, number];
   fontStyle?: "bold" | "normal";
   fontSize?: number;
+  totalRule?: boolean;
+  finalRule?: boolean;
 };
 
-function buildSectionTableData(section: ExportSection): { bodyRows: string[][]; rowStyles: PdfRowStyle[] } {
+export function buildSectionTableData(section: ExportSection): { bodyRows: string[][]; rowStyles: PdfRowStyle[] } {
   const bodyRows: string[][] = [];
   const rowStyles: PdfRowStyle[] = [];
 
   for (const [label, value] of section.metrics) {
-    if (isBlankRow(label, value)) {
+    const kind = classifyLedgerRow(label, value);
+
+    if (kind === "blank") {
       bodyRows.push(["", "", ""]);
       rowStyles.push({ fillColor: [255, 255, 255] });
       continue;
     }
-    if (isSectionHeader(label)) {
+    if (kind === "divider") {
       const title = pdfSafeText(label.replace(/^[-\u2013\u2014]+\s*/, "").replace(/\s*[-\u2013\u2014]+$/, "").trim());
       bodyRows.push(["", title, ""]);
-      rowStyles.push({ fillColor: sectionAccentRgb(title), textColor: [255, 255, 255], fontStyle: "bold", fontSize: 6.5 });
+      rowStyles.push({ fillColor: sectionAccentRgb(title), textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7 });
       continue;
     }
 
-    const balanced  = isBalancedRow(label, value);
-    const mismatch  = isMismatchRow(label, value);
-    const totalRow  = isTotalRow(label);
-    const deductRow = isDeductRow(label);
-    const infoRow   = isInfoRow(label);
-    const finalRow  = label === "Expected Physical Cash";
-
-    const sign = deductRow ? "-" : (totalRow || finalRow) ? "=" : infoRow ? "i" : "";
-    const textCol: [number, number, number] = finalRow
-      ? (balanced ? PDF_GRN : mismatch ? PDF_RED : PDF_DARK)
-      : balanced ? PDF_GRN
-      : mismatch ? PDF_RED
-      : deductRow ? PDF_RED
-      : infoRow   ? PDF_AMB
-      : totalRow  ? PDF_DARK
+    const onNavy = kind === "final";
+    const textCol: [number, number, number] = onNavy          ? [255, 255, 255]
+      : kind === "balanced" ? PDF_GRN
+      : kind === "mismatch" ? PDF_RED
+      : kind === "deduct"   ? PDF_RED
+      : kind === "info"     ? PDF_AMB
+      : kind === "total"    ? PDF_DARK
       : [55, 65, 81];
 
-    const fillCol: [number, number, number] | undefined = finalRow
-      ? (balanced ? [220, 252, 231] : [254, 226, 226])
-      : balanced  ? [220, 252, 231]
-      : mismatch  ? [254, 226, 226]
-      : totalRow  ? [226, 232, 240]
-      : infoRow   ? [254, 243, 199]
+    const fillCol: [number, number, number] | undefined = onNavy  ? PDF_NAVY
+      : kind === "balanced" ? [220, 252, 231]
+      : kind === "mismatch" ? [254, 226, 226]
+      : kind === "total"    ? [226, 232, 240]
+      : kind === "info"     ? [254, 243, 199]
       : undefined;
 
-    bodyRows.push([sign, pdfSafeText(label), pdfSafeText(value)]);
+    const rule = ledgerRowRule(kind);
+    bodyRows.push([ledgerRowSign(kind), pdfSafeText(label), pdfSafeText(value)]);
     rowStyles.push({
       fillColor: fillCol,
       textColor: textCol,
-      fontStyle: (totalRow || finalRow) ? "bold" : "normal",
-      fontSize: finalRow ? 8.5 : 7,
+      valueColor: onNavy ? PDF_MINT : undefined,
+      fontStyle: rule !== "none" ? "bold" : "normal",
+      fontSize: onNavy ? 10.5 : kind === "total" ? 8.5 : 8,
+      totalRule: rule === "total",
+      finalRule: rule === "final",
     });
   }
 
@@ -509,18 +734,24 @@ function drawPdfSectionBox(
 ): number {
   const accent = sectionAccentRgb(section.title);
   const boxTop = y;
-  const headerH = 5.5;
+  const headerH = 6.5;
 
   doc.setFillColor(...accent);
   doc.rect(x, y, boxW, headerH, "F");
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(7.5);
+  doc.setFontSize(8);
   doc.setFont("helvetica", "bold");
-  doc.text(pdfSafeText(section.title.toUpperCase()), x + 2.5, y + 3.8);
+  doc.text(pdfSafeText(section.title.toUpperCase()), x + 2.5, y + 4.4);
   y += headerH;
 
-  const labelW = Math.max(28, boxW - LEDGER_SIGN_MM - LEDGER_VALUE_MM - 4);
+  // autoTable's `cellWidth` already contains the cell padding, so the three columns must
+  // sum to the box width exactly. Subtracting the padding a second time — which is what the
+  // old `- 4` did — makes the table wider than its own box and autoTable silently squeezes
+  // the label column (it logs "units width could not fit page" once per section).
+  const padX = 1.6;
+  const labelW = Math.max(24, boxW - LEDGER_SIGN_MM - LEDGER_VALUE_MM);
   const { bodyRows, rowStyles } = buildSectionTableData(section);
+  const pagesBefore = doc.getNumberOfPages();
 
   autoTable(doc, {
     startY: y,
@@ -528,84 +759,107 @@ function drawPdfSectionBox(
     theme: "grid",
     tableWidth: boxW,
     styles: {
-      fontSize: 7,
-      cellPadding: { top: 0.5, bottom: 0.5, left: 1.2, right: 1.2 },
+      fontSize: 8,
+      cellPadding: { top: 0.9, bottom: 0.9, left: padX, right: padX },
       overflow: "linebreak",
       valign: "middle",
-      lineColor: [203, 213, 225],
-      lineWidth: 0.15,
+      lineColor: PDF_RULE_LIGHT,
+      lineWidth: 0.12,
     },
     columnStyles: {
-      0: { cellWidth: LEDGER_SIGN_MM, halign: "center", fontSize: 6.5, fontStyle: "bold" },
+      0: { cellWidth: LEDGER_SIGN_MM, halign: "center", fontSize: 7.5, fontStyle: "bold" },
       1: { cellWidth: labelW },
       2: { halign: "right", fontStyle: "bold", cellWidth: LEDGER_VALUE_MM, overflow: "visible" },
     },
-    margin: { left: x, right: doc.internal.pageSize.getWidth() - x - boxW },
+    margin: { left: x, right: doc.internal.pageSize.getWidth() - x - boxW, top: PDF_TOP_BAND, bottom: PDF_BOTTOM_BAND },
     didParseCell(data) {
       const rs = rowStyles[data.row.index];
       if (!rs) return;
       if (rs.fillColor) data.cell.styles.fillColor = rs.fillColor;
       if (rs.textColor) data.cell.styles.textColor = rs.textColor;
+      if (rs.valueColor && data.column.index === 2) data.cell.styles.textColor = rs.valueColor;
       if (rs.fontStyle) data.cell.styles.fontStyle = rs.fontStyle;
       if (rs.fontSize)  data.cell.styles.fontSize  = rs.fontSize;
+      // A total gets a heavy rule across the whole box, so the line between the formula
+      // and its answer is impossible to miss at a glance on paper.
+      if (rs.finalRule) {
+        data.cell.styles.lineWidth = 0.9;
+        data.cell.styles.lineColor = PDF_NAVY;
+      } else if (rs.totalRule) {
+        data.cell.styles.lineWidth = { top: 0.55, bottom: 0.12, left: 0.12, right: 0.12 };
+        data.cell.styles.lineColor = PDF_RULE_TOTAL;
+      }
     },
   });
 
   const finalY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
-  doc.setDrawColor(...accent);
-  doc.setLineWidth(0.5);
-  doc.rect(x, boxTop, boxW, finalY - boxTop);
+  // Only frame the box if it stayed on one page: a split box's finalY belongs to the last
+  // page it touched, and drawing from the original y to it paints a long rectangle across
+  // the wrong page.
+  if (doc.getNumberOfPages() === pagesBefore) {
+    doc.setDrawColor(...accent);
+    doc.setLineWidth(0.8);
+    doc.rect(x, boxTop, boxW, finalY - boxTop);
+  }
   return finalY - boxTop;
 }
 
 async function downloadPDF(config: ExportConfig, orientation: PaperOrientation, mode: ExportMode = "full"): Promise<void> {
   if (mode === "simple") {
-    await downloadSimplePDF(config);
+    await downloadSimplePDF(config, orientation);
     return;
   }
-  const doc = new jsPDF({ orientation, unit: "mm", format: "a4" });
+  const doc = await buildSummaryPdf(config, orientation);
+  doc.save(sanitizeFilename(config.title) + ".pdf");
+}
+
+/**
+ * The full report as a jsPDF document, without saving it. Exported so a test can open the
+ * real bytes: compression, page count and file size are not things a source-text grep can
+ * honestly check, and the clinic's PDFs used to arrive at ~2 MB for a single page.
+ */
+export async function buildSummaryPdf(config: ExportConfig, orientation: PaperOrientation): Promise<jsPDF> {
+  // compress: the page streams are deflated. Without it every page of text is stored raw.
+  const doc = new jsPDF({ orientation, unit: "mm", format: "a4", compress: true });
+  doc.setProperties({
+    title: config.title,
+    subject: config.subtitle,
+    author: config.clinicName ?? "Care Diagnostics ERP",
+    creator: "Care Diagnostics ERP",
+    keywords: "daily summary, cash reconciliation, billing",
+  });
   const pageW  = doc.internal.pageSize.getWidth();
   const pageH  = doc.internal.pageSize.getHeight();
-  const margin = 8;
-  const gap    = 4;
+  const margin = PDF_MARGIN;
+  const gap    = PDF_GAP;
   const ts     = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const fullW  = pageW - margin * 2;
   const halfW  = (fullW - gap) / 2;
-  const headerH = 18;
-  const logoMaxH = 12;
-  const logoMaxW = 28;
+  const contentBottom = pageH - PDF_BOTTOM_BAND;
+  const contentTop = PDF_TOP_BAND + 2;
 
-  doc.setFillColor(...PDF_NAVY);
-  doc.rect(0, 0, pageW, headerH, "F");
+  const logo = config.logoDataUrl ? await preparePdfLogo(config.logoDataUrl) : null;
+  drawPdfBand(doc, config, ts, PDF_TOP_BAND, logo);
 
-  let titleX = margin;
-  if (config.logoDataUrl) {
-    const placed = await drawPdfLogo(doc, config.logoDataUrl, margin, 3, logoMaxW, logoMaxH);
-    if (placed) titleX = margin + placed.w + 2.5;
-  }
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(12);
-  doc.setFont("helvetica", "bold");
-  doc.text(pdfSafeText(config.title), titleX, 9);
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.text(pdfSafeText(config.subtitle), titleX, 14.5);
-  doc.setFontSize(6);
-  doc.text(pdfSafeText(ts), pageW - margin, 9, { align: "right" });
-  doc.text(pdfSafeText(config.clinicName ?? "Care Diagnostics ERP"), pageW - margin, 14, { align: "right" });
-
-  let y = 22;
+  let y = contentTop;
   let pendingHalf: ExportSection | null = null;
 
-  const ensureSpace = (needed: number) => {
-    if (y + needed > pageH - 10) { doc.addPage(); y = margin; pendingHalf = null; }
+  const newPage = () => {
+    doc.addPage();
+    y = contentTop;
+    pendingHalf = null;
   };
+  const ensureSpace = (needed: number) => { if (y + needed > contentBottom) newPage(); };
 
   for (const section of config.sections) {
     if (isFullWidthSection(section)) {
-      if (pendingHalf) {
+      // `ensureSpace` can start a new page, and starting one clears the pending half —
+      // so the box to draw is captured first. Reading `pendingHalf` after the call is a
+      // crash, not a style choice.
+      const held = pendingHalf;
+      if (held) {
         ensureSpace(40);
-        const hPending = drawPdfSectionBox(doc, pendingHalf, margin, y, halfW);
+        const hPending = drawPdfSectionBox(doc, held, margin, y, halfW);
         y += hPending + gap;
         pendingHalf = null;
       }
@@ -620,34 +874,38 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation, 
       continue;
     }
 
-    ensureSpace(50);
-    const hLeft  = drawPdfSectionBox(doc, pendingHalf, margin, y, halfW);
+    const heldPair = pendingHalf;
+    ensureSpace(55);
+    const hLeft  = drawPdfSectionBox(doc, heldPair, margin, y, halfW);
     const hRight = drawPdfSectionBox(doc, section, margin + halfW + gap, y, halfW);
     y += Math.max(hLeft, hRight) + gap;
     pendingHalf = null;
   }
 
   if (pendingHalf) {
+    const held = pendingHalf;
     ensureSpace(40);
-    const h = drawPdfSectionBox(doc, pendingHalf, margin, y, halfW);
+    const h = drawPdfSectionBox(doc, held, margin, y, halfW);
     y += h + gap;
   }
 
   const tableW = fullW;
   for (const table of config.tables) {
-    if (y > pageH - 28) { doc.addPage(); y = margin; }
+    if (y > contentBottom - 24) newPage();
 
     const boxTop = y;
     doc.setFillColor(...PDF_NAVY);
-    doc.rect(margin, y, tableW, 5.5, "F");
+    doc.rect(margin, y, tableW, 6.5, "F");
     doc.setTextColor(255, 255, 255);
-    doc.setFontSize(7.5);
+    doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
-    doc.text(pdfSafeText(table.title), margin + 2.5, y + 3.8);
-    y += 5.5;
+    doc.text(pdfSafeText(table.title.toUpperCase()), margin + 2.5, y + 4.4);
+    y += 6.5;
 
     const amountCol = (header: string, value: string) =>
-      /^-?Rs\./.test(value) || /amount|discount|net|cash|gross|refund|due|expense|collected|billed/i.test(header);
+      /^-?Rs\./.test(value) || isAmountHeader(header);
+
+    const pagesBeforeTable = doc.getNumberOfPages();
 
     autoTable(doc, {
       startY: y,
@@ -655,66 +913,80 @@ async function downloadPDF(config: ExportConfig, orientation: PaperOrientation, 
       body: table.rows.map((row) => row.map((cell) => pdfSafeText(String(cell)))),
       theme: "grid",
       tableWidth: tableW,
-      styles: { fontSize: 6, cellPadding: 0.8, overflow: "linebreak", valign: "middle", lineColor: [203, 213, 225], lineWidth: 0.12 },
-      headStyles: { fillColor: PDF_NAVY, textColor: [255, 255, 255], fontSize: 6, fontStyle: "bold" },
+      styles: { fontSize: 7, cellPadding: { top: 1, bottom: 1, left: 1.6, right: 1.6 }, overflow: "linebreak", valign: "middle", lineColor: PDF_RULE_LIGHT, lineWidth: 0.12 },
+      headStyles: { fillColor: PDF_NAVY, textColor: [255, 255, 255], fontSize: 7, fontStyle: "bold", cellPadding: { top: 1.2, bottom: 1.2, left: 1.6, right: 1.6 } },
       alternateRowStyles: { fillColor: [248, 250, 252] },
       didParseCell(data) {
         if (data.section === "head") return;
         const header = table.headers[data.column.index] ?? "";
         const v = String(data.cell.raw ?? "");
         if (amountCol(header, v)) data.cell.styles.halign = "right";
+        // Same rule weight as the ledger boxes: a total in a detail table answers the rows
+        // above it, so it is separated from them, not merely bold.
+        if (isTableTotalRow(table, data.row.index)) {
+          data.cell.styles.fontStyle = "bold";
+          data.cell.styles.fillColor = [226, 232, 240];
+          data.cell.styles.lineWidth = { top: 0.55, bottom: 0.12, left: 0.12, right: 0.12 };
+          data.cell.styles.lineColor = PDF_RULE_TOTAL;
+        }
       },
-      margin: { left: margin, right: margin },
+      margin: { left: margin, right: margin, top: PDF_TOP_BAND, bottom: PDF_BOTTOM_BAND },
     });
 
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
-    doc.setDrawColor(...PDF_NAVY);
-    doc.setLineWidth(0.5);
-    doc.rect(margin, boxTop, tableW, y - boxTop);
+    if (doc.getNumberOfPages() === pagesBeforeTable) {
+      doc.setDrawColor(...PDF_NAVY);
+      doc.setLineWidth(0.8);
+      doc.rect(margin, boxTop, tableW, y - boxTop);
+    }
     y += gap;
   }
 
   const totalPages = doc.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
-    doc.setFontSize(5.5);
-    doc.setTextColor(...PDF_GRY);
-    doc.text(
-      pdfSafeText(`Care Diagnostics ERP  |  Confidential  |  ${ts}  |  Page ${i} of ${totalPages}`),
-      margin,
-      pageH - 3.5,
-    );
+    if (i > 1) drawPdfBand(doc, config, ts, 12, null);
+    drawPdfFooter(doc, ts, i, totalPages);
   }
 
-  doc.save(sanitizeFilename(config.title) + ".pdf");
+  return doc;
 }
 
-async function downloadSimplePDF(config: ExportConfig): Promise<void> {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+async function downloadSimplePDF(config: ExportConfig, orientation: PaperOrientation = "portrait"): Promise<void> {
+  const doc = new jsPDF({ orientation, unit: "mm", format: "a4", compress: true });
+  doc.setProperties({
+    title: `${config.title} (Simple)`,
+    subject: config.subtitle,
+    author: config.clinicName ?? "Care Diagnostics ERP",
+    creator: "Care Diagnostics ERP",
+  });
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;
   const cardW = Math.min(120, pageW - margin * 2);
   const x = (pageW - cardW) / 2;
   const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   let y = margin;
-  const logoMaxH = 12;
-  const logoMaxW = 28;
 
-  if (config.logoDataUrl) {
-    const placed = await drawPdfLogo(doc, config.logoDataUrl, x, y, logoMaxW, logoMaxH);
-    if (placed) y += placed.h + 2;
+  const logo = config.logoDataUrl ? await preparePdfLogo(config.logoDataUrl) : null;
+  if (logo) {
+    try {
+      doc.addImage(logo.url, logo.format, x, y, logo.w, logo.h);
+      y += logo.h + 2.5;
+    } catch { /* no logo is not a reason to lose the ledger */ }
   }
 
   doc.setFillColor(...PDF_NAVY);
-  doc.rect(x, y, cardW, 14, "F");
+  doc.rect(x, y, cardW, 15.5, "F");
+  doc.setFillColor(37, 99, 235);
+  doc.rect(x, y + 15.5, cardW, 1.2, "F");
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(11);
+  doc.setFontSize(12);
   doc.setFont("helvetica", "bold");
-  doc.text(pdfSafeText(config.title), x + 3, y + 6);
-  doc.setFontSize(7.5);
+  doc.text(pdfSafeText(config.title), x + 3, y + 6.5);
+  doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
-  doc.text(pdfSafeText(config.subtitle), x + 3, y + 11);
-  y += 16;
+  doc.text(pdfSafeText(config.subtitle), x + 3, y + 12);
+  y += 19.5;
 
   const rows = config.simpleLedger ?? [];
   const bodyRows: string[][] = [];
@@ -739,46 +1011,63 @@ async function downloadSimplePDF(config: ExportConfig): Promise<void> {
         : isNote ? [255, 251, 235]
         : row.kind === "add" ? [220, 252, 231]
         : undefined,
-      textColor: isTotal ? [134, 239, 172] : isNote ? PDF_AMB : PDF_DARK,
+      textColor: isTotal ? [255, 255, 255] : isNote ? PDF_AMB : isSubtr ? PDF_RED : PDF_DARK,
+      valueColor: isTotal ? PDF_MINT : undefined,
       fontStyle: isTotal || isSub ? "bold" : "normal",
-      fontSize: isTotal ? 10 : isSub ? 8.5 : 7.5,
+      fontSize: isTotal ? 11.5 : isSub ? 9.5 : 8.5,
+      totalRule: isSub,
+      finalRule: isTotal,
     });
   }
 
+  const pagesBeforeCard = doc.getNumberOfPages();
   autoTable(doc, {
     startY: y,
     body: bodyRows,
     theme: "grid",
     tableWidth: cardW,
     styles: {
-      fontSize: 7.5,
-      cellPadding: { top: 1.2, bottom: 1.2, left: 2.5, right: 2.5 },
+      fontSize: 8.5,
+      cellPadding: { top: 1.6, bottom: 1.6, left: 2.5, right: 2.5 },
       overflow: "linebreak",
       valign: "middle",
-      lineColor: [100, 116, 139],
-      lineWidth: 0.2,
+      lineColor: [148, 163, 184],
+      lineWidth: 0.15,
     },
     columnStyles: {
-      0: { cellWidth: cardW * 0.62 },
-      1: { halign: "right", fontStyle: "bold", cellWidth: cardW * 0.38 },
+      0: { cellWidth: cardW * 0.6 },
+      1: { halign: "right", fontStyle: "bold", cellWidth: cardW * 0.4 },
     },
-    margin: { left: x, right: pageW - x - cardW },
+    margin: { left: x, right: pageW - x - cardW, top: 18, bottom: 16 },
     didParseCell(data) {
       const rs = rowStyles[data.row.index];
       if (!rs) return;
       if (rs.fillColor) data.cell.styles.fillColor = rs.fillColor;
       if (rs.textColor) data.cell.styles.textColor = rs.textColor;
       if (rs.fontStyle) data.cell.styles.fontStyle = rs.fontStyle;
-      if (rs.fontSize) data.cell.styles.fontSize = rs.fontSize;
-      if (data.row.index < rowStyles.length && rowStyles[data.row.index] && rows[data.row.index]?.kind === "total") {
-        if (data.column.index === 0) data.cell.styles.textColor = [255, 255, 255];
+      if (rs.fontSize)  data.cell.styles.fontSize  = rs.fontSize;
+      if (rs.valueColor && data.column.index === 1) data.cell.styles.textColor = rs.valueColor;
+      if (rs.finalRule) {
+        data.cell.styles.lineWidth = { top: 1, bottom: 1, left: 0.15, right: 0.15 };
+        data.cell.styles.lineColor = PDF_NAVY;
+      } else if (rs.totalRule) {
+        data.cell.styles.lineWidth = { top: 0.6, bottom: 0.15, left: 0.15, right: 0.15 };
+        data.cell.styles.lineColor = PDF_RULE_TOTAL;
       }
     },
   });
 
-  const footY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 4;
-  doc.setFontSize(6);
+  const finalY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+  if (doc.getNumberOfPages() === pagesBeforeCard) {
+    doc.setDrawColor(...PDF_NAVY);
+    doc.setLineWidth(1);
+    doc.rect(x, y, cardW, finalY - y);
+  }
+
+  const footY = finalY + 5;
+  doc.setFontSize(6.5);
   doc.setTextColor(...PDF_GRY);
+  doc.setFont("helvetica", "normal");
   doc.text(
     pdfSafeText("Bills + Old Dues - (Cancel+Refund+Outstanding) - Digital = Cash in counter"),
     pageW / 2,
@@ -787,87 +1076,337 @@ async function downloadSimplePDF(config: ExportConfig): Promise<void> {
   );
   doc.text(pdfSafeText(`${config.clinicName ?? "Care Diagnostics ERP"}  |  ${ts}`), pageW / 2, footY + 4, { align: "center" });
 
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    drawPdfFooter(doc, ts, i, totalPages);
+  }
+
   doc.save(sanitizeFilename(config.title) + "_Simple.pdf");
 }
 
 // ─── Excel ────────────────────────────────────────────────────────────────────
 
-function downloadExcel(config: ExportConfig, mode: ExportMode = "full") {
-  const wb = XLSX.utils.book_new();
+type XlStyle = NonNullable<XLSX.CellObject["s"]>;
 
-  if (mode === "simple" && config.simpleLedger?.length) {
-    const rows: (string | number)[][] = [
-      [config.title],
-      [config.subtitle],
-      [`Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`],
-      [],
-      ["Label", "Amount"],
-      ...config.simpleLedger
-        .filter((r) => r.kind !== "blank")
-        .map((r) => [r.detail ? `${r.label} (${r.detail})` : r.label, r.value]),
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [{ wch: 42 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, ws, "Simple Ledger");
-    XLSX.writeFile(wb, sanitizeFilename(config.title) + "_Simple.xlsx");
-    return;
-  }
+/**
+ * The writer is `xlsx-js-style`, not SheetJS Community. Community accepts a workbook and
+ * silently throws away every `cell.s` — measured on the clinic's own
+ * Daily_Financial_Reconciliation_Simple.xlsx: 2 fills, 1 border, 2 cellXfs, which is
+ * exactly what a blank file carries. Same API, same cells, through this writer: 4 fills,
+ * 6 borders, 8 cellXfs, and the sheet references them by index.
+ */
+const XL = {
+  navy: "0F172A",
+  band: "1E293B",
+  white: "FFFFFF",
+  muted: "64748B",
+  alt: "F8FAFC",
+  totalFill: "E2E8F0",
+  addFill: "DCFCE7",
+  subFill: "FEE2E2",
+  noteFill: "FEF3C7",
+  green: "15803D",
+  red: "B91C1C",
+  amber: "92400E",
+  mint: "86EFAC",
+};
 
-  // Summary sheet — parse section headers and blank rows for visual structure
-  const summaryRows: (string | number)[][] = [
-    [config.title],
-    [config.subtitle],
-    [`Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`],
-    [],
+/** Indian digit grouping — `##,##0` puts the separator where the clinic's screens do. */
+const XL_MONEY = '"₹"##,##0';
+
+const XL_EDGE = {
+  hair:   { style: "hair",   color: { rgb: "E2E8F0" } },
+  thin:   { style: "thin",   color: { rgb: "CBD5E1" } },
+  medium: { style: "medium", color: { rgb: "334155" } },
+  thick:  { style: "thick",  color: { rgb: "0F172A" } },
+} as const;
+
+const xlFill = (rgb: string) => ({ fgColor: { rgb }, patternType: "solid" as const });
+
+/**
+ * A currency string only. A bare digit string is NOT money — bill numbers, token numbers
+ * and phone numbers live in these same tables, and turning one into a number drops its
+ * leading zeros.
+ */
+export function parseMoneyCell(raw: unknown): number | null {
+  const s = String(raw ?? "")
+    .trim()
+    .replace(/[\u2212\u2013]/g, "-")
+    .replace(/\u20B9/g, "Rs.");
+  const m = s.match(/^(-?)\s*Rs\.\s*(-?[\d,]+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const n = Number(m[2].replace(/,/g, ""));
+  if (!Number.isFinite(n)) return null;
+  return m[1] === "-" || m[2].startsWith("-") ? -Math.abs(n) : n;
+}
+
+export function isAmountHeader(header: string): boolean {
+  return /amount|discount|net|cash|gross|refund|due|expense|collected|billed/i.test(header);
+}
+
+function xlLedgerStyle(kind: LedgerRowKind): XlStyle {
+  const rule = ledgerRowRule(kind);
+  const onNavy = kind === "final";
+  const textColor = onNavy             ? XL.white
+    : kind === "deduct"   ? XL.red
+    : kind === "info"     ? XL.amber
+    : kind === "balanced" ? XL.green
+    : kind === "mismatch" ? XL.red
+    : kind === "total"    ? XL.navy
+    : "1F2937";
+  const fill = onNavy             ? xlFill(XL.navy)
+    : kind === "balanced" ? xlFill(XL.addFill)
+    : kind === "mismatch" ? xlFill(XL.subFill)
+    : kind === "total"    ? xlFill(XL.totalFill)
+    : kind === "info"     ? xlFill(XL.noteFill)
+    : undefined;
+  return {
+    font: { bold: rule !== "none", sz: onNavy ? 11.5 : 9.5, color: { rgb: textColor } },
+    ...(fill ? { fill } : {}),
+    border: {
+      top: rule === "final" ? XL_EDGE.thick : rule === "total" ? XL_EDGE.medium : XL_EDGE.hair,
+      bottom: rule === "final" ? XL_EDGE.thick : XL_EDGE.hair,
+      left: XL_EDGE.hair,
+      right: XL_EDGE.hair,
+    },
+    alignment: { vertical: "center", horizontal: "left", wrapText: false },
+  };
+}
+
+function xlLedgerValueStyle(kind: LedgerRowKind, money: boolean): XlStyle {
+  const base = xlLedgerStyle(kind);
+  return {
+    ...base,
+    font: { ...(base.font ?? {}), bold: true, color: { rgb: kind === "final" ? XL.mint : base.font?.color?.rgb ?? "0F172A" } },
+    alignment: { vertical: "center", horizontal: "right" },
+    ...(money ? { numFmt: XL_MONEY } : {}),
+  };
+}
+
+type XlRow = { values: (string | number | null)[]; styles: (XlStyle | null)[]; hpt?: number };
+
+function xlSheet(rows: XlRow[], cols: { wch: number }[], merges: XLSX.Range[] = [], autoFilter?: { ref: string }): XLSX.WorkSheet {
+  const ws = XLSX.utils.aoa_to_sheet(rows.map((r) => r.values));
+  rows.forEach((row, r) => {
+    row.values.forEach((_, c) => {
+      const s = row.styles[c];
+      if (!s) return;
+      const cell = ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined;
+      if (cell) cell.s = s;
+    });
+  });
+  ws["!cols"] = cols;
+  const heights = rows.map((r) => (r.hpt ? { hpt: r.hpt } : {}));
+  if (rows.some((r) => r.hpt)) ws["!rows"] = heights;
+  if (merges.length) ws["!merges"] = merges;
+  if (autoFilter) ws["!autofilter"] = autoFilter;
+  return ws;
+}
+
+/** Title / subtitle / generated band, then a spacer. Every sheet opens the same way. */
+function xlHeaderRows(title: string, subtitle: string, ts: string, width: number): XlRow[] {
+  const titleStyle: XlStyle = {
+    font: { bold: true, sz: 14, color: { rgb: XL.white } },
+    fill: xlFill(XL.navy),
+    alignment: { vertical: "center", horizontal: "left" },
+  };
+  const subStyle: XlStyle = {
+    font: { bold: true, sz: 10, color: { rgb: "CBD5E1" } },
+    fill: xlFill(XL.navy),
+    alignment: { vertical: "center", horizontal: "left" },
+  };
+  const metaStyle: XlStyle = {
+    font: { sz: 8, italic: true, color: { rgb: XL.muted } },
+    alignment: { vertical: "center", horizontal: "left" },
+  };
+  const band = (text: string, style: XlStyle, hpt: number): XlRow => ({
+    values: [text, ...Array(Math.max(0, width - 1)).fill("")],
+    styles: Array(width).fill(style),
+    hpt,
+  });
+  return [
+    band(title, titleStyle, 24),
+    band(subtitle, subStyle, 16),
+    band(`Generated ${ts}`, metaStyle, 13),
+    { values: Array(width).fill(null), styles: Array(width).fill(null), hpt: 7 },
   ];
+}
+
+function xlMergeRange(width: number, row: number): XLSX.Range {
+  return { s: { r: row, c: 0 }, e: { r: row, c: Math.max(0, width - 1) } };
+}
+
+function xlLedgerRow(label: string, value: string): XlRow {
+  const kind = classifyLedgerRow(label, value);
+  if (kind === "blank") return { values: [null, null], styles: [null, null], hpt: 6 };
+  if (kind === "divider") {
+    const title = pdfSafeText(label.replace(/^[-\u2013\u2014]+\s*/, "").replace(/\s*[-\u2013\u2014]+$/, "").trim());
+    const style: XlStyle = {
+      font: { bold: true, sz: 9, color: { rgb: XL.white } },
+      fill: xlFill(sectionAccent(title).replace("#", "").toUpperCase()),
+      alignment: { vertical: "center", horizontal: "left" },
+    };
+    return { values: [title.toUpperCase(), ""], styles: [style, style], hpt: 15 };
+  }
+  const money = parseMoneyCell(value);
+  return {
+    values: [pdfSafeText(label), money ?? pdfSafeText(value)],
+    styles: [xlLedgerStyle(kind), xlLedgerValueStyle(kind, money !== null)],
+    hpt: 14,
+  };
+}
+
+function xlReconciliationSheet(config: ExportConfig, ts: string): XLSX.WorkSheet {
+  const header = xlHeaderRows(config.title, config.subtitle, ts, 2);
+  const rows: XlRow[] = [...header];
+  const merges: XLSX.Range[] = [];
+  header.forEach((_, i) => { if (i < 3) merges.push(xlMergeRange(2, i)); });
 
   for (const sec of config.sections) {
-    summaryRows.push([sec.title]);
-    for (const [label, value] of sec.metrics) {
-      if (isBlankRow(label, value)) { summaryRows.push([]); continue; }
-      if (isSectionHeader(label)) {
-        summaryRows.push([label.replace(/^──\s*/, "").replace(/\s*──+$/, "").trim()]);
-        continue;
-      }
-      summaryRows.push([label, value]);
-    }
-    summaryRows.push([]);
+    const accent = xlFill(sectionAccent(sec.title).replace("#", "").toUpperCase());
+    const bandStyle: XlStyle = {
+      font: { bold: true, sz: 10, color: { rgb: XL.white } },
+      fill: accent,
+      alignment: { vertical: "center", horizontal: "left" },
+    };
+    const bandRow = rows.length;
+    rows.push({ values: [pdfSafeText(sec.title.toUpperCase()), ""], styles: [bandStyle, bandStyle], hpt: 17 });
+    merges.push(xlMergeRange(2, bandRow));
+    for (const [label, value] of sec.metrics) rows.push(xlLedgerRow(label, value));
+    rows.push({ values: [null, null], styles: [null, null], hpt: 7 });
   }
 
-  const summaryWs = XLSX.utils.aoa_to_sheet(summaryRows);
-  summaryWs["!cols"] = [{ wch: 34 }, { wch: 22 }];
-  XLSX.utils.book_append_sheet(wb, summaryWs, "Reconciliation");
+  const noteStyle: XlStyle = { font: { sz: 8, italic: true, color: { rgb: XL.muted } } };
+  rows.push({ values: ["Care Diagnostics ERP - Confidential", null], styles: [noteStyle, null] });
 
-  // One sheet per data table
-  for (const table of config.tables) {
-    const sheetData: (string | number)[][] = [
-      [table.title],
-      [`${config.subtitle}  •  ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`],
-      [],
-      table.headers,
-      ...table.rows,
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(sheetData);
-    // Auto-width columns
-    const colWidths = table.headers.map((h, ci) => {
-      const maxLen = Math.max(
-        h.length,
-        ...table.rows.map((r) => String(r[ci] ?? "").length),
-      );
-      return { wch: Math.min(maxLen + 2, 40) };
+  return xlSheet(rows, [{ wch: 52 }, { wch: 20 }], merges);
+}
+
+function xlTableSheet(table: ExportTable, config: ExportConfig, ts: string): XLSX.WorkSheet {
+  const width = Math.max(1, table.headers.length);
+  const header = xlHeaderRows(table.title, `${config.subtitle}  |  ${ts}`, ts, width);
+  const rows: XlRow[] = [...header];
+  const merges: XLSX.Range[] = [];
+  header.forEach((_, i) => { if (i < 3) merges.push(xlMergeRange(width, i)); });
+
+  const headStyle: XlStyle = {
+    font: { bold: true, sz: 9, color: { rgb: XL.white } },
+    fill: xlFill(XL.band),
+    border: { top: XL_EDGE.thin, bottom: XL_EDGE.thin, left: XL_EDGE.thin, right: XL_EDGE.thin },
+    alignment: { vertical: "center", horizontal: "left", wrapText: true },
+  };
+  const headerRowIdx = rows.length;
+  rows.push({
+    values: table.headers.map((h) => pdfSafeText(h)),
+    styles: table.headers.map(() => headStyle),
+    hpt: 18,
+  });
+
+  table.rows.forEach((row, ri) => {
+    const isLast = ri === table.rows.length - 1;
+    const totalRow = isLast && isTableTotalRow(table, ri);
+    const fill = totalRow ? xlFill(XL.totalFill) : ri % 2 === 1 ? xlFill(XL.alt) : undefined;
+    const cells = row.map((cell, ci) => {
+      const colHeader = table.headers[ci] ?? "";
+      const money = parseMoneyCell(cell);
+      const numeric = money ?? (isAmountHeader(colHeader) && typeof cell === "number" ? cell : null);
+      const rightAligned = numeric !== null || isAmountHeader(colHeader);
+      const edge = totalRow
+        ? { top: XL_EDGE.medium, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }
+        : { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair };
+      const style: XlStyle = {
+        font: { sz: 9, bold: totalRow, color: { rgb: totalRow ? XL.navy : "1F2937" } },
+        ...(fill ? { fill } : {}),
+        border: edge,
+        alignment: { vertical: "center", horizontal: rightAligned ? "right" : "left" },
+        ...(numeric !== null ? { numFmt: XL_MONEY } : {}),
+      };
+      return { value: numeric ?? pdfSafeText(String(cell ?? "")), style };
     });
-    ws["!cols"] = colWidths;
-    const name = table.title.substring(0, 31).replace(/[\\/?*[\]:]/g, "_");
-    XLSX.utils.book_append_sheet(wb, ws, name);
+    rows.push({ values: cells.map((c) => c.value), styles: cells.map((c) => c.style), hpt: 13 });
+  });
+
+  const cols = table.headers.map((h, ci) => {
+    const maxLen = Math.max(h.length, ...table.rows.map((r) => String(r[ci] ?? "").length));
+    return { wch: Math.min(Math.max(maxLen + 2, 10), 42) };
+  });
+  const lastRow = rows.length - 1;
+  const autoFilter = {
+    ref: `${XLSX.utils.encode_cell({ r: headerRowIdx, c: 0 })}:${XLSX.utils.encode_cell({ r: lastRow, c: width - 1 })}`,
+  };
+  return xlSheet(rows, cols, merges, autoFilter);
+}
+
+const XL_SIMPLE_KIND_STYLE: Record<SimpleLedgerRow["kind"], XlStyle> = {
+  meta:     { font: { bold: true, sz: 9, color: { rgb: "334155" } }, fill: xlFill("F8FAFC"), border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  add:      { font: { sz: 9.5, color: { rgb: "065F46" } }, fill: xlFill(XL.addFill), border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  subtract: { font: { sz: 9.5, color: { rgb: XL.red } }, fill: xlFill(XL.subFill), border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  subtotal: { font: { bold: true, sz: 10, color: { rgb: XL.navy } }, fill: xlFill(XL.totalFill), border: { top: XL_EDGE.medium, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  total:    { font: { bold: true, sz: 12, color: { rgb: XL.white } }, fill: xlFill(XL.navy), border: { top: XL_EDGE.thick, bottom: XL_EDGE.thick, left: XL_EDGE.thick, right: XL_EDGE.thick }, alignment: { vertical: "center", horizontal: "left" } },
+  note:     { font: { sz: 8.5, italic: true, color: { rgb: XL.amber } }, fill: xlFill(XL.noteFill), border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  line:     { font: { sz: 9.5, color: { rgb: "1F2937" } }, border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+  blank:    { font: { sz: 9, color: { rgb: "1F2937" } }, border: { top: XL_EDGE.hair, bottom: XL_EDGE.hair, left: XL_EDGE.hair, right: XL_EDGE.hair }, alignment: { vertical: "center", horizontal: "left" } },
+};
+
+function xlSimpleSheet(config: ExportConfig, ts: string): XLSX.WorkSheet {
+  const header = xlHeaderRows(config.title, config.subtitle, ts, 2);
+  const rows: XlRow[] = [...header];
+  const merges: XLSX.Range[] = [];
+  header.forEach((_, i) => { if (i < 3) merges.push(xlMergeRange(2, i)); });
+
+  for (const row of config.simpleLedger ?? []) {
+    if (row.kind === "blank") { rows.push({ values: [null, null], styles: [null, null], hpt: 6 }); continue; }
+    const labelStyle = XL_SIMPLE_KIND_STYLE[row.kind];
+    const money = parseMoneyCell(row.value);
+    const valueStyle: XlStyle = {
+      ...labelStyle,
+      font: { ...(labelStyle.font ?? {}), bold: true, color: { rgb: row.kind === "total" ? XL.mint : labelStyle.font?.color?.rgb ?? XL.navy } },
+      alignment: { vertical: "center", horizontal: "right" },
+      ...(money !== null ? { numFmt: XL_MONEY } : {}),
+    };
+    const label = row.detail ? `${row.label} (${row.detail})` : row.label;
+    rows.push({
+      values: [pdfSafeText(label), money ?? pdfSafeText(row.value)],
+      styles: [labelStyle, valueStyle],
+      hpt: row.kind === "total" ? 21 : row.kind === "subtotal" ? 16 : 14,
+    });
   }
 
-  XLSX.writeFile(wb, sanitizeFilename(config.title) + ".xlsx");
+  const formulaStyle: XlStyle = { font: { sz: 8, italic: true, color: { rgb: XL.muted } }, alignment: { horizontal: "left" } };
+  const noteRow = rows.length;
+  rows.push({ values: ["Bills + Old Dues - (Cancel+Refund+Outstanding) - Digital = Cash in counter", null], styles: [formulaStyle, null], hpt: 16 });
+  merges.push(xlMergeRange(2, noteRow));
+
+  return xlSheet(rows, [{ wch: 52 }, { wch: 20 }], merges);
+}
+
+export function buildExcelWorkbook(config: ExportConfig, mode: ExportMode = "full"): XLSX.WorkBook {
+  const wb = XLSX.utils.book_new();
+  const ts = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+  if (mode === "simple" && config.simpleLedger?.length) {
+    XLSX.utils.book_append_sheet(wb, xlSimpleSheet(config, ts), "Simple Ledger");
+    return wb;
+  }
+
+  XLSX.utils.book_append_sheet(wb, xlReconciliationSheet(config, ts), "Reconciliation");
+  for (const table of config.tables) {
+    const name = table.title.substring(0, 31).replace(/[\\/?*[\]:]/g, "_");
+    XLSX.utils.book_append_sheet(wb, xlTableSheet(table, config, ts), name);
+  }
+  return wb;
+}
+
+function downloadExcel(config: ExportConfig, mode: ExportMode = "full") {
+  const name = sanitizeFilename(config.title) + (mode === "simple" ? "_Simple" : "") + ".xlsx";
+  XLSX.writeFile(buildExcelWorkbook(config, mode), name);
 }
 
 // ─── Word ─────────────────────────────────────────────────────────────────────
 
 function downloadWord(config: ExportConfig, mode: ExportMode = "full") {
-  const html = buildHTML(config, mode);
+  const html = buildWordDocument(config, mode);
   const blob = new Blob([html], { type: "application/msword; charset=utf-8" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
@@ -922,18 +1461,21 @@ export function SummaryExportToolbar({
   const [pdfOrientation, setPdfOrientation] = useState<PaperOrientation>(
     () => loadSummaryPdfOrientation(),
   );
+  const [scope, setScope] = useState<ExportMode>("full");
 
   if (!config) return null;
   const hasSimple = (config.simpleLedger?.length ?? 0) > 0;
+  // A page with no simple ledger has no choice to make, and must never export one.
+  const view: ExportMode = hasSimple ? scope : "full";
 
   function handleSetOrientation(o: PaperOrientation) {
     persistSummaryPdfOrientation(o);
     setPdfOrientation(o);
   }
 
-  async function handlePDF(mode: ExportMode = "full") {
+  async function handlePDF() {
     setPdfBusy(true);
-    try { await downloadPDF(config!, pdfOrientation, mode); }
+    try { await downloadPDF(config!, pdfOrientation, view); }
     finally { setPdfBusy(false); }
   }
 
@@ -945,7 +1487,7 @@ export function SummaryExportToolbar({
     const addr = emailTo.trim();
     if (!addr) return;
     setSending(true); setResult(null);
-    const r = await sendSummaryEmail(config!, addr, emailEndpoint);
+    const r = await sendSummaryEmail(config!, addr, emailEndpoint, view);
     setResult(r); setSending(false);
   }
 
@@ -966,11 +1508,11 @@ export function SummaryExportToolbar({
         <div className={`flex items-center overflow-hidden rounded-md border ${compact ? "border-slate-600/40 h-6" : "border-blue-700 h-8"}`}>
           <Button variant="ghost" size="sm"
             className={pdfBtnClass}
-            onClick={() => void handlePDF("full")} disabled={pdfBusy}>
+            onClick={() => void handlePDF()} disabled={pdfBusy}>
             {pdfBusy
               ? <Loader2 size={icSz} className="animate-spin" />
               : <FileText size={icSz} />}
-            PDF
+            {view === "simple" && !compact ? "Simple PDF" : "PDF"}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -980,9 +1522,28 @@ export function SummaryExportToolbar({
                 <ChevronDown size={compact ? 10 : 12} />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuContent align="end" className="w-56">
+              {/* One format list, not two. The old menu repeated Print / PDF / Word / Excel
+                  under "Simple ledger", so the same four actions appeared eight times and the
+                  only difference was which content was bundled with them. */}
               <DropdownMenuLabel className="text-[10px] text-muted-foreground font-normal">
-                PDF layout
+                What to export
+              </DropdownMenuLabel>
+              {hasSimple ? (
+                <DropdownMenuRadioGroup value={view} onValueChange={(v) => setScope(v as ExportMode)}>
+                  <DropdownMenuRadioItem value="full" className="text-xs">
+                    Full report
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="simple" className="text-xs">
+                    Simple ledger (one page)
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              ) : (
+                <div className="px-2 py-1 text-xs text-muted-foreground">Full report</div>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[10px] text-muted-foreground font-normal">
+                PDF page
               </DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 value={pdfOrientation}
@@ -995,38 +1556,21 @@ export function SummaryExportToolbar({
                 </DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-xs gap-2" onClick={() => doPrint(config, "full")}>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => void handlePDF()} disabled={pdfBusy}>
+                <FileText size={13} /> Download PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => doPrint(config, view)}>
                 <Printer size={13} /> Print
               </DropdownMenuItem>
-              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadWord(config, "full")}>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadWord(config, view)}>
                 <FileType size={13} /> Word (.doc)
               </DropdownMenuItem>
-              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadExcel(config, "full")}>
+              <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadExcel(config, view)}>
                 <FileSpreadsheet size={13} /> Excel (.xlsx)
               </DropdownMenuItem>
               <DropdownMenuItem className="text-xs gap-2" onClick={openEmail}>
                 <Mail size={13} /> Email
               </DropdownMenuItem>
-              {hasSimple && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-[10px] text-amber-700 font-semibold">
-                    Simple ledger
-                  </DropdownMenuLabel>
-                  <DropdownMenuItem className="text-xs gap-2" onClick={() => doPrint(config, "simple")}>
-                    <Printer size={13} /> Simple Print
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-xs gap-2" onClick={() => void handlePDF("simple")} disabled={pdfBusy}>
-                    <FileText size={13} /> Simple PDF
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadExcel(config, "simple")}>
-                    <FileSpreadsheet size={13} /> Simple Excel
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-xs gap-2" onClick={() => downloadWord(config, "simple")}>
-                    <FileType size={13} /> Simple Word
-                  </DropdownMenuItem>
-                </>
-              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -1057,6 +1601,10 @@ export function SummaryExportToolbar({
               />
             </div>
             <div className="rounded-lg bg-gray-50 dark:bg-muted/20 p-3">
+              <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-0.5">Content:</p>
+              <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
+                {view === "simple" ? "Simple ledger (one page)" : "Full report"}
+              </p>
               <p className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-0.5">Subject:</p>
               <p className="text-xs text-gray-600 dark:text-gray-400 truncate">
                 {config.title} — {config.subtitle}
