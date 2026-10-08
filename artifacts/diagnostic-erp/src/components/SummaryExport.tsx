@@ -582,7 +582,7 @@ export function buildHTML(config: ExportConfig, mode: ExportMode = "full"): stri
     table { border-collapse: collapse; }
     @media print {
       body { padding: 0; }
-      @page { margin: 6mm 8mm; size: A4 ${mode === "simple" ? "portrait" : "landscape"}; }
+      @page { margin: 6mm 8mm; size: A4 portrait; }
       .no-print { display: none !important; }
     }
   </style>
