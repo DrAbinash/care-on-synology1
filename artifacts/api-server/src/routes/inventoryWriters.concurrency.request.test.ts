@@ -635,6 +635,31 @@ describe.skipIf(!dbAvailable)("B-13 inventory writers — real Postgres concurre
     // order instead of ascending itemId, Postgres would have aborted one of them
     // with 40P02 and the assertion above would have failed as a 500.
     expect(res.map((r) => r.body.invoice?.status)).toEqual(["posted", "posted"]);
+
+    // Phase 2 is the inversion the shared lock order exists to prevent: the
+    // automatic FEFO deduction and the manual FEFO endpoint contending for the
+    // SAME lots and item from two code paths. With lots-before-item on both sides
+    // no cycle is reachable. If either side takes the item first, Postgres kills
+    // one of them with 40P02, which surfaces as a 500 from the route or a
+    // deadlock error string from the library — never as a silent shortage.
+    const f = await mkItem({
+      lots: [{ qty: "20", expiry: "2029-01-01" }, { qty: "20", expiry: "2030-01-01" }, { qty: "20", expiry: "2031-01-01" }],
+    });
+    const fTest = await mkAutoRule(f, "2");
+    const [autoFefo, manualFefo] = await Promise.all([
+      burst(6, (i) => consumeInventoryForTest({ testId: fTest, referenceKey: `${marker}-17b-${i}`, performedBy: marker })),
+      burst(6, (i) => consumeFefo(f.id, { quantity: 2, reference: `${marker}-17b-M${i}` })),
+    ]);
+    const errors = autoFefo.flat().filter((l) => l.error).map((l) => String(l.error));
+    expect(errors.filter((e) => /deadlock|could not serialize/i.test(e)), `lock-order inversion reached a client: ${errors.join("; ")}`).toEqual([]);
+    const serverErrors = manualFefo.filter((r) => r.status === 500);
+    expect(serverErrors.length, `consume-fefo 500ed ${serverErrors.length} times under contention — an aborted lock cycle, not a shortage`).toBe(0);
+    // 12 withdrawals of 2 against 60 usable units: all of them must land. A pair
+    // lost to a deadlock would halve this number without any 500 reaching us.
+    expect(consumed(autoFefo) + countOk(manualFefo)).toBe(12);
+    expect(r2(await stockOf(f.id))).toBe(36);
+    await assertChain(f.id, f.initial);
+    await assertLotsReconcile(f.id);
   }, 60_000);
 
   it("B13-A3 invoice post concurrent with a manual stock-out on the same item", async () => {
