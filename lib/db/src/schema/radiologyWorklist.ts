@@ -23,6 +23,13 @@ export const radiologyWorklistTable = pgTable(
     studyDate: text("study_date"),
     accessionNumber: text("accession_number"), // nullable, NOT globally unique — see radiologyWorklist.ts header note
     studyInstanceUID: text("study_instance_uid"),
+    // WHY this UID is on this row. Nullable with no default: NULL means
+    // "unknown / predates provenance tracking" and is never rewritten, so a
+    // historical binding can never be relabelled as verified. Values are owned
+    // by lib/pacs/studyUidBinding.ts (STUDY_UID_PROVENANCE) and are always
+    // written in the same statement as study_instance_uid — including the
+    // NULLs, so a purged UID cannot leave a provenance describing it behind.
+    studyUidProvenance: text("study_uid_provenance"),
     aeTitle: text("ae_title"),
     ipAddress: text("ip_address"),
     port: integer("port"),

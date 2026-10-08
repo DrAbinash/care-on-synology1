@@ -18,6 +18,11 @@ export const PACS_WORKLIST_DETAIL_SELECT = {
   studyDate: radiologyWorklistTable.studyDate,
   accessionNumber: radiologyWorklistTable.accessionNumber,
   studyInstanceUID: radiologyWorklistTable.studyInstanceUID,
+  // D1: how the UID above was obtained. Returned on the detail read so a
+  // caller (and the viewer's unresolved panel) can tell a modality-supplied
+  // binding from one recorded before provenance tracking, instead of inferring
+  // authority from the UID merely being present.
+  studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
   referringDoctor: radiologyWorklistTable.referringDoctor,
   status: radiologyWorklistTable.status,
   dicomMetadata: radiologyWorklistTable.dicomMetadata,

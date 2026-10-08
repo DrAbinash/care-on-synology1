@@ -301,6 +301,11 @@ export async function scrubErpStudyCache(studyInstanceUIDs: string[]): Promise<E
       .update(radiologyWorklistTable)
       .set({
         studyInstanceUID: null,
+        // The study left the archive, so the reason its UID was bound is no
+        // longer a statement about this row. Nulled in the same set() as the
+        // UID itself — a provenance describing an absent UID would be the most
+        // convincing kind of stale identity there is.
+        studyUidProvenance: null,
         weasisUrl: null,
         dicomMetadata: null,
         sourcePacs: null,
