@@ -2541,6 +2541,23 @@ radiologyReportGeneratorRouter.post(
       }
     }
 
+    // D2-I1: a capture that names a study at all must name THIS study, even when it
+    // names no series and no SOP. An empty claim stays legal — the file-upload form
+    // sends no DICOM UID, and that is an image with no identity rather than a wrong
+    // one — so only a claim that disagrees is refused.
+    if (studyUid) {
+      try {
+        await assertImageUidBelongsToDraft(draftId, String(studyUid));
+      } catch (err) {
+        await cleanupOrphans();
+        if (err instanceof RadiologyIdentityError) {
+          res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+          return;
+        }
+        throw err;
+      }
+    }
+
     // D2 — the format check above only proves the string looks like a UID. A
     // captured image also has to be the image the viewer says it is, or it is
     // not stored as an identity at all. See lib/imageIdentity.ts.

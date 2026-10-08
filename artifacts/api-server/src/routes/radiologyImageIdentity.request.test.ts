@@ -467,6 +467,41 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
     expect(row.viewportSnapshotJson ?? "").not.toMatch(/ds-should-be-ignored/);
   });
 
+  it("D2-I1 (capture, study-level): a capture that names only a foreign study is refused", async () => {
+    // The ownership chain needs series+SOP to be worth asking about, but a wrong
+    // StudyInstanceUID on its own is still a wrong study, and this route had no
+    // study comparison at all before D2.
+    const res = await keyImagePost({
+      studyInstanceUID: STUDY_B,
+      viewer: "frames",
+      sourceType: "VIEWPORT_CAPTURE",
+      caption: "foreign study, no image named",
+    });
+    expectStatus(res, 409);
+    expect(res.body.code).toBe("IMAGE_STUDY_MISMATCH");
+    const rows = await db
+      .select({ id: radiologyReportKeyImagesTable.id })
+      .from(radiologyReportKeyImagesTable)
+      .where(eq(radiologyReportKeyImagesTable.studyInstanceUid, STUDY_B));
+    expect(rows.length).toBe(0);
+  });
+
+  it("D2-I7 (capture): a file upload that names no study still saves, unanchored", async () => {
+    // RadiologyReportGenerator.tsx's upload form sends draftId + studyId + patientId
+    // and no DICOM UID. Making a study claim mandatory here would break a working
+    // feature to close a hole that is not there, so the empty claim keeps its
+    // meaning: an image with no DICOM identity.
+    const res = await keyImagePost({
+      sourceType: "UPLOAD",
+      caption: "uploaded photo, no study claimed",
+    });
+    expectStatus(res, 201);
+    cleanupKeyImageIds.push(res.body?.item?.id);
+    const row = await rowFor(res.body.item.id);
+    expect(row.studyInstanceUid).toBeNull();
+    expect(row.sopInstanceUid).toBeNull();
+  });
+
   // ────────────────────────────────────────────────────────────────────────────
   // /image-references — the report's image list. Study was checked; the rest was not.
   // ────────────────────────────────────────────────────────────────────────────
