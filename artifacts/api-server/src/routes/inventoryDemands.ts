@@ -6,6 +6,7 @@ import {
   inventoryItemsTable,
   inventoryTransactionsTable,
 } from "@workspace/db/schema";
+import { lockItemForStockTx } from "../lib/inventoryStockLock";
 import { and, desc, eq } from "drizzle-orm";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 
@@ -139,23 +140,31 @@ router.post("/demands/:id/issue", async (req: StaffAuthRequest, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "bad id" }); return; }
 
-  const [demand] = await db.select().from(inventoryDemandRequestsTable).where(eq(inventoryDemandRequestsTable.id, id)).limit(1);
-  if (!demand) { res.status(404).json({ error: "Demand not found" }); return; }
-  if (demand.status !== "pending" && demand.status !== "approved") {
-    res.status(400).json({ error: `Cannot issue demand in status ${demand.status}` });
-    return;
-  }
-  if (!demand.itemId) {
-    res.status(400).json({ error: "Link this demand to a catalog item before issuing stock" });
-    return;
-  }
-
-  const qty = n(demand.quantity);
   const actor = req.staffSession?.subjectName ?? "store";
 
   try {
     const result = await db.transaction(async (tx) => {
-      const [item] = await tx.select().from(inventoryItemsTable).where(eq(inventoryItemsTable.id, demand.itemId!)).limit(1);
+      // The demand row is this writer's document key, so it is locked BEFORE its
+      // status is read. Checked against an unlocked read outside the transaction,
+      // "pending/approved" is only a description of a moment: two staff opening
+      // the same slip and both clicking Issue passed the guard together, and the
+      // shelf went out twice for one request while the ledger carried the same
+      // `DEMAND-<id>` reference on both rows. One row lock makes the second
+      // attempt see `issued` and refuse.
+      const [demand] = await tx
+        .select()
+        .from(inventoryDemandRequestsTable)
+        .where(eq(inventoryDemandRequestsTable.id, id))
+        .for("update")
+        .limit(1);
+      if (!demand) throw new Error("DEMAND_NOT_FOUND");
+      if (demand.status !== "pending" && demand.status !== "approved") {
+        throw new Error(`NOT_ISSUABLE:${demand.status}`);
+      }
+      if (!demand.itemId) throw new Error("NO_CATALOG_ITEM");
+
+      const qty = n(demand.quantity);
+      const item = await lockItemForStockTx(tx, demand.itemId);
       if (!item) throw new Error("ITEM_NOT_FOUND");
       const before = n(item.currentStock);
       if (before < qty) throw new Error("INSUFFICIENT_STOCK");
@@ -189,6 +198,18 @@ router.post("/demands/:id/issue", async (req: StaffAuthRequest, res) => {
     res.json({ ...mapDemand(result.demand), newStock: result.newStock });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Issue failed";
+    if (msg === "DEMAND_NOT_FOUND") {
+      res.status(404).json({ error: "Demand not found" });
+      return;
+    }
+    if (msg.startsWith("NOT_ISSUABLE:")) {
+      res.status(400).json({ error: `Cannot issue demand in status ${msg.slice("NOT_ISSUABLE:".length)}` });
+      return;
+    }
+    if (msg === "NO_CATALOG_ITEM") {
+      res.status(400).json({ error: "Link this demand to a catalog item before issuing stock" });
+      return;
+    }
     if (msg === "INSUFFICIENT_STOCK") {
       res.status(400).json({ error: "Insufficient stock to issue this demand" });
       return;
