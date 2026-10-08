@@ -387,8 +387,11 @@ function simpleRowStyle(kind: SimpleLedgerRow["kind"]): SimpleRowLook {
 
 /** `tableTag` carries the reset Word needs; per-table styles are added on top of it. */
 function tableTag(style = "", width = "100%"): string {
+  // `width="460"` is a pixel count, but the CSS property needs a unit — Word reads the
+  // attribute and a browser reads the declaration, so both have to be right.
+  const css = /^\d+$/.test(width) ? `${width}px` : width;
   return `<table cellpadding="0" cellspacing="0" border="0" width="${width}" `
-    + `style="width:${width};border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0;padding:0;${style}">`;
+    + `style="width:${css};border-collapse:collapse;border-spacing:0;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0;padding:0;${style}">`;
 }
 
 function gapRow(pt: number): string {

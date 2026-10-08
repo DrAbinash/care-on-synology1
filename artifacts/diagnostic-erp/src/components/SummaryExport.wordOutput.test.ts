@@ -179,6 +179,10 @@ describe("the one-page ledger renders through the same tables", () => {
     // The old simple body was `<div style="max-width:520px;margin:0 auto">`, which Word
     // renders as a full-width block and centres not at all.
     expect(doc).toContain('width="460"');
+    expect(doc).toContain("width:460px");
+    // A bare `width:460` is an invalid declaration, so a browser would have ignored it and
+    // only Word's attribute reading would have honoured the card width.
+    expect(doc).not.toContain("width:460;");
     expect(doc).not.toContain("max-width:520px");
     expect(doc).not.toContain("border-radius");
     expect(doc).toContain("WordSection1");
