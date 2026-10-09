@@ -2,14 +2,19 @@
  * Thin cloud Composer adapters — translate ComposerProviderRequest into
  * @workspace/ai-providers shared OpenAI-compatible transport.
  * Do NOT own duplicate SDK clients / fetch / usage extraction.
+ *
+ * These three adapters are the only way composer text reaches a cloud vendor,
+ * so they are where the two things CARE was missing are now enforced:
+ *  - `assertGatewayPrivacy` runs before any network call (cloud-bound composer
+ *    text previously bypassed every PHI control CARE has).
+ *  - credentials resolve through `ai_provider_settings` first, like the rest of
+ *    CARE, instead of environment-only (see cloudComposerConfig.ts).
  */
 import {
   openAiCompatibleChat,
-  readEnvApiKey,
-  readEnvBaseUrl,
-  COMPATIBLE_PROVIDER_DEFAULTS,
   assertVisionCapable,
   estimateUsageCostUsd,
+  COMPATIBLE_PROVIDER_DEFAULTS,
   type CompatibleImagePart,
 } from "@workspace/ai-providers";
 import type {
@@ -20,14 +25,34 @@ import type {
   ComposerProviderName,
 } from "./types";
 import { modelCapabilities } from "./modelRegistry";
+import { assertGatewayPrivacy } from "./gatewayPrivacy";
+import { resolveCloudComposerConfig, type CloudComposerProvider } from "./cloudComposerConfig";
 
-type CloudId = "qwen" | "deepseek" | "openai";
+type CloudId = CloudComposerProvider;
+
+function failed(
+  provider: CloudId,
+  model: string,
+  safeError: string,
+  detail?: string,
+): ComposerProviderResult {
+  return {
+    ok: false,
+    provider,
+    model,
+    safeError,
+    latencyMs: 0,
+    execution: "CLOUD",
+    ...(detail ? { detail } : {}),
+  };
+}
 
 async function composeViaSharedTransport(
   provider: CloudId,
   request: ComposerProviderRequest,
 ): Promise<ComposerProviderResult> {
-  const model = (request.model || "").trim() || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.defaultModel || "";
+  const model =
+    (request.model || "").trim() || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.defaultModel || "";
   const imageCount = request.images?.length ?? 0;
   const execution = "CLOUD" as const;
 
@@ -45,27 +70,37 @@ async function composeViaSharedTransport(
     }
   }
 
-  const apiKey = readEnvApiKey(provider);
-  const baseURL = readEnvBaseUrl(provider) || COMPATIBLE_PROVIDER_DEFAULTS[provider]?.baseURL;
-  if (!apiKey) {
-    return {
-      ok: false,
-      provider,
-      model,
-      safeError: `${provider}_api_key_not_configured`,
-      latencyMs: 0,
-      execution,
-    };
+  // ─── Privacy gate: runs before the request exists on the wire ───────────────
+  // The gate may redact identifier VALUES (never clinical content) and returns
+  // the exact text that is allowed to leave. Anything it refuses is refused
+  // here, not silently sent.
+  const privacy = await assertGatewayPrivacy({
+    provider,
+    systemPrompt: request.systemPrompt,
+    userPrompt: request.userPrompt,
+    images: request.images,
+    cloudVisionAllowed: request.cloudVisionAllowed === true,
+  });
+  if (!privacy.ok) {
+    return failed(provider, model, privacy.safeError, privacy.detail);
   }
-  if (!baseURL) {
-    return {
-      ok: false,
+
+  const cfg = await resolveCloudComposerConfig(provider);
+  if (!cfg.apiKey) {
+    return failed(
       provider,
       model,
-      safeError: `${provider}_endpoint_not_configured`,
-      latencyMs: 0,
-      execution,
-    };
+      `${provider}_api_key_not_configured`,
+      "No API key found for this provider in AI Provider Settings or the environment.",
+    );
+  }
+  if (!cfg.baseURL) {
+    return failed(
+      provider,
+      model,
+      `${provider}_endpoint_not_configured`,
+      `No endpoint configured for ${provider}.`,
+    );
   }
 
   const images: CompatibleImagePart[] | undefined = request.images?.map((i) => ({
@@ -75,11 +110,11 @@ async function composeViaSharedTransport(
 
   const r = await openAiCompatibleChat({
     provider,
-    baseURL,
-    apiKey,
+    baseURL: cfg.baseURL,
+    apiKey: cfg.apiKey,
     model,
-    systemPrompt: request.systemPrompt,
-    userPrompt: request.userPrompt,
+    systemPrompt: privacy.systemPrompt,
+    userPrompt: privacy.userPrompt,
     images,
     temperature: request.temperature,
     timeoutMs: request.timeoutMs,

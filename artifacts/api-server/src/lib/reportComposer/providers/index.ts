@@ -28,6 +28,17 @@ export {
 
 export { listModels, defaultModelFor, assertModelSupportsCapability } from "./modelRegistry";
 export { assertGatewayPrivacy } from "./gatewayPrivacy";
+export type {
+  GatewayPrivacyInput,
+  GatewayPrivacyResult,
+  CloudTextPosture,
+  PixelPhiPosture,
+} from "./gatewayPrivacy";
+export {
+  resolveCloudComposerConfig,
+  asCloudComposerProvider,
+} from "./cloudComposerConfig";
+export type { CloudComposerProvider, CloudComposerConfig } from "./cloudComposerConfig";
 export {
   deepseekConfiguredPublicStatus,
   DEEPSEEK_TEXT_MODEL,

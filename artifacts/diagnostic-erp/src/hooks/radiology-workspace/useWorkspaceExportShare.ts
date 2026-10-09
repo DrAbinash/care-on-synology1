@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import { withStaffToken } from "@/lib/authFileUrl";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
 import {
@@ -295,7 +296,7 @@ const handleExportPdf = useCallback(async () => {
         await Promise.all(
           frozenForPdf.map(async (img) => {
             try {
-              const res = await fetch(img.imageUrl);
+              const res = await fetch(withStaffToken(img.imageUrl));
               if (!res.ok) return null;
               const blob = await res.blob();
               return await new Promise<string | null>((resolve) => {

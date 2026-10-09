@@ -13,6 +13,7 @@ import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
 import { whatsappWebhookRouter } from "./routes/whatsapp";
 import { recordRequest } from "./lib/requestMetrics";
+import { KEY_IMAGE_MOUNT, radiologyKeyImageHandlers } from "./lib/radiologyKeyImageStatic";
 
 // Helmet is required in production. In dev it is optional so a missing
 // install (or CSP that would break Vite HMR) never blocks local work —
@@ -309,6 +310,16 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
 // request and can 429 login even when the dedicated staff/patient login
 // limiters would still allow the attempt.
 app.use("/api", router);
+
+// Radiology key images are clinical pictures: a viewport capture can carry the
+// patient's name, UHID or accession burned into the raster by the modality, and
+// no code in CARE inspects pixels — so the file itself is the PHI. This prefix
+// used to sit on the public static mount below, protected only by a UUID
+// filename. Guarded by the same staff-session middleware every clinical route
+// uses; see lib/radiologyKeyImageStatic.ts for the reasoning and the client-side
+// `?staffToken=` convention. Server-side readers (composer, print) are
+// unaffected because they read from disk.
+app.use(KEY_IMAGE_MOUNT, ...radiologyKeyImageHandlers());
 
 // Serve user-uploaded site assets (favicon, photos, hero images, etc.)
 // from data/uploads. Path matches what /api/website/photos returns.

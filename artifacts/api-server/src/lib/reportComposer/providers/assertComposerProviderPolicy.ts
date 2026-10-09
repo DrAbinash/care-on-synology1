@@ -1,14 +1,17 @@
 /**
  * Pre-adapter policy gate for Report Composer domain facade.
  * Ollama + Local OpenAI-Compatible are LOCAL (no cloud vision gate).
- * Cloud providers require API keys (env or DB).
+ * Cloud providers require API keys (DB first, then env — resolved by the caller
+ * through `resolveCloudComposerConfig`, because this gate stays synchronous).
  * Cloud vision requires explicit cloudVisionAllowed for ALL cloud vendors.
  */
+import { isCompatibleProviderConfigured } from "@workspace/ai-providers";
 import {
-  isCompatibleProviderConfigured,
-  isLocalOpenAiCompatibleProvider,
-} from "@workspace/ai-providers";
-import type { ComposerProviderName, ComposerProviderImage } from "./types";
+  isCloudComposerProvider,
+  isLocalComposerProvider,
+  type ComposerProviderName,
+  type ComposerProviderImage,
+} from "./types";
 
 export type ComposerProviderPolicyInput = {
   provider: ComposerProviderName;
@@ -18,15 +21,17 @@ export type ComposerProviderPolicyInput = {
   imageCount?: number;
   /** When set, Local OpenAI-Compatible is considered configured (endpoint present). */
   localEndpointConfigured?: boolean;
+  /**
+   * When set, cloud key presence is taken from this — the caller resolved it
+   * from `ai_provider_settings` and then env. Omitted callers keep the previous
+   * env-only answer, so nothing here silently loosens the gate.
+   */
+  cloudApiKeyConfigured?: boolean;
 };
 
 export type ComposerProviderPolicyResult =
   | { ok: true }
   | { ok: false; safeError: string };
-
-function isCloud(provider: ComposerProviderName): boolean {
-  return provider === "qwen" || provider === "deepseek" || provider === "openai";
-}
 
 export function assertComposerProviderPolicy(
   input: ComposerProviderPolicyInput,
@@ -43,7 +48,7 @@ export function assertComposerProviderPolicy(
     return { ok: true };
   }
 
-  if (isLocalOpenAiCompatibleProvider(provider)) {
+  if (isLocalComposerProvider(provider)) {
     // Optional API key is intentionally allowed. Endpoint must be configured
     // (checked via localEndpointConfigured or env at call sites).
     if (input.localEndpointConfigured === false) {
@@ -56,11 +61,15 @@ export function assertComposerProviderPolicy(
     return { ok: true };
   }
 
-  if (!isCloud(provider)) {
+  // Anything else — including gemini and anthropic, which have provider
+  // adapters but no composer adapter — is refused rather than assumed local.
+  if (!isCloudComposerProvider(provider)) {
     return { ok: false, safeError: "composer_provider_not_configured" };
   }
 
-  if (!isCompatibleProviderConfigured(provider)) {
+  const keyConfigured =
+    input.cloudApiKeyConfigured ?? isCompatibleProviderConfigured(provider);
+  if (!keyConfigured) {
     return { ok: false, safeError: `${provider}_api_key_not_configured` };
   }
 

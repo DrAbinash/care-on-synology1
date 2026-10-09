@@ -1,15 +1,29 @@
 /**
  * Experimental DeepSeek Vision A/B trial — never writes clinical reports.
  * Uses derived JPEG/PNG/WebP only (no DICOM). Requires explicit confirmCloudVisionTrial.
+ *
+ * PRIVACY CLAIMS ARE POSTURES, NOT BOOLEANS. This response used to hard-code
+ * `identifiersExcluded: true` on every return path — including the one that
+ * inspected nothing, and including real patient pixels that no code anywhere
+ * can check. A field that asserts a control exists when it does not is worse
+ * than no field, because an auditor reads it as coverage. What is reported now
+ * is only what was actually established:
+ *  - `rawDicomExcluded`  — earned: the MIME/filename check ran on this payload.
+ *  - `textIdentifiers`   — what the shared gate detected/redacted in the prompt.
+ *  - `pixelIdentifiers`  — always `not_verified`. Nothing in CARE inspects
+ *                          image pixels, so a burned-in name or UHID survives
+ *                          every step of this trial. That is the truth the
+ *                          operator needs before pointing it at real studies.
  */
 import { DeepSeekComposerAdapter, approximateDeepSeekCostUsd, getRecentDeepSeekTelemetry } from "./deepseekComposerAdapter";
 import {
   DEEPSEEK_TEXT_MODEL,
   DEEPSEEK_VISION_MODEL,
   deepseekConfiguredPublicStatus,
-  isDeepSeekConfigured,
 } from "./deepseekConfig";
 import { assertNoRawDicomPayload, flagPossibleBurnedInPhi } from "./cloudPayloadPrivacy";
+import { assertGatewayPrivacy, type CloudTextPosture } from "./gatewayPrivacy";
+import { resolveCloudComposerConfig } from "./cloudComposerConfig";
 import type { ComposerProviderImage } from "./types";
 import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 import { resolveComposerRuntime } from "../../voiceReportComposer/runtimeConfig";
@@ -42,9 +56,34 @@ export type VisionTrialArmResult = {
   approximateCostUsd?: number | null;
 };
 
+export type VisionTrialPrivacy = {
+  rawDicomExcluded: boolean;
+  textIdentifiers: CloudTextPosture | "not_evaluated";
+  pixelIdentifiers: "not_verified";
+  identifiersExcluded: false;
+  burnedInPhiFlags: string[];
+};
+
 function tinySyntheticPngBase64(): string {
   // 1x1 PNG
   return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+}
+
+function privacyPosture(opts: {
+  rawDicomExcluded?: boolean;
+  textIdentifiers?: CloudTextPosture | "not_evaluated";
+  burnedInPhiFlags?: string[];
+}): VisionTrialPrivacy {
+  return {
+    rawDicomExcluded: opts.rawDicomExcluded ?? false,
+    textIdentifiers: opts.textIdentifiers ?? "not_evaluated",
+    pixelIdentifiers: "not_verified",
+    // Nothing can claim identifier exclusion for pixels, so the legacy boolean
+    // stays false instead of being deleted — older panels keep rendering, and
+    // what they render is no longer a lie.
+    identifiersExcluded: false,
+    burnedInPhiFlags: opts.burnedInPhiFlags ?? [],
+  };
 }
 
 export async function runDeepSeekVisionAbTrial(opts: {
@@ -58,17 +97,12 @@ export async function runDeepSeekVisionAbTrial(opts: {
   ok: boolean;
   writesClinicalReport: false;
   deepSeekConfigured: boolean;
-  privacy: {
-    rawDicomExcluded: true;
-    identifiersExcluded: true;
-    burnedInPhiFlags: string[];
-  };
+  privacy: VisionTrialPrivacy;
   local: VisionTrialArmResult | null;
   deepseek: VisionTrialArmResult | null;
   sameImageCount: number;
   samePrompt: string;
 }> {
-  const status = deepseekConfiguredPublicStatus();
   const prompt =
     (opts.clinicalPrompt ?? "").trim() ||
     "MRI LS Spine key images. Propose structured observations only. Limited review.";
@@ -93,12 +127,8 @@ export async function runDeepSeekVisionAbTrial(opts: {
     return {
       ok: false,
       writesClinicalReport: false,
-      deepSeekConfigured: status.configured,
-      privacy: {
-        rawDicomExcluded: true,
-        identifiersExcluded: true,
-        burnedInPhiFlags: ["raw_dicom_blocked"],
-      },
+      deepSeekConfigured: (await resolveCloudComposerConfig("deepseek")).keyConfigured,
+      privacy: privacyPosture({ rawDicomExcluded: true, burnedInPhiFlags: ["raw_dicom_blocked"] }),
       local: null,
       deepseek: null,
       sameImageCount: 0,
@@ -106,8 +136,24 @@ export async function runDeepSeekVisionAbTrial(opts: {
     };
   }
 
-  const burnedInPhiFlags = flagPossibleBurnedInPhi([prompt, ...images.map((i) => i.label ?? "")]);
   const userPrompt = `${prompt}\n\nImage count: ${images.length}. De-identified trial only.`;
+  const cloudArmAllowed = opts.confirmCloudVisionTrial === true && opts.cloudVisionAllowed === true;
+
+  // The same gate the production composer uses. The cloud arm is refused here
+  // as well as inside the adapter, so this trial cannot become the back door
+  // that the policy gate was built to close.
+  const gate = await assertGatewayPrivacy({
+    provider: "deepseek",
+    systemPrompt: VISION_TRIAL_SYSTEM,
+    userPrompt,
+    images,
+    filenames: images.map((i) => i.filename),
+    cloudVisionAllowed: cloudArmAllowed,
+  });
+
+  const deepSeekCfg = await resolveCloudComposerConfig("deepseek");
+  const status = deepseekConfiguredPublicStatus();
+  const deepSeekConfigured = deepSeekCfg.keyConfigured || Boolean(status.configured);
 
   let local: VisionTrialArmResult | null = null;
   let deepseek: VisionTrialArmResult | null = null;
@@ -175,7 +221,21 @@ export async function runDeepSeekVisionAbTrial(opts: {
         fallbackUsed: false,
         writesClinicalReport: false,
       };
-    } else if (!isDeepSeekConfigured()) {
+    } else if (!gate.ok) {
+      // Refused by the shared privacy gate — no request was made.
+      deepseek = {
+        execution: "CLOUD",
+        provider: "deepseek",
+        model: DEEPSEEK_VISION_MODEL,
+        ok: false,
+        latencyMs: 0,
+        imageCount: images.length,
+        proposalText: null,
+        safeError: gate.safeError,
+        fallbackUsed: false,
+        writesClinicalReport: false,
+      };
+    } else if (!deepSeekConfigured) {
       deepseek = {
         execution: "CLOUD",
         provider: "deepseek",
@@ -191,11 +251,12 @@ export async function runDeepSeekVisionAbTrial(opts: {
     } else {
       const adapter = new DeepSeekComposerAdapter();
       const r = await adapter.compose({
-        systemPrompt: VISION_TRIAL_SYSTEM,
-        userPrompt,
+        systemPrompt: gate.systemPrompt,
+        userPrompt: gate.userPrompt,
         model: DEEPSEEK_VISION_MODEL,
         temperature: 0.1,
         timeoutMs: 90_000,
+        cloudVisionAllowed: true,
         images: images.map((i) => ({ mimeType: i.mimeType, base64: i.base64 })),
       });
       const last = getRecentDeepSeekTelemetry(1)[0];
@@ -220,12 +281,16 @@ export async function runDeepSeekVisionAbTrial(opts: {
   return {
     ok: (local?.ok ?? false) || (deepseek?.ok ?? false),
     writesClinicalReport: false,
-    deepSeekConfigured: status.configured,
-    privacy: {
+    deepSeekConfigured,
+    privacy: privacyPosture({
+      // Earned unconditionally from here on: assertNoRawDicomPayload already
+      // ran on every image above and returned early if any failed it.
       rawDicomExcluded: true,
-      identifiersExcluded: true,
-      burnedInPhiFlags,
-    },
+      textIdentifiers: gate.ok ? gate.textPosture : "not_evaluated",
+      burnedInPhiFlags: gate.ok
+        ? gate.burnedInPhiFlags
+        : flagPossibleBurnedInPhi([userPrompt, ...images.map((i) => i.label ?? "")]),
+    }),
     local,
     deepseek,
     sameImageCount: images.length,

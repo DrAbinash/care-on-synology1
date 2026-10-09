@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { withStaffToken } from "@/lib/authFileUrl";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import ReportLayoutQuickSelect, {
@@ -864,7 +865,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
       findings,
       impression: impressionRaw,
       recommendation,
-      keyImages: keyImages.length ? keyImages.map((i) => i.thumbnailUrl).filter((u): u is string => u != null) : undefined,
+      keyImages: keyImages.length ? keyImages.map((i) => withStaffToken(i.thumbnailUrl)).filter((u): u is string => u != null) : undefined,
       reportTitle: template?.studyName ? `${template.studyName} Report` : "Radiology Report",
       printedBy: session?.user.name ?? undefined,
     }, printSettings, clinicSettings ?? null);
@@ -2044,7 +2045,7 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                     key={img.id}
                     className={`relative rounded-lg border p-2 space-y-2 ${img.includeInReport ? "border-border" : "border-dashed opacity-60"}`}
                   >
-                    <img src={img.imageUrl} alt={img.caption || "Key image"} className="w-full h-28 object-contain rounded bg-muted" />
+                    <img src={withStaffToken(img.imageUrl)} alt={img.caption || "Key image"} className="w-full h-28 object-contain rounded bg-muted" />
                     <div className="flex items-center gap-1">
                       <Switch checked={img.includeInReport} onCheckedChange={() => void toggleInclude(img)} className="scale-75" />
                       <span className="text-[10px] text-muted-foreground">{img.includeInReport ? "In report" : "Excluded"}</span>

@@ -9,6 +9,7 @@ import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles }
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/fetchApi";
+import { withStaffToken } from "@/lib/authFileUrl";
 import { readStaffSession } from "@/lib/staffSession";
 import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
 
@@ -243,7 +244,7 @@ export default function FrozenKeyImagesRail({
                     title="Preview"
                   >
                     <img
-                      src={img.thumbnailUrl || img.imageUrl}
+                      src={withStaffToken(img.thumbnailUrl || img.imageUrl)}
                       alt={img.caption || "Key image"}
                       className="h-full w-full object-contain"
                       loading="lazy"
@@ -356,7 +357,7 @@ export default function FrozenKeyImagesRail({
             className="max-w-3xl w-full bg-white rounded-lg overflow-hidden shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <img src={preview.imageUrl} alt={preview.caption} className="w-full max-h-[70vh] object-contain bg-black" />
+            <img src={withStaffToken(preview.imageUrl)} alt={preview.caption} className="w-full max-h-[70vh] object-contain bg-black" />
             <div className="p-3 space-y-2">
               {disabled ? (
                 <p className="text-sm">{preview.caption}</p>

@@ -29,6 +29,8 @@ import {
   defaultModelFor,
   assertModelSupportsCapability,
   parseComposerProviderName,
+  resolveCloudComposerConfig,
+  asCloudComposerProvider,
   type ComposerProviderName,
 } from "./providers";
 import {
@@ -214,6 +216,13 @@ export async function runReportComposer(opts: {
   const localEndpoint = isLocalOpenAi ? await getLocalOpenAiBaseUrl(null) : null;
   const providerAdapter = resolveComposerProvider(providerName);
   const cloudVisionAllowed = opts.cloudVisionAllowed === true && isCloud;
+  // Key presence is resolved the same way the send itself resolves it
+  // (ai_provider_settings first, then env), so the gate can no longer say
+  // "not configured" about a provider the admin genuinely configured.
+  const cloudProviderKey = asCloudComposerProvider(providerName);
+  const cloudCfg = cloudProviderKey
+    ? await resolveCloudComposerConfig(cloudProviderKey)
+    : null;
   const policy = assertComposerProviderPolicy({
     provider: providerName,
     aiMode,
@@ -221,6 +230,7 @@ export async function runReportComposer(opts: {
     imageCount: (opts.snapshot.selectedKeyImages ?? []).length,
     images: undefined,
     localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
+    cloudApiKeyConfigured: cloudCfg?.keyConfigured,
   });
   if (!policy.ok) {
     return {
@@ -428,6 +438,10 @@ export async function runReportComposer(opts: {
       numCtx: composeNumCtx,
       endpoint: isLocalOpenAi ? (localEndpoint ?? undefined) : runtime.endpoint,
       localOnly: runtime.localOnly,
+      // Re-checked inside the cloud transport, so opening cloud vision would
+      // need two deliberate changes rather than one. Passes through only what
+      // the policy above already required — production jobs never set it.
+      cloudVisionAllowed,
       // Preserve each resolved image's actual MIME (jpeg/png/webp) — do not coerce to JPEG.
       images: resolved.images.map((img) => ({
         mimeType: img.mimeType,
