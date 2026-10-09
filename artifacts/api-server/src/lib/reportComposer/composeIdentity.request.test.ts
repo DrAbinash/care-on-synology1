@@ -128,6 +128,10 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
   let stCollideA = 0;
   let stCollideB = 0;
   let wlCollide = 0;
+  // A study whose own draft row contradicts it (draft saved under Patient A's
+  // id while the worklist belongs to Patient B) — identity is not establishable.
+  let stMismatch = 0;
+  let wlMismatch = 0;
   let admin: { token: string; userId: number; name: string };
 
   beforeAll(async () => {
@@ -298,6 +302,42 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
       .returning();
     wlCollide = wc.id;
     worklistIds.push(wlCollide);
+
+    // Patient B's study, with a draft row saved under Patient A's patient id.
+    const [mmStudy] = await db
+      .insert(radiologyStudiesTable)
+      .values({
+        accessionNumber: `ACC-${marker}-mismatch`,
+        patientId: p2,
+        testId: 1,
+        modality: "MR",
+        department: "MRI",
+        status: "acquired",
+      })
+      .returning();
+    stMismatch = mmStudy.id;
+    studyIds.push(stMismatch);
+    const [mmWl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientName: "Synthetic Mismatch",
+        modality: "MR",
+        studyDescription: "MRI LS Spine",
+        studyInstanceUID: uid("mismatch"),
+        accessionNumber: `ACC-${marker}-mismatch-wl`,
+        patientId: p2,
+        studyId: stMismatch,
+        patientMatchStatus: "MATCHED",
+        status: "STUDY_RECEIVED",
+      })
+      .returning();
+    wlMismatch = mmWl.id;
+    worklistIds.push(wlMismatch);
+    const [badDraft] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({ studyId: wlMismatch, worklistId: wlMismatch, patientId: p1, modality: "MR", status: "DRAFT" })
+      .returning();
+    draftIds.push(badDraft.id);
   });
 
   afterAll(async () => {
@@ -533,6 +573,23 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
     });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("compose_job_report_conflict");
+  });
+
+  it("4b. a study whose saved draft names a different patient is refused outright", async () => {
+    // wlCollide2 exists only for this case: nothing else targets it, so the
+    // contradiction is the reason for the refusal rather than an artefact of
+    // ordering against another guard.
+    const { id } = await seedReadyJob({
+      worklistId: wlMismatch,
+      studyId: stMismatch,
+      findings: "Identity 4b: draft names the wrong patient.",
+    });
+    const res = await postApply(id, radiologist.token, {
+      acceptedChangeIds: ["c1"],
+      target: { worklistId: wlMismatch, studyId: stMismatch },
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("compose_draft_conflict");
   });
 
   // ── 5, 6, 7 ──────────────────────────────────────────────────────────────
