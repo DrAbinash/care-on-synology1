@@ -528,6 +528,8 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           onAiModeChange={setComposerAiMode}
           primaryRegionLabel={composerPrimaryRegionLabel}
           selectedKeyImageCount={composerSelectedKeyImages.length}
+          inputPreview={reportComposer.inputPreview}
+          onPreview={() => void reportComposer.previewInput()}
           sessionModelOptions={composerSessionModelOptions}
           sessionModelValue={composerSessionModelKey}
           onSessionModelChange={setComposerSessionModelKey}

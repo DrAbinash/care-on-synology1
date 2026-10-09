@@ -7,6 +7,10 @@ import { useWorkspace } from "@/lib/zai-workspace/store";
 import { reportComposerApi, type JobKind } from "@/lib/reportComposer/api";
 import { deriveComposeObservations } from "@/lib/reportComposer/composeObservations";
 import {
+  buildComposerInputPreview,
+  type ComposerInputPreview,
+} from "@/lib/reportComposer/composerInputPreview";
+import {
   computeSnapshotHashes,
   materializeAcceptedText,
   type ComposeJobView,
@@ -52,12 +56,20 @@ export function useReportComposer(opts: {
   /** Session-only provider/model override (workspace A/B). Does not mutate Settings. */
   sessionProvider?: string | null;
   sessionModel?: string | null;
+  /**
+   * The radiologist's optional "Instructions to AI" text from the composer panel. It is
+   * part of the frozen snapshot — and therefore of `inputHash` — for every job kind, so
+   * the preview and the generation request cannot diverge on it.
+   */
+  instruction?: string;
 }) {
   const { toast } = useToast();
   const [job, setJob] = useState<ComposeJobView | null>(null);
   const [busy, setBusy] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [showAiChanges, setShowAiChanges] = useState(true);
+  /** The AI input the radiologist last previewed; dropped whenever clinical input changes. */
+  const [inputPreview, setInputPreview] = useState<ComposerInputPreview | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const findingsText = useWorkspace((s) => s.findingsText);
@@ -194,6 +206,7 @@ export function useReportComposer(opts: {
     // included here automatically and do NOT need a second pass through
     // `voiceComposerObservations`.
     const observations: ComposeObservation[] = deriveComposeObservations(appliedPathologyPatches);
+    const guidance = (opts.instruction ?? "").trim();
     const snap: ComposerInputSnapshot = {
       studyId: opts.studyId,
       worklistId: opts.worklistId,
@@ -227,6 +240,10 @@ export function useReportComposer(opts: {
             sessionModel: opts.sessionModel?.trim() || undefined,
           }
         : {}),
+      // Radiologist guidance is part of the frozen clinical input for every kind, and is
+      // already inside `inputHash` on both client and server. Spread before `extra` so an
+      // explicit per-call instruction (micro-edit) still wins.
+      ...(guidance ? { instruction: guidance } : {}),
       ...extra,
     };
     const hashes = await computeSnapshotHashes(snap);
@@ -235,6 +252,46 @@ export function useReportComposer(opts: {
   }, [
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
     fieldProvenance, appliedPathologyPatches, opts,
+  ]);
+
+  // Bumped every time the clinical input changes, so an in-flight preview that raced a
+  // Quick Select click is discarded instead of being believed.
+  const previewInvalidation = useRef(0);
+
+  /**
+   * Project the frozen AI input for the radiologist to read, and send nothing. This calls
+   * `buildSnapshot()` — the same function `enqueue()` freezes and the server validates —
+   * so the preview is the request's own input rather than a second description of it.
+   */
+  const previewInput = useCallback(async (): Promise<ComposerInputPreview | null> => {
+    const token = previewInvalidation.current;
+    const snapshot = await buildSnapshot();
+    const hashes = await computeSnapshotHashes(snapshot);
+    const preview = buildComposerInputPreview(snapshot, hashes);
+    if (previewInvalidation.current !== token) return null;
+    setInputPreview(preview);
+    return preview;
+  }, [buildSnapshot]);
+
+  const selectedImageSignature = (opts.selectedKeyImages ?? [])
+    .map((r) => r.keyImageId)
+    .join(",");
+
+  // A preview is a claim about the CURRENT input. Any change to the ledger (a finding added
+  // or deselected, a measurement, a level, a laterality, a macro, dictation), the narrative,
+  // the clinical indication, the technique, the study identity, the image selection, the
+  // mode, the radiologist's own instructions or the chosen provider/model makes that claim
+  // false — so the preview is dropped instead of being left on screen after the finding it
+  // showed has been deselected.
+  useEffect(() => {
+    previewInvalidation.current += 1;
+    setInputPreview(null);
+  }, [
+    appliedPathologyPatches, findingsText, impressionText, recommendationText,
+    clinicalHistoryText, techniqueText, opts.worklistId, opts.studyId, opts.modality,
+    opts.region, opts.protocol, opts.reportTitle, opts.family, opts.bodyPart,
+    opts.spineSegment, opts.studyType, opts.aiMode, opts.instruction,
+    opts.sessionProvider, opts.sessionModel, selectedImageSignature,
   ]);
 
   const enqueue = useCallback(async (jobKind: JobKind = "FULL_REPORT", extra?: Partial<ComposerInputSnapshot>) => {
@@ -470,6 +527,8 @@ export function useReportComposer(opts: {
     setShowAiChanges,
     pendingCount,
     enqueue,
+    inputPreview,
+    previewInput,
     composeFull: () => enqueue("FULL_REPORT"),
     composeImpression: () => enqueue("IMPRESSION", { aiMode: "TEXT_ONLY", selectedKeyImages: [] }),
     microEdit: (kind: JobKind, selectionText: string, selectionField: "FINDINGS" | "IMPRESSION" | "RECOMMENDATION", instruction: string, targetLanguage?: string) =>

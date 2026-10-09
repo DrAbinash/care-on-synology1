@@ -2,6 +2,7 @@
  * AI Report Assistant — compact panel inside existing Reporting Workspace.
  * Review colors are render-time only; clinical text stays plain (Guard 4).
  */
+import { useState } from "react";
 import { Bot, Check, Loader2, RefreshCw, Trash2, X, Eye, EyeOff, AlertTriangle, Minus, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ComposeJobView, TrackedChange } from "@/lib/reportComposer/types";
@@ -11,6 +12,8 @@ import {
   DETERMINISTIC_FALLBACK_WARNING,
   isDeterministicComposeFallback,
 } from "@/lib/reportComposer/types";
+import type { ComposerInputPreview } from "@/lib/reportComposer/composerInputPreview";
+import { composerInputSummaryLine } from "@/lib/reportComposer/composerInputPreview";
 import { shouldSubmitAiInstructionKey } from "@/lib/aiInstructionKeys";
 
 type Props = {
@@ -26,6 +29,14 @@ type Props = {
   onAiModeChange: (mode: "TEXT_ONLY" | "SELECTED_IMAGES") => void;
   primaryRegionLabel: string;
   selectedKeyImageCount: number;
+  /**
+   * The frozen AI input, projected from the canonical observation ledger. Null until the
+   * radiologist previews it, and null again as soon as anything clinical changes — a
+   * preview that could go stale on its own would be worse than no preview.
+   */
+  inputPreview: ComposerInputPreview | null;
+  /** Builds the preview from the live ledger. Sends nothing to any provider. */
+  onPreview: () => void;
   /**
    * Session-only AI model options from configured/enabled providers.
    * Empty/default uses Settings Model Routing.
@@ -155,6 +166,7 @@ function provenanceFromJob(job: ComposeJobView | null): {
 }
 
 export function ReportComposerAssistant(props: Props) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const sources = props.job?.sources ?? {};
   const sourceLine = [
     sources["quick-select"] ? `Quick Select ${sources["quick-select"]}` : null,
@@ -174,6 +186,13 @@ export function ReportComposerAssistant(props: Props) {
   const selectedImagesDisabled = props.selectedKeyImageCount <= 0;
   const provenance = provenanceFromJob(props.job);
   const isFallbackDraft = isDeterministicComposeFallback(props.job);
+  // Which model the NEXT click would use, read from the live selector — the preview can
+  // only report the provider that was frozen when the preview was taken.
+  const sessionChoice = (props.sessionModelOptions ?? []).find(
+    (o) => o.value === (props.sessionModelValue ?? ""),
+  );
+  const liveProviderLabel =
+    sessionChoice?.label ?? "Clinic default routing (AI Settings → Model Routing)";
 
   if (props.minimized) {
     return (
@@ -275,6 +294,71 @@ export function ReportComposerAssistant(props: Props) {
         <p className="text-[10px] text-muted-foreground">
           Selected images support the draft; radiologist observations remain authoritative.
         </p>
+      </div>
+
+      <div className="rounded-md border bg-white/70 dark:bg-background/40 px-2 py-1.5 space-y-1" data-testid="ai-input-preview-wrap">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <p className="text-[10px] text-muted-foreground" data-testid="ai-input-summary">
+            {props.inputPreview ? (
+              <>
+                AI input: <span className="font-medium text-foreground">{composerInputSummaryLine(props.inputPreview)}</span>
+                {props.inputPreview.screening ? " · screening study" : ""}
+              </>
+            ) : (
+              "AI input not previewed yet — it is built from your confirmed findings."
+            )}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[10px] gap-1"
+            disabled={props.busy || props.isFinalized}
+            onClick={() => {
+              props.onPreview();
+              setPreviewOpen(true);
+            }}
+            data-testid="ai-preview-input"
+          >
+            <Eye className="h-3 w-3" />
+            Preview AI Input
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground" data-testid="ai-input-provider">
+          Generate will use: <span className="font-medium text-foreground">{liveProviderLabel}</span>
+          {props.inputPreview ? (
+            <>
+              {" · "}frozen in this preview:{" "}
+              <span className="font-medium text-foreground">{props.inputPreview.providerLabel}</span>
+            </>
+          ) : null}
+        </p>
+        {props.inputPreview && previewOpen && (
+          <div className="space-y-1" data-testid="ai-input-preview">
+            <p className="text-[10px] font-medium text-foreground">
+              Clinical snapshot preview — what CARE freezes and composes from. This is not the
+              provider-bound payload: a cloud request passes CARE&apos;s PHI gate on top of it,
+              which can redact text or refuse the send.
+            </p>
+            <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded bg-muted/60 p-2 text-[10px] leading-4">
+              {props.inputPreview.text}
+            </pre>
+            <p className="text-[10px] text-muted-foreground">
+              Nothing has been sent. Generating always builds a fresh frozen snapshot; if anything
+              clinical changes, this preview is dropped and an earlier draft becomes stale.
+              {" · "}revision {props.inputPreview.reportRevision} · input {props.inputPreview.inputHash}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 text-[10px] gap-1"
+              onClick={() => setPreviewOpen(false)}
+            >
+              <EyeOff className="h-3 w-3" /> Hide
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-1.5">
