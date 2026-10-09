@@ -1531,6 +1531,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     primaryRegionLabel: composerPrimaryRegionLabel,
     sessionProvider: composerSessionResolved.provider,
     sessionModel: composerSessionResolved.model,
+    // One source of truth: the panel's instruction box is part of the frozen input for both
+    // the preview and the generation request, so they cannot diverge on it.
+    instruction: microInstruction,
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────

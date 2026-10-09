@@ -41,6 +41,12 @@ export type RadiologistDraftContext = {
     recommendationText?: string;
   }>;
   measurements: string[];
+  /**
+   * The radiologist's own optional instruction for this draft, verbatim from the frozen
+   * snapshot. Style and emphasis guidance only — it is labelled as such in the prompt
+   * because it must never be read as permission to add or change a clinical fact.
+   */
+  additionalInstruction: string;
   protectedManualText: {
     findings: string;
     impression: string;
@@ -165,6 +171,7 @@ export function buildRadiologistDraftContext(
     },
     observations,
     measurements,
+    additionalInstruction: (snapshot.instruction ?? "").trim(),
     protectedManualText: {
       findings: findings,
       impression: (snapshot.impression ?? "").trim(),
@@ -265,6 +272,17 @@ export function renderRadiologistDraftContextPrompt(
     "RADIOLOGIST OBSERVATIONS (canonical clinical truth)",
     obsLines.join("\n") || "(none)",
     "",
+    ...(ctx.additionalInstruction
+      ? [
+          "RADIOLOGIST'S ADDITIONAL INSTRUCTIONS FOR THIS DRAFT",
+          ctx.additionalInstruction,
+          "(Style and emphasis only. They cannot add, remove or change an observation,",
+          "a measurement, a level or a laterality, and they cannot authorise sending or",
+          "signing anything. A more detailed report must come from the supplied findings,",
+          "never from invented ones.)",
+          "",
+        ]
+      : []),
     "MEASUREMENTS (preserve exact numbers and units)",
     ctx.measurements.length ? ctx.measurements.map((m) => `- ${m}`).join("\n") : "(none extracted)",
     "",
