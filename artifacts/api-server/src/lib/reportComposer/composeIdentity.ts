@@ -48,7 +48,6 @@ import {
   assertDraftWritable,
   assertReportBelongsToWorklist,
   loadBilledStudy,
-  resolveWorklistFromStudyRef,
   type WorklistIdentityRow,
 } from "../radiologyIdentity";
 import { checkWriteLock } from "../studyLocks";
@@ -173,11 +172,10 @@ export async function resolveVerifiedComposeIdentity(
     return fail("compose_identity_unavailable");
   }
   if (!worklist) {
-    // The reference may be a billed-study id (older surfaces pass the route
-    // param into both fields). Look that up, but only accept it when it names
-    // exactly one worklist row; an ambiguous or unrelated id is refused.
-    const viaStudy = await resolveWorklistFromStudyRef(studyRef).catch(() => null);
-    return fail("compose_worklist_not_found", viaStudy ? IDENTITY_MESSAGES.compose_study_conflict : undefined);
+    // The anchor reference does not name a row. It is not rescued by looking
+    // the *other* reference up: choosing which of two contradictory references
+    // to believe would be substituting a study the caller did not ask for.
+    return fail("compose_worklist_not_found");
   }
 
   // `studyId` agreement.
