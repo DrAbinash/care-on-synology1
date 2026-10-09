@@ -26,6 +26,14 @@ export interface InferenceProvenance {
   detail?: string;
   /** When set, overnight must NOT treat this as EMPTY/READY — job fails permanently. */
   resourceFailureCode?: "GPU_OUT_OF_MEMORY" | "CONTEXT_BUDGET_EXCEEDED" | "PROVIDER_TIMEOUT" | "PROVIDER_HTTP_ERROR" | null;
+  /**
+   * Why the draft has no content, named. Deliberately separate from
+   * `resourceFailureCode`, which drives model unload, image-count recovery and
+   * the overnight pause streak: this field only informs the radiologist, so a
+   * name can never change what the runner does with the job.
+   */
+  failureCode?: string | null;
+  failureDetail?: string | null;
   httpStatus?: number | null;
   elapsedMs?: number | null;
   requestedImages?: number | null;

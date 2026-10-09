@@ -28,6 +28,9 @@ export interface WorklistAiDraftViewerPayload {
   clinicalStatus: ShadowDraftClinicalStatus | "UNKNOWN";
   emptyReason: string | null;
   emptyReasonLabel: string | null;
+  /** Named provider outcome behind an unusable draft, plus its raw diagnostic. */
+  providerFailureCode: string | null;
+  providerFailureDetail: string | null;
   degraded: boolean;
   quarantinedCount: number;
   candidateCount: number;
@@ -96,11 +99,22 @@ function reasonClassesFromStored(stored: Record<string, unknown>): Array<{ reaso
   return out;
 }
 
+function providerFailureFromStored(stored: Record<string, unknown> | null): {
+  code: string | null;
+  detail: string | null;
+} {
+  return {
+    code: typeof stored?.providerFailureCode === "string" ? stored.providerFailureCode : null,
+    detail: typeof stored?.providerFailureDetail === "string" ? stored.providerFailureDetail : null,
+  };
+}
+
 export function shapeWorklistAiDraftViewer(input: {
   stored: Record<string, unknown> | null;
   shadow: WorkspaceDraft | null;
 }): WorklistAiDraftViewerPayload {
   const { stored, shadow } = input;
+  const storedFailure = providerFailureFromStored(stored);
 
   if (shadow) {
     const findings = shadow.findings
@@ -124,6 +138,7 @@ export function shapeWorklistAiDraftViewer(input: {
       candidateCount,
       degraded: shadow.degraded,
       imageCount: typeof stored?.imageCount === "number" ? stored.imageCount : undefined,
+      providerFailure: storedFailure,
     });
     // Prefer explicit clinicalStatus from pointer when present.
     const pointerStatus = typeof stored?.clinicalStatus === "string"
@@ -147,6 +162,8 @@ export function shapeWorklistAiDraftViewer(input: {
       clinicalStatus,
       emptyReason: (typeof stored?.emptyReason === "string" ? stored.emptyReason : usability.emptyReason),
       emptyReasonLabel: (typeof stored?.emptyReasonLabel === "string" ? stored.emptyReasonLabel : usability.emptyReasonLabel),
+      providerFailureCode: storedFailure.code ?? usability.providerFailureCode,
+      providerFailureDetail: storedFailure.detail ?? usability.providerFailureDetail,
       degraded: shadow.degraded,
       quarantinedCount,
       candidateCount,
@@ -165,6 +182,8 @@ export function shapeWorklistAiDraftViewer(input: {
         acceptedCount: findings.length,
         quarantinedCount,
         degraded: shadow.degraded,
+        providerFailureCode: storedFailure.code ?? usability.providerFailureCode,
+        providerFailureDetail: storedFailure.detail ?? usability.providerFailureDetail,
         modelVersion: shadow.provenance.modelVersion,
         promptVersion: shadow.provenance.promptVersion,
         imageCount: typeof stored?.imageCount === "number" ? stored.imageCount : null,
@@ -186,6 +205,8 @@ export function shapeWorklistAiDraftViewer(input: {
       clinicalStatus: "EMPTY",
       emptyReason: "no_candidate_findings",
       emptyReasonLabel: "No draft stored for this study.",
+      providerFailureCode: null,
+      providerFailureDetail: null,
       degraded: false,
       quarantinedCount: 0,
       candidateCount: 0,
@@ -216,6 +237,7 @@ export function shapeWorklistAiDraftViewer(input: {
     candidateCount,
     degraded: stored.source === "ai_shadow_degraded" || stored.degraded === true,
     imageCount: typeof stored.imageCount === "number" ? stored.imageCount : undefined,
+    providerFailure: storedFailure,
   });
   const pointerStatus = typeof stored.clinicalStatus === "string" ? stored.clinicalStatus.toUpperCase() : null;
   const clinicalStatus =
@@ -236,6 +258,8 @@ export function shapeWorklistAiDraftViewer(input: {
     clinicalStatus,
     emptyReason: typeof stored.emptyReason === "string" ? stored.emptyReason : usability.emptyReason,
     emptyReasonLabel: typeof stored.emptyReasonLabel === "string" ? stored.emptyReasonLabel : usability.emptyReasonLabel,
+    providerFailureCode: storedFailure.code ?? usability.providerFailureCode,
+    providerFailureDetail: storedFailure.detail ?? usability.providerFailureDetail,
     degraded: stored.source === "ai_shadow_degraded" || stored.degraded === true,
     quarantinedCount,
     candidateCount,
@@ -253,6 +277,8 @@ export function shapeWorklistAiDraftViewer(input: {
       quarantinedCount,
       imageCount: typeof stored.imageCount === "number" ? stored.imageCount : null,
       degraded: stored.source === "ai_shadow_degraded" || stored.degraded === true,
+      providerFailureCode: storedFailure.code ?? usability.providerFailureCode,
+      providerFailureDetail: storedFailure.detail ?? usability.providerFailureDetail,
       modelVersion: typeof stored.modelVersion === "string" ? stored.modelVersion : null,
     },
   };
