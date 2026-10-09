@@ -587,8 +587,9 @@ function OvernightVisionOpsPanel() {
       <div className="rounded-md border border-violet-200 bg-violet-50/50 p-3 space-y-2 text-[11px]" data-testid="night-vision-provider">
         <p className="font-semibold">Night Vision Provider (experimental)</p>
         <p className="text-[10px] text-muted-foreground">
-          Default remains LOCAL ONLY. DeepSeek uses official API only when cloud vision is explicitly allowed.
-          A/B keeps local authoritative and records DeepSeek as trial telemetry.
+          Default remains LOCAL ONLY. Clinical images leave the clinic only when cloud vision is
+          explicitly allowed below — and that one switch covers every cloud provider, not just
+          DeepSeek. A/B keeps local authoritative and records the cloud run as trial telemetry.
         </p>
         <select
           className="h-8 w-full rounded-md border bg-background px-2 text-xs"
@@ -607,8 +608,21 @@ function OvernightVisionOpsPanel() {
             checked={deepseekCloudVisionAllowed}
             onChange={(e) => setDeepseekCloudVisionAllowed(e.target.checked)}
           />
-          <span>Allow DeepSeek cloud vision (explicit opt-in)</span>
+          {/*
+            The stored key is `deepseekCloudVisionAllowed`, but the server reads it as
+            `cloudVisionAllowed` for every cloud vendor (routes/reportComposer.ts,
+            routes/aiReporting.ts, lib/ai/gatewayInferenceProvider.ts). The label says what
+            it does; the key is not renamed, because renaming a persisted settings column
+            would trade a misleading word for a migration.
+          */}
+          <span data-testid="cloud-vision-optin-label">
+            Allow cloud vision for ALL cloud providers — DeepSeek, Qwen and OpenAI (explicit opt-in)
+          </span>
         </label>
+        <p className="text-[10px] text-amber-900" data-testid="cloud-vision-optin-warning">
+          Images are sent exactly as stored. Nothing in CARE inspects pixels, so a name burned
+          into the image by the scanner goes with it; report text still passes the PHI gate first.
+        </p>
       </div>
       {safeMode ? (
         <p className="text-[10px] text-amber-900">
