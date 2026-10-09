@@ -361,4 +361,21 @@ describe("the server's impression mirror is this function", () => {
     // composer's durability token has to describe.
     expect(normalizeImpressionLines(column).join("\n")).toBe(display);
   });
+
+  // The other branch: a column that is not a JSON array. POST /save-draft always
+  // writes an array, so this is what a restored or hand-written legacy row looks
+  // like — and the server mirror has to read it the same way, so its six cases are
+  // pinned on both sides too.
+  const PLAIN_VECTORS: Array<{ name: string; stored: string; display: string }> = [
+    { name: "plain text column", stored: "Plain impression text", display: "Plain impression text" },
+    { name: "padded plain text", stored: "  Padded.  ", display: "Padded." },
+    { name: "array-shaped but unparsable stays text", stored: '["unclosed"', display: '["unclosed"' },
+    { name: "empty column", stored: "", display: "" },
+    { name: "whitespace column", stored: "   ", display: "" },
+    { name: "object-shaped JSON is not an array", stored: '{"a":1}', display: '{"a":1}' },
+  ];
+
+  it.each(PLAIN_VECTORS)("non-array column: $name", ({ stored, display }) => {
+    expect(normalizeImpressionLines(stored).join("\n")).toBe(display);
+  });
 });

@@ -1151,4 +1151,83 @@ describe.skipIf(!hasDatabaseUrl())("Composer durable Apply and server-derived fr
     expect(res.status).toBe(200);
     expect((await draftById(draftId)).rawFindings).toBe(accepted);
   });
+
+  it("24. a save the server authorised that does not contain the accepted text is not an apply", async () => {
+    const findings = "Persistence 24: the report before.";
+    const accepted = "Persistence 24: the AI sentence the radiologist accepted.";
+    const { jobId, draftId } = await readyJob({ worklistId: wlOpen, findings, acceptedFindings: accepted });
+
+    // The tab persists something else entirely — an editor that overwrote the
+    // field between accept and save. The compare-and-set passes (the row was
+    // untouched) and the receipt is real, so this is the only case that isolates
+    // the containment proof: without it the job would be marked applied while the
+    // accepted sentence is in no report.
+    const saved = await persistAccepted(reader.token, {
+      jobId,
+      worklistId: wlOpen,
+      previous: { findings, impression: "", recommendation: "" },
+      next: "Persistence 24: unrelated text typed over the accepted one.",
+    });
+    expect(saved.status).toBe(200);
+    expect((await evidence(jobId)).receiptToken).toBe(await tokenOfDraft(draftId));
+
+    const res = await applied(reader.token, jobId, { acceptedChangeIds: ["c1"], target: { worklistId: wlOpen } });
+    expect(res.status).toBe(409);
+    expect((res.body as { code?: string }).code).toBe("compose_not_persisted");
+    expect((await evidence(jobId)).status).toBe("READY");
+  });
+
+  it("25. a draft row that disagrees about which worklist it belongs to has no baseline", async () => {
+    // The two id sequences are independent, and a draft row's `study_id` is
+    // normally the worklist id because POST /save-draft overwrites it that way. A
+    // row written before that rule — or one whose numbers collide across the
+    // sequences — can name a different worklist. Neither side is then trusted: the
+    // server refuses to call any report "the current one" rather than picking.
+    const [conflicting] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        studyId: wlOpen,
+        worklistId: wlSecond,
+        patientId: p1,
+        rawFindings: "Persistence 25: a row whose two study columns disagree.",
+        impression: JSON.stringify([]),
+        status: "DRAFT",
+      })
+      .returning();
+    cleanup.draftIds.push(conflicting.id);
+
+    const res = await enqueue(reader.token, snapshotOf({ worklistId: wlOpen, findings: "" }));
+    expect(res.status).toBe(409);
+    expect((res.body as { code?: string }).code).toBe("compose_persistence_unavailable");
+    expect(String((res.body as { error?: string }).error)).toMatch(/could not read/i);
+  });
+
+  it("26. an accepted deletion is refused when the removed sentence is still in the report", async () => {
+    const findings = "Persistence 26: kept. Persistence 26: the sentence the AI removed.";
+    const { jobId, draftId } = await readyJob({
+      worklistId: wlOpen,
+      findings,
+      acceptedFindings: "",
+      changeType: "DELETE",
+    });
+
+    // The save happens and is authorised — the editor really was replacing the
+    // text the row holds — but it writes the narrative back unchanged, so the
+    // deletion the radiologist accepted never took place. Containment cannot see
+    // this (an empty proposal is "in" every report), which is exactly why a
+    // deletion is proved by absence.
+    const saved = await persistAccepted(reader.token, {
+      jobId,
+      worklistId: wlOpen,
+      previous: { findings, impression: "", recommendation: "" },
+      next: findings,
+    });
+    expect(saved.status).toBe(200);
+    expect((await evidence(jobId)).receiptToken).toBe(await tokenOfDraft(draftId));
+
+    const res = await applied(reader.token, jobId, { acceptedChangeIds: ["c1"], target: { worklistId: wlOpen } });
+    expect(res.status).toBe(409);
+    expect((res.body as { code?: string }).code).toBe("compose_not_persisted");
+    expect((await evidence(jobId)).status).toBe("READY");
+  });
 });

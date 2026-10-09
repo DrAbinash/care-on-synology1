@@ -46,6 +46,19 @@ const VECTORS: Array<{ name: string; stored: string; display: string }> = [
   { name: "trailing newline trimmed", stored: "Impression.\n", display: "Impression." },
 ];
 
+/** A stored column that is NOT a JSON array. POST /save-draft always writes an
+ *  array, so this is the shape a hand-written, restored or legacy row arrives
+ *  with — and the mirror has to agree on it anyway, because the editor's own
+ *  `normalizeImpressionLines` reads that branch. */
+const PLAIN_VECTORS: Array<{ name: string; stored: string; display: string }> = [
+  { name: "plain text column", stored: "Plain impression text", display: "Plain impression text" },
+  { name: "padded plain text", stored: "  Padded.  ", display: "Padded." },
+  { name: "array-shaped but unparsable stays text", stored: '["unclosed"', display: '["unclosed"' },
+  { name: "empty column", stored: "", display: "" },
+  { name: "whitespace column", stored: "   ", display: "" },
+  { name: "object-shaped JSON is not an array", stored: '{"a":1}', display: '{"a":1}' },
+];
+
 function draft(over: Partial<ComposeDraftRow>): ComposeDraftRow {
   return {
     id: 1,
@@ -67,6 +80,11 @@ describe("Composer server-side report projection", () => {
     const column = JSON.stringify([stored]);
     expect(projectStoredImpression(column)).toBe(display);
     expect(projectComposeNarrative(draft({ impression: column })).impression).toBe(display);
+  });
+
+  it.each(PLAIN_VECTORS)("reads a non-array impression column: $name", ({ stored, display }) => {
+    expect(projectStoredImpression(stored)).toBe(display);
+    expect(projectComposeNarrative(draft({ impression: stored })).impression).toBe(display);
   });
 
   it("the editor-side projection of the same text agrees with the stored one", () => {
