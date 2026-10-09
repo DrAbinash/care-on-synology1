@@ -1,0 +1,51 @@
+-- D2 completion: carry the model's presentation_json into the migration chain.
+--
+-- WHY THIS FILE EXISTS
+-- lib/db/src/schema/radiologyReportGenerator.ts:224 declares
+--   presentationJson: text("presentation_json").notNull().default("{}")
+-- and POST /api/radiology/report-generator/image-references writes it
+-- (radiology-report-generator.ts:3390, the report's non-destructive viewport
+-- framing: zoom / offsetX / offsetY / fitMode). No file in the production
+-- migration chain ever created it:
+--   * lib/db/drizzle/0001_warm_leopardon.sql:14-23 creates
+--     radiology_image_references WITHOUT the column,
+--   * grep -rl presentation_json migrations/ lib/db/drizzle/ returns nothing.
+-- So a database built the way the clinic builds one — drizzle journal order,
+-- then migrations/*.sql in alphabetical order (docker/db-patch-entrypoint.sh,
+-- scripts/apply-all-migrations.mjs) — does not have the column, and every
+-- INSERT that names it fails with `column "presentation_json" of relation
+-- "radiology_image_references" does not exist`. The route returns HTTP 500 on
+-- any migration-built database: a development database created by
+-- `drizzle-kit push` has the column, which is why this survived review. It is
+-- the same class of defect the AI audit's `anonymized` default was, and it is
+-- asserted the same way — against a real Postgres, because lib/db saying
+-- "NOT NULL DEFAULT '{}'" is not evidence unless a migrations/*.sql file
+-- carries it to the deploy.
+--
+-- WHAT IT DOES
+-- One additive column. The three UIDs and the frame number that R1.1 added
+-- (migrations/add_report_image_panel_r13.sql:27-30) are already there, so this
+-- is the last column the model expects and the chain never delivered.
+--
+-- WHAT THIS MIGRATION DELIBERATELY DOES NOT DO
+--   * No rewrite of any earlier migration, and no edit of
+--     add_report_image_panel_r13.sql — the chain is append-only because the
+--     clinic's database has already run those files and their hashes are
+--     recorded in schema_migrations_log.
+--   * No backfill and no data change. Existing rows receive the DEFAULT, which
+--     is the value the model already promised them, and no clinical column is
+--     touched. A viewport framing of '{}' means "display it as before", so
+--     nothing about an existing report's content, images or identity moves.
+--   * No new index, constraint or FK: the column is read with its row by id.
+--   * No unrelated schema cleanup. This file fixes one column and nothing else.
+--
+-- SAFE AGAINST THE CURRENT PRODUCTION SCHEMA
+-- ADD COLUMN IF NOT EXISTS is a no-op where `drizzle-kit push` already created
+-- the column (the clinic's development databases and this repo's test harness),
+-- so applying this to a database that has it — or to one that does not — both
+-- end with the column present. Redeploying the file is harmless.
+-- scripts/migration-bootstrap-smoke.mjs asserts the resulting column, its
+-- NOT NULL, its DEFAULT and that a row can be inserted without naming it.
+
+ALTER TABLE radiology_image_references
+  ADD COLUMN IF NOT EXISTS presentation_json text NOT NULL DEFAULT '{}';

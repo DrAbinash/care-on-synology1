@@ -43,6 +43,14 @@ import { startMockDicomWeb, type MockDicomWeb, type MockInstance } from "../test
 // route's own "Unreadable image file" check, which is not what is under test.
 const jpegBytes: { current: Buffer } = { current: Buffer.alloc(0) };
 
+/** Drizzle's raw execute returns a pg result or a row array depending on version —
+ *  the same tolerance the API's own helpers use. */
+function rowsOf(res: unknown): Array<Record<string, unknown>> {
+  const withRows = res as { rows?: Array<Record<string, unknown>> };
+  if (Array.isArray(withRows.rows)) return withRows.rows;
+  return Array.isArray(res) ? (res as Array<Record<string, unknown>>) : [];
+}
+
 // ── The PACS fixture: what Orthanc would actually answer for this study ──
 const d = String(Math.floor(100000 + Math.random() * 899999));
 const STUDY_A = `1.2.840.99901${d}`;
@@ -112,17 +120,26 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
     jpegBytes.current = await sharp(Buffer.alloc(16 * 16 * 3, 96), {
       raw: { width: 16, height: 16, channels: 3 },
     }).jpeg({ quality: 80 }).toBuffer();
-    // radiology_image_references.presentation_json exists in the Drizzle model
-    // (radiologyReportGenerator.ts:224, NOT NULL DEFAULT '{}') but in no migration
-    // file — `grep -rl presentation_json migrations/` returns 0 — so a database
-    // built by apply-all-migrations cannot complete a successful
-    // POST /image-references: the INSERT names a column that is not there and the
-    // route 500s. The production fix is a migrations/*.sql file; it is not D2's
-    // scope, so the harness adds the column locally and the gap is reported.
-    await db.execute(
-      sql`ALTER TABLE radiology_image_references
-            ADD COLUMN IF NOT EXISTS presentation_json text NOT NULL DEFAULT '{}'`,
+    // The route's INSERT names radiology_image_references.presentation_json, so the
+    // column has to arrive through the migration chain. This harness deliberately
+    // does NOT add it: a locally repaired schema would hide the exact 500 that a
+    // clinic database built by apply-all-migrations gets. It asserts instead, which
+    // makes the migration's absence fail here as well as in the migration smoke.
+    const framing = rowsOf(
+      await db.execute(sql`
+        SELECT is_nullable FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'radiology_image_references'
+           AND column_name = 'presentation_json'
+      `),
     );
+    expect(
+      framing.length,
+      "radiology_image_references.presentation_json must be delivered by migrations/*.sql "
+        + "(see migrations/zzzzzzzzzzzzzzzzz_radiology_image_reference_presentation_json.sql) — "
+        + "not repaired by this test harness",
+    ).toBe(1);
+    expect(framing[0]?.is_nullable).toBe("NO");
     await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
     pacs = await startMockDicomWeb(MANIFEST);
     pacsPort = pacs.port;
