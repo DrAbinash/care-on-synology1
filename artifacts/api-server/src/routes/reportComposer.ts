@@ -135,7 +135,12 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
     persistedContentToken: body.persistedContentToken ? String(body.persistedContentToken) : null,
   });
   if (!result.ok) {
-    const status = result.code === "disabled" ? 403 : result.code === "finalized" ? 409 : 400;
+    const status =
+      result.code === "disabled"
+        ? 403
+        : result.code === "finalized" || result.code === "compose_locked"
+          ? 409
+          : 400;
     res.status(status).json(result);
     return;
   }
@@ -249,6 +254,12 @@ reportComposerRouter.post("/jobs/:id/changes/:changeId/reject", async (req, res)
 /**
  * Confirm that client already applied accepted changes via canonical workspace mutation.
  * Does NOT write Findings/Impression on the server.
+ *
+ * `target` names the study the clinician is applying INTO. It is required, and
+ * the server resolves it from its own rows before comparing it with the study
+ * the job was bound to at enqueue time — so this is the boundary where "a draft
+ * generated for Patient A applied to Patient B" is refused, whatever the
+ * browser believed.
  */
 reportComposerRouter.post("/jobs/:id/applied", async (req, res): Promise<void> => {
   if (!canUse(req as StaffAuthRequest)) {
@@ -263,12 +274,15 @@ reportComposerRouter.post("/jobs/:id/applied", async (req, res): Promise<void> =
     recommendationHash?: string;
     reportRevision?: string;
     inputHash?: string;
+    target?: { worklistId?: number | null; studyId?: number | null; reportId?: number | null };
   };
   const acceptedChangeIds = Array.isArray(body.acceptedChangeIds) ? body.acceptedChangeIds : [];
   const result = await markComposeApplied({
     jobId: Number(req.params.id),
     appliedBy: meta.createdBy,
     appliedByStaffId: meta.createdByStaffId,
+    staffId: (req as StaffAuthRequest).staffSession?.subjectId ?? null,
+    target: body.target ?? null,
     acceptedChangeIds,
     findingsHash: typeof body.findingsHash === "string" ? body.findingsHash : undefined,
     impressionHash: typeof body.impressionHash === "string" ? body.impressionHash : undefined,

@@ -426,6 +426,11 @@ export function useReportComposer(opts: {
       job.id,
       accepted.map((c) => c.id),
       hashes,
+      // The study this apply is happening inside. The server resolves it from
+      // its own rows and refuses unless it is the study the draft was created
+      // for — so a draft generated for Patient A cannot be confirmed against
+      // Patient B's report, whatever this tab has loaded.
+      { worklistId: opts.worklistId, studyId: opts.studyId, reportId: opts.reportId },
     );
     if (!applied.ok) {
       useWorkspace.getState().undoLastPatch();
@@ -433,9 +438,10 @@ export function useReportComposer(opts: {
       if (again.ok) setJob(again.job);
       toast({
         title: "Apply blocked",
-        description: applied.error === "stale_ready"
-          ? "Report changed during apply — restored previous text."
-          : (applied.error ?? "Server rejected apply"),
+        // One source of refusal wording (the server), plus the promise that
+        // the refusal cost nothing: the accepted text is rolled back, never
+        // silently kept and never silently lost.
+        description: `${applied.message ?? applied.error ?? "Server rejected apply"} Your previous report text has been restored.`,
         variant: "destructive",
       });
       return;

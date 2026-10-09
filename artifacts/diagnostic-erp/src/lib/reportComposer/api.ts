@@ -93,10 +93,18 @@ export const reportComposerApi = {
       reportRevision: string;
       inputHash: string;
     },
+    /**
+     * Which study this apply is happening inside. The server resolves it from
+     * its own `radiology_worklist` / `patient_reports` rows and compares it with
+     * the study the job was bound to when it was created, so a draft generated
+     * for one patient cannot be confirmed against another patient's report.
+     * Required — an apply that names no study is refused.
+     */
+    target?: { worklistId: number | null; studyId: number | null; reportId: number | null },
   ) {
-    return api.post<{ ok: boolean; error?: string }>(
+    return api.post<{ ok: boolean; error?: string; code?: string; message?: string }>(
       `/api/radiology/report-composer/jobs/${jobId}/applied`,
-      { acceptedChangeIds, ...(hashes ?? {}) },
+      { acceptedChangeIds, ...(hashes ?? {}), ...(target ? { target } : {}) },
     );
   },
 

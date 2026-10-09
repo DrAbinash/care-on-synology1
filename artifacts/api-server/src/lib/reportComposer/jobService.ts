@@ -30,6 +30,11 @@ import { computeSnapshotHashes, dedupeObservations, isComposeJobStale, summarize
 import { runReportComposer } from "./composeEngine";
 import { validateComposerOutput } from "./validateOutput";
 import { buildTrackedChanges } from "./trackedChanges";
+import {
+  resolveVerifiedComposeIdentity,
+  verifyComposeJobIdentity,
+  type ComposeStudyRefs,
+} from "./composeIdentity";
 
 export const AI_REPORT_COMPOSE_JOB = "ai_report_compose";
 
@@ -78,8 +83,13 @@ async function loadPersistedReportToken(reportId: number | null | undefined): Pr
   status: string | null;
   token: string | null;
   finalized: boolean;
+  /** A reportId was supplied but its row could not be read — which is NOT the
+   * same as "not finalized". Callers must refuse rather than treat an
+   * unreadable report as an open one. */
+  unresolved: boolean;
 }> {
-  if (!reportId || !Number.isInteger(reportId)) return { status: null, token: null, finalized: false };
+  if (!reportId) return { status: null, token: null, finalized: false, unresolved: false };
+  if (!Number.isInteger(reportId)) return { status: null, token: null, finalized: false, unresolved: true };
   try {
     const [row] = await db
       .select({
@@ -90,7 +100,7 @@ async function loadPersistedReportToken(reportId: number | null | undefined): Pr
       .from(patientReportsTable)
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
-    if (!row) return { status: null, token: null, finalized: false };
+    if (!row) return { status: null, token: null, finalized: false, unresolved: true };
     const finalized = ["final", "FINAL", "signed", "SIGNED", "amended", "verified", "delivered"].includes(
       String(row.status),
     );
@@ -98,9 +108,9 @@ async function loadPersistedReportToken(reportId: number | null | undefined): Pr
       .update(`${row.body ?? ""}\u001e${row.impression ?? ""}`)
       .digest("hex")
       .slice(0, 32);
-    return { status: row.status, token, finalized };
+    return { status: row.status, token, finalized, unresolved: false };
   } catch {
-    return { status: null, token: null, finalized: false };
+    return { status: null, token: null, finalized: false, unresolved: true };
   }
 }
 
@@ -202,11 +212,38 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     };
   }
 
-  const worklistId = snapshot.worklistId ?? null;
-  const reportId = snapshot.reportId ?? null;
+  const worklistRef = snapshot.worklistId ?? null;
+  const studyRef = snapshot.studyId ?? null;
+  const reportRef = snapshot.reportId ?? null;
+
+  // Server-verified study identity. The snapshot's ids are references to look
+  // up, never evidence of whose study this is: a job must not be able to name
+  // Patient A's worklist row while its clinical text came from Patient B's
+  // screen, and it must not be able to name a row that does not exist. The
+  // frozen snapshot itself is left byte-for-byte untouched (Model B) — only the
+  // job's own identity columns carry the resolved values.
+  const identity = await resolveVerifiedComposeIdentity({
+    worklistId: worklistRef,
+    studyId: studyRef,
+    reportId: reportRef,
+  });
+  if (!identity.ok) {
+    return { ok: false, error: identity.message, code: identity.code };
+  }
+  const worklistId = identity.identity.worklistId;
+  const reportId = identity.identity.reportId;
   const persisted = await loadPersistedReportToken(reportId);
   if (persisted.finalized) {
     return { ok: false, error: "Report is finalized — composition not allowed", code: "finalized" };
+  }
+  if (persisted.unresolved) {
+    // `resolveVerifiedComposeIdentity` already proved this reportId belongs to
+    // this worklist, so an unreadable row means it went away mid-request.
+    return {
+      ok: false,
+      error: "CARE could not read the report for this study. Nothing was queued — try again.",
+      code: "compose_identity_unavailable",
+    };
   }
   if (args.persistedContentToken && persisted.token && args.persistedContentToken !== persisted.token) {
     return {
@@ -247,7 +284,10 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   const [inserted] = await db
     .insert(aiReportComposeJobsTable)
     .values({
-      studyId: snapshot.studyId ?? null,
+      // Resolved server-side from the worklist row, not from the browser:
+      // study_id holds the billed radiology_studies.id that row points at,
+      // worklist_id its primary key, report_id the report of record bound to it.
+      studyId: identity.identity.studyId,
       worklistId,
       reportId,
       jobKind,
@@ -607,6 +647,16 @@ export async function markComposeApplied(opts: {
   /** Client must confirm which change ids were accepted into canonical report. */
   acceptedChangeIds: string[];
   /**
+   * Which study the clinician is applying into. Required — and resolved
+   * against `radiology_worklist` / `patient_reports` on the server, never
+   * trusted as given. An Apply that does not name a target is refused:
+   * unverifiable identity is not permitted identity.
+   */
+  target?: ComposeStudyRefs | null;
+  /** `req.staffSession.subjectId` — checked against an active study write lock,
+   * on the same terms as POST /save-draft. */
+  staffId?: number | null;
+  /**
    * Live hashes at Apply time (required for new clients). When provided,
    * READY jobs that no longer match the live editor/ledger/study context
    * are flipped to STALE_READY and Apply is rejected — closes the
@@ -617,11 +667,46 @@ export async function markComposeApplied(opts: {
   recommendationHash?: string;
   reportRevision?: string;
   inputHash?: string;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; code?: string; message?: string }> {
   const job = await getComposeJob(opts.jobId);
-  if (!job) return { ok: false, error: "not_found" };
-  if (!["READY", "STALE_READY"].includes(job.status)) return { ok: false, error: "not_ready" };
-  if (job.status === "STALE_READY") return { ok: false, error: "stale_ready" };
+  // `error` stays the machine token every existing caller and test matches on;
+  // `message` is the clinician-facing sentence, so the wording lives in one
+  // place instead of being re-invented by each client that renders a refusal.
+  if (!job) {
+    return {
+      ok: false,
+      error: "not_found",
+      message: "This AI draft no longer exists. Nothing was changed.",
+    };
+  }
+  if (!["READY", "STALE_READY"].includes(job.status)) {
+    return {
+      ok: false,
+      error: "not_ready",
+      message: `This AI draft is ${String(job.status).toLowerCase()}, so it cannot be applied. Nothing was changed.`,
+    };
+  }
+  if (job.status === "STALE_READY") {
+    return {
+      ok: false,
+      error: "stale_ready",
+      message: "The report has changed since this AI draft was generated. Please review and regenerate.",
+    };
+  }
+
+  // Verified study identity, BEFORE anything is recorded as applied. The job's
+  // stored binding and the caller's target are each re-read from server rows
+  // and must describe the same study, the same patient and the same report —
+  // comparing two client integers would prove nothing, because both sides can
+  // be forged.
+  const identity = await verifyComposeJobIdentity({
+    job,
+    target: opts.target ?? {},
+    staffId: opts.staffId ?? null,
+  });
+  if (!identity.ok) {
+    return { ok: false, error: identity.code, code: identity.code, message: identity.message };
+  }
 
   if (opts.reportRevision) {
     const freshness = await evaluateJobFreshness(opts.jobId, {
@@ -637,7 +722,22 @@ export async function markComposeApplied(opts: {
   }
 
   const persisted = await loadPersistedReportToken(job.reportId);
-  if (persisted.finalized) return { ok: false, error: "finalized" };
+  if (persisted.finalized) {
+    return {
+      ok: false,
+      error: "finalized",
+      message: "The target report is finalized. AI changes cannot be applied.",
+    };
+  }
+  if (persisted.unresolved) {
+    return {
+      ok: false,
+      error: "compose_identity_unavailable",
+      code: "compose_identity_unavailable",
+      message:
+        "CARE could not read the report this draft was generated against, so it cannot confirm the apply is safe. Nothing was changed.",
+    };
+  }
 
   let changes: TrackedChange[] = [];
   try {
@@ -655,7 +755,13 @@ export async function markComposeApplied(opts: {
         : c,
   );
 
-  await db
+  // Compare-and-set on the status the caller actually reviewed. Two Apply
+  // requests for one READY job (double-click, retry after a timeout, a second
+  // workstation on the same study) used to both pass every check above and
+  // both write APPLIED, so the second one re-recorded an apply that had already
+  // happened. The status column is the only durable evidence of the transition,
+  // so the transition itself has to be the guard.
+  const flipped = await db
     .update(aiReportComposeJobsTable)
     .set({
       status: "APPLIED",
@@ -665,7 +771,17 @@ export async function markComposeApplied(opts: {
       appliedByStaffId: opts.appliedByStaffId ?? null,
       updatedAt: new Date(),
     })
-    .where(eq(aiReportComposeJobsTable.id, opts.jobId));
+    .where(and(eq(aiReportComposeJobsTable.id, opts.jobId), eq(aiReportComposeJobsTable.status, "READY")))
+    .returning({ id: aiReportComposeJobsTable.id });
+  if (flipped.length === 0) {
+    return {
+      ok: false,
+      error: "already_applied",
+      code: "already_applied",
+      message:
+        "This AI draft has already been applied or superseded, so it was not applied again. Nothing was changed.",
+    };
+  }
   await syncWorklistStatus(job.worklistId, "APPLIED", opts.jobId);
   return { ok: true };
 }
