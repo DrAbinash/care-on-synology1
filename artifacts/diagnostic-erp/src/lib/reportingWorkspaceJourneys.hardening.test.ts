@@ -294,6 +294,41 @@ describe("Journey 12 — signing with an unreviewed AI draft outstanding", () =>
     expect(composer).toContain("significantPending");
     expect(composer).toContain("materializeAcceptedText({");
   });
+
+  it("WIRED: Apply persists the accepted text before the server is told it was applied", () => {
+    // PROMPT 4's ordering, pinned. The sequence used to be
+    // mutate → confirmApplied → (maybe) autosave, so a closed tab or a failing
+    // save left a job marked APPLIED whose text was in no report. Now the
+    // accepted text is written by the workspace's own awaited draft save, and the
+    // confirm follows it.
+    const composer = read("hooks/useReportComposer.ts");
+    expectOrder(
+      composer,
+      "const tag: ComposerPersistenceTag = {",
+      "applyAiComposerAccepted(text);",
+      "await opts.persistAccepted(tag);",
+      "const applied = await reportComposerApi.confirmApplied(",
+      "useWorkspace.getState().undoLastPatch();",
+    );
+    // `previous` is captured from the store before the AI text goes in, so what
+    // the server compares against is the text being replaced, not the result.
+    expect(composer).toMatch(/previous: \{\s*findings: findingsText,\s*impression: impressionText,\s*recommendation: recommendationText,\s*\}/);
+
+    // The persistence call is the workspace's canonical save — not a new endpoint,
+    // and not the debounced autosave.
+    const ui = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+    expect(ui).toMatch(/persistAccepted: \(tag\) => saveDraft\(\{ composer: tag, silent: true \}\)/);
+
+    // And a refused composer save is reported as a refusal, never as a lost save:
+    // the text stays in the editor and the ordinary autosave still owns it. The
+    // whole catch block is matched rather than an ordering across the file,
+    // because `setAutoSaveStatus("error")` legitimately appears in other paths.
+    const persistence = read("hooks/radiology-workspace/useDraftPersistence.ts");
+    expect(persistence).toMatch(
+      /if \(opts\?\.composer && err instanceof HttpError && err\.status === 409\) \{\s*setAutoSaveStatus\("refused"\);\s*return null;\s*\}/,
+    );
+    expect(persistence).toMatch(/\.\.\.\(opts\?\.composer \? \{ composer: opts\.composer \} : \{\}\)/);
+  });
 });
 
 // ─── Journey 13 — A → B → A rapid switching ───────────────────────────────────

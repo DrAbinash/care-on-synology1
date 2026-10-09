@@ -354,6 +354,21 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   return { findingsHash, impressionHash, recommendationHash, inputHash, reportRevision };
 }
 
+/**
+ * The persistence tag an Apply sends with its save (PROMPT 4).
+ *
+ * `previous` is the narrative this editor is replacing — the text it showed
+ * before the accepted AI sentences went in. The server treats it as a candidate,
+ * never as evidence: it is compared against the study's saved row, and it can
+ * only authorise the write if that row already holds it. That is what lets the
+ * clinician's own autosave count as current while a second workstation's edit
+ * refuses the apply.
+ */
+export type ComposerPersistenceTag = {
+  jobId: number;
+  previous: { findings: string; impression: string; recommendation: string };
+};
+
 /** Materialize accepted changes into plain text (no HTML). */
 export function materializeAcceptedText(opts: {
   currentFindings: string;

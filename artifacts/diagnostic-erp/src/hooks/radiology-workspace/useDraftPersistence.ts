@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { RadiologyDraftRow } from "@/hooks/useRadiologyDraftId";
 import { saveRadiologyDraft } from "@/lib/radiologyReportLifecycle";
+import { HttpError } from "@/lib/fetchApi";
+import type { ComposerPersistenceTag } from "@/lib/reportComposer/types";
 import {
   canHydrateDraftForPatient,
   shouldCommitAutosave,
@@ -404,7 +406,18 @@ useEffect(() => {
   return () => deregisterDraftRescueSaver();
 }, [studyId, isFinalized, backupEnabled]);
 
-const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<number | null> => {
+const saveDraft = useCallback(async (opts?: {
+  silent?: boolean;
+  /**
+   * PROMPT 4 — set only by the AI composer's Apply step. It asks the server to
+   * compare this study's saved report against the baseline it recorded when the
+   * draft was generated, and to remember the content it writes. Without that
+   * comparison, "AI draft applied" is a claim about the browser's memory; with it,
+   * the claim is about a row. Ordinary saves never send it and behave exactly as
+   * before.
+   */
+  composer?: ComposerPersistenceTag;
+}): Promise<number | null> => {
   if (!studyId) return null;
   // The auto-save effect below refuses a signed study, but it is not the only
   // caller of this function: the top bar's Save button, the command palette's
@@ -457,6 +470,9 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
         rawFindings: live.findingsText,
         impression: [live.impressionText],
         recommendation: live.recommendationText,
+        // Undefined unless this save is the composer's Apply persistence step, so
+        // every other writer sends the identical body it always did.
+        ...(opts?.composer ? { composer: opts.composer } : {}),
         findingsSections: useStructured ? findingsMap : undefined,
         structuredFormatState: structuredTouchedRef.current && studySetup.selectedTemplate && formatHasStructuredFields(studySetup.selectedTemplate.sectionsJson)
           ? toDraftFormatState({
@@ -535,6 +551,16 @@ const saveDraft = useCallback(async (opts?: { silent?: boolean }): Promise<numbe
     }
     return id;
   } catch (err) {
+    // A composer-tagged save can be refused because the study's saved report
+    // moved after the AI draft was generated. That is a refusal, not a failure
+    // (#862): the radiologist's text stays in the editor, the ordinary autosave
+    // still persists it, and it is the Apply that stops. Toasting "Save failed"
+    // here would report a loss that did not happen — and with TOAST_LIMIT at 1 it
+    // would evict the Apply-refused explanation the composer is about to show.
+    if (opts?.composer && err instanceof HttpError && err.status === 409) {
+      setAutoSaveStatus("refused");
+      return null;
+    }
     setAutoSaveStatus("error");
     toast({ title: "Save failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" });
     return null;
