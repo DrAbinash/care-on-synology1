@@ -197,7 +197,7 @@ describe("structuredViewerMeasurements", () => {
     expect(row.spinalLevel).toBeNull();
   });
 
-  it("row provenance wins over activeAnchor (SOP/frame A retained)", () => {
+  it("row provenance is the only provenance a measurement row can carry", () => {
     const row = structuredFromViewerRow({
       row: {
         id: 13,
@@ -210,17 +210,60 @@ describe("structuredViewerMeasurements", () => {
         viewerName: "OHIF",
       },
       mode: "historical",
-      liveActiveAnchor: {
-        studyInstanceUID: "1.2.3",
-        seriesInstanceUID: "1.2.3.B",
-        sopInstanceUID: "1.2.3.B.9",
-        frameNumber: 99,
-        viewer: "ohif",
-        capturedAt: new Date().toISOString(),
-      },
     });
     expect(row.anchor?.sopInstanceUID).toBe("1.2.3.A.1");
     expect(row.anchor?.frameNumber).toBe(4);
+  });
+
+  it("D2-I2: a row with no image UIDs keeps an unknown image, even mid-event", () => {
+    // The live viewport used to be borrowed as this measurement's provenance when
+    // the row named no series and no SOP — one caliper's evidence attached to
+    // whatever picture happened to be on screen.
+    const row = structuredFromViewerRow({
+      row: {
+        id: 21,
+        value: "8",
+        unit: "mm",
+        studyInstanceUID: "1.2.3",
+        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ annotationId: "no-image-1" }),
+      },
+      mode: "new_event",
+      liveIntent: "LESION",
+    });
+    expect(row.anchor?.studyInstanceUID).toBe("1.2.3");
+    expect(row.anchor?.seriesInstanceUID).toBeUndefined();
+    expect(row.anchor?.sopInstanceUID).toBeUndefined();
+    expect(row.anchor?.frameNumber).toBeUndefined();
+  });
+
+  it("D2-I2: a row that names no study at all cannot adopt the live viewport", () => {
+    // The deleted fallback keyed on exactly this shape — no row UIDs, so no study
+    // to compare against, and the image on screen became the measurement's
+    // provenance. liveActiveAnchor is no longer an option; it is re-attached here
+    // so this test goes red if the borrow is ever revived.
+    const opts = {
+      row: {
+        id: 22,
+        value: "9",
+        unit: "mm",
+        measurementType: "linear",
+        imageCoordinates: JSON.stringify({ annotationId: "no-study-1" }),
+      },
+      mode: "new_event",
+      liveIntent: "LESION",
+      liveActiveAnchor: {
+        studyInstanceUID: "1.2.840.live",
+        seriesInstanceUID: "1.2.840.live.s",
+        sopInstanceUID: "1.2.840.live.i",
+        frameNumber: 7,
+        viewer: "ohif",
+        capturedAt: new Date().toISOString(),
+      },
+    } as unknown as Parameters<typeof structuredFromViewerRow>[0];
+    const row = structuredFromViewerRow(opts);
+    expect(row.anchor).toBeNull();
+    expect(row.concept).toBe("LESION");
   });
 
   it("new_event may stamp live intent/level/observation", () => {

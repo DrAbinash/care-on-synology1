@@ -6,11 +6,13 @@
  *   { source: "care-ohif", type: "measurement", … annotationId?, intent? }
  *   { source: "care-ohif", type: "key-image", … }
  *   { source: "care-ohif", type: "active-anchor", … }
+ *   { source: "care-ohif", type: "displayed-anchor-unavailable", error, requestId }
  *   { source: "care-ohif", type: "viewport-capture-result", … }  // annotated freeze
  *   { source: "care-ohif", type: "measurement-deleted", annotationId }
  *
  * CARE → OHIF (outbound, when iframe same-policy allows):
  *   { source: "care-reporting", type: "viewport-capture-request", version: 1, requestId }
+ *   { source: "care-reporting", type: "displayed-anchor-request", version: 1, requestId }
  *   { source: "care-reporting", type: "navigate-to-anchor", version: 1, …UIDs }
  *
  * Security: validate event.origin against allowlist; validate event.source against
@@ -67,6 +69,8 @@ export type CareOhifActiveAnchorMessage = {
   sopInstanceUID?: string;
   frameNumber?: number;
   seriesDescription?: string;
+  /** Present when this anchor answers a displayed-anchor-request. */
+  requestId?: string;
 };
 
 export type CareOhifViewportCaptureResult = {
@@ -92,12 +96,25 @@ export type CareOhifMeasurementDeleted = {
   studyInstanceUID?: string;
 };
 
+/**
+ * The viewer's honest "I cannot name the image on screen" — no identity fields,
+ * only a reason and the requestId of the request it answers.
+ */
+export type CareOhifDisplayedAnchorUnavailable = {
+  source: typeof CARE_OHIF_SOURCE;
+  type: "displayed-anchor-unavailable";
+  version?: number;
+  error?: string;
+  requestId?: string;
+};
+
 export type CareOhifMessage =
   | CareOhifMeasurementMessage
   | CareOhifKeyImageMessage
   | CareOhifActiveAnchorMessage
   | CareOhifViewportCaptureResult
-  | CareOhifMeasurementDeleted;
+  | CareOhifMeasurementDeleted
+  | CareOhifDisplayedAnchorUnavailable;
 
 export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
   if (!data || typeof data !== "object") return false;
@@ -109,6 +126,7 @@ export function isCareOhifMessage(data: unknown): data is CareOhifMessage {
     || d.type === "active-anchor"
     || d.type === "viewport-capture-result"
     || d.type === "measurement-deleted"
+    || d.type === "displayed-anchor-unavailable"
   );
 }
 
@@ -201,6 +219,14 @@ export type OhifBridgeContext = {
   onMeasurementSaved?: () => void;
   onKeyImageSaved?: () => void;
   onActiveAnchor?: (ctx: ViewportContext) => void;
+  /** Called when the viewer answers that it cannot identify the displayed image. */
+  onActiveAnchorUnavailable?: (reason?: string) => void;
+  /**
+   * Anchor requests CARE has asked the viewer to answer. An `active-anchor`
+   * carrying a requestId that was never asked for is stale or foreign and is
+   * dropped — the reply must belong to the question.
+   */
+  pendingAnchorRequestIds?: Set<string>;
   /** Pending capture request ids (reject stale/unknown). */
   pendingCaptureRequestIds?: Set<string>;
   onViewportCaptureResult?: (msg: CareOhifViewportCaptureResult) => void | Promise<void>;
@@ -249,13 +275,41 @@ export async function handleCareOhifMessage(
     }
   }
 
-  if (ctx.studyInstanceUID && "studyInstanceUID" in msg && msg.studyInstanceUID
-    && msg.type !== "measurement-deleted"
-    && msg.studyInstanceUID !== ctx.studyInstanceUID) {
-    return "ignored";
+  // The viewer's refusal names no image and no study, so it is matched before the
+  // identity gate below — and it only means anything for the request that asked.
+  // Without this the ERP would sit until its own timeout for an answer it already
+  // has, which is a slower "unknown", not a wrong one.
+  if (msg.type === "displayed-anchor-unavailable") {
+    const rid = String(msg.requestId ?? "").trim();
+    if (!rid || !ctx.pendingAnchorRequestIds?.has(rid)) return "ignored";
+    ctx.pendingAnchorRequestIds.delete(rid);
+    ctx.onActiveAnchorUnavailable?.();
+    return "ok";
+  }
+
+  // D2-I1: an identity-bearing event has to name the study it belongs to. An
+  // empty claim used to fall straight through this check — the CARE measurement
+  // adapter sends "" when the viewer cannot resolve a study — and the row was
+  // then processed against whatever study happened to be open. No claim means no
+  // claim to check, so it is refused rather than borrowed.
+  if (msg.type !== "measurement-deleted") {
+    const claimed = "studyInstanceUID" in msg ? String(msg.studyInstanceUID ?? "").trim() : "";
+    if (!claimed) return "ignored";
+    if (ctx.studyInstanceUID && claimed !== ctx.studyInstanceUID) return "ignored";
   }
 
   if (msg.type === "active-anchor") {
+    const rid = String(msg.requestId ?? "").trim();
+    if (rid) {
+      if (!ctx.pendingAnchorRequestIds?.has(rid)) return "ignored"; // stale / unasked
+      ctx.pendingAnchorRequestIds?.delete(rid);
+    }
+    if (!msg.sopInstanceUID && !msg.seriesInstanceUID) {
+      // The viewer could not name the displayed image. Keep the study context and
+      // say so — do not turn an unknown into an anchor.
+      ctx.onActiveAnchorUnavailable?.();
+      return "ignored";
+    }
     ctx.onActiveAnchor?.(ohifActiveAnchorToViewport(msg));
     return "ok";
   }
@@ -423,6 +477,34 @@ export function requestOhifNavigateToAnchor(opts: {
       seriesInstanceUID: opts.seriesInstanceUID ?? undefined,
       sopInstanceUID: opts.sopInstanceUID ?? undefined,
       frameNumber: opts.frameNumber ?? undefined,
+    },
+    origin,
+  );
+  return true;
+}
+
+/**
+ * Outbound (D2 Phase 6): ask the viewer which image it is displaying *right now*.
+ *
+ * The anchor is pulled at the moment CARE needs it instead of being cached from
+ * an earlier push, so the click → delay → radiologist scrolls → read-the-stale-
+ * viewport window cannot exist. The viewer answers with the existing
+ * `active-anchor` message carrying the same requestId.
+ */
+export function requestOhifDisplayedAnchor(opts: {
+  target: Window | null | undefined;
+  requestId: string;
+  targetOrigin?: string | null;
+}): boolean {
+  if (!opts.target || !opts.requestId) return false;
+  const origin = (opts.targetOrigin || "").trim();
+  if (!origin) return false; // refuse silent "*"
+  opts.target.postMessage(
+    {
+      source: CARE_REPORTING_SOURCE,
+      type: "displayed-anchor-request",
+      version: 1,
+      requestId: opts.requestId,
     },
     origin,
   );

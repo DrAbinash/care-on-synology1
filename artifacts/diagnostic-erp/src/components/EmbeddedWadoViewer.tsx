@@ -403,14 +403,16 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
       }
       return;
     }
+    // D2-I3/D2-I4: Frames addresses *instances*, not frames. The selected index
+    // used to be published as frameNumber, which then round-tripped back through
+    // goToAnchor as an index and looked correct — it was a stack position wearing
+    // a DICOM tag's clothes. The SOP is the identity; the frame stays unknown.
     const next: ViewportContext = {
       studyInstanceUID,
       seriesInstanceUID: selectedSeriesUID,
       sopInstanceUID: inst.uid,
-      frameNumber: selectedInstIdx + 1,
-      instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+      instanceNumber: inst.instanceNumber ?? undefined,
       seriesDescription: seriesMeta?.description ?? undefined,
-      totalFrames: instances.length || seriesMeta?.numInstances || undefined,
       modality: seriesMeta?.modality ?? undefined,
       viewer: "frames",
     };
@@ -502,10 +504,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
         studyInstanceUID,
         seriesInstanceUID: selectedSeriesUID,
         sopInstanceUID: inst.uid,
-        frameNumber: selectedInstIdx + 1,
-        instanceNumber: inst.instanceNumber ?? selectedInstIdx + 1,
+        instanceNumber: inst.instanceNumber ?? undefined,
         seriesDescription: seriesMeta?.description ?? undefined,
-        totalFrames: instances.length || seriesMeta?.numInstances || undefined,
         modality: seriesMeta?.modality ?? undefined,
         viewer: "frames",
       };
@@ -560,14 +560,9 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
           setSelectedInstIdx(idx);
           return true;
         }
-        // Series may still be loading — remember intent via frameNumber fallback
-      }
-      if (anchor.frameNumber != null && Number.isFinite(anchor.frameNumber)) {
-        const idx = Math.max(0, Math.min(instances.length - 1, Math.floor(anchor.frameNumber) - 1));
-        if (instances.length > 0) {
-          setSelectedInstIdx(idx);
-          return true;
-        }
+        // Series may still be loading. D2: that is reported as "could not
+        // navigate" — frameNumber is no longer accepted as a stand-in for an
+        // instance position, because it used to be written as one.
       }
       return Boolean(anchor.seriesInstanceUID);
     },

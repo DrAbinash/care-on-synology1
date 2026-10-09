@@ -8,6 +8,8 @@ import {
   captureResultToBlob,
   requestOhifNavigateToAnchor,
   requestOhifViewportCapture,
+  requestOhifDisplayedAnchor,
+  CARE_REPORTING_SOURCE,
   isExpectedOhifSource,
   resolveOhifTargetOrigin,
 } from "./ohifViewerBridge";
@@ -344,5 +346,122 @@ describe("ohifViewerBridge", () => {
       allowedOrigins: ["https://erp.example", "https://ohif.example"],
       pageOrigin: "https://erp.example",
     })).toBe("https://ohif.example");
+  });
+});
+
+/**
+ * D2 — the receiver must not be the place where an un-named image becomes an
+ * anchored one. These cases are the ones the old guard let through: an empty
+ * study claim skipped the study comparison entirely, and an anchor could arrive
+ * that nobody had asked for.
+ */
+describe("D2 identity gates on the receiving side", () => {
+  const baseCtx = {
+    studyInstanceUID: "1.2.840.study.a",
+    patientId: 7,
+    studyId: 11,
+    draftId: 5,
+  };
+
+  it("an event that names no study is refused instead of compared to nothing", async () => {
+    for (const msg of [
+      { source: CARE_OHIF_SOURCE, type: "measurement", studyInstanceUID: "", value: 12, unit: "mm" },
+      { source: CARE_OHIF_SOURCE, type: "key-image", studyInstanceUID: "", seriesInstanceUID: "1.2.3", sopInstanceUID: "1.2.4" },
+      { source: CARE_OHIF_SOURCE, type: "active-anchor", studyInstanceUID: "" },
+    ] as const) {
+      const out = await handleCareOhifMessage(msg as never, { ...baseCtx });
+      expect(out, JSON.stringify(msg)).toBe("ignored");
+    }
+    expect(vi.mocked(api.post)).not.toHaveBeenCalled();
+  });
+
+  it("an anchor reply is only honoured for the request that asked for it", async () => {
+    const pending = new Set<string>();
+    const seen: unknown[] = [];
+    const ctx = { ...baseCtx, pendingAnchorRequestIds: pending, onActiveAnchor: (c: unknown) => seen.push(c) };
+    const reply = {
+      source: CARE_OHIF_SOURCE,
+      type: "active-anchor",
+      studyInstanceUID: "1.2.840.study.a",
+      seriesInstanceUID: "1.2.840.s",
+      sopInstanceUID: "1.2.840.i",
+      frameNumber: 3,
+      requestId: "anc-never-asked",
+    } as const;
+    expect(await handleCareOhifMessage(reply as never, ctx)).toBe("ignored");
+    expect(seen.length).toBe(0);
+
+    pending.add("anc-1");
+    expect(await handleCareOhifMessage({ ...reply, requestId: "anc-1" } as never, ctx)).toBe("ok");
+    expect(seen.length).toBe(1);
+    expect(pending.has("anc-1")).toBe(false); // consumed, so it cannot be replayed
+  });
+
+  it("a refusal from the viewer ends the request instead of leaving it to expire", async () => {
+    // The viewer says "nothing addressable is on screen". Silently dropping that
+    // would leave the ERP waiting for its timeout, so the refusal is consumed by
+    // requestId — and it is still not an anchor.
+    const pending = new Set(["anc-1"]);
+    let unavailable = 0;
+    let applied = 0;
+    const ctx = {
+      ...baseCtx,
+      pendingAnchorRequestIds: pending,
+      onActiveAnchor: () => { applied += 1; },
+      onActiveAnchorUnavailable: () => { unavailable += 1; },
+    };
+    const refusal = {
+      source: CARE_OHIF_SOURCE,
+      type: "displayed-anchor-unavailable",
+      version: 1,
+      error: "no_displayed_image",
+      requestId: "anc-1",
+    } as const;
+
+    expect(await handleCareOhifMessage(refusal as never, ctx)).toBe("ok");
+    expect(unavailable).toBe(1);
+    expect(applied).toBe(0);
+    expect(pending.has("anc-1")).toBe(false);
+
+    // A refusal for a request nobody made is silence, not a warning.
+    expect(await handleCareOhifMessage({ ...refusal, requestId: "anc-old" } as never, ctx)).toBe("ignored");
+    expect(unavailable).toBe(1);
+  });
+
+  it("an anchor that cannot identify an image says so instead of anchoring the study", async () => {
+    let unavailable = 0;
+    let applied = 0;
+    const out = await handleCareOhifMessage(
+      { source: CARE_OHIF_SOURCE, type: "active-anchor", studyInstanceUID: "1.2.840.study.a" } as never,
+      {
+        ...baseCtx,
+        onActiveAnchor: () => { applied += 1; },
+        onActiveAnchorUnavailable: () => { unavailable += 1; },
+      },
+    );
+    expect(out).toBe("ignored");
+    expect(applied).toBe(0);
+    expect(unavailable).toBe(1);
+  });
+
+  it("a displayed-anchor request is never broadcast to *", async () => {
+    const postMessage = vi.fn();
+    const target = { postMessage } as unknown as Window;
+    expect(requestOhifDisplayedAnchor({ target, requestId: "anc-1" })).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(requestOhifDisplayedAnchor({
+      target,
+      requestId: "anc-1",
+      targetOrigin: "https://ohif.example",
+    })).toBe(true);
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: CARE_REPORTING_SOURCE,
+        type: "displayed-anchor-request",
+        version: 1,
+        requestId: "anc-1",
+      }),
+      "https://ohif.example",
+    );
   });
 });

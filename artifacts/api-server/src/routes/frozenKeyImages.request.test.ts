@@ -12,12 +12,21 @@ import { db } from "@workspace/db";
 import {
   usersTable,
   portalSessionsTable,
+  radiologyWorklistTable,
   radiologyReportDraftsTable,
   radiologyReportKeyImagesTable,
 } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { FROZEN_KEY_IMAGE_DIR } from "../lib/frozenKeyImages";
+import { startMockDicomWeb, type MockDicomWeb } from "../testSupport/mockDicomWeb";
+
+// The capture the suite posts names a specific image, and since D2 a named image
+// is only stored as an identity once the PACS confirms the chain — so this suite
+// needs a PACS to answer, the same one the clinic runs, spoken over HTTP.
+const CAPTURE_STUDY = "1.2.840.10008.1.2.1";
+const CAPTURE_SERIES = "1.2.840.10008.1.2.2";
+const CAPTURE_SOP = "1.2.840.10008.1.2.3";
 
 const JPEG_1X1 = Buffer.from(
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z",
@@ -43,11 +52,18 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
   let imageId = 0;
   let otherImageId = 0;
   let userId = 0;
+  let worklistId = 0;
+  let pacs: MockDicomWeb | null = null;
+  const prevOrthanc = process.env.ORTHANC_INTERNAL_URL;
   const cleanupImageIds: number[] = [];
 
   beforeAll(async () => {
     app = await createTestApp();
     await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
+    pacs = await startMockDicomWeb({
+      [CAPTURE_STUDY]: { [CAPTURE_SERIES]: [{ sopUid: CAPTURE_SOP, numberOfFrames: 12 }] },
+    });
+    process.env.ORTHANC_INTERNAL_URL = pacs.url;
     const [user] = await db
       .insert(usersTable)
       .values({
@@ -69,12 +85,30 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
+    const [wl] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientName: `KI ${marker}`,
+        modality: "MR",
+        studyDescription: "KI API test",
+        studyDate: new Date().toISOString().slice(0, 10),
+        accessionNumber: `KI-${marker}`,
+        studyInstanceUID: CAPTURE_STUDY,
+        matchScore: "GREEN",
+        matchDecision: "PENDING",
+        status: "STUDY_RECEIVED",
+      })
+      .returning();
+    worklistId = wl.id;
+
     const [draft] = await db
       .insert(radiologyReportDraftsTable)
       .values({
         status: "DRAFT",
         studyName: "KI API test",
         modality: "MR",
+        worklistId,
+        studyId: worklistId,
         rawFindings: "x",
         impression: "[]",
       })
@@ -117,10 +151,16 @@ describe.skipIf(!dbReady)("frozen key-images API", () => {
     if (otherDraftId) {
       await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, otherDraftId));
     }
+    if (worklistId) {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, worklistId));
+    }
     if (userId) {
       await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
       await db.delete(usersTable).where(eq(usersTable.id, userId));
     }
+    await pacs?.close();
+    if (prevOrthanc === undefined) delete process.env.ORTHANC_INTERNAL_URL;
+    else process.env.ORTHANC_INTERNAL_URL = prevOrthanc;
   });
 
   it("rejects SVG / invalid MIME", async () => {
