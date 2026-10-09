@@ -73,6 +73,9 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       httpStatus?: number | null;
       elapsedMs?: number | null;
       responseLength?: number | null;
+      thinkingLength?: number | null;
+      evalCount?: number | null;
+      finishReason?: string | null;
     } | null = null;
 
     const { generateAiResponse } = await import("@workspace/ai-providers");
@@ -144,6 +147,9 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           httpStatus: direct.diagnostics.httpStatus,
           elapsedMs: direct.diagnostics.elapsedMs,
           responseLength: direct.diagnostics.responseLength,
+          thinkingLength: direct.diagnostics.thinkingLength,
+          evalCount: direct.diagnostics.ollamaEvalCount,
+          finishReason: direct.diagnostics.finishReason,
         }
       : null;
 
@@ -154,6 +160,10 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         errorCode: lastDiag?.errorCode,
         errorMessage: lastError,
         responseLength: lastDiag?.responseLength,
+        thinkingLength: lastDiag?.thinkingLength,
+        evalCount: lastDiag?.evalCount,
+        numPredict: vision.policy.maxTokens,
+        finishReason: lastDiag?.finishReason,
       });
       return {
         draft: {
@@ -172,6 +182,8 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
           provider: authoritativeProvider,
           degraded: true,
           detail: fail.detail,
+          failureCode: fail.code,
+          failureDetail: fail.detail,
           resourceFailureCode:
             fail.code === "GPU_OUT_OF_MEMORY" || fail.code === "CONTEXT_BUDGET_EXCEEDED"
               ? fail.code
@@ -218,6 +230,30 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
       },
     );
 
+    // A degraded-but-successful call is the case the clinic actually sees: HTTP 200,
+    // an empty draft, and no record of why. Classify while the diagnostics are still
+    // in scope so "budget exhausted" is not reported as "provider/parse failure".
+    let failureCode: string | null = null;
+    let failureDetail: string | null = null;
+    if (result.degraded) {
+      const emptied = classifyOvernightProviderFailure({
+        success: true,
+        httpStatus: lastDiag?.httpStatus ?? 200,
+        errorCode: lastDiag?.errorCode ?? null,
+        errorMessage: lastError ?? null,
+        responseLength: (direct.text ?? "").length,
+        thinkingLength: lastDiag?.thinkingLength ?? null,
+        evalCount: lastDiag?.evalCount ?? null,
+        numPredict: vision.policy.maxTokens,
+        finishReason: lastDiag?.finishReason ?? null,
+        // The gateway reached us with text that produced no draft; that is what
+        // parserSuccess=false means here.
+        parserSuccess: false,
+      });
+      failureCode = emptied.code;
+      failureDetail = emptied.detail;
+    }
+
     return {
       draft: {
         studyContext: result.report.studyContext,
@@ -236,8 +272,12 @@ export const gatewayInferenceProvider: ShadowInferenceProvider = {
         modelDigest: result.modelDigest,
         provider: result.provider || authoritativeProvider,
         degraded: result.degraded,
-        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}`,
+        detail: `${result.detail}; endpoint=${vision.endpointUrl}; num_ctx=${vision.numCtx}; think=${vision.think}; safeMode=${vision.policy.safeMode}; nightVisionProvider=${nightVisionProvider}; authoritative=${authoritativeProvider}${
+          failureCode ? `; cause=${failureCode} (${failureDetail})` : ""
+        }`,
         resourceFailureCode: null,
+        failureCode,
+        failureDetail,
         httpStatus: lastDiag?.httpStatus ?? (direct.success ? 200 : null),
         elapsedMs: lastDiag?.elapsedMs ?? null,
         requestedImages: images.length,

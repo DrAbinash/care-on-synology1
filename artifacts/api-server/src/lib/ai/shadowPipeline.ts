@@ -29,6 +29,7 @@ import { shadowStubProvider, type ShadowInferenceProvider } from "./shadowInfere
 import { runDeterministicQuality } from "./rulesBeforeAi";
 import { applyTrustGauntlet, type GauntletFinding } from "./findingValidation";
 import { classifyShadowDraftUsability, buildWorklistAiDraftPointer } from "./shadowDraftUsability";
+import { logger } from "../logger";
 
 export const AI_SHADOW_PIPELINE_JOB = "ai_shadow_pipeline";
 
@@ -440,6 +441,9 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
     // success with empty/quarantined content must NOT display as READY.
     // Human report drafts stay radiologist-owned (AiDraftPanel Accept → editor);
     // AI must never write radiology_report_drafts (aiIsolation guard).
+    // Named cause of an unusable draft, kept out here so the job's own summary
+    // line can carry it; the worklist pointer below is best-effort.
+    let draftFailureCode: string | null = null;
     try {
       const findingsText = gauntlet.valid.map((f) => f.text).join("\n");
       const usability = classifyShadowDraftUsability({
@@ -449,7 +453,24 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
         candidateCount: aiFindings.length,
         degraded,
         imageCount: rendered.length,
+        providerFailure: { code: provenance.failureCode ?? null, detail: provenance.failureDetail ?? null },
       });
+      draftFailureCode = usability.providerFailureCode;
+      if (!usability.usable && usability.providerFailureCode) {
+        logger.warn(
+          {
+            studyInstanceUid: uid,
+            providerFailureCode: usability.providerFailureCode,
+            providerFailureDetail: usability.providerFailureDetail,
+            degraded,
+            imageCount: rendered.length,
+            numCtx: policy.numCtx,
+            maxTokens: policy.maxTokens,
+            model: policy.model,
+          },
+          "ai shadow pipeline produced an unusable draft",
+        );
+      }
       const pointer = buildWorklistAiDraftPointer({
         draftId: draftRow.id,
         version,
@@ -474,7 +495,7 @@ export function makeAiShadowPipelineHandler(overrides: Partial<ShadowPipelineDep
 
     return {
       ok: true,
-      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}, images ${rendered.length}/${policy.maxImages} (num_ctx=${policy.numCtx} ${policy.numCtxSource}; ${policy.imageCapReason}; preflight ${preflight.reasonForReduction ?? "no reduction"}; recovered=${Boolean(provenance.recoveredOnce)}), model ${provenance.modelVersion}`,
+      detail: `shadow OK — rev ${snapshotRevision}, draft v${version} (#${draftRow.id}), manifest ${manifestRow.id}, valid ${gauntlet.valid.length}, quarantined ${gauntlet.quarantined.length}, degraded ${degraded}${draftFailureCode ? `, unusable because ${draftFailureCode}` : ""}, images ${rendered.length}/${policy.maxImages} (num_ctx=${policy.numCtx} ${policy.numCtxSource}; ${policy.imageCapReason}; preflight ${preflight.reasonForReduction ?? "no reduction"}; recovered=${Boolean(provenance.recoveredOnce)}), model ${provenance.modelVersion}`,
     };
   };
 }

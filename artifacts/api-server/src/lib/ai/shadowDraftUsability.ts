@@ -27,6 +27,12 @@ export interface ShadowDraftUsabilityInput {
   degraded?: boolean;
   /** Images rendered and passed to inference. */
   imageCount?: number;
+  /**
+   * What the provider actually did, as named by the gateway. Without this every
+   * empty draft — a model that exhausted its answer budget, one that returned no
+   * text, and one whose text was not valid report JSON — read identically.
+   */
+  providerFailure?: { code: string | null; detail: string | null } | null;
 }
 
 export interface ShadowDraftUsability {
@@ -38,7 +44,36 @@ export interface ShadowDraftUsability {
   impressionCount: number;
   emptyReason: ShadowEmptyReasonCode | null;
   emptyReasonLabel: string | null;
+  /** Named provider outcome behind an unusable draft; null when none was reported. */
+  providerFailureCode: string | null;
+  providerFailureDetail: string | null;
   quarantineReasonClasses: Array<{ reason: string; count: number }>;
+}
+
+/**
+ * Sentences for the causes a radiologist can act on. Unknown or absent codes fall
+ * back to the generic wording, so a new failure mode stays honest instead of
+ * claiming a cause we did not establish.
+ */
+export function describeProviderFailure(code: string | null): string | null {
+  switch (code) {
+    case "OUTPUT_BUDGET_EXHAUSTED":
+      return "The model spent its entire answer budget before writing any report text — the draft is empty because none was ever produced.";
+    case "EMPTY_MODEL_OUTPUT":
+      return "The AI provider answered successfully but returned no text at all.";
+    case "PARSE_FAILED":
+      return "The model replied with text that could not be read as a structured draft.";
+    case "PROVIDER_TIMEOUT":
+      return "The AI provider did not answer within the timeout.";
+    case "GPU_OUT_OF_MEMORY":
+      return "The AI machine ran out of GPU memory while answering.";
+    case "CONTEXT_BUDGET_EXCEEDED":
+      return "The request was larger than the model's available context window.";
+    case "PROVIDER_HTTP_ERROR":
+      return "The AI provider returned an HTTP error.";
+    default:
+      return null;
+  }
 }
 
 function trimLines(lines: string[] | null | undefined): string[] {
@@ -57,6 +92,8 @@ export function classifyShadowDraftUsability(input: ShadowDraftUsabilityInput): 
   const acceptedCount = accepted.length;
   const impressionCount = impression.length;
   const usable = acceptedCount > 0 || impressionCount > 0;
+  const failureCode = input.providerFailure?.code ?? null;
+  const failureDetail = input.providerFailure?.detail ?? null;
 
   const reasonCounts = new Map<string, number>();
   for (const q of input.quarantinedFindings) {
@@ -79,6 +116,8 @@ export function classifyShadowDraftUsability(input: ShadowDraftUsabilityInput): 
       impressionCount,
       emptyReason: null,
       emptyReasonLabel: null,
+      providerFailureCode: failureCode,
+      providerFailureDetail: failureDetail,
       quarantineReasonClasses,
     };
   }
@@ -93,17 +132,22 @@ export function classifyShadowDraftUsability(input: ShadowDraftUsabilityInput): 
       impressionCount,
       emptyReason: "all_findings_quarantined",
       emptyReasonLabel: `${Math.max(quarantinedCount, candidateCount)} candidate finding(s) withheld by grounding/safety checks; no usable impression.`,
+      providerFailureCode: failureCode,
+      providerFailureDetail: failureDetail,
       quarantineReasonClasses,
     };
   }
 
   const degraded = input.degraded === true;
   const emptyReason: ShadowEmptyReasonCode = degraded ? "degraded_empty" : "model_or_gateway_empty";
-  const emptyReasonLabel = degraded
-    ? "AI gateway degraded to an empty draft (provider/parse failure) — no usable findings or impression."
-    : (input.imageCount != null && input.imageCount === 0)
-      ? "No images were available for vision inference — no usable findings or impression."
-      : "Model returned no candidate findings and no impression.";
+  const namedCause = degraded ? describeProviderFailure(failureCode) : null;
+  const emptyReasonLabel = namedCause
+    ? namedCause
+    : degraded
+      ? "AI gateway degraded to an empty draft (provider/parse failure) — no usable findings or impression."
+      : (input.imageCount != null && input.imageCount === 0)
+        ? "No images were available for vision inference — no usable findings or impression."
+        : "Model returned no candidate findings and no impression.";
 
   return {
     clinicalStatus: "EMPTY",
@@ -114,6 +158,8 @@ export function classifyShadowDraftUsability(input: ShadowDraftUsabilityInput): 
     impressionCount,
     emptyReason,
     emptyReasonLabel,
+    providerFailureCode: failureCode,
+    providerFailureDetail: failureDetail,
     quarantineReasonClasses,
   };
 }
@@ -141,6 +187,8 @@ export function buildWorklistAiDraftPointer(input: {
     clinicalStatus: u.clinicalStatus,
     emptyReason: u.emptyReason,
     emptyReasonLabel: u.emptyReasonLabel,
+    providerFailureCode: u.providerFailureCode,
+    providerFailureDetail: u.providerFailureDetail,
     candidateCount: u.candidateCount,
     quarantinedCount: u.quarantinedCount,
     impressionCount: u.impressionCount,
