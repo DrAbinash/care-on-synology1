@@ -309,8 +309,10 @@ async function buildBillsBatch(
     orderTest: typeof orderTestsTable.$inferSelect;
     test: typeof testsTable.$inferSelect | null;
   };
+  // Line names are needed even in compact mode so the Bills list can show and
+  // search by test. Only the full `tests` hydration stays gated.
   let orderTestRows: OrderTestJoined[] = [];
-  if (!compact && orderIds.length > 0) {
+  if (orderIds.length > 0) {
     orderTestRows = await db
       .select({ orderTest: orderTestsTable, test: testsTable })
       .from(orderTestsTable)
@@ -335,6 +337,7 @@ async function buildBillsBatch(
     const patient = patientById.get(bill.patientId) ?? null;
     const order = orderById.get(bill.orderId) ?? null;
     const sanitized = patient ? sanitizePatient(patient) : null;
+    const lineItems = order ? (testsByOrderId.get(order.id) ?? []) : [];
 
     const orderDetails = order
       ? {
@@ -342,12 +345,20 @@ async function buildBillsBatch(
           totalAmount: Number(order.totalAmount),
           patient: sanitized,
           doctor: order.doctorId != null ? (doctorById.get(order.doctorId) ?? null) : null,
-          tests: (testsByOrderId.get(order.id) ?? []).map((ot) => ({
-            ...ot.orderTest,
-            price: Number(ot.orderTest.price),
-            displayName: ot.orderTest.displayName ?? null,
-            test: ot.test ? { ...ot.test, price: Number(ot.test.price) } : null,
-          })),
+          // Mirrors what the bill prints: the per-order override wins over the
+          // master name. Cancelled lines stay listed so a test-wise search that
+          // matched them shows why the bill came back.
+          testNames: lineItems.map(
+            (ot) => ot.orderTest.displayName?.trim() || ot.test?.name || "",
+          ).filter(Boolean),
+          tests: compact
+            ? []
+            : lineItems.map((ot) => ({
+                ...ot.orderTest,
+                price: Number(ot.orderTest.price),
+                displayName: ot.orderTest.displayName ?? null,
+                test: ot.test ? { ...ot.test, price: Number(ot.test.price) } : null,
+              })),
         }
       : null;
 
@@ -405,6 +416,12 @@ async function buildBill(bill: typeof billsTable.$inferSelect) {
   };
 }
 
+function parsePositiveInt(raw: unknown): number | null {
+  if (typeof raw !== "string" || raw === "") return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 billsRouter.get("/creators", async (_req, res) => {
   const rows = await db
     .selectDistinct({ createdByName: billsTable.createdByName })
@@ -412,6 +429,43 @@ billsRouter.get("/creators", async (_req, res) => {
     .where(sql`${billsTable.createdByName} IS NOT NULL AND ${billsTable.createdByName} != ''`)
     .orderBy(billsTable.createdByName);
   return res.json(rows.map((r) => r.createdByName));
+});
+
+/**
+ * Referring doctors that actually appear on bills — the option set for the
+ * Bills page referral filter. Scoped to billed orders on purpose: the doctors
+ * master is longer and mostly irrelevant here.
+ */
+billsRouter.get("/referrers", async (_req, res) => {
+  const rows = await db
+    .selectDistinct({ id: doctorsTable.id, name: doctorsTable.name })
+    .from(billsTable)
+    .innerJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .innerJoin(doctorsTable, eq(ordersTable.doctorId, doctorsTable.id))
+    .orderBy(doctorsTable.name);
+  return res.json(rows);
+});
+
+/**
+ * Catalog tests that actually appear on bills — the option set for the Bills
+ * page test filter. Keyed by catalog id, not by the per-order display-name
+ * override, so picking "MRI Brain" returns every bill containing that test
+ * however the desk printed the line.
+ */
+billsRouter.get("/billed-tests", async (_req, res) => {
+  const rows = await db
+    .select({
+      id: testsTable.id,
+      code: testsTable.code,
+      name: testsTable.name,
+    })
+    .from(billsTable)
+    .innerJoin(ordersTable, eq(billsTable.orderId, ordersTable.id))
+    .innerJoin(orderTestsTable, eq(orderTestsTable.orderId, ordersTable.id))
+    .innerJoin(testsTable, eq(orderTestsTable.testId, testsTable.id))
+    .groupBy(testsTable.id, testsTable.code, testsTable.name)
+    .orderBy(testsTable.name);
+  return res.json(rows);
 });
 
 billsRouter.get("/search", async (req, res) => {
@@ -524,6 +578,20 @@ billsRouter.get("/", async (req, res) => {
   const dateField = req.query.dateField === "due" ? "due" : "created";
   const createdBy = typeof req.query.createdBy === "string" && req.query.createdBy ? req.query.createdBy : null;
 
+  // Referral-wise / test-wise search. Read raw like the filters above so the
+  // generated OpenAPI zod schema doesn't have to round-trip every tweak.
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const referralDoctorId = parsePositiveInt(req.query.referralDoctorId);
+  const testId = parsePositiveInt(req.query.testId);
+  if (req.query.referralDoctorId && referralDoctorId === null) {
+    res.status(400).json({ error: "referralDoctorId must be a positive integer" });
+    return;
+  }
+  if (req.query.testId && testId === null) {
+    res.status(400).json({ error: "testId must be a positive integer" });
+    return;
+  }
+
   // ISO date strings only — basic guard against SQL injection via the raw fragments.
   const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
   if (dateFrom && !isoDateRe.test(dateFrom)) {
@@ -548,6 +616,51 @@ billsRouter.get("/", async (req, res) => {
   }
   if (createdBy) {
     conditions.push(sql`${billsTable.createdByName} = ${createdBy}`);
+  }
+  if (referralDoctorId) {
+    conditions.push(sql`${billsTable.orderId} IN (
+      SELECT ${ordersTable.id} FROM ${ordersTable}
+      WHERE ${ordersTable.doctorId} = ${referralDoctorId}
+    )`);
+  }
+  if (testId) {
+    conditions.push(sql`${billsTable.orderId} IN (
+      SELECT ${orderTestsTable.orderId} FROM ${orderTestsTable}
+      WHERE ${orderTestsTable.testId} = ${testId}
+    )`);
+  }
+  if (q.length >= 2) {
+    // One box, referral- and test-aware. Semi-joins rather than joins so a bill
+    // with ten line items still counts once and the page totals stay correct.
+    // A test line matches on its catalogue name/code OR the desk's display-name
+    // override, so renaming a bill line never hides it from a catalogue search
+    // — the same grouping the testId filter gives.
+    const like = `%${q.toLowerCase()}%`;
+    conditions.push(sql`(
+      LOWER(${billsTable.billNumber}) LIKE ${like}
+      OR EXISTS (
+        SELECT 1 FROM ${patientsTable}
+        WHERE ${patientsTable.id} = ${billsTable.patientId}
+          AND (LOWER(${patientsTable.firstName} || ' ' || ${patientsTable.lastName}) LIKE ${like}
+               OR LOWER(${patientsTable.patientId}) LIKE ${like}
+               OR ${patientsTable.phone} LIKE ${like})
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${ordersTable}
+        LEFT JOIN ${doctorsTable} ON ${doctorsTable.id} = ${ordersTable.doctorId}
+        WHERE ${ordersTable.id} = ${billsTable.orderId}
+          AND (LOWER(${ordersTable.orderNumber}) LIKE ${like}
+               OR LOWER(${doctorsTable.name}) LIKE ${like})
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${orderTestsTable}
+        LEFT JOIN ${testsTable} ON ${testsTable.id} = ${orderTestsTable.testId}
+        WHERE ${orderTestsTable.orderId} = ${billsTable.orderId}
+          AND (LOWER(${testsTable.name}) LIKE ${like}
+               OR LOWER(${testsTable.code}) LIKE ${like}
+               OR LOWER(COALESCE(${orderTestsTable.displayName}, '')) LIKE ${like})
+      )
+    )`);
   }
   if (dateFrom || dateTo) {
     if (dateField === "due") {
