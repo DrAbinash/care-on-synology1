@@ -315,10 +315,11 @@ app.use("/api", router);
 // patient's name, UHID or accession burned into the raster by the modality, and
 // no code in CARE inspects pixels — so the file itself is the PHI. This prefix
 // used to sit on the public static mount below, protected only by a UUID
-// filename. Guarded by the same staff-session middleware every clinical route
-// uses; see lib/radiologyKeyImageStatic.ts for the reasoning and the client-side
-// `?staffToken=` convention. Server-side readers (composer, print) are
-// unaffected because they read from disk.
+// filename. It now admits either a Bearer staff session that holds
+// /radiology, or a short-lived grant minted for that one file by
+// POST /api/radiology/report-generator/key-images/access-urls — never the
+// `?staffToken=` session query token. See lib/radiologyKeyImageStatic.ts.
+// Server-side readers (composer, print) are unaffected: they read from disk.
 app.use(KEY_IMAGE_MOUNT, ...radiologyKeyImageHandlers());
 
 // Serve user-uploaded site assets (favicon, photos, hero images, etc.)

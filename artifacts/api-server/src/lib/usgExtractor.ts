@@ -849,6 +849,20 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
       // deliberate refusal, not a missing feature: normalization is skipped and
       // the study stays in the queue for local OCR / manual review rather than
       // sending serialized DICOM to a vendor.
+      //
+      // DOCUMENTED LIMITATION (verified, not assumed): the six allow-listed
+      // fields carry no biometry. `geminiNormalizeMeasurements()` extracts
+      // numbers out of the text it is given, so with only Modality,
+      // StudyDescription, SeriesDescription, BodyPartExamined, Manufacturer and
+      // ManufacturerModelName this path can at most recover a gestational-age
+      // hint a sonographer typed into a description ("OT: Fetus(1) 30w2d"). It
+      // is not a measurement source. It never was a good one — the guard above
+      // only reaches this line after `parseDicomSr()` and `parseGePrivateTags()`
+      // both returned nothing, and those are where BPD/HC/AC/FL/PSV actually
+      // come from (asserted in usgExtractorCloudAllowList.test.ts against a
+      // Voluson E8 profile). The privacy change removed identifiers from the
+      // outbound text; it did not remove clinical values, because the outbound
+      // text was never carrying them.
       const safeText = buildSafeUsgNormalizationText({
         dicomMetadataJson,
         knownIdentifiers: [

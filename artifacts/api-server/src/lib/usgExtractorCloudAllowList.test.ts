@@ -29,6 +29,9 @@ vi.mock("@workspace/db", () => ({
 
 import {
   buildSafeUsgNormalizationText,
+  extractDopplerFromSr,
+  parseDicomSr,
+  parseGePrivateTags,
   USG_CLOUD_NEVER_SENT_TAGS,
 } from "./usgExtractor";
 
@@ -162,5 +165,139 @@ describe("buildSafeUsgNormalizationText", () => {
     const text = buildSafeUsgNormalizationText({ dicomMetadataJson: long });
     const line = text.split("\n").find((l) => l.startsWith("StudyDescription:")) ?? "";
     expect(line.length).toBeLessThanOrEqual("StudyDescription: ".length + 120);
+  });
+});
+
+/**
+ * Item 3 — what the narrowed fallback can still do, on a real Voluson machine
+ * profile, using the same sanitized fixture shapes `usgExtractor.test.ts` uses.
+ *
+ * `runUsgExtraction()` reaches the AI normalizer only when BOTH value parsers
+ * came back empty (no DICOM SR, no GE private tags) and screenshot OCR is
+ * disabled by policy. So the honest question is not "did the allow-list break
+ * measurement extraction" — the six fields carry no biometry at all — but
+ * "does the measurement pipeline still work, and what is left in the cloud
+ * path". Both are asserted below on one realistic blob:
+ *  - the values (BPD 78.5 mm, HC 285.2 mm, UA PSV 42.5 cm/s) come out of the
+ *    local parsers, untouched by this change;
+ *  - what would be sent is device/protocol context plus any gestational-age
+ *    hint a sonographer typed into a description field, and nothing else.
+ */
+const VOLUSON_E8_BLOB = JSON.stringify({
+  // Identifying content, in Orthanc's ascending tag order — exactly the window
+  // the old `slice(0, 2000)` used to ship.
+  "00080050": { vr: "SH", Value: ["ACC-2610-0448"] },
+  "00080060": { vr: "CS", Value: ["US"] },
+  "00080070": { vr: "LO", Value: ["GE Healthcare"] },
+  "00080080": { vr: "LO", Value: ["Care Diagnostics Deoghar"] },
+  "00080090": { vr: "PN", Value: [{ Alphabetic: "Singh^Rahul" }] },
+  "00081030": { vr: "LO", Value: ["OG ANTROPOMETRY + DOPPLER"] },
+  "0008103E": { vr: "LO", Value: ["OT: Fetus(1)  30w2d"] },
+  "00081090": { vr: "LO", Value: ["Voluson E8"] },
+  "00100010": { vr: "PN", Value: [{ Alphabetic: "Ramesh^Kumar" }] },
+  "00100020": { vr: "LO", Value: ["UHID-45812"] },
+  "00100030": { vr: "DA", Value: ["19960312"] },
+  "00101040": { vr: "CS", Value: ["F"] },
+  // GE private measurement block — the real values live here.
+  "00791021": {
+    vr: "OB",
+    Value: [
+      `<USGMeasurements><Measurement Name="BPD" Value="78.5" Unit="mm"/><Measurement Name="HC" Value="285.2" Unit="mm"/><Measurement Name="AC" Value="271.0" Unit="mm"/><Measurement Name="FL" Value="56.1" Unit="mm"/></USGMeasurements>`,
+    ],
+  },
+  // DICOM SR content sequence with a Doppler value.
+  "0040A730": {
+    vr: "SQ",
+    Value: [
+      {
+        "0040A040": { vr: "CS", Value: ["NUM"] },
+        "0040A043": {
+          vr: "SQ",
+          Value: [{ "00080104": { vr: "LO", Value: ["Peak Systolic Velocity"] } }],
+        },
+        "0040A300": {
+          vr: "SQ",
+          Value: [
+            {
+              "0040A30A": { vr: "DS", Value: [42.5] },
+              "004008EA": { vr: "SQ", Value: [{ "00080100": { vr: "SH", Value: ["cm/s"] } }] },
+            },
+          ],
+        },
+      },
+    ],
+  },
+});
+
+describe("Voluson E8 profile — measurement pipeline survives the narrowed cloud path", () => {
+  const identifiers = [
+    "Ramesh Kumar",
+    "UHID-45812",
+    "ACC-2610-0448",
+    "Care Diagnostics Deoghar",
+    "Singh Rahul",
+  ];
+
+  it("still extracts every real measurement value locally, from the same blob", () => {
+    const ge = parseGePrivateTags(VOLUSON_E8_BLOB);
+    expect(ge.bpd).toBe("78.5");
+    expect(ge.hc).toBe("285.2");
+    expect(ge.ac).toBe("271.0");
+    expect(ge.fl).toBe("56.1");
+
+    const sr = parseDicomSr(VOLUSON_E8_BLOB);
+    const psv = sr.find((s) => /peak systolic/i.test(s.conceptName));
+    expect(psv?.value).toBe("42.5");
+    expect(psv?.unit).toBe("cm/s");
+    const dopplers = extractDopplerFromSr(sr);
+    // The Doppler group carries value AND unit ("42.5 cm/s") — proof the SR tree
+    // is fully parsed locally, which is exactly the content the cloud path lost.
+    expect(dopplers.some((d) => d.psv === "42.5 cm/s")).toBe(true);
+  });
+
+  it("sends only device and protocol context, and none of those values", () => {
+    const text = buildSafeUsgNormalizationText({
+      dicomMetadataJson: VOLUSON_E8_BLOB,
+      knownIdentifiers: identifiers,
+    });
+
+    expect(text).toContain("Modality: US");
+    expect(text).toContain("Manufacturer: GE Healthcare");
+    expect(text).toContain("ManufacturerModelName: Voluson E8");
+    expect(text).toContain("StudyDescription: OG ANTROPOMETRY + DOPPLER");
+    expect(text).toContain("SeriesDescription: OT: Fetus(1)  30w2d");
+
+    // No biometry leaves: the values the parsers just read are absent here.
+    for (const value of ["78.5", "285.2", "271.0", "56.1", "42.5"]) {
+      expect(text, `measurement value leaked: ${value}`).not.toContain(value);
+    }
+    expect(text).not.toMatch(/\d+(\.\d+)?\s?(mm|cm|cc|g|cm\/s)\b/);
+    // No private-tag payload, no SR tree, no UIDs, no patient group.
+    expect(text).not.toContain("USGMeasurements");
+    expect(text).not.toMatch(/00791021|0040A730|0040A30A/i);
+    expect(text).not.toMatch(/Ramesh|45812|ACC-2610|19960312|Deoghar|Singh/);
+    expect(text.length).toBeGreaterThan(0);
+    expect(text.split("\n").length).toBeLessThanOrEqual(6);
+  });
+
+  it("keeps the one genuinely useful hint a sonographer can type — gestational age in a description", () => {
+    // This is the whole residual value of the fallback: it can carry a typed
+    // "30w2d" and the exam context. It cannot invent a measurement it was never
+    // given, and it no longer buys that with a patient's name.
+    const text = buildSafeUsgNormalizationText({
+      dicomMetadataJson: VOLUSON_E8_BLOB,
+      knownIdentifiers: identifiers,
+    });
+    expect(text).toMatch(/30w2d/);
+  });
+
+  it("refuses everything when the description field itself names the patient", () => {
+    const named = VOLUSON_E8_BLOB.replace(
+      '"OT: Fetus(1)  30w2d"',
+      '"RAMESH KUMAR 30w2d followup"',
+    );
+    expect(
+      buildSafeUsgNormalizationText({ dicomMetadataJson: named, knownIdentifiers: identifiers }),
+    ).toBe("");
   });
 });

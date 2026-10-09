@@ -3,13 +3,14 @@
  * Print inclusion (`includeInReport`) is independent of AI selection.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/fetchApi";
-import { withStaffToken } from "@/lib/authFileUrl";
+import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
+import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
 import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "@/lib/reportComposer/types";
 
@@ -96,6 +97,14 @@ export default function FrozenKeyImagesRail({
     if (!filterObservationId) return all;
     return all.filter((i) => i.observationId === filterObservationId);
   }, [q.data?.items, filterObservationId]);
+
+  // One grant request for the whole rail instead of one per thumbnail; the
+  // images then read the shared cache. See components/radiology/KeyImageWithAccess.tsx.
+  useEffect(() => {
+    const ids = items.map((i) => i.id);
+    if (ids.length === 0) return;
+    void fetchKeyImageAccessUrls(ids);
+  }, [items]);
 
   const aiSelected = useMemo(() => new Set(aiSelectedIds ?? []), [aiSelectedIds]);
   const eligibleItems = useMemo(() => items.filter(isEligibleForAiSelection), [items]);
@@ -243,8 +252,10 @@ export default function FrozenKeyImagesRail({
                     onClick={() => setPreview(img)}
                     title="Preview"
                   >
-                    <img
-                      src={withStaffToken(img.thumbnailUrl || img.imageUrl)}
+                    <KeyImageWithAccess
+                      id={img.id}
+                      src={img.thumbnailUrl || img.imageUrl}
+                      variant="thumbnail"
                       alt={img.caption || "Key image"}
                       className="h-full w-full object-contain"
                       loading="lazy"
@@ -357,7 +368,13 @@ export default function FrozenKeyImagesRail({
             className="max-w-3xl w-full bg-white rounded-lg overflow-hidden shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <img src={withStaffToken(preview.imageUrl)} alt={preview.caption} className="w-full max-h-[70vh] object-contain bg-black" />
+            <KeyImageWithAccess
+              id={preview.id}
+              src={preview.imageUrl}
+              alt={preview.caption}
+              className="w-full max-h-[70vh] object-contain bg-black"
+              loading="eager"
+            />
             <div className="p-3 space-y-2">
               {disabled ? (
                 <p className="text-sm">{preview.caption}</p>

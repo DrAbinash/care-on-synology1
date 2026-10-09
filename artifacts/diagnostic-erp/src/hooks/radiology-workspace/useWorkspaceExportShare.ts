@@ -9,7 +9,6 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
-import { withStaffToken } from "@/lib/authFileUrl";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
 import {
@@ -296,9 +295,12 @@ const handleExportPdf = useCallback(async () => {
         await Promise.all(
           frozenForPdf.map(async (img) => {
             try {
-              const res = await fetch(withStaffToken(img.imageUrl));
-              if (!res.ok) return null;
-              const blob = await res.blob();
+              // Authenticated blob, no credential in the URL. `fetch` can send
+              // the Bearer header, and the guarded key-image mount accepts it
+              // (with the /radiology permission) precisely so that callers like
+              // this one never need a grant. A stored key image is PHI-bearing
+              // pixels and is no longer fetched anonymously.
+              const blob = await api.getBlob(img.imageUrl);
               return await new Promise<string | null>((resolve) => {
                 const reader = new FileReader();
                 reader.onload = () => resolve(String(reader.result || "") || null);

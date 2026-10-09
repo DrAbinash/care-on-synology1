@@ -85,6 +85,7 @@ import {
   detachKeyImagesFromObservation,
   isSafeKeyImageFilename,
   FROZEN_KEY_IMAGE_DIR,
+  FROZEN_KEY_IMAGE_URL_PREFIX,
   normalizeKeyImageForPrint,
   parseViewportSnapshotJson,
   parseAnnotationMetadataJson,
@@ -93,6 +94,10 @@ import {
   parseModality,
   isReasonableDicomUid,
 } from "../lib/frozenKeyImages";
+import {
+  KEY_IMAGE_GRANT_QUERY_PARAM,
+  mintKeyImageGrant,
+} from "../lib/keyImageAccessToken";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import {
@@ -2762,6 +2767,104 @@ radiologyReportGeneratorRouter.get("/key-images", async (req: StaffAuthRequest, 
   // When both filters supplied, require the row to match both (no cross-draft leak by studyId alone).
   res.json({ success: true, items: rows });
 });
+
+/**
+ * Mint a per-file grant onto one stored key-image URL.
+ *
+ * Returns the URL untouched when it is not a file under the guarded prefix (an
+ * Orthanc/DICOMweb rendered URL, a data: URI, a legacy absolute path) or when
+ * the stored name is not a safe single file name — in those cases there is
+ * nothing to grant, and inventing a token would either 404 in the client or,
+ * worse, look like protection that does not exist.
+ */
+function signKeyImageUrl(url: string | null): { url: string | null; expiresAt: Date | null } {
+  if (!url || typeof url !== "string") return { url: url ?? null, expiresAt: null };
+  if (!url.startsWith(FROZEN_KEY_IMAGE_URL_PREFIX)) return { url, expiresAt: null };
+  const file = url.slice(FROZEN_KEY_IMAGE_URL_PREFIX.length).split("?")[0] ?? "";
+  if (!isSafeKeyImageFilename(file)) return { url, expiresAt: null };
+  const grant = mintKeyImageGrant(file);
+  return {
+    url: `${FROZEN_KEY_IMAGE_URL_PREFIX}${file}?${KEY_IMAGE_GRANT_QUERY_PARAM}=${grant.token}`,
+    expiresAt: grant.expiresAt,
+  };
+}
+
+/**
+ * POST /key-images/access-urls  { ids: number[] }
+ * → { success, expiresAt, items: [{ id, imageUrl, thumbnailUrl }] }
+ *
+ * `radiologyKeyImageStatic.ts` guards the stored pixels, and `<img>` cannot send
+ * a Bearer header, so the workspace asks for these URLs and puts them in the
+ * `src`. Each one carries a grant that is bound to a single file name and
+ * expires in minutes; the staff session itself never appears in an image URL.
+ * Authorization is this route's existing mount — `requireStaffAuth` plus
+ * `requireStaffPermission("/radiology")` — so a mint is a permitted, logged-in,
+ * per-image decision, not a capability the client can fabricate.
+ *
+ * URLs that are not stored key-image files (an Orthanc/DICOMweb rendered URL,
+ * a data: URI) are returned unchanged: this guard covers the upload directory
+ * only, and silently dropping an image the client still needs would break the
+ * rail for those studies.
+ */
+const KeyImageAccessBody = z.object({
+  ids: z.array(z.number().int().positive()).min(1).max(100),
+});
+
+radiologyReportGeneratorRouter.post(
+  "/key-images/access-urls",
+  async (req: StaffAuthRequest, res: Response) => {
+    const parsed = KeyImageAccessBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: "ids required (1-100 positive integers)" });
+      return;
+    }
+    const ids = [...new Set(parsed.data.ids)];
+
+    const rows = await db
+      .select({
+        id: radiologyReportKeyImagesTable.id,
+        imageUrl: radiologyReportKeyImagesTable.imageUrl,
+        thumbnailUrl: radiologyReportKeyImagesTable.thumbnailUrl,
+      })
+      .from(radiologyReportKeyImagesTable)
+      .where(inArray(radiologyReportKeyImagesTable.id, ids));
+
+    let expiresAt: Date | null = null;
+    let items: Array<{ id: number; imageUrl: string | null; thumbnailUrl: string | null }>;
+    try {
+      items = rows.map((row) => {
+        const image = signKeyImageUrl(row.imageUrl);
+        const thumb = row.thumbnailUrl ? signKeyImageUrl(row.thumbnailUrl) : null;
+        for (const grant of [image, thumb]) {
+          if (grant?.expiresAt && (!expiresAt || grant.expiresAt < expiresAt)) {
+            expiresAt = grant.expiresAt;
+          }
+        }
+        return {
+          id: row.id,
+          imageUrl: image.url,
+          thumbnailUrl: thumb?.url ?? null,
+        };
+      });
+    } catch {
+      // No signing secret configured (`SESSION_SECRET` / `JWT_SECRET` are unset).
+      // Fail closed: hand out nothing rather than a URL the guard cannot verify.
+      res.status(503).json({
+        success: false,
+        error: "key_image_grant_unavailable",
+        message:
+          "CARE could not sign an image link right now, so no image was released. The report text and the study are unaffected — please retry, and ask the admin to check the server's SESSION_SECRET if this persists.",
+      });
+      return;
+    }
+
+    if (items.length === 0) {
+      res.status(404).json({ success: false, error: "no_key_image_rows" });
+      return;
+    }
+    res.json({ success: true, expiresAt, items });
+  },
+);
 
 // PUT /key-images/:id
 const UpdateKeyImageBody = z.object({
