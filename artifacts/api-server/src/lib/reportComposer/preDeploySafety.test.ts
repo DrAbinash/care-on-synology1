@@ -112,7 +112,13 @@ describe("pre-deploy safety contracts — review gate (5–6, 12)", () => {
 
   it("12. STALE_READY apply guard exists in jobService", () => {
     const jobService = readFileSync(join(__dirname, "jobService.ts"), "utf8");
-    expect(jobService).toContain('if (job.status === "STALE_READY") return { ok: false, error: "stale_ready" }');
+    // The fact, not the formatting: the STALE_READY branch must refuse with the
+    // stale_ready error. A literal one-line pin failed the moment that refusal
+    // grew a clinician-facing `message`, and a guard test that breaks on a
+    // reformat teaches nothing about the guard.
+    expect(jobService).toMatch(
+      /if \(job\.status === "STALE_READY"\)\s*\{?[\s\S]{0,240}?error:\s*"stale_ready"/,
+    );
   });
 });
 
