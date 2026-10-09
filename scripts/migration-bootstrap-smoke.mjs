@@ -209,6 +209,51 @@ async function main() {
     ).rows[0];
     assert('AI audit insert omitting "anonymized" records false', false, anonProbe?.anonymized);
 
+    // D2 completion: radiology_image_references.presentation_json is declared
+    // NOT NULL DEFAULT '{}' in lib/db/src/schema/radiologyReportGenerator.ts:224
+    // and POST /image-references writes it, but no migration ever created it — so
+    // a database built the way the clinic builds it 500s on every image reference.
+    // Asserted as schema AND as a working insert, because the symptom was the
+    // route failing, not a column name missing from a listing.
+    const D2_TABLE = "radiology_image_references";
+    const d2Col = (
+      await db.query(`
+        SELECT is_nullable FROM information_schema.columns
+         WHERE table_schema='public' AND table_name=$1 AND column_name='presentation_json'
+      `, [D2_TABLE])
+    ).rows[0];
+    assert("image references presentation_json present after clean boot", true, d2Col !== undefined);
+    assert("image references presentation_json is NOT NULL", "NO", d2Col?.is_nullable);
+    const d2Default = (
+      await db.query(`
+        SELECT pg_get_expr(d.adbin, d.adrelid) AS def
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid = a.attrelid
+          LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+         WHERE c.relnamespace = 'public'::regnamespace
+           AND c.relname = $1
+           AND a.attname = 'presentation_json'
+           AND a.attnum > 0 AND NOT a.attisdropped
+      `, [D2_TABLE])
+    ).rows[0]?.def;
+    assert("image references presentation_json DB default is '{}'::text", "'{}'::text", d2Default);
+    const d2Named = (
+      await db.query(`
+        INSERT INTO radiology_image_references (draft_id, description, presentation_json)
+        VALUES (0, 'CARE-SMOKE names framing', '{"zoom":1.5}')
+        RETURNING presentation_json
+      `)
+    ).rows[0];
+    assert("image-reference insert naming presentation_json works on a migrated DB", '{"zoom":1.5}', d2Named?.presentation_json);
+    const d2Omitted = (
+      await db.query(`
+        INSERT INTO radiology_image_references (draft_id, description)
+        VALUES (0, 'CARE-SMOKE omits framing')
+        RETURNING presentation_json
+      `)
+    ).rows[0];
+    assert("image-reference insert omitting presentation_json records {}", "{}", d2Omitted?.presentation_json);
+
     // ── §3 UPGRADE SAFETY (populated re-run) ──────────────────────────────
     console.log(`\n${YEL}§3 UPGRADE SAFETY (populated re-run / restart)${NC}`);
     await db.query(`
@@ -243,6 +288,81 @@ async function main() {
     assert("SIGNED report content immutable", before.sig, after.sig);
     assert("feature flag config preserved", before.flag, after.flag);
     assert('AI audit "anonymized" DB default survives a re-run', "false", await anonDefault());
+
+    // ── §4 FORWARD UPGRADE from the immediately preceding schema ────────────
+    // The clinic's database does not have this column: it was built by the chain as
+    // it stood before this migration existed, and `drizzle-kit push` never reaches
+    // production. So idempotency over a schema that already has the column (§3) is
+    // not the case that matters. This reproduces the state that does: drop the
+    // column on the scratch database only, leave every row alone, show the deployed
+    // insert shape genuinely fails, apply ONLY the new file, then show the surviving
+    // row is unchanged and defaulted, the insert works, and redeploying is a no-op.
+    console.log(`\n${YEL}§4 FORWARD UPGRADE (pre-migration schema → new migration only)${NC}`);
+    const NEW_MIGRATION = "zzzzzzzzzzzzzzzzz_radiology_image_reference_presentation_json.sql";
+    // Dropping the column here is safe precisely because this is the throwaway
+    // scratch database the script created and is about to drop (§2's own probe rows
+    // lose nothing the production upgrade would not also lose).
+    await db.query(`ALTER TABLE radiology_image_references DROP COLUMN IF EXISTS presentation_json`);
+    const absentNow = (
+      await db.query(`SELECT count(*)::int c FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name='radiology_image_references'
+                         AND column_name='presentation_json'`)
+    ).rows[0].c;
+    assert("§4 preceding state reproduced (column absent)", 0, absentNow);
+
+    const legacy = (
+      await db.query(`
+        INSERT INTO radiology_image_references
+          (draft_id, description, study_instance_uid, sop_instance_uid, frame_number)
+        VALUES (0, 'CARE-SMOKE legacy reference', '1.2.840.smoke', '1.2.840.smoke.1', 4)
+        RETURNING id,
+                  md5(coalesce(description,'')||'|'||coalesce(sop_instance_uid,'')||'|'||coalesce(frame_number::text,'')) h
+      `)
+    ).rows[0];
+    assert("§4 legacy row inserted on the preceding schema", true, legacy?.id != null);
+
+    // The exact defect, proven rather than described: POST /image-references names
+    // this column, so on this schema the INSERT cannot run at all.
+    let routeFailed = "";
+    try {
+      await db.query(`INSERT INTO radiology_image_references (draft_id, description, presentation_json)
+                      VALUES (0, 'CARE-SMOKE route shape', '{}')`);
+    } catch (e) { routeFailed = String(e.message || e).split("\n")[0]; }
+    assert("§4 route-shaped insert fails before the migration", true, /does not exist/i.test(routeFailed));
+
+    await db.query(
+      fs.readFileSync(path.join(FEATURE_DIR, NEW_MIGRATION), "utf8").replace(/^﻿/, "")
+    );
+    const upgradedCol = (
+      await db.query(`SELECT is_nullable FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name='radiology_image_references'
+                         AND column_name='presentation_json'`)
+    ).rows[0];
+    assert("§4 forward migration adds the column NOT NULL", "NO", upgradedCol?.is_nullable);
+
+    const survivor = (
+      await db.query(`SELECT description, sop_instance_uid, frame_number, presentation_json,
+                             md5(coalesce(description,'')||'|'||coalesce(sop_instance_uid,'')||'|'||coalesce(frame_number::text,'')) h
+                        FROM radiology_image_references WHERE id=$1`, [legacy.id])
+    ).rows[0];
+    assert("§4 existing row survived the upgrade byte-identical", legacy.h, survivor?.h);
+    assert("§4 existing row's clinical frame is untouched", 4, survivor?.frame_number);
+    assert("§4 existing row receives the model's default framing", "{}", survivor?.presentation_json);
+
+    const afterUpgrade = (
+      await db.query(`INSERT INTO radiology_image_references
+                        (draft_id, description, study_instance_uid, series_instance_uid,
+                         sop_instance_uid, presentation_json)
+                      VALUES (0, 'CARE-SMOKE after upgrade', '1.2.840.smoke', '1.2.840.smoke.s',
+                              '1.2.840.smoke.1', '{"zoom":2}')
+                      RETURNING presentation_json`)
+    ).rows[0];
+    assert("§4 route-shaped insert works after the migration", '{"zoom":2}', afterUpgrade?.presentation_json);
+
+    const rerunNew = await db.query(
+      fs.readFileSync(path.join(FEATURE_DIR, NEW_MIGRATION), "utf8").replace(/^﻿/, "")
+    ).then(() => "ok").catch((e) => String(e.message));
+    assert("§4 re-applying the new migration is a no-op", "ok", rerunNew);
   } finally {
     await db.end();
     const cleanup = new Client({ connectionString: adminUrl });
