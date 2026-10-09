@@ -26,6 +26,7 @@ import { logger } from "./logger";
 import { isFeatureEnabledServer } from "./featureFlags";
 import { ingestSrProvenance } from "./usgProvenanceIngest";
 import { geminiNormalizeMeasurements, type UsgMeasurementJson } from "@workspace/integrations-gemini-ai";
+import { detectPhiCategories } from "@workspace/ai-providers";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -210,6 +211,108 @@ export function extractDicomMetadata(metadataJson: string): DicomMetaExtract {
   } catch {
     return {};
   }
+}
+
+// ── Cloud egress allow-list for AI measurement normalization ─────────────────
+//
+// This fallback used to send Gemini the first 2000 characters of whatever
+// serialized DICOM metadata the worklist row held. Orthanc's DICOM JSON is
+// tag-ordered, so that window runs straight through Group 0008 and into the
+// patient group: PatientName (0010,0010) and PatientID (0010,0020) left the
+// clinic. And it left through a transport that has no PHI gate at all —
+// `generateAiResponse`'s identifier controls in @workspace/ai-providers are
+// never consulted here, because the Gemini integration is its own client.
+//
+// Nothing arbitrary leaves now. Only the tags below are named, in a fixed
+// label:value form, and the assembled text is additionally refused if a known
+// identifier appears anywhere inside it — because a sonographer can type the
+// patient's name into SeriesDescription, and an allow-list of tag numbers does
+// not police what a human put in the value.
+const USG_CLOUD_SAFE_TAGS: ReadonlyArray<{ tag: string; label: string; flat: string }> = [
+  { tag: "00080060", label: "Modality", flat: "modality" },
+  { tag: "00081030", label: "StudyDescription", flat: "studyDescription" },
+  { tag: "0008103E", label: "SeriesDescription", flat: "seriesDescription" },
+  { tag: "00180015", label: "BodyPartExamined", flat: "bodyPartExamined" },
+  { tag: "00080070", label: "Manufacturer", flat: "manufacturer" },
+  { tag: "00081090", label: "ManufacturerModelName", flat: "manufacturerModelName" },
+];
+
+/**
+ * Identifiers that must never be named in an outbound normalization request.
+ * Exported so the regression test can assert their values are absent from the
+ * constructed text rather than trusting this list to look right.
+ */
+export const USG_CLOUD_NEVER_SENT_TAGS = [
+  "00100010", // PatientName
+  "00100020", // PatientID
+  "00100030", // PatientBirthDate
+  "00101010", // PatientAge
+  "00101040", // PatientSex
+  "00080050", // AccessionNumber
+  "00080080", // InstitutionName
+  "00080081", // InstitutionAddress
+  "00080090", // ReferringPhysicianName
+  "00101000", // OtherPatientIDs
+  "0020000D", // StudyInstanceUID
+  "0020000E", // SeriesInstanceUID
+  "00080018", // SOPInstanceUID
+] as const;
+
+/**
+ * Build the only text this path is allowed to send off-prem. Returns "" when no
+ * safe input can be constructed — the caller then skips AI normalization
+ * instead of substituting something wider. Fail closed, no silent widening.
+ */
+export function buildSafeUsgNormalizationText(args: {
+  dicomMetadataJson?: string | null;
+  knownIdentifiers?: Array<string | null | undefined>;
+}): string {
+  const raw = (args.dicomMetadataJson ?? "").trim();
+  if (!raw) return "";
+
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return "";
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "";
+
+  const lines: string[] = [];
+  for (const spec of USG_CLOUD_SAFE_TAGS) {
+    const entry = obj[spec.tag] as { Value?: unknown[] } | undefined;
+    const fromTag = entry?.Value?.[0];
+    const flatValue = obj[spec.flat];
+    const value =
+      typeof fromTag === "string"
+        ? fromTag
+        : fromTag != null && typeof fromTag !== "object"
+          ? String(fromTag)
+          : typeof flatValue === "string"
+            ? flatValue
+            : "";
+    const clean = value.trim();
+    if (!clean) continue;
+    lines.push(`${spec.label}: ${clean.slice(0, 120)}`);
+  }
+
+  const text = lines.join("\n");
+  if (!text.trim()) return "";
+
+  // Value-level containment check against the identifiers CARE itself knows.
+  const lowered = text.toLowerCase();
+  for (const id of args.knownIdentifiers ?? []) {
+    const v = (id ?? "").trim();
+    if (v.length < 2) continue;
+    if (lowered.includes(v.toLowerCase())) return "";
+  }
+
+  // And the shared detector, for identifiers present in the metadata that this
+  // extraction never saw as separate fields (e.g. a phone number typed into a
+  // series description).
+  if (detectPhiCategories(text).length > 0) return "";
+
+  return text;
 }
 
 // ── DICOM SR parser ───────────────────────────────────────────────────────────
@@ -742,14 +845,42 @@ export async function runUsgExtraction(input: UsgExtractionInput): Promise<UsgEx
     // If OCR failed entirely but we have SR text or metadata, normalize via Gemini
     let aiNormalized = false;
     if (!ocrResult && settings.aiNormalizeEnabled && srMeasurements.length === 0 && !gePrivateFound) {
-      const rawText = [
-        meta.studyDescription ?? "",
-        meta.manufacturer ?? "",
-        dicomMetadataJson?.slice(0, 2000) ?? "",
-      ].join("\n");
-      if (rawText.trim()) {
-        ocrResult = await geminiNormalizeMeasurements(rawText);
+      // Allow-listed, identifier-checked text only. An empty result is a
+      // deliberate refusal, not a missing feature: normalization is skipped and
+      // the study stays in the queue for local OCR / manual review rather than
+      // sending serialized DICOM to a vendor.
+      //
+      // DOCUMENTED LIMITATION (verified, not assumed): the six allow-listed
+      // fields carry no biometry. `geminiNormalizeMeasurements()` extracts
+      // numbers out of the text it is given, so with only Modality,
+      // StudyDescription, SeriesDescription, BodyPartExamined, Manufacturer and
+      // ManufacturerModelName this path can at most recover a gestational-age
+      // hint a sonographer typed into a description ("OT: Fetus(1) 30w2d"). It
+      // is not a measurement source. It never was a good one — the guard above
+      // only reaches this line after `parseDicomSr()` and `parseGePrivateTags()`
+      // both returned nothing, and those are where BPD/HC/AC/FL/PSV actually
+      // come from (asserted in usgExtractorCloudAllowList.test.ts against a
+      // Voluson E8 profile). The privacy change removed identifiers from the
+      // outbound text; it did not remove clinical values, because the outbound
+      // text was never carrying them.
+      const safeText = buildSafeUsgNormalizationText({
+        dicomMetadataJson,
+        knownIdentifiers: [
+          meta.patientName,
+          meta.patientId,
+          accessionNumber,
+          patientId != null ? String(patientId) : null,
+          meta.institutionName,
+        ],
+      });
+      if (safeText.trim()) {
+        ocrResult = await geminiNormalizeMeasurements(safeText);
         aiNormalized = true;
+      } else {
+        logger.info(
+          { logId, studyInstanceUID },
+          "USG: AI normalization skipped — no non-identifying metadata could be assembled (fail closed, nothing sent)",
+        );
       }
     }
 

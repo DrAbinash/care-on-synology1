@@ -45,6 +45,11 @@ import { assignRadiologistToStudy } from "../lib/radiologistAssignment";
 import { runUsgExtraction, getUsgAdminSettings } from "../lib/usgExtractor";
 import { isUltrasoundModality, isObstetricUsgStudy } from "../lib/usgModality";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
+import {
+  aiReviewStateUnavailableError,
+  checkUnreviewedAiFinalize,
+  unreviewedAiFinalizeError,
+} from "../lib/reportComposer/unreviewedAiGuard";
 import { auditLog } from "../lib/audit";
 import { genderToDicomSex, sanitizeDicomSex } from "@workspace/pathology";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput, type BilledTestInput } from "../lib/pacs/matchingEngine";
@@ -1120,10 +1125,12 @@ router.post("/radiology/report-status", async (req, res) => {
   }
 
   // Soft Final (status-only REPORT_FINAL without a signed patient report) is
-  // admin/owner override only — radiologists must use workspace Finalize & Sign.
+  // admin/owner override only — radiologists must use Workspace Finalize & Sign.
   // Canonical finalizeRadiologyReport always sets deliveryStatus READY_TO_SEND
   // (even when the patient-report row is skipped for unbilled studies).
-  // INTERNAL_API_KEY automation (no staffSession) is unchanged.
+  // INTERNAL_API_KEY automation keeps its existing role handling, but a status
+  // flip to REPORT_FINAL with no signed row is now AI-review guarded for every
+  // caller — see the unreviewed-AI block below this one.
   const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
   const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
   if (
@@ -1156,6 +1163,34 @@ router.post("/radiology/report-status", async (req, res) => {
         ? b.softFinalReason.trim()
         : "admin soft final (no signed reportId)",
     });
+  }
+
+  // Unreviewed-AI protection on every non-canonical finalize.
+  //
+  // Finalize & Sign is guarded twice already (POST /api/patient-reports and
+  // POST /:id/sign both call checkUnreviewedAiFinalize). This endpoint is the
+  // third way a study becomes REPORT_FINAL — Admin "mark final" without a
+  // signed row, and the same status flip over an internal API key — and until
+  // now it was the only one with no AI-review check. Being an admin made the
+  // bypass silent, not legitimate: an unreviewed AI draft could sit PENDING
+  // while the worklist read as Final, printed nothing, and sent nothing.
+  //
+  // Same shared guard, same typed rejections, no duplicated logic, no new
+  // override: soft-final keeps its audited role gate for the missing-signature
+  // problem, which is a different problem from unreviewed machine text.
+  if (b.status === "REPORT_FINAL" && !b.reportId && !isCanonicalFinalize) {
+    const aiReview = await checkUnreviewedAiFinalize({
+      worklistId: existing.id,
+      studyId: existing.studyId ?? null,
+    });
+    if (aiReview.state === "unreviewed") {
+      res.status(409).json(unreviewedAiFinalizeError(aiReview.draft));
+      return;
+    }
+    if (aiReview.state === "unknown") {
+      res.status(503).json(aiReviewStateUnavailableError());
+      return;
+    }
   }
 
   // PCPNDT server-side finalize guard. The canonical Radiology Reporting

@@ -2525,11 +2525,24 @@ radiologyRouter.delete("/structured-templates/:id", async (req, res) => {
 // ── Phase 3 — AI enhancement ──
 
 // POST /api/radiology/studies/:id/ai-enhance
+// LEGACY / DEPRECATED — superseded by the Report Composer, and this generator
+// has no clinical grounding (its prompt carried no observations). It now fails
+// closed instead of storing invented findings, measurements or a canned
+// impression, so an unparsable model answer is a 502 rather than a 200 with an
+// `error` key inside the body.
 radiologyRouter.post("/studies/:id/ai-enhance", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const result = await generateAiEnhancement(id);
-  res.json(result ?? { error: "Could not generate enhancement" });
+  if (!result) {
+    res.status(502).json({
+      error: "legacy_ai_enhance_unparsable_output",
+      message:
+        "The legacy AI enhancer did not return usable text, so nothing was stored. Use the Reporting Workspace's AI Draft Report instead, which is checked against your observations.",
+    });
+    return;
+  }
+  res.json(result);
 });
 
 // GET /api/radiology/studies/:id/ai-enhance

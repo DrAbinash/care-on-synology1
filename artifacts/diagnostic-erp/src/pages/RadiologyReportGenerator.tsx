@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRadiologyDraftId } from "@/hooks/useRadiologyDraftId";
 import { readStaffSession } from "@/lib/staffSession";
 import { api } from "@/lib/fetchApi";
+import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import SpinalMeasurementPanel from "@/components/SpinalMeasurementPanel";
 import ReportPrintSettingsDialog from "@/components/ReportPrintSettingsDialog";
 import ReportLayoutQuickSelect, {
@@ -2044,7 +2045,12 @@ export default function RadiologyReportGenerator({ studyId }: { studyId?: number
                     key={img.id}
                     className={`relative rounded-lg border p-2 space-y-2 ${img.includeInReport ? "border-border" : "border-dashed opacity-60"}`}
                   >
-                    <img src={img.imageUrl} alt={img.caption || "Key image"} className="w-full h-28 object-contain rounded bg-muted" />
+                    <KeyImageWithAccess
+                      id={img.id}
+                      src={img.imageUrl}
+                      alt={img.caption || "Key image"}
+                      className="w-full h-28 object-contain rounded bg-muted"
+                    />
                     <div className="flex items-center gap-1">
                       <Switch checked={img.includeInReport} onCheckedChange={() => void toggleInclude(img)} className="scale-75" />
                       <span className="text-[10px] text-muted-foreground">{img.includeInReport ? "In report" : "Excluded"}</span>
