@@ -51,6 +51,22 @@ export interface AutoLinkResult {
   matchScore?: string;
   reason?: string;
   method?: string;
+  /** Only set when `preview` was asked for: the decision is real, the write is not. */
+  preview?: boolean;
+}
+
+export interface AutoLinkOptions {
+  /**
+   * Walk the whole accession → patient-scored → name±referral cascade and
+   * return the decision it reaches, but persist nothing.
+   *
+   * The flag is threaded down to the single write point rather than the
+   * decision being extracted into a second function, because a preview that
+   * computed its own answer would be a second matcher — it would agree with
+   * the real one only until the two drifted apart, and the entire purpose of
+   * the mode is to predict what a backfill will do to live billing rows.
+   */
+  preview?: boolean;
 }
 
 type WorklistRow = typeof radiologyWorklistTable.$inferSelect;
@@ -113,6 +129,7 @@ async function applyWorklistStudyLink(opts: {
   matchScore: string;
   method: string;
   reason: string;
+  preview: boolean;
 }): Promise<AutoLinkResult> {
   const [study] = await db
     .select()
@@ -120,8 +137,23 @@ async function applyWorklistStudyLink(opts: {
     .where(eq(radiologyStudiesTable.id, opts.studyId))
     .limit(1);
 
+  // Read before the preview branch on purpose: a candidate whose study row
+  // vanished mid-flight must be refused in preview exactly as it is in a real
+  // run, or the preview over-reports the backfill's yield.
   if (!study) {
     return { linked: false, reason: "matched study row missing" };
+  }
+
+  if (opts.preview) {
+    return {
+      linked: true,
+      studyId: opts.studyId,
+      matchPoints: opts.matchPoints,
+      matchScore: opts.matchScore,
+      reason: opts.reason,
+      method: opts.method,
+      preview: true,
+    };
   }
 
   await db
@@ -180,7 +212,9 @@ async function alreadyLinkedStudyIds(): Promise<number[]> {
 export async function autoLinkBilledStudyForWorklist(
   worklistId: number,
   actor = "system",
+  opts: AutoLinkOptions = {},
 ): Promise<AutoLinkResult> {
+  const preview = opts.preview === true;
   const [worklistItem] = await db
     .select()
     .from(radiologyWorklistTable)
@@ -219,6 +253,7 @@ export async function autoLinkBilledStudyForWorklist(
         matchScore: "GREEN",
         method: "accession-normalized",
         reason: "linked by accession number",
+        preview,
       });
     }
   }
@@ -268,6 +303,7 @@ export async function autoLinkBilledStudyForWorklist(
         matchScore: best.score,
         method: "patient-scoped-score",
         reason: "auto-linked to billed study",
+        preview,
       });
     }
   }
@@ -346,5 +382,6 @@ export async function autoLinkBilledStudyForWorklist(
     matchScore: capped,
     method: "name-referral",
     reason: "auto-linked by patient name ± referral (review in Match Center)",
+    preview,
   });
 }
