@@ -25,23 +25,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, ChevronRight, Printer, Search, X, Receipt, CalendarDays, User } from "lucide-react";
+import {
+  Plus, ChevronRight, Printer, Search, X, Receipt, CalendarDays, User, ChevronsUpDown,
+} from "lucide-react";
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useForm } from "react-hook-form";
 import { readStaffSession, hasSubPermission } from "@/lib/staffSession";
-
-type BillSearchResult = {
-  id: number;
-  billNumber: string;
-  totalAmount: number;
-  paidAmount: number;
-  balanceAmount: number;
-  status: string;
-  createdAt: string;
-  patientName: string;
-  patientId: string;
-  phone: string;
-  doctorName?: string | null;
-};
 
 type BillForm = {
   orderId: number;
@@ -49,7 +41,86 @@ type BillForm = {
   dueDate?: string;
 };
 
+type BillListRow = {
+  id: number; billNumber: string; totalAmount: number; paidAmount: number;
+  balanceAmount: number; status: string; createdAt: string;
+  patient?: { firstName: string; lastName: string; patientId: string } | null;
+  order?: {
+    orderNumber: string;
+    doctor?: { name: string } | null;
+    testNames?: string[];
+  } | null;
+};
+
 const STATUSES = ["draft", "pending", "partial", "paid", "cancelled"];
+
+/** Searchable dropdown for the referral / test filters — both option lists can
+ *  run to hundreds, which a native Select handles badly. */
+function FilterCombobox({ label, placeholder, value, options, onChange }: {
+  label: string;
+  placeholder: string;
+  value: string;
+  options: { value: string; label: string; hint?: string }[];
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.value === value);
+  return (
+    <div>
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="mt-0.5 h-8 w-44 justify-between text-sm font-normal"
+          >
+            <span className={selected ? "truncate" : "text-muted-foreground"}>
+              {selected ? selected.label : placeholder}
+            </span>
+            <ChevronsUpDown size={12} className="ml-1 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-80 p-0" align="start">
+          <Command>
+            <CommandInput placeholder={`Search ${label.toLowerCase()}…`} />
+            <CommandList>
+              <CommandEmpty>No match</CommandEmpty>
+              <CommandGroup>
+                <CommandItem value={`all ${placeholder}`} onSelect={() => { onChange(""); setOpen(false); }}>
+                  {placeholder}
+                </CommandItem>
+                {options.map((o) => (
+                  <CommandItem
+                    key={o.value}
+                    value={`${o.label} ${o.hint ?? ""}`}
+                    onSelect={() => { onChange(o.value); setOpen(false); }}
+                  >
+                    <span className="truncate">{o.label}</span>
+                    {o.hint && <span className="ml-auto pl-2 text-xs text-muted-foreground">{o.hint}</span>}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+/** Two names fit the column; the rest collapse into a count with a tooltip. */
+function BillTestNames({ names }: { names: string[] }) {
+  if (names.length === 0) return <span className="opacity-40">—</span>;
+  return (
+    <span title={names.join(", ")}>
+      {names.slice(0, 2).join(", ")}
+      {names.length > 2 && <span className="opacity-60"> +{names.length - 2}</span>}
+    </span>
+  );
+}
 
 export default function Billing() {
   const session = readStaffSession();
@@ -70,6 +141,8 @@ export default function Billing() {
   });
   const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [createdBy, setCreatedBy] = useState("");
+  const [referralDoctorId, setReferralDoctorId] = useState("");
+  const [testId, setTestId] = useState("");
   const queryClient = useQueryClient();
 
   const { data: billCreators = [] } = useQuery<string[]>({
@@ -78,19 +151,28 @@ export default function Billing() {
     staleTime: 60_000,
   });
 
+  const { data: referrers = [] } = useQuery<{ id: number; name: string }[]>({
+    queryKey: ["bills-referrers"],
+    queryFn: () => api.get("/api/bills/referrers"),
+    staleTime: 60_000,
+  });
+
+  const { data: billedTests = [] } = useQuery<{ id: number; code: string; name: string }[]>({
+    queryKey: ["bills-billed-tests"],
+    queryFn: () => api.get("/api/bills/billed-tests"),
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 350);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  const isSearching = debouncedSearch.length >= 2;
+  // Below 2 characters the box is noise; the backend applies the same floor.
+  const q = debouncedSearch.length >= 2 ? debouncedSearch : "";
 
-  const { data: searchResults, isFetching: searchFetching } = useQuery<BillSearchResult[]>({
-    queryKey: ["bills-search", debouncedSearch],
-    queryFn: () => api.get(`/api/bills/search?q=${encodeURIComponent(debouncedSearch)}`),
-    enabled: isSearching,
-    staleTime: 10_000,
-  });
+  // A new search term is a new result set — don't stay parked on page 7.
+  useEffect(() => { setPage(1); }, [q]);
 
   const billsUrl = (() => {
     const p = new URLSearchParams();
@@ -100,21 +182,19 @@ export default function Billing() {
     if (dateFrom) p.set("dateFrom", dateFrom);
     if (dateTo) p.set("dateTo", dateTo);
     if (createdBy) p.set("createdBy", createdBy);
+    if (q) p.set("q", q);
+    if (referralDoctorId) p.set("referralDoctorId", referralDoctorId);
+    if (testId) p.set("testId", testId);
     p.set("compact", "1");
     return `/api/bills?${p.toString()}`;
   })();
 
-  const { data, isLoading } = useQuery<{
-    bills: Array<{
-      id: number; billNumber: string; totalAmount: number; paidAmount: number;
-      balanceAmount: number; status: string; createdAt: string;
-      patient?: { firstName: string; lastName: string; patientId: string } | null;
-      order?: { orderNumber: string; doctor?: { name: string } | null } | null;
-    }>;
+  const { data, isLoading, isFetching } = useQuery<{
+    bills: BillListRow[];
     total: number; page: number; limit: number;
     totals: { totalAmount: number; paidAmount: number; balanceAmount: number };
   }>({
-    queryKey: ["bills-list", status, page, dateFrom, dateTo, createdBy],
+    queryKey: ["bills-list", status, page, dateFrom, dateTo, createdBy, q, referralDoctorId, testId],
     queryFn: () => api.get(billsUrl),
     ...FINANCIAL_QUERY_OPTIONS,
   });
@@ -200,7 +280,7 @@ export default function Billing() {
                 <Input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by patient name, ID, or bill number…"
+                  placeholder="Search patient, bill/order no, referral doctor or test…"
                   className="pl-8 pr-8 h-8 text-sm"
                 />
                 {searchQuery && (
@@ -214,8 +294,7 @@ export default function Billing() {
                 )}
               </div>
             </div>
-            {/* Date / status / user filters — collapsed when searching */}
-            {!isSearching && (
+            {/* Date / status / user / referral / test filters */}
               <div className="space-y-2">
                 {/* Quick date range chips */}
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -245,8 +324,18 @@ export default function Billing() {
                       </button>
                     );
                   })}
-                  {(dateFrom || dateTo || createdBy) && (
-                    <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => { setPage(1); setDateFrom(""); setDateTo(""); setCreatedBy(""); }}>
+                  {(dateFrom || dateTo || createdBy || searchQuery || referralDoctorId || testId) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs px-2"
+                      onClick={() => {
+                        setPage(1);
+                        setDateFrom(""); setDateTo(""); setCreatedBy("");
+                        setSearchQuery(""); setDebouncedSearch("");
+                        setReferralDoctorId(""); setTestId("");
+                      }}
+                    >
                       <X size={12} className="mr-1" /> Clear
                     </Button>
                   )}
@@ -280,6 +369,20 @@ export default function Billing() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <FilterCombobox
+                    label="Referral"
+                    placeholder="All Referrals"
+                    value={referralDoctorId}
+                    onChange={(v) => { setPage(1); setReferralDoctorId(v); }}
+                    options={referrers.map((d) => ({ value: String(d.id), label: d.name }))}
+                  />
+                  <FilterCombobox
+                    label="Test"
+                    placeholder="All Tests"
+                    value={testId}
+                    onChange={(v) => { setPage(1); setTestId(v); }}
+                    options={billedTests.map((t) => ({ value: String(t.id), label: t.name, hint: t.code }))}
+                  />
                   <div>
                     <Label className="text-xs text-muted-foreground">From</Label>
                     <Input type="date" value={dateFrom} onChange={(e) => { setPage(1); setDateFrom(e.target.value); }} className="w-36 mt-0.5 h-8 text-sm" />
@@ -290,7 +393,6 @@ export default function Billing() {
                   </div>
                 </div>
               </div>
-            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -299,8 +401,9 @@ export default function Billing() {
                 <tr className="text-left text-xs text-muted-foreground border-b border-slate-200 dark:border-border bg-slate-50 dark:bg-muted/30">
                   <th className="px-4 py-3 font-medium">Bill No.</th>
                   <th className="px-4 py-3 font-medium">Patient</th>
-                  {!isSearching && <th className="px-4 py-3 font-medium">Order</th>}
+                  <th className="px-4 py-3 font-medium">Order</th>
                   <th className="px-4 py-3 font-medium">Referral</th>
+                  <th className="px-4 py-3 font-medium">Tests</th>
                   <th className="px-4 py-3 font-medium text-right">Total</th>
                   <th className="px-4 py-3 font-medium text-right">Paid</th>
                   <th className="px-4 py-3 font-medium text-right">Balance</th>
@@ -310,57 +413,18 @@ export default function Billing() {
                 </tr>
               </thead>
               <tbody>
-                {isSearching ? (
-                  searchFetching ? (
-                    [...Array(3)].map((_, i) => (
-                      <tr key={i} className="border-b border-border/50 animate-pulse">
-                        {[...Array(8)].map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded w-20" /></td>)}
-                      </tr>
-                    ))
-                  ) : !searchResults?.length ? (
-                    <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground">No bills match "{debouncedSearch}"</td></tr>
-                  ) : (
-                    searchResults.map((b) => (
-                      <tr key={b.id} className={`border-b last:border-0 ${b.status === "cancelled" ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/40 opacity-80" : "border-border/50 hover:bg-muted/30"}`}>
-                        <td className="px-4 py-3 font-mono text-xs font-medium text-primary">{b.billNumber}</td>
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{b.patientName}</div>
-                          <div className="text-xs text-muted-foreground">{b.patientId}{b.phone ? ` · ${b.phone}` : ""}</div>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{b.doctorName ?? <span className="opacity-40">—</span>}</td>
-                        <td className="px-4 py-3 text-right font-semibold">{formatCurrency(b.totalAmount)}</td>
-                        <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-medium">{formatCurrency(b.paidAmount)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={b.balanceAmount > 0 ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}>
-                            {formatCurrency(b.balanceAmount)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3"><StatusBadge status={b.status} /></td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(b.createdAt).toLocaleDateString()}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1">
-                            {canReprint && (
-                              <a href={`/erp/billing/${b.id}?print=1`} target="_blank" rel="noopener noreferrer"
-                                className="text-muted-foreground hover:text-foreground inline-flex p-1 rounded hover:bg-muted" title="Print Bill">
-                                <Printer size={14} />
-                              </a>
-                            )}
-                            <Link href={`/billing/${b.id}`} className="text-muted-foreground hover:text-foreground inline-flex p-1 rounded hover:bg-muted">
-                              <ChevronRight size={16} />
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )
-                ) : isLoading ? (
+                {isLoading ? (
                   [...Array(5)].map((_, i) => (
                     <tr key={i} className="border-b border-border/50 animate-pulse">
-                      {[...Array(9)].map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded w-20" /></td>)}
+                      {[...Array(11)].map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded w-20" /></td>)}
                     </tr>
                   ))
                 ) : data?.bills?.length === 0 ? (
-                  <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">No bills found</td></tr>
+                  <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
+                    {q || referralDoctorId || testId
+                      ? <>No bills match this search{q ? <> — “{q}”</> : ""}</>
+                      : "No bills found"}
+                  </td></tr>
                 ) : (
                   data?.bills?.map((b) => (
                     <tr key={b.id} className={`border-b last:border-0 ${b.status === "cancelled" ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/40 opacity-80" : "border-border/50 hover:bg-muted/30"}`}>
@@ -374,7 +438,10 @@ export default function Billing() {
                         )}
                       </td>
                       <td className="px-4 py-3 font-mono text-xs">{b.order?.orderNumber}</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{(b.order as { doctor?: { name: string } | null })?.doctor?.name ?? <span className="opacity-40">—</span>}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">{b.order?.doctor?.name ?? <span className="opacity-40">—</span>}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground max-w-[220px] truncate">
+                        <BillTestNames names={b.order?.testNames ?? []} />
+                      </td>
                       <td className="px-4 py-3 text-right font-semibold">{formatCurrency(b.totalAmount)}</td>
                       <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-medium">{formatCurrency(b.paidAmount)}</td>
                       <td className="px-4 py-3 text-right">
@@ -409,18 +476,18 @@ export default function Billing() {
             </table>
           </div>
 
-          {!isSearching && data && data.total > 20 && (
+          {data && data.total > 0 && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-              <span className="text-xs text-muted-foreground">Showing {(page - 1) * 20 + 1}–{Math.min(page * 20, data.total)} of {data.total}</span>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Prev</Button>
-                <Button variant="outline" size="sm" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>Next</Button>
-              </div>
-            </div>
-          )}
-          {isSearching && searchResults && searchResults.length > 0 && (
-            <div className="px-4 py-2 border-t border-border text-xs text-muted-foreground">
-              {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} for "{debouncedSearch}"
+              <span className={`text-xs text-muted-foreground ${isFetching ? "opacity-50" : ""}`}>
+                Showing {(page - 1) * 20 + 1}–{Math.min(page * 20, data.total)} of {data.total}
+                {q ? <> for “{q}”</> : null}
+              </span>
+              {data.total > 20 && (
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Prev</Button>
+                  <Button variant="outline" size="sm" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>Next</Button>
+                </div>
+              )}
             </div>
           )}
         </div>
