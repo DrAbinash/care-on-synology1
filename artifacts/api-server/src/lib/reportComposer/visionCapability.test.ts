@@ -14,7 +14,7 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
       // Delegate to the real implementation but through fetch mock
       const tagsUrl = `${url.replace(/\/$/, "")}/api/tags`;
       try {
-        const resp = await fetch(tagsUrl);
+        const resp = await globalThis.fetch(tagsUrl);
         if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
         const data = (await resp.json()) as { models?: Array<{ name: string }> };
         return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
@@ -25,7 +25,7 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
     probeOllamaModelVision: async (url: string, model: string, timeoutMs?: number) => {
       const showUrl = `${url.replace(/\/$/, "")}/api/show`;
       try {
-        const resp = await fetch(showUrl, {
+        const resp = await globalThis.fetch(showUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model }),

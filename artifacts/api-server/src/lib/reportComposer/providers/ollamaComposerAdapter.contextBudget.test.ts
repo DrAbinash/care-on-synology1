@@ -13,7 +13,7 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
   return {
     ...actual,
     hardenedLocalRequest: async (url: string, init?: RequestInit) => {
-      const response = await fetch(url, init);
+      const response = await globalThis.fetch(url, init);
       return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
     },
   };

@@ -50,7 +50,7 @@ vi.mock("@workspace/ai-providers", async (importOriginal) => {
     ...actual,
     createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
       return async (url: string | URL | Request, init?: RequestInit) => {
-        return fetch(url, init);
+        return globalThis.fetch(url, init);
       };
     },
   };
