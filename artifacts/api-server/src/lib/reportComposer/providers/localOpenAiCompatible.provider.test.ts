@@ -42,6 +42,20 @@ vi.mock("./localOpenAiCompatibleConfig", async () => {
   };
 });
 
+// Production code uses createHardenedLocalFetch (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("@workspace/ai-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
+  return {
+    ...actual,
+    createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
+      return async (url: string | URL | Request, init?: RequestInit) => {
+        return fetch(url, init);
+      };
+    },
+  };
+});
+
 describe("local_openai_compatible provider identity", () => {
   it("registers as LOCAL and never as cloud merely for OpenAI wire format", () => {
     expect(BUILTIN_PROVIDER_CONFIGS.local_openai_compatible?.label).toBe(

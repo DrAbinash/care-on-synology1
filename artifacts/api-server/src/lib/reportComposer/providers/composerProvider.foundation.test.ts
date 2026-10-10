@@ -8,6 +8,24 @@ import { QwenComposerAdapter } from "./qwenComposerAdapter";
 import { assertModelSupportsCapability } from "./modelRegistry";
 import { generateAiResponse, assertCloudImageEgress } from "@workspace/ai-providers";
 
+// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("@workspace/ai-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
+  return {
+    ...actual,
+    hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+      const response = await fetch(url, init);
+      return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+    },
+    createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
+      return async (url: string | URL | Request, init?: RequestInit) => {
+        return fetch(url, init);
+      };
+    },
+  };
+});
+
 describe("assertComposerProviderPolicy", () => {
   it("allows Ollama TEXT_ONLY", () => {
     const r = assertComposerProviderPolicy({

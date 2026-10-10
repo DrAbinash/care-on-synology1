@@ -6,6 +6,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 
+// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("@workspace/ai-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
+  return {
+    ...actual,
+    hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+      const response = await fetch(url, init);
+      return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+    },
+  };
+});
+
 const CONTEXT_ERROR = JSON.stringify({
   error: {
     code: "exceed_context_size_error",

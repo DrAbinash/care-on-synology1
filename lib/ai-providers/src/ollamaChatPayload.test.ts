@@ -3,6 +3,15 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 vi.mock("@workspace/db", () => ({ db: {} }));
 vi.mock("@workspace/crypto", () => ({ decryptSecret: (s: string) => s }));
 
+// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("./hardenedTransport", () => ({
+  hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+    const response = await fetch(url, init);
+    return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+  },
+}));
+
 const { buildOllamaChatPayload, stripThinkBlocks, createAiProvider } = await import("./index");
 
 describe("buildOllamaChatPayload — overnight MRI native /api/chat", () => {
