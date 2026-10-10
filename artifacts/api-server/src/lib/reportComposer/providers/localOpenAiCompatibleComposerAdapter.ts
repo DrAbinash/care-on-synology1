@@ -139,7 +139,10 @@ export class LocalOpenAiCompatibleComposerAdapter implements ComposerProviderAda
           ? false
           : settings.jsonMode === true;
 
-    const images: CompatibleImagePart[] | undefined = request.images?.map((i) => ({
+    // Send what the gate cleared. On a genuinely local endpoint this is the
+    // caller's own set unchanged; when the URL reclassifies the provider as
+    // cloud, it is the verified, metadata-stripped set instead.
+    const images: CompatibleImagePart[] | undefined = privacy.images.map((i) => ({
       mimeType: i.mimeType,
       base64: i.base64,
     }));
