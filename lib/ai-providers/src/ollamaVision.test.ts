@@ -16,7 +16,14 @@ vi.mock("./hardenedTransport", () => ({
   },
 }));
 
-const { classifyOllamaModelVisionByName, probeOllamaReachable, probeOllamaModelVision } = await import("./index");
+const {
+  classifyOllamaModelVisionByName,
+  probeOllamaReachable,
+  probeOllamaModelVision,
+  modelSupportsVision,
+  listBuiltinModels,
+  defaultModelForProvider,
+} = await import("./index");
 
 // Locks down the Form F OCR fix's model-capability heuristics: an admin
 // pointing OCR at a text-only Ollama model (e.g. the built-in default
@@ -30,6 +37,9 @@ describe("classifyOllamaModelVisionByName", () => {
     "llava:13b", "llava-llama3:latest", "bakllava:7b", "moondream:latest",
     "minicpm-v:8b", "pixtral:12b", "llama3.2-vision:11b", "llama3.2-vision:90b",
     "qwen2.5-vl:7b", "qwen2-vl:7b", "qwen3-vl:8b", "gemma3:12b", "gemma3:27b",
+    // Every MedGemma tag spelling: `lookupBuiltinCapability` matches one exact
+    // tag, so the name list is what covers the rest of the family.
+    "medgemma1.5:4b", "medgemma1.5:4b-it", "medgemma:4b", "medgemma:27b",
   ])("classifies %s as vision-capable", (model) => {
     expect(classifyOllamaModelVisionByName(model)).toBe("vision");
   });
@@ -48,6 +58,49 @@ describe("classifyOllamaModelVisionByName", () => {
 
   it("classifies an empty/missing model as unknown", () => {
     expect(classifyOllamaModelVisionByName("")).toBe("unknown");
+  });
+});
+
+// ─── The capability table and the name list must tell one story ──────────────
+// `gemma3:12b` was declared `supportsVision: false` in BUILTIN_MODEL_CAPABILITIES
+// while `classifyOllamaModelVisionByName` called the whole gemma3 family
+// vision-capable. Different callers read different tables — the Composer's
+// selected-image gate reads the classifier, the model registry and cloud
+// image-egress policy read the table — so CARE simultaneously believed and
+// disbelieved the same fact about the model the clinic actually runs. Ollama's
+// own `/api/show` settled it (capabilities ["completion","vision"], CLIP vision
+// projector present); these tests make the contradiction impossible to re-enter.
+
+describe("the Ollama capability table agrees with the Ollama name list", () => {
+  it.each(
+    listBuiltinModels({ provider: "ollama" }).map((row) => [row.model, row.supportsVision] as const),
+  )("row %s states vision=%s, which is what the classifier also says", (model, declared) => {
+    expect(modelSupportsVision("ollama", model)).toBe(declared);
+    expect(declared).toBe(classifyOllamaModelVisionByName(model) === "vision");
+  });
+
+  it("says gemma3:12b can see, because /api/show says it can", () => {
+    expect(modelSupportsVision("ollama", "gemma3:12b")).toBe(true);
+  });
+
+  it("offers medgemma1.5:4b as a selectable local vision model", () => {
+    expect(modelSupportsVision("ollama", "medgemma1.5:4b")).toBe(true);
+    const offered = listBuiltinModels({ provider: "ollama", vision: true }).map((r) => r.model);
+    expect(offered).toContain("medgemma1.5:4b");
+  });
+
+  it("does not let adding it move any default, which is why row order is load-bearing", () => {
+    // `defaultModelForProvider` returns the FIRST vision row. medgemma1.5:4b is
+    // deliberately declared after qwen3-vl:8b so no production vision default
+    // changes to a model the clinic may not have installed.
+    expect(defaultModelForProvider("ollama", true)).toBe("qwen3-vl:8b");
+    // And the text composer default is untouched by any of this.
+    expect(defaultModelForProvider("ollama", false)).toBe("qwen3-vl:8b");
+  });
+
+  it("still fails closed for a name neither table recognises", () => {
+    expect(modelSupportsVision("ollama", "some-custom-org/their-finetune:latest")).toBe(false);
+    expect(classifyOllamaModelVisionByName("some-custom-org/their-finetune:latest")).toBe("unknown");
   });
 });
 

@@ -42,6 +42,11 @@ describe("canonical Local AI runtime", () => {
     expect(normalizeLocalChatVisionModel("qwen3:8b")).toBe("qwen3-vl:8b");
     expect(normalizeLocalChatVisionModel("qwen3-vl:8b")).toBe("qwen3-vl:8b");
     expect(normalizeLocalChatVisionModel("gemma3:12b")).toBe("gemma3:12b");
+    // An operator who points the local vision slot at MedGemma must actually get
+    // MedGemma. Anything else in this function silently substitutes the clinic's
+    // old model for the one they chose, and the images never reach the reader.
+    expect(normalizeLocalChatVisionModel("medgemma1.5:4b")).toBe("medgemma1.5:4b");
+    expect(normalizeLocalChatVisionModel("  medgemma:4b  ")).toBe("medgemma:4b");
   });
 
   test("env defaults and overnight options share canonical endpoint/model", async () => {

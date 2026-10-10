@@ -1709,27 +1709,14 @@ export async function generateAiForTask(
 // name resolves to "unknown" rather than a false positive/negative, and
 // callers should treat "unknown" as "attempt it, but don't promise vision
 // support in the UI."
-
-const KNOWN_VISION_MODEL_PATTERNS = [
-  /llava/i, /bakllava/i, /moondream/i, /minicpm-v/i, /pixtral/i,
-  /llama3\.2-vision/i, /llama-vision/i, /llama4/i,
-  /qwen2(\.5)?-vl/i, /qwen-vl/i, /qwen3-vl/i, /granite3\.2-vision/i, /cogvlm/i,
-  /gemma3(?!:1b)/i, // gemma3 family supports vision except the 1b text-only variant
-];
-const KNOWN_TEXT_ONLY_MODEL_PATTERNS = [
-  /gpt-oss/i, /^llama3(\.1)?(?!.*vision)/i, /mistral/i, /mixtral/i,
-  /phi-?3/i, /phi-?4/i, /qwen2(\.5)?(?!.*vl)/i, /deepseek/i, /codellama/i,
-  /starcoder/i, /gemma2/i, /^gemma(?!3)/i, /command-r/i, /gemma3:1b/i,
-];
-
-/** Best-effort, name-based classification — see module doc comment above. */
-export function classifyOllamaModelVisionByName(model: string): "vision" | "text-only" | "unknown" {
-  const name = (model || "").trim();
-  if (!name) return "unknown";
-  if (KNOWN_VISION_MODEL_PATTERNS.some((p) => p.test(name))) return "vision";
-  if (KNOWN_TEXT_ONLY_MODEL_PATTERNS.some((p) => p.test(name))) return "text-only";
-  return "unknown";
-}
+//
+// The name tier used to live here as two private arrays, duplicated by a third
+// copy in ./builtinModelCapabilities that the two files never reconciled — and
+// they disagreed about gemma3, which one called vision-capable and the other
+// declared not. All three lists and `classifyOllamaModelVisionByName` now live
+// in ./builtinModelCapabilities (a module with no imports, so nothing can cycle)
+// and are re-exported below by `export * from "./builtinModelCapabilities"`.
+// Importers of `classifyOllamaModelVisionByName` are unaffected.
 
 /**
  * Fast reachability probe — a plain GET /api/tags with a short timeout, NOT
