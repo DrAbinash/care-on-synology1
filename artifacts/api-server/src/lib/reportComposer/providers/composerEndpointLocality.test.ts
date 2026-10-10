@@ -9,9 +9,9 @@
  * parameter. They prove that:
  *  1. A local provider with a private URL bypasses cloud vision gate (unchanged)
  *  2. A local provider with a public URL is reclassified as cloud
- *  3. Images cannot leave the clinic through a reclassified provider without
- *     explicit cloudVisionAllowed
- *  4. Text is not blocked for reclassified providers (text has its own gate)
+ *  3. ALL data (text AND images) is refused for reclassified providers — the
+ *     admin thought the provider was local and did NOT consent to cloud egress
+ *  4. A genuinely local provider (private URL) has no cloud gate
  */
 import { describe, it, expect, vi } from "vitest";
 
@@ -102,10 +102,23 @@ describe("assertComposerProviderPolicy — endpoint-derived locality", () => {
     });
   });
 
-  // ─── Reclassified as cloud: public URL → cloud gate applies ────────────────
+  // ─── Reclassified as cloud: public URL → ALL data refused ─────────────────
 
   describe("local_openai_compatible + public URL (reclassified as cloud)", () => {
-    it("blocks SELECTED_IMAGES without cloudVisionAllowed", () => {
+    it("refuses TEXT_ONLY — clinical text is PHI, admin did not consent to cloud", () => {
+      const r = assertComposerProviderPolicy({
+        provider: "local_openai_compatible",
+        aiMode: "TEXT_ONLY",
+        cloudVisionAllowed: false,
+        imageCount: 0,
+        localEndpointConfigured: true,
+        resolvedUrl: "https://api.openai.com/v1",
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
+    });
+
+    it("refuses SELECTED_IMAGES without cloudVisionAllowed", () => {
       const r = assertComposerProviderPolicy({
         provider: "local_openai_compatible",
         aiMode: "SELECTED_IMAGES",
@@ -115,10 +128,23 @@ describe("assertComposerProviderPolicy — endpoint-derived locality", () => {
         resolvedUrl: "https://api.openai.com/v1",
       });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
     });
 
-    it("blocks SELECTED_IMAGES even when imageCount > 0 but aiMode is TEXT_ONLY", () => {
+    it("refuses SELECTED_IMAGES even WITH cloudVisionAllowed — the admin configured a LOCAL provider", () => {
+      const r = assertComposerProviderPolicy({
+        provider: "local_openai_compatible",
+        aiMode: "SELECTED_IMAGES",
+        cloudVisionAllowed: true,
+        imageCount: 3,
+        localEndpointConfigured: true,
+        resolvedUrl: "https://api.openai.com/v1",
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
+    });
+
+    it("refuses TEXT_ONLY even when imageCount > 0 (the mode is text, the URL is cloud)", () => {
       const r = assertComposerProviderPolicy({
         provider: "local_openai_compatible",
         aiMode: "TEXT_ONLY",
@@ -128,47 +154,21 @@ describe("assertComposerProviderPolicy — endpoint-derived locality", () => {
         resolvedUrl: "https://api.openai.com/v1",
       });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
     });
 
-    it("allows TEXT_ONLY (no images) even with public URL", () => {
+    it("refuses a DeepSeek public URL pointed at a local provider", () => {
       const r = assertComposerProviderPolicy({
         provider: "local_openai_compatible",
         aiMode: "TEXT_ONLY",
-        cloudVisionAllowed: false,
-        imageCount: 0,
-        localEndpointConfigured: true,
-        resolvedUrl: "https://api.openai.com/v1",
-      });
-      expect(r).toEqual({ ok: true });
-    });
-
-    it("allows SELECTED_IMAGES WITH cloudVisionAllowed on public URL", () => {
-      const r = assertComposerProviderPolicy({
-        provider: "local_openai_compatible",
-        aiMode: "SELECTED_IMAGES",
-        cloudVisionAllowed: true,
-        imageCount: 3,
-        localEndpointConfigured: true,
-        resolvedUrl: "https://api.openai.com/v1",
-      });
-      expect(r).toEqual({ ok: true });
-    });
-
-    it("blocks when imageCount is 0 but mode is SELECTED_IMAGES (reclassified)", () => {
-      const r = assertComposerProviderPolicy({
-        provider: "local_openai_compatible",
-        aiMode: "SELECTED_IMAGES",
-        cloudVisionAllowed: true,
-        imageCount: 0,
         localEndpointConfigured: true,
         resolvedUrl: "https://api.deepseek.com",
       });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.safeError).toBe("selected_images_empty");
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
     });
 
-    it("blocks images to cloud metadata endpoint (169.254.169.254)", () => {
+    it("refuses images to cloud metadata endpoint (169.254.169.254)", () => {
       const r = assertComposerProviderPolicy({
         provider: "local_openai_compatible",
         aiMode: "SELECTED_IMAGES",
@@ -178,7 +178,7 @@ describe("assertComposerProviderPolicy — endpoint-derived locality", () => {
         resolvedUrl: "http://169.254.169.254/latest/meta-data",
       });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.safeError).toBe("cloud_vision_not_allowed");
+      if (!r.ok) expect(r.safeError).toBe("local_provider_url_points_to_cloud");
     });
   });
 

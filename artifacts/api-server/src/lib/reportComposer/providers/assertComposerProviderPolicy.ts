@@ -70,21 +70,17 @@ export function assertComposerProviderPolicy(
     // Endpoint-derived locality: a "local_openai_compatible" provider whose
     // resolved URL points to a public internet address is reclassified as
     // cloud for PHI egress purposes. The URL is the ground truth, not the name.
+    //
+    // SECURITY: A local provider reclassified as cloud is REFUSED for ALL data
+    // (text AND images). Clinical text contains patient identifiers (name, DOB,
+    // findings, impression) — sending it to a public endpoint is PHI egress.
+    // The admin configured this provider thinking it was local; they did NOT
+    // explicitly agree to cloud egress. If they want cloud AI, they must
+    // configure a proper cloud provider (openai/gemini/anthropic/deepseek).
     if (input.resolvedUrl != null && input.resolvedUrl !== "") {
       const effective = classifyEffectiveLocality(provider, input.resolvedUrl);
       if (effective.locality === "cloud") {
-        // Reclassified as cloud — apply the same vision gate as any other
-        // cloud provider. The key check is skipped because local_openai_compatible
-        // has no cloud API key; the privacy gate is the point, not credentials.
-        if (aiMode === "SELECTED_IMAGES" || imageCount > 0) {
-          if (!cloudVisionAllowed) {
-            return { ok: false, safeError: "cloud_vision_not_allowed" };
-          }
-          if (imageCount <= 0) {
-            return { ok: false, safeError: "selected_images_empty" };
-          }
-        }
-        return { ok: true };
+        return { ok: false, safeError: "local_provider_url_points_to_cloud" };
       }
     }
 

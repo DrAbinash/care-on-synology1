@@ -8,7 +8,7 @@
  * the TOCTOU gap between URL validation and actual connection.
  */
 import OpenAI from "openai";
-import { createHardenedLocalFetch, rewriteUrlToValidatedIp, assertNoRedirect } from "./hardenedTransport";
+import { createHardenedLocalFetch, hardenedLocalRequest } from "./hardenedTransport";
 
 export type CompatibleImagePart = {
   mimeType: "image/jpeg" | "image/png" | "image/webp";
@@ -367,30 +367,28 @@ export async function probeOpenAiCompatibleModels(
   }
 
   try {
-    // SECURITY: For local providers, rewrite URL to validated IP and disable redirects
-    let requestUrl = `${base}/models`;
-    let hostHeader: string | null = null;
-    if (opts.enforceLocalBinding) {
-      const { rewrittenUrl, originalHost } = await rewriteUrlToValidatedIp(requestUrl);
-      requestUrl = rewrittenUrl;
-      hostHeader = originalHost;
-    }
-
+    const requestUrl = `${base}/models`;
     const headers: Record<string, string> = apiKey
       ? { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }
       : { Accept: "application/json" };
-    if (hostHeader) headers["Host"] = hostHeader;
 
-    const resp = await fetch(requestUrl, {
-      method: "GET",
-      headers,
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: opts.enforceLocalBinding ? "manual" : "follow",
-    });
-
-    // SECURITY: Check for redirect attempts when binding is enforced
+    // SECURITY: When enforceLocalBinding, use hardened transport (DNS-pinned,
+    // redirect-rejecting, works for both HTTP and HTTPS). Otherwise plain fetch.
+    let resp: Response;
     if (opts.enforceLocalBinding) {
-      await assertNoRedirect(resp, { originalUrl: `${base}/models` });
+      const r = await hardenedLocalRequest(requestUrl, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      resp = r.response;
+    } else {
+      resp = await fetch(requestUrl, {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: "follow",
+      });
     }
 
     if (!resp.ok) {

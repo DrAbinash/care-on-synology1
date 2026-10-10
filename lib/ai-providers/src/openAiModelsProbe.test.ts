@@ -147,7 +147,7 @@ describe("local OpenAI-compatible 'Test connection' is provider-aware", () => {
   const LOCAL_BASE = "http://127.0.0.1:8080/v1";
 
   it("short-circuits with the /models verdict when the server is down", async () => {
-    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    // No server on port 8080 — hardenedLocalRequest will get connection refused.
     const p = await createAiProvider("local_openai_compatible", "", LOCAL_BASE);
     const r = await p!.testConnection("bonsai");
     expect(r.ok).toBe(false);
@@ -157,29 +157,66 @@ describe("local OpenAI-compatible 'Test connection' is provider-aware", () => {
   });
 
   it("returns the served model list so Settings can show what the box actually has", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "bonsai" }, { id: "other" }] }));
-    const p = await createAiProvider("local_openai_compatible", "", LOCAL_BASE);
-    const r = await p!.testConnection("bonsai");
-    expect(r.ok).toBe(true);
-    expect(r.availableModels).toEqual(["bonsai", "other"]);
-    expect(openaiCreate).toHaveBeenCalledTimes(1);
+    const server = http.createServer((req, res) => {
+      if (req.url?.endsWith("/v1/models")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "bonsai" }, { id: "other" }] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as any).port;
+    try {
+      const p = await createAiProvider("local_openai_compatible", "", `http://127.0.0.1:${port}/v1`);
+      const r = await p!.testConnection("bonsai");
+      expect(r.ok).toBe(true);
+      expect(r.availableModels).toEqual(["bonsai", "other"]);
+      expect(openaiCreate).toHaveBeenCalledTimes(1);
+    } finally {
+      server.close();
+    }
   });
 
   it("says so when the requested model is not the one served", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "something-else" }] }));
-    const p = await createAiProvider("local_openai_compatible", "", LOCAL_BASE);
-    const r = await p!.testConnection("bonsai");
-    expect(r.ok).toBe(true);
-    expect(r.message).toContain('"bonsai" is not one of them');
+    const server = http.createServer((req, res) => {
+      if (req.url?.endsWith("/v1/models")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "something-else" }] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as any).port;
+    try {
+      const p = await createAiProvider("local_openai_compatible", "", `http://127.0.0.1:${port}/v1`);
+      const r = await p!.testConnection("bonsai");
+      expect(r.ok).toBe(true);
+      expect(r.message).toContain('"bonsai" is not one of them');
+    } finally {
+      server.close();
+    }
   });
 
   it("still trusts the chat completion when /models is unimplemented (404)", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}, 404));
-    const p = await createAiProvider("local_openai_compatible", "", LOCAL_BASE);
-    const r = await p!.testConnection("bonsai");
-    expect(openaiCreate).toHaveBeenCalledTimes(1);
-    expect(r.ok).toBe(true);
-    expect(r.message).toContain("GET /models: HTTP 404");
+    const server = http.createServer((req, res) => {
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as any).port;
+    try {
+      const p = await createAiProvider("local_openai_compatible", "", `http://127.0.0.1:${port}/v1`);
+      const r = await p!.testConnection("bonsai");
+      expect(openaiCreate).toHaveBeenCalledTimes(1);
+      expect(r.ok).toBe(true);
+      expect(r.message).toContain("GET /models: HTTP 404");
+    } finally {
+      server.close();
+    }
   });
 
   it("does not probe /models for a cloud OpenAI-compatible vendor (no extra egress)", async () => {
@@ -191,13 +228,15 @@ describe("local OpenAI-compatible 'Test connection' is provider-aware", () => {
   });
 
   it("leaves the Ollama probe on /api/tags, untouched", async () => {
-    // /api/tags goes through hardenedLocalRequest (node:http, not globalThis.fetch),
-    // so we need a real HTTP server for it. The chat completion (/api/chat) goes
-    // through rewriteUrlToValidatedIp + bare fetch(), which IS the stubbed fetch.
+    // Both /api/tags and /api/chat now go through hardenedLocalRequest (node:http),
+    // so we need a real HTTP server that handles both endpoints.
     const server = http.createServer((req, res) => {
       if (req.url?.endsWith("/api/tags")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ models: [{ name: "qwen3-vl:8b" }] }));
+      } else if (req.url?.endsWith("/api/chat")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ message: { content: "CONNECTED" } }));
       } else {
         res.writeHead(404);
         res.end();
@@ -205,9 +244,6 @@ describe("local OpenAI-compatible 'Test connection' is provider-aware", () => {
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as any).port;
-
-    // The query() path uses bare fetch() — mock it for the /api/chat call
-    fetchMock.mockResolvedValue(jsonResponse({ message: { content: "CONNECTED" } }));
 
     try {
       const p = await createAiProvider("ollama", undefined, `http://127.0.0.1:${port}`);

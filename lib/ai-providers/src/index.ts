@@ -842,22 +842,16 @@ class OllamaProvider implements AiProvider {
       const bodyJson = JSON.stringify(body);
       const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
 
-      // SECURITY: Pre-resolve DNS and bind to validated IP for Ollama (always local).
-      // This eliminates DNS rebinding and redirect-based SSRF.
+      // SECURITY: Use hardened transport — DNS-pinned, redirect-rejecting, works
+      // for both HTTP and HTTPS (closes the TOCTOU gap the old URL-rewrite had).
       const chatUrl = `${base}/api/chat`;
-      const { rewrittenUrl, originalHost } = await rewriteUrlToValidatedIp(chatUrl);
-
       const init: RequestInit = {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Host": originalHost },
+        headers: { "Content-Type": "application/json" },
         body: bodyJson,
-        redirect: "manual",
       };
       init.signal = AbortSignal.timeout(timeoutMsConfigured);
-      const resp = await fetch(rewrittenUrl, init);
-
-      // SECURITY: Check for redirect attempts
-      await assertNoRedirect(resp, { originalUrl: chatUrl });
+      const { response: resp } = await hardenedLocalRequest(chatUrl, init);
 
       const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
@@ -1755,16 +1749,11 @@ export async function probeOllamaReachable(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
-    // SECURITY: Pre-resolve DNS and bind to validated IP
-    const { rewrittenUrl, originalHost } = await rewriteUrlToValidatedIp(rawUrl);
-    const resp = await fetch(rewrittenUrl, {
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
       method: "GET",
-      headers: { "Host": originalHost },
       signal: controller.signal,
-      redirect: "manual",
     });
-    // SECURITY: Check for redirect attempts
-    await assertNoRedirect(resp, { originalUrl: rawUrl });
     if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
     const data = (await resp.json()) as { models?: Array<{ name: string }> };
     return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
@@ -1794,17 +1783,13 @@ export async function probeOllamaModelVision(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/show`;
-    // SECURITY: Pre-resolve DNS and bind to validated IP
-    const { rewrittenUrl, originalHost } = await rewriteUrlToValidatedIp(rawUrl);
-    const resp = await fetch(rewrittenUrl, {
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Host": originalHost },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
       signal: controller.signal,
-      redirect: "manual",
     });
-    // SECURITY: Check for redirect attempts
-    await assertNoRedirect(resp, { originalUrl: rawUrl });
     if (!resp.ok) return null;
     const data = (await resp.json()) as { capabilities?: string[] };
     if (!Array.isArray(data.capabilities)) return null;
