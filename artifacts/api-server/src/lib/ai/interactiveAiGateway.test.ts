@@ -75,24 +75,33 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@workspace/crypto", () => ({ decryptSecret: (s: string) => `decrypted:${s}` }));
 
-// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
-// bare fetch. Skip the DNS validation and bound fetch — just delegate to global.fetch
-// so existing mocks work. The security tests are in lib/ai-providers/.
-vi.mock("@workspace/ai-providers", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
-  return {
-    ...actual,
-    hardenedLocalRequest: async (url: string, init?: RequestInit) => {
-      const response = await globalThis.fetch(url, init);
-      return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
-    },
-    createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
-      return async (url: string | URL | Request, init?: RequestInit) => {
-        return globalThis.fetch(url, init);
-      };
-    },
-  };
-});
+// Production code uses hardenedLocalRequest / createHardenedLocalFetch (DNS-pinned
+// transport) instead of bare fetch. Mock the transport module at its resolved path
+// so that internal imports within @workspace/ai-providers (index.ts, openAiCompatible.ts)
+// pick up the mock — overriding the @workspace/ai-providers exports is not enough
+// because generateAiResponse calls hardenedLocalRequest via an internal binding.
+vi.mock("../../../../lib/ai-providers/src/hardenedTransport", () => ({
+  hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+    const response = await globalThis.fetch(url, init);
+    return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+  },
+  createHardenedLocalFetch: (_opts?: { enforceBinding?: boolean }) => {
+    return async (url: string | URL | Request, init?: RequestInit) => {
+      return globalThis.fetch(url, init);
+    };
+  },
+  resolveAndValidatePrivateIps: async (hostname: string) => ({
+    ips: ["127.0.0.1"],
+    isPrivate: true,
+  }),
+  assertNoRedirect: (resp: Response) => resp,
+  rewriteUrlToValidatedIp: async (rawUrl: string) => ({
+    rewrittenUrl: rawUrl,
+    originalHost: new URL(rawUrl).host,
+    boundIp: "127.0.0.1",
+  }),
+  createBoundFetch: async () => globalThis.fetch,
+}));
 
 vi.mock("@google/generative-ai", () => ({
   GoogleGenerativeAI: class {

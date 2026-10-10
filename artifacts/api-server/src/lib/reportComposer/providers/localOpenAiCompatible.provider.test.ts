@@ -43,18 +43,30 @@ vi.mock("./localOpenAiCompatibleConfig", async () => {
 });
 
 // Production code uses createHardenedLocalFetch (DNS-pinned transport) instead of
-// bare fetch. Delegate to global.fetch so existing mocks work.
-vi.mock("@workspace/ai-providers", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
-  return {
-    ...actual,
-    createHardenedLocalFetch: (_opts: { enforceBinding: boolean }) => {
-      return async (url: string | URL | Request, init?: RequestInit) => {
-        return globalThis.fetch(url, init);
-      };
-    },
-  };
-});
+// bare fetch. Mock the transport module at its resolved path so that internal imports
+// within @workspace/ai-providers (openAiCompatible.ts) pick up the mock.
+vi.mock("../../../../../lib/ai-providers/src/hardenedTransport", () => ({
+  hardenedLocalRequest: async (url: string, init?: RequestInit) => {
+    const response = await globalThis.fetch(url, init);
+    return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
+  },
+  createHardenedLocalFetch: (_opts?: { enforceBinding?: boolean }) => {
+    return async (url: string | URL | Request, init?: RequestInit) => {
+      return globalThis.fetch(url, init);
+    };
+  },
+  resolveAndValidatePrivateIps: async (hostname: string) => ({
+    ips: ["127.0.0.1"],
+    isPrivate: true,
+  }),
+  assertNoRedirect: (resp: Response) => resp,
+  rewriteUrlToValidatedIp: async (rawUrl: string) => ({
+    rewrittenUrl: rawUrl,
+    originalHost: new URL(rawUrl).host,
+    boundIp: "127.0.0.1",
+  }),
+  createBoundFetch: async () => globalThis.fetch,
+}));
 
 describe("local_openai_compatible provider identity", () => {
   it("registers as LOCAL and never as cloud merely for OpenAI wire format", () => {
