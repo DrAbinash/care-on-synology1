@@ -213,7 +213,12 @@ describe("assertGatewayPrivacy — image posture is not weakened by the text gat
     expect(r.safeError).toBe("cloud_vision_not_allowed");
   });
 
-  it("reports pixel identifiers as NOT verified even when the text is clean", async () => {
+  it("refuses cloud pixels that nothing has verified", async () => {
+    // Inverted on purpose. This asserted `ok:true` with `pixelPosture:
+    // "not_verified"` — an honest label on an unsafe decision: an opt-in and a
+    // MIME check never looked at the raster, so they cannot say the patient's
+    // name is not burned into it. Denying is the only posture consistent with
+    // the label.
     const r = await assertGatewayPrivacy({
       provider: "deepseek",
       userPrompt: CLINICAL_PROMPT,
@@ -221,10 +226,42 @@ describe("assertGatewayPrivacy — image posture is not weakened by the text gat
       filenames: ["lumbar-sag.jpg"],
       cloudVisionAllowed: true,
     });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect((r as { safeError: string }).safeError).toBe("cloud_image_not_verified");
+  });
+
+  it("reports pixels as verified only when the on-prem gate attests, and sends what it checked", async () => {
+    // Different bytes on purpose: what leaves must be the re-encoded set the
+    // gate inspected, not whatever the caller originally asked with.
+    const verified = { base64: "VkVSSUZJRURCWVRFUw==", mimeType: "image/jpeg" as const };
+    const r = await assertGatewayPrivacy({
+      provider: "deepseek",
+      userPrompt: CLINICAL_PROMPT,
+      images: [JPEG],
+      filenames: ["lumbar-sag.jpg"],
+      cloudVisionAllowed: true,
+      pixelProof: { posture: "clean", images: [verified] },
+    });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.pixelPosture).toBe("not_verified");
+    expect(r.pixelPosture).toBe("verified_clean");
     expect(r.rawDicomExcluded).toBe(true);
+    expect(r.images).toEqual([verified]);
+    expect(r.images[0].base64).not.toBe(JPEG.base64);
+  });
+
+  it("refuses a proof that covered fewer images than are being sent", async () => {
+    const r = await assertGatewayPrivacy({
+      provider: "deepseek",
+      userPrompt: CLINICAL_PROMPT,
+      images: [JPEG, JPEG],
+      cloudVisionAllowed: true,
+      pixelProof: { posture: "clean", images: [{ base64: "AA", mimeType: "image/jpeg" }] },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect((r as { safeError: string }).safeError).toBe("cloud_image_verification_incomplete");
   });
 
   it("rejects raw DICOM payloads", async () => {

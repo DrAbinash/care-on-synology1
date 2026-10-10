@@ -59,6 +59,13 @@ export type GatewayPrivacyInput = {
    * is reclassified as cloud and subject to full PHI gating.
    */
   resolvedUrl?: string | null;
+  /**
+   * Cloud arm with pixels: the outcome of the de-identification gate. Absent, or
+   * not `clean`, or covering a different number of images than are being sent,
+   * means the pixels are refused. A caller cannot opt out by omitting it — the
+   * default is deny, and the local arm never needs it because nothing egresses.
+   */
+  pixelProof?: PixelEgressProof | null;
 };
 
 /**
@@ -74,11 +81,31 @@ export type GatewayPrivacyInput = {
 export type CloudTextPosture = "not_applicable" | "clean_undetected" | "identifiers_redacted";
 
 /**
- * There is no pixel inspection anywhere in CARE. An image that passed the MIME
- * and raw-DICOM checks may still carry a name burned into the raster by the
- * modality, and nothing here can say otherwise.
+ * Pixel postures this gate can honestly claim.
+ *
+ * `not_verified` — nothing inspected the raster. This is the ONLY posture a local
+ * arm can report (correctly: nothing egressed, so there was nothing to verify),
+ * and it now also means "may not go to a cloud provider", because the cloud arm
+ * refuses on it.
+ *
+ * `verified_clean` — the de-identification gate re-encoded the image, proved no
+ * container metadata survived, and the clinic's own on-premises model read the
+ * picture and found none of this patient's identifiers in it. A call to a cloud
+ * provider is allowed only on this posture, and only for the exact bytes that
+ * gate produced.
  */
-export type PixelPhiPosture = "not_verified";
+export type PixelPhiPosture = "not_verified" | "verified_clean";
+
+/**
+ * What the de-identification gate must hand this seam before any pixel moves.
+ * Carrying the verified images through here, rather than letting the caller pass
+ * whatever bytes it likes afterwards, is what makes the proof non-forgeable:
+ * the gate sends what was verified, not what was asked for.
+ */
+export type PixelEgressProof = {
+  posture: "clean";
+  images: Array<{ base64: string; mimeType: string }>;
+};
 
 export type GatewayPrivacyResult =
   | {
@@ -97,6 +124,13 @@ export type GatewayPrivacyResult =
        * it is not the result of inspecting the bytes.
        */
       rawDicomExcluded: boolean;
+      /**
+       * The exact bytes cleared for egress. When pixels were verified this is the
+       * metadata-stripped re-encoded set the gate checked — NOT the set the caller
+       * asked with, which may carry a burned-in name or surviving EXIF. Callers
+       * must send these and nothing else.
+       */
+      images: ComposerProviderImage[];
     }
   | { ok: false; safeError: string; detail?: string };
 
@@ -141,6 +175,9 @@ export async function assertGatewayPrivacy(
         pixelPosture: "not_verified",
         burnedInPhiFlags: [],
         rawDicomExcluded: true,
+        // Nothing egresses on the local arm, so the caller's images pass through
+        // unchanged — and `cloud: false` is what says so.
+        images,
       };
     }
     // Reclassified as cloud — fall through to the cloud gate below.
@@ -170,6 +207,35 @@ export async function assertGatewayPrivacy(
       img.mimeType !== "image/webp"
     ) {
       return { ok: false, safeError: "cloud_image_mime_not_allowed" };
+    }
+  }
+
+  // PIXELS REQUIRE PROOF. An opt-in and a MIME check are permissions, not
+  // inspections: neither looked at the raster, so neither can say the patient's
+  // name is not burned into it. The de-identification gate is the only thing
+  // that has, and its result is demanded here rather than trusted downstream.
+  //
+  // Three separate ways this could be quietly defeated, all closed:
+  //  - omitted entirely               → the default is deny, not "unverified ok";
+  //  - a clean proof for other bytes  → the sent images are the proof's images;
+  //  - a proof covering fewer images  → the count must match exactly.
+  if (hasImages) {
+    const proof = input.pixelProof ?? null;
+    if (!proof || proof.posture !== "clean") {
+      return {
+        ok: false,
+        safeError: "cloud_image_not_verified",
+        detail:
+          "No on-premises verification that these images are free of patient identifiers, so nothing was sent. "
+          + "Configure the local vision model, or keep this task on a local provider.",
+      };
+    }
+    if (proof.images.length !== images.length) {
+      return {
+        ok: false,
+        safeError: "cloud_image_verification_incomplete",
+        detail: `Verification covered ${proof.images.length} of ${images.length} images; the whole set must be checked before any of it is sent.`,
+      };
     }
   }
 
@@ -216,6 +282,18 @@ export async function assertGatewayPrivacy(
     ...(input.filenames ?? []).filter((f): f is string => typeof f === "string"),
   ]);
 
+  // The image set that actually leaves is the set that was checked. Substituting
+  // the caller's original bytes here would verify one thing and send another.
+  const approvedProof = hasImages ? input.pixelProof ?? null : null;
+  const egressImages: ComposerProviderImage[] = approvedProof
+    ? approvedProof.images.map((i) => ({
+        base64: i.base64,
+        mimeType: (i.mimeType === "image/png" || i.mimeType === "image/webp"
+          ? i.mimeType
+          : "image/jpeg") as ComposerProviderImage["mimeType"],
+      }))
+    : images;
+
   return {
     ok: true,
     cloud: true,
@@ -223,8 +301,11 @@ export async function assertGatewayPrivacy(
     userPrompt: outUser,
     phiCategories: categories,
     textPosture,
-    pixelPosture: "not_verified",
+    // Honest only now that something looked. Without pixels there is nothing to
+    // claim, and an absent proof could not have reached this line.
+    pixelPosture: approvedProof ? "verified_clean" : "not_verified",
     burnedInPhiFlags,
     rawDicomExcluded: true,
+    images: egressImages,
   };
 }

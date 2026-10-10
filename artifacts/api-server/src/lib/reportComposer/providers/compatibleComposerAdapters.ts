@@ -103,7 +103,12 @@ async function composeViaSharedTransport(
     );
   }
 
-  const images: CompatibleImagePart[] | undefined = request.images?.map((i) => ({
+  // The gate returns the exact bytes that cleared verification — a re-encoded,
+  // metadata-stripped set, not the ones it was shown. Taking them from
+  // `request.images` instead would inspect one image and send another, the same
+  // way sending `request.userPrompt` rather than `privacy.userPrompt` would
+  // un-redact text the gate had just scrubbed.
+  const images: CompatibleImagePart[] | undefined = privacy.images.map((i) => ({
     mimeType: i.mimeType,
     base64: i.base64,
   }));
