@@ -1,12 +1,21 @@
 /**
- * A real HTTP server that answers Orthanc's single-instance and single-series
- * QIDO queries.
+ * A real HTTP server that answers Orthanc's instance and series QIDO queries.
  *
  * D2's identity check asks the PACS "does this SOPInstanceUID live in this
- * SeriesInstanceUID of this StudyInstanceUID, and how many frames does the
- * object hold?" — so the test double has to be an HTTP endpoint, not a stubbed
- * function: the route under test reaches it over the network exactly the way it
- * reaches the NAS, through the same base-URL resolution and the same fetch.
+ * SeriesInstanceUID of this StudyInstanceUID, and how many frames does the object
+ * hold?" — so the test double has to be an HTTP endpoint, not a stubbed function:
+ * the route under test reaches it over the network exactly the way it reaches the
+ * NAS, through the same base-URL resolution and the same fetch.
+ *
+ * It mirrors Orthanc 1.13.0's DICOMweb behaviour, which is what the production
+ * lookup depends on:
+ *   • `/dicom-web/studies/{S}/series/{SE}/instances?00080018={I}` → 200 with a
+ *     DICOM-JSON array carrying 0020000D / 0020000E / 00080018 / 00280008; an
+ *     unmatched filter is a 200 with an EMPTY array, never a 404.
+ *   • `/dicom-web/studies/{S}/series?0020000E={SE}` → the same shape at series level.
+ *   • the path-style singletons (`/instances/{SOP}` and `/series/{SE-UID}`), which
+ *     Orthanc keys by internal id, return 400 — so a regression back to path-style
+ *     lookups fails the check instead of silently passing.
  *
  * `manifest[study][series] = [{ sopUid, numberOfFrames? }]`.
  */
@@ -20,22 +29,32 @@ export type MockDicomWeb = {
   url: string;
   /** "down" makes every request 500, which the verifier must read as unreachable. */
   setMode(mode: "serve" | "down"): void;
-  /** Requests received, so a test can prove the check really went to the PACS. */
+  /** Requests received (decoded, query included), so a test can prove the check really went to the PACS. */
   hits(): string[];
   close(): Promise<void>;
 };
 
-function seriesEntry(uid: string): Record<string, { Value: string[] }> {
-  return { "0020000E": { Value: [uid] }, "00080060": { Value: ["MR"] }, "00200011": { Value: ["1"] } };
-}
+type JsonValue = Record<string, { Value: string[] }>;
 
-function instanceEntry(m: MockInstance, instanceNumber: number): Record<string, { Value: string[] }> {
-  const e: Record<string, { Value: string[] }> = {
+function instanceEntry(study: string, series: string, m: MockInstance, instanceNumber: number): JsonValue {
+  const e: JsonValue = {
+    "0020000D": { Value: [study] },
+    "0020000E": { Value: [series] },
     "00080018": { Value: [m.sopUid] },
+    "00080016": { Value: ["1.2.840.10008.5.1.4.1.1.6.1"] },
     "00200013": { Value: [String(instanceNumber)] },
   };
   if (m.numberOfFrames != null) e["00280008"] = { Value: [String(m.numberOfFrames)] };
   return e;
+}
+
+function seriesEntry(study: string, series: string): JsonValue {
+  return {
+    "0020000D": { Value: [study] },
+    "0020000E": { Value: [series] },
+    "00080060": { Value: ["MR"] },
+    "00200011": { Value: ["1"] },
+  };
 }
 
 export async function startMockDicomWeb(
@@ -45,54 +64,60 @@ export async function startMockDicomWeb(
   let mode: "serve" | "down" = "serve";
 
   const server: Server = createServer((req, res) => {
-    const url = decodeURIComponent(req.url || "");
-    seen.push(url);
-    if (mode === "down") {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end("{}");
-      return;
+    const raw = req.url || "";
+    seen.push(decodeURIComponent(raw));
+
+    const send = (status: number, body: unknown): void => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+
+    if (mode === "down") return send(500, {});
+
+    const [pathRaw, queryRaw = ""] = raw.split("?");
+    const path = decodeURIComponent(pathRaw);
+    const q = new URLSearchParams(queryRaw);
+    const sopFilter = q.get("00080018");
+    const seriesFilter = q.get("0020000E");
+
+    // Instance QIDO scoped to Study + Series, filtered by SOPInstanceUID.
+    let m = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances$/.exec(path);
+    if (m && sopFilter != null) {
+      const [, study, series] = m;
+      const hit = (manifest[study]?.[series] || []).find((i) => i.sopUid === sopFilter);
+      return send(200, hit ? [instanceEntry(study, series, hit, 1)] : []);
     }
-    const one = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances\/([^/]+)$/.exec(url);
-    if (one) {
-      const [, study, series, sop] = one;
-      const entry = (manifest[study]?.[series] || []).find((i) => i.sopUid === sop);
-      if (!entry) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end("[]");
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify([instanceEntry(entry, 1)]));
-      return;
+
+    // Series QIDO scoped to Study, filtered by SeriesInstanceUID.
+    m = /^\/dicom-web\/studies\/([^/]+)\/series$/.exec(path);
+    if (m && seriesFilter != null) {
+      const study = m[1];
+      const present = Boolean(manifest[study]?.[seriesFilter]);
+      return send(200, present ? [seriesEntry(study, seriesFilter)] : []);
     }
-    const list = /^\/dicom-web\/studies\/([^/]+)\/series$/.exec(url);
-    if (list) {
-      const series = Object.keys(manifest[list[1]] || {});
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(series.map(seriesEntry)));
-      return;
+
+    // Path-style singletons: Orthanc 1.13.0 rejects these (keys by internal id).
+    if (
+      /^\/dicom-web\/studies\/[^/]+\/series\/[^/]+\/instances\//.test(path) ||
+      /^\/dicom-web\/studies\/[^/]+\/series\/[^/]+$/.test(path)
+    ) {
+      return send(400, { HttpError: "Bad Request", Message: "cannot retrieve by SOP UID" });
     }
-    const seriesOne = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)$/.exec(url);
-    if (seriesOne) {
-      const [, study, series] = seriesOne;
-      if (!manifest[study] || !manifest[study][series]) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end("[]");
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify([seriesEntry(series)]));
-      return;
+
+    // Plain list endpoints (not used by the lookup, kept for completeness).
+    m = /^\/dicom-web\/studies\/([^/]+)\/series$/.exec(path);
+    if (m) {
+      const study = m[1];
+      return send(200, Object.keys(manifest[study] || {}).map((s) => seriesEntry(study, s)));
     }
-    const insts = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances$/.exec(url);
-    if (insts) {
-      const rows = (manifest[insts[1]]?.[insts[2]] || []).map(instanceEntry);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(rows));
-      return;
+    m = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances$/.exec(path);
+    if (m) {
+      const [, study, series] = m;
+      const list = manifest[study]?.[series] || [];
+      return send(200, list.map((i, idx) => instanceEntry(study, series, i, idx + 1)));
     }
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end("[]");
+
+    return send(404, []);
   });
 
   server.listen(0, "127.0.0.1");

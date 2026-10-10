@@ -630,7 +630,7 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
     cleanupKeyImageIds.push(res.body?.item?.id);
     const hits = (pacs?.hits() ?? []).slice(before);
     expect(
-      hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A2}/instances/${INST_A_CINE}`),
+      hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A2}/instances?00080018=${INST_A_CINE}`),
     ).toBe(true);
   });
 
@@ -675,7 +675,7 @@ describe.skipIf(!dbReady)("D2 displayed-image identity at the API boundary", () 
     cleanupAnnotationIds.push(id);
     const hits = (pacs?.hits() ?? []).slice(before);
     expect(
-      hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A1}/instances/${INST_A_SINGLE}`),
+      hits.some((h) => h === `/dicom-web/studies/${STUDY_A}/series/${SERIES_A1}/instances?00080018=${INST_A_SINGLE}`),
     ).toBe(true);
     const [row] = await db
       .select()

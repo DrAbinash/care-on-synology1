@@ -131,10 +131,20 @@ export function createOrthancInstanceLookup(opts: {
       orthancDicomWebUrl: val("orthanc_dicomweb_url"),
     });
     if (!base) return { ok: false, reason: "unreachable" };
-    const url =
-      `${base}/dicom-web/studies/${encodeURIComponent(studyInstanceUID)}`
-      + `/series/${encodeURIComponent(seriesInstanceUID)}`
-      + (sopInstanceUID ? `/instances/${encodeURIComponent(sopInstanceUID)}` : "");
+    // Orthanc 1.13.0 keys its retrieve / QIDO-single path by an internal id, not the
+    // SOPInstanceUID, so `/…/instances/{SOP}` answers HTTP 400 and every claim then
+    // reads back "unreachable" — server verification could never succeed against the
+    // clinic's PACS. A QIDO search scoped to the requested Study + Series, filtered by
+    // the tag, is the only form this Orthanc answers, and the path scoping is itself the
+    // ownership question: an empty result means the image is not in that series of that
+    // study. With no SOP named, the same query one level up asks only whether the
+    // series is in the study.
+    const url = sopInstanceUID
+      ? `${base}/dicom-web/studies/${encodeURIComponent(studyInstanceUID)}`
+        + `/series/${encodeURIComponent(seriesInstanceUID)}`
+        + `/instances?00080018=${encodeURIComponent(sopInstanceUID)}`
+      : `${base}/dicom-web/studies/${encodeURIComponent(studyInstanceUID)}`
+        + `/series?0020000E=${encodeURIComponent(seriesInstanceUID)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -146,9 +156,24 @@ export function createOrthancInstanceLookup(opts: {
       if (res.status === 404) return { ok: false, reason: "not-found" };
       if (!res.ok) return { ok: false, reason: "unreachable" };
       const body = (await res.json().catch(() => null)) as unknown;
-      const entries = Array.isArray(body) ? body : body ? [body] : [];
-      const first = entries[0] as Record<string, { Value?: unknown[] }> | undefined;
-      const raw = first?.["00280008"]?.Value?.[0];
+      const entries: Array<Record<string, { Value?: unknown[] }>> = Array.isArray(body)
+        ? body
+        : body ? [body as Record<string, { Value?: unknown[] }>] : [];
+      const uidOf = (entry: Record<string, { Value?: unknown[] }>, keyword: string) => {
+        const v = entry?.[keyword]?.Value?.[0];
+        return typeof v === "string" ? v : null;
+      };
+      // Never trust the path alone: confirm the returned object really carries the
+      // Study / Series — and the SOP, when one was named — that we asked about. An
+      // unmatched filter is an HTTP 200 with an empty array here, not a 404, so
+      // "nothing matched" is decided by the absence of a verified entry.
+      const match = entries.find((entry) =>
+        uidOf(entry, "0020000D") === studyInstanceUID
+        && uidOf(entry, "0020000E") === seriesInstanceUID
+        && (!sopInstanceUID || uidOf(entry, "00080018") === sopInstanceUID),
+      );
+      if (!match) return { ok: false, reason: "not-found" };
+      const raw = match["00280008"]?.Value?.[0];
       const frames = typeof raw === "string" || typeof raw === "number" ? Number(raw) : NaN;
       return { ok: true, numberOfFrames: Number.isFinite(frames) ? frames : null };
     } catch {
