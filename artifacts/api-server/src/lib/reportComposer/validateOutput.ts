@@ -407,6 +407,70 @@ function findDeniedFindings(corpus: string): Set<string> {
 }
 
 /**
+ * Words that carry no statement of their own. Every report uses them and every
+ * honest rewrite rearranges them, so they cannot mark a claim.
+ *
+ * Laterality and severity are listed here deliberately: they have their own
+ * definite checks, and counting them twice would let a single "mild" decide
+ * whether a finding survived.
+ */
+const NON_CLINICAL_WORDS = new Set([
+  // connective tissue
+  "the", "and", "with", "that", "this", "these", "those", "there", "their", "which",
+  "while", "without", "within", "also", "seen", "shown", "noted", "present", "findings",
+  "no", "not", "than", "then", "been", "were", "are", "was", "has", "have",
+  "when", "where", "from", "into", "over", "under", "both", "each", "some",
+  "should", "would", "could", "might", "must", "about", "however", "therefore",
+  // discourse about the report rather than the patient
+  "above", "below", "described", "detailed", "mentioned", "otherwise",
+  "unremarkable", "significant", "apparent", "likely", "consistent", "normal",
+  "appears", "appear", "appearance", "appearances", "remains", "remain", "unchanged",
+  "further", "additional", "remainder", "remaining", "impression", "conclusion",
+  "recommendation", "correlate", "correlated", "correlates", "correlation",
+  "clinical", "clinically", "advised", "advisable", "suggested",
+  // guarded definitively by their own checks
+  "mild", "moderate", "severe", "minimal", "mildly", "marked",
+  "left", "right", "bilaterally", "bilateral",
+]);
+
+/**
+ * The words that make a statement identifiable, stemmed to five letters so that
+ * "disc"/"discs" and "narrowing"/"narrow" are the same term. A rewrite is allowed
+ * to change wording completely; it is not allowed to make a statement unfindable.
+ *
+ * Digits are excluded by the shape of the match, which drops levels ("L4-L5") and
+ * units ("mm") — both are guarded by the measurement and level checks below.
+ */
+function distinctiveTerms(text: string): string[] {
+  const stems = (text.toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? [])
+    .filter((word) => !NON_CLINICAL_WORDS.has(word))
+    .map((word) => word.slice(0, 5));
+  return Array.from(new Set(stems));
+}
+
+/**
+ * A statement the draft contained and the report no longer says anywhere.
+ *
+ * This is the loss path the refinement flow exists to stop: "shorten the
+ * impression" or "make this more professional" carried out by deleting a finding
+ * rather than rewriting it. Reordering, merging and synonym swaps all keep at
+ * least one distinctive term, so only a statement whose every distinctive term
+ * has vanished counts as lost — and a statement with fewer than two terms is not
+ * judged at all, because there is nothing to judge it by.
+ */
+function findDroppedClaims(previousUnits: string[], surviving: Set<string>): string[] {
+  const dropped: string[] = [];
+  for (const unit of previousUnits) {
+    const terms = distinctiveTerms(unit);
+    if (terms.length < 2) continue;
+    if (terms.some((t) => surviving.has(t))) continue;
+    const label = unit.trim().replace(/\s+/g, " ").slice(0, 90);
+    if (label && !dropped.includes(label)) dropped.push(label);
+  }
+  return dropped;
+}
+
+/**
  * Flag abnormality terms that appear in AI output but nowhere in radiologist-supplied input.
  *
  * PR #657: also detects laterality swaps, level changes, and severity escalations.
@@ -463,6 +527,47 @@ export function validateComposerOutput(
     if (asserted.length > 0) {
       errors.push("denied_finding_asserted");
       warnings.push(`AI asserted a finding the input denied: ${asserted.join(" | ")}`);
+    }
+  }
+
+  // Statements the draft deletes. Measured against what the report would actually
+  // SAY after this draft is applied — an empty field emits no tracked change, so
+  // the radiologist's own text stands and nothing is lost. Comparing against the
+  // raw draft instead would refuse honest partial rewrites.
+  //
+  // Only the text that is already in the report is protected here. The observation
+  // ledger is deliberately not a claim source: whether an unused observation
+  // belongs in the prose is a different question with its own advisory
+  // (detectMissingMeasurements), and treating every ledger row as mandatory would
+  // fail legitimate first drafts.
+  //
+  // TRANSLATE is exempt: a German report does not contain the English words of the
+  // English draft it was translated from, and refusing that would be the guard
+  // breaking the one feature it is meant to police.
+  const targetLanguage = (snapshot.targetLanguage ?? "").toLowerCase();
+  const crossLanguage =
+    snapshot.jobKindHint === "TRANSLATE" ||
+    (targetLanguage !== "" && !targetLanguage.startsWith("en"));
+  if (!crossLanguage) {
+    const effective = [
+      draft.findings.trim() ? draft.findings : snapshot.findings,
+      draft.impression.trim() ? draft.impression : snapshot.impression,
+      draft.recommendation.trim() ? draft.recommendation : snapshot.recommendation,
+    ].join("\n");
+    const surviving = new Set(distinctiveTerms(effective));
+    const droppedClaims = findDroppedClaims(
+      [
+        ...splitReportSentences(snapshot.findings),
+        ...splitReportSentences(snapshot.impression),
+        ...splitReportSentences(snapshot.recommendation),
+      ],
+      surviving,
+    );
+    if (droppedClaims.length > 0) {
+      errors.push("observation_dropped");
+      warnings.push(
+        `AI removed ${droppedClaims.length} statement(s) the report already contained: ${droppedClaims.join(" | ")}`,
+      );
     }
   }
 

@@ -136,7 +136,18 @@ export type ComposeJobView = {
   proposedImpression: string | null;
   proposedRecommendation: string | null;
   trackedChanges: TrackedChange[];
-  draft: { findings?: string; impression?: string; recommendation?: string } | null;
+  draft: {
+    findings?: string;
+    impression?: string;
+    recommendation?: string;
+    /**
+     * What CARE's prompt calls for whenever the instruction or the findings do not
+     * fit each other: the model's own question, instead of a guess dressed up as a
+     * finding. It has always been in the stored draft; nothing used to display it,
+     * so a draft that asked for clarification asked silently.
+     */
+    unresolvedQuestions?: string[];
+  } | null;
   validation: unknown;
   sources: Record<string, number>;
   model: string | null;

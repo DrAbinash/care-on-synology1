@@ -61,8 +61,17 @@ export function buildCareSystemPrompt(
     case "EXPAND":
     case "TRANSLATE":
       parts.push(
-        "TASK: Apply the instruction only to the selected/target text. " +
-        "Preserve meaning, laterality, levels, and numbers. Do NOT invent new clinical facts.",
+        "TASK: Apply the instruction to the TARGET TEXT only. " +
+        "Preserve meaning, laterality, levels, and numbers. Do NOT invent new clinical facts.\n" +
+        "Return every field the instruction does not concern EXACTLY as supplied — an omitted " +
+        "field is a deleted finding, not a blank line. The TARGET TEXT may span more than one " +
+        "section (Findings and Impression labelled together): return each revised section in " +
+        "its own field, never one merged block.\n" +
+        "Refining wording never removes clinical content: after a SHORTEN, every level, side, " +
+        "number, severity and named abnormality in the input must still be in the output.\n" +
+        "If the instruction cannot be honoured without changing a clinical fact — a side, a " +
+        "number, or an abnormality the findings do not support — do NOT comply and do NOT guess: " +
+        "return the text unchanged and say why in unresolvedQuestions.",
       );
       break;
     default:

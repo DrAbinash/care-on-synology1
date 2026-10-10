@@ -1118,13 +1118,12 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                             onMicroSubmit={() => {
                               const instr = microInstruction.trim();
                               if (!instr) return;
-                              const selection = window.getSelection()?.toString() ?? "";
-                              void reportComposer.microEdit(
-                                /translat/i.test(instr) ? "TRANSLATE" : /shorten/i.test(instr) ? "SHORTEN" : /expand/i.test(instr) ? "EXPAND" : "REPHRASE",
-                                selection || useWorkspace.getState().findingsText.slice(0, 800),
-                                "FINDINGS",
-                                instr,
-                              );
+                              // The instruction goes to the model as written. It used to be
+                              // matched against /translat|shorten|expand/ and defaulted to
+                              // REPHRASE, which turned "add a canal measurement table" into a
+                              // request to rephrase, and refined only the first 800 characters
+                              // of Findings.
+                              void reportComposer.refineReport(instr);
                               setMicroInstruction("");
                             }}
                           />

@@ -125,8 +125,15 @@ describe("AI Assistant multiline + minimize contracts", () => {
       "utf8",
     );
     expect(src).toMatch(/<textarea/);
-    expect(src).toMatch(/Instructions to AI \(optional\)/);
-    expect(src).toMatch(/Tell AI what to improve, rephrase or emphasize/);
+    // Was "Instructions to AI (optional)" with the placeholder "Tell AI what to
+    // improve, rephrase or emphasize". The box is the same control; its label now
+    // names the action ("Refine Report") and its placeholder carries the actual
+    // instructions the feature accepts, because a radiologist cannot guess that a
+    // sentence like "add the canal measurement table" belongs in this box.
+    expect(src).toMatch(/Refine Report/);
+    expect(src).toMatch(/tell CARE AI what to change/);
+    expect(src).toMatch(/Make it more professional/);
+    expect(src).toMatch(/add the canal measurement table/);
     expect(src).toMatch(/shouldSubmitAiInstructionKey/);
     expect(src).toMatch(/data-testid="ai-report-assistant-minimized"/);
     expect(src).toMatch(/value=\{props\.microInstruction\}/);

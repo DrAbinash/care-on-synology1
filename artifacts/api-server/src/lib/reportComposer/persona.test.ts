@@ -341,7 +341,7 @@ describe("§S 11. Recommendation — no filler", () => {
   it("persona carries the no-filler-recommendation rule", () => {
     const snap = snapshot();
     const prompt = buildCareSystemPrompt("FULL_REPORT" as AiComposeJobKind, snap);
-    expect(prompt).toContain("Do NOT generate meaningless recommendations");
+    expect(prompt).toMatch(/No filler recommendations/i);
     expect(prompt).toContain("Please correlate clinically");
     expect(prompt).toMatch(/leave recommendation empty|Prefer empty over filler/i);
   });
@@ -627,6 +627,10 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
       family: "spine",
       spineSegment: "lumbar",
       findings: "Mild disc bulge at L4-L5. Severe canal stenosis at L5-S1.",
+      // The helper's default impression is a brain one; leaving it here would give
+      // this case an Impression that its draft really does delete, and the
+      // dropped-claim check would be right to refuse it.
+      impression: "Disc bulge at L4-L5. Canal stenosis at L5-S1.",
       observations: [
         { concept: "disc_contour", source: "quick-findings", level: "L4-L5", severity: "mild", findingsText: "Mild disc bulge at L4-L5." },
         { concept: "canal_stenosis", source: "quick-findings", level: "L5-S1", severity: "severe", findingsText: "Severe canal stenosis at L5-S1." },
@@ -840,7 +844,11 @@ describe("§S 19. Printed-structure contract", () => {
 
   it("the style module teaches the pipe-table convention for per-level values", () => {
     expect(CARE_REPORT_STYLE).toMatch(/\| Level \| AP Canal \(mm\) \|/);
-    expect(CARE_REPORT_STYLE).toMatch(/never invent a level to complete a table/);
+    expect(CARE_REPORT_STYLE).toMatch(/never invent a level/);
+    // The unit belongs in the cell: validateComposerOutput re-checks every supplied
+    // measurement, and a bare "14" in a table is not a measurement it can see. The
+    // behavioural half of this contract is in refinementScenarios.test.ts.
+    expect(CARE_REPORT_STYLE).toMatch(/\| L1-L2 \| 14 mm \|/);
   });
 
   it("the style module forbids markdown emphasis, because the renderer bolds abnormalities itself", () => {

@@ -14,15 +14,15 @@ export const CARE_REPORT_STYLE = `REPORT STRUCTURE (compose Findings / Impressio
 4. RECOMMENDATION — only when radiologist-supplied or clearly warranted. Prefer empty over filler.
 
 LANGUAGE STYLE:
-- Concise professional radiologist language (CARE clinic house style).
+- Concise professional radiologist language.
 - Emphasize abnormalities by clinical ordering, not verbosity.
-- Avoid teaching text and patient-directed language.
+- No teaching text; do not address the patient.
 - Differentials: give them only when the input supports more than one entity, and say what
   distinguishes them on THIS study. No reflex list, none for a finding already named.
 - Do NOT repeat the same abnormality multiple times.
 - Do NOT write a second conclusion — one Impression, never an Impression plus a
   "Conclusion" that repeats it.
-- Expand shorthand (e.g. "DOC", "bilat foraminal narrowing") into conventional prose without changing meaning.
+- Expand shorthand ("DOC", "bilat foraminal narrowing") into conventional prose without changing meaning.
 - If shorthand is ambiguous, ask via unresolvedQuestions — do not guess.
 
 NORMAL SCAFFOLD:
@@ -34,19 +34,20 @@ NORMAL SCAFFOLD:
 IMPRESSION RULES:
 - Ground Impression in canonical observations / Findings only.
 - Priority: clinically important abnormality → secondary → chronic/incidental.
-- Example pattern: Findings describe C5-C6 disc-osteophyte complex with thecal sac / foraminal effects → Impression summarizes that entity without new diagnosis.
+- Example: a C5-C6 disc-osteophyte complex with thecal sac effect → the Impression states
+  that entity, adding no new diagnosis.
 
 RECOMMENDATION RULES:
-- Prefer radiologist-supplied recommendation / observation recommendation contribution / established CARE rule.
+- Prefer a radiologist-supplied recommendation or an established CARE rule.
 - Do NOT freely invent follow-up tests.
-- Do NOT generate meaningless recommendations such as "Please correlate clinically."
-- Do NOT generate "Clinical correlation advised" or similar filler.
-- If no recommendation is indicated, leave recommendation empty.
+- No filler recommendations: never "Please correlate clinically", "Clinical correlation
+  advised" or similar.
 
 PRINTED STRUCTURE (what CARE's printer parses; anything else prints as prose):
 - A Findings line that is exactly a short "Label:" prints as an underlined section heading;
   "Label: sentence" on one line stays a paragraph.
 - Per-level numbers go in a pipe table, header row first: "| Level | AP Canal (mm) |" then
-  "| L1-L2 | 14 |". One row per supplied level; never invent a level to complete a table.
+  "| L1-L2 | 14 mm |" — the unit inside the cell, so CARE can re-check every supplied
+  measurement. One row per supplied level; never invent a level.
 - No markdown emphasis anywhere: CARE's printer bolds abnormal findings lines itself;
   asterisks print literally on screen and in Word.`;
