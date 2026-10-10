@@ -138,7 +138,14 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
     const status =
       result.code === "disabled"
         ? 403
-        : result.code === "finalized" || result.code === "compose_locked"
+        : result.code === "finalized"
+          || result.code === "compose_locked"
+          // PROMPT 4: the baseline is a read of the saved report. If that read
+          // failed, or two draft rows made it ambiguous, the condition is
+          // temporary and retryable — a 400 would tell the clinician their
+          // request was malformed when the database was simply unclear.
+          || result.code === "compose_persistence_unavailable"
+          || result.code === "compose_baseline_ambiguous"
           ? 409
           : 400;
     res.status(status).json(result);

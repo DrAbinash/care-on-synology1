@@ -328,3 +328,54 @@ describe("matchWorkspaceShortcut (Phase 11)", () => {
     expect(matchWorkspaceShortcut({ key: "\\", altKey: true, metaKey: true })).toBeNull();
   });
 });
+
+// PROMPT 4 — the same twelve vectors the API server runs against its own mirror.
+//
+// `projectStoredImpression` in
+// `artifacts/api-server/src/lib/reportComposer/composePersistence.ts` is a copy of
+// `normalizeImpressionLines` above: the server computes its durability token over
+// the impression the radiologist actually reads, so the two projections must be
+// the same function. There is no shared module between the packages (the SPA
+// cannot be imported by the API), so the agreement is pinned by running one table
+// of vectors on both sides — `composePersistence.contract.test.ts` holds the
+// identical list. Drift in either implementation fails both suites, naming the
+// vector that drifted.
+describe("the server's impression mirror is this function", () => {
+  const VECTORS: Array<{ name: string; stored: string; display: string }> = [
+    { name: "plain", stored: "Mild disc bulge.", display: "Mild disc bulge." },
+    { name: "multi-line", stored: "Line one.\nLine two.", display: "Line one.\nLine two." },
+    { name: "outer blank lines dropped, inner kept", stored: "\nLine one.\n\nLine two.\n", display: "Line one.\n\nLine two." },
+    { name: "only the element edges are trimmed", stored: "  Line one.  \n  Line two.  ", display: "Line one.  \n  Line two." },
+    { name: "whitespace only becomes empty", stored: "   \n  ", display: "" },
+    { name: "empty stays empty", stored: "", display: "" },
+    { name: "text that looks like a JSON array survives whole", stored: '["Already","an","array"]', display: '["Already","an","array"]' },
+    { name: "CRLF inside the element is preserved", stored: "Line one.\r\nLine two.", display: "Line one.\r\nLine two." },
+    { name: "clinic punctuation", stored: "Findings · ₹500 — L4/5.", display: "Findings · ₹500 — L4/5." },
+    { name: "trailing newline trimmed", stored: "Impression.\n", display: "Impression." },
+  ];
+
+  it.each(VECTORS)("$name", ({ stored, display }) => {
+    // Exactly what POST /save-draft stores for an editor holding `stored`…
+    const column = JSON.stringify([stored]);
+    // …and exactly what the reload puts back on screen, which is what the
+    // composer's durability token has to describe.
+    expect(normalizeImpressionLines(column).join("\n")).toBe(display);
+  });
+
+  // The other branch: a column that is not a JSON array. POST /save-draft always
+  // writes an array, so this is what a restored or hand-written legacy row looks
+  // like — and the server mirror has to read it the same way, so its six cases are
+  // pinned on both sides too.
+  const PLAIN_VECTORS: Array<{ name: string; stored: string; display: string }> = [
+    { name: "plain text column", stored: "Plain impression text", display: "Plain impression text" },
+    { name: "padded plain text", stored: "  Padded.  ", display: "Padded." },
+    { name: "array-shaped but unparsable stays text", stored: '["unclosed"', display: '["unclosed"' },
+    { name: "empty column", stored: "", display: "" },
+    { name: "whitespace column", stored: "   ", display: "" },
+    { name: "object-shaped JSON is not an array", stored: '{"a":1}', display: '{"a":1}' },
+  ];
+
+  it.each(PLAIN_VECTORS)("non-array column: $name", ({ stored, display }) => {
+    expect(normalizeImpressionLines(stored).join("\n")).toBe(display);
+  });
+});

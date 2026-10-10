@@ -16,6 +16,7 @@ import {
   type ComposeJobView,
   type ComposeObservation,
   type ComposerInputSnapshot,
+  type ComposerPersistenceTag,
   type TrackedChange,
 } from "@/lib/reportComposer/types";
 
@@ -62,6 +63,18 @@ export function useReportComposer(opts: {
    * the preview and the generation request cannot diverge on it.
    */
   instruction?: string;
+  /**
+   * Persist the accepted AI text through the workspace's own canonical draft-save
+   * path and resolve once the server has recorded what it wrote. Required for
+   * Apply: an accepted draft that was never saved is not a report, and "AI
+   * Applied" has to mean the study's row holds the text.
+   *
+   * Resolves to the draft row id, or null when the save did not happen — a
+   * refusal or a network failure both end here, and Apply then simply never gets
+   * recorded, because the server's durability proof reads the row rather than
+   * trusting this return value.
+   */
+  persistAccepted: (tag: ComposerPersistenceTag) => Promise<number | null>;
 }) {
   const { toast } = useToast();
   const [job, setJob] = useState<ComposeJobView | null>(null);
@@ -478,7 +491,31 @@ export function useReportComposer(opts: {
       currentRecommendation: recommendationText,
       changes: accepted,
     });
+    // The narrative this tab is replacing, captured BEFORE the accepted text goes
+    // into the store. The server compares the study's saved report against it and
+    // against the baseline it took when the draft was generated; it is not asked
+    // to believe either one.
+    const tag: ComposerPersistenceTag = {
+      jobId: job.id,
+      previous: {
+        findings: findingsText,
+        impression: impressionText,
+        recommendation: recommendationText,
+      },
+    };
     applyAiComposerAccepted(text);
+    // PROMPT 4 — persist first, then confirm. The save runs through the
+    // workspace's own canonical draft-save path (the same one the Save button,
+    // the autosave and Finalize use), awaited, so the accepted sentences are in
+    // `radiology_report_drafts` before anything claims they are. The order is the
+    // guarantee: previously the sequence was mutate → mark APPLIED → maybe
+    // autosave later, which let a closed tab or a failed save leave a job recorded
+    // as applied with its text in no database.
+    //
+    // A null return (refused or offline) is not handled here on purpose. `/applied`
+    // re-reads the row on the server, so the refusal — and its wording — comes
+    // from the same place whichever step did not happen.
+    await opts.persistAccepted(tag);
     const applied = await reportComposerApi.confirmApplied(
       job.id,
       accepted.map((c) => c.id),

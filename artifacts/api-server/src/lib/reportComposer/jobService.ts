@@ -35,6 +35,11 @@ import {
   verifyComposeJobIdentity,
   type ComposeStudyRefs,
 } from "./composeIdentity";
+import {
+  captureComposeBaseline,
+  verifyComposeDurabilityTx,
+  type ComposeAcceptedField,
+} from "./composePersistence";
 
 export const AI_REPORT_COMPOSE_JOB = "ai_report_compose";
 
@@ -253,6 +258,22 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     };
   }
 
+  // Server-derived persistence baseline.
+  //
+  // `args.persistedContentToken` above and the four `source*Hash` columns below
+  // are all the browser's own account of the text in its editor. None of them
+  // says what the database held, which is the thing an Apply has to be checked
+  // against — a second workstation's save, a reload, or a draft that was never
+  // saved at all are indistinguishable from that side. So the job records the
+  // token of the study's authoritative draft row as the server read it here,
+  // before the AI is asked to draft, and Apply is only ever allowed against
+  // that. `patient_reports` cannot carry this duty: a workspace study has no
+  // such row until it is signed.
+  const baseline = await captureComposeBaseline(worklistId, identity.identity.patientId);
+  if (!baseline.ok) {
+    return { ok: false, error: baseline.message, code: baseline.code };
+  }
+
   // Dedupe active identical jobs
   if (worklistId) {
     const [existing] = await db
@@ -281,28 +302,43 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     }
   }
 
-  const [inserted] = await db
-    .insert(aiReportComposeJobsTable)
-    .values({
-      // Resolved server-side from the worklist row, not from the browser:
-      // study_id holds the billed radiology_studies.id that row points at,
-      // worklist_id its primary key, report_id the report of record bound to it.
-      studyId: identity.identity.studyId,
-      worklistId,
-      reportId,
-      jobKind,
-      status: "QUEUED",
-      sourceReportRevision: hashes.reportRevision,
-      sourceFindingsHash: hashes.findingsHash,
-      sourceImpressionHash: hashes.impressionHash,
-      sourceRecommendationHash: hashes.recommendationHash,
-      inputHash: hashes.inputHash,
-      inputSnapshotJson: JSON.stringify(snapshot),
-      createdBy: args.createdBy ?? null,
-      createdByStaffId: args.createdByStaffId ?? null,
-      priority: priorityForKind(jobKind),
-    })
-    .returning();
+  const [inserted] = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(aiReportComposeJobsTable)
+      .values({
+        // Resolved server-side from the worklist row, not from the browser:
+        // study_id holds the billed radiology_studies.id that row points at,
+        // worklist_id its primary key, report_id the report of record bound to it.
+        studyId: identity.identity.studyId,
+        worklistId,
+        reportId,
+        jobKind,
+        status: "QUEUED",
+        sourceReportRevision: hashes.reportRevision,
+        sourceFindingsHash: hashes.findingsHash,
+        sourceImpressionHash: hashes.impressionHash,
+        sourceRecommendationHash: hashes.recommendationHash,
+        inputHash: hashes.inputHash,
+        inputSnapshotJson: JSON.stringify(snapshot),
+        createdBy: args.createdBy ?? null,
+        createdByStaffId: args.createdByStaffId ?? null,
+        priority: priorityForKind(jobKind),
+      })
+      .returning();
+
+    // The server-derived baseline, written in the same transaction as the job so
+    // a job can never exist without the evidence that says what the saved report
+    // held when the AI was asked to draft it. Raw SQL because these columns are
+    // only ever touched transactionally (see composePersistence.ts) and because
+    // the insert must not become two commits.
+    await tx.execute(sql`
+      UPDATE ai_report_compose_jobs
+         SET source_persisted_token = ${baseline.token},
+             source_draft_id = ${baseline.draftId},
+             applied_persisted_token = NULL
+       WHERE id = ${row.id}`);
+    return [row];
+  });
 
   const queue = await enqueueRadiologyJob({
     operationType: AI_REPORT_COMPOSE_JOB,
@@ -755,25 +791,67 @@ export async function markComposeApplied(opts: {
         : c,
   );
 
-  // Compare-and-set on the status the caller actually reviewed. Two Apply
-  // requests for one READY job (double-click, retry after a timeout, a second
-  // workstation on the same study) used to both pass every check above and
-  // both write APPLIED, so the second one re-recorded an apply that had already
-  // happened. The status column is the only durable evidence of the transition,
-  // so the transition itself has to be the guard.
-  const flipped = await db
-    .update(aiReportComposeJobsTable)
-    .set({
-      status: "APPLIED",
-      trackedChangesJson: JSON.stringify(next),
-      appliedAt: new Date(),
-      appliedBy: opts.appliedBy ?? null,
-      appliedByStaffId: opts.appliedByStaffId ?? null,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(aiReportComposeJobsTable.id, opts.jobId), eq(aiReportComposeJobsTable.status, "READY")))
-    .returning({ id: aiReportComposeJobsTable.id });
-  if (flipped.length === 0) {
+  // Durability before attribution.
+  //
+  // The accepted text has to be in the study's saved report before this job may
+  // say it was applied. That is the whole of PROMPT 4's final objective, and the
+  // order matters: the proof is read and the status is flipped in ONE
+  // transaction, with the draft row locked, so an APPLIED row is never a promise
+  // about a write that has not happened. Before this, the sequence was
+  // "client mutates its editor → server marks APPLIED → autosave may or may not
+  // persist later", which let a crash, a closed tab or a failing autosave leave
+  // a job recorded as applied while its accepted sentences were in no database.
+  //
+  // The refusal never touches the clinician's text: nothing here writes clinical
+  // content, and the workspace's own save path is untouched apart from the
+  // composer-tagged compare-and-set in `authoriseComposeSaveTx`.
+  const acceptedChanges = next
+    .filter((c) => accepted.has(c.id))
+    .map((c) => ({
+      field: (c.field === "IMPRESSION"
+        ? "impression"
+        : c.field === "RECOMMENDATION"
+          ? "recommendation"
+          : "findings") as ComposeAcceptedField,
+      text: c.proposedText ?? "",
+      originalText: c.originalText ?? "",
+    }));
+
+  const outcome = await db.transaction(async (tx) => {
+    const durability = await verifyComposeDurabilityTx(tx, {
+      jobId: opts.jobId,
+      worklistId: identity.identity.worklistId,
+      patientId: identity.identity.patientId,
+      accepted: acceptedChanges,
+    });
+    if (!durability.ok) return { kind: "refused" as const, code: durability.code, message: durability.message };
+
+    // Compare-and-set on the status the caller actually reviewed. Two Apply
+    // requests for one READY job (double-click, retry after a timeout, a second
+    // workstation on the same study) used to both pass every check above and
+    // both write APPLIED, so the second one re-recorded an apply that had already
+    // happened. The status column is the only durable evidence of the transition,
+    // so the transition itself has to be the guard.
+    const flipped = await tx
+      .update(aiReportComposeJobsTable)
+      .set({
+        status: "APPLIED",
+        trackedChangesJson: JSON.stringify(next),
+        appliedAt: new Date(),
+        appliedBy: opts.appliedBy ?? null,
+        appliedByStaffId: opts.appliedByStaffId ?? null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(aiReportComposeJobsTable.id, opts.jobId), eq(aiReportComposeJobsTable.status, "READY")))
+      .returning({ id: aiReportComposeJobsTable.id });
+    if (flipped.length === 0) return { kind: "already" as const };
+    return { kind: "applied" as const };
+  });
+
+  if (outcome.kind === "refused") {
+    return { ok: false, error: outcome.code, code: outcome.code, message: outcome.message };
+  }
+  if (outcome.kind === "already") {
     return {
       ok: false,
       error: "already_applied",

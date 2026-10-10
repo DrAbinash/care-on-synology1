@@ -16,7 +16,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "@workspace/db";
@@ -32,6 +32,11 @@ import {
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../../testSupport/apiTestApp";
 import { computeSnapshotHashes } from "./snapshot";
+import {
+  composeNarrativeToken,
+  projectComposeNarrative,
+  type ComposeDraftRow,
+} from "./composePersistence";
 import type { ComposerInputSnapshot } from "./types";
 
 const marker = `vitest-id-${randomUUID().slice(0, 8)}`;
@@ -360,6 +365,8 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
     reportId?: number | null;
     findings: string;
     status?: string;
+    /** Seed the durable-persistence evidence too (default true). */
+    persist?: boolean;
   }) {
     const snapshot = snapshotOf({
       worklistId: opts.worklistId,
@@ -401,7 +408,82 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
       })
       .returning();
     jobIds.push(row.id);
+    // Every identity case except the ones that opt out is meant to be otherwise
+    // appliable, so the persistence evidence is seeded by default. A test that
+    // wants the "no durable apply possible" state passes `persist: false`.
+    if (opts.persist !== false && opts.worklistId != null) {
+      await seedPersistence({
+        jobId: row.id as number,
+        worklistId: opts.worklistId,
+        beforeFindings: opts.findings,
+        acceptedFindings: `${opts.findings} (AI)`,
+      });
+    }
     return { id: row.id as number, hashes };
+  }
+
+  /**
+   * Seed the persistence evidence a job needs so that an Apply can be recorded.
+   *
+   * These 23 tests are about identity: which study a draft belongs to, and what
+   * happens when the browser names the wrong one. Since PROMPT 4 the server also
+   * refuses to mark a job APPLIED until the accepted text is durably in the
+   * study's saved report, and that new boundary is exercised by
+   * `composePersistence.request.test.ts` against the real POST /save-draft route.
+   * Here the evidence is seeded directly, because half of these fixtures are
+   * studies that already have a report of record — a study the editor can no
+   * longer save into at all (`assertDraftWritable` refuses it as REPORT_LOCKED),
+   * which is the point of tests 2-4 and 11, not an accident of this helper.
+   *
+   * The token is computed with the server's own function over the row exactly as
+   * it is stored, so a drift in either the projection or the token would show up
+   * as a failure here rather than as a false green.
+   */
+  async function seedPersistence(opts: {
+    jobId: number;
+    worklistId: number;
+    beforeFindings: string;
+    acceptedFindings: string;
+  }) {
+    const [wl] = await db
+      .select({ patientId: radiologyWorklistTable.patientId })
+      .from(radiologyWorklistTable)
+      .where(eq(radiologyWorklistTable.id, opts.worklistId))
+      .limit(1);
+    const patientId = wl?.patientId ?? null;
+    const [draft] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        studyId: opts.worklistId,
+        worklistId: opts.worklistId,
+        patientId,
+        rawFindings: opts.acceptedFindings,
+        impression: JSON.stringify([]),
+        recommendation: null,
+        status: "DRAFT",
+      })
+      .returning();
+    draftIds.push(draft.id);
+    const stored: ComposeDraftRow = {
+      id: draft.id as number,
+      studyId: opts.worklistId,
+      worklistId: opts.worklistId,
+      patientId,
+      rawFindings: opts.acceptedFindings,
+      impression: JSON.stringify([]),
+      recommendation: null,
+      status: "DRAFT",
+      finalReportId: null,
+      updatedAt: "seeded",
+    };
+    const baselineRow: ComposeDraftRow = { ...stored, rawFindings: opts.beforeFindings };
+    await db.execute(sql`
+      UPDATE ai_report_compose_jobs
+         SET source_persisted_token = ${composeNarrativeToken(projectComposeNarrative(baselineRow))},
+             source_draft_id = ${draft.id},
+             applied_persisted_token = ${composeNarrativeToken(projectComposeNarrative(stored))}
+       WHERE id = ${opts.jobId}`);
+    return draft.id as number;
   }
 
   const postApply = (jobId: number, token: string, body: Record<string, unknown>) =>

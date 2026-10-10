@@ -254,6 +254,43 @@ async function main() {
     ).rows[0];
     assert("image-reference insert omitting presentation_json records {}", "{}", d2Omitted?.presentation_json);
 
+    // PROMPT 4 durable Composer Apply: the three evidence columns on
+    // ai_report_compose_jobs are declared in
+    // lib/db/src/schema/aiReportComposer.ts and written by
+    // lib/reportComposer/composePersistence.ts and jobService.ts, but only a
+    // migrations/*.sql file carries them to the clinic. Asserted as schema AND as
+    // a working write, because the failure mode that matters is the enqueue
+    // transaction erroring on a migration-built database, not a name missing from
+    // a listing. Nullability is the safety property: a job that predates them must
+    // read as NULL ("no baseline was ever captured", refused at Apply), never as
+    // an empty string that could be mistaken for a real baseline of an empty
+    // report.
+    const COMPOSE_TABLE = "ai_report_compose_jobs";
+    for (const col of ["source_persisted_token", "source_draft_id", "applied_persisted_token"]) {
+      const info = (
+        await db.query(`
+          SELECT is_nullable, column_default FROM information_schema.columns
+           WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+        `, [COMPOSE_TABLE, col])
+      ).rows[0];
+      assert(`composer ${col} present after clean boot`, true, info !== undefined);
+      assert(`composer ${col} is nullable`, "YES", info?.is_nullable);
+      assert(`composer ${col} has no default`, null, info?.column_default ?? null);
+    }
+    const composeWrite = (
+      await db.query(`
+        INSERT INTO ai_report_compose_jobs
+                 (source_report_revision, source_findings_hash, source_impression_hash,
+                  input_hash, input_snapshot_json, source_persisted_token, source_draft_id)
+        VALUES ('smoke-rev', 'smoke-f', 'smoke-i', 'smoke-h', '{}', 'smoke-token', 424242)
+        RETURNING source_persisted_token, source_draft_id, applied_persisted_token
+      `)
+    ).rows[0];
+    assert("composer insert naming the baseline columns works", "smoke-token", composeWrite?.source_persisted_token);
+    assert("composer baseline draft id round-trips", 424242, composeWrite?.source_draft_id);
+    assert("composer receipt column defaults to NULL (missing is not unchanged)", null, composeWrite?.applied_persisted_token ?? null);
+    await db.query(`DELETE FROM ai_report_compose_jobs WHERE source_report_revision = 'smoke-rev'`);
+
     // ── §3 UPGRADE SAFETY (populated re-run) ──────────────────────────────
     console.log(`\n${YEL}§3 UPGRADE SAFETY (populated re-run / restart)${NC}`);
     await db.query(`

@@ -52,6 +52,23 @@ export const aiReportComposeJobsTable = pgTable(
     sourceRecommendationHash: text("source_recommendation_hash").notNull().default(""),
     inputHash: text("input_hash").notNull(),
     inputSnapshotJson: text("input_snapshot_json").notNull(),
+    // PROMPT 4 — server-derived persistence evidence. `inputHash` and the three
+    // `source*Hash` columns above are computed by the browser over the text in
+    // its editor; these three are computed by the server over the text in
+    // `radiology_report_drafts`, which is the only durable record of an
+    // unsigned study's report. Nullable with no default on purpose: a job that
+    // predates them must read as "no baseline was ever captured" and be refused,
+    // never as "nothing has changed".
+    //
+    // Read and written with raw SQL, not through this model: the apply path needs
+    // `SELECT … FOR UPDATE` on the draft row and a conditional write, neither of
+    // which Drizzle expresses, and the update has to land in the same
+    // transaction as the job INSERT. The declarations here exist so a
+    // `drizzle-kit push` database and a migration-built one describe the same
+    // table (migrations/zzzzzzzzzzzzzzzzzz_composer_persisted_baseline.sql).
+    sourcePersistedToken: text("source_persisted_token"),
+    sourceDraftId: integer("source_draft_id"),
+    appliedPersistedToken: text("applied_persisted_token"),
     // Outputs — assistant artifacts only until Apply
     outputPlanJson: text("output_plan_json"),
     trackedChangesJson: text("tracked_changes_json"),

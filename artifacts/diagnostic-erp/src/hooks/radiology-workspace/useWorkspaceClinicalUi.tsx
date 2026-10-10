@@ -1534,6 +1534,11 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // One source of truth: the panel's instruction box is part of the frozen input for both
     // the preview and the generation request, so they cannot diverge on it.
     instruction: microInstruction,
+    // The composer's Apply persistence step goes through the workspace's own
+    // awaited draft save — the same canonical writer the Save button, the
+    // autosave and Finalize use — never a second one. Silent because the Apply
+    // result is what the radiologist needs to hear about, twice would be noise.
+    persistAccepted: (tag) => saveDraft({ composer: tag, silent: true }),
   });
 
   // ─── Finalize gauntlet (Phase 3) ───────────────────────────────────────────

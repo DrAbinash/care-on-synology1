@@ -157,14 +157,29 @@ describe("the chip says a refusal is a refusal, not a failure", () => {
   });
 
   it("is not a status a caller can reach by accident", () => {
-    // Both writers of "refused" are inside a signedContentLocked branch. If a
-    // third appears that is not, the label starts lying about why nothing saved.
+    // The invariant is not "exactly two" — it is that every writer of "refused"
+    // sits under a test that actually refused to write, so the label can never
+    // lie about why nothing saved. Two are the signedContentLocked branches. The
+    // third is PROMPT 4's composer-tagged save, which stops because the study's
+    // saved report moved since the AI draft was generated: a refusal decided by
+    // the server before writing, carrying a 409, and leaving the radiologist's
+    // text in the editor. A writer that is neither of those (a network timeout
+    // dressed up as a refusal, say) makes the chip claim something false, and a
+    // fourth writer has to be argued for here rather than just counted.
     const src = read(PERSIST);
-    const writers = src.split(/\r?\n/).map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
-    expect(writers.length, "exactly two writers of the refused status").toBe(2);
+    const lines = src.split(/\r?\n/);
+    const writers = lines.map((l, i) => ({ l, n: i + 1 })).filter((x) => x.l.includes('setAutoSaveStatus("refused")'));
+    expect(writers.length, "exactly three writers of the refused status").toBe(3);
     for (const w of writers) {
-      const above = src.split(/\r?\n/).slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
-      expect(above, `the writer at :${w.n} must sit under a signedContentLocked test`).toContain("signedContentLocked");
+      const above = lines.slice(Math.max(0, w.n - 12), w.n - 1).join("\n");
+      const signedRefusal = above.includes("signedContentLocked");
+      const composerRefusal = /opts\?\.composer/.test(above) && /err\.status === 409/.test(above);
+      expect(
+        signedRefusal || composerRefusal,
+        `the writer at :${w.n} must sit under a refusal branch, not a failure path`,
+      ).toBe(true);
+      // Every one of them also has to say out loud that this is not a lost save.
+      expect(above, `the writer at :${w.n} needs a comment naming the refusal`).toMatch(/refus/i);
     }
   });
 });

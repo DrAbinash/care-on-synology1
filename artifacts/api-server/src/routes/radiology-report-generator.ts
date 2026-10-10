@@ -109,6 +109,10 @@ import { reconcileAccessionVsReferringDoctor } from "../lib/pacs/dicomNameNormal
 import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { checkWriteLock } from "../lib/studyLocks";
 import {
+  authoriseComposeSaveTx,
+  recordComposeReceiptTx,
+} from "../lib/reportComposer/composePersistence";
+import {
   RadiologyIdentityError,
   assertDraftWritable,
   assertImageUidBelongsToDraft,
@@ -1669,6 +1673,27 @@ const SaveDraftBody = z.object({
     accessionNumber: z.string().nullish(),
     studyInstanceUID: z.string().nullish(),
   }).nullish(),
+  /**
+   * PROMPT 4 — present only on the save that persists an accepted AI draft.
+   *
+   * It names the Composer job this save is writing for, and the narrative this
+   * editor believes it is replacing. The job id is a reference the server looks
+   * up (`radiology_report_compose_jobs`), and `previous` is checked against the
+   * row rather than believed: it can only authorise a write if the saved report
+   * already holds it. Ordinary autosaves never send this, and their behaviour is
+   * unchanged, byte for byte — the AI apply is the only flow allowed to be
+   * refused here, because refusing it costs nothing (the text stays in the
+   * editor and the next autosave persists it), whereas letting a stale draft
+   * overwrite a newer report costs a patient's report.
+   */
+  composer: z.object({
+    jobId: z.number().int().positive(),
+    previous: z.object({
+      findings: z.string(),
+      impression: z.string(),
+      recommendation: z.string(),
+    }),
+  }).nullish(),
 });
 
 radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest, res: Response) => {
@@ -1761,20 +1786,66 @@ radiologyReportGeneratorRouter.post("/save-draft", async (req: StaffAuthRequest,
   // unambiguous place to hang off, after the legacy save has fully committed
   // and before the single response is sent. No behavior change: same two
   // queries, same values, same response shape as before.
-  const draft = id
-    ? (
-        await db
+  //
+  // PROMPT 4 adds one branch to that: a save carrying `composer` (the reporting
+  // workspace persisting an accepted AI draft) runs the same write inside a
+  // transaction that first compares the saved report against the job's
+  // server-derived baseline, and then records the token of what it wrote. An
+  // ordinary save — every autosave, every manual Save, every other surface —
+  // takes the two queries below exactly as before, with no lock and no gate.
+  const composerTag = rest.composer ?? null;
+  // `db` and a `db.transaction()` handle share every query method; only the pool
+  // reference differs, so omitting it is the type that accepts both.
+  type DraftExecutor = Omit<typeof db, "$client">;
+  const writeDraftRow = (executor: DraftExecutor) =>
+    id
+      ? executor
           .update(radiologyReportDraftsTable)
           .set(values)
           .where(eq(radiologyReportDraftsTable.id, id))
           .returning()
-      )[0]
-    : (
-        await db
+          .then((rows) => rows[0])
+      : executor
           .insert(radiologyReportDraftsTable)
           .values({ ...values, createdBy: author })
           .returning()
-      )[0];
+          .then((rows) => rows[0]);
+
+  let draft: typeof radiologyReportDraftsTable.$inferSelect | undefined;
+  if (composerTag && worklistId != null) {
+    const outcome = await db.transaction(async (tx) => {
+      const gate = await authoriseComposeSaveTx(tx, {
+        jobId: composerTag.jobId,
+        worklistId,
+        patientId,
+        previous: composerTag.previous,
+      });
+      if ("refuse" in gate) return { kind: "refused" as const, refusal: gate.refuse };
+      const row = await writeDraftRow(tx);
+      if (gate.proceed === "composer") {
+        const receipt = await recordComposeReceiptTx(tx, { jobId: composerTag.jobId, worklistId, patientId });
+        if (!receipt.ok) {
+          return {
+            kind: "refused" as const,
+            refusal: { ok: false as const, code: receipt.code, message: receipt.message },
+          };
+        }
+      }
+      return { kind: "saved" as const, row };
+    });
+    if (outcome.kind === "refused") {
+      res.status(409).json({
+        success: false,
+        error: outcome.refusal.code,
+        code: outcome.refusal.code,
+        message: outcome.refusal.message,
+      });
+      return;
+    }
+    draft = outcome.row;
+  } else {
+    draft = await writeDraftRow(db);
+  }
 
   // Ticket A3.2 — dual-write the structured Quick Select findings into
   // report_finding_instances, gated on ff_radiology_structured_core (default
