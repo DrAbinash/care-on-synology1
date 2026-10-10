@@ -32,7 +32,11 @@ describe("canonical Local AI runtime", () => {
   });
 
   test("constants match approved production local AI", () => {
-    expect(CANONICAL_OLLAMA_ENDPOINT).toBe("http://172.16.1.140:11434");
+    // The shipped default must be loopback, never a site-specific address. It is
+    // the last resort when no endpoint is configured anywhere, and it used to name
+    // a clinic host that no longer answers — so an unconfigured install pointed
+    // every fallback at a dead machine. Inverted from asserting that address.
+    expect(CANONICAL_OLLAMA_ENDPOINT).toBe("http://127.0.0.1:11434");
     expect(CANONICAL_LOCAL_CHAT_VISION_MODEL).toBe("qwen3-vl:8b");
     expect(CANONICAL_EMBEDDING_MODEL).toBe("nomic-embed-text");
   });

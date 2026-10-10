@@ -236,9 +236,9 @@ export const clinicSettingsTable = pgTable("clinic_settings", {
   maxScanWidth: integer("max_scan_width").notNull().default(2000),
 
   // ── Ollama Local Models (Phase 10C / 11) ──
-  // Primary endpoint — set to Windows PC primary LAN IP: http://192.168.1.250:11434
+  // Primary endpoint — the clinic AI PC address, configured per site (never hardcoded in source).
   ollamaBaseUrl: text("ollama_base_url"),
-  // Fallback endpoint — set to Windows PC secondary LAN IP: http://172.16.1.140:11434
+  // Fallback endpoint — optional second AI host; leave equal to primary when there is only one.
   // The backend probes primary first, switches to fallback if primary times out.
   ollamaFallbackUrl: text("ollama_fallback_url"),
   ollamaModel: text("ollama_model"),

@@ -472,7 +472,12 @@ export async function runReportComposer(opts: {
         latencyMs: Date.now() - started,
         model: visionModel,
         rawLength: primary.text?.length ?? 0,
-        provenance,
+        provenance: {
+          ...provenance,
+          degradedReason:
+            `The model replied in prose rather than the structured form the Composer requires, so nothing `
+            + `was written to your report. Your observations are unchanged.`,
+        },
       };
     }
 
@@ -567,7 +572,19 @@ export async function runReportComposer(opts: {
       model,
       fallbackUsed,
       rawLength: text?.length ?? 0,
-      provenance: { ...baseProvenance, model, provider: providerName, fallbackUsed },
+      provenance: {
+        ...baseProvenance,
+        model,
+        provider: providerName,
+        fallbackUsed,
+        // The model did answer — this is a format disagreement, not an outage,
+        // and the two need different fixes. Saying only `malformed_json` sent
+        // the reader to check whether Ollama was running.
+        degradedReason:
+          `The model replied in prose rather than the structured form the Composer requires, so nothing `
+          + `was written to your report. Your observations are unchanged. Try again, or pick a different `
+          + `model in AI Reporting Settings → Local AI → Report Composer model.`,
+      },
     };
   }
 

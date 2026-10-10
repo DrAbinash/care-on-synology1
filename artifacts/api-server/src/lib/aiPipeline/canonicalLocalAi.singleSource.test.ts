@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { CANONICAL_OLLAMA_ENDPOINT } from "./canonicalLocalAi";
 
 // ─── Single source of truth for the canonical Local AI values ────────────────
 // These two constants used to be declared twice — once in the provider library
@@ -64,8 +65,11 @@ describe("canonical Local AI constants have one definition", () => {
   });
 
   it("names the canonical endpoint in no other production code", () => {
+    // Matched against the imported constant, not a literal: a hardcoded example
+    // address here would silently stop testing anything the day the canonical
+    // value changes, and this guard's whole job is to notice duplication.
     const holders = productionCode(["lib", join("artifacts", "api-server", "src")])
-      .filter(({ path, code }) => path !== CANONICAL_FILE && code.includes("http://172.16.1.140:11434"))
+      .filter(({ path, code }) => path !== CANONICAL_FILE && code.includes(CANONICAL_OLLAMA_ENDPOINT))
       .map(({ path }) => relative(path));
     expect(holders).toEqual([]);
   });
@@ -80,14 +84,16 @@ describe("both layers agree on the values", () => {
     expect(pipeline.CANONICAL_EMBEDDING_MODEL).toBe(leaf.CANONICAL_EMBEDDING_MODEL);
 
     // Effective production values are unchanged by the consolidation.
-    expect(leaf.CANONICAL_OLLAMA_ENDPOINT).toBe("http://172.16.1.140:11434");
+    // Loopback, not a clinic host — see canonicalLocalAi.test.ts for why the
+    // shipped default may never be a site-specific address.
+    expect(leaf.CANONICAL_OLLAMA_ENDPOINT).toBe("http://127.0.0.1:11434");
     expect(leaf.CANONICAL_LOCAL_CHAT_VISION_MODEL).toBe("qwen3-vl:8b");
     expect(leaf.CANONICAL_EMBEDDING_MODEL).toBe("nomic-embed-text");
   });
 
   it("still normalises empty and legacy values the same way", async () => {
     const pipeline = await import("./canonicalLocalAi");
-    expect(pipeline.normalizeOllamaBaseUrl("")).toBe("http://172.16.1.140:11434");
+    expect(pipeline.normalizeOllamaBaseUrl("")).toBe("http://127.0.0.1:11434");
     expect(pipeline.normalizeOllamaBaseUrl("http://10.0.0.9:11434/")).toBe("http://10.0.0.9:11434");
     expect(pipeline.normalizeLocalChatVisionModel("qwen3:8b")).toBe("qwen3-vl:8b");
     expect(pipeline.normalizeLocalChatVisionModel(null)).toBe("qwen3-vl:8b");
