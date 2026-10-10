@@ -34,6 +34,7 @@ import {
   cloudTextPhiAllowed,
   detectPhiCategories,
   scrubPhiText,
+  classifyEffectiveLocality,
   type PhiCategory,
 } from "@workspace/ai-providers";
 import { assertNoRawDicomPayload, flagPossibleBurnedInPhi } from "./cloudPayloadPrivacy";
@@ -52,6 +53,12 @@ export type GatewayPrivacyInput = {
   filenames?: Array<string | null | undefined>;
   cloudAllowed?: boolean;
   cloudVisionAllowed?: boolean;
+  /**
+   * Resolved base URL for local providers. When provided, locality is derived
+   * from the actual network destination. A "local" provider with a public URL
+   * is reclassified as cloud and subject to full PHI gating.
+   */
+  resolvedUrl?: string | null;
 };
 
 /**
@@ -112,17 +119,31 @@ export async function assertGatewayPrivacy(
         detail: `Provider "${String(input.provider)}" has no Report Composer adapter, so nothing was sent.`,
       };
     }
-    return {
-      ok: true,
-      cloud: false,
-      systemPrompt,
-      userPrompt,
-      phiCategories: [],
-      textPosture: "not_applicable",
-      pixelPosture: "not_verified",
-      burnedInPhiFlags: [],
-      rawDicomExcluded: true,
-    };
+
+    // Endpoint-derived locality: a "local" provider whose resolved URL points
+    // to a public internet address is reclassified as cloud. The URL is the
+    // ground truth, not the adapter name. When reclassified, the local bypass
+    // is skipped and the request falls through to the full cloud PHI gate below.
+    const effectivelyCloud =
+      input.resolvedUrl != null &&
+      input.resolvedUrl !== "" &&
+      classifyEffectiveLocality(input.provider, input.resolvedUrl).locality === "cloud";
+
+    if (!effectivelyCloud) {
+      // Genuinely local (private/LAN URL, or no URL resolved) — bypass cloud PHI.
+      return {
+        ok: true,
+        cloud: false,
+        systemPrompt,
+        userPrompt,
+        phiCategories: [],
+        textPosture: "not_applicable",
+        pixelPosture: "not_verified",
+        burnedInPhiFlags: [],
+        rawDicomExcluded: true,
+      };
+    }
+    // Reclassified as cloud — fall through to the cloud gate below.
   }
 
   if (input.cloudAllowed === false) {

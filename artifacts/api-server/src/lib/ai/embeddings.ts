@@ -18,7 +18,7 @@
  * a clinic-scale corpus (hundreds–low-thousands of chunks).
  */
 
-import { getProviderEndpointUrl } from "@workspace/ai-providers";
+import { getProviderEndpointUrl, hardenedLocalRequest } from "@workspace/ai-providers";
 import { logger } from "../logger";
 
 const EMBED_MODEL = process.env.RAG_EMBED_MODEL || "nomic-embed-text";
@@ -51,7 +51,8 @@ export async function embedText(text: string): Promise<number[] | null> {
   const base = await ollamaBase();
   if (!base) return null;
   try {
-    const resp = await fetch(`${base}/api/embeddings`, {
+    // SECURITY: Bind to validated IP and reject redirects (PHI egress — embedding text).
+    const { response: resp } = await hardenedLocalRequest(`${base}/api/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: EMBED_MODEL, prompt: clean.slice(0, MAX_CHARS) }),

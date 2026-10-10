@@ -89,6 +89,8 @@ export class OpenAiCompatibleProvider implements AiProvider {
       jsonMode: this.opts.defaultJsonMode ?? false,
       allowEmptyApiKey: allowEmpty,
       extraBody,
+      // SECURITY: Enforce DNS binding and disable redirects for local providers.
+      enforceLocalBinding: isLocalOpenAiCompatibleProvider(this.providerName),
     });
 
     const baseDiag = {
@@ -167,7 +169,10 @@ export class OpenAiCompatibleProvider implements AiProvider {
     let availableModels: string[] | undefined;
     let note = "";
     if (isLocalOpenAiCompatibleProvider(this.providerName)) {
-      const listing = await probeOpenAiCompatibleModels(this.baseURL, { apiKey: this.apiKey });
+      const listing = await probeOpenAiCompatibleModels(this.baseURL, {
+        apiKey: this.apiKey,
+        enforceLocalBinding: true,
+      });
       if (listing.reachable) {
         availableModels = listing.models;
         if (listing.models.length > 0 && probe !== "unknown" && !listing.models.includes(probe)) {
@@ -198,6 +203,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
       timeoutMs: 30_000,
       jsonMode: false,
       allowEmptyApiKey: allowEmpty,
+      enforceLocalBinding: isLocalOpenAiCompatibleProvider(this.providerName),
     });
     if (!r.ok) return { ok: false, message: `${r.safeError}${note}` };
     return { ok: true, message: `${r.text.slice(0, 200)}${note}`, availableModels };
@@ -233,6 +239,7 @@ export class OpenAiCompatibleProvider implements AiProvider {
       timeoutMs: 60_000,
       jsonMode: false,
       allowEmptyApiKey: allowEmpty,
+      enforceLocalBinding: isLocalOpenAiCompatibleProvider(this.providerName),
     });
     if (!r.ok) return { ok: false, message: r.safeError };
     return { ok: true, message: r.text.slice(0, 200) };

@@ -4,6 +4,7 @@
  */
 import { validateOllamaUrl } from "../../ssrf/ollamaUrlGuard";
 import { parseOllamaContextExceeded } from "../../ai/contextBudget";
+import { hardenedLocalRequest } from "@workspace/ai-providers";
 import type {
   ComposerProviderAdapter,
   ComposerProviderCapabilities,
@@ -56,22 +57,26 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         userMessage.images = request.images.map((img) => img.base64);
       }
 
-      const res = await fetch(`${endpoint.replace(/\/$/, "")}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(request.timeoutMs),
-        body: JSON.stringify({
-          model,
-          stream: false,
-          format: "json",
-          think: false,
-          options: {
-            temperature: request.temperature,
-            num_ctx: request.numCtx ?? 4096,
-          },
-          messages: [{ role: "system", content: request.systemPrompt }, userMessage],
-        }),
-      });
+      // SECURITY: Bind to validated IP and reject redirects for Ollama chat (PHI egress).
+      const { response: res } = await hardenedLocalRequest(
+        `${endpoint.replace(/\/$/, "")}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(request.timeoutMs),
+          body: JSON.stringify({
+            model,
+            stream: false,
+            format: "json",
+            think: false,
+            options: {
+              temperature: request.temperature,
+              num_ctx: request.numCtx ?? 4096,
+            },
+            messages: [{ role: "system", content: request.systemPrompt }, userMessage],
+          }),
+        },
+      );
 
       if (!res.ok) {
         // Ollama answers a too-large request with an explicit

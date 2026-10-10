@@ -21,6 +21,7 @@ import {
   estimateBase64DecodedBytes,
   formatFetchNetworkError,
   generateAiForTask,
+  hardenedLocalRequest,
   loadProviderConfig,
   probeOllamaReachable,
   probeOpenAiCompatibleModels,
@@ -444,7 +445,8 @@ async function directGenerate(opts: {
   const bodyJson = JSON.stringify(body);
   const t0 = Date.now();
   try {
-    const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/generate`, {
+    // SECURITY: Bind to validated IP and reject redirects for infra probe.
+    const { response: resp } = await hardenedLocalRequest(`${opts.endpoint.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: bodyJson,
@@ -545,7 +547,8 @@ async function directChatProductionShaped(opts: {
   const bodyJson = JSON.stringify(payload);
   const t0 = Date.now();
   try {
-    const resp = await fetch(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
+    // SECURITY: Bind to validated IP and reject redirects for infra probe.
+    const { response: resp } = await hardenedLocalRequest(`${opts.endpoint.replace(/\/$/, "")}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: bodyJson,

@@ -1,9 +1,13 @@
 /**
  * Central cloud image egress policy for @workspace/ai-providers.
  * DEFAULT = DENY for all non-local providers. Explicit trial opt-in required.
- * Local OpenAI-compatible servers are LOCAL — never gated as cloud.
+ * Local OpenAI-compatible servers are LOCAL — never gated as cloud — BUT only
+ * when their resolved URL actually points to a private/LAN address. A
+ * "local_openai_compatible" provider pointed at a public URL is reclassified
+ * as cloud and subject to all image egress controls.
  */
 import { isLocalExecutionProvider } from "./openAiCompatible";
+import { classifyEffectiveLocality } from "./providerLocality";
 
 export type CloudImageEgressInput = {
   provider: string;
@@ -12,6 +16,12 @@ export type CloudImageEgressInput = {
   cloudVisionAllowed?: boolean;
   /** Model must be vision-capable when images present. */
   modelSupportsVision?: boolean;
+  /**
+   * Resolved base URL for the provider. When provided, locality is derived from
+   * the actual network destination, not the provider name. A "local" provider
+   * with a public URL is reclassified as cloud.
+   */
+  resolvedUrl?: string | null;
 };
 
 export type CloudImageEgressResult =
@@ -20,8 +30,14 @@ export type CloudImageEgressResult =
 
 export function assertCloudImageEgress(input: CloudImageEgressInput): CloudImageEgressResult {
   if (input.imageCount <= 0) return { ok: true };
-  // Ollama + Local OpenAI-Compatible remain on-prem from CARE's policy.
-  if (isLocalExecutionProvider(input.provider)) return { ok: true };
+
+  // Endpoint-derived locality: when a resolved URL is available, classify based
+  // on the actual destination. Otherwise fall back to name-based classification.
+  const isLocal = input.resolvedUrl != null
+    ? classifyEffectiveLocality(input.provider, input.resolvedUrl).locality === "local"
+    : isLocalExecutionProvider(input.provider);
+
+  if (isLocal) return { ok: true };
 
   if (input.cloudVisionAllowed !== true) {
     return {

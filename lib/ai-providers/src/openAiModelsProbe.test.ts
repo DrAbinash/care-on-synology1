@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as http from "node:http";
 
 // The SDK is stubbed so a chat completion is observable and never real.
 const openaiCreate = vi.fn(async (_args: { model: string }) => ({
@@ -190,15 +191,31 @@ describe("local OpenAI-compatible 'Test connection' is provider-aware", () => {
   });
 
   it("leaves the Ollama probe on /api/tags, untouched", async () => {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen3-vl:8b" }] });
-      return jsonResponse({ models: [] });
+    // /api/tags goes through hardenedLocalRequest (node:http, not globalThis.fetch),
+    // so we need a real HTTP server for it. The chat completion (/api/chat) goes
+    // through rewriteUrlToValidatedIp + bare fetch(), which IS the stubbed fetch.
+    const server = http.createServer((req, res) => {
+      if (req.url?.endsWith("/api/tags")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ models: [{ name: "qwen3-vl:8b" }] }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
     });
-    const p = await createAiProvider("ollama", undefined, "http://127.0.0.1:11434");
-    const r = await p!.testConnection("qwen3-vl:8b");
-    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.endsWith("/api/tags"))).toBe(true);
-    expect(urls.some((u) => u.endsWith("/models"))).toBe(false);
-    expect(r.availableModels).toEqual(["qwen3-vl:8b"]);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as any).port;
+
+    // The query() path uses bare fetch() — mock it for the /api/chat call
+    fetchMock.mockResolvedValue(jsonResponse({ message: { content: "CONNECTED" } }));
+
+    try {
+      const p = await createAiProvider("ollama", undefined, `http://127.0.0.1:${port}`);
+      const r = await p!.testConnection("qwen3-vl:8b");
+      expect(r.ok).toBe(true);
+      expect(r.availableModels).toEqual(["qwen3-vl:8b"]);
+    } finally {
+      server.close();
+    }
   });
 });

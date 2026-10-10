@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
+import { hardenedLocalRequest } from "@workspace/ai-providers";
 
 export type FallbackRuntimeFingerprint = {
   reachable: boolean;
@@ -55,13 +56,16 @@ async function fingerprint(
 ): Promise<FallbackRuntimeFingerprint> {
   const base = rawUrl.replace(/\/+$/, "");
   try {
-    const [tagsResp, versionResp] = await Promise.all([
-      fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) }),
-      fetch(`${base}/api/version`, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => null),
+    // SECURITY: Bind to validated IP and reject redirects for Ollama identity probe.
+    const [tagsResult, versionResult] = await Promise.all([
+      hardenedLocalRequest(`${base}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) }).catch((e) => ({ error: e })),
+      hardenedLocalRequest(`${base}/api/version`, { signal: AbortSignal.timeout(timeoutMs) }).catch((e) => ({ error: e })),
     ]);
-    if (!tagsResp.ok) {
+    if ("error" in tagsResult || !tagsResult.response.ok) {
       return { reachable: false, version: null, modelCount: 0, modelsFingerprint: null };
     }
+    const tagsResp = tagsResult.response;
+    const versionResp = "error" in versionResult ? null : versionResult.response;
     const data = (await tagsResp.json()) as {
       models?: Array<{ name?: string; digest?: string }>;
     };

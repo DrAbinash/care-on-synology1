@@ -1,8 +1,14 @@
 /**
  * Shared OpenAI-compatible chat transport.
  * Used by DeepSeek, Qwen (DashScope), and OpenAI — one implementation, thin configs.
+ *
+ * SECURITY: When `enforceLocalBinding` is set, the transport uses a hardened
+ * fetch that pre-resolves DNS, validates all IPs are private/LAN, binds the
+ * connection to the validated IP, and disables redirect following. This closes
+ * the TOCTOU gap between URL validation and actual connection.
  */
 import OpenAI from "openai";
+import { createHardenedLocalFetch, rewriteUrlToValidatedIp, assertNoRedirect } from "./hardenedTransport";
 
 export type CompatibleImagePart = {
   mimeType: "image/jpeg" | "image/png" | "image/webp";
@@ -30,6 +36,16 @@ export type CompatibleChatRequest = {
   allowEmptyApiKey?: boolean;
   /** Provider-specific body extras (e.g. Qwen enable_thinking:false). */
   extraBody?: Record<string, unknown>;
+  /**
+   * SECURITY: When true, the transport uses a hardened fetch that:
+   * 1. Pre-resolves DNS and validates ALL IPs are private/LAN
+   * 2. Binds the connection to the validated IP (eliminates DNS rebinding)
+   * 3. Disables redirect following (3xx = error)
+   *
+   * MUST be set for all local provider connections (ollama, local_openai_compatible).
+   * MUST NOT be set for cloud providers (DNS binding only works for private IPs).
+   */
+  enforceLocalBinding?: boolean;
 };
 
 export type CompatibleUsage = {
@@ -102,10 +118,18 @@ export async function openAiCompatibleChat(
   // OpenAI SDK requires a non-empty apiKey string even when the server ignores it.
   const sdkApiKey = apiKeyTrimmed || "not-needed";
 
+  // SECURITY: For local providers, use a hardened fetch that binds to validated
+  // IPs and disables redirects. This closes the TOCTOU gap between URL validation
+  // and actual connection (DNS rebinding, redirect-based SSRF).
+  const sdkFetch = req.enforceLocalBinding
+    ? createHardenedLocalFetch({ enforceBinding: true })
+    : undefined;
+
   const client = new OpenAI({
     apiKey: sdkApiKey,
     baseURL: req.baseURL.replace(/\/$/, ""),
     timeout: req.timeoutMs ?? 120_000,
+    ...(sdkFetch ? { fetch: sdkFetch } : {}),
   });
 
   try {
@@ -319,10 +343,13 @@ function scrubProbeError(raw: string, apiKey: string): string {
  * require no auth, so the Authorization header is only sent when a key exists.
  * Never throws: transport, timeout, HTTP and parse failures all come back as
  * `reachable: false` with a safe `error`.
+ *
+ * SECURITY: When `enforceLocalBinding` is true, DNS is pre-resolved and the
+ * connection is bound to the validated IP. Redirects are not followed.
  */
 export async function probeOpenAiCompatibleModels(
   baseUrl: string | null | undefined,
-  opts: { apiKey?: string | null; timeoutMs?: number } = {},
+  opts: { apiKey?: string | null; timeoutMs?: number; enforceLocalBinding?: boolean } = {},
 ): Promise<OpenAiModelsProbeResult> {
   const started = Date.now();
   const base = (baseUrl ?? "").trim().replace(/\/$/, "");
@@ -340,13 +367,32 @@ export async function probeOpenAiCompatibleModels(
   }
 
   try {
-    const resp = await fetch(`${base}/models`, {
+    // SECURITY: For local providers, rewrite URL to validated IP and disable redirects
+    let requestUrl = `${base}/models`;
+    let hostHeader: string | null = null;
+    if (opts.enforceLocalBinding) {
+      const { rewrittenUrl, originalHost } = await rewriteUrlToValidatedIp(requestUrl);
+      requestUrl = rewrittenUrl;
+      hostHeader = originalHost;
+    }
+
+    const headers: Record<string, string> = apiKey
+      ? { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }
+      : { Accept: "application/json" };
+    if (hostHeader) headers["Host"] = hostHeader;
+
+    const resp = await fetch(requestUrl, {
       method: "GET",
-      headers: apiKey
-        ? { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }
-        : { Accept: "application/json" },
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
+      redirect: opts.enforceLocalBinding ? "manual" : "follow",
     });
+
+    // SECURITY: Check for redirect attempts when binding is enforced
+    if (opts.enforceLocalBinding) {
+      await assertNoRedirect(resp, { originalUrl: `${base}/models` });
+    }
+
     if (!resp.ok) {
       return {
         reachable: false,
