@@ -427,7 +427,14 @@ export function AiReportingPanel() {
     concurrency: 1,
     knownModels: [] as string[],
     enabled: false,
-    localOnly: true,
+    // Must match the server default (`ollama_local_only` is notNull().default(false)
+    // and the GET fallback is false). This screen previously started from `true`,
+    // so on a fresh install the toggle DISPLAYED "Local / LAN mode: ON" while the
+    // database held false and the Composer refused the LAN endpoint. Worse, the
+    // "Test connection" button reads this same local state, so the test PASSED
+    // while real composition was blocked — a settings screen that disagreed with
+    // the thing it configured.
+    localOnly: false,
     timeoutSeconds: 30,
     auditEnabled: true,
   });
@@ -1177,7 +1184,7 @@ export function AiReportingPanel() {
                 type="text"
                 value={localAi.primaryUrl}
                 onChange={(e) => setLocalAi((s) => ({ ...s, primaryUrl: e.target.value }))}
-                placeholder="http://172.16.1.140:11434"
+                placeholder="http://&lt;AI PC address&gt;:11434"
                 className="w-full h-9 px-3 text-xs rounded-lg border bg-background font-mono"
               />
             </div>

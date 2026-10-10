@@ -43,7 +43,8 @@ describe("aiPipeline config", () => {
     expect(c.modelStandard).toBe("qwen3-vl:8b");
     expect(c.modelLarge).toBe("qwen3-vl:8b");
     expect(c.modelVision).toBe("qwen3-vl:8b");
-    expect(c.ollamaBaseUrl).toBe("http://172.16.1.140:11434");
+    // Unconfigured default is loopback, not a clinic host (see canonicalLocalAi).
+    expect(c.ollamaBaseUrl).toBe("http://127.0.0.1:11434");
     expect(c.ollamaNumCtx).toBe(16384);
     expect(c.ollamaThink).toBe(false);
     expect(c.aiMode).toBe("AUTO");
