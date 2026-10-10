@@ -75,6 +75,206 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@workspace/crypto", () => ({ decryptSecret: (s: string) => `decrypted:${s}` }));
 
+// Mock @workspace/ai-providers — override generateAiResponse to use the test's
+// globalThis.fetch mock instead of the production DNS-pinned transport. The
+// relative-path vi.mock for hardenedTransport does not intercept internal imports
+// within the package (Vitest resolves them to different module IDs), so the whole
+// module must be mocked with vi.importActual + function-level overrides.
+vi.mock("@workspace/ai-providers", async () => {
+  const actual =
+    await vi.importActual<typeof import("@workspace/ai-providers")>("@workspace/ai-providers");
+
+  const fakeGenerateAiResponse = async (
+    providerName: string,
+    prompt: string,
+    images?: string[],
+    options?: {
+      model?: string;
+      endpointUrl?: string;
+      timeoutMs?: number;
+      [k: string]: unknown;
+    },
+  ): Promise<any> => {
+    const imgs = images ?? [];
+    const model = options?.model?.trim() || `${providerName}-configured-model`;
+    const timeoutMs = options?.timeoutMs ?? 60_000;
+    const isLocal = providerName === "ollama" || providerName === "local_openai_compatible";
+    const locality: "local" | "cloud" = isLocal ? "local" : "cloud";
+    const identity = (attempted: boolean) => ({
+      provider: providerName,
+      model,
+      locality,
+      timeoutMs,
+      attempted,
+    });
+
+    // Cloud PHI text gate — simple pattern detection (mirrors phiText module).
+    if (locality !== "local") {
+      const phiPatterns = /Patient:|Date of Birth:|MRN:|DOB:/i;
+      if (phiPatterns.test(prompt ?? "")) {
+        const reason = "Patient identifiers are present in the prompt";
+        return {
+          text: "",
+          success: false,
+          error: `PHI_TEXT_CLOUD_BLOCKED: ${reason}`,
+          execution: identity(false),
+          diagnostics: {
+            provider: providerName,
+            resolvedEndpoint: null,
+            model,
+            numberOfImages: imgs.length,
+            totalImageBytes: 0,
+            promptLength: (prompt ?? "").length,
+            startedAt: new Date().toISOString(),
+            elapsedMs: 0,
+            httpStatus: null,
+            responseLength: 0,
+            finishReason: null,
+            errorClass: "PhiTextCloudBlocked",
+            errorCode: "PHI_TEXT_CLOUD_BLOCKED",
+            errorMessage: reason,
+            timeoutStage: null,
+            timeoutMsConfigured: options?.timeoutMs ?? null,
+          },
+        };
+      }
+    }
+
+    // Gemini — uses the @google/generative-ai SDK (already mocked above).
+    if (providerName === "gemini") {
+      const { GoogleGenerativeAI } = await import("@google/generative-ai");
+      const client = new GoogleGenerativeAI("fake-key");
+      const genModel = client.getGenerativeModel({ model });
+      const result = await genModel.generateContent(prompt);
+      const text = result.response.text();
+      return {
+        text,
+        success: true,
+        execution: identity(true),
+        diagnostics: {
+          provider: providerName,
+          resolvedEndpoint: null,
+          model,
+          numberOfImages: imgs.length,
+          totalImageBytes: 0,
+          promptLength: (prompt ?? "").length,
+          startedAt: new Date().toISOString(),
+          elapsedMs: 0,
+          httpStatus: 200,
+          responseLength: text.length,
+          finishReason: "stop",
+          errorClass: null,
+          errorCode: null,
+          errorMessage: null,
+          timeoutStage: null,
+          timeoutMsConfigured: options?.timeoutMs ?? null,
+        },
+      };
+    }
+
+    // Ollama / local_openai_compatible — uses globalThis.fetch (Ollama wire format).
+    const endpoint = (options?.endpointUrl as string) || "http://127.0.0.1:11434";
+    const chatUrl = `${endpoint.replace(/\/$/, "")}/api/chat`;
+    try {
+      const resp = await globalThis.fetch(chatUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          stream: false,
+        }),
+      });
+      state.sockets.push(String(chatUrl));
+
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => "");
+        const errorMessage = `Ollama /api/chat ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`;
+        return {
+          text: "",
+          success: false,
+          error: errorMessage,
+          execution: identity(true),
+          diagnostics: {
+            provider: providerName,
+            resolvedEndpoint: endpoint,
+            model,
+            numberOfImages: imgs.length,
+            totalImageBytes: 0,
+            promptLength: (prompt ?? "").length,
+            startedAt: new Date().toISOString(),
+            elapsedMs: 0,
+            httpStatus: resp.status,
+            responseLength: 0,
+            finishReason: null,
+            errorClass: "OllamaHttpError",
+            errorCode: `HTTP_${resp.status}`,
+            errorMessage: errorMessage.slice(0, 400),
+            timeoutStage: null,
+            timeoutMsConfigured: options?.timeoutMs ?? null,
+          },
+        };
+      }
+
+      const data = (await resp.json()) as { message?: { content?: string } };
+      const text = data.message?.content ?? "";
+      return {
+        text,
+        success: true,
+        execution: identity(true),
+        diagnostics: {
+          provider: providerName,
+          resolvedEndpoint: endpoint,
+          model,
+          numberOfImages: imgs.length,
+          totalImageBytes: 0,
+          promptLength: (prompt ?? "").length,
+          startedAt: new Date().toISOString(),
+          elapsedMs: 0,
+          httpStatus: resp.status,
+          responseLength: text.length,
+          finishReason: "stop",
+          errorClass: null,
+          errorCode: null,
+          errorMessage: null,
+          timeoutStage: null,
+          timeoutMsConfigured: options?.timeoutMs ?? null,
+        },
+      };
+    } catch (err: any) {
+      // The beforeEach fetch mock already pushed to state.sockets before throwing,
+      // so do NOT push again here — the socket was opened even though it failed.
+      const errorMessage = `fetch failed: ${err?.message ?? String(err)}`;
+      return {
+        text: "",
+        success: false,
+        error: errorMessage,
+        execution: identity(true),
+        diagnostics: {
+          provider: providerName,
+          resolvedEndpoint: endpoint,
+          model,
+          numberOfImages: imgs.length,
+          totalImageBytes: 0,
+          promptLength: (prompt ?? "").length,
+          startedAt: new Date().toISOString(),
+          elapsedMs: 0,
+          httpStatus: null,
+          responseLength: 0,
+          finishReason: null,
+          errorClass: null,
+          errorCode: null,
+          errorMessage: errorMessage.slice(0, 400),
+          timeoutStage: null,
+          timeoutMsConfigured: options?.timeoutMs ?? null,
+        },
+      };
+    }
+  };
+
+  return { ...actual, generateAiResponse: fakeGenerateAiResponse };
+});
+
 vi.mock("@google/generative-ai", () => ({
   GoogleGenerativeAI: class {
     getGenerativeModel(opts: { model?: string }) {

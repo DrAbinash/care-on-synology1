@@ -1,11 +1,17 @@
 /**
  * Pre-adapter policy gate for Report Composer domain facade.
- * Ollama + Local OpenAI-Compatible are LOCAL (no cloud vision gate).
+ * Ollama + Local OpenAI-Compatible are LOCAL (no cloud vision gate) — BUT only
+ * when their resolved URL actually points to a private/LAN address. A
+ * "local_openai_compatible" provider pointed at a public URL is reclassified
+ * as cloud and subject to all cloud vision / PHI controls.
  * Cloud providers require API keys (DB first, then env — resolved by the caller
  * through `resolveCloudComposerConfig`, because this gate stays synchronous).
  * Cloud vision requires explicit cloudVisionAllowed for ALL cloud vendors.
  */
-import { isCompatibleProviderConfigured } from "@workspace/ai-providers";
+import {
+  isCompatibleProviderConfigured,
+  classifyEffectiveLocality,
+} from "@workspace/ai-providers";
 import {
   isCloudComposerProvider,
   isLocalComposerProvider,
@@ -27,6 +33,12 @@ export type ComposerProviderPolicyInput = {
    * env-only answer, so nothing here silently loosens the gate.
    */
   cloudApiKeyConfigured?: boolean;
+  /**
+   * Resolved base URL for local providers. When provided, locality is derived
+   * from the actual network destination, not the provider name. A "local"
+   * provider with a public URL is reclassified as cloud for PHI egress.
+   */
+  resolvedUrl?: string | null;
 };
 
 export type ComposerProviderPolicyResult =
@@ -54,10 +66,28 @@ export function assertComposerProviderPolicy(
     if (input.localEndpointConfigured === false) {
       return { ok: false, safeError: "local_openai_compatible_endpoint_not_configured" };
     }
+
+    // Endpoint-derived locality: a "local_openai_compatible" provider whose
+    // resolved URL points to a public internet address is reclassified as
+    // cloud for PHI egress purposes. The URL is the ground truth, not the name.
+    //
+    // SECURITY: A local provider reclassified as cloud is REFUSED for ALL data
+    // (text AND images). Clinical text contains patient identifiers (name, DOB,
+    // findings, impression) — sending it to a public endpoint is PHI egress.
+    // The admin configured this provider thinking it was local; they did NOT
+    // explicitly agree to cloud egress. If they want cloud AI, they must
+    // configure a proper cloud provider (openai/gemini/anthropic/deepseek).
+    if (input.resolvedUrl != null && input.resolvedUrl !== "") {
+      const effective = classifyEffectiveLocality(provider, input.resolvedUrl);
+      if (effective.locality === "cloud") {
+        return { ok: false, safeError: "local_provider_url_points_to_cloud" };
+      }
+    }
+
     if (aiMode === "SELECTED_IMAGES" && imageCount <= 0) {
       return { ok: false, safeError: "selected_images_empty" };
     }
-    // Never apply cloud_vision_not_allowed — this provider is LOCAL.
+    // Genuinely local (private/LAN URL or no URL resolved) — no cloud gate.
     return { ok: true };
   }
 

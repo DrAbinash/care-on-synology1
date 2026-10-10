@@ -2,6 +2,7 @@
  * Voice Report Composer — Ollama structured change-plan generation.
  */
 import { validateOllamaUrl } from "../ssrf/ollamaUrlGuard";
+import { hardenedLocalRequest } from "@workspace/ai-providers";
 import { buildComposerPrompt, type ComposerContextInput } from "./contextBuilder";
 import { catalogForPrompt, fillLevelInPhrase, matchCatalogPhrases } from "./phraseCatalog";
 import {
@@ -180,7 +181,8 @@ async function ollamaGenerateJson(
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), opts.timeoutMs);
   try {
-    const res = await fetch(`${endpoint}/api/generate`, {
+    // SECURITY: Bind to validated IP and reject redirects (PHI egress — voice transcript).
+    const { response: res } = await hardenedLocalRequest(`${endpoint}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: ac.signal,

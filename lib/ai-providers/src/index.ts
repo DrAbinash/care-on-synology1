@@ -13,7 +13,9 @@ import { db } from "@workspace/db";
 import { aiProviderSettingsTable, aiModelRoutesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { decryptSecret } from "@workspace/crypto";
-import { isLocalExecutionProvider } from "./openAiCompatible";
+import { isLocalExecutionProvider, readEnvBaseUrl, LOCAL_OPENAI_COMPATIBLE_PROVIDER } from "./openAiCompatible";
+import { classifyEffectiveLocality } from "./providerLocality";
+import { rewriteUrlToValidatedIp, assertNoRedirect, hardenedLocalRequest } from "./hardenedTransport";
 import { CANONICAL_OLLAMA_ENDPOINT, CANONICAL_LOCAL_CHAT_VISION_MODEL } from "./canonicalLocalAi";
 
 // Canonical on-prem Local AI (chat/vision) values live in ./canonicalLocalAi.ts —
@@ -24,6 +26,21 @@ export {
   CANONICAL_LOCAL_CHAT_VISION_MODEL,
   CANONICAL_EMBEDDING_MODEL,
 } from "./canonicalLocalAi";
+
+// Endpoint-derived provider locality — PHI egress gates must use this, not
+// isLocalExecutionProvider(), when a resolved URL is available. The name-based
+// function is safe for provider-chain ordering (no data in flight) but NOT
+// for privacy gating: a "local_openai_compatible" provider pointed at a public
+// URL would bypass all cloud PHI controls.
+export {
+  classifyEffectiveLocality,
+  isEffectivelyLocal,
+  isHostPrivateOrLan,
+  isHostCloudMetadata,
+  canonicalHostsForLocality,
+  type EffectiveLocality,
+  type LocalityClassification,
+} from "./providerLocality";
 
 // C1 — the single failure vocabulary and the execution identity that accompanies
 // it. Re-exported so an interactive route needs exactly one import to record
@@ -824,13 +841,18 @@ class OllamaProvider implements AiProvider {
       const body = buildOllamaChatPayload(opts);
       const bodyJson = JSON.stringify(body);
       const requestBodyBytes = Buffer.byteLength(bodyJson, "utf8");
+
+      // SECURITY: Use hardened transport — DNS-pinned, redirect-rejecting, works
+      // for both HTTP and HTTPS (closes the TOCTOU gap the old URL-rewrite had).
+      const chatUrl = `${base}/api/chat`;
       const init: RequestInit = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: bodyJson,
       };
       init.signal = AbortSignal.timeout(timeoutMsConfigured);
-      const resp = await fetch(`${base}/api/chat`, init);
+      const { response: resp } = await hardenedLocalRequest(chatUrl, init);
+
       const elapsedMs = Date.now() - t0;
       if (!resp.ok) {
         const detail = await resp.text().catch(() => "");
@@ -938,7 +960,8 @@ class OllamaProvider implements AiProvider {
   async testConnection(model?: string): Promise<{ ok: boolean; message: string; availableModels?: string[] }> {
     try {
       const url = `${this.endpointUrl.replace(/\/$/, "")}/api/tags`;
-      const tagsResp = await fetch(url, { method: "GET" });
+      // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+      const { response: tagsResp } = await hardenedLocalRequest(url, { method: "GET" });
       if (!tagsResp.ok) {
         return { ok: false, message: `Ollama server returned ${tagsResp.status}` };
       }
@@ -1238,9 +1261,38 @@ export async function generateAiResponse(
   // resolved value keeps that call a no-op instead of a second opinion, so what a
   // caller sees in `execution.timeoutMs` is the number that armed the abort.
   const timeoutMs = resolveRequestTimeoutMs(options?.timeoutMs);
-  const locality: AiExecutionIdentity["locality"] = isLocalExecutionProvider(providerName)
-    ? "local"
+
+  // ─── Endpoint-derived locality ─────────────────────────────────────────────
+  // SECURITY: Provider locality is derived from the effective validated network
+  // destination, never from the provider name alone. A "local_openai_compatible"
+  // provider whose base URL points to a public internet endpoint is classified
+  // as "cloud" for PHI egress purposes, regardless of its name.
+  //
+  // For "local" providers (ollama, local_openai_compatible), resolve the URL
+  // and classify based on the actual destination. For "cloud" providers, the
+  // name-based classification is already correct.
+  let resolvedEndpointUrlForLocality: string | null = null;
+  if (isLocalExecutionProvider(providerName)) {
+    // Resolve the URL for locality classification. Precedence:
+    // 1. Explicit endpointUrl option (caller override)
+    // 2. Database (ai_provider_settings.endpointUrl)
+    // 3. Environment variable
+    const fromOption = (options?.endpointUrl ?? "").trim().replace(/\/$/, "");
+    if (fromOption) {
+      resolvedEndpointUrlForLocality = fromOption;
+    } else {
+      const fromDb = await getProviderEndpointUrl(providerName);
+      if (fromDb?.trim()) {
+        resolvedEndpointUrlForLocality = fromDb.replace(/\/$/, "");
+      } else {
+        resolvedEndpointUrlForLocality = readEnvBaseUrl(providerName);
+      }
+    }
+  }
+  const effectiveLocality = isLocalExecutionProvider(providerName)
+    ? classifyEffectiveLocality(providerName, resolvedEndpointUrlForLocality).locality
     : "cloud";
+  const locality: AiExecutionIdentity["locality"] = effectiveLocality;
   /** Identity as the execution layer knows it — not as the caller described it. */
   const identity = (model: string | null, attempted: boolean): AiExecutionIdentity => ({
     provider: providerName,
@@ -1259,10 +1311,11 @@ export async function generateAiResponse(
   // clinical-note endpoint is the concrete case — it builds a prompt with the
   // patient's name, MRN, date of birth, sex and blood group.
   //
-  // Local providers are unaffected, which is the point: with the on-prem
-  // default from #806 nothing here changes day-to-day behaviour, and a cloud
-  // route now has to be chosen deliberately, with the identifiers scrubbed.
-  if (!isLocalExecutionProvider(providerName)) {
+  // EFFECTIVE locality is used here, not name-based: a "local_openai_compatible"
+  // provider pointed at a public URL is treated as cloud, with all PHI controls
+  // applied. Only providers whose resolved URL actually points to a private/LAN
+  // address bypass the gate.
+  if (effectiveLocality !== "local") {
     const { detectPhiCategories, scrubPhiText } = await import("./phiText");
     const categories = detectPhiCategories(prompt ?? "");
     if (categories.length > 0) {
@@ -1298,8 +1351,8 @@ export async function generateAiResponse(
     }
   }
 
-  // Central cloud image egress — DEFAULT DENY. Local providers (Ollama +
-  // Local OpenAI-Compatible) are never gated as cloud.
+  // Central cloud image egress — DEFAULT DENY. Effective locality is derived
+  // from the resolved URL: a "local" provider with a public URL is gated as cloud.
   if (imgs.length > 0) {
     const { assertCloudImageEgress } = await import("./cloudImagePolicy");
     const { modelSupportsVision } = await import("./builtinModelCapabilities");
@@ -1309,6 +1362,7 @@ export async function generateAiResponse(
       imageCount: imgs.length,
       cloudVisionAllowed: options?.cloudVisionAllowed === true,
       modelSupportsVision: model ? modelSupportsVision(providerName, model) : true,
+      resolvedUrl: resolvedEndpointUrlForLocality,
     });
     if (!egress.ok) {
       return {
@@ -1683,6 +1737,9 @@ export function classifyOllamaModelVisionByName(model: string): "vision" | "text
  * correct for an explicit "Test Connection" button click but too slow to
  * run on every OCR request). Returns the model list when reachable so
  * callers can cross-check the configured model is actually pulled.
+ *
+ * SECURITY: DNS is pre-resolved and the connection is bound to the validated
+ * IP. Redirects are not followed.
  */
 export async function probeOllamaReachable(
   endpointUrl: string,
@@ -1691,8 +1748,12 @@ export async function probeOllamaReachable(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
-    const resp = await fetch(url, { method: "GET", signal: controller.signal });
+    const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/tags`;
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
     if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
     const data = (await resp.json()) as { models?: Array<{ name: string }> };
     return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
@@ -1709,6 +1770,9 @@ export async function probeOllamaReachable(
  * `capabilities` array (Ollama 0.4+). Returns null (not false) when the
  * server doesn't report capabilities at all, so callers fall back to the
  * name-based heuristic instead of concluding "no vision support."
+ *
+ * SECURITY: DNS is pre-resolved and the connection is bound to the validated
+ * IP. Redirects are not followed.
  */
 export async function probeOllamaModelVision(
   endpointUrl: string,
@@ -1718,8 +1782,9 @@ export async function probeOllamaModelVision(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${endpointUrl.replace(/\/$/, "")}/api/show`;
-    const resp = await fetch(url, {
+    const rawUrl = `${endpointUrl.replace(/\/$/, "")}/api/show`;
+    // SECURITY: Hardened transport — DNS-pinned, redirect-rejecting.
+    const { response: resp } = await hardenedLocalRequest(rawUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
@@ -1752,3 +1817,19 @@ export * from "./builtinModelCapabilities";
 export * from "./cloudImagePolicy";
 export * from "./phiText";
 export { OpenAiCompatibleProvider } from "./openAiCompatibleProvider";
+// Hardened transport — DNS binding, redirect control, IP validation for local providers.
+export {
+  resolveAndValidatePrivateIps,
+  createHardenedLocalFetch,
+  rewriteUrlToValidatedIp,
+  assertNoRedirect,
+  noRedirectInit,
+  hardenedLocalRequest,
+} from "./hardenedTransport";
+// Endpoint trust policy — configured ≠ approved for PHI.
+export {
+  classifyEndpointTrust,
+  isEndpointTrustedForPhi,
+  type EndpointTrustLevel,
+  type EndpointTrustClassification,
+} from "./endpointTrustPolicy";

@@ -24,6 +24,8 @@ import {
   localOpenAiModelSupportsVision,
   LOCAL_OPENAI_COMPATIBLE_ID,
 } from "./localOpenAiCompatibleConfig";
+import { validateOllamaUrl } from "../../ssrf/ollamaUrlGuard";
+import { assertGatewayPrivacy } from "./gatewayPrivacy";
 
 export class LocalOpenAiCompatibleComposerAdapter implements ComposerProviderAdapter {
   readonly name = "local_openai_compatible" as const;
@@ -84,6 +86,49 @@ export class LocalOpenAiCompatibleComposerAdapter implements ComposerProviderAda
       };
     }
 
+    // SSRF guard — validate the resolved URL before making any request.
+    // A "local_openai_compatible" provider whose base URL points to a public
+    // internet endpoint, cloud metadata service, or other dangerous destination
+    // must be blocked here. allowLocal=true because this provider is intended
+    // to contact LAN/private addresses (the clinic's own AI server).
+    const urlValidation = validateOllamaUrl(baseURL, /* allowLocal */ true);
+    if (!urlValidation.ok) {
+      return {
+        ok: false,
+        provider: this.name,
+        model,
+        safeError: "local_openai_compatible_endpoint_blocked",
+        latencyMs: Date.now() - started,
+        execution,
+      };
+    }
+
+    // Endpoint-derived privacy gate. For genuinely local URLs (private/LAN),
+    // the gate returns a local bypass (no PHI check, text passes through
+    // unchanged). For public URLs, the provider is reclassified as cloud and
+    // the full PHI detection/redaction gate applies — same policy as the
+    // cloud adapters. This closes the gap where a "local" provider pointed at
+    // a public URL could send clinical text off-prem without any PHI check.
+    const privacy = await assertGatewayPrivacy({
+      provider: this.name,
+      systemPrompt: request.systemPrompt,
+      userPrompt: request.userPrompt,
+      images: request.images,
+      cloudAllowed: true,
+      cloudVisionAllowed: request.cloudVisionAllowed,
+      resolvedUrl: baseURL,
+    });
+    if (!privacy.ok) {
+      return {
+        ok: false,
+        provider: this.name,
+        model,
+        safeError: privacy.safeError,
+        latencyMs: Date.now() - started,
+        execution,
+      };
+    }
+
     const apiKey = await getLocalOpenAiApiKey();
     const settings = await loadLocalOpenAiSettings();
     // Prefer request.jsonMode when set; otherwise Settings (default false).
@@ -104,13 +149,16 @@ export class LocalOpenAiCompatibleComposerAdapter implements ComposerProviderAda
       baseURL,
       apiKey,
       model,
-      systemPrompt: request.systemPrompt,
-      userPrompt: request.userPrompt,
+      systemPrompt: privacy.systemPrompt,
+      userPrompt: privacy.userPrompt,
       images,
       temperature: request.temperature,
       timeoutMs: request.timeoutMs,
       jsonMode,
       allowEmptyApiKey: true,
+      // SECURITY: Enforce DNS binding and disable redirects for local provider.
+      // This eliminates DNS rebinding and redirect-based SSRF.
+      enforceLocalBinding: true,
     });
 
     const usage = {

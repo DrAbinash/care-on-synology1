@@ -4,6 +4,42 @@ import {
   assertVisionCapableModel,
 } from "./visionCapability";
 
+// Production code uses hardenedLocalRequest (DNS-pinned transport) instead of
+// bare fetch. Delegate to global.fetch so existing mocks work.
+vi.mock("@workspace/ai-providers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@workspace/ai-providers")>();
+  return {
+    ...actual,
+    probeOllamaReachable: async (url: string, timeoutMs?: number) => {
+      // Delegate to the real implementation but through fetch mock
+      const tagsUrl = `${url.replace(/\/$/, "")}/api/tags`;
+      try {
+        const resp = await globalThis.fetch(tagsUrl);
+        if (!resp.ok) return { reachable: false, error: `Ollama server returned ${resp.status}` };
+        const data = (await resp.json()) as { models?: Array<{ name: string }> };
+        return { reachable: true, models: data.models?.map((m) => m.name) ?? [] };
+      } catch (err) {
+        return { reachable: false, error: String(err) };
+      }
+    },
+    probeOllamaModelVision: async (url: string, model: string, timeoutMs?: number) => {
+      const showUrl = `${url.replace(/\/$/, "")}/api/show`;
+      try {
+        const resp = await globalThis.fetch(showUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
+        if (!resp.ok) return null;
+        const data = (await resp.json()) as { capabilities?: string[] };
+        return data.capabilities?.includes("vision") ?? null;
+      } catch {
+        return null;
+      }
+    },
+  };
+});
+
 afterEach(() => {
   __resetVisionCapabilityCacheForTests();
   vi.restoreAllMocks();

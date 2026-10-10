@@ -7,6 +7,7 @@ import { requireStaffAuth, requireStaffPermission } from "../middleware/requireS
 import { RADIOLOGY_WHISPER_PROMPT, normalizeDictation, PROMPT_DICTATION_POLISH, isPolishSafe } from "../lib/ai/radiologyDictationVocab";
 import {
   generateAiForTask,
+  hardenedLocalRequest,
 } from "@workspace/ai-providers";
 import {
   geminiTranscribe,
@@ -278,7 +279,8 @@ router.post("/transcribe/local", requireStaffAuth, async (req, res) => {
       form.append("model", config.model || "whisper-1");
       form.append("response_format", "json");
     }
-    const upstream = await fetch(endpoint, { method: "POST", body: form, signal: AbortSignal.timeout(60_000) });
+    // SECURITY: Bind to validated IP and reject redirects for local STT (PHI egress — audio).
+    const { response: upstream } = await hardenedLocalRequest(endpoint, { method: "POST", body: form, signal: AbortSignal.timeout(60_000) });
     if (!upstream.ok) {
       req.log?.warn({ status: upstream.status }, "local stt upstream error");
       res.status(502).json({ error: `Local STT server responded ${upstream.status}. Check the server and its protocol setting.` });

@@ -8,6 +8,8 @@
  * Never logs prompts, images, or patient identifiers.
  */
 
+import { hardenedLocalRequest } from "@workspace/ai-providers";
+
 export interface OllamaRunnerSnapshot {
   model: string;
   sizeBytes: number | null;
@@ -88,7 +90,8 @@ export async function fetchOllamaPs(
   const capturedAt = new Date().toISOString();
   const base = endpointUrl.replace(/\/$/, "");
   try {
-    const resp = await fetch(`${base}/api/ps`, {
+    // SECURITY: Bind to validated IP and reject redirects for Ollama diagnostics.
+    const { response: resp } = await hardenedLocalRequest(`${base}/api/ps`, {
       method: "GET",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -149,7 +152,8 @@ export async function unloadOllamaModel(opts: {
   const t0 = Date.now();
   const base = opts.endpointUrl.replace(/\/$/, "");
   try {
-    const resp = await fetch(`${base}/api/generate`, {
+    // SECURITY: Bind to validated IP and reject redirects for Ollama unload.
+    const { response: resp } = await hardenedLocalRequest(`${base}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

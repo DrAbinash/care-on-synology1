@@ -231,6 +231,7 @@ export async function runReportComposer(opts: {
     images: undefined,
     localEndpointConfigured: isLocalOpenAi ? Boolean(localEndpoint?.trim()) : undefined,
     cloudApiKeyConfigured: cloudCfg?.keyConfigured,
+    resolvedUrl: isLocalOpenAi ? localEndpoint ?? null : undefined,
   });
   if (!policy.ok) {
     return {

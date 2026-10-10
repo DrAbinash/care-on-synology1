@@ -35,7 +35,7 @@ import { desc, sql } from "drizzle-orm";
 import { type StaffAuthRequest, FULL_ACCESS_ROLES } from "../middleware/requireStaffAuth";
 import { validateOllamaUrl } from "../lib/ssrf/ollamaUrlGuard";
 import { verifyOllamaFallbackIdentity } from "../lib/ai/localAiFallbackIdentity";
-import { normalizeOllamaEndpointUrl } from "@workspace/ai-providers";
+import { normalizeOllamaEndpointUrl, hardenedLocalRequest } from "@workspace/ai-providers";
 
 export const radiologyOllamaRouter = Router();
 
@@ -71,7 +71,8 @@ async function probeEndpoint(url: string, timeoutMs: number): Promise<boolean> {
   try {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
-    const r = await fetch(`${url}/api/tags`, { signal: ac.signal });
+    // SECURITY: Bind to validated IP and reject redirects for Ollama probe.
+    const { response: r } = await hardenedLocalRequest(`${url}/api/tags`, { signal: ac.signal });
     clearTimeout(t);
     return r.ok;
   } catch {
