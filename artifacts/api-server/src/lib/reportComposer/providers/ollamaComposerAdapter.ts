@@ -43,6 +43,9 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         provider: "ollama",
         model,
         safeError: "composer_endpoint_blocked",
+        // Carried through to the workspace so the radiologist sees which switch
+        // to move rather than a bare error code.
+        detail: guard.reason,
         latencyMs: Date.now() - started,
         execution,
       };

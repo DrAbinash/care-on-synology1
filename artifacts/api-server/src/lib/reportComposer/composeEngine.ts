@@ -258,6 +258,11 @@ export async function runReportComposer(opts: {
           ...baseProvenance,
           provider: providerName,
           fallbackUsed: false,
+          // The guard's own reason names the setting to change, and it was
+          // being discarded here. `composer_endpoint_blocked` on its own reads
+          // like a firewall problem and sends an operator looking in the wrong
+          // place; the sentence below is the fix, already written for a clinician.
+          degradedReason: guard.reason,
         },
       };
     }
@@ -545,6 +550,12 @@ export async function runReportComposer(opts: {
           provider: "deterministic",
           fallbackUsed: true,
           personaVersion: null,
+          // The draft is mechanical, so the reason the model did not answer is
+          // the only thing that tells the radiologist this is not an AI report
+          // and what to change. Losing it left "six months of bad drafts" with
+          // no trace of why.
+          degradedReason:
+            primary.detail ?? primary.safeError ?? "The local model did not answer; this draft was assembled without AI.",
         },
       };
     }
