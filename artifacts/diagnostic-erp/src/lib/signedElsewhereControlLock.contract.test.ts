@@ -119,7 +119,10 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   [CANVAS]: 60,
   [RAIL]: 34,
-  [VIEWER]: 7,
+  // 7 → 8: D2's "Add Current OHIF Image" is a gated control, and it writes
+  // clinical content — an image reference on the signed report's image set — so
+  // it is gated rather than counted as a hole. Measured on this tree.
+  [VIEWER]: 8,
 };
 
 /**
@@ -478,17 +481,22 @@ describe("what this deliberately does not change", () => {
     // Disclosed rather than fixed here, for two different reasons.
     //
     // useOhifViewerBridge takes isLocked and isFinalized as parameters and has
-    // no contentLocked in scope, so gating its seven guards is a signature
-    // change and a call-site change, not a substitution. Its controls are
-    // reached through ViewerColumn, which this PR does gate, so the visible
-    // affordance is already closed.
+    // no contentLocked in scope, so gating its guards is a signature change and a
+    // call-site change, not a substitution. Its controls are reached through
+    // ViewerColumn, which this file does gate, so the visible affordance is
+    // already closed.
+    //
+    // 7 → 8 is D2's `addCurrentOhifImageToReport`, which guards internally for the
+    // same reason its siblings do (the rail's camera can be driven from the handle,
+    // not only from the gated button) and is additionally gated at the affordance in
+    // ViewerColumn — so it is one more of these session-only pairs, not a new hole.
     //
     // applyVoiceComposerWithUndo and insertRawDictation have no lock guard at
     // all — a hole wider than this PR's subject, because it is open for a report
     // signed in THIS session too. VoiceCommandBar is rendered without any lock
     // prop (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
     // whether that bar gets a disabled state.
-    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(7);
+    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(8);
     const hook = read(HOOK);
     for (const fn of [
       "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {",
