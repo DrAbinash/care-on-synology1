@@ -187,6 +187,43 @@ export const ComposerDraftOutputSchema = z.object({
 
 export type ComposerDraftOutput = z.infer<typeof ComposerDraftOutputSchema>;
 
+/**
+ * Models put the printer's own markers into their prose. Seen in real output from
+ * this composer path (2026-10-11, gemma3:12b): `**Findings:**` for emphasis, a
+ * label-only line copied out of the context block, and a whole line beginning
+ * `TECHNIQUE:` repeated from the protected technique field.
+ *
+ * All three reach the patient's report as structure, not as text: the print
+ * surface would honour the asterisks, a `Findings:` line prints a nested FINDINGS
+ * heading, and an echoed technique duplicates a section the radiologist already
+ * owns. So the contract strips them here — one owner, every provider, before
+ * validation — and the two cases are handled differently on purpose:
+ *
+ *   TECHNIQUE / CLINICAL HISTORY / COMPARISON → the line goes. That content has
+ *     its own protected field and its own printed section; a copy inside Findings
+ *     is a duplicate, and dropping it loses nothing.
+ *   FINDINGS / IMPRESSION / RECOMMENDATION    → only the label goes, the sentence
+ *     stays. Deleting the sentence could delete a finding, which is never safe.
+ *
+ * No clinical wording is rewritten; only markup and echoed section labels move.
+ */
+const EMPHASIS_RE = /\*\*([^*\n]+)\*\*|__([^_\n]+)__/g;
+const OWN_SECTION_LINE_RE = /^\s*(?:TECHNIQUE|CLINICAL\s+HISTORY|COMPARISON)\s*(?::|$)/i;
+const FIELD_LABEL_ONLY_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:?\s*$/i;
+const FIELD_LABEL_PREFIX_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:\s+/i;
+
+export function normalizeComposerDraftText(text: string): string {
+  const unemphasised = (text ?? "").replace(EMPHASIS_RE, (_m, a, b) => String(a ?? b ?? ""));
+  const kept = unemphasised
+    .split("\n")
+    .filter((line) => !OWN_SECTION_LINE_RE.test(line) && !FIELD_LABEL_ONLY_RE.test(line))
+    .map((line) => line.replace(FIELD_LABEL_PREFIX_RE, ""));
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null {
   const trimmed = raw.trim();
   const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
@@ -194,7 +231,13 @@ export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
     const result = ComposerDraftOutputSchema.safeParse(parsed);
-    return result.success ? result.data : null;
+    if (!result.success) return null;
+    return {
+      ...result.data,
+      findings: normalizeComposerDraftText(result.data.findings),
+      impression: normalizeComposerDraftText(result.data.impression),
+      recommendation: normalizeComposerDraftText(result.data.recommendation),
+    };
   } catch {
     return null;
   }

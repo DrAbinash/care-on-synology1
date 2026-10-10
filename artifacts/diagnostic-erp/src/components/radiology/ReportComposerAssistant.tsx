@@ -375,7 +375,7 @@ export function ReportComposerAssistant(props: Props) {
           data-testid="compose-in-background"
         >
           {props.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
-          {props.aiMode === "SELECTED_IMAGES" ? "Draft with Selected Images" : "Draft from Observations"}
+          {props.aiMode === "SELECTED_IMAGES" ? "Draft with Selected Images" : "Generate Professional Report"}
         </Button>
         <Button
           type="button"

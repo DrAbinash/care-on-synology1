@@ -161,3 +161,59 @@ describe("abnormal lines are bold in the printed document", () => {
     expect(html).toContain(ABNORMAL_LINE);
   });
 });
+
+/**
+ * The "Generate Professional Report" contract, measured where it lands.
+ *
+ * The composer prompt tells the model to author findings with exactly two pieces
+ * of markup — a section line that is only `Label:` and a pipe table for a
+ * per-level series — and to write no markdown emphasis. Those are claims about
+ * this printer, so they are tested against the real builders rather than against
+ * the prompt text: a normal line stays plain, an abnormal line is bolded WITHOUT
+ * the model asking for it, and asterisks the model was told not to write would
+ * have reached the page.
+ */
+const AI_AUTHORED = [
+  "Alignment:",
+  "Normal lumbar lordosis maintained.",
+  "",
+  "Canal Diameter:",
+  "| Level | AP Canal (mm) |",
+  "| L3-L4 | 12 |",
+  "| L4-L5 | 9 |",
+  "",
+  "L4-L5: Central disc herniation compressing the traversing left L5 root.",
+].join("\n");
+
+describe("the AI-authored report shape prints as intended", () => {
+  it("the two conventions the prompt teaches are the two the printer parses", () => {
+    const html = signed(AI_AUTHORED);
+    expect(html).toContain(`<div class="section-heading">ALIGNMENT</div>`);
+    expect(html).toContain(`<div class="section-heading">CANAL DIAMETER</div>`);
+    expect(html).toContain('<table class="findings-table"');
+    expect(html).toContain("AP Canal (mm)");
+    expect(html).toContain(">12<");
+    expect(html).toContain(">9<");
+    // …and the numbers arrive as table cells, not as a stray paragraph of pipes.
+    expect(html).not.toContain("<p>| Level |");
+  });
+
+  it("bolds the abnormal sentence the model wrote, without the model asking for it", () => {
+    const html = signed(AI_AUTHORED);
+    expect(html).toContain(
+      "<strong>L4-L5: Central disc herniation compressing the traversing left L5 root.</strong>",
+    );
+    expect(html).not.toContain("<strong>Normal lumbar lordosis");
+  });
+
+  it("markdown emphasis WOULD reach the page, which is why the prompt forbids it", () => {
+    const withStars = "L4-L5: **Central disc herniation** compressing the traversing left L5 root.";
+    // The screen/Word body escapes HTML and has no markdown pass: the asterisks
+    // are content, and the patient's report would carry them.
+    const screen = renderFindingsDocumentHtml(withStars);
+    expect(screen).toContain("**Central disc herniation**");
+    // The derived emphasis rule bolds the same line on its own, so writing stars
+    // gains the model nothing and risks literal ones.
+    expect(renderFindingsDocumentHtml(withStars, { renderBody: (t) => t })).toContain("<strong>");
+  });
+});
