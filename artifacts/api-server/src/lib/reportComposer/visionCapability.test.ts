@@ -230,4 +230,87 @@ describe("assertVisionCapableModel", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.safeError).toBe("vision_capability_unverified");
   });
+
+  // ── MedGemma 1.5: the model this gate used to refuse ───────────────────────
+  // Before `/medgemma/i` existed in the name list, a configured MedGemma tag
+  // classified as "unknown", so on any server where /api/show was slow or silent
+  // the Composer answered `vision_capability_unverified` and refused to draft
+  // from the images — a false negative about a model that genuinely reads CT and
+  // MRI. These three cases are the difference between "unrecognised" and
+  // "recognised but unproven": the second one is the fix.
+
+  it("accepts a pulled medgemma1.5:4b on the server's own capability report", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/tags")) {
+          return { ok: true, json: async () => ({ models: [{ name: "medgemma1.5:4b" }] }) };
+        }
+        if (url.includes("/api/show")) {
+          return { ok: true, json: async () => ({ capabilities: ["completion", "vision"] }) };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "medgemma1.5:4b",
+    });
+    expect(r).toEqual({ ok: true, model: "medgemma1.5:4b", source: "api_show" });
+  });
+
+  it("still accepts it when /api/show gives no answer, which is what the name list is for", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/tags")) {
+          return { ok: true, json: async () => ({ models: [{ name: "medgemma1.5:4b" }] }) };
+        }
+        if (url.includes("/api/show")) {
+          return { ok: false, status: 500, json: async () => ({}) };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "medgemma1.5:4b",
+    });
+    expect(r).toEqual({ ok: true, model: "medgemma1.5:4b", source: "known_name" });
+  });
+
+  it("refuses a medgemma that is not installed and never pulls it to find out", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        asked.push(url);
+        if (url.includes("/api/tags")) {
+          // The clinic's PC as it stands today: gemma3 and qwen3-vl, no MedGemma.
+          return {
+            ok: true,
+            json: async () => ({ models: [{ name: "gemma3:12b" }, { name: "qwen3-vl:8b" }] }),
+          };
+        }
+        throw new Error(`unexpected ${url}`);
+      }),
+    );
+    const r = await assertVisionCapableModel({
+      endpoint: "http://127.0.0.1:11434",
+      model: "medgemma1.5:4b",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.safeError).toBe("vision_model_required");
+      // The operator has to decide to download it; CARE names the gap instead.
+      expect(r.detail).toContain("medgemma1.5:4b");
+      expect(r.detail).toContain("not present");
+    }
+    // Reading-only proof: nothing in this path asks Ollama to fetch weights.
+    expect(asked.some((u) => u.includes("/api/pull"))).toBe(false);
+    expect(asked.some((u) => u.includes("/api/generate") || u.includes("/api/chat"))).toBe(false);
+  });
 });
