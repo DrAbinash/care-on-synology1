@@ -42,31 +42,118 @@ vi.mock("./localOpenAiCompatibleConfig", async () => {
   };
 });
 
-// Production code uses createHardenedLocalFetch (DNS-pinned transport) instead of
-// bare fetch. Mock the transport module at its resolved path so that internal imports
-// within @workspace/ai-providers (openAiCompatible.ts) pick up the mock.
-vi.mock("../../../../../lib/ai-providers/src/hardenedTransport", () => ({
-  hardenedLocalRequest: async (url: string, init?: RequestInit) => {
-    const response = await globalThis.fetch(url, init);
-    return { response, boundIp: "127.0.0.1", originalHost: new URL(url).host };
-  },
-  createHardenedLocalFetch: (_opts?: { enforceBinding?: boolean }) => {
-    return async (url: string | URL | Request, init?: RequestInit) => {
-      return globalThis.fetch(url, init);
+// Mock @workspace/ai-providers — override openAiCompatibleChat to use globalThis.fetch
+// directly instead of the production OpenAI SDK + DNS-pinned transport. The
+// relative-path vi.mock for hardenedTransport does not intercept internal imports
+// within the package (Vitest resolves them to different module IDs), so the whole
+// module must be mocked with vi.importActual + function-level overrides.
+vi.mock("@workspace/ai-providers", async () => {
+  // @workspace/ai-providers → index.ts → @workspace/db which throws without DATABASE_URL.
+  // Set a dummy value so vi.importActual can load the module without a real DB.
+  if (!process.env.DATABASE_URL) process.env.DATABASE_URL = "postgresql://fake";
+  const actual =
+    await vi.importActual<typeof import("@workspace/ai-providers")>("@workspace/ai-providers");
+
+  const fakeOpenAiCompatibleChat = async (req: any): Promise<any> => {
+    const emptyUsage = { promptTokens: null, completionTokens: null, totalTokens: null };
+    const started = Date.now();
+    const provider = req.provider;
+    const model = (req.model || "").trim();
+
+    // API key check for cloud providers (matches real openAiCompatibleChat).
+    if (!(req.apiKey?.trim()) && !req.allowEmptyApiKey) {
+      return {
+        ok: false,
+        provider,
+        model,
+        safeError: `${provider}_api_key_not_configured`,
+        latencyMs: Date.now() - started,
+        usage: emptyUsage,
+      };
+    }
+
+    // When enforceLocalBinding is NOT set, delegate to the real function —
+    // the test sets globalThis.fetch so the OpenAI SDK uses the mock.
+    if (!req.enforceLocalBinding) {
+      return actual.openAiCompatibleChat(req);
+    }
+
+    // Build OpenAI-format body (mirrors real openAiCompatibleChat).
+    type ContentPart =
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } };
+    const userContent: ContentPart[] = [{ type: "text", text: req.userPrompt }];
+    for (const img of req.images ?? []) {
+      userContent.push({
+        type: "image_url",
+        image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+      });
+    }
+    const messages: Array<{ role: "system" | "user"; content: string | ContentPart[] }> = [];
+    if (req.systemPrompt?.trim()) {
+      messages.push({ role: "system", content: req.systemPrompt });
+    }
+    const imageCount = req.images?.length ?? 0;
+    messages.push({
+      role: "user",
+      content: imageCount > 0 ? userContent : req.userPrompt,
+    });
+    const body: Record<string, unknown> = {
+      model,
+      temperature: req.temperature ?? 0.1,
+      messages,
+      ...(req.maxTokens != null ? { max_tokens: req.maxTokens } : {}),
+      ...(req.jsonMode !== false ? { response_format: { type: "json_object" } } : {}),
+      ...(req.extraBody ?? {}),
     };
-  },
-  resolveAndValidatePrivateIps: async (hostname: string) => ({
-    ips: ["127.0.0.1"],
-    isPrivate: true,
-  }),
-  assertNoRedirect: (resp: Response) => resp,
-  rewriteUrlToValidatedIp: async (rawUrl: string) => ({
-    rewrittenUrl: rawUrl,
-    originalHost: new URL(rawUrl).host,
-    boundIp: "127.0.0.1",
-  }),
-  createBoundFetch: async () => globalThis.fetch,
-}));
+
+    const baseURL = (req.baseURL || "").replace(/\/$/, "");
+    const url = `${baseURL}/chat/completions`;
+    try {
+      const resp = await globalThis.fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          provider,
+          model,
+          safeError: `${provider}_http_${resp.status}`,
+          latencyMs: Date.now() - started,
+          usage: emptyUsage,
+        };
+      }
+      const data = (await resp.json()) as any;
+      const text = data?.choices?.[0]?.message?.content ?? "";
+      const usage = data?.usage ?? {};
+      return {
+        ok: true,
+        text,
+        provider,
+        model,
+        latencyMs: Date.now() - started,
+        usage: {
+          promptTokens: usage.prompt_tokens ?? null,
+          completionTokens: usage.completion_tokens ?? null,
+          totalTokens: usage.total_tokens ?? null,
+        },
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        provider,
+        model,
+        safeError: err?.message ?? "fetch failed",
+        latencyMs: Date.now() - started,
+        usage: emptyUsage,
+      };
+    }
+  };
+
+  return { ...actual, openAiCompatibleChat: fakeOpenAiCompatibleChat };
+});
 
 describe("local_openai_compatible provider identity", () => {
   it("registers as LOCAL and never as cloud merely for OpenAI wire format", () => {
