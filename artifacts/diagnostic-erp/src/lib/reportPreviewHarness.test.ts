@@ -192,6 +192,28 @@ function storeClick(region: string, label: string) {
 const cervicalHerniation = storeClick("Cervical Spine", "Disc herniation C5-C6");
 const cervicalCord = storeClick("Cervical Spine", "Cord compression C5-C6");
 
+const brainHemorrhage = storeClick("Brain", "Basal ganglia hemorrhage");
+const brainMass = storeClick("Brain", "Mass lesion");
+const brainSmallVessel = (() => {
+  const first = storeClick("Brain", "Fazekas 2");
+  const tile = tileByLabel("Lacunar infarcts");
+  const outcome = useWorkspace
+    .getState()
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", {}));
+  if (outcome !== "applied") throw new Error(`store click refused Lacunar infarcts: ${outcome}`);
+  const st = useWorkspace.getState();
+  return {
+    narrative: {
+      clinicalHistory: st.clinicalHistoryText,
+      technique: st.techniqueText,
+      findings: st.findingsText,
+      impression: st.impressionText,
+      recommendation: st.recommendationText,
+    },
+    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+  };
+})();
+
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
@@ -333,6 +355,24 @@ const CASES: Case[] = [
     narrative: cervicalCord.narrative, replaced: cervicalCord.replaced,
   },
   {
+    key: "14-brain-hemorrhage", title: "MRI Brain — Basal ganglia hemorrhage (critical)",
+    note: "A critical hemorrhage click: the normal hemorrhage denial must retire, the impression must name the hemorrhage, and the printed page must bold the finding.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainHemorrhage.narrative, replaced: brainHemorrhage.replaced,
+  },
+  {
+    key: "15-brain-mass", title: "MRI Brain — Mass lesion with edema (critical)",
+    note: "Mass effect carries its own concept and retires the parenchyma normal; the impression must name the mass without importing advice from another box.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainMass.narrative, replaced: brainMass.replaced,
+  },
+  {
+    key: "16-brain-small-vessel", title: "MRI Brain — Fazekas 2 + Lacunar infarcts (two clicks)",
+    note: "Two small-vessel disease boxes on one report: both findings must coexist in the findings text, both impressions must appear, and neither may retire the other.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainSmallVessel.narrative, replaced: brainSmallVessel.replaced,
+  },
+  {
     key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
     note: "Read only to compare with the case above: same study, format chosen from the DICOM header alone. This is what #827 removed.",
     study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
@@ -453,6 +493,9 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "11-cervical-normal": { count: 0 },
   "12-cervical-herniation-click": { count: 1, contains: "Central disc herniation at C5-C6" },
   "13-cervical-cord-click": { count: 1, contains: "Cervical cord compression at C5-C6" },
+  "14-brain-hemorrhage": { count: 1, contains: "hemorrhage" },
+  "15-brain-mass": { count: 1, contains: "mass lesion" },
+  "16-brain-small-vessel": { count: 2, contains: "Fazekas grade 2" },
 };
 
 /**
@@ -487,6 +530,18 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
   "13-cervical-cord-click": {
     must: ["Urgent neurosurgical consultation"],
     mustNot: ["Conservative management with physiotherapy", "Immediate stroke team notification"],
+  },
+  "14-brain-hemorrhage": {
+    must: ["Immediate neurosurgical consultation"],
+    mustNot: ["Immediate stroke team notification", "Conservative management with NSAIDs"],
+  },
+  "15-brain-mass": {
+    must: [],
+    mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
+  },
+  "16-brain-small-vessel": {
+    must: ["Aggressive vascular risk factor management"],
+    mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
   },
 };
 
@@ -584,10 +639,11 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    // Three of these thirteen are the cervical examination (the one-click normal,
+    // Three of these sixteen are the cervical examination (the one-click normal,
     // a disc click and a cord click) — added with the cervical catalogue so its
-    // wording can be read on paper before anything ships.
-    expect(CASES.length).toBe(13);
+    // wording can be read on paper before anything ships. Three more are the
+    // brain catalogue additions (hemorrhage, mass, small-vessel multi-click).
+    expect(CASES.length).toBe(16);
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
