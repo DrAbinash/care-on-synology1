@@ -115,11 +115,19 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * gated control, so the two changes are additive rather than competing; the
  * combined numbers were measured on the merged tree rather than summed from the
  * two PRs, and they agreed.
+ *
+ * VIEWER 7 → 9 is "SELECT IMAGES FROM PACS": one early return in the handler that
+ * opens it, one that removes the affordance altogether. Decided as clinical, not
+ * cosmetic — the picker writes pictures into the delivered document through
+ * `radiology_report_key_images`, which is what print and PDF are built from, and
+ * an image added after signature changes what was signed. The server refuses the
+ * same write on its own (`keyImagesLocked`), so the UI gate is the polite half of
+ * a guard that already holds.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   [CANVAS]: 60,
   [RAIL]: 34,
-  [VIEWER]: 7,
+  [VIEWER]: 9,
 };
 
 /**

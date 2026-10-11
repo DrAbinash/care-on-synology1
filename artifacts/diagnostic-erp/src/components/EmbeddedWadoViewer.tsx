@@ -435,9 +435,14 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances/${encodeURIComponent(inst.uid)}/rendered?quality=90&viewport=800,800`;
     setLoadingFrames(true);
     const img = new Image();
-    img.onload = () => { setFrameUrl(url); setLoadingFrames(false); };
+    // Store the AUTHENTICATED url, not the bare one. `<img src>` cannot send an
+    // Authorization header and staff auth is Bearer-only, so putting `url` into
+    // state made the visible element re-request unauthenticated and 401 — Frames
+    // mode showed an empty view box while the preloader above succeeded.
+    const authedUrl = withDicomWebAuth(url) ?? url;
+    img.onload = () => { setFrameUrl(authedUrl); setLoadingFrames(false); };
     img.onerror = () => { setLoadingFrames(false); };
-    img.src = withDicomWebAuth(url) ?? url;
+    img.src = authedUrl;
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));

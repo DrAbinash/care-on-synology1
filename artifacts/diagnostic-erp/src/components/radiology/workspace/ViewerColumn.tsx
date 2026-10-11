@@ -7,9 +7,11 @@ import type { RadiologyWorkspaceVm } from "./types";
 import {
   ResizableHandle, ResizablePanel,
 } from "@/components/ui/resizable";
+import { useState } from "react";
 import { api } from "@/lib/fetchApi";
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
+import PacsImagePickerDialog from "@/components/radiology/PacsImagePickerDialog";
 import FrozenKeyImagesRail, {
   uploadFrozenKeyImage,
   useFrozenKeyImages,
@@ -447,6 +449,40 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     workspaceEntry,
   } = vm;
 
+  // SELECT IMAGES FROM PACS — the Orthanc picker. Deliberately not gated on the
+  // viewer: it browses the study through CARE's own DICOMweb proxy, so it keeps
+  // working when OHIF is down. A draft is created silently on click, because
+  // "save the report first" is not a step a radiologist should have to know.
+  const [pacsDraftId, setPacsDraftId] = useState<number | null>(null);
+  const [pacsPickerOpen, setPacsPickerOpen] = useState(false);
+  const openPacsPicker = async () => {
+    if (contentLocked) return;
+    let id = draftId ?? null;
+    if (!id) id = await ensureDraftOnce();
+    if (!id) {
+      toast({
+        title: "Could not open PACS images",
+        description: "The report could not be saved, so images cannot be attached yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setPacsDraftId(id);
+    setPacsPickerOpen(true);
+  };
+  const pacsStudyUid = workflow.currentRow?.studyInstanceUID ?? null;
+  const pacsPatientId = Number(workflow.currentRow?.patientId);
+  const pacsContext = () =>
+    pacsPickerOpen && pacsDraftId && pacsStudyUid
+      ? {
+          draftId: pacsDraftId,
+          studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+          patientId: Number.isFinite(pacsPatientId) && pacsPatientId > 0 ? pacsPatientId : null,
+          accessionNumber: workflow.currentRow?.accessionNumber ?? null,
+          studyInstanceUid: pacsStudyUid,
+        }
+      : null;
+
   return (
     <>
           {showEmbeddedViewer && (
@@ -605,6 +641,12 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                         onAiSelectedIdsChange={setAiSelectedKeyImageIds}
                         captureBusy={captureBusy}
                         captureBlockedTitle={ohifUnavailable ? "OHIF not reachable for this study" : undefined}
+                        onPickFromPacs={contentLocked ? undefined : () => { void openPacsPicker(); }}
+                        pacsBlockedTitle={
+                          pacsStudyUid
+                            ? undefined
+                            : "This report is not linked to a PACS study yet"
+                        }
                         onCaptureRequest={
                           contentLocked || ohifUnavailable
                             ? undefined
@@ -632,6 +674,16 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       />
                     </div>
                   )}
+                  <PacsImagePickerDialog
+                    open={pacsPickerOpen}
+                    onClose={() => setPacsPickerOpen(false)}
+                    studyInstanceUID={pacsStudyUid}
+                    getContext={pacsContext}
+                    onAttached={() => {
+                      void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(pacsDraftId) });
+                      void qc.invalidateQueries({ queryKey: ["report-image-references", pacsDraftId] });
+                    }}
+                  />
                 </div>
               </ResizablePanel>
               <ResizableHandle />
