@@ -44,14 +44,13 @@
  * normal.`, because the guard compared the model's longer wording against the
  * radiologist's shorter one. Both are pinned by cases in
  * `reportingAssistant.relations.test.ts`, transcribed from these answers.
- */
  *
- * Both of those refusals were invisible before this run: the added report was not
- * part of what the checks considered "supplied", and nothing required the rows to
- * COVER the dictation — only to stay inside it. The two defects the same run
- * exposed and fixed were the merged study being reported as invented content
- * (`level_change`/`unsupported_abnormality` on a faithful merge) and "hemorrhage"
- * counted as an invented abnormality against a dictation that said "haemorrhage".
+ * The two refusals above were invisible before any of this: the added report was
+ * not part of what the checks considered "supplied", and nothing required the rows
+ * to COVER the dictation — only to stay inside it. The same first run exposed the
+ * merged study being reported as invented content (`level_change` /
+ * `unsupported_abnormality` on a faithful merge) and "hemorrhage" counted as an
+ * invented abnormality against a dictation that said "haemorrhage".
  */
 import { describe, expect, it } from "vitest";
 import { buildUserPrompt } from "./composeEngine";
