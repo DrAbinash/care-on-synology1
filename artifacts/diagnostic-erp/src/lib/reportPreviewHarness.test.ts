@@ -42,6 +42,12 @@ import {
 import { billedStudyContextForNormal, resolveNormalBootstrapFormat } from "./zai-workspace/normalBootstrap";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
+  defaultScreeningState,
+  screeningLedgerBundles,
+} from "@/lib/mriSpineScreening";
+import { SCREENING_SCHEMAS } from "@/lib/mriSpineScreeningSchemas";
+import { resolveScreeningRoles } from "@/lib/mriSpineScreeningRoles";
+import {
   renderReportDocument,
   resolvePresentationTemplate,
   type ReportDocumentModel,
@@ -218,6 +224,74 @@ const brainSmallVessel = (() => {
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
+/**
+ * A whole-spine SCREENING study with one dorsal abnormality recorded in the
+ * screening panel — the workflow the panel exists for, read out of the real
+ * store rather than written by hand.
+ *
+ * It is in this harness because of what the store used to produce: the panel
+ * writes its one limitation sentence as its own ledger row, and until that row
+ * declared what it owns, the sentence it deleted was every scaffold normal that
+ * happened to contain the word "screening" — 13 of the 16 findings rows of this
+ * very examination. The printed page is the only place that mistake was readable.
+ */
+const wholeSpineScreeningAbnormal = (() => {
+  const ctx = buildReportingStudyContext({
+    modality: "MR",
+    studyDescription: "MRI WHOLE SPINE SCREENING",
+    regions: ["Whole Spine"],
+    source: "auto",
+  });
+  useWorkspace.setState({
+    findingsText: "", impressionText: "", recommendationText: "", techniqueText: "",
+    clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
+    screening: defaultScreeningState(),
+    impressionNeedsRefresh: false, impressionOrderFrozen: false,
+    lastPatchSnapshot: null, patchUndoStack: [], confirmOverwriteOpen: false,
+    pendingPathologyPatch: null, pendingFormatIds: [], mergePreviewOpen: false,
+    appliedFormatReportTitle: null, appliedFormatName: null, startingCanvasBaseline: null,
+    canalApProvenance: {}, dorsalCanalForced: false, isFinalized: false, isDirty: false,
+    reportingContext: ctx, reportFormats: DEFAULT_REPORT_FORMATS, selectedFormatIds: [],
+  });
+  const generated = useWorkspace.getState().generateProfessionalReport(ctx);
+  if (generated.status !== "generated") {
+    throw new Error(`whole-spine screening refused: ${JSON.stringify(generated)}`);
+  }
+  useWorkspace.getState().replaceScreeningRoles(
+    resolveScreeningRoles({ name: "MRI WHOLE SPINE SCREENING" }).roles,
+  );
+  useWorkspace.getState().setScreeningRegion("dorsal", {
+    selections: { bodies_marrow: [{ optionId: "compression_deformity" }] },
+  });
+  // The panel's own ledger plan, applied through the panel's own two calls.
+  const ws = useWorkspace.getState();
+  const plan = screeningLedgerBundles({
+    state: ws.screening,
+    schemas: SCREENING_SCHEMAS,
+    sequences: ws.sequencesAvailable,
+    numbering: ws.lumbarNumbering,
+    ledgerRegion: "Whole Spine",
+  });
+  for (const bundle of plan) {
+    const outcome = useWorkspace.getState().applyMacroBundle({
+      bundleId: bundle.bundleId, observations: bundle.observations,
+    });
+    if (outcome !== "applied") throw new Error(`screening bundle ${bundle.bundleId} -> ${outcome}`);
+  }
+  useWorkspace.getState().refreshImpressionFromLedger({ excludeBaselineObservations: true });
+  const st = useWorkspace.getState();
+  return {
+    narrative: {
+      clinicalHistory: st.clinicalHistoryText,
+      technique: st.techniqueText,
+      findings: st.findingsText,
+      impression: st.impressionText,
+      recommendation: st.recommendationText,
+    },
+    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+  };
+})();
+
 /** What the auto-open bootstrap actually chooses once the Templates row is in
  *  the library — the report the radiologist sees before touching anything. */
 const autoOpenedLs = (() => {
@@ -391,6 +465,12 @@ const CASES: Case[] = [
       recommendation: brainPlainAuto.recommendation,
     },
   },
+  {
+    key: "18-whole-spine-screening", title: "MRI Whole Spine Screening — one dorsal abnormality",
+    note: "The screening page: every region's screening normal must still be on the paper, the dorsal finding must be added, and the limitation line must appear once.",
+    study: { modality: "MRI", bodyPart: "Whole Spine", title: "MRI WHOLE SPINE SCREENING" },
+    narrative: wholeSpineScreeningAbnormal.narrative, replaced: wholeSpineScreeningAbnormal.replaced,
+  },
 ];
 
 function toReportData(c: Case, patient: ReportData): ReportData {
@@ -504,6 +584,10 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "15-brain-mass": { count: 1, contains: "mass lesion" },
   "16-brain-small-vessel": { count: 2, contains: "Fazekas grade 2" },
   "17-brain-chronic-infarct": { count: 1, contains: "consistent with chronic infarct" },
+  // The screening abnormality is the only thing on that page a reader must find
+  // first: every other line is a screening statement about a region that was not
+  // the reason for the examination.
+  "18-whole-spine-screening": { count: 1, contains: "Compression deformity" },
 };
 
 /**
@@ -651,12 +735,12 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    // Three of these seventeen are the cervical examination (the one-click normal,
+    // Three of these eighteen are the cervical examination (the one-click normal,
     // a disc click and a cord click) — added with the cervical catalogue so its
     // wording can be read on paper before anything ships. Four more are the brain
     // catalogue additions (hemorrhage, mass, small-vessel multi-click, chronic
-    // infarct).
-    expect(CASES.length).toBe(17);
+    // infarct). The eighteenth is the whole-spine screening page.
+    expect(CASES.length).toBe(18);
 
     // Staging an infarct as chronic retires the acute-infarct denial and the
     // whole-examination parenchyma normal — encephalomalacia is lost parenchyma —
@@ -672,6 +756,34 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     expect(brainChronicInfarct.narrative.findings).not.toContain("Brain parenchyma shows normal signal intensity");
     expect(brainChronicInfarct.narrative.findings).toContain("No restricted diffusion is seen on DWI/ADC.");
     expect(brainChronicInfarct.narrative.impression).toMatch(/chronic right cerebral infarct/i);
+
+    // The screening page, on paper. One dorsal abnormality was recorded on a
+    // whole-spine screening study, so the page must still carry every other
+    // region's screening statement — 15 of them. Until the limitation row declared
+    // what it owns, writing its one line deleted 13 of the 16 findings lines this
+    // examination's normal report carries. The limitation is a claim about the
+    // examination, so it must appear exactly once, and nothing may be added.
+    const screeningFindings = wholeSpineScreeningAbnormal.narrative.findings;
+    expect(screeningFindings.match(/SCREENING STUDIES ARE LIMITED/gi)).toHaveLength(1);
+    expect(screeningFindings).toContain("Vertebral Bodies / Marrow: Compression deformity");
+    for (const region of ["Cervical spine", "Dorsal spine", "Lumbar spine"]) {
+      expect(screeningFindings).toContain(`${region}: Alignment is within normal limits on screening sequences.`);
+      expect(screeningFindings).toContain(`${region}: No significant disc herniation is identified on screening sequences.`);
+    }
+    expect(screeningFindings).toContain("Cervical spine: Cord morphology and signal are within normal limits on screening sequences.");
+    expect(screeningFindings).toContain("Lumbar spine: Conus medullaris appears normal on screening images.");
+    expect(wholeSpineScreeningAbnormal.narrative.impression)
+      .toMatch(/Dorsal Spine Screening:.*Compression deformity/);
+
+    // Every case must carry a printed-emphasis expectation. `?? { count: 0 }` made
+    // a missing entry mean "this page must bold nothing", so deleting an entry —
+    // or renaming a case key — silently turned the check into its opposite.
+    for (const c of CASES) {
+      expect(PRINT_EMPHASIS[c.key], `case ${c.key} has no printed-emphasis expectation`).toBeTruthy();
+    }
+    for (const key of Object.keys(PRINT_EMPHASIS)) {
+      expect(CASES.some((c) => c.key === key), `PRINT_EMPHASIS names ${key}, no such case`).toBe(true);
+    }
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
