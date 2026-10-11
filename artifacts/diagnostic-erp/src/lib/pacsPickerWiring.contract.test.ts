@@ -53,6 +53,11 @@ function segments(body: string): string[] {
   return out.map((s) => s.trim()).filter(Boolean);
 }
 
+/** Statements must be read as code: this file's own comments name what they forbid. */
+function code(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 /** `open, onClose, onPick?` — a destructure list. */
 function destructuredNames(body: string): string[] {
   return segments(body)
@@ -159,5 +164,80 @@ describe("PACS picker call-site wiring (the @ts-nocheck blind spot)", () => {
     const dialog = read(DIALOG);
     // A report with no PACS link must be told so, not shown an empty sequence pane.
     expect(dialog).toContain("not linked to a PACS study");
+  });
+});
+
+/**
+ * §2 — the key-images rail and the embedded viewer used to mount on
+ * `workflow.currentRow`, which is the reading queue's row for the CURRENT FILTER.
+ * Changing the modality or date filter (or opening a report by link) made it null,
+ * so the only way to attach a PACS image vanished from a report that was still
+ * open, still locked to this radiologist and still being written. Identity now
+ * comes from `resolveOpenStudyIdentity`, off the same by-id read that already
+ * decides the lock and the signed status.
+ *
+ * These assert the structure, not one spelling: handing the queue back to either
+ * consumer fails, and so does deriving identity from it inside the bridge.
+ */
+describe("the open report's image identity does not ride on the filtered queue", () => {
+  const COLUMN = "components/radiology/workspace/ViewerColumn.tsx";
+  const CLINICAL = "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
+  const BRIDGE = "hooks/radiology-workspace/useOhifViewerBridge.ts";
+
+  it("identity is resolved from the by-id worklist read", () => {
+    const src = read(CLINICAL);
+    expect(src).toContain("resolveOpenStudyIdentity({");
+    const memo = balanced(src.slice(src.indexOf("const reportIdentity = useMemo(")), "");
+    expect(memo, "no reportIdentity memo found").not.toBeNull();
+    expect(memo).toContain("detail: worklistDetailQ.data");
+    expect(memo).toContain("queueRow: workflow.currentRow");
+    // …and it reaches the column that mounts the rail. Both the bridge args and
+    // the vm bag hold a bare `reportIdentity,` at the same indent, so the check
+    // is bound to the bag itself — otherwise deleting it from the vm survives.
+    const vmBody = balanced(src.slice(src.indexOf("  const vm = {")), "");
+    expect(vmBody, "the vm bag was not found").not.toBeNull();
+    expect(destructuredNames(vmBody!), "reportIdentity never reaches the viewer column").toContain("reportIdentity");
+  });
+
+  it("the viewer bridge is not handed the reading queue at all", () => {
+    const src = read(CLINICAL);
+    const args = balanced(src.slice(src.indexOf("useOhifViewerBridge({")), "");
+    expect(args, "useOhifViewerBridge is not called here").not.toBeNull();
+    const given = destructuredNames(code(args!));
+    expect(given).toContain("reportIdentity");
+    expect(given, "the bridge can reach the filtered queue — identity can come from the wrong study").not.toContain("workflow");
+    // The options type must not offer it either, or the next edit takes it back.
+    const options = balanced(read(BRIDGE), "export type UseOhifViewerBridgeOptions =");
+    expect(options).not.toBeNull();
+    expect(options).not.toContain("workflow");
+    const bridgeCode = code(read(BRIDGE));
+    expect(bridgeCode, "the bridge reads the queue row again").not.toContain("workflow.currentRow");
+  });
+
+  it("every study field the bridge uses is derived from the resolved identity", () => {
+    const src = read(BRIDGE);
+    for (const local of ["openStudyUid", "openPatientId", "openLinkedStudyId", "openAccession"]) {
+      expect(src, `${local} is not derived from reportIdentity`).toContain(`const ${local} = reportIdentity?.`);
+    }
+  });
+
+  it("the rail mounts on the open report, not on a queue row", () => {
+    const src = read(COLUMN);
+    const mount = src.slice(src.indexOf("{!viewerColumnExpanded && reportIdentity"));
+    expect(mount.length, "the key-images rail no longer mounts on reportIdentity").toBeGreaterThan(0);
+    expect(mount.slice(0, 400)).toContain("<FrozenKeyImagesRail");
+    expect(src).not.toContain("{!viewerColumnExpanded && workflow.currentRow");
+  });
+
+  it("no live viewer-column image prop reads off the queue row", () => {
+    for (const name of ["EmbeddedWadoViewer", "FrozenKeyImagesRail"]) {
+      const offenders = passedProps(COLUMN, name)
+        .filter((p) => p.value.includes("workflow.currentRow"))
+        .map((p) => p.name);
+      expect(offenders, `${name}: identity from the filtered queue: ${offenders.join(", ")}`).toEqual([]);
+    }
+    const ctx = balanced(read(COLUMN), "const pacsContext =");
+    expect(ctx, "the picker context is gone").not.toBeNull();
+    expect(ctx).not.toContain("workflow.currentRow");
   });
 });

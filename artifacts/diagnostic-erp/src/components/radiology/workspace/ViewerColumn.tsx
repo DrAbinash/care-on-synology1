@@ -290,6 +290,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     recommendationText,
     referringDoctorName,
     reportComposer,
+    reportIdentity,
     reportImagesOpen,
     reportLayout,
     reportLayoutLabel,
@@ -471,15 +472,18 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     setPacsDraftId(id);
     setPacsPickerOpen(true);
   };
-  const pacsStudyUid = workflow.currentRow?.studyInstanceUID ?? null;
-  const pacsPatientId = Number(workflow.currentRow?.patientId);
+  // Identity comes from the open report, not from the filtered reading queue: a
+  // radiologist who changes the modality/date filter, or who opened this report by
+  // link, must still be able to attach images to the study in front of them.
+  const pacsStudyUid = reportIdentity?.studyInstanceUID ?? null;
+  const pacsPatientId = Number(reportIdentity?.patientId);
   const pacsContext = () =>
     pacsPickerOpen && pacsDraftId && pacsStudyUid
       ? {
           draftId: pacsDraftId,
-          studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+          studyId: reportIdentity?.studyId ?? studyId ?? null,
           patientId: Number.isFinite(pacsPatientId) && pacsPatientId > 0 ? pacsPatientId : null,
-          accessionNumber: workflow.currentRow?.accessionNumber ?? null,
+          accessionNumber: reportIdentity?.accessionNumber ?? null,
           studyInstanceUid: pacsStudyUid,
         }
       : null;
@@ -510,10 +514,10 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                   <div className={reportImagesOpen ? "hidden h-0 overflow-hidden" : "flex-1 min-h-0"}>
                     <EmbeddedWadoViewer
                       ref={embeddedViewerRef}
-                      studyInstanceUID={workflow.currentRow?.studyInstanceUID ?? null}
-                      worklistId={workflow.currentRow?.id ?? studyId ?? null}
-                      accessionNumber={workflow.currentRow?.accessionNumber ?? null}
-                      patientName={canonicalDemography.patientName || workflow.currentRow?.patientName || study?.patient?.name || null}
+                      studyInstanceUID={pacsStudyUid}
+                      worklistId={reportIdentity?.worklistId ?? studyId ?? null}
+                      accessionNumber={reportIdentity?.accessionNumber ?? null}
+                      patientName={canonicalDemography.patientName || reportIdentity?.patientName || study?.patient?.name || null}
                       columnExpanded={viewerColumnExpanded}
                       onColumnExpandedChange={setViewerColumnExpanded}
                       onViewportContextChange={(ctx) => {
@@ -555,11 +559,11 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 const fd = new FormData();
                                 fd.append("image", payload.blob, "capture.jpg");
                                 fd.append("draftId", String(id));
-                                if (workflow.currentRow?.studyId ?? studyId) {
-                                  fd.append("studyId", String(workflow.currentRow?.studyId ?? studyId));
+                                if (reportIdentity?.studyId ?? studyId) {
+                                  fd.append("studyId", String(reportIdentity?.studyId ?? studyId));
                                 }
-                                if (workflow.currentRow?.patientId) {
-                                  fd.append("patientId", String(workflow.currentRow.patientId));
+                                if (reportIdentity?.patientId) {
+                                  fd.append("patientId", String(reportIdentity.patientId));
                                 }
                                 fd.append("sourceType", "VIEWPORT_CAPTURE");
                                 fd.append("caption", caption);
@@ -605,7 +609,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       ohifImageAdding={ohifImageAdding}
                     />
                   </div>
-                  {!viewerColumnExpanded && workflow.currentRow && (
+                  {!viewerColumnExpanded && reportIdentity && (
                     <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
                       <FrozenKeyImagesRail
                         draftId={draftId ?? null}

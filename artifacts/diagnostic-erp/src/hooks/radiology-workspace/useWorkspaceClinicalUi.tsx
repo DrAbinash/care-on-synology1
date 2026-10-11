@@ -104,6 +104,7 @@ import {
   doctorCatalogLabels,
   type ReportDemography,
 } from "@/lib/reportDemography";
+import { resolveOpenStudyIdentity } from "@/lib/openStudyIdentity";
 import type { PrintClinic } from "@/lib/reportPdfGenerator";
 import { loadPrintSettings, savePrintSettings } from "@/lib/reportPdfGenerator";
 import {
@@ -770,9 +771,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // until the poll happened to bring the row back. This query is keyed on
   // `studyId` and refetches on study change, so it is the canonical source.
   const worklistDetailQ = useQuery<{
+    id?: number;
     status?: string | null;
     dicomMetadata?: string | Record<string, unknown> | null;
     age?: string | null;
+    studyId?: number | null;
+    patientId?: number | null;
+    patientName?: string | null;
+    accessionNumber?: string | null;
+    studyInstanceUID?: string | null;
+    modality?: string | null;
   }>({
     queryKey: ["pacs-worklist-detail", studyId],
     queryFn: () => api.get(`/api/radiology/pacs-worklist/${studyId}`),
@@ -788,6 +796,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
    */
   const authoritativeStatus = worklistDetailQ.data?.status ?? workflow.currentRow?.status ?? null;
   const studyIsSignedElsewhere = authoritativeStatus === "REPORT_FINAL" || authoritativeStatus === "DELIVERED";
+
+  /**
+   * Which study this report is about — for the viewer, the image rail and every
+   * image attachment. The queue row answers to the reading-queue FILTER (modality,
+   * date preset) and is null for a report opened by link, so identity comes from
+   * the same by-id read that decides the lock and the signed status above.
+   * Navigation (Prev/Next/position) still walks the filtered queue; only identity
+   * is separated here.
+   */
+  const reportIdentity = useMemo(
+    () => resolveOpenStudyIdentity({
+      studyId,
+      detail: worklistDetailQ.data,
+      queueRow: workflow.currentRow,
+    }),
+    [studyId, worklistDetailQ.data, workflow.currentRow],
+  );
 
   // 2. Study lock (claim/heartbeat/release)
   const studyLock = useStudyLock(studyId, {
@@ -2542,10 +2567,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     captureBusy,
     showEmbeddedViewer,
     layoutMode,
-    workflow,
     embeddedViewerRef,
     toast,
     ensureDraftOnce,
+    reportIdentity,
     imageRefs,
     frozenKeyImagesQ,
     appliedPathologyPatches,
@@ -3338,6 +3363,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     recommendationText,
     referringDoctorName,
     reportComposer,
+    reportIdentity,
     reportImagesOpen,
     reportLayout,
     reportLayoutLabel,
