@@ -27,17 +27,32 @@ import { describe, expect, it } from "vitest";
 import type { AiComposeJobKind } from "@workspace/db/schema";
 import { buildCareSystemPrompt } from "./persona";
 import { buildUserPrompt, runReportComposer } from "./composeEngine";
-import type { ComposerProviderName } from "./providers";
-import { resolveCloudComposerConfig } from "./providers/cloudComposerConfig";
+import {
+  resolveCloudComposerConfig,
+  type CloudComposerProvider,
+} from "./providers/cloudComposerConfig";
 import { planComposerTextContext } from "./composerContextBudget";
 import { validateComposerOutput } from "./validateOutput";
 import { parseComposerSnapshot } from "./types";
 
 const WANTED = process.env.RUN_LIVE_CLOUD === "1";
-const PROVIDERS = (process.env.LIVE_CLOUD_PROVIDERS ?? "openai,qwen,deepseek")
+/**
+ * Only the three providers CARE treats as cloud. A name outside this list is
+ * reported and dropped rather than dialled — `local_openai_compatible` is a local
+ * endpoint, and sending synthetic-but-realistic clinical text to something because
+ * a list happened to name it is the mistake this gate exists to prevent.
+ */
+const CLOUD_NAMES: readonly CloudComposerProvider[] = ["openai", "qwen", "deepseek"];
+const REQUESTED = (process.env.LIVE_CLOUD_PROVIDERS ?? CLOUD_NAMES.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const PROVIDERS = REQUESTED.filter((n): n is CloudComposerProvider =>
+  (CLOUD_NAMES as readonly string[]).includes(n),
+);
+for (const ignored of REQUESTED.filter((n) => !PROVIDERS.includes(n as CloudComposerProvider))) {
+  console.warn(`[cloud-live] "${ignored}" is not a CARE cloud provider — not dialled.`);
+}
 
 /** Why a provider was not tried, printed instead of silently skipped. */
 const skipped: Array<{ provider: string; reason: string }> = [];
@@ -102,7 +117,7 @@ const OPS: Array<{ kind: AiComposeJobKind; label: string; extra?: Record<string,
 describe.runIf(WANTED)("the three operations against a configured cloud provider", () => {
   for (const name of PROVIDERS) {
     it(`${name}: answers, is attributed correctly, and loses nothing`, async () => {
-      const cfg = await resolveCloudComposerConfig(name as ComposerProviderName);
+      const cfg = await resolveCloudComposerConfig(name);
       if (cfg.enabled === false) {
         skipped.push({ provider: name, reason: "the admin has switched it OFF" });
         return;
@@ -117,7 +132,7 @@ describe.runIf(WANTED)("the three operations against a configured cloud provider
         const run = await runReportComposer({
           kind: op.kind,
           snapshot,
-          providerOverride: name as ComposerProviderName,
+          providerOverride: name,
           allowDeterministicFallback: false,
         });
 
@@ -148,7 +163,7 @@ describe.runIf(WANTED)("what a cloud provider does when the request does not fit
     // job must FAIL with the reason named, and the model must never be shown half
     // the report and graded on it.
     for (const name of PROVIDERS) {
-      const cfg = await resolveCloudComposerConfig(name as ComposerProviderName);
+      const cfg = await resolveCloudComposerConfig(name);
       if (!cfg.apiKey || cfg.enabled === false) continue;
 
       const longFindings = `${LS_FINDINGS}\n`.repeat(40);
@@ -166,7 +181,7 @@ describe.runIf(WANTED)("what a cloud provider does when the request does not fit
       const run = await runReportComposer({
         kind: "PROFESSIONALIZE",
         snapshot,
-        providerOverride: name as ComposerProviderName,
+        providerOverride: name,
         allowDeterministicFallback: false,
       });
       expect(run.ok).toBe(false);
