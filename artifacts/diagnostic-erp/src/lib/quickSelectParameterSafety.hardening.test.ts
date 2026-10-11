@@ -512,15 +512,21 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Acute hemorrhage",
       "Acute infarct (DWI)",
       "Basal ganglia hemorrhage",
+      // The cervical catalogue added two laterality boxes, at levels the lumbar
+      // set had no tile for. Both put `{side}` in the findings sentence and again
+      // in the impression sentence, which is why the token count below moves by
+      // four and the tile count by two.
+      "Foraminal stenosis C5-C6",
       "Foraminal stenosis L4-L5",
       "Hip effusion",
       "Maxillary sinusitis",
       "Meniscus tear",
+      "Nerve root compression C6",
       "Orbital cellulitis",
       "Renal calculus",
       "Rotator cuff tear",
     ]);
-    expect(affected.length).toBe(10);
+    expect(affected.length).toBe(12);
   });
 
   it("counts the tokens so a new one cannot arrive uncounted", () => {
@@ -534,7 +540,7 @@ describe("T8 — census over every shipped Quick Select template", () => {
         + ((t.impressionSentence ?? "").match(/\{severity\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{severity\}/g) ?? []).length;
     }
-    expect(side).toBe(14);
+    expect(side).toBe(18);
     expect(severity).toBe(1);
   });
 
