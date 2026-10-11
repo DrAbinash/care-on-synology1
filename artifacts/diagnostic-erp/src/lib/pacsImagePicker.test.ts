@@ -127,9 +127,14 @@ describe("buildPacsStillBody", () => {
     expect(buildPacsStillBody({ ...pick, frame: 5 }, ctx).frameNumber).toBe(5);
   });
 
-  it("labels the picture from the study itself so an untyped report still reads properly", () => {
-    expect(buildPacsStillBody(pick, ctx).caption).toBe("T2 AXIAL");
-    expect(buildPacsStillBody({ ...pick, seriesDescription: "" }, ctx).caption).toBe("Image 7");
+  it("sends no caption at all — what the study says is metadata, not a label", () => {
+    // CARE used to write the series description (or "Image 7") into the caption
+    // so a printed report would label its own pictures. A caption is now the
+    // radiologist's words or nothing, and the description still travels in its
+    // own field for the rail and the DICOM identity check.
+    expect("caption" in buildPacsStillBody(pick, ctx)).toBe(false);
+    expect("caption" in buildPacsStillBody({ ...pick, seriesDescription: "" }, ctx)).toBe(false);
+    expect(buildPacsStillBody(pick, ctx).seriesDescription).toBe("T2 AXIAL");
   });
 
   it("refuses to build a body around a malformed UID", () => {
@@ -184,9 +189,10 @@ describe("buildViewerStillBody", () => {
     expect(buildViewerStillBody({ ...ref, frameNumber: 7.4 }, ctx).frameNumber).toBe(7);
   });
 
-  it("never sends a blank caption, because an unlabelled figure prints as one", () => {
-    expect(buildViewerStillBody(ref, ctx).caption).toBe("Key image (viewer)");
-    expect(buildViewerStillBody({ ...ref, caption: "   " }, ctx).caption).toBe("Key image (viewer)");
+  it("sends the radiologist's words or an empty caption — never an invented one", () => {
+    expect(buildViewerStillBody(ref, ctx).caption).toBe("");
+    // Whitespace the radiologist typed is not a caption.
+    expect(buildViewerStillBody({ ...ref, caption: "   " }, ctx).caption).toBe("");
     expect(buildViewerStillBody({ ...ref, caption: " T2 axial C4 " }, ctx).caption).toBe("T2 axial C4");
   });
 

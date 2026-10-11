@@ -6,6 +6,8 @@ import {
   coerceFontFamilyKey,
   coerceImagePlacement,
   coerceLogoPosition,
+  KEY_IMAGE_ASPECTS,
+  keyImageLayoutCss,
   resolveFontFamilyCss,
 } from "./institutionalReportStyle";
 import type { RenderableTemplate } from "./reportPresentation";
@@ -98,6 +100,21 @@ describe("institutionalReportStyle", () => {
       headerRuleEnabled: false,
     });
     expect(css).toContain(".hdr-rule { display: none");
+  });
+
+  it("leaves the rail cell free to grow by a caption, in every port shape", () => {
+    // This layer wins over reportPresentation's with !important, so a 1/1 ratio
+    // here clipped the caption out of the printed page while the HTML still
+    // contained it. The square belongs to .image-viewport, never to .image-cell.
+    for (const aspect of [undefined, ...KEY_IMAGE_ASPECTS, "not-a-shape"] as const) {
+      const css = keyImageLayoutCss({ keyImageAspect: aspect });
+      const cellRules = (css.match(/\.image-cell\s*\{[^}]*\}/g) ?? []).filter((r) => !r.includes(".image-cell ."));
+      expect(cellRules.length, `aspect=${aspect}: no .image-cell rule found at all`).toBeGreaterThan(0);
+      for (const rule of cellRules) {
+        expect(rule, `aspect=${aspect}`).not.toMatch(/aspect-ratio:\s*1\s*\/\s*1/);
+      }
+      expect(css, `aspect=${aspect}: the port itself stays square`).toMatch(/\.image-viewport\s*\{[^}]*aspect-ratio/);
+    }
   });
 
   it("emits default square/contain + extreme-right layout CSS when style is null", () => {

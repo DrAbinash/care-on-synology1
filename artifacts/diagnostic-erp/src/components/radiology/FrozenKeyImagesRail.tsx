@@ -317,15 +317,17 @@ export default function FrozenKeyImagesRail({
                       id={img.id}
                       src={img.thumbnailUrl || img.imageUrl}
                       variant="thumbnail"
-                      alt={img.caption || "Key image"}
+                      alt={img.caption}
                       className="h-full w-full object-contain"
                       loading="lazy"
                     />
                   </button>
                   <div className="px-1.5 py-1 space-y-0.5">
-                    <p className="text-[9px] font-medium text-slate-800 line-clamp-2" title={img.caption}>
-                      {img.caption || "Untitled"}
-                    </p>
+                    {img.caption.trim() ? (
+                      <p className="text-[9px] font-medium text-slate-800 line-clamp-2" title={img.caption}>
+                        {img.caption}
+                      </p>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-1 text-[8px] text-slate-500">
                       <span className="truncate">{label}</span>
                       {img.sourceType === "DICOM" && img.sopInstanceUid ? (
@@ -469,7 +471,7 @@ export default function FrozenKeyImagesRail({
             />
             <div className="p-3 space-y-2">
               {disabled ? (
-                <p className="text-sm">{preview.caption}</p>
+                preview.caption.trim() ? <p className="text-sm">{preview.caption}</p> : null
               ) : (
                 <input
                   className="w-full border rounded px-2 py-1 text-sm"

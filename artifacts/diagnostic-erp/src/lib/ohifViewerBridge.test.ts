@@ -236,7 +236,9 @@ describe("ohifViewerBridge", () => {
         studyInstanceUid: "1.2.3",
         seriesInstanceUid: "1.2.3.4",
         sopInstanceUid: "1.2.3.4.5",
-        caption: "Key image (OHIF)",
+        // The viewer never says what the image should be called, and CARE no
+        // longer decides for the radiologist: an added image has no caption.
+        caption: "",
       }),
     );
     const body = vi.mocked(api.post).mock.calls[0][1] as Record<string, unknown>;

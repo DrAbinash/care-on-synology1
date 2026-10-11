@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFindingsText, fetchKeyImageDataUrls, hydratePrintPreviewKeyImages, replaceSideImagePanel, countInlinedDicomImages } from "./radiologyReportPdfExport";
+import {
+  buildFindingsText, buildKeyImagesRailHtml, countInlinedDicomImages, fetchKeyImageDataUrls,
+  hydratePrintPreviewKeyImages, replaceSideImagePanel,
+} from "./radiologyReportPdfExport";
 import type { ReportImageRef } from "./reportImageRefs";
 
 describe("buildFindingsText", () => {
@@ -228,5 +231,82 @@ describe("hydratePrintPreviewKeyImages", () => {
     } finally {
       if (OriginalFR) (globalThis as { FileReader: unknown }).FileReader = OriginalFR;
     }
+  });
+});
+
+const TINY_JPEG =
+  "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z";
+
+/** blob → data URL needs FileReader, which the node environment does not have. */
+async function withPixels<T>(run: () => Promise<T>): Promise<T> {
+  const OriginalFR = (globalThis as { FileReader?: typeof FileReader }).FileReader;
+  class FakeFileReader {
+    result: string | null = null;
+    onload: null | (() => void) = null;
+    onerror: null | (() => void) = null;
+    readAsDataURL(_blob: Blob) {
+      this.result = TINY_JPEG;
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  (globalThis as { FileReader: unknown }).FileReader = FakeFileReader;
+  try {
+    return await run();
+  } finally {
+    if (OriginalFR) (globalThis as { FileReader: unknown }).FileReader = OriginalFR;
+    else delete (globalThis as { FileReader?: typeof FileReader }).FileReader;
+  }
+}
+
+const jpegResponse = () => ({
+  ok: true,
+  blob: async () => new Blob([Uint8Array.from([0xff, 0xd8, 0xff])], { type: "image/jpeg" }),
+});
+
+describe("Download PDF carries each image's own label, and nobody else's", () => {
+  // Every earlier case here failed the fetch, so nothing ever asserted the shape
+  // of a successful item — the caption could have been dropped silently.
+  it("keeps the stored caption with the pixels it belongs to, in display order", async () => {
+    const refs = [
+      makeRef({ id: 1, sopInstanceUid: "1.1.1.1", description: "FLAIR", displayOrder: 1 }),
+      makeRef({ id: 2, sopInstanceUid: "2.2.2.2", description: "T2 AXIAL", displayOrder: 0 }),
+    ];
+    const got = await withPixels(() =>
+      fetchKeyImageDataUrls("https://pacs.example/dicomweb", refs, {
+        fetchImpl: vi.fn().mockResolvedValue(jpegResponse()),
+      }),
+    );
+    expect(got.map((k) => k.caption)).toEqual(["T2 AXIAL", "FLAIR"]);
+    expect(got.every((k) => k.src.startsWith("data:image/jpeg;base64,"))).toBe(true);
+  });
+
+  it("a label nobody wrote stays absent — no caption, no invented words", async () => {
+    const refs = [makeRef({ id: 1, description: "" }), makeRef({ id: 2, description: "   \t " })];
+    const got = await withPixels(() =>
+      fetchKeyImageDataUrls("https://pacs.example/dicomweb", refs, {
+        fetchImpl: vi.fn().mockResolvedValue(jpegResponse()),
+      }),
+    );
+    expect(got.map((k) => k.caption)).toEqual(["", ""]);
+  });
+
+  it("the rail puts a caption only under the image that has one", () => {
+    const rail = buildKeyImagesRailHtml([
+      { src: "data:image/jpeg;base64,AAA", caption: "T2 SAG" },
+      { src: "data:image/jpeg;base64,BBB", caption: "   " },
+      { src: "data:image/jpeg;base64,CCC", caption: "ADC b=1000" },
+    ]);
+    expect(rail.match(/<figcaption/g) ?? []).toHaveLength(2);
+    expect(rail).toContain('<figcaption class="image-caption">T2 SAG</figcaption>');
+    expect(rail).toContain('<figcaption class="image-caption">ADC b=1000</figcaption>');
+    // The uncaptioned image gets no number either.
+    expect(rail).not.toMatch(/Image \d/);
+    expect(rail.match(/alt="([^"]*)"/g)).toEqual(['alt="T2 SAG"', 'alt=""', 'alt="ADC b=1000"']);
+  });
+
+  it("escapes the caption, because it is the radiologist's text inside innerHTML", () => {
+    const rail = buildKeyImagesRailHtml([{ src: "data:image/jpeg;base64,AAA", caption: `<b>x</b>"y` }]);
+    expect(rail).not.toContain("<b>x</b>");
+    expect(rail).toContain("&lt;b&gt;x&lt;/b&gt;&quot;y");
   });
 });

@@ -179,11 +179,29 @@ export type ReportData = {
   technique?: string;
   comparison?: string;
   measurements?: Array<{ label: string; value: string }>;
-  /** Optional array of key-image data URLs (base64 JPEG/PNG) */
-  keyImages?: string[];
+  /**
+   * Key images for the rail. A bare data URL is still accepted because that is
+   * what the non-radiology pages have always passed; the reporting workspace
+   * passes the stored record, whose caption is the radiologist's own words.
+   */
+  keyImages?: Array<string | ReportKeyImage>;
   reportTitle?: string;
   printedBy?: string;
 };
+
+/** One frozen key image as the rail needs it: pixels, plus a caption if one exists. */
+export interface ReportKeyImage {
+  src: string;
+  caption?: string | null;
+}
+
+function normalizeKeyImages(list: ReportData["keyImages"]): Array<{ src: string; caption: string }> {
+  return (list ?? [])
+    .map((img) => (typeof img === "string"
+      ? { src: img, caption: "" }
+      : { src: img.src, caption: (img.caption ?? "").trim() }))
+    .filter((img) => Boolean(img.src));
+}
 
 /** Slightly compact sizes so a full MRI report fits one A4 page with air between lines. */
 const FONT_SIZES = {
@@ -535,7 +553,7 @@ function drawNumberedImpression(
 /** Key images beside report text — extreme-right rail, square ports, equal frame pad. */
 function drawSideRailKeyImages(
   doc: jsPDF,
-  images: string[],
+  images: Array<{ src: string; caption: string }>,
   railX: number,
   railW: number,
   startY: number,
@@ -552,9 +570,32 @@ function drawSideRailKeyImages(
   // Cap square for page fit, then shrink the navy panel to that square so
   // left/right framePad stay equal (no leftover blue band on the right).
   const square = Math.min(innerW, 32);
-  const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
-  const shown = images.slice(0, Math.min(images.length, maxCells));
-  const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
+
+  // A caption belongs BELOW its square, so it costs height that a uniform cell
+  // count cannot see. Measured first, then the fit decision uses each real cell
+  // height: a report with no captions occupies exactly the space it did before.
+  const capSize = 5;
+  const capLineH = capSize * 0.3528 * 1.25; // pt -> mm, with leading
+  const capPad = 0.6;
+  doc.setFont(font, "normal");
+  doc.setFontSize(capSize);
+  const linesOf = images.map((img) =>
+    img.caption ? (doc.splitTextToSize(img.caption, square - 1) as string[]) : [],
+  );
+  const cellH = (i: number) =>
+    square + (linesOf[i].length ? linesOf[i].length * capLineH + capPad : 0);
+
+  const picked: number[] = [];
+  let used = 0;
+  for (let i = 0; i < images.length; i++) {
+    const add = cellH(i) + (picked.length ? gap : 0);
+    if (used + add > avail && picked.length > 0) break;
+    if (picked.length === 0 && add > avail) break;
+    picked.push(i);
+    used += add;
+  }
+  if (picked.length === 0) return startY;
+  const stackH = headingH + used;
   const frameH = stackH + 2 * framePad;
   const panelW = square + 2 * framePad;
   const panelX = railX + Math.max(0, railW - panelW);
@@ -572,13 +613,14 @@ function drawSideRailKeyImages(
   doc.setTextColor(255, 255, 255);
   doc.text("KEY IMAGES", imgX, imgY + 3.2);
   imgY += headingH;
-  for (const img of shown) {
-    if (!img) continue;
+  for (const i of picked) {
+    const img = images[i];
+    if (!img?.src) continue;
     try {
-      const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
+      const ext = img.src.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
       doc.setFillColor(0, 0, 0);
       doc.rect(imgX, imgY, square, square, "F");
-      const props = doc.getImageProperties(img);
+      const props = doc.getImageProperties(img.src);
       const iw = Math.max(1, props.width);
       const ih = Math.max(1, props.height);
       const scale = Math.min(square / iw, square / ih);
@@ -587,8 +629,16 @@ function drawSideRailKeyImages(
       // Center DICOM pixels inside the square port (equal letterbox if needed).
       const ox = imgX + (square - dw) / 2;
       const oy = imgY + (square - dh) / 2;
-      doc.addImage(img, ext, ox, oy, dw, dh);
-      imgY += square + gap;
+      doc.addImage(img.src, ext, ox, oy, dw, dh);
+      imgY += square;
+      if (linesOf[i].length) {
+        doc.setFont(font, "normal");
+        doc.setFontSize(capSize);
+        doc.setTextColor(255, 255, 255);
+        doc.text(linesOf[i], imgX + 0.3, imgY + capLineH * 0.85, { maxWidth: square - 1 });
+        imgY += linesOf[i].length * capLineH + capPad;
+      }
+      imgY += gap;
     } catch { /* skip broken image */ }
   }
   return startY + frameH;
@@ -771,7 +821,7 @@ export function generateReportPDF(
   // Key-image rail starts just under AGE/SEX/DATE (demography), right column.
   // Capture before the study title so images hug the demography block.
   const demographyBottomY = y;
-  const keyImageList = (report.keyImages ?? []).filter(Boolean);
+  const keyImageList = normalizeKeyImages(report.keyImages);
   const sideRail =
     keyImageList.length > 0 && settings.show.keyImages;
   const framePadMm = 2.5;

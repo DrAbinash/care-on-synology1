@@ -110,16 +110,13 @@ export interface PacsStudyContext {
   studyInstanceUid: string;
 }
 
-/** Body for POST /key-images/from-pacs. The caption starts from what the study
- *  itself says (series description, then instance number) so a printed report
- *  labels its pictures without the radiologist typing anything. */
+/** Body for POST /key-images/from-pacs. No caption is sent at all: what the study
+ *  says travels in `seriesDescription` / `instanceNumber`, and a printed label
+ *  appears only if the radiologist later types one in the rail. */
 export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Record<string, unknown> {
   if (!UID.test(pick.seriesUid) || !UID.test(pick.sopUid) || !UID.test(ctx.studyInstanceUid)) {
     throw new Error("Not a valid DICOM reference");
   }
-  const caption =
-    pick.seriesDescription.trim()
-    || (pick.instanceNumber != null ? `Image ${pick.instanceNumber}` : "");
   return {
     draftId: ctx.draftId,
     ...(ctx.studyId ? { studyId: ctx.studyId } : {}),
@@ -132,7 +129,6 @@ export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Recor
     ...(pick.instanceNumber != null ? { instanceNumber: pick.instanceNumber } : {}),
     ...(pick.seriesDescription ? { seriesDescription: pick.seriesDescription } : {}),
     ...(pick.modality ? { modality: pick.modality } : {}),
-    ...(caption ? { caption } : {}),
   };
 }
 
@@ -171,7 +167,7 @@ export function buildViewerStillBody(
     ...(ref.frameNumber != null && ref.frameNumber >= 1
       ? { frameNumber: Math.floor(ref.frameNumber) }
       : {}),
-    caption: (ref.caption || "").trim() || "Key image (viewer)",
+    caption: (ref.caption ?? "").trim(),
   };
 }
 
