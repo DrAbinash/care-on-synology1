@@ -203,13 +203,26 @@ export async function listDraftImageReferences(draftId: number): Promise<ImageRe
   return rows as ImageReferenceRow[];
 }
 
+/** Identity of one picture, shared by the frozen and the reference paths so a
+ *  print resolution can tell "the same image twice" from "two images". A frame
+ *  number is part of it: an 8-frame object is 8 different pictures. */
+export function imageIdentityKey(sopInstanceUid: string | null | undefined, frameNumber: number | null | undefined): string {
+  return `${sopInstanceUid ?? ""}|${frameNumber ?? ""}`;
+}
+
 /** Resolve a draft's image references to inlined key-image models.
  *  R1.3 — fetches run with bounded concurrency (a 100-image report must not
  *  serialize 100 PACS round-trips) and stop inlining once the whole-report
- *  byte budget is spent; document order stays displayOrder regardless. */
-export async function resolveDraftKeyImages(draftId: number): Promise<ReportKeyImageModel[]> {
+ *  byte budget is spent; document order stays displayOrder regardless.
+ *  `excludeKeys` drops references a frozen artifact already covers, so a report
+ *  that mixes frozen captures and picker images prints each picture once. */
+export async function resolveDraftKeyImages(
+  draftId: number,
+  excludeKeys?: Set<string>,
+): Promise<ReportKeyImageModel[]> {
   const refs = (await listDraftImageReferences(draftId))
     .filter((r) => renderedPathForReference(r) != null)
+    .filter((r) => !excludeKeys || !excludeKeys.has(imageIdentityKey(r.sopInstanceUid, r.frameNumber)))
     .slice(0, MAX_IMAGES_PER_REPORT);
   const viewport = viewportForImageCount(refs.length);
   const srcs: (string | null)[] = new Array(refs.length).fill(null);

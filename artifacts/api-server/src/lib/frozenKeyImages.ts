@@ -21,7 +21,7 @@ import { db } from "@workspace/db";
 import { radiologyReportKeyImagesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
-import { resolveDraftKeyImages } from "./reportImages";
+import { imageIdentityKey, resolveDraftKeyImages } from "./reportImages";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const FROZEN_KEY_IMAGE_DIR = path.resolve(PACKAGE_ROOT, "data", "uploads", "radiology-key-images");
@@ -230,18 +230,46 @@ export async function frozenRowsToPresentationModels(
 }
 
 /**
- * Print/PDF image resolution for a draft:
- * A. No includeInReport frozen rows → legacy Orthanc image-references (older reports).
- * B. Any includeInReport frozen rows → ONLY frozen artifacts (placeholders if missing).
- *    Never silently fall back to live PACS pixels when frozen evidence was expected.
+ * Print/PDF image resolution for a draft.
+ *
+ * A. No includeInReport frozen rows → Orthanc image references (live pixels).
+ * B. Frozen rows exist, the draft is still being written → frozen artifacts
+ *    first, then any reference they do not already cover.
+ * C. Frozen rows exist and the draft is FINAL → frozen artifacts alone.
+ *
+ * C is #815's guarantee and stays exactly as it was: a signed report's evidence
+ * must not depend on PACS being up, and a live picture must never be
+ * substituted for a frozen one that went missing.
+ *
+ * B is what changed. The blanket "frozen wins, alone" rule deleted work: an
+ * image attached through the report image picker vanished from print and PDF
+ * the moment any other image was frozen, which is exactly what "I attached
+ * images and they did not appear" was. The two stores are not competitors —
+ * they are different pictures of the same study — so a report in progress now
+ * carries both. Only a reference whose own SOP+frame is already frozen is
+ * skipped, because that one is deliberately printed from disk, and a missing
+ * disk file keeps its explicit placeholder instead of reaching back to Orthanc.
  */
 export async function resolveDraftPrintKeyImagesDetailed(draftId: number): Promise<FrozenPrintResolution> {
-  const frozen = await listDraftFrozenKeyImages(draftId);
+  const [frozen, draft] = await Promise.all([
+    listDraftFrozenKeyImages(draftId),
+    db
+      .select({ status: radiologyReportDraftsTable.status })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId))
+      .limit(1),
+  ]);
   const printable = frozen.filter((r) => r.includeInReport);
   if (printable.length > 0) {
     const { images, unavailableCount } = await frozenRowsToPresentationModels(printable);
+    const finalized = draft[0]?.status === "FINAL";
+    if (finalized) {
+      return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0 };
+    }
+    const covered = new Set(printable.map((r) => imageIdentityKey(r.sopInstanceUid, r.frameNumber)));
+    const additional = await resolveDraftKeyImages(draftId, covered);
     return {
-      images,
+      images: [...images, ...additional],
       source: "frozen",
       unavailableFrozenCount: unavailableCount,
       integrityOk: unavailableCount === 0,

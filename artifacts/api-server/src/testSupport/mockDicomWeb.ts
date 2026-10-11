@@ -16,6 +16,9 @@
  *   • the path-style singletons (`/instances/{SOP}` and `/series/{SE-UID}`), which
  *     Orthanc keys by internal id, return 400 — so a regression back to path-style
  *     lookups fails the check instead of silently passing.
+ *   • `/instances/{SOP}[/frames/{N}]/rendered` answers with JPEG bytes for objects
+ *     the manifest holds and 404 for those it does not — the PACS image picker's
+ *     "give me the pixels of exactly this image" leg.
  *
  * `manifest[study][series] = [{ sopUid, numberOfFrames? }]`.
  */
@@ -35,6 +38,13 @@ export type MockDicomWeb = {
 };
 
 type JsonValue = Record<string, { Value: string[] }>;
+
+/** A real (tiny) JPEG, so a caller that pipes the answer through an image
+ *  decoder gets bytes it can decode rather than a 404-shaped surprise. */
+const JPEG_STUB = Buffer.from(
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcP//Z",
+  "base64",
+);
 
 function instanceEntry(study: string, series: string, m: MockInstance, instanceNumber: number): JsonValue {
   const e: JsonValue = {
@@ -59,6 +69,7 @@ function seriesEntry(study: string, series: string): JsonValue {
 
 export async function startMockDicomWeb(
   manifest: Record<string, Record<string, MockInstance[]>>,
+  opts: { renderedJpeg?: Buffer } = {},
 ): Promise<MockDicomWeb> {
   const seen: string[] = [];
   let mode: "serve" | "down" = "serve";
@@ -94,6 +105,27 @@ export async function startMockDicomWeb(
       const study = m[1];
       const present = Boolean(manifest[study]?.[seriesFilter]);
       return send(200, present ? [seriesEntry(study, seriesFilter)] : []);
+    }
+
+    // WADO-RS rendered pixels — what the PACS image picker asks CARE to fetch
+    // and freeze. Answered only for an object the manifest actually holds, so a
+    // route that fetched pixels for a wrong-study image gets a 404 rather than
+    // a picture, exactly as the clinic's Orthanc does. Frame numbers in the URL
+    // are 1-based (PS3.18 / Orthanc), and a single-frame object has no frames
+    // path at all.
+    m = /^\/dicom-web\/studies\/([^/]+)\/series\/([^/]+)\/instances\/([^/]+)(?:\/frames\/(\d+))?\/rendered$/.exec(path);
+    if (m) {
+      const [, study, series, sop, frameRaw] = m;
+      const inst = (manifest[study]?.[series] || []).find((i) => i.sopUid === sop);
+      if (!inst) return send(404, { HttpError: "Not Found" });
+      if (frameRaw != null) {
+        const frames = inst.numberOfFrames ?? 1;
+        const n = Number(frameRaw);
+        if (!Number.isInteger(n) || n < 1 || n > frames) return send(404, { HttpError: "Not Found" });
+      }
+      const body = opts.renderedJpeg ?? JPEG_STUB;
+      res.writeHead(200, { "Content-Type": "image/jpeg", "Content-Length": String(body.length) });
+      return res.end(body);
     }
 
     // Path-style singletons: Orthanc 1.13.0 rejects these (keys by internal id).
