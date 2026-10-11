@@ -259,17 +259,22 @@ ran. The deterministic reporting engine does not gain a dependency on any of thi
 ## Y.9 Measured on the clinic AI PC (11 Oct 2026, `192.168.1.250:11434`)
 
 `RUN_LIVE_OLLAMA=1` drives the shipped prompts, transport, JSON contract **and the
-shipped validator** over six synthetic cases per model. 17 of 19 answers were
+shipped validator** over six synthetic cases per model. 15 of the 18 model calls were
 accepted; the three refusals below are the guard working, not the harness failing.
+Seconds are wall time for the call; the token figure is what the vendor reported.
 
 | operation | gemma3:12b | medgemma1.5:4b | qwen3:14b |
 | --- | --- | --- | --- |
-| PROFESSIONALIZE MRI LS spine (8.2 mm canal, right S1 extrusion) | 20.2 s accepted | 6.9 s accepted | 25.4 s accepted |
-| REPHRASE MRI cervical ("make more professional") | 11.2 s accepted | 2.7 s accepted | 7.9 s accepted |
-| PROFESSIONALIZE MRI brain (Fazekas 2) | 11.2 s accepted | 2.6 s accepted | 8.2 s accepted |
-| PROFESSIONALIZE whole-spine screening | 16.2 s accepted | 3.1 s accepted | 10.3 s accepted |
-| COMBINE cervical + lumbar | 24.5 s accepted | **blocked** — discarded the lumbar study (`level_dropped`, `measurement_dropped`, `laterality_dropped`) | 19.1 s accepted |
-| OBSERVATIONS dictated shorthand | **blocked** — 1 row from a 4-fact dictation | **blocked** — 1 row | 22.4 s accepted, 4 rows |
+| PROFESSIONALIZE MRI LS spine (8.2 mm canal, right S1 extrusion) | 28.7 s / 2,040 accepted | 8.1 s / 1,975 accepted | 25.1 s / 2,011 accepted |
+| REPHRASE MRI cervical ("make more professional") | 14.4 s / 1,748 accepted | 3.0 s / 1,720 accepted | 8.0 s / 1,710 accepted |
+| PROFESSIONALIZE MRI brain (Fazekas 2) | 14.1 s / 1,827 accepted | 3.3 s / 1,809 accepted | 8.1 s / 1,816 accepted |
+| PROFESSIONALIZE whole-spine screening | 22.1 s / 1,924 accepted | 4.0 s / 1,870 accepted | 10.5 s / 1,893 accepted |
+| COMBINE cervical + lumbar | 36.2 s / 2,177 accepted | **blocked** — discarded the lumbar study (`measurement_mutation`, `measurement_dropped`, `level_dropped`, `laterality_dropped`) | 19.3 s / 2,192 accepted |
+| OBSERVATIONS dictated shorthand | **blocked** — 1 row from a 4-fact dictation (`measurement_dropped`) | **blocked** — 1 row (`measurement_dropped`, `laterality_dropped`) | 22.4 s / 2,174 accepted, 4 rows |
+
+The same run also re-generated a `FULL_REPORT` from scratch on `gemma3:12b`: 39.7 s,
+all eight observations, four levels and the bilateral laterality preserved, no
+measurement invented.
 
 So, stated plainly: **text transformation works on every installed local model,
 and structured extraction from dictation works only on `qwen3:14b`.** Nothing here
@@ -277,11 +282,15 @@ was tuned for; the 4 B models are configured away from Operation 1 rather than
 trained. No language-quality claim is being made about diagnostic accuracy — the
 cases are synthetic and a radiologist has not read them on a screen.
 
-Two defects this run found and fixed (both would have made operations unusable in
-the clinic while every mocked test stayed green):
+Three defects this run found and fixed (all three would have made operations
+unusable or unsafe in the clinic while every mocked test stayed green):
 1. a faithful COMBINE was **blocked** as invented content, because "what the
    radiologist supplied" did not include the second report the model had been
    given — and, in the other direction, a merge that silently dropped that report
    could not fail.
 2. "no acute infarct or **hemorrhage**" was blocked as an invented abnormality
    against a dictation that said **haemorrhage** — a spelling, not a fact.
+3. `gemma3:12b` returned chat markdown (`**Cervical Spine:**`) and every guard
+   passed it. CARE renders reports as plain text into print HTML and PDF, so those
+   asterisks would have reached the report of record; emphasis markers are now
+   stripped at the parse boundary, before validation and before storage.

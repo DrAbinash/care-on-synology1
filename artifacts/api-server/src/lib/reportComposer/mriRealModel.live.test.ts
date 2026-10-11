@@ -11,30 +11,33 @@
  * in Local/LAN mode — the same switch that has been blocking every report.
  *
  * Recorded 2026-10-11 against gemma3:12b at http://192.168.1.250:11434: passed in
- * 39 s, preserving all eight observations, all four levels and the bilateral
+ * 39.7 s, preserving all eight observations, all four levels and the bilateral
  * laterality, inventing no measurement. That is the first MRI report CARE has
  * ever produced through its own composer.
  *
- * RECORDED 2026-10-11 (second run) — the three operations × the installed local
- * text models, every answer scored by the shipped validator, on the clinic AI PC:
+ * RECORDED 2026-10-11, final run on the shipped head — the six operations × the
+ * installed local text models, every answer scored by the shipped validator, on
+ * the clinic AI PC. Seconds are wall time for the model call; tokens are the
+ * prompt+completion the vendor reported.
  *
- *   operation                        gemma3:12b   medgemma1.5:4b   qwen3:14b
- *   PROFESSIONALIZE MRI LS spine     20.2 s        6.9 s           25.4 s   accepted
- *   REPHRASE MRI cervical            11.2 s        2.7 s            7.9 s   accepted
- *   PROFESSIONALIZE MRI brain        11.2 s        2.6 s            8.2 s   accepted
- *   PROFESSIONALIZE whole spine      16.2 s        3.1 s           10.3 s   accepted
- *   COMBINE cervical + lumbar        24.5 s        BLOCKED         19.1 s   accepted
- *   OBSERVATIONS dictated shorthand  BLOCKED       BLOCKED         22.4 s   accepted
+ *   operation                        gemma3:12b      medgemma1.5:4b  qwen3:14b
+ *   PROFESSIONALIZE MRI LS spine     28.7 s / 2040    8.1 s / 1975    25.1 s / 2011   accepted
+ *   REPHRASE MRI cervical            14.4 s / 1748    3.0 s / 1720     8.0 s / 1710   accepted
+ *   PROFESSIONALIZE MRI brain        14.1 s / 1827    3.3 s / 1809     8.1 s / 1816   accepted
+ *   PROFESSIONALIZE whole spine      22.1 s / 1924    4.0 s / 1870    10.5 s / 1893   accepted
+ *   COMBINE cervical + lumbar        36.2 s / 2177    2.8 s BLOCKED   19.3 s / 2192   accepted
+ *   OBSERVATIONS dictated shorthand   6.4 s BLOCKED   2.8 s BLOCKED   22.4 s / 2174   accepted, 4 rows
  *
- * 17 of 19 accepted; the three that were not are the guard working, not the
- * harness failing. `medgemma1.5:4b` answered the COMBINE with the cervical report
- * only — it discarded the study it was handed — and `measurement_dropped`,
- * `level_dropped` and `laterality_dropped` stopped it reaching READY.
- * `gemma3:12b` and `medgemma1.5:4b` each turned a four-fact dictation into ONE
- * observation row, losing the 8.2 mm canal measurement (and the bilateral side),
- * so Operation 1 is usable on `qwen3:14b` and not on the two 4-billion-parameter
- * models. That is a capability boundary to route around by configuration; the
- * brief's answer to it is not fine-tuning.
+ * 15 of those 18 model calls were accepted. The three that were not are the guard
+ * working, not the harness failing. `medgemma1.5:4b` answered the COMBINE with the
+ * cervical report only — it discarded the study it was handed — and
+ * `measurement_mutation`, `measurement_dropped`, `level_dropped` and
+ * `laterality_dropped` stopped it reaching READY. `gemma3:12b` and
+ * `medgemma1.5:4b` each turned a four-fact dictation into ONE observation row,
+ * losing the 8.2 mm canal measurement (and the bilateral side), so Operation 1 is
+ * usable on `qwen3:14b` and not on the two 4-billion-parameter models. That is a
+ * capability boundary to route around by configuration; the brief's answer to it
+ * is not fine-tuning.
  *
  * Both of those refusals were invisible before this run: the added report was not
  * part of what the checks considered "supplied", and nothing required the rows to
