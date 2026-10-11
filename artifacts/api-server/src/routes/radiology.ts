@@ -33,6 +33,7 @@ import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, ne, or, sql } fro
 import { alias } from "drizzle-orm/pg-core";
 import crypto from "node:crypto";
 import { findOrthancStudies, orthancEphemeralWorklistId } from "../lib/pacs/orthancStudyFind.js";
+import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import { accessionUidMap, canBindUidToRow, decideStudyUidBinding, identityKey } from "../lib/pacs/studyUidBinding.js";
 import { isWorklistUidRaceViolation } from "../lib/radiologyWorklistDedup.js";
 import { decideLegacyReportWrite } from "../lib/legacyReportAuthority.js";
@@ -514,7 +515,8 @@ radiologyRouter.get("/pacs-worklist-stream", async (req, res): Promise<void> => 
 
 // GET /api/radiology/pacs-worklist?status=&modality=&search=&dateFrom=&dateTo=&orthanc=1
 // Staff-authenticated view of radiology_worklist (PACS-pushed studies).
-// dateFrom/dateTo filter on DICOM studyDate (YYYYMMDD), not received createdAt.
+// dateFrom/dateTo bound the DICOM study date, never received createdAt — see
+// lib/pacs/worklistDateFilter.ts for why both sides are canonicalised first.
 // orthanc=1 merges live Orthanc C-FIND hits for back-date / archive search.
 // Different from /api/radiology/worklist which queries radiology_studies (RIS-driven).
 radiologyRouter.get("/pacs-worklist", async (req, res) => {
@@ -527,8 +529,6 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
     const includeOrthanc = req.query.orthanc === "1" || req.query.orthanc === "true";
     const unlinkedOnly =
       req.query.unlinked === "1" || req.query.unlinked === "true" || req.query.filter === "unbilled";
-
-    const toCompact = (iso: string) => iso.replace(/-/g, "");
 
     req.log.info({
       status: status || "all",
@@ -547,8 +547,9 @@ radiologyRouter.get("/pacs-worklist", async (req, res) => {
       if (modFilter) conds.push(modFilter as ReturnType<typeof eq>);
     }
     if (unlinkedOnly) conds.push(isNull(radiologyWorklistTable.studyId));
-    if (dateFrom) conds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
-    if (dateTo) conds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
+    for (const dateCond of worklistDateConditions(radiologyWorklistTable.studyDate, { dateFrom, dateTo })) {
+      conds.push(dateCond as ReturnType<typeof eq>);
+    }
     if (search) {
       const pattern = `%${search}%`;
       conds.push(or(
