@@ -41,10 +41,14 @@ const PATHOLOGY_TERMS = [
   // kyphosis is normal." fails a guard instead of bolding a normal page.
   "compress", "myelomalaci", "syrinx", "kyphos", "instabilit", "ossif",
   // Brain, head, orbit
-  "infarct", "ischemi", "ischaemi", "lacune", "lacunar", "hemorrhage",
-  "haemorrhage", "bleed", "aneurysm", "thrombo", "embol", "occlus", "mass effect",
+  "infarct", "ischemi", "ischaemi", "lacune", "lacunar", "encephalomalaci",
+  "hemorrhage", "haemorrhage", "bleed", "subdural", "epidural", "subarachnoid",
+  "microbleed", "hemosiderin",
+  "cavernoma", "avm", "arteriovenous", "contusion", "diffuse axonal",
+  "aneurysm", "thrombo", "embol", "occlus", "mass effect",
   "midline shift", "hydrocephal", "atrophy", "fazekas", "leukoaraiosis",
-  "demyelinat", "edema", "oedema", "space-occupying", "lesion", "tumor", "tumour",
+  "demyelinat", "sclerosis", "hyperintens",
+  "edema", "oedema", "space-occupying", "lesion", "tumor", "tumour",
   "neoplasm", "metast", "proptosis", "cellulitis", "sinusitis",
   "thickening", "effusion",
   // Chest, abdomen, pelvis

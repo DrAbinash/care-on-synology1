@@ -30,7 +30,10 @@ import {
   resolveCanonicalConcept,
   canonicalConceptTokens,
   generateConceptCanonRecord,
+  normaliseConceptKey,
 } from "./conceptCanon/conceptCanon";
+import { CLINICAL_CONTENT_PACKS, contentPackForConcept } from "./conceptCanon/contentPacks";
+import { assertsAbnormality } from "./generateLocalImpression";
 
 export {
   SLOT_WILDCARD,
@@ -383,6 +386,96 @@ export function sentenceMatchesConcept(sentence: string, concept: string | null)
   return conceptMatchTokens(concept).some((token) => s.includes(token));
 }
 
+/**
+ * Is `token` present as a word?
+ *
+ * The derived scan cannot use plain `includes`: the hemorrhage pack carries the
+ * alias "ich", so "maximum thickness ___ mm" would read as a hemorrhage and the
+ * engine would delete a normal that is still true. A concept the radiologist
+ * authored on the tile keeps the established looser match; concepts inferred from
+ * prose get the strict one.
+ */
+function mentionsWord(hay: string, token: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(token, from);
+    if (at === -1) return false;
+    const beforeOpen = at === 0 || !/[a-z0-9]/.test(hay[at - 1]);
+    const end = at + token.length;
+    const afterOpen = end === hay.length || !/[a-z0-9]/.test(hay[end]);
+    if (beforeOpen && afterOpen) return true;
+    from = at + 1;
+  }
+}
+
+let ASSERTABLE_TOKENS: Map<string, string[]> | null = null;
+/** Every pack concept with at least one non-broad token, computed once. */
+function assertableTokens(): Map<string, string[]> {
+  if (ASSERTABLE_TOKENS) return ASSERTABLE_TOKENS;
+  const m = new Map<string, string[]>();
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    const toks = conceptMatchTokens(pack.concept);
+    if (toks.length > 0) m.set(pack.concept, toks);
+  }
+  ASSERTABLE_TOKENS = m;
+  return m;
+}
+
+/** Does the statement name this concept as a word? Strict — for derived ownership only. */
+function namesConcept(sentence: string, concept: string): boolean {
+  const tokens = assertableTokens().get(concept);
+  if (!tokens) return false;
+  const hay = normaliseConceptKey(sentence);
+  return tokens.some((t) => mentionsWord(hay, t));
+}
+
+/**
+ * Which canonical concepts a statement positively asserts.
+ *
+ * A Quick Select box can state several things at once. "Acute intraparenchymal
+ * hemorrhage in the right basal ganglia with midline shift of 6 mm" asserts a
+ * hemorrhage, a basal ganglia abnormality and a midline abnormality, so the
+ * scaffold's "Basal ganglia and thalami are normal" and "No midline shift is
+ * seen." are both falsified by it. Ownership used to be tested against the tile's
+ * single declared concept only, which left those normals standing next to the
+ * finding that contradicts them — a report that says the basal ganglia both
+ * bleeds and is normal.
+ *
+ * Denied clauses are excluded by `assertsAbnormality`, so "No midline shift"
+ * agrees with the baseline instead of retiring it, and a box that restates a
+ * normal cannot delete it.
+ *
+ * `regionOfConcept` bounds the scan to anatomy that can appear in the same
+ * examination. The packs carry cross-region aliases ("cavitation" also names a
+ * lung finding, "mass_like_opacity" a chest one), and a brain box must not be
+ * able to retire a chest normal through a shared word. An unknown host concept
+ * claims nothing at all — fail closed.
+ *
+ * This is also the oracle the catalogue tests measure against, so the engine and
+ * its test cannot drift into two different matching rules again.
+ */
+export function conceptsAssertedIn(text: string, regionOfConcept?: string | null): string[] {
+  let allowed: Set<string> | null = null;
+  if (regionOfConcept !== undefined) {
+    if (!regionOfConcept) return [];
+    const host = contentPackForConcept(regionOfConcept);
+    if (!host) return [];
+    if (!host.regions.includes("*")) {
+      allowed = new Set(host.regions);
+    }
+  }
+  const clauses = splitToSentences(text).filter((c) => assertsAbnormality(c));
+  if (clauses.length === 0) return [];
+  const joined = clauses.join(" ");
+  const out: string[] = [];
+  for (const pack of CLINICAL_CONTENT_PACKS) {
+    if (allowed && !pack.regions.includes("*") && !pack.regions.some((r) => allowed.has(r))) continue;
+    if (out.includes(pack.concept)) continue;
+    if (namesConcept(joined, pack.concept)) out.push(pack.concept);
+  }
+  return out;
+}
+
 /** Laterality mentioned as a lesion side — not used as automatic mutex. */
 export function lateralityMentionedInSentence(sentence: string): string {
   const s = sentence.toLowerCase();
@@ -402,11 +495,22 @@ export function lateralityMentionedInSentence(sentence: string): string {
  */
 export function sentenceOwnedBySlot(
   sentence: string,
-  obs: Pick<CanonicalObservation, "concept" | "level" | "laterality" | "anatomicalSection" | "baselineReplaces">,
+  obs: Pick<CanonicalObservation, "concept" | "level" | "laterality" | "anatomicalSection" | "baselineReplaces"> & {
+    /** Concepts the statement asserts in its own words, beyond its declared one. */
+    alsoOwns?: string[];
+  },
 ): boolean {
   const baseline = (obs.baselineReplaces ?? "").trim();
   if (baseline && sentence.includes(baseline)) return true;
-  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept);
+  // Prose-derived concepts may widen retirement over the scaffold's NORMALS only.
+  // A second aneurysm, a second DAI site and a second lacune all name their own
+  // family's word, so letting prose decide would let one abnormality delete
+  // another — three aneurysms arriving as two, which is exactly how a real study
+  // loses a sac. Only the tile's declared concept may claim a sentence that
+  // itself asserts something abnormal.
+  const derived = (obs.alsoOwns?.length ?? 0) > 0 && !assertsAbnormality(sentence)
+    && obs.alsoOwns!.some((c) => c !== obs.concept && namesConcept(sentence, c));
+  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept) || derived;
   const level = normalizeLevel(obs.level);
   if (level && !sentenceHasLevel(sentence, level)) {
     // A study-wide sentence speaks for every level, so one level's pathology
