@@ -13,7 +13,7 @@ import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { quickSelectTilePatch } from "./quickSelectTilePayload";
 import { useWorkspace } from "./store";
-import { MRI_CERVICAL_STANDARD_NORMAL_MANIFEST } from "./fullReportBaseline";
+import { MRI_CERVICAL_STANDARD_NORMAL_MANIFEST, MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST } from "./fullReportBaseline";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import { splitToSentences } from "@/lib/reportFieldMerge";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
@@ -71,13 +71,13 @@ const BASELINE_ROWS = (MRI_CERVICAL_STANDARD_NORMAL_MANIFEST.observations ?? [])
  * "C5-C6: Neural foramina are patent bilaterally." is about C5-C6, and a
  * study-wide statement about some other site leaves it standing.
  */
-function contradictedRows(text: string): Set<string> {
+function contradictedRows(text: string, rows = BASELINE_ROWS): Set<string> {
   const out = new Set<string>();
   for (const clause of splitToSentences(text)) {
     if (!assertsAbnormality(clause)) continue;
     const hay = normaliseConceptKey(clause);
     const clauseLevel = extractLevel(clause);
-    for (const row of BASELINE_ROWS) {
+    for (const row of rows) {
       const tokens = canonicalConceptTokens(row.concept);
       if (tokens.length === 0) continue;
       if (!tokens.some((tok) => hay.includes(tok))) continue;
@@ -271,5 +271,54 @@ describe("the cervical Quick Select catalogue", () => {
     expect(useWorkspace.getState().findingsText).toContain(
       "C5-C6: No significant disc bulge or protrusion is seen.",
     );
+  });
+});
+
+describe("the scan's own semantics", () => {
+  /**
+   * The denial arm needs a fixture or it measures nothing, and no box in the
+   * cervical catalogue supplies one — none of them denies a concept the scaffold
+   * also owns. The shipped lumbar herniation box does: it asserts its own disc
+   * contour, and then says "No significant central canal stenosis.", which
+   * AGREES with the canal normal instead of contradicting it. Read here both to
+   * reach that arm and to put a measured number, not a claim, in the record for
+   * the lumbar box that this PR leaves as it ships.
+   */
+  it("reads a denial as agreement", () => {
+    const lsRows = (MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST.observations ?? []).filter(
+      (o) => o.field === "findings",
+    );
+    const herniation = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation L4-L5")!;
+    const denied = [...contradictedRows(herniation.sentence, lsRows)];
+    // Measured, in full, the day this landed: one row, the disc contour the box
+    // owns. "No significant central canal stenosis." agrees with the canal
+    // normal rather than contradicting it, so it is not in the list — remove the
+    // denial arm and the canal row appears here and this fails.
+    expect(denied).toEqual(["L4-L5: No significant disc bulge or protrusion is seen."]);
+    // And the limit of the method, recorded where it can be seen. The same box
+    // also writes "mild narrowing of bilateral neural foramina" beside the
+    // scaffold's "Neural foramina are patent bilaterally." — a real
+    // contradiction that this scan does NOT read, because no alias of
+    // `foraminal_stenosis` in the content pack matches that word order. Recall
+    // is the pack's vocabulary, not a synonym table invented for the test, so
+    // the lumbar box is left as it ships (five suites pin its sentence) and the
+    // cervical catalogue is authored one concept per box instead, so that no
+    // sentence like this has to be caught after the fact.
+    expect(denied.some((row) => /Neural foramina are patent/i.test(row))).toBe(false);
+  });
+
+  it("does not read a denial as a reason to retire the row it restates", () => {
+    // The scaffold's own sentence, which is exactly the shape of the defect PR C
+    // was written for: it carries two disc-contour aliases (`bulge`,
+    // `protrusion`), so without the denial arm the scan demands the report retire
+    // a line that says nothing abnormal. The content-wide ratchet in
+    // `generateProfessionalReport.test.ts` is what keeps that true of every
+    // shipped baseline sentence, not of one fixture. Measured, not assumed: the
+    // canal sentence below does NOT reach that arm, because no alias of
+    // `canal_stenosis` matches "No spinal canal or thecal sac compression" — the
+    // same vocabulary limit recorded above, and why this fixture had to be chosen
+    // by reading the pack rather than by picking any denial.
+    expect([...contradictedRows("C5-C6: No significant disc bulge or protrusion is seen.")]).toEqual([]);
+    expect([...contradictedRows("C5-C6: No spinal canal or thecal sac compression is seen.")]).toEqual([]);
   });
 });
