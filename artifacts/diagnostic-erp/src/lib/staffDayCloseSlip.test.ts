@@ -120,7 +120,42 @@ describe("buildStaffDayCloseSlipHtml", () => {
     expect(html).toContain("1,73,150.00");
     expect(html).toContain("DISCOUNTS GIVEN → Rs. 2,375.00");
     expect(html).toContain("line emphasize");
-    expect(html).toContain("Expected = Bill Gen + Dues Collected");
+    // The explanatory formula box used to print only when dues were non-zero,
+    // which made two slips from one system read as two different reports.
+    expect(html).not.toContain("Expected = Bill Gen");
+  });
+
+  test("a dues slip and a no-dues slip carry the same rows in the same order", () => {
+    const branding = { name: "Care Diagnostics", logoDataUrl: "data:image/png;base64,abc" };
+    const withDues = buildStaffDayCloseSlipHtml(
+      { ...sample, userName: "SURAJ JHA", printActivity: { ...sample.printActivity!, dueReceived: 13700 } },
+      branding,
+      "SURAJ JHA",
+    );
+    const noDues = buildStaffDayCloseSlipHtml(
+      { ...sample, userName: "VIJAY YADAV", printActivity: { ...sample.printActivity!, dueReceived: 0 } },
+      branding,
+      "VIJAY YADAV",
+    );
+    const rows = (html: string) =>
+      [...html.matchAll(/<span class="lbl">([^<]+)<\/span>/g)].map((m) => m[1]);
+    expect(rows(withDues)).toEqual(rows(noDues));
+    expect(withDues).not.toContain("Expected = Bill Gen");
+    expect(noDues).not.toContain("Expected = Bill Gen");
+  });
+
+  test("missing branding prints no letterhead and no placeholder box", () => {
+    const html = buildStaffDayCloseSlipHtml(sample, { name: "Care Diagnostics" }, "Alice");
+    expect(html).not.toContain("logo-ph");
+    expect(html).not.toContain("LOGO");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("CARE DIAGNOSTICS");
+  });
+
+  test("header is held clear of the printer's non-printable top band", () => {
+    const html = buildStaffDayCloseSlipHtml(sample, {}, "Alice");
+    expect(html).toContain("margin: 12mm 6mm 6mm");
+    expect(html).toContain("padding-top: 3mm");
   });
 
   test("24-Sep Suraj-style bridge: Bill Gen 132900 + Dues 3000 = Expected 135900", () => {

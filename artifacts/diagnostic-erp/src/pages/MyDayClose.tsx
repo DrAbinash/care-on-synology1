@@ -19,6 +19,7 @@ import {
 import {
   autoPrintStaffDayClose,
   openStaffDayClosePrint,
+  resolveStaffSlipClinic,
   type StaffPrintActivity,
   type StaffSlipClinic,
 } from "@/lib/staffDayCloseSlip";
@@ -123,11 +124,19 @@ export default function MyDayClose() {
     ...FINANCIAL_QUERY_OPTIONS,
   });
 
-  const clinicQ = useQuery<StaffSlipClinic>({
+  const clinicBrandingQuery = {
     queryKey: ["clinic-settings"],
     queryFn: () => api.get<StaffSlipClinic>("/api/clinic-settings/branding"),
     staleTime: 60_000,
-  });
+  };
+
+  // Prefetched on mount so the slip usually resolves from cache instantly.
+  useQuery<StaffSlipClinic>(clinicBrandingQuery);
+
+  // A slip must not be built from a branding request that has not landed yet —
+  // that is how reconciliation reached staff with no letterhead.
+  const ensureClinicBranding = () =>
+    resolveStaffSlipClinic(() => qc.ensureQueryData<StaffSlipClinic>(clinicBrandingQuery));
 
   // Post-closure activity — only fetched after a successful close to show the
   // "chocolate box" callout.
@@ -231,11 +240,9 @@ export default function MyDayClose() {
       } else {
         toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
       }
-      const shouldPrint = clinicQ.data?.dayCloseAutoPrint !== false;
-      const clinic = clinicQ.data ?? {};
       const slip = { ...closure, userName: closure.userName ?? myName };
       // Close confirm first; defer print + reload so Radix can clear body pointer-events.
-      dismissDialogThen(setConfirmOpen, () => {
+      dismissDialogThen(setConfirmOpen, async () => {
         setVarianceNote("");
         setNotes("");
         setDenomCounts(EMPTY_DENOMS);
@@ -245,6 +252,8 @@ export default function MyDayClose() {
         qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
         qc.invalidateQueries({ queryKey: ["drawer-status"] });
         qc.invalidateQueries({ queryKey: ["my-drawer-status"] });
+        const clinic = await ensureClinicBranding();
+        const shouldPrint = clinic.dayCloseAutoPrint !== false;
         if (shouldPrint) {
           autoPrintStaffDayClose(slip, clinic, myName);
         }
@@ -267,7 +276,7 @@ export default function MyDayClose() {
         : await api.get<MyClose>(`/api/day-close/my-closures/${c.id}/print-summary`);
       openStaffDayClosePrint(
         { ...full, userName: full.userName ?? myName },
-        clinicQ.data ?? {},
+        await ensureClinicBranding(),
         myName,
       );
     } catch (e) {
