@@ -262,11 +262,40 @@ describe("orthanc.sync_divergence — is Orthanc actually delivering into the ER
       },
     }));
     expect(c.status).toBe("UNKNOWN");
-    expect(c.message).toMatch(/range query is not answering as expected/);
+    expect(c.message).toMatch(/either that StudyDate range is not answering as expected, or what arrived here carries a DICOM date outside/);
     // The tie-breaker has to read the intake table: dicom_studies is empty on
     // this pathway, so consulting it would make every quiet window look broken.
     expect(crossCheckSql).toContain("radiology_worklist");
     expect(crossCheckSql).not.toContain("dicom_studies");
+  });
+
+  // A PASS is only a statement about the studies that could be matched, so the
+  // ones Orthanc returned without a readable UID + date must be said out loud.
+  it("a clean delivery still names the studies it could not compare", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), { ID: "x" }, { ID: "y" }],
+      }),
+      query: async () => [{ study_instance_uid: "1.2.3.10" }],
+    }));
+    expect(c.status).toBe("PASS");
+    expect(c.message).toContain("2 returned without a readable UID + StudyDate were not compared");
+    expect(c.metadata?.undated).toBe(2);
+  });
+
+  it("a delivery failure names the studies it could not compare too", async () => {
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({
+        ok: true, status: 200, ms: 6,
+        json: [orthancStudy("1.2.3.10", "20260721", "090000"), { ID: "x" }],
+      }),
+      query: async () => [],
+    }));
+    expect(c.status).toBe("FAIL");
+    expect(c.message).toContain("1 returned without a readable UID + StudyDate were not compared");
   });
 
   it("Orthanc lists nothing and the ERP has received nothing inside the window → SKIPPED, not UNKNOWN", async () => {
