@@ -111,6 +111,22 @@ export function assertsAbnormality(line: string): boolean {
     && !words(s).some((w) => NEGATION_WORDS.has(w));
 }
 
+/**
+ * True only for a sentence that positively states normality — "…shows normal
+ * signal intensity…", "…are unremarkable", "No acute infarct is seen."
+ *
+ * `assertsAbnormality` answering false is NOT this test: it also answers false for
+ * a finding whose cue word its list does not carry ("There is encephalomalacia
+ * with gliosis…"), and a caller that deletes sentences must never mistake one of
+ * those for a normal.
+ */
+export function assertsNormalStatement(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  if (assertsAbnormality(s)) return false;
+  return NORMAL_PREDICATE_RE.test(s) || LEADING_NEGATION_RE.test(unlabelled(s));
+}
+
 function splitFindingsLines(findingsText: string): string[] {
   return findingsText
     .split(/(?<=[.!?])\s+|\n+/)

@@ -75,37 +75,72 @@ const BASELINE_ROWS = (MRI_BRAIN_STANDARD_NORMAL_MANIFEST.observations ?? []).fi
  */
 const OWNERSHIP: Record<string, { must: string[]; mustNot: string[] }> = {
   "Basal ganglia hemorrhage": {
-    must: ["hemorrhage", "basal_ganglia", "midline"],
-    mustNot: ["ventricles", "brain_parenchyma", "infarct", "diffusion", "extra_axial",
+    // `brain_parenchyma` is in `must`, not `mustNot`: an intraparenchymal
+    // hemorrhage is a parenchymal lesion, so the whole-examination statement that
+    // the parenchyma has normal signal is falsified by it. That is a supersession
+    // contract on the concept, not a word match — see GLOBAL_NORMAL_SUPERSESSION.
+    must: ["hemorrhage", "basal_ganglia", "midline", "brain_parenchyma"],
+    mustNot: ["ventricles", "infarct", "diffusion", "extra_axial",
       "brainstem", "cerebellum", "posterior_fossa", "vascular_flow_voids"],
   },
   "Acute hemorrhage": {
-    must: ["hemorrhage", "basal_ganglia", "midline"],
-    mustNot: ["ventricles", "brain_parenchyma", "infarct", "diffusion", "extra_axial",
+    must: ["hemorrhage", "basal_ganglia", "midline", "brain_parenchyma"],
+    mustNot: ["ventricles", "infarct", "diffusion", "extra_axial",
       "brainstem", "cerebellum", "posterior_fossa", "vascular_flow_voids"],
   },
   "Acute infarct (DWI)": {
-    must: ["infarct", "diffusion"],
+    must: ["infarct", "diffusion", "brain_parenchyma"],
     mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial",
-      "brain_parenchyma", "brainstem", "cerebellum"],
+      "brainstem", "cerebellum"],
   },
   "Chronic infarct": {
-    // `diffusion` is deliberately not listed either way. The infarct content
-    // pack carries "restricted diffusion" as an alias, so any infarction claim —
-    // chronic included — reads onto "No restricted diffusion is seen on DWI/ADC."
-    // and retires it. That is right for an acute infarct and a lost negative for
-    // a chronic one; adjudicating it needs a change to the alias table, which is
-    // outside this box's contract and is recorded as a follow-up rather than
-    // pinned here as expected behaviour.
-    must: ["infarct"],
-    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial"],
+    // `diffusion` is deliberately not listed either way, and since #928 it is
+    // genuinely neither: the infarct pack no longer aliases "restricted diffusion",
+    // so a chronic claim neither retires the DWI/ADC normal nor keeps it by force —
+    // the tile says nothing about the sequence, and the report says nothing more.
+    // `brain_parenchyma` is in `must`: encephalomalacia with gliosis is lost
+    // parenchyma, whatever words the tile happens to use.
+    must: ["infarct", "brain_parenchyma"],
+    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial", "diffusion"],
+  },
+  Contusion: {
+    must: ["hemorrhage", "brain_parenchyma"],
+    mustNot: ["basal_ganglia", "extra_axial", "midline", "ventricles"],
+  },
+  "Diffuse axonal injury": {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "infarct", "ventricles", "midline", "basal_ganglia",
+      "cerebellum", "brainstem"],
+  },
+  "Hippocampal sclerosis": {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "infarct", "ventricles", "midline", "basal_ganglia", "cerebellum"],
+  },
+  Cavernoma: {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "infarct", "ventricles", "midline", "extra_axial", "basal_ganglia"],
+  },
+  AVM: {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "infarct", "ventricles", "midline", "extra_axial",
+      "basal_ganglia", "vascular_flow_voids"],
+  },
+  "Cerebral atrophy": {
+    // The exemption that proves the rule: a brain can atrophy with normal signal,
+    // so a volume claim falsifies none of these. Atrophy retires no normal at all.
+    must: [],
+    mustNot: ["brain_parenchyma", "hemorrhage", "infarct", "diffusion", "ventricles",
+      "midline", "basal_ganglia", "extra_axial"],
   },
   Hydrocephalus: {
     must: ["ventricles"],
-    mustNot: ["midline", "hemorrhage", "infarct", "diffusion", "basal_ganglia", "extra_axial"],
+    mustNot: ["midline", "hemorrhage", "infarct", "diffusion", "basal_ganglia", "extra_axial",
+      "brain_parenchyma"],
   },
   "Subdural hematoma": {
     must: ["hemorrhage", "extra_axial"],
+    // Extra-axial blood: the parenchyma itself can be normal, and its
+    // whole-examination normal must survive the click.
     mustNot: ["ventricles", "basal_ganglia", "midline", "brain_parenchyma", "infarct",
       "diffusion", "brainstem", "cerebellum"],
   },
@@ -116,10 +151,6 @@ const OWNERSHIP: Record<string, { must: string[]; mustNot: string[] }> = {
   "Subarachnoid hemorrhage": {
     must: ["hemorrhage"],
     mustNot: ["basal_ganglia", "ventricles", "extra_axial", "midline", "brain_parenchyma"],
-  },
-  Contusion: {
-    must: ["hemorrhage"],
-    mustNot: ["basal_ganglia", "extra_axial", "midline", "ventricles", "brain_parenchyma"],
   },
   "Fazekas 1": {
     must: ["brain_parenchyma"],
@@ -153,7 +184,7 @@ const OWNERSHIP: Record<string, { must: string[]; mustNot: string[] }> = {
   },
   "Extra-axial collection": {
     must: ["extra_axial"],
-    mustNot: ["hemorrhage", "midline", "ventricles", "basal_ganglia"],
+    mustNot: ["hemorrhage", "midline", "ventricles", "basal_ganglia", "brain_parenchyma"],
   },
   "Mass lesion": {
     must: ["brain_parenchyma"],

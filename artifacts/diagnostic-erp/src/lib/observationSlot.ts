@@ -33,7 +33,7 @@ import {
   normaliseConceptKey,
 } from "./conceptCanon/conceptCanon";
 import { CLINICAL_CONTENT_PACKS, contentPackForConcept } from "./conceptCanon/contentPacks";
-import { assertsAbnormality } from "./generateLocalImpression";
+import { assertsAbnormality, assertsNormalStatement } from "./generateLocalImpression";
 
 export {
   SLOT_WILDCARD,
@@ -498,6 +498,11 @@ export function sentenceOwnedBySlot(
   obs: Pick<CanonicalObservation, "concept" | "level" | "laterality" | "anatomicalSection" | "baselineReplaces"> & {
     /** Concepts the statement asserts in its own words, beyond its declared one. */
     alsoOwns?: string[];
+    /**
+     * Whole-examination normals this concept's lesion sits inside of — the
+     * explicit supersession contract, not something read off the sentence.
+     */
+    supersedesGlobals?: readonly string[];
   },
 ): boolean {
   const baseline = (obs.baselineReplaces ?? "").trim();
@@ -510,7 +515,23 @@ export function sentenceOwnedBySlot(
   // itself asserts something abnormal.
   const derived = (obs.alsoOwns?.length ?? 0) > 0 && !assertsAbnormality(sentence)
     && obs.alsoOwns!.some((c) => c !== obs.concept && namesConcept(sentence, c));
-  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept) || derived;
+  // An explicit contract retires a whole-examination normal — the one class of
+  // normal sentence prose inference cannot reach, because a lesion described as
+  // "encephalomalacia", "intraparenchymal" or "MCA territory" never spells
+  // "brain parenchyma". One gate keeps it inside that job: the sentence must
+  // positively state normality. Not "it does not assert abnormality" — that test
+  // also answers false for a finding whose cue word is missing from the list, and
+  // a sentence-deleting rule must never read one of those as a normal.
+  //
+  // Cross-level and cross-region sentences are NOT handled here. The level gate
+  // below already refuses them, and it is the same rule the cervical and dorsal
+  // catalogues depend on ("Disc herniation L4-L5" widening to every level once
+  // deleted all five normals), so repeating the test in this arm would be a guard
+  // no mutant can break — which reads as coverage and is not.
+  const supersedes = (obs.supersedesGlobals?.length ?? 0) > 0
+    && assertsNormalStatement(sentence)
+    && obs.supersedesGlobals!.some((t) => namesConcept(sentence, t));
+  const matchesConcept = sentenceMatchesConcept(sentence, obs.concept) || derived || supersedes;
   const level = normalizeLevel(obs.level);
   if (level && !sentenceHasLevel(sentence, level)) {
     // A study-wide sentence speaks for every level, so one level's pathology

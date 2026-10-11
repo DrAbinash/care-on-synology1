@@ -658,13 +658,18 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // infarct).
     expect(CASES.length).toBe(17);
 
-    // Staging an infarct as chronic retires the acute-infarct denial and nothing
-    // else. The DWI/ADC negative is the fact that makes the case chronic, so it has
-    // to still be on the page — measured off the rendered narrative, because the
-    // alias that used to own it (infarct → "restricted diffusion") deleted it on
-    // exactly this click.
-    expect(brainChronicInfarct.replaced).toEqual(["No acute infarct is seen."]);
+    // Staging an infarct as chronic retires the acute-infarct denial and the
+    // whole-examination parenchyma normal — encephalomalacia is lost parenchyma —
+    // while the DWI/ADC negative is the fact that makes the case chronic and has
+    // to still be on the page. Measured off the rendered narrative, because the
+    // alias that used to own it (infarct → "restricted diffusion") deleted the
+    // sequence negative on exactly this click and kept the parenchyma one.
+    expect(brainChronicInfarct.replaced).toEqual([
+      "Brain parenchyma shows normal signal intensity with preserved grey-white differentiation.",
+      "No acute infarct is seen.",
+    ]);
     expect(brainChronicInfarct.narrative.findings).not.toContain("No acute infarct is seen.");
+    expect(brainChronicInfarct.narrative.findings).not.toContain("Brain parenchyma shows normal signal intensity");
     expect(brainChronicInfarct.narrative.findings).toContain("No restricted diffusion is seen on DWI/ADC.");
     expect(brainChronicInfarct.narrative.impression).toMatch(/chronic right cerebral infarct/i);
 

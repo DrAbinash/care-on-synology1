@@ -22,6 +22,7 @@ import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLinesProvenanceAware } from "./quickFindingsMerge";
 import { assertsAbnormality } from "./generateLocalImpression";
+import { globalNormalsSupersededBy } from "./conceptCanon/contentPacks";
 import {
   buildCanonicalObservation,
   conceptsAssertedIn,
@@ -402,6 +403,7 @@ export function applyPathologyPatch(opts: {
         anatomicalSection: slotObs.anatomicalSection,
         baselineReplaces: baseline,
         alsoOwns,
+        supersedesGlobals: globalNormalsSupersededBy(slotObs.concept ?? opts.ownership.concept ?? null),
       }) && overwritesAbnormalClaim(probe)
       : Boolean(
         (baseline && probe.includes(baseline))
