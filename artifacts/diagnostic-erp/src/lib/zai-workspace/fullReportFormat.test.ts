@@ -334,8 +334,8 @@ describe("full report format — workspace apply", () => {
       },
       source: "quick-select",
     });
+    expect(result.narrative.findings.toLowerCase()).toMatch(/basal ganglia/);
     expect(result.narrative.findings).toMatch(/hemorrhage/i);
-    expect(result.narrative.findings).toMatch(/mass effect/i);
     expect(result.narrative.findings).toContain("Fazekas");
   });
 

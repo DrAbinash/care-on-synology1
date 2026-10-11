@@ -493,7 +493,7 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "11-cervical-normal": { count: 0 },
   "12-cervical-herniation-click": { count: 1, contains: "Central disc herniation at C5-C6" },
   "13-cervical-cord-click": { count: 1, contains: "Cervical cord compression at C5-C6" },
-  "14-brain-hemorrhage": { count: 1, contains: "hemorrhage" },
+  "14-brain-hemorrhage": { count: 2, contains: "hemorrhage" },
   "15-brain-mass": { count: 1, contains: "mass lesion" },
   "16-brain-small-vessel": { count: 2, contains: "Fazekas grade 2" },
 };

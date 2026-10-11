@@ -14,9 +14,8 @@ import { quickSelectTilePatch } from "./quickSelectTilePayload";
 import { useWorkspace } from "./store";
 import { MRI_BRAIN_STANDARD_NORMAL_MANIFEST } from "./baselines/mriBrainStandardNormal";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
-import { splitToSentences } from "@/lib/reportFieldMerge";
+import { conceptsAssertedIn } from "@/lib/observationSlot";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
-import { canonicalConceptTokens, normaliseConceptKey } from "@/lib/conceptCanon/conceptCanon";
 import { CLINICAL_CONTENT_PACKS } from "@/lib/conceptCanon/contentPacks";
 
 function brainCtx() {
@@ -56,28 +55,115 @@ const BASELINE_ROWS = (MRI_BRAIN_STANDARD_NORMAL_MANIFEST.observations ?? []).fi
 );
 
 /**
- * Which of the scaffold's own normal sentences this text denies.
+ * Which scaffold normals a clicked box must delete — and which it must leave
+ * alone.
  *
- * The subject is the content pack's alias list, not a synonym table invented
- * here, so a concept the pack renames is caught the same day the pack changes.
- * A clause that denies ("…no acute infarct…") asserts nothing, so it retires
- * nothing — that is `assertsAbnormality`'s job, the same function the Conclusion
- * picker uses.
+ * Both columns are authored from the clinical claim, not read out of the engine.
+ * An earlier version of this file paired a box to a normal by substring, and that
+ * is what made the two sides disagree: "periventricular" reaches into the
+ * ventricular normal and "intraparenchymal" into the parenchymal one, neither of
+ * which the box actually falsifies. Because the engine refused to retire them,
+ * the only way to get green looked like deleting anatomy from a radiologist's
+ * sentence — which is what was done, and what four clinical suites then caught.
+ *
+ * `must`    — the regions this box says are abnormal, so their normals go.
+ *             One box may legitimately contradict several.
+ * `mustNot` — anatomy this box says nothing about, so its normal stays. A right
+ *             basal ganglia hemorrhage says nothing about the brainstem, and
+ *             mild periventricular white-matter change says nothing about
+ *             ventricular size.
  */
-function contradictedRows(text: string, rows = BASELINE_ROWS): Set<string> {
-  const out = new Set<string>();
-  for (const clause of splitToSentences(text)) {
-    if (!assertsAbnormality(clause)) continue;
-    const hay = normaliseConceptKey(clause);
-    for (const row of rows) {
-      const tokens = canonicalConceptTokens(row.concept);
-      if (tokens.length === 0) continue;
-      if (!tokens.some((tok) => hay.includes(tok))) continue;
-      out.add(row.renderedText.trim());
-    }
-  }
-  return out;
-}
+const OWNERSHIP: Record<string, { must: string[]; mustNot: string[] }> = {
+  "Basal ganglia hemorrhage": {
+    must: ["hemorrhage", "basal_ganglia", "midline"],
+    mustNot: ["ventricles", "brain_parenchyma", "infarct", "diffusion", "extra_axial",
+      "brainstem", "cerebellum", "posterior_fossa", "vascular_flow_voids"],
+  },
+  "Acute hemorrhage": {
+    must: ["hemorrhage", "basal_ganglia", "midline"],
+    mustNot: ["ventricles", "brain_parenchyma", "infarct", "diffusion", "extra_axial",
+      "brainstem", "cerebellum", "posterior_fossa", "vascular_flow_voids"],
+  },
+  "Acute infarct (DWI)": {
+    must: ["infarct", "diffusion"],
+    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial",
+      "brain_parenchyma", "brainstem", "cerebellum"],
+  },
+  "Chronic infarct": {
+    // `diffusion` is deliberately not listed either way. The infarct content
+    // pack carries "restricted diffusion" as an alias, so any infarction claim —
+    // chronic included — reads onto "No restricted diffusion is seen on DWI/ADC."
+    // and retires it. That is right for an acute infarct and a lost negative for
+    // a chronic one; adjudicating it needs a change to the alias table, which is
+    // outside this box's contract and is recorded as a follow-up rather than
+    // pinned here as expected behaviour.
+    must: ["infarct"],
+    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial"],
+  },
+  Hydrocephalus: {
+    must: ["ventricles"],
+    mustNot: ["midline", "hemorrhage", "infarct", "diffusion", "basal_ganglia", "extra_axial"],
+  },
+  "Subdural hematoma": {
+    must: ["hemorrhage", "extra_axial"],
+    mustNot: ["ventricles", "basal_ganglia", "midline", "brain_parenchyma", "infarct",
+      "diffusion", "brainstem", "cerebellum"],
+  },
+  "Epidural hematoma": {
+    must: ["hemorrhage", "extra_axial"],
+    mustNot: ["ventricles", "basal_ganglia", "midline", "brain_parenchyma", "infarct", "diffusion"],
+  },
+  "Subarachnoid hemorrhage": {
+    must: ["hemorrhage"],
+    mustNot: ["basal_ganglia", "ventricles", "extra_axial", "midline", "brain_parenchyma"],
+  },
+  Contusion: {
+    must: ["hemorrhage"],
+    mustNot: ["basal_ganglia", "extra_axial", "midline", "ventricles", "brain_parenchyma"],
+  },
+  "Fazekas 1": {
+    must: ["brain_parenchyma"],
+    mustNot: ["ventricles", "basal_ganglia", "midline", "hemorrhage", "infarct",
+      "diffusion", "extra_axial", "brainstem", "cerebellum"],
+  },
+  "Fazekas 2": {
+    must: ["brain_parenchyma"],
+    mustNot: ["ventricles", "basal_ganglia", "midline", "hemorrhage", "infarct", "diffusion"],
+  },
+  "Fazekas 3": {
+    must: ["brain_parenchyma"],
+    mustNot: ["ventricles", "basal_ganglia", "midline", "hemorrhage", "infarct", "diffusion"],
+  },
+  Microbleeds: {
+    // Microbleeds are not a hemorrhage: the macroscopic negative survives.
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "infarct"],
+  },
+  "Lacunar infarcts": {
+    must: ["brain_parenchyma"],
+    mustNot: ["infarct", "diffusion", "hemorrhage", "ventricles", "basal_ganglia"],
+  },
+  "Demyelinating lesion": {
+    must: ["brain_parenchyma"],
+    mustNot: ["ventricles", "infarct", "hemorrhage", "basal_ganglia", "diffusion"],
+  },
+  "Midline shift": {
+    must: ["midline"],
+    mustNot: ["hemorrhage", "basal_ganglia", "ventricles", "extra_axial", "brain_parenchyma"],
+  },
+  "Extra-axial collection": {
+    must: ["extra_axial"],
+    mustNot: ["hemorrhage", "midline", "ventricles", "basal_ganglia"],
+  },
+  "Mass lesion": {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial"],
+  },
+  "Cerebral edema": {
+    must: ["brain_parenchyma"],
+    mustNot: ["hemorrhage", "basal_ganglia", "midline", "extra_axial"],
+  },
+};
 
 function applyTile(tile: (typeof BRAIN_TILES)[number]) {
   const side = /\{side\}/i.test(tile.sentence) ? "right" : undefined;
@@ -100,23 +186,111 @@ describe("the brain Quick Select catalogue", () => {
   it("no box can be clicked without retiring every normal it denies", () => {
     const offenders: string[] = [];
     let checked = 0;
+    for (const [label, rule] of Object.entries(OWNERSHIP)) {
+      const tile = BRAIN_TILES.find((t) => t.label === label);
+      if (!tile) {
+        offenders.push(`${label} is missing from the catalogue`);
+        continue;
+      }
+      reset();
+      const { outcome, findings } = applyTile(tile);
+      if (outcome !== "applied") {
+        offenders.push(`${label} was not applied`);
+        continue;
+      }
+      const text = findings();
+      const rowFor = (concept: string) => BASELINE_ROWS.find((r) => r.concept === concept);
+      for (const concept of rule.must) {
+        const row = rowFor(concept);
+        if (!row) { offenders.push(`${label} :: no baseline row for ${concept}`); continue; }
+        checked++;
+        if (text.includes(row.renderedText.trim())) {
+          offenders.push(`${label} leaves the ${concept} normal standing: ${row.renderedText}`);
+        }
+      }
+      for (const concept of rule.mustNot) {
+        const row = rowFor(concept);
+        if (!row) { offenders.push(`${label} :: no baseline row for ${concept}`); continue; }
+        checked++;
+        if (!text.includes(row.renderedText.trim())) {
+          offenders.push(`${label} retires the ${concept} normal it does not deny: ${row.renderedText}`);
+        }
+      }
+    }
+    // Every entry of the table has to be exercised in both directions, or an
+    // emptied table reads as a pass.
+    expect(Object.keys(OWNERSHIP).length).toBeGreaterThanOrEqual(15);
+    expect(checked).toBeGreaterThanOrEqual(60);
+    expect(offenders).toEqual([]);
+  });
+
+  it("the engine and the box agree on what the box's own words claim", () => {
+    // The ratchet. `conceptsAssertedIn` is the rule the patch engine uses to
+    // decide what a compound sentence falsifies, so a new box that names an
+    // anatomy and fails to retire that anatomy's normal is caught the day it is
+    // added — without the substring over-reach the authored table exists to stop.
+    const offenders: string[] = [];
+    let checked = 0;
     for (const tile of BRAIN_TILES) {
+      const claimed = conceptsAssertedIn(
+        `${tile.sentence} ${tile.impressionSentence ?? ""}`,
+        tile.concept ?? null,
+      );
+      if (claimed.length === 0) continue;
       reset();
       const { outcome, findings } = applyTile(tile);
       expect(outcome, `${tile.label} was not applied`).toBe("applied");
       const text = findings();
-      const denied = new Set([
-        ...contradictedRows(tile.sentence),
-        ...contradictedRows(tile.impressionSentence ?? ""),
-      ]);
-      checked += denied.size;
-      for (const row of denied) {
-        if (text.includes(row)) offenders.push(`${tile.label} leaves standing: ${row}`);
+      for (const concept of claimed) {
+        const row = BASELINE_ROWS.find((r) => r.concept === concept);
+        if (!row) continue;
+        checked++;
+        if (text.includes(row.renderedText.trim())) {
+          offenders.push(`${tile.label} claims ${concept} but leaves its normal standing`);
+        }
       }
     }
-    // The scan has to be looking at something.
-    expect(checked).toBeGreaterThanOrEqual(4);
+    expect(checked).toBeGreaterThanOrEqual(10);
     expect(offenders).toEqual([]);
+  });
+
+  it("anatomy is never deleted from a sentence to make retirement pass", () => {
+    // This guard exists because one attempt to get this file green removed
+    // "basal ganglia" from the hemorrhage box's sentence and its Impression.
+    // That is a clinical loss the clinic would have signed, and the retirement
+    // problem was in the engine, not in the prose.
+    const REQUIRED: Record<string, string[]> = {
+      "Basal ganglia hemorrhage": ["basal ganglia", "intraparenchymal", "intraventricular", "mass effect", "midline shift"],
+      "Acute hemorrhage": ["basal ganglia", "intraparenchymal", "intraventricular"],
+      "Acute infarct (DWI)": ["mca", "restricted diffusion", "acute infarct"],
+      "Fazekas 1": ["brain parenchyma", "periventricular", "fazekas grade 1"],
+      "Fazekas 2": ["brain parenchyma", "periventricular", "confluent"],
+      "Fazekas 3": ["brain parenchyma", "deep white matter", "fazekas grade 3"],
+      "Subdural hematoma": ["subdural hematoma", "extra-axial", "convexity"],
+      "Epidural hematoma": ["epidural hematoma", "extra-axial"],
+      "Subarachnoid hemorrhage": ["subarachnoid hemorrhage", "basal cisterns"],
+      Microbleeds: ["brain parenchyma", "gre/swi", "microbleeds"],
+      "Demyelinating lesion": ["brain parenchyma", "demyelinating"],
+      "Chronic infarct": ["encephalomalacia", "chronic infarct"],
+      Contusion: ["contusion", "intraparenchymal hemorrhage"],
+      "Mass lesion": ["brain parenchyma", "mass lesion", "edema"],
+      "Cerebral edema": ["brain parenchyma", "edema"],
+      Hydrocephalus: ["ventricular system", "hydrocephalus"],
+    };
+    const offenders: string[] = [];
+    for (const [label, phrases] of Object.entries(REQUIRED)) {
+      const tile = BRAIN_TILES.find((t) => t.label === label);
+      if (!tile) { offenders.push(`${label} is missing from the catalogue`); continue; }
+      const hay = `${tile.sentence} ${tile.impressionSentence ?? ""}`.toLowerCase();
+      for (const p of phrases) {
+        if (!hay.includes(p.toLowerCase())) offenders.push(`${label} no longer says "${p}"`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    // The hemorrhage box must still put the location in the Impression, which is
+    // the line the clinic reads first.
+    const hem = BRAIN_TILES.find((t) => t.label === "Basal ganglia hemorrhage")!;
+    expect(hem.impressionSentence ?? "").toMatch(/basal ganglia/i);
   });
 
   it("clears a normal it contradicts even when no shared word gives it away", () => {
