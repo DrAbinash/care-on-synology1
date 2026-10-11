@@ -212,6 +212,8 @@ import {
   alreadySaysThis,
   canalApReportTable,
   radiologistObservations,
+  reportHasDeviation,
+  unexplainedFindingLines,
   type ProfessionalReportOutcome,
 } from "./professionalReport";
 import {
@@ -1579,6 +1581,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Read before anything is written: these are the statements the report must
     // still make when the action finishes.
     const retained = radiologistObservations(get().appliedPathologyPatches);
+    const freeTextBefore = unexplainedFindingLines(findingsBefore, get().appliedPathologyPatches);
 
     // The scaffold is merged in, never dropped on top of the report. An identical
     // sentence is not written twice, and no sentence the format does not contain
@@ -1641,14 +1644,24 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().mergeField("findings", measurementTable, "companion");
     }
 
-    // Re-derive the Impression from the Findings as they now stand — but only if
-    // this press actually changed the Findings. The refresh writes unconditionally
-    // (it sets the dirty flag even when the text comes back identical), so running
-    // it on a no-op press would mark a report dirty that is not and schedule a save
-    // for nothing. `impressionNeedsRefresh` cannot be the test: merging the format's
-    // own Impression clears it, because a template is one of the sources that owns
-    // both sides.
-    if (get().findingsText !== findingsBefore || get().appliedPathologyPatches.length !== patchCountBefore) {
+    // Re-derive the Impression from the Findings as they now stand — but only over
+    // a report that actually deviates from the approved normal, and only if this
+    // press changed the Findings. Two separate reasons, both measured:
+    //  - `generateLocalImpression` reads "No acute infarct is seen." as abnormal,
+    //    because the cue survives its own negation. Refreshed over a complete
+    //    normal it appends the Findings' relevant negatives to the Impression, so
+    //    "Normal MRI of the brain." arrives followed by five repetitions of the
+    //    body — the duplicated conclusion section this milestone forbids. Where the
+    //    radiologist has recorded nothing but the normal, the format's own
+    //    Impression, which the clinic approved, is the professional conclusion.
+    //  - The refresh writes unconditionally (it sets the dirty flag even when the
+    //    text comes back identical), so a press that changed nothing must not call it.
+    // `impressionNeedsRefresh` cannot be the test either way: merging the format's
+    // own Impression clears it, because a template is a source that owns both sides.
+    if (
+      (get().findingsText !== findingsBefore || get().appliedPathologyPatches.length !== patchCountBefore)
+      && reportHasDeviation(get().appliedPathologyPatches, freeTextBefore)
+    ) {
       get().refreshImpressionFromLedger();
     }
     get().orderImpressionByPriority();

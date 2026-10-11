@@ -134,6 +134,52 @@ export function alreadySaysThis(existing: string, incoming: string): boolean {
   return wanted.every((unit) => present.has(unit));
 }
 
+/** One narrative line, normalized the way CARE's merge normalizes it. */
+function narrativeLines(text: string): string[] {
+  return text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * The findings lines the report owes to something other than the radiologist's
+ * keyboard: an observation's own sentence, or a baseline sentence the applied
+ * format owns. What is left over is free text — dictated, typed or pasted. This is
+ * computed from ledger identity, never from NLP on the prose.
+ */
+export function unexplainedFindingLines(
+  findingsText: string,
+  patches: readonly AppliedPathologyPatch[],
+): string[] {
+  const owned = new Set<string>();
+  for (const p of patches) {
+    for (const source of [p.lastRendered.findings, p.templates.findings]) {
+      for (const line of narrativeLines(source ?? "")) owned.add(normalizeForDedupe(line));
+    }
+  }
+  return narrativeLines(findingsText).filter((line) => !owned.has(normalizeForDedupe(line)));
+}
+
+/**
+ * True when the report says something beyond the approved normal.
+ *
+ * `generateLocalImpression` promotes a findings sentence that carries a pathology
+ * cue, and the negation in front of it does not cancel the cue: on a normal brain,
+ * "No acute infarct is seen." matches `infarct` and is read as abnormal. Refreshed
+ * over a complete normal, that turns one curated conclusion into "Normal MRI of the
+ * brain." followed by five copies of the Findings' own relevant negatives — a
+ * duplicated conclusion section, and a report that no longer reads as a normal.
+ * So the derived Impression runs only where the radiologist has deviated; elsewhere
+ * the format's own Impression, which the clinic approved, stands.
+ */
+export function reportHasDeviation(
+  patches: readonly AppliedPathologyPatch[],
+  unexplainedLines: readonly string[],
+): boolean {
+  if (unexplainedLines.length > 0) return true;
+  return patches.some((p) => !p.stale
+    && p.observation?.role !== "baseline"
+    && !isSystemNormalPatch(p));
+}
+
 /**
  * The canal AP measurements as report text, or `""` when there is nothing to print.
  *

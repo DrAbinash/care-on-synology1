@@ -10,6 +10,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { useWorkspace } from "./store";
+import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import { resolveNormalBootstrapFormat } from "./normalBootstrap";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
@@ -84,6 +85,31 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
     // A report that changed must say it changed: this is what schedules the draft
     // save and stops the workspace looking unchanged after a press.
     expect(useWorkspace.getState().isDirty).toBe(true);
+  });
+
+  it("leaves a complete normal with one conclusion, not a copy of the Findings", () => {
+    reset();
+    const chosen = resolveNormalBootstrapFormat({ ctx: brainCtx(), formats: DEFAULT_REPORT_FORMATS });
+    expect(chosen?.status).toBe("apply");
+    if (chosen?.status !== "apply") return;
+    useWorkspace.getState().generateProfessionalReport(brainCtx());
+    const impressionLines = useWorkspace.getState().impressionText
+      .split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    // "No acute infarct is seen." carries the cue `infarct`, and the cue survives
+    // its own negation in `generateLocalImpression`. Deriving over a complete normal
+    // therefore promoted every relevant negative in the body into the Impression, so
+    // the report read "Normal MRI of the brain." and then five more lines of Findings.
+    for (const line of impressionLines) {
+      expect(line).not.toMatch(/^No (acute infarct|intracranial hemorrhage|midline shift) is seen\.$/);
+      expect(line).not.toMatch(/are preserved\.|are unremarkable\.$/);
+    }
+    // The guarantee is that the conclusion is exactly what the clinic approved.
+    // Compared sentence by sentence, not line by line: CARE's merge re-flows a
+    // one-line Impression into one sentence per line, which is presentation, not
+    // content — and this test is about content that was not supposed to arrive.
+    const asSentences = (t: string) => splitToSentences(t).map(normalizeForDedupe).filter(Boolean).sort();
+    expect(asSentences(useWorkspace.getState().impressionText))
+      .toEqual(asSentences(chosen.format.impression));
   });
 
   it("refuses an unidentified study and writes nothing at all", () => {
