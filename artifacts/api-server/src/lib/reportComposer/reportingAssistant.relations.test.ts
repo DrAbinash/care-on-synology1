@@ -181,6 +181,24 @@ describe("a measurement may not change anatomical owner", () => {
     expect(r.errors).toContain("measurement_repositioned");
   });
 
+  it("blocks a number moving level when one dictated line carries both levels", () => {
+    // The semicolon case, which no per-sentence matcher can reach without splitting
+    // clauses: dictated as one line, the input sentence names L4-L5 AND L5-S1, so a
+    // matcher that treats a sentence as the unit finds the number still next to a
+    // level the report mentioned and reports nothing. The owner of 8.2 mm is decided
+    // inside its clause, and moving it to the other clause is the fault.
+    const source = snap({
+      findings: "AP canal diameter 8.2 mm at L4-L5; severe left foraminal narrowing at L5-S1.",
+      impression: "",
+    });
+    const r = pro(source, body(
+      "The L4-L5 disc height is preserved; the AP diameter of the spinal canal measures"
+      + " 8.2 mm at L5-S1, where severe left foraminal narrowing is seen.",
+    ));
+    expect(r.errors).toContain("measurement_repositioned");
+    expect(r.relations?.repositionedMeasurements.join(" ")).toContain("8.2mm");
+  });
+
   it("is not demanded of a drafting kind, which may restructure prose", () => {
     const draft = validateComposerOutput(
       snap(),
