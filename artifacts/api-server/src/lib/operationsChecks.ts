@@ -47,8 +47,12 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
   syncDivergenceWindowHours: 48,
 };
 
-/** Hard cap on the Orthanc study window a single delivery comparison reads. */
-const SYNC_DIVERGENCE_LIMIT = 200;
+/**
+ * Cap on the Orthanc study window a single delivery comparison reads. Orthanc's
+ * DICOMweb MaxResourceCount defaults to 100, so asking for more is an error,
+ * not a wider window.
+ */
+const SYNC_DIVERGENCE_LIMIT = 100;
 
 /** One row set from a read-only query (array of plain objects). */
 export type QueryFn = (text: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>;
@@ -109,6 +113,13 @@ function humanAge(mins: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** One value out of a DICOMweb (QIDO-RS) JSON attribute; "" when absent or bulk-referenced. */
+function dicomWebValue(entry: unknown, tag: string): string {
+  if (typeof entry !== "object" || entry === null) return "";
+  const v = (entry as Record<string, { Value?: unknown[] }>)[tag]?.Value?.[0];
+  return typeof v === "string" || typeof v === "number" ? String(v) : "";
 }
 
 /** DICOM DA as written by a modality: YYYYMMDD, no zone. */
@@ -353,14 +364,18 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
         return { status: "SKIPPED", message: "Orthanc not configured — no study list to compare the worklist against" };
       }
       // Orthanc's study list has no documented "newest first" contract and the
-      // archive is far too large to expand whole, so the window is bounded by
-      // the DICOM StudyDate range instead.
+      // archive is far too large to read whole, so the window is bounded by a
+      // DICOMweb StudyDate range. This is the study-list form this codebase
+      // already exercises (radiologyDeploymentDiagnostics probes
+      // /dicom-web/studies, the care-pacs validation docs curl it); the native
+      // ?query=&value= form is not, and a light that cannot tell "400 Bad
+      // Request" from "no studies" is not a light.
       const url =
-        `${ctx.orthanc.baseUrl}/studies?query=StudyDate` +
-        `&value=${dicomDate(new Date(ctx.now.getTime() - ctx.thresholds.syncDivergenceWindowHours * 3600000))}-${dicomDate(ctx.now)}` +
-        `&limit=${SYNC_DIVERGENCE_LIMIT}&expand=true`;
+        `${ctx.orthanc.baseUrl}/dicom-web/studies?StudyDate=` +
+        `${dicomDate(new Date(ctx.now.getTime() - ctx.thresholds.syncDivergenceWindowHours * 3600000))}-${dicomDate(ctx.now)}` +
+        `&limit=${SYNC_DIVERGENCE_LIMIT}`;
       const r = await ctx.probe(url, {
-        headers: { Accept: "application/json", ...ctx.orthanc.headers },
+        headers: { Accept: "application/dicom+json", ...ctx.orthanc.headers },
         parseJson: true,
       });
       if (r.status == null) {
@@ -377,18 +392,18 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       const dated: Array<{ uid: string; studyDate: string; studyTime: string }> = [];
       let undated = 0;
       for (const item of r.json) {
-        const tags = (item as { MainDicomTags?: Record<string, unknown> })?.MainDicomTags ?? {};
-        const uid = String(tags.StudyInstanceUID ?? "").trim();
-        const studyDate = String(tags.StudyDate ?? "").trim();
+        const uid = dicomWebValue(item, "0020000D").trim();
+        const studyDate = dicomWebValue(item, "00080020").trim();
         if (!uid || !/^\d{8}$/.test(studyDate)) {
           undated++;
           continue;
         }
-        dated.push({ uid, studyDate, studyTime: String(tags.StudyTime ?? "").trim() });
+        dated.push({ uid, studyDate, studyTime: dicomWebValue(item, "00080030").trim() });
       }
       // A study is comparable only if it has both a UID and a StudyDate; a list
-      // where none qualify means `expand` did not take effect, and reporting
-      // "0 missing" against an empty comparison is the most convincing kind of lie.
+      // where none qualify means the response is not the study metadata we asked
+      // for, and reporting "0 missing" against an empty comparison is the most
+      // convincing kind of lie.
       if (undated === r.json.length && r.json.length > 0) {
         return { status: "UNKNOWN", message: `${undated} Orthanc studies returned without a readable StudyInstanceUID + StudyDate — delivery cannot be compared` };
       }

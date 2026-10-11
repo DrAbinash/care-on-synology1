@@ -121,9 +121,13 @@ describe("Sync freshness vs last-DICOM — 'no recent study' is never a FAIL", (
   });
 });
 
-/** An Orthanc /studies?expand=true entry as the native API returns it. */
+/** One Orthanc QIDO-RS study. PS3.15 JSON: tag uppercase, `vr` lower, `Value` capital. */
 function orthancStudy(uid: string, studyDate: string, studyTime?: string) {
-  return { ID: uid.slice(-3), MainDicomTags: { StudyInstanceUID: uid, StudyDate: studyDate, ...(studyTime ? { StudyTime: studyTime } : {}) } };
+  return {
+    "0020000D": { vr: "UI", Value: [uid] },
+    "00080020": { vr: "DA", Value: [studyDate] },
+    ...(studyTime ? { "00080030": { vr: "TM", Value: [studyTime] } } : {}),
+  };
 }
 
 const ORTHANC_CFG = { baseUrl: "http://care-orthanc:8042", headers: {}, configured: true };
@@ -227,7 +231,7 @@ describe("orthanc.sync_divergence — is Orthanc actually delivering into the ER
       orthanc: ORTHANC_CFG,
       probe: async () => ({
         ok: true, status: 200, ms: 6,
-        json: [{ ID: "abc", MainDicomTags: {} }, { ID: "def", MainDicomTags: {} }],
+        json: [{ ID: "abc" }, { ID: "def" }],
       }),
       query: async () => [],
     }));
@@ -260,9 +264,11 @@ describe("orthanc.sync_divergence — is Orthanc actually delivering into the ER
     expect(sql).toContain("= ANY($1::text[])");
     expect(params).toEqual([["1.2.3.10"]]); // bound as a parameter, never interpolated
     expect(sql).not.toContain("1.2.3.10");
-    expect(url).toContain("/studies?query=StudyDate");
-    expect(url).toContain("value=20260719-20260721");
-    expect(url).toContain("expand=true");
+    expect(url).toContain("/dicom-web/studies?StudyDate=20260719-20260721");
+    // Orthanc's DICOMweb MaxResourceCount defaults to 100: a larger limit is an
+    // error page, not a wider window.
+    expect(url).toContain("&limit=100");
+    expect(url).not.toContain("query=StudyDate"); // the native form is unproven on this deployment
   });
 });
 
@@ -394,7 +400,7 @@ describe("buildOperationsReport — end to end with a fake ctx", () => {
         return [{ c: 0, ok: 1 }];
       },
       probe: async (url) => {
-        if (url.includes("/studies?query=StudyDate")) {
+        if (url.includes("/dicom-web/studies?StudyDate")) {
           return { ok: true, status: 200, ms: 4, json: [orthancStudy("1.2.3.10", "20260721", "090000")] };
         }
         if (url.includes("/system")) return { ok: true, status: 200, ms: 6, json: { Version: "1.12.4" } };
