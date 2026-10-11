@@ -410,6 +410,25 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       }
       const due = dated.filter((s) => studyDueForErp(s.studyDate, s.studyTime, ctx.now, ctx.thresholds.syncStaleMinutes));
       if (due.length === 0) {
+        // An empty (or fully-in-flight) window is the one state that could read
+        // as healthy when it is not: a StudyDate range this Orthanc does not
+        // understand answers with nothing, which looks exactly like a quiet PACS.
+        // The ERP side settles it — if a study arrived here inside the window,
+        // Orthanc cannot genuinely have none to show.
+        const windowMinutes = ctx.thresholds.syncDivergenceWindowHours * 60;
+        let arrivedMinutes: number | null = null;
+        if (r.json.length === 0) {
+          const latest = await ctx.query("SELECT max(created_at) AS m FROM radiology_worklist");
+          const m = latest[0]?.m ? new Date(latest[0].m as string).toISOString() : null;
+          arrivedMinutes = m ? minutesSince(ctx.now, m) : null;
+        }
+        if (r.json.length === 0 && arrivedMinutes != null && arrivedMinutes <= windowMinutes) {
+          return {
+            status: "UNKNOWN",
+            message: `Orthanc listed no study dated in the last ${window} but the ERP received one ${humanAge(arrivedMinutes)} ago — the StudyDate range query is not answering as expected`,
+            metadata: { window, undated, arrivedMinutes },
+          };
+        }
         return {
           status: "SKIPPED",
           message: r.json.length === 0

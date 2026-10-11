@@ -247,6 +247,39 @@ describe("orthanc.sync_divergence — is Orthanc actually delivering into the ER
     expect(c.status).toBe("SKIPPED");
   });
 
+  it("Orthanc lists nothing but the ERP received a study minutes ago → UNKNOWN, not a quiet PACS", async () => {
+    // The false all-clear this guards: a StudyDate range this Orthanc does not
+    // understand answers with an empty array, which is indistinguishable from a
+    // genuinely empty PACS unless the ERP side is consulted.
+    const recent = new Date(NOW.getTime() - 10 * 60000).toISOString();
+    let crossCheckSql = "";
+    const c = await run("orthanc.sync_divergence", ctx({
+      orthanc: ORTHANC_CFG,
+      probe: async () => ({ ok: true, status: 200, ms: 6, json: [] }),
+      query: async (text) => {
+        if (text.includes("max(created_at)")) { crossCheckSql = text; return [{ m: recent }]; }
+        return [];
+      },
+    }));
+    expect(c.status).toBe("UNKNOWN");
+    expect(c.message).toMatch(/range query is not answering as expected/);
+    // The tie-breaker has to read the intake table: dicom_studies is empty on
+    // this pathway, so consulting it would make every quiet window look broken.
+    expect(crossCheckSql).toContain("radiology_worklist");
+    expect(crossCheckSql).not.toContain("dicom_studies");
+  });
+
+  it("Orthanc lists nothing and the ERP has received nothing inside the window → SKIPPED, not UNKNOWN", async () => {
+    for (const m of [new Date(NOW.getTime() - 3 * 86400000).toISOString(), null]) {
+      const c = await run("orthanc.sync_divergence", ctx({
+        orthanc: ORTHANC_CFG,
+        probe: async () => ({ ok: true, status: 200, ms: 6, json: [] }),
+        query: async (text) => (text.includes("max(created_at)") ? [{ m }] : []),
+      }));
+      expect(c.status).toBe("SKIPPED");
+    }
+  });
+
   it("queries the worklist by parameter, and bounds Orthanc by StudyDate", async () => {
     let sql = "";
     let params: unknown[] | undefined;
