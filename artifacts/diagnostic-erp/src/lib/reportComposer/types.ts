@@ -27,6 +27,14 @@ export type ComposeObservation = {
   baselineReplaces?: string;
 };
 
+export type ComposerReportSource = {
+  label?: string;
+  modality?: string;
+  region?: string;
+  findings?: string;
+  impression?: string;
+};
+
 export type ComposerInputSnapshot = {
   studyId?: number | null;
   worklistId?: number | null;
@@ -75,6 +83,13 @@ export type ComposerInputSnapshot = {
   selectionText?: string;
   selectionField?: "FINDINGS" | "IMPRESSION" | "RECOMMENDATION";
   instruction?: string;
+  /**
+   * Second report(s) supplied for a COMBINE job. Mirrors the server's
+   * `ComposerInputSnapshotSchema.additionalReports`. Optional, and the hash
+   * canon is only extended when this is non-empty, so a snapshot without it
+   * keeps exactly the hashes it had before the field existed.
+   */
+  additionalReports?: ComposerReportSource[];
   targetLanguage?: string;
   jobKindHint?: string;
   /** AI drafting mode. Absent/undefined = TEXT_ONLY (backward compatible). */
@@ -120,6 +135,27 @@ export type TrackedChange = {
   model?: string;
 };
 
+/**
+ * One structured observation the assistant is PROPOSING (Operation 1). Server
+ * mirror: `api-server/src/lib/reportComposer/types.ts` `ProposedObservationSchema`.
+ * It is a proposal for the canonical finding ledger, never report text — an
+ * OBSERVATIONS job has no Apply path, and inserting a row is the workspace's own
+ * audited mutation.
+ */
+export type ProposedObservation = {
+  concept: string;
+  region?: string | null;
+  level?: string | null;
+  severity?: string | null;
+  laterality?: string | null;
+  measurement?: string | null;
+  findingsText: string;
+  impressionText?: string | null;
+  recommendationText?: string | null;
+  /** Verbatim fragment of the dictation this row came from. */
+  sourceText?: string | null;
+};
+
 export type ComposeJobView = {
   id: number;
   studyId: number | null;
@@ -136,10 +172,24 @@ export type ComposeJobView = {
   proposedImpression: string | null;
   proposedRecommendation: string | null;
   trackedChanges: TrackedChange[];
-  draft: { findings?: string; impression?: string; recommendation?: string } | null;
+  draft: {
+    findings?: string;
+    impression?: string;
+    recommendation?: string;
+    /** Operation 1's answer. Present on an OBSERVATIONS job, absent otherwise. */
+    observations?: ProposedObservation[];
+  } | null;
   validation: unknown;
   sources: Record<string, number>;
   model: string | null;
+  /** Derived server-side from the job's provenance — not a column. */
+  provider?: string | null;
+  usage?: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+    approximateCostUsd: number | null;
+  } | null;
   fallbackUsed: boolean;
   latencyMs: number | null;
   safeError: string | null;
@@ -308,6 +358,19 @@ export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot):
     .join("\n");
 }
 
+/** MUST mirror server `canonicalAdditionalReportsHashPayload`. */
+export function canonicalAdditionalReportsHashPayload(s: ComposerInputSnapshot): string {
+  const norm = (v: string | null | undefined): string =>
+    (v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return (s.additionalReports ?? [])
+    .map((r) =>
+      [norm(r.label), norm(r.modality), norm(r.region), norm(r.findings), norm(r.impression)].join(
+        "\u001f",
+      ),
+    )
+    .join("\n");
+}
+
 export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Promise<{
   findingsHash: string;
   impressionHash: string;
@@ -333,6 +396,7 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   // `canonicalStudyContextHashPayload` docstring for the rationale).
   const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
   const selectedImagesCanon = canonicalSelectedKeyImagesHashPayload(snapshot);
+  const additionalReports = snapshot.additionalReports ?? [];
   const inputHash = await hashText(
     [
       snapshot.jobKindHint ?? "",
@@ -348,6 +412,9 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
       (snapshot.templateSections ?? []).join(","),
       snapshot.aiMode ?? "TEXT_ONLY",
       selectedImagesCanon,
+      // Appended only when non-empty, exactly as the server does — an unchanged
+      // array keeps every pre-existing snapshot's `inputHash` byte-identical.
+      ...(additionalReports.length ? [canonicalAdditionalReportsHashPayload(snapshot)] : []),
     ].join("\u001e"),
   );
   const reportRevision = await hashText(`${findingsHash}:${impressionHash}:${recommendationHash}:${obsCanon}`);

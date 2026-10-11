@@ -1055,6 +1055,53 @@ describe("composeObservations — review hardening (PR #654 review)", () => {
     expect(clientHash.reportRevision).toBe(serverHash.reportRevision);
   });
 
+  it("hash-canonical G. a snapshot carrying a second report hashes identically on both sides", async () => {
+    // `additionalReports` is the COMBINE job's second study. If the browser and
+    // the server canonicalise it differently, every combination draft is born
+    // STALE (or, worse, stays applicable after the added report changed), and
+    // neither failure is visible in the UI.
+    const withExtra = {
+      ...snapWithReports(),
+      additionalReports: [
+        {
+          label: "MRI LUMBOSACRAL SPINE (same patient, same day)",
+          modality: "MRI",
+          region: "LS Spine",
+          findings: "Broad-based disc bulge at L4-L5, AP canal 8.2 mm.",
+          impression: "Canal stenosis at L4-L5.",
+        },
+      ],
+    };
+    const clientHash = await computeSnapshotHashes(withExtra);
+    const serverHash = serverComputeSnapshotHashes(withExtra);
+    expect(clientHash.inputHash).toBe(serverHash.inputHash);
+    // The added report is AI input, not the study's own editable narrative.
+    expect(clientHash.reportRevision).toBe(serverHash.reportRevision);
+
+    // And it moves the frozen input: a different second report is a different
+    // request, so the earlier READY draft must not stay applicable to it.
+    const edited = {
+      ...withExtra,
+      additionalReports: [
+        { ...withExtra.additionalReports[0], findings: "Broad-based disc bulge at L4-L5." },
+      ],
+    };
+    expect((await computeSnapshotHashes(edited)).inputHash).not.toBe(clientHash.inputHash);
+  });
+
+  function snapWithReports() {
+    return {
+      findings: "Loss of cervical lordosis. Left C5-C6 foraminal protrusion.",
+      impression: "Left C6 root contact.",
+      recommendation: "",
+      observations: [] as ComposeObservation[],
+      jobKindHint: "COMBINE" as const,
+      clinicalHistory: "Neck pain.",
+      technique: "Multiplanar MRI cervical spine.",
+      templateSections: [],
+    };
+  }
+
   it("hash-canonical backward compatibility: old snapshot without `region` still parses and hashes cleanly", async () => {
     // Simulate a snapshot produced by a pre-hardening client (no `region`
     // field on observations). The schema must still accept it, the hash

@@ -4,6 +4,7 @@ export type {
   ComposerProviderImage,
   ComposerProviderRequest,
   ComposerProviderResult,
+  ComposerProviderUsage,
   ComposerProviderAdapter,
   AiInferenceRole,
   AiExecution,
@@ -24,6 +25,8 @@ export { LocalOpenAiCompatibleComposerAdapter } from "./localOpenAiCompatibleCom
 export {
   resolveComposerProvider,
   parseComposerProviderName,
+  unsupportedComposerProviderMessage,
+  DEFAULT_COMPOSER_PROVIDER,
 } from "./resolveComposerProvider";
 
 export { listModels, defaultModelFor, assertModelSupportsCapability } from "./modelRegistry";

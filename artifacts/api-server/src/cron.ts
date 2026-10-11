@@ -209,12 +209,27 @@ export function startRadiologyJobConsumer(): void {
 export function startAiReportComposeJobConsumer(): void {
   if (aiReportComposeConsumerStarted) return;
   aiReportComposeConsumerStarted = true;
+  // Re-entrancy guard: a cloud call can outlast the tick that started it, and two
+  // overlapping ticks on one worker only mean the second one polls while the
+  // first is still holding a job.
+  let inFlight = false;
   const run = () => {
-    void fireAiReportComposeTick().catch((err) => {
-      console.error("[cron] ai report compose tick failed:", err);
-    });
+    if (inFlight) return;
+    inFlight = true;
+    fireAiReportComposeTick()
+      .catch((err) => {
+        console.error("[cron] ai report compose tick failed:", err);
+      })
+      .finally(() => {
+        inFlight = false;
+      });
   };
   setTimeout(run, 10_000).unref?.();
+  // 20 s, not just the minute hand. The radiologist clicked "professionalise
+  // this report" and is looking at a spinner: on a minute-only cron the request
+  // could sit queued for 59 seconds before the model was even asked, which is
+  // more latency than the slowest local model in this clinic adds to the answer.
+  setInterval(run, 20_000).unref?.();
   cron.schedule("* * * * *", async () => {
     try {
       await fireAiReportComposeTick();
@@ -222,7 +237,7 @@ export function startAiReportComposeJobConsumer(): void {
       console.error("[cron] ai report compose cron tick failed:", err);
     }
   });
-  console.log("[cron] ai report compose consumer registered (independent of ENABLE_SCHEDULERS)");
+  console.log("[cron] ai report compose consumer registered (10s first poll, then every 20s; independent of ENABLE_SCHEDULERS)");
 }
 
 async function fireAiReportComposeTick(): Promise<void> {

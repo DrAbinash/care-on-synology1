@@ -10,6 +10,7 @@ import type {
   ComposerProviderCapabilities,
   ComposerProviderRequest,
   ComposerProviderResult,
+  ComposerProviderUsage,
 } from "./types";
 import { modelCapabilities } from "./modelRegistry";
 
@@ -75,6 +76,9 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
             options: {
               temperature: request.temperature,
               num_ctx: request.numCtx ?? 4096,
+              // Without an explicit ceiling Ollama caps the answer at its own
+              // default and a long report comes back as half a JSON object.
+              ...(request.maxTokens != null ? { num_predict: request.maxTokens } : {}),
             },
             messages: [{ role: "system", content: request.systemPrompt }, userMessage],
           }),
@@ -114,8 +118,21 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
       const json = (await res.json()) as {
         message?: { content?: string };
         response?: string;
+        done_reason?: string;
+        eval_count?: number;
+        prompt_eval_count?: number;
       };
       const text = json.message?.content ?? json.response ?? "";
+      const usage: ComposerProviderUsage = {
+        promptTokens: json.prompt_eval_count ?? null,
+        completionTokens: json.eval_count ?? null,
+        totalTokens:
+          json.prompt_eval_count != null && json.eval_count != null
+            ? json.prompt_eval_count + json.eval_count
+            : null,
+        // On-prem inference is not metered; CARE does not invent a cost.
+        approximateCostUsd: null,
+      };
       if (!text.trim()) {
         return {
           ok: false,
@@ -124,6 +141,29 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
           safeError: "empty_model_response",
           latencyMs: Date.now() - started,
           execution,
+          usage,
+        };
+      }
+      // A model that stops because it ran out of output room returns valid-looking
+      // text that is simply incomplete. Left unsaid, the composer's JSON parser
+      // reports `malformed_json` and the radiologist is told the model answered
+      // in prose — which is a different fault with a different fix.
+      // Refused rather than parsed on a best-effort basis: an answer that stopped
+      // at the ceiling may have lost the last paragraph of findings, and a
+      // one-off retry is a cheaper mistake than a silently shortened report.
+      if (json.done_reason === "length") {
+        return {
+          ok: false,
+          provider: "ollama",
+          model,
+          safeError: "composer_output_truncated",
+          detail:
+            `The model reached its output limit part-way through (${json.eval_count ?? "an unknown number"} `
+            + `tokens), so nothing was written to your report. Shorten the request — compose one section at a `
+            + `time — or route this study to a provider with a larger output limit.`,
+          latencyMs: Date.now() - started,
+          execution,
+          usage,
         };
       }
       return {
@@ -133,6 +173,7 @@ export class OllamaComposerAdapter implements ComposerProviderAdapter {
         model,
         latencyMs: Date.now() - started,
         execution,
+        usage,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "ollama_error";

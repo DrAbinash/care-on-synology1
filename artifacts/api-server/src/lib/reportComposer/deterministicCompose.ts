@@ -26,6 +26,42 @@ export function deterministicComposeFromSnapshot(
   snapshot: ComposerInputSnapshot,
   kind: AiComposeJobKind,
 ): ComposerDraftOutput {
+  // No model, no rewriting. "Make this report more professional" and "combine
+  // these two reports" are language tasks: assembling sentences from the
+  // observation list is NOT a professionalisation of the report the radiologist
+  // wrote, and passing it off as one would put mechanical prose into the report
+  // of record under an Apply that looks like an accepted AI edit. The honest
+  // no-AI answer is their own text back, unchanged, with the reason attached —
+  // which produces zero tracked changes and therefore nothing to accept.
+  // Structuring a dictation has no mechanical equivalent either. Emitting the
+  // dictation as a single row would read as a structured observation and be
+  // insertable into the canonical ledger, which is a clinical claim CARE did not
+  // make — so the no-AI answer is an empty proposal, and the job reports why.
+  if (kind === "OBSERVATIONS") {
+    return {
+      findings: "",
+      impression: "",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: ["deterministic_fallback", "deterministic_cannot_structure_dictation"],
+    };
+  }
+
+  if (kind === "PROFESSIONALIZE" || kind === "COMBINE") {
+    return {
+      findings: snapshot.findings ?? "",
+      impression: snapshot.impression ?? "",
+      recommendation: snapshot.recommendation ?? "",
+      unresolvedQuestions: [],
+      warnings: [
+        "deterministic_fallback",
+        kind === "COMBINE"
+          ? "deterministic_no_model_so_nothing_was_merged"
+          : "deterministic_no_model_so_report_unchanged",
+      ],
+    };
+  }
+
   const obs = snapshot.observations ?? [];
   const scaffold = (snapshot.findings ?? "").trim();
   const findingsFromObs = obs.map((o) => o.findingsText.trim()).filter(Boolean);

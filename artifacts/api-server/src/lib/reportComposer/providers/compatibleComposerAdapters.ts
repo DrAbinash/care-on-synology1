@@ -8,7 +8,8 @@
  *  - `assertGatewayPrivacy` runs before any network call (cloud-bound composer
  *    text previously bypassed every PHI control CARE has).
  *  - credentials resolve through `ai_provider_settings` first, like the rest of
- *    CARE, instead of environment-only (see cloudComposerConfig.ts).
+ *    CARE, instead of environment-only (see cloudComposerConfig.ts), and a
+ *    provider the admin has switched OFF there is refused rather than used.
  */
 import {
   openAiCompatibleChat,
@@ -70,21 +71,11 @@ async function composeViaSharedTransport(
     }
   }
 
-  // ─── Privacy gate: runs before the request exists on the wire ───────────────
-  // The gate may redact identifier VALUES (never clinical content) and returns
-  // the exact text that is allowed to leave. Anything it refuses is refused
-  // here, not silently sent.
-  const privacy = await assertGatewayPrivacy({
-    provider,
-    systemPrompt: request.systemPrompt,
-    userPrompt: request.userPrompt,
-    images: request.images,
-    cloudVisionAllowed: request.cloudVisionAllowed === true,
-  });
-  if (!privacy.ok) {
-    return failed(provider, model, privacy.safeError, privacy.detail);
-  }
-
+  // ─── Which provider may be used at all ─────────────────────────────────────
+  // Resolved before the privacy gate on purpose: PHI detection and image
+  // verification are the expensive steps, and neither should run for a provider
+  // the admin has switched off. Nothing here dials out — this is one settings
+  // read — so no clinical text is exposed by ordering it first.
   const cfg = await resolveCloudComposerConfig(provider);
   if (!cfg.apiKey) {
     return failed(
@@ -101,6 +92,36 @@ async function composeViaSharedTransport(
       `${provider}_endpoint_not_configured`,
       `No endpoint configured for ${provider}.`,
     );
+  }
+  // `enabled === false` is a stored row that says OFF. The rest of CARE already
+  // refuses on it (`resolveInteractiveTarget`, `/generate`); the composer read
+  // only the key and ignored the switch, so the same settings screen produced a
+  // working draft here and a "provider is disabled" error there.
+  // `null` (no row) is not a statement about enablement and stays allowed, so a
+  // clinic that configured its key through the environment is not switched off
+  // by a check that was never shown to it.
+  if (cfg.enabled === false) {
+    return failed(
+      provider,
+      model,
+      `${provider}_provider_disabled`,
+      `${provider} is switched OFF in AI Provider Settings. Enable it there, or select a provider that is on.`,
+    );
+  }
+
+  // ─── Privacy gate: runs before the request exists on the wire ───────────────
+  // The gate may redact identifier VALUES (never clinical content) and returns
+  // the exact text that is allowed to leave. Anything it refuses is refused
+  // here, not silently sent.
+  const privacy = await assertGatewayPrivacy({
+    provider,
+    systemPrompt: request.systemPrompt,
+    userPrompt: request.userPrompt,
+    images: request.images,
+    cloudVisionAllowed: request.cloudVisionAllowed === true,
+  });
+  if (!privacy.ok) {
+    return failed(provider, model, privacy.safeError, privacy.detail);
   }
 
   // The gate returns the exact bytes that cleared verification — a re-encoded,
@@ -123,6 +144,9 @@ async function composeViaSharedTransport(
     images,
     temperature: request.temperature,
     timeoutMs: request.timeoutMs,
+    // "Output limits are configured": without this the vendor's own default
+    // caps a long report mid-sentence and the JSON arrives unparseable.
+    ...(request.maxTokens != null ? { maxTokens: request.maxTokens } : {}),
     jsonMode: request.jsonMode !== false,
     extraBody: provider === "qwen" ? { enable_thinking: false } : undefined,
   });

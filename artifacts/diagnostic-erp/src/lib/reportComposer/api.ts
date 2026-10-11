@@ -9,7 +9,13 @@ export type JobKind =
   | "TRANSLATE"
   | "REPHRASE"
   | "SHORTEN"
-  | "EXPAND";
+  | "EXPAND"
+  /** Whole report in, better-written version of the same report out. */
+  | "PROFESSIONALIZE"
+  /** Current report merged with supplied report text. */
+  | "COMBINE"
+  /** Dictated findings → structured observation proposal. Nothing to Apply. */
+  | "OBSERVATIONS";
 
 export const reportComposerApi = {
   enqueue(opts: {

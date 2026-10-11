@@ -14,10 +14,40 @@
  * 39 s, preserving all eight observations, all four levels and the bilateral
  * laterality, inventing no measurement. That is the first MRI report CARE has
  * ever produced through its own composer.
+ *
+ * RECORDED 2026-10-11 (second run) — the three operations × the installed local
+ * text models, every answer scored by the shipped validator, on the clinic AI PC:
+ *
+ *   operation                        gemma3:12b   medgemma1.5:4b   qwen3:14b
+ *   PROFESSIONALIZE MRI LS spine     20.2 s        6.9 s           25.4 s   accepted
+ *   REPHRASE MRI cervical            11.2 s        2.7 s            7.9 s   accepted
+ *   PROFESSIONALIZE MRI brain        11.2 s        2.6 s            8.2 s   accepted
+ *   PROFESSIONALIZE whole spine      16.2 s        3.1 s           10.3 s   accepted
+ *   COMBINE cervical + lumbar        24.5 s        BLOCKED         19.1 s   accepted
+ *   OBSERVATIONS dictated shorthand  BLOCKED       BLOCKED         22.4 s   accepted
+ *
+ * 17 of 19 accepted; the three that were not are the guard working, not the
+ * harness failing. `medgemma1.5:4b` answered the COMBINE with the cervical report
+ * only — it discarded the study it was handed — and `measurement_dropped`,
+ * `level_dropped` and `laterality_dropped` stopped it reaching READY.
+ * `gemma3:12b` and `medgemma1.5:4b` each turned a four-fact dictation into ONE
+ * observation row, losing the 8.2 mm canal measurement (and the bilateral side),
+ * so Operation 1 is usable on `qwen3:14b` and not on the two 4-billion-parameter
+ * models. That is a capability boundary to route around by configuration; the
+ * brief's answer to it is not fine-tuning.
+ *
+ * Both of those refusals were invisible before this run: the added report was not
+ * part of what the checks considered "supplied", and nothing required the rows to
+ * COVER the dictation — only to stay inside it. The two defects the same run
+ * exposed and fixed were the merged study being reported as invented content
+ * (`level_change`/`unsupported_abnormality` on a faithful merge) and "hemorrhage"
+ * counted as an invented abnormality against a dictation that said "haemorrhage".
  */
 import { describe, expect, it } from "vitest";
 import { buildUserPrompt } from "./composeEngine";
 import { buildCareSystemPrompt } from "./persona";
+import { planComposerTextContext } from "./composerContextBudget";
+import { validateComposerOutput } from "./validateOutput";
 import { parseComposerSnapshot, parseComposerDraftJson } from "./types";
 import { OllamaComposerAdapter } from "./providers/ollamaComposerAdapter";
 import type { AiComposeJobKind } from "@workspace/db/schema";
@@ -25,6 +55,20 @@ import type { AiComposeJobKind } from "@workspace/db/schema";
 const ENDPOINT = process.env.LIVE_OLLAMA_URL ?? "http://192.168.1.250:11434";
 const MODEL = process.env.LIVE_OLLAMA_MODEL ?? "gemma3:12b";
 const WANTED = process.env.RUN_LIVE_OLLAMA === "1";
+/**
+ * The text-operations matrix runs on every candidate that is actually installed
+ * (same rule as the vision A/B file: nothing is pulled onto a clinic PC by a
+ * test). These are text-only models — this file measures transformation of
+ * prose the radiologist wrote, not image reading.
+ */
+const TEXT_MODEL_CANDIDATES = (
+  process.env.LIVE_OLLAMA_TEXT_MODELS ?? "gemma3:12b,medgemma1.5:4b,qwen3:14b"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+/** The clinic's configured composer window, mirrored from AI Reporting Settings. */
+const CONFIGURED_NUM_CTX = Number(process.env.LIVE_OLLAMA_NUM_CTX ?? 8192);
 
 /**
  * A live call is skipped when the host is not answering, rather than failed.
@@ -35,18 +79,19 @@ const WANTED = process.env.RUN_LIVE_OLLAMA === "1";
  * reader to ignore this file, and the file exists to be trusted. The reachability
  * probe therefore decides participation, and the reason is printed.
  */
-async function hostIsUp(): Promise<boolean> {
+async function hostIsUp(): Promise<{ up: boolean; why: string }> {
   try {
-    const r = await fetch(`${ENDPOINT}/api/tags`, { signal: AbortSignal.timeout(4000) });
-    return r.ok;
-  } catch {
-    return false;
+    const r = await fetch(`${ENDPOINT}/api/tags`, { signal: AbortSignal.timeout(8000) });
+    return { up: r.ok, why: `HTTP ${r.status}` };
+  } catch (e) {
+    return { up: false, why: e instanceof Error ? `${e.name}: ${e.message}` : String(e) };
   }
 }
 
-const HOST_UP = WANTED ? await hostIsUp() : false;
+const PROBE = WANTED ? await hostIsUp() : { up: false, why: "RUN_LIVE_OLLAMA not set" };
+const HOST_UP = PROBE.up;
 if (WANTED && !HOST_UP) {
-  console.warn(`[live] skipped: no Ollama answering at ${ENDPOINT}`);
+  console.warn(`[live] skipped: no Ollama answering at ${ENDPOINT} — ${PROBE.why}`);
 }
 
 const OBSERVATIONS = [
@@ -129,3 +174,387 @@ describe.runIf(HOST_UP)("a real MRI report from the real composer path", () => {
     expect(all.toLowerCase()).not.toMatch(/canal (?:diameter|ap) \d+\s*mm/);
   }, 180_000);
 });
+
+/**
+ * ── The three reporting-assistant operations, on the same live path ─────────
+ *
+ * The single case above answers "can CARE's composer write an MRI report at
+ * all?". These answer the questions that decide whether the feature is usable:
+ *
+ *  - PROFESSIONALIZE: given a complete, deterministic report, does a local model
+ *    improve the prose WITHOUT losing a level, a side or a measurement?
+ *  - REPHRASE / COMBINE: same promise under an instruction, and across two
+ *    reports that have to be merged without either one winning.
+ *  - OBSERVATIONS: given dictated shorthand, does the model return structured
+ *    rows that say what was said — and nothing more?
+ *
+ * Every run is scored by the SHIPPED validator (`validateComposerOutput`), not
+ * by a local assertion, so a live draft that drops the 8.2 mm canal measurement
+ * fails for the same reason the job queue would refuse it. That is the point:
+ * this file measures what the clinic would get, and the printed table is the
+ * evidence for "which installed model is good enough at text transformation".
+ *
+ * Nothing here measures diagnostic accuracy, and no patient data is used.
+ */
+
+type TextCase = {
+  name: string;
+  kind: AiComposeJobKind;
+  snapshot: ReturnType<typeof parseComposerSnapshot>;
+  /** Strings that must appear in the answer — levels, sides, measurements. */
+  mustContain: string[];
+  /** A measurement or diagnosis the input never stated, so it must not appear. */
+  mustNotMatch: RegExp[];
+};
+
+const LS_PRO = parseComposerSnapshot({
+  reportId: 11,
+  studyId: 11,
+  worklistId: 11,
+  modality: "MRI",
+  region: "Lumbosacral Spine",
+  family: "MRI",
+  spineSegment: "LS",
+  reportTitle: "MRI LUMBOSACRAL SPINE",
+  protocol: "MRI lumbar spine, non-contrast",
+  clinicalHistory: "Low back pain with left S1 radiculopathy.",
+  technique: "Multiplanar multisequence non-contrast MRI of the lumbosacral spine at 1.5T.",
+  findings: [
+    "Lumbar lordosis is loss of normal curvature with straightening.",
+    "Disc desiccation and reduced height at L4-L5 and L5-S1.",
+    "Diffuse posterior disc bulge at L3-L4.",
+    "Broad-based posterior disc bulge at L4-L5 with bilateral lateral recess narrowing, AP canal diameter 8.2 mm.",
+    "Right paramedian disc extrusion at L5-S1 compressing the right S1 traversing root.",
+    "Mild bilateral facet arthropathy at L4-L5.",
+    "Conus ends at L1, normal signal.",
+  ].join("\n"),
+  impression:
+    "L4-L5 diffuse disc bulge with bilateral recess narrowing and canal stenosis (AP 8.2 mm). "
+    + "Right paramedian disc extrusion at L5-S1 compressing the right S1 root.",
+  recommendation: "",
+  observations: [],
+  aiMode: "TEXT_ONLY",
+});
+
+const CERVICAL = parseComposerSnapshot({
+  reportId: 12,
+  studyId: 12,
+  worklistId: 12,
+  modality: "MRI",
+  region: "Cervical Spine",
+  family: "MRI",
+  spineSegment: "C",
+  reportTitle: "MRI CERVICAL SPINE",
+  protocol: "MRI cervical spine, non-contrast",
+  clinicalHistory: "Neck pain with left C6 radiculopathy.",
+  technique: "Multiplanar multisequence non-contrast MRI of the cervical spine.",
+  findings: [
+    "Loss of cervical lordosis.",
+    "Disc desiccation at C5-C6 and C6-C7.",
+    "Left foraminal disc protrusion at C5-C6 narrowing the left C6 foramen.",
+    "Central disc bulge at C6-C7, no cord compression.",
+    "Cord signal normal. No syrinx.",
+  ].join("\n"),
+  impression: "Left C5-C6 foraminal protrusion contacting the left C6 root.",
+  recommendation: "",
+  observations: [],
+  aiMode: "TEXT_ONLY",
+});
+
+const BRAIN = parseComposerSnapshot({
+  reportId: 13,
+  studyId: 13,
+  worklistId: 13,
+  modality: "MRI",
+  region: "Brain",
+  family: "MRI",
+  reportTitle: "MRI BRAIN",
+  protocol: "MRI brain, non-contrast",
+  clinicalHistory: "68-year-old with new headache.",
+  technique: "Multiplanar multisequence non-contrast MRI of the brain.",
+  findings: [
+    "No acute infarct or haemorrhage. No mass lesion or midline shift.",
+    "Periventricular and deep white matter T2/FLAIR hyperintensities, Fazekas grade 2.",
+    "Ventricles and sulci normal for age. No hydrocephalus.",
+    "Pituitary normal. No sellar mass.",
+  ].join("\n"),
+  impression: "Grade 2 small-vessel ischaemic change. No acute intracranial pathology.",
+  recommendation: "",
+  observations: [],
+  aiMode: "TEXT_ONLY",
+});
+
+const WHOLE_SPINE = parseComposerSnapshot({
+  reportId: 14,
+  studyId: 14,
+  worklistId: 14,
+  modality: "MRI",
+  region: "Whole Spine",
+  family: "MRI",
+  spineSegment: "TOTAL",
+  reportTitle: "MRI WHOLE SPINE SCREENING",
+  protocol: "Whole spine screening, limited sequences",
+  clinicalHistory: "Pre-operative scoliosis screening.",
+  technique: "Sagittal T1 and T2 screening sequences of the whole spine; limited planar study.",
+  findings: [
+    "Cervical: loss of lordosis; C4-C5 and C5-C6 disc bulges, no cord compression.",
+    "Dorsal: mild right thoracic curvature, no cord signal abnormality.",
+    "Lumbar: L3-L4 disc bulge; L4-L5 broad-based bulge with bilateral recess narrowing; L5-S1 disc protrusion.",
+    "Conus and filum terminale normal.",
+  ].join("\n"),
+  impression: "Multilevel degenerative disc disease of the whole spine without cord compression.",
+  recommendation: "",
+  observations: [],
+  aiMode: "TEXT_ONLY",
+});
+
+const DICTATION_TEXT = "L4-5 diffuse bulge, bilateral recess narrowing, LF hypertrophy, canal 8.2 mm.";
+
+const DICTATION = parseComposerSnapshot({
+  reportId: 15,
+  studyId: 15,
+  worklistId: 15,
+  modality: "MRI",
+  region: "Lumbosacral Spine",
+  family: "MRI",
+  spineSegment: "LS",
+  reportTitle: "MRI LUMBOSACRAL SPINE",
+  protocol: "MRI lumbar spine, non-contrast",
+  technique: "Multiplanar multisequence non-contrast MRI of the lumbosacral spine.",
+  // The radiologist's own words, exactly as the brief dictates them: shorthand,
+  // no sentences, no structure. This is the input Operation 1 must turn into
+  // rows without adding a fact.
+  findings: DICTATION_TEXT,
+  impression: "",
+  recommendation: "",
+  observations: [],
+  aiMode: "TEXT_ONLY",
+});
+
+const COMBINED = parseComposerSnapshot({
+  ...CERVICAL,
+  reportId: 16,
+  studyId: 16,
+  worklistId: 16,
+  reportTitle: "MRI CERVICAL + LUMBAR SPINE",
+  additionalReports: [
+    {
+      label: "MRI LUMBOSACRAL SPINE (same patient, same day)",
+      modality: "MRI",
+      region: "Lumbosacral Spine",
+      findings: LS_PRO.findings,
+      impression: LS_PRO.impression,
+    },
+  ],
+});
+
+const TEXT_CASES: TextCase[] = [
+  {
+    name: "professionalize / MRI LS spine",
+    kind: "PROFESSIONALIZE",
+    snapshot: LS_PRO,
+    mustContain: ["L3-L4", "L4-L5", "L5-S1", "bilateral", "8.2", "right", "S1"],
+    mustNotMatch: [/left\s+(?:S1|paramedian)/i],
+  },
+  {
+    name: "rephrase / MRI cervical (instruction: make more professional)",
+    kind: "REPHRASE",
+    snapshot: CERVICAL,
+    mustContain: ["C5-C6", "C6-C7", "left"],
+    // The input says the left C6 foramen and a normal cord. A side flip or a cord
+    // signal abnormality would be invented, not paraphrased.
+    mustNotMatch: [/right\s+(?:C5|C6|foraminal)/i, /myelomalacia/i],
+  },
+  {
+    name: "professionalize / MRI brain",
+    kind: "PROFESSIONALIZE",
+    snapshot: BRAIN,
+    mustContain: ["Fazekas", "no acute"],
+    mustNotMatch: [/haemorrhage (?:is present|noted)/i, /\b(aneurysm|metastasis|abscess)\b/i],
+  },
+  {
+    name: "professionalize / whole-spine screening",
+    kind: "PROFESSIONALIZE",
+    snapshot: WHOLE_SPINE,
+    mustContain: ["C4-C5", "C5-C6", "L3-L4", "L4-L5", "L5-S1"],
+    mustNotMatch: [],
+  },
+  {
+    name: "combine / cervical + lumbar",
+    kind: "COMBINE",
+    snapshot: COMBINED,
+    mustContain: ["C5-C6", "L4-L5", "bilateral", "8.2", "left"],
+    mustNotMatch: [],
+  },
+  {
+    name: "observations / dictated shorthand",
+    kind: "OBSERVATIONS",
+    snapshot: DICTATION,
+    mustContain: [],
+    mustNotMatch: [],
+  },
+];
+
+async function installedModels(): Promise<string[]> {
+  try {
+    const r = await fetch(`${ENDPOINT.replace(/\/$/, "")}/api/tags`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) {
+      console.warn(`[live] /api/tags HTTP ${r.status}`);
+      return [];
+    }
+    const body = (await r.json()) as { models?: Array<{ name?: string }> };
+    return (body.models ?? []).map((m) => m.name ?? "").filter(Boolean);
+  } catch (e) {
+    console.warn(`[live] /api/tags failed: ${e instanceof Error ? `${e.name}: ${e.message}` : e}`);
+    return [];
+  }
+}
+
+const INSTALLED = HOST_UP ? await installedModels() : [];
+const TEXT_MODELS = TEXT_MODEL_CANDIDATES.filter((m) => INSTALLED.includes(m));
+const MISSING_MODELS = TEXT_MODEL_CANDIDATES.filter((m) => !INSTALLED.includes(m));
+if (HOST_UP && MISSING_MODELS.length > 0) {
+  console.warn(`[live] not installed, skipped (nothing is pulled by a test): ${MISSING_MODELS.join(", ")}`);
+}
+
+type ScoreRow = {
+  model: string;
+  case: string;
+  seconds: string;
+  tokens: string;
+  verdict: string;
+};
+
+const scoreRows: ScoreRow[] = [];
+
+describe.runIf(HOST_UP && TEXT_MODELS.length > 0)(
+  "the three reporting-assistant operations on live local models",
+  () => {
+    for (const model of TEXT_MODELS) {
+      for (const c of TEXT_CASES) {
+        it(`${c.name} — ${model}`, async () => {
+          const systemPrompt = buildCareSystemPrompt(c.kind, c.snapshot);
+          const userPrompt = buildUserPrompt(c.kind, c.snapshot);
+
+          // The bounded-context plan runs before the send, exactly as the job
+          // path does. A report that does not fit is a refusal with a named
+          // ceiling — never a truncated request.
+          const plan = planComposerTextContext({
+            systemPrompt,
+            userPrompt,
+            transport: "ollama",
+            configuredNumCtx: CONFIGURED_NUM_CTX,
+          });
+          expect(plan.fits, plan.reason).toBe(true);
+
+          const r = await new OllamaComposerAdapter().compose({
+            systemPrompt,
+            userPrompt,
+            model,
+            temperature: 0.1,
+            timeoutMs: 240_000,
+            numCtx: plan.numCtx,
+            maxTokens: plan.maxTokens,
+            endpoint: ENDPOINT,
+            localOnly: true,
+          });
+          const seconds = (r.latencyMs / 1000).toFixed(1);
+
+          if (!r.ok) {
+            scoreRows.push({ model, case: c.name, seconds, tokens: "-", verdict: `refused: ${r.safeError}` });
+            throw new Error(`${model} / ${c.name}: composer refused — ${r.safeError} ${r.detail ?? ""}`);
+          }
+
+          const draft = parseComposerDraftJson(r.text);
+          if (!draft) {
+            scoreRows.push({ model, case: c.name, seconds, tokens: "-", verdict: "unparseable answer" });
+            throw new Error(`${model} / ${c.name}: answered outside the structured form.`);
+          }
+
+          // Counted BEFORE validation: the shipped validator prunes ungrounded
+          // rows in place, so reading the count afterwards cannot tell a model
+          // that returned one row from one that returned four and had three
+          // dropped by the guard.
+          const rowsReturned = (draft.observations ?? []).length;
+
+          // The shipped gate: invention AND, for these kinds, loss.
+          const validation = validateComposerOutput(c.snapshot, draft, { kind: c.kind });
+          const rowsKept = (draft.observations ?? []).length;
+          const tokenText =
+            r.usage?.totalTokens != null ? String(r.usage.totalTokens) : "-";
+          const answer =
+            c.kind === "OBSERVATIONS"
+              ? (draft.observations ?? [])
+                  .map((o) => [o.level, o.laterality, o.concept, o.measurement, o.findingsText]
+                    .filter(Boolean)
+                    .join(" | "))
+                  .join("\n")
+              : `${draft.findings}\n${draft.impression}`;
+
+          scoreRows.push({
+            model,
+            case: c.name,
+            seconds,
+            tokens: tokenText,
+            verdict:
+              (c.kind === "OBSERVATIONS" ? `rows ${rowsReturned}→${rowsKept}, ` : "")
+              + (validation.ok ? "accepted" : `blocked: ${(validation.errors ?? []).join(", ")}`),
+          });
+
+          console.log(
+            `\n===== ${c.name} — ${model} (${seconds}s, ${tokenText} tokens`
+            + (c.kind === "OBSERVATIONS" ? `, ${rowsReturned} rows returned` : "")
+            + ") =====\n"
+            + (c.kind === "OBSERVATIONS" ? answer : `FINDINGS + IMPRESSION:\n${answer}\n`)
+            + (validation.warnings.length ? `\nwarnings: ${validation.warnings.join(" | ")}` : ""),
+          );
+
+          expect(
+            validation.ok,
+            `${model} lost or invented clinical content: ${(validation.errors ?? []).join(", ")}`,
+          ).toBe(true);
+
+          if (c.kind === "OBSERVATIONS") {
+            expect(
+              rowsKept,
+              `${model} returned ${rowsReturned} row(s) for a dictation that states four facts`,
+            ).toBeGreaterThanOrEqual(3);
+            expect(answer, `${model} lost the canal measurement`).toContain("8.2");
+            expect(answer.toLowerCase(), `${model} lost "bilateral"`).toContain("bilateral");
+            // The prompt tells the model to keep the radiologist's own wording, so
+            // either the expansion or the shorthand is a correct answer here.
+            expect(answer, `${model} dropped the LF hypertrophy`).toMatch(
+              /ligamentum flavum|\bLF\b/i,
+            );
+            // Not in the dictation: no facet arthropathy, no listhesis, no L3-L4.
+            expect(answer).not.toMatch(/L3-?L?4\b/i);
+            expect(answer.toLowerCase()).not.toContain("facet");
+          } else {
+            const lower = answer.toLowerCase();
+            for (const needle of c.mustContain) {
+              expect(lower, `${model} dropped "${needle}"`).toContain(needle.toLowerCase());
+            }
+            for (const forbidden of c.mustNotMatch) {
+              expect(lower, `${model} invented ${forbidden}`).not.toMatch(forbidden);
+            }
+          }
+        }, 300_000);
+      }
+    }
+
+    it("prints the measured table", () => {
+      console.log("\n===== LIVE LOCAL MODEL SCORE (synthetic cases, shipped validator) =====");
+      console.table(scoreRows);
+      // A matrix that silently ran nothing would otherwise read as a green file.
+      expect(scoreRows.length, "no live case executed").toBeGreaterThan(0);
+      if (scoreRows.length !== TEXT_MODELS.length * TEXT_CASES.length) {
+        console.warn(
+          `[live] partial run (${scoreRows.length} of ${TEXT_MODELS.length * TEXT_CASES.length} cases) `
+          + "— a name filter, not a defect.",
+        );
+      }
+    });
+  },
+);

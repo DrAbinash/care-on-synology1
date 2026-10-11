@@ -39,6 +39,26 @@ export const ComposerAiModeSchema = z.enum(["TEXT_ONLY", "SELECTED_IMAGES"]);
 export type ComposerAiMode = z.infer<typeof ComposerAiModeSchema>;
 
 /**
+ * A SECOND report supplied for `COMBINE` — "combine the cervical and lumbar
+ * findings", "add the supplied whole-spine screening report".
+ *
+ * It is context, not an override: the study's own Findings/Impression stay
+ * authoritative and this text is merged into them by the model, under the same
+ * conservation rule that forbids losing anything from either side. The calling
+ * application is what established that these reports belong to the same patient
+ * and study; CARE does not guess from names or dates, and nothing here accepts a
+ * patient identifier — the composer is addressed by worklist/report identity.
+ */
+export const ComposerReportSourceSchema = z.object({
+  label: z.string().max(200).optional(),
+  modality: z.string().max(16).optional(),
+  region: z.string().max(120).optional(),
+  findings: z.string().default(""),
+  impression: z.string().default(""),
+});
+export type ComposerReportSource = z.infer<typeof ComposerReportSourceSchema>;
+
+/**
  * Stable metadata for radiologist-selected frozen key images.
  * NEVER store base64 / blob URLs here — only IDs + safe audit metadata.
  */
@@ -112,6 +132,13 @@ export const ComposerInputSnapshotSchema = z.object({
   selectionText: z.string().optional(),
   selectionField: z.enum(["FINDINGS", "IMPRESSION", "RECOMMENDATION"]).optional(),
   instruction: z.string().optional(),
+  /**
+   * Second report(s) supplied for a `COMBINE` job. Optional, so every snapshot
+   * written before it still parses AND every snapshot without it hashes exactly
+   * as it did before — see `computeSnapshotHashes`, which only extends the
+   * canonical string when this list is non-empty.
+   */
+  additionalReports: z.array(ComposerReportSourceSchema).optional(),
   targetLanguage: z.string().optional(),
   jobKindHint: z.string().optional(),
   /**
@@ -142,6 +169,35 @@ export function parseComposerSnapshot(
 }
 
 export type ComposerInputSnapshot = z.infer<typeof ComposerInputSnapshotSchema>;
+
+/**
+ * The task kinds whose contract is PRESERVE: the radiologist's own text is the
+ * clinical truth and the answer must contain all of it — better written, shorter,
+ * or merged with a supplied second report, but never missing a finding.
+ *
+ * `FULL_REPORT` and `IMPRESSION` are deliberately NOT here: they DRAFT from
+ * observations and may legitimately restructure what they were given.
+ *
+ * Lives in this pure module because both the prompt builder and the validator
+ * need the same answer. Two lists of these kinds is exactly how CARE ended up
+ * telling two different stories about one model.
+ */
+export const PRESERVING_COMPOSE_KINDS = [
+  "PROFESSIONALIZE",
+  "COMBINE",
+  "REPHRASE",
+  "SHORTEN",
+  "EXPAND",
+  "SECTION_EDIT",
+  "SELECTION_EDIT",
+  "TRANSLATE",
+] as const;
+
+export type PreservingComposeKind = (typeof PRESERVING_COMPOSE_KINDS)[number];
+
+export function isPreservingComposeKind(kind: string | null | undefined): boolean {
+  return (PRESERVING_COMPOSE_KINDS as readonly string[]).includes(kind ?? "");
+}
 
 export const TrackedChangeReviewStates = ["PENDING", "ACCEPTED", "REJECTED", "EDITED"] as const;
 export type TrackedChangeReviewState = (typeof TrackedChangeReviewStates)[number];
@@ -176,6 +232,30 @@ export const TrackedChangeSchema = z.object({
 
 export type TrackedChange = z.infer<typeof TrackedChangeSchema>;
 
+/**
+ * One structured observation proposed from dictated text (Operation 1).
+ *
+ * Field-for-field this is `ComposeObservation` minus the bookkeeping keys,
+ * because the proposal has to be insertable into the deterministic Composer's
+ * canonical observation ledger without a translation layer. `source` is fixed to
+ * "structured" by the caller that inserts it — CARE does not decide on the
+ * radiologist's behalf which slot the finding ends up in.
+ */
+export const ProposedObservationSchema = z.object({
+  concept: z.string().min(1),
+  region: z.string().nullish(),
+  level: z.string().nullish(),
+  severity: z.string().nullish(),
+  laterality: z.string().nullish(),
+  measurement: z.string().nullish(),
+  findingsText: z.string().min(1),
+  impressionText: z.string().nullish(),
+  recommendationText: z.string().nullish(),
+  /** Verbatim fragment of the dictation this row came from. */
+  sourceText: z.string().nullish(),
+});
+export type ProposedObservation = z.infer<typeof ProposedObservationSchema>;
+
 /** Structured composer model output — validated before READY. */
 export const ComposerDraftOutputSchema = z.object({
   findings: z.string().default(""),
@@ -183,9 +263,35 @@ export const ComposerDraftOutputSchema = z.object({
   recommendation: z.string().default(""),
   unresolvedQuestions: z.array(z.string()).default([]),
   warnings: z.array(z.string()).default([]),
+  /**
+   * Present for the `OBSERVATIONS` task (dictated text → structured rows).
+   * Absent for every report-text task, so no existing consumer changes.
+   *
+   * It travels here rather than in a new table or a new endpoint because this
+   * object is already persisted (`output_plan_json`), already returned to the
+   * workspace (`draft` on the job view), and already the thing the acceptance
+   * boundary refuses to apply unseen. A proposal the radiologist has not looked
+   * at cannot reach a report.
+   */
+  observations: z.array(ProposedObservationSchema).optional(),
 });
 
 export type ComposerDraftOutput = z.infer<typeof ComposerDraftOutputSchema>;
+
+/**
+ * Chat-style emphasis a report cannot carry. Measured live on 2026-10-11:
+ * `gemma3:12b` answered a whole-spine PROFESSIONALIZE with
+ * `**Cervical Spine:** There is loss of cervical lordosis.` and CARE's guards
+ * accepted it — the report of record is rendered as plain text into print HTML
+ * and PDF, where those two characters print literally. Nothing clinical lives in
+ * an emphasis marker, so the marker is dropped at the parse boundary instead of
+ * becoming wording the radiologist then has to delete by hand.
+ */
+const EMPHASIS_MARKER_RE = /\*\*|__/g;
+
+function stripEmphasisMarkers(text: string): string {
+  return text.replace(EMPHASIS_MARKER_RE, "");
+}
 
 export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null {
   const trimmed = raw.trim();
@@ -194,7 +300,23 @@ export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
     const result = ComposerDraftOutputSchema.safeParse(parsed);
-    return result.success ? result.data : null;
+    if (!result.success) return null;
+    const draft = result.data;
+    return {
+      ...draft,
+      findings: stripEmphasisMarkers(draft.findings ?? ""),
+      impression: stripEmphasisMarkers(draft.impression ?? ""),
+      recommendation: stripEmphasisMarkers(draft.recommendation ?? ""),
+      ...(draft.observations
+        ? {
+            observations: draft.observations.map((o) => ({
+              ...o,
+              findingsText: stripEmphasisMarkers(o.findingsText ?? ""),
+              ...(o.impressionText ? { impressionText: stripEmphasisMarkers(o.impressionText) } : {}),
+            })),
+          }
+        : {}),
+    };
   } catch {
     return null;
   }

@@ -33,6 +33,25 @@ export const AI_COMPOSE_JOB_KINDS = [
   "REPHRASE",
   "SHORTEN",
   "EXPAND",
+  // The three radiologist-facing tasks the reporting workspace calls. All three
+  // ride the existing job machinery (frozen snapshot, tracked changes, READY →
+  // accept → apply proof) because that is where the acceptance boundary lives;
+  // a task that bypassed it could overwrite the radiologist's own text.
+  //
+  // `job_kind` is plain `text` with no CHECK constraint
+  // (migrations/add_ai_report_composer.sql:10), so these are code-only — no
+  // migration, and an older row can never carry a kind the server does not know.
+  /** Complete existing report in, better-written version of the SAME report out. */
+  "PROFESSIONALIZE",
+  /** Current report plus supplied report text, merged into one proposal. */
+  "COMBINE",
+  /**
+   * Dictated/typed free text in, structured observation rows out. The answer is
+   * `draft.observations`, and there are no tracked changes — inserting a finding
+   * into the canonical ledger is the workspace's own mutation path, so this job
+   * proposes and never applies.
+   */
+  "OBSERVATIONS",
 ] as const;
 export type AiComposeJobKind = (typeof AI_COMPOSE_JOB_KINDS)[number];
 
