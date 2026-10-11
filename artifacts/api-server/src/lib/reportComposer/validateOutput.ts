@@ -373,6 +373,40 @@ export function detectDefiniteClinicalMutations(
 }
 
 /**
+ * Findings the radiologist denied AND never asserted anywhere in the input, plus
+ * the sentence splitter that decides it. A denial is a cue BEFORE the term in the
+ * same sentence ("No intracranial haemorrhage").
+ *
+ * A term the input both denies and affirms — "No significant disc bulge" next to
+ * an observation "L4-5 diffuse disc bulge" — is not a denial, it is a
+ * level-specific mixed finding, and treating it as a denial would refuse honest
+ * reports. Only a term that NEVER appears in an affirmative input sentence counts.
+ */
+const DENIAL_CUE_RE = /\b(no|not|without|absence|negative|unremarkable|free)\b/i;
+
+function splitReportSentences(text: string): string[] {
+  return (text ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function findDeniedFindings(corpus: string): Set<string> {
+  const denied = new Set<string>();
+  const affirmed = new Set<string>();
+  for (const sentence of splitReportSentences(corpus.toLowerCase())) {
+    for (const hint of ABNORMALITY_HINTS) {
+      if (!sentence.includes(hint)) continue;
+      const at = sentence.indexOf(hint);
+      if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) denied.add(hint);
+      else affirmed.add(hint);
+    }
+  }
+  for (const term of affirmed) denied.delete(term);
+  return denied;
+}
+
+/**
  * Flag abnormality terms that appear in AI output but nowhere in radiologist-supplied input.
  *
  * PR #657: also detects laterality swaps, level changes, and severity escalations.
@@ -409,6 +443,29 @@ export function validateComposerOutput(
     );
   }
 
+  // A finding the input DENIED must not come back asserted. "No intracranial
+  // haemorrhage" rewritten into "Haemorrhage is present" keeps every keyword, so
+  // no grounding check sees it — the medicine is exactly inverted. Hard-fail only
+  // where it is unambiguous: a denied term in a sentence with no denial cue at all.
+  const deniedTerms = findDeniedFindings(corpus);
+  if (deniedTerms.size > 0) {
+    const asserted: string[] = [];
+    for (const text of [draft.findings, draft.impression, draft.recommendation]) {
+      for (const sentence of splitReportSentences(text)) {
+        const lower = sentence.toLowerCase();
+        for (const term of deniedTerms) {
+          if (!lower.includes(term) || DENIAL_CUE_RE.test(lower)) continue;
+          const label = `${term}: ${sentence.trim()}`;
+          if (!asserted.includes(label)) asserted.push(label);
+        }
+      }
+    }
+    if (asserted.length > 0) {
+      errors.push("denied_finding_asserted");
+      warnings.push(`AI asserted a finding the input denied: ${asserted.join(" | ")}`);
+    }
+  }
+
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.
   lateralitySwaps.push(...detectLateralitySwaps(corpus, output));
   if (lateralitySwaps.length > 0) {
@@ -428,6 +485,27 @@ export function validateComposerOutput(
   const missingMeasurements = detectMissingMeasurements(corpus, output);
   if (missingMeasurements.length > 0) {
     warnings.push(`AI may have dropped measurements (advisory): ${missingMeasurements.join(", ")}`);
+  }
+
+  // Verbatim repetition is not a second finding — it is one sentence printed twice,
+  // which CARE's style rules forbid. Advisory on purpose: the radiologist decides,
+  // and nothing here silently removes clinical text.
+  const seenSentence = new Map<string, string>();
+  const repeated: string[] = [];
+  for (const field of [draft.findings, draft.impression]) {
+    for (const raw of (field ?? "").split(/(?<=[.!?])\s+|\n+/)) {
+      const sentence = raw.trim();
+      const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (key.length < 24) continue; // "Normal." is not evidence of duplication
+      if (seenSentence.has(key)) {
+        if (!repeated.includes(seenSentence.get(key)!)) repeated.push(seenSentence.get(key)!);
+      } else {
+        seenSentence.set(key, sentence);
+      }
+    }
+  }
+  if (repeated.length > 0) {
+    warnings.push(`AI repeated a sentence verbatim: ${repeated.join(" | ")}`);
   }
 
   // ── Definite clinical mutations → hard-block READY ─────────────────────
