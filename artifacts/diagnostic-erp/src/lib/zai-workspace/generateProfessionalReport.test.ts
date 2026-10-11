@@ -13,6 +13,7 @@ import { useWorkspace } from "./store";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import { resolveNormalBootstrapFormat } from "./normalBootstrap";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import {
   canalApReportTable,
   radiologistObservations,
@@ -29,6 +30,11 @@ function brainCtx() {
 function lsCtx() {
   return buildReportingStudyContext({
     modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
+  });
+}
+function cCtx() {
+  return buildReportingStudyContext({
+    modality: "MR", studyDescription: "MRI Cervical Spine", regions: ["Cervical Spine"], source: "auto",
   });
 }
 /** An identity CARE cannot resolve — no region at all. */
@@ -431,5 +437,159 @@ describe("professionalReport — the pure parts", () => {
     } as never;
     expect(reapplyInputFromPatch({ ...base, observation: { region: "", level: "", laterality: "left", state: "", severity: "", measurement: "", slotKey: "", source: "quick-select", baselineReplaces: "", supportsLaterality: true, bundleId: "", sectionsOwned: [], specificity: "region", concept: null, conflictGroup: "", anatomicalSection: "", role: "finding" } } as never)?.side).toBe("left");
     expect(reapplyInputFromPatch({ ...base, observation: { region: "", level: "", laterality: "unilateral", state: "", severity: "", measurement: "", slotKey: "", source: "quick-select", baselineReplaces: "", supportsLaterality: true, bundleId: "", sectionsOwned: [], specificity: "region", concept: null, conflictGroup: "", anatomicalSection: "", role: "finding" } } as never)?.side).toBe("");
+  });
+});
+
+describe("a hand-typed deviation over a cervical normal", () => {
+  /**
+   * The conclusion used to come back as six lines, five of them the report's own
+   * per-level normals — "C2-C3: No exiting or traversing nerve root compression
+   * is seen." among them — because the impression picker reads the Findings text,
+   * and the Findings text is where the scaffold wrote those sentences. Excluding
+   * the baseline ledger rows and then re-reading every sentence from the text put
+   * them back through the door the ledger had just closed.
+   */
+  it("concludes the abnormality and nothing the scaffold already owns", () => {
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    expect(useWorkspace.getState().generateProfessionalReport(cCtx()).status).toBe("generated");
+    const impression = useWorkspace.getState().impressionText;
+    expect(impression).toContain("C5-C6: Disc herniation with cord compression.");
+    expect(impression).not.toMatch(/No spinal canal or thecal sac compression/i);
+    expect(impression).not.toMatch(/No exiting or traversing nerve root compression/i);
+    expect(impression).not.toMatch(/Neural foramina are patent/i);
+    expect(impression).not.toMatch(/unremarkable/i);
+    // A deviating report still may not borrow the normal's own conclusion (PR B).
+    expect(impression).not.toMatch(/Normal MRI of the cervical spine/i);
+  });
+
+  it("keeps every other level's normal that the deviation does not touch", () => {
+    // Nothing here decides that C2-C3 is normal — the scaffold said so, and the
+    // radiologist did not contradict it. Trimming the Conclusion must not trim
+    // the body.
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("C2-C3: No significant disc bulge or protrusion is seen.");
+    expect(findings).toContain("C6-C7: Neural foramina are patent bilaterally.");
+  });
+
+  it("does not treat a denial the radiologist typed as a deviation", () => {
+    // The same sentence as a finding and as a denial differ only in the words
+    // between the label and the cue, and six words was enough to lose it.
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: No spinal canal or thecal sac compression is seen.", { source: "manual" });
+    expect(useWorkspace.getState().generateProfessionalReport(cCtx()).status).toBe("generated");
+    const impression = useWorkspace.getState().impressionText;
+    expect(impression).not.toMatch(/No spinal canal or thecal sac compression/i);
+    expect(impression).toContain("Normal MRI of the cervical spine");
+  });
+});
+
+describe("a deviation retires the scaffold's description of the level it contradicts", () => {
+  /**
+   * The report used to carry both statements. Pressing Generate over a typed
+   * "C5-C6: Disc herniation with cord compression." wrote the approved cervical
+   * normal underneath it, including "C5-C6: No significant disc bulge or
+   * protrusion is seen." — and nothing on the page could tell the radiologist
+   * which of the two the examination showed.
+   */
+  it("removes the contradicted level's normals and keeps every other level's", () => {
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    expect(useWorkspace.getState().generateProfessionalReport(cCtx()).status).toBe("generated");
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("C5-C6: Disc herniation with cord compression.");
+    expect(findings).not.toContain("C5-C6: No significant disc bulge or protrusion is seen.");
+    expect(findings).not.toContain("C5-C6: No spinal canal or thecal sac compression is seen.");
+    expect(findings).not.toContain("C5-C6: Neural foramina are patent bilaterally.");
+    // Levels nobody spoke about keep the normal the clinic approved.
+    expect(findings).toContain("C4-C5: No significant disc bulge or protrusion is seen.");
+    expect(findings).toContain("C6-C7: No significant disc bulge or protrusion is seen.");
+  });
+
+  it("one undo frame takes the whole press back and leaves what he typed", () => {
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    const retired = useWorkspace.getState().appliedPathologyPatches.filter(
+      (p) => p.observation?.role === "baseline" && p.stale,
+    );
+    expect(retired.length).toBeGreaterThan(0);
+    expect(retired.every((p) => p.observation?.level === "C5-C6")).toBe(true);
+    expect(useWorkspace.getState().patchUndoStack).toHaveLength(1);
+    useWorkspace.getState().undoLastPatch();
+    // Undo of the press removes the normals it wrote — the ones it retired with
+    // them — and cannot touch the sentence that was on the page before it.
+    expect(useWorkspace.getState().findingsText).toBe("C5-C6: Disc herniation with cord compression.");
+  });
+
+  it("pressing twice does not retire a second time", () => {
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    const once = useWorkspace.getState().findingsText;
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    expect(useWorkspace.getState().findingsText).toBe(once);
+  });
+
+  it("a denial that names a level is that level's normal, not a contradiction of it", () => {
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: No significant disc bulge is seen.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    expect(useWorkspace.getState().findingsText)
+      .toContain("C5-C6: No spinal canal or thecal sac compression is seen.");
+  });
+
+  it("a sentence that names no level retires nothing", () => {
+    // An infarct is attributed to the study, not to a disc space, so there is no
+    // level whose normal it denies and the rule must delete nothing.
+    reset();
+    useWorkspace.getState().setField("findings", "Acute infarct in the left MCA territory.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(brainCtx());
+    expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.stale)).toBe(false);
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("Acute infarct in the left MCA territory.");
+    expect(findings).toContain("No intracranial hemorrhage is seen.");
+  });
+
+  it("strips only sentences the template itself wrote", () => {
+    // The rows this rule may touch are the template's, and the sentences it
+    // removes are theirs: a tile's finding or a dictated line is what the level
+    // was contradicted BY, never what gets deleted to make the report agree.
+    reset({ reportingContext: cCtx() });
+    useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
+    useWorkspace.getState().generateProfessionalReport(cCtx());
+    const retired = useWorkspace.getState().appliedPathologyPatches.filter((p) =>
+      p.observation?.role === "baseline" && p.stale,
+    );
+    expect(retired.every((p) => p.templates.findings?.startsWith("C5-C6:"))).toBe(true);
+    expect(useWorkspace.getState().findingsText).toContain("C5-C6: Disc herniation with cord compression.");
+  });
+});
+
+describe("CARE's own baseline sentences can never read as findings", () => {
+  /**
+   * A content-wide gate rather than another hand-picked example: every sentence
+   * the shipped formats write into Findings is a normal, so not one of them may
+   * be recognised as pathology. Measured before the fix, 32 of 152 were — all of
+   * them level-labelled or region-labelled denials and screening scope notices —
+   * and every one of them was arriving in a signed Conclusion as an abnormality.
+   */
+  it("none of the baseline findings sentences asserts abnormality", () => {
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const format of DEFAULT_REPORT_FORMATS) {
+      for (const observation of format.baselineManifest?.observations ?? []) {
+        if (observation.field !== "findings") continue;
+        scanned += 1;
+        if (assertsAbnormality(observation.renderedText)) offenders.push(`${format.name}: ${observation.renderedText}`);
+      }
+    }
+    // The scan itself has to be non-vacuous: a manifest that stopped loading
+    // would satisfy `toEqual([])` on nothing.
+    expect(scanned).toBeGreaterThan(100);
+    expect(offenders).toEqual([]);
   });
 });
