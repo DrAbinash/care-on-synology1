@@ -240,4 +240,30 @@ describe("the open report's image identity does not ride on the filtered queue",
     expect(ctx, "the picker context is gone").not.toBeNull();
     expect(ctx).not.toContain("workflow.currentRow");
   });
+
+  /**
+   * The printed report header is the same coupling in a second consumer, and it
+   * is worse: with `workflow.currentRow` absent, `patientName` and `studyDate`
+   * resolved to undefined while `age` did not (it already had a detail
+   * fallback), so a radiologist who filtered the reading queue and then printed
+   * got a report showing "AGE/SEX: 45 YRS" with no patient name and no date.
+   * Reproduced in a real browser before this guard existed.
+   */
+  it("the printed demography does not depend on the queue containing the study", () => {
+    const HOOK = "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
+    const src = read(HOOK);
+    const memo = balanced(src, "const canonicalDemography = useMemo");
+    expect(memo, "canonicalDemography is gone").not.toBeNull();
+    const erp = balanced(memo!, "erp:");
+    expect(erp, "the erp demography object is gone").not.toBeNull();
+
+    for (const field of ["patientName", "studyDate", "accessionNumber", "sex", "referringDoctor", "studyDescription", "patientId"]) {
+      const line = erp!.split("\n").find((l) => new RegExp(`^\\s*${field}:`).test(l));
+      expect(line, `${field} is no longer in the erp demography`).toBeTruthy();
+      expect(
+        line!,
+        `${field} reads only off the filtered queue row: ${line!.trim()}`,
+      ).toMatch(/detail\?\./);
+    }
+  });
 });
