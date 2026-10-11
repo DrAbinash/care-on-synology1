@@ -799,4 +799,37 @@ describe.skipIf(!hasDatabaseUrl())("Composer COMBINE source patient identity", (
       expect(res.body.error.length).toBeGreaterThan(40);
     }
   });
+
+  it("20. with no model, a real merge is refused by conservation, not by identity", async () => {
+    // Two different guards, and whoever reads the failed job must be able to tell
+    // them apart. `deterministicCompose` answers a COMBINE by echoing the study's
+    // own text — it cannot merge — so every fact of the supplied report is missing
+    // from the answer and the conservation guard fires. The combination still
+    // names the sources it verified, and no unmerged draft is left to apply.
+    const enq = await enqueue(
+      combineSnapshot(wlA, `Source 20: no model available to merge. ${marker}`, [
+        source({
+          findings: "AP canal diameter at L4-L5 is 8.2 mm with left foraminal narrowing.",
+          impression: "Left L5 canal stenosis.",
+        }),
+      ]),
+    );
+    expect(enq.status).toBe(202);
+    const jobId = enq.body.jobId as number;
+    const proc = await request(app)
+      .post(`/api/radiology/report-composer/jobs/${jobId}/process-now`)
+      .set("Authorization", `Bearer ${admin.token}`)
+      .send({});
+    expect(proc.status).toBe(200);
+    const row = await trackJob(jobId);
+    expect(row.status).toBe("FAILED");
+    expect(row.safeError).toContain("dropped");
+    expect(String(row.safeError)).not.toMatch(/compose_source_/);
+    expect(row.proposedFindings).toBeNull();
+    const validation = JSON.parse(String(row.validationJson)) as {
+      sourceIdentities?: Array<{ worklistId: number; signed: boolean }>;
+    };
+    expect(validation.sourceIdentities).toHaveLength(1);
+    expect(validation.sourceIdentities?.[0]).toMatchObject({ worklistId: wlA2, signed: true });
+  });
 });

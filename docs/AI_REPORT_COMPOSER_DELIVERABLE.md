@@ -285,6 +285,13 @@ sentence, so the relation guard's duplicate arm was deleted and #915's rule is n
 through the structured `OBSERVATIONS` rows, whose three narrative fields are empty by design.
 One inverted finding, one code, one sentence for the radiologist to read.
 
+The seven `compose_source_*` codes (§AA) are a different class from all of the above: they
+are raised **before** a model is contacted, so they arrive on the `POST /jobs` response as
+HTTP 409 with `error` = the clinician sentence, and there is no job, no `safeError` and no
+draft to review. A workspace that only renders refusals found on a job will show nothing at
+all for them. `processComposeJob` can also raise the same codes on a job that was queued
+before a source's patient link moved; those do arrive as `job.safeError`.
+
 ## Y.8 Deterministic independence
 
 With AI switched off or unreachable, `deterministicCompose` still answers
@@ -292,6 +299,19 @@ With AI switched off or unreachable, `deterministicCompose` still answers
 returns the radiologist's **own text unchanged** (`PROFESSIONALIZE`, `COMBINE`) or an
 explicit "no mechanical equivalent" (`OBSERVATIONS`), with a warning naming that no model
 ran. The deterministic reporting engine does not gain a dependency on any of this.
+
+Measured on this head, and worth knowing before a clinic night with the AI off: a
+`COMBINE` that really carries a second report **fails** on the deterministic path. The
+fallback echoes the study's own text and cannot merge, so the conservation guard fires on
+the supplied report's facts — `level_dropped,laterality_dropped,morphology_dropped,location_dropped`
+for a cervical source added to a lumbar report (`composeSourceIdentity.request.test.ts` 20,
+which also asserts the refusal is a conservation code and not a `compose_source_*` one, so
+the two guards cannot be confused by whoever reads the failed job). The suite's 17b case is
+the other half: a source whose facts the anchor already restates, which the fallback can
+echo and which therefore does reach READY. That is the guard working — no model means no
+merge — and a merge that quietly dropped the second study would be worse. It is a `FAILED`
+job with a named cause, not a silent downgrade, and the workspace should say "no model was
+available to combine these" rather than showing an empty draft.
 
 ## Y.9 Measured on the clinic AI PC (11 Oct 2026, `192.168.1.250:11434`, head `ac3d4bd0`)
 
@@ -389,7 +409,11 @@ decides what a *generated* report may conclude, `denied_finding_asserted` decide
   `deriveComposeObservations(appliedPathologyPatches)` (`lib/reportComposer/composeObservations.ts:158`),
   and the hash mirror the server recomputes. Do not build a second snapshot shape.
 - Operation-specific additions: `instruction` for a refine, and for `COMBINE` the array
-  `additionalReports: [{ label, modality, region, findings, impression }]`.
+  `additionalReports`. Each entry must name a CARE study — `worklistId` (a
+  `radiology_worklist.id`) and/or `reportId` (a `patient_reports.id`) — beside its text:
+  `[{ worklistId, reportId, studyInstanceUid, label, modality, region, findings, impression }]`.
+  CARE resolves those references and proves the source belongs to the same patient as the
+  study being reported (§AA). A source that names no study is refused.
 
 ## Z.3 Lifecycle the UI already knows
 
@@ -440,3 +464,82 @@ sentence written for a radiologist. Surface the sentence; do not show the code. 
 guard refusal (`measurement_repositioned`, `certainty_escalation`, `technique_invention`, …)
 means the model's answer lost or invented something, and the report is untouched — say that,
 because the failure the owner is guarding against is a lost measurement nobody noticed.
+
+## AA. Who each combined report belongs to (COMBINE source identity)
+
+A `COMBINE` merges a second report into the study being reported. Until this section the
+only evidence that the second report was this patient's was the browser's own caption, so a
+stale tab or a wrong row in a prior-study list could put another person's findings into this
+person's report — and every clinical guard in §Y.7 would stay silent, because each fact in
+the wrong patient's report is faithfully present.
+
+**The rule.** Every entry in `additionalReports` must carry `worklistId` and/or `reportId`,
+and CARE looks both up (`verifyComposeSourceIdentities`, `composeIdentity.ts`) using the same
+rows the anchor and the finalize path treat as authoritative — `radiology_worklist`,
+`patient_reports`, plus the billed study cross-checked against its worklist row exactly as
+`bindRadiologyReportIdentity` does. The source's patient must be the anchor's patient, and
+**both must be known**: a study not yet linked to a patient is refused on either side. Two
+references on one source must describe one study. No name, date, accession or `label` is
+read by any part of this — the caption is for the clinician's eye only.
+
+**Where it is enforced, twice.** `POST /jobs` refuses before a job exists (HTTP 409, `error`
+= the sentence, no `jobId`). `processComposeJob` re-checks before building the prompt, because
+the queue is a background worker: a study can be re-linked in Match Center, or signed by
+another workstation, while its combination waits — and a job queued before this gate existed
+has no identity on it at all. The model never sees an unverified merge, which is the whole of
+"AI cannot override an identity refusal".
+
+| code | what it means | what the UI should do |
+| --- | --- | --- |
+| `compose_source_unidentified` | the source names no CARE study | offer to pick the study from the patient's own list; do not offer "combine anyway" |
+| `compose_source_unmatched` | that study has no patient linked | send the clinician to Match Center |
+| `compose_source_anchor_unverified` | the study being reported has no patient linked | same, and it applies to every source in the request |
+| `compose_source_not_found` | the row is gone (deleted, or the id was never a study) | re-open the other study and retry |
+| `compose_source_conflict` | the source's own rows disagree about which study/patient it is | report it as a data problem, not a user error |
+| `compose_source_patient_mismatch` | it is another patient's report | stop; this is the refusal the whole section exists for |
+| `compose_source_uid_conflict` | the declared DICOM UID is not the row's | re-read the study, do not let the caller edit the UID |
+
+Each message arrives with a position when more than one source was sent — `(report 2 of 3)` —
+so the clinician knows which entry to fix.
+
+**The identifiers are kept.** The resolved record per source — `worklistId`, `studyId`,
+`reportId`, `reportNumber`, `patientId`, `studyInstanceUID`, `modality`, `worklistStatus`,
+`signed`, `position`, and the caption — is written into the job's `validation_json` (which is
+how provider and usage are already recorded; the table gains no column) and is returned by
+`GET /jobs/:id` as `job.validation.sourceIdentities`. `studyInstanceUID` is the row's value,
+never the caller's. Show it: a merged report that cannot say which study each half came from
+is not reviewable.
+
+**Signed sources are preserved.** A signed prior study is the normal thing to combine, and it
+is read-only here: the composer's own writes (`aiComposeStatus`, `aiComposeJobId`) land only
+on the anchor, and the source's `patient_reports` and worklist rows are asserted
+byte-identical before and after (`composeSourceIdentity.request.test.ts` 17). The job can
+never be applied into a source — Apply resolves the anchor alone (#905) — and an anchor
+signed while its combination waits is refused at composition with `compose_locked` (case 16),
+which is the case that also proves the worker's re-check reads the anchor afresh.
+
+**What is narrower than before.** A report CARE does not hold — an outside printout typed
+into the box — has no row to resolve, so it is refused. "Confirm every source belongs to the
+intended patient" and "accept unverifiable pasted text" cannot both hold. The route in is
+CARE's own: attach/link that study so it has a patient, a UID and a report of record, and it
+combines like any other.
+
+**What is still the clinician's claim.** The *narrative* still arrives from the browser, so
+identity is proved for the named study, not for the words typed under it. Binding the text to
+the row was tried and rejected: a signed report's `body` and a draft's `findings_sections`
+are not byte-equal to the editor's text (the print formatters own them), so an equality gate
+would refuse honest merges. A mis-transcription is caught by the conservation and relation
+guards and by the radiologist's review — say so in the UI rather than implying the machine
+proved the wording.
+
+**Freshness.** The references join `canonicalAdditionalReportsHashPayload`, on both mirrors,
+so pointing the picker at a different study is a different request and the earlier READY draft
+goes `STALE_READY` instead of staying applicable. Snapshots with no `additionalReports` hash
+exactly as before.
+
+**With no model available** (`deterministicCompose`) a real merge fails: the fallback echoes
+the study's own text, cannot merge, and conservation refuses it (`…level_dropped,laterality_dropped,
+morphology_dropped,location_dropped`). Case 20 asserts that the refusal is a conservation code
+and *not* a `compose_source_*` one, so the two guards can never be confused from the failed
+job, and that the sources are still named on the record.
+
