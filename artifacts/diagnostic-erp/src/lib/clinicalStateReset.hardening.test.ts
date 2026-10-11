@@ -445,7 +445,12 @@ describe("signed-state lock — the canonical source is the per-study detail row
     // second source of truth for the same field.
     expect(src.match(/queryKey: \["pacs-worklist-detail", studyId\]/g)).toHaveLength(1);
 
-    const detailBlock = src.slice(detailAt - 260, detailAt + 320);
+    // Bound the assertion on the declaration, not a character budget: the row
+    // type carries the study identity fields now, and a fixed slice silently
+    // dropped `status` out of it and looked like the lock had lost its source.
+    const declAt = src.indexOf("const worklistDetailQ = useQuery<{");
+    expect(declAt).toBeGreaterThanOrEqual(0);
+    const detailBlock = src.slice(declAt, detailAt);
     expect(detailBlock).toMatch(/status\?: string \| null;/);
 
     const statusBlock = src.slice(detailAt, detailAt + 1400);

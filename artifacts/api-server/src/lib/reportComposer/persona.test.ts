@@ -341,7 +341,7 @@ describe("§S 11. Recommendation — no filler", () => {
   it("persona carries the no-filler-recommendation rule", () => {
     const snap = snapshot();
     const prompt = buildCareSystemPrompt("FULL_REPORT" as AiComposeJobKind, snap);
-    expect(prompt).toContain("Do NOT generate meaningless recommendations");
+    expect(prompt).toContain("No filler recommendations");
     expect(prompt).toContain("Please correlate clinically");
     expect(prompt).toMatch(/leave recommendation empty|Prefer empty over filler/i);
   });
@@ -840,7 +840,10 @@ describe("§S 19. Printed-structure contract", () => {
 
   it("the style module teaches the pipe-table convention for per-level values", () => {
     expect(CARE_REPORT_STYLE).toMatch(/\| Level \| AP Canal \(mm\) \|/);
-    expect(CARE_REPORT_STYLE).toMatch(/never invent a level to complete a table/);
+    expect(CARE_REPORT_STYLE).toMatch(/never invent a level/);
+    // The unit belongs in the cell: validateComposerOutput re-checks every supplied
+    // measurement, and a bare "14" in a table is not a measurement it can see.
+    expect(CARE_REPORT_STYLE).toMatch(/\| L1-L2 \| 14 mm \|/);
   });
 
   it("the style module forbids markdown emphasis, because the renderer bolds abnormalities itself", () => {

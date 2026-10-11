@@ -421,8 +421,19 @@ const GUARD_CASES: Array<{
   {
     // Armed with a hand-written Impression so the refresh has something to
     // overwrite; the unsigned control is the whole point of this action.
+    //
+    // It is also armed with a findings sentence the ledger does not own. Since
+    // Milestone 1 PR C the picker draws conclusions only from what is unexplained
+    // — a sentence a ledger row already speaks for arrives through that row, and
+    // reading it out of the Findings text again is how the scaffold's own normals
+    // re-entered a signed Conclusion. An arm whose every findings line is owned
+    // therefore leaves the action genuinely nothing to write, which is the case
+    // this control exists to catch, not a guard to fix.
     action: "refreshImpressionFromLedger",
-    arm: () => useWorkspace.getState().setField("impression", "Hand-written impression.", { source: "manual" }),
+    arm: () => {
+      useWorkspace.getState().setField("impression", "Hand-written impression.", { source: "manual" });
+      useWorkspace.getState().mergeField("findings", "Acute infarct in the left MCA territory.", "manual");
+    },
     call: () => useWorkspace.getState().refreshImpressionFromLedger(),
     refusal: undefined,
   },

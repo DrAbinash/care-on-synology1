@@ -53,6 +53,29 @@ function boundedBy(src: string, startMarker: string, endMarker: string, label: s
   return body;
 }
 
+/**
+ * The opening tag of the Button that carries this `data-testid`, located at run
+ * time instead of by counting characters from it.
+ *
+ * A fixed window is a prop budget wearing a hat: any attribute added to the
+ * button — including one that changes nothing — pushes the disclaimer outside it
+ * and the test fails on the layout rather than on the claim. Taking the element's
+ * own tag says what is actually promised *on that control*, which is the thing
+ * that matters: a "No AI" sitting on a neighbouring element would not tell the
+ * radiologist anything about the button he presses.
+ */
+function openingTag(src: string, testid: string): string {
+  const at = src.indexOf(`data-testid="${testid}"`);
+  expect(at, `no control with data-testid="${testid}"`).toBeGreaterThanOrEqual(0);
+  const open = src.lastIndexOf("<Button", at);
+  expect(open, `the "${testid}" control is not a Button`).toBeGreaterThanOrEqual(0);
+  // An inline handler's `=>` is not the end of the tag.
+  let close = src.indexOf(">", at);
+  while (close !== -1 && src[close - 1] === "=") close = src.indexOf(">", close + 1);
+  expect(close, `the "${testid}" Button never closes`).toBeGreaterThan(at);
+  return src.slice(open, close);
+}
+
 /** Count every occurrence, so "exactly one" is a measurement and not a guess. */
 function occurrences(src: string, needle: string): number {
   let n = 0;
@@ -229,6 +252,12 @@ describe("the AI path is named as AI and the deterministic path says so", () => 
   });
 
   it("the generator tells him plainly that it is not AI", () => {
-    expect(CANVAS).toMatch(/data-testid="generate-professional-report"[\s\S]{0,200}No AI/);
+    // Pinned on the control itself, and on the handler that makes it the
+    // generator: the disclaimer and the action have to be the same element, or
+    // "No AI" is decoration somewhere on the canvas rather than a promise about
+    // what this press does.
+    const tag = openingTag(CANVAS, "generate-professional-report");
+    expect(tag).toContain("No AI");
+    expect(tag).toContain("onClick={handleStartReport}");
   });
 });

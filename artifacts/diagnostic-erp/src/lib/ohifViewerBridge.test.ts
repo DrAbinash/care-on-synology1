@@ -214,13 +214,77 @@ describe("ohifViewerBridge", () => {
         draftId: 9999,
         studyId: 888,
       },
-      { patientId: 42, studyId: 7, draftId: 55, studyInstanceUID: "1.2.3", getImageRefs: () => [] },
+      {
+        patientId: 42,
+        studyId: 7,
+        draftId: 55,
+        accessionNumber: "ACC-7",
+        studyInstanceUID: "1.2.3",
+      },
     );
     expect(r).toBe("ok");
+    // The viewer's image goes to the FROZEN store through the same endpoint the
+    // PACS picker uses — writing it to /image-references left one report holding
+    // two competing sets of images, only one of which survived an Orthanc outage.
     expect(api.post).toHaveBeenCalledWith(
-      "/api/radiology/report-generator/image-references",
-      expect.objectContaining({ draftId: 55, studyId: 7 }),
+      "/api/radiology/report-generator/key-images/from-pacs",
+      expect.objectContaining({
+        draftId: 55,
+        studyId: 7,
+        patientId: 42,
+        accessionNumber: "ACC-7",
+        studyInstanceUid: "1.2.3",
+        seriesInstanceUid: "1.2.3.4",
+        sopInstanceUid: "1.2.3.4.5",
+        caption: "Key image (OHIF)",
+      }),
     );
+    const body = vi.mocked(api.post).mock.calls[0][1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty("frameNumber");
+  });
+
+  it("keeps the viewer's frame for a multiframe image and drops frame 0", async () => {
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "key-image",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.4",
+        sopInstanceUID: "1.2.3.4.5",
+        frameNumber: 4,
+        caption: "Axial T2",
+      },
+      { patientId: 1, studyId: 2, draftId: 3, studyInstanceUID: "1.2.3" },
+    );
+    expect(vi.mocked(api.post).mock.calls[0][1]).toMatchObject({ frameNumber: 4, caption: "Axial T2" });
+
+    await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "key-image",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.4",
+        sopInstanceUID: "1.2.3.4.5",
+        frameNumber: 0,
+      },
+      { patientId: 1, studyId: 2, draftId: 3, studyInstanceUID: "1.2.3" },
+    );
+    expect(vi.mocked(api.post).mock.calls[1][1]).not.toHaveProperty("frameNumber");
+  });
+
+  it("refuses a key-image claim that is not a DICOM UID, before any request", async () => {
+    const r = await handleCareOhifMessage(
+      {
+        source: CARE_OHIF_SOURCE,
+        type: "key-image",
+        studyInstanceUID: "1.2.3",
+        seriesInstanceUID: "1.2.3.4",
+        sopInstanceUID: "not a uid",
+      },
+      { patientId: 1, studyId: 2, draftId: 3, studyInstanceUID: "1.2.3" },
+    );
+    expect(r).toBe("error");
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it("does not tag unlabeled disc-level ruler as CANAL_AP without intent", async () => {

@@ -59,6 +59,17 @@ env_my_temp*
 *---delete*
 superadmin.key
 
+# Runtime upload storage — REAL PATIENT DATA. The API writes these at
+# <cwd-ancestor>/data/uploads, which resolves differently per launch
+# directory, so the pattern is depth-independent on purpose: it covers
+# data/uploads/, artifacts/data/uploads/ and artifacts/api-server/data/uploads/.
+# These hold radiology key images (DICOM renders of named studies) and expense
+# bill/receipt photographs. Nothing under any data/uploads path is tracked, so
+# this excludes runtime data only and no application file. The leading **/ is
+# required: a pattern containing a middle separator is anchored to this file's
+# directory, so "data/uploads/" alone would miss artifacts/data/uploads/.
+**/data/uploads/
+
 # Large binary / database dumps — cause mmap errors on Windows git
 *.dump
 *.sql.gz

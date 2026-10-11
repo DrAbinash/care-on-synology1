@@ -403,14 +403,14 @@ export function ReportComposerAssistant(props: Props) {
 
       <div className="space-y-1" data-testid="ai-micro-command-wrap">
         <label htmlFor="ai-micro-command" className="block text-[10px] font-medium text-muted-foreground">
-          Instructions to AI (optional)
+          Refine Report — tell CARE AI what to change
         </label>
         <div className="flex gap-1.5 items-end">
           <textarea
             id="ai-micro-command"
             className="flex-1 min-h-[4.5rem] max-h-[10.5rem] resize-none rounded-md border bg-background px-2 py-1.5 text-xs leading-5 overflow-y-auto"
             rows={3}
-            placeholder="Tell AI what to improve, rephrase or emphasize…"
+            placeholder="e.g. Make it more professional · organise the findings by level · add the canal measurement table · shorten the impression · remove the duplicated conclusion"
             value={props.microInstruction}
             onChange={(e) => {
               props.onMicroInstructionChange(e.target.value);
@@ -438,7 +438,7 @@ export function ReportComposerAssistant(props: Props) {
             onClick={props.onMicroSubmit}
             data-testid="ai-micro-run"
           >
-            Run
+            Refine Report
           </Button>
         </div>
         <p className="text-[10px] text-muted-foreground">Ctrl/⌘+Enter to run · Enter for a new line</p>
@@ -449,6 +449,17 @@ export function ReportComposerAssistant(props: Props) {
           AI composition failed — report unchanged. ({props.job.safeError})
           {provenance.degradedReason ? ` ${provenance.degradedReason}` : ""}
         </p>
+      )}
+
+      {props.job?.status === "FAILED" && (provenance.warnings?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 text-red-950 p-2 text-[11px] space-y-0.5" data-testid="ai-compose-failure-reason">
+          <p className="font-semibold">Why CARE refused this draft</p>
+          <ul className="list-disc pl-4">
+            {provenance.warnings!.slice(0, 6).map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {props.job?.status === "STALE_READY" && (
@@ -481,6 +492,17 @@ export function ReportComposerAssistant(props: Props) {
         </div>
       )}
 
+      {(props.job?.draft?.unresolvedQuestions?.length ?? 0) > 0 && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 text-sky-950 p-2 text-[11px] space-y-0.5" data-testid="ai-unresolved-questions">
+          <p className="font-semibold">CARE AI did not guess — it is asking you</p>
+          <ul className="list-disc pl-4">
+            {props.job!.draft!.unresolvedQuestions!.slice(0, 8).map((q) => (
+              <li key={q}>{q}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {props.reviewOpen && props.job && (
         <div className="space-y-2 border-t pt-2" data-testid="ai-report-review">
           <div className="text-[10px] text-muted-foreground space-y-0.5" data-testid="ai-compose-provenance">
@@ -506,7 +528,7 @@ export function ReportComposerAssistant(props: Props) {
               {props.showAiChanges ? "Show AI Changes: ON" : "Show AI Changes: OFF"}
             </Button>
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={props.onAcceptAll}>
-              Accept all
+              Accept Revision
             </Button>
             <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={props.onRejectAll}>
               Reject all
@@ -515,7 +537,7 @@ export function ReportComposerAssistant(props: Props) {
               <RefreshCw className="h-3 w-3" /> Regenerate
             </Button>
             <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px] gap-1 text-red-700" onClick={props.onDiscard}>
-              <Trash2 className="h-3 w-3" /> Discard
+              <Trash2 className="h-3 w-3" /> Discard Revision
             </Button>
           </div>
 

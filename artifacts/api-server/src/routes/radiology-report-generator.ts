@@ -125,6 +125,7 @@ import {
   type IdentityVerdict,
 } from "../lib/imageIdentity";
 import { regenerateDraftStructuredJson } from "../lib/radiologyStructuredJsonCache";
+import { fetchPrintImageBytes } from "../lib/reportImages";
 import {
   persistCareStructuredJsonPatch,
 } from "../lib/persistCareStructuredFormatState";
@@ -3631,9 +3632,200 @@ radiologyReportGeneratorRouter.delete("/image-references/:id", async (req: Staff
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// SELECT IMAGES FROM PACS — attach an Orthanc image to a report, no viewer
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The picker browses Orthanc's own DICOMweb (series → instances → frames) and
+// then asks CARE for the pixels. CARE fetches Orthanc's server-rendered JPEG
+// from the server, with Orthanc's own credentials, and FREEZES it into
+// radiology_report_key_images — the table print/PDF already treats as the
+// authoritative image set. So one click produces one row in the store the
+// delivered document is built from, the printed report keeps its pictures
+// even if Orthanc goes away, and no second image database exists.
+//
+// Identity is verified the same way as every other durable DICOM claim (D2,
+// lib/imageIdentity.ts) before a byte is stored, so an image of another
+// patient's study cannot be attached to this report.
+
+const PacsStillSchema = z.object({
+  draftId: z.number().int().positive(),
+  studyId: z.number().int().positive().optional(),
+  patientId: z.number().int().positive().optional(),
+  accessionNumber: z.string().max(64).optional(),
+  studyInstanceUid: z.string().regex(UID),
+  seriesInstanceUid: z.string().regex(UID),
+  sopInstanceUid: z.string().regex(UID),
+  frameNumber: z.number().int().min(1).max(10_000).optional().nullable(),
+  instanceNumber: z.number().int().min(0).max(999_999).optional().nullable(),
+  seriesDescription: z.string().max(200).optional(),
+  modality: z.string().max(16).optional(),
+  caption: z.string().max(500).optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+});
+
+radiologyReportGeneratorRouter.post(
+  "/key-images/from-pacs",
+  async (req: StaffAuthRequest, res: Response) => {
+    const parsed = PacsStillSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, error: "Invalid body" });
+      return;
+    }
+    const claim = parsed.data;
+
+    if (await keyImagesLocked(claim.draftId)) {
+      res.status(409).json({ success: false, error: KEY_IMAGE_LOCKED_MSG });
+      return;
+    }
+
+    // The draft the image lands in must be writable by the study/patient the
+    // caller names — the same cross-patient guard the viewport capture uses.
+    try {
+      await assertDraftWritable({
+        draftId: claim.draftId,
+        studyId: claim.studyId ?? null,
+        patientId: claim.patientId ?? null,
+      });
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    let identity: VerifiedIdentity | null = null;
+    let identityWarning: { code: string; message: string } | null = null;
+    try {
+      await assertImageUidBelongsToDraft(claim.draftId, claim.studyInstanceUid);
+      const verdict = await verifyImageIdentityClaim({
+        draftId: claim.draftId,
+        claim: {
+          studyInstanceUID: claim.studyInstanceUid,
+          seriesInstanceUID: claim.seriesInstanceUid,
+          sopInstanceUID: claim.sopInstanceUid,
+          frameNumber: claim.frameNumber ?? null,
+        },
+      });
+      if (verdict.status === "contradicted") {
+        res.status(409).json({ success: false, error: verdict.message, code: verdict.code });
+        return;
+      }
+      if (verdict.status === "verified") identity = verdict.identity;
+      else identityWarning = { code: verdict.code, message: verdict.message };
+    } catch (err) {
+      if (err instanceof RadiologyIdentityError) {
+        res.status(err.httpStatus).json({ success: false, error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
+    // Pixels come from Orthanc at print quality, named by the verified identity
+    // (not by whatever the browser claimed) when verification succeeded.
+    const rendered = await fetchPrintImageBytes({
+      studyInstanceUid: identity?.studyInstanceUID ?? claim.studyInstanceUid,
+      seriesInstanceUid: identity?.seriesInstanceUID ?? claim.seriesInstanceUid,
+      sopInstanceUid: identity?.sopInstanceUID ?? claim.sopInstanceUid,
+      frameNumber: identity ? identity.frameNumber : claim.frameNumber ?? null,
+    });
+    if (!rendered) {
+      res.status(502).json({
+        success: false,
+        error: "PACS could not render this image. Confirm the study is still in Orthanc.",
+      });
+      return;
+    }
+
+    const stem = randomUUID();
+    let absPath = path.join(KEY_IMAGE_DIR, `${stem}.jpg`);
+    let thumbAbs: string | null = null;
+    const cleanupOrphans = async () => {
+      await unlinkKeyImageArtifacts(absPath, thumbAbs);
+    };
+
+    try {
+      await fs.mkdir(KEY_IMAGE_DIR, { recursive: true });
+      await fs.writeFile(absPath, rendered.bytes);
+      const normalized = await normalizeKeyImageForPrint(absPath);
+      absPath = normalized.absPath;
+
+      const existing = await db
+        .select({
+          sopInstanceUid: radiologyReportKeyImagesTable.sopInstanceUid,
+          frameNumber: radiologyReportKeyImagesTable.frameNumber,
+          sortOrder: radiologyReportKeyImagesTable.sortOrder,
+        })
+        .from(radiologyReportKeyImagesTable)
+        .where(eq(radiologyReportKeyImagesTable.draftId, claim.draftId));
+      const sameImage = existing.some(
+        (r) =>
+          r.sopInstanceUid === (identity?.sopInstanceUID ?? claim.sopInstanceUid)
+          && (r.frameNumber ?? null) === (identity ? identity.frameNumber : claim.frameNumber ?? null),
+      );
+      if (sameImage) {
+        await cleanupOrphans();
+        res.status(409).json({ success: false, error: "This image is already attached to the report" });
+        return;
+      }
+
+      const imageUrl = `${FROZEN_KEY_IMAGE_URL_PREFIX}${normalized.filename}`;
+      let thumbnailUrl = imageUrl;
+      const thumb = await makeKeyImageThumbnail(absPath);
+      if (thumb) {
+        thumbnailUrl = thumb;
+        thumbAbs = path.join(KEY_IMAGE_DIR, path.basename(thumb));
+      }
+
+      const caption = (
+        claim.caption?.trim()
+        || claim.seriesDescription?.trim()
+        || `Image ${claim.instanceNumber ?? ""}`.trim()
+        || "Key image"
+      ).slice(0, 500);
+
+      const [row] = await db
+        .insert(radiologyReportKeyImagesTable)
+        .values({
+          draftId: claim.draftId,
+          studyId: claim.studyId ?? null,
+          patientId: claim.patientId ?? null,
+          accessionNumber: claim.accessionNumber?.slice(0, 64) ?? null,
+          imageUrl,
+          thumbnailUrl,
+          caption,
+          captionManual: Boolean(claim.caption?.trim()),
+          sortOrder: claim.sortOrder ?? existing.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1,
+          includeInReport: true,
+          sourceType: "DICOM",
+          studyInstanceUid: identity?.studyInstanceUID ?? null,
+          seriesInstanceUid: identity?.seriesInstanceUID ?? null,
+          sopInstanceUid: identity?.sopInstanceUID ?? null,
+          frameNumber: identity ? identity.frameNumber : null,
+          instanceNumber: claim.instanceNumber ?? null,
+          seriesDescription: claim.seriesDescription?.slice(0, 200) ?? null,
+          modality: parseModality(claim.modality),
+          viewer: "ORTHANC",
+          capturedAt: new Date(),
+          createdBy: req.staffSession?.subjectName ?? null,
+        })
+        .returning();
+
+      res.status(201).json({
+        success: true,
+        item: row,
+        ...(identityWarning ? { warningCode: identityWarning.code, warning: identityWarning.message } : {}),
+      });
+    } catch (err) {
+      await cleanupOrphans();
+      throw err;
+    }
+  },
+);
+
+// ════════════════════════════════════════════════════════════════════════════
 // RADIOLOGIST STYLE PREFERENCES — AI impression style settings
 // ════════════════════════════════════════════════════════════════════════════
-
 const StylePreferencesSchema = z.object({
   impressionStyle: z.enum(["concise", "detailed", "academic", "diagnostic"]),
   terminologyLevel: z.enum(["simple", "standard", "advanced"]),

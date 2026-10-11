@@ -365,7 +365,10 @@ describe("Golden H — Cervical multilevel + AP canal measurements", () => {
     const draft = deterministicComposeFromSnapshot(snapshot, "FULL_REPORT");
     assertAbnormalitiesRepresented(draft.findings, ["11.2 mm", "10.9 mm", "C6-C7"]);
     const dropped = validateComposerOutput(snapshot, {
-      findings: "C6-C7 mild disc bulge.",
+      // The cord negative stays: this case is about a DROPPED MEASUREMENT being
+      // advisory, and deleting a whole statement on the way past would be a separate
+      // (and genuinely refusible) loss.
+      findings: "Cord signal is normal. C6-C7 mild disc bulge.",
       impression: "C6-C7 mild disc bulge.",
       recommendation: "",
       unresolvedQuestions: [],

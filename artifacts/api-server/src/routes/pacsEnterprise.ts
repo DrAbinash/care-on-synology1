@@ -17,6 +17,7 @@ import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnab
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
+import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import {
   NETWORK_LAN_HOST,
   DEFAULT_VIEWER_SETTINGS,
@@ -770,14 +771,29 @@ async function orthancDicomWebFetch(pathAndQuery: string, accept: string): Promi
   }
 }
 
+/** QIDO `includefield` values the pickers may ask for, forwarded to Orthanc.
+ *  A browser cannot read a multiframe object's frame count without it, and the
+ *  picker must not offer a frame a study does not have. Only DICOM tag numbers
+ *  (plain or 8,8 group,element form) pass; anything else is dropped. */
+function includefieldQuery(raw: unknown): string {
+  const values = Array.isArray(raw) ? raw : [raw];
+  const tags = values
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter((v) => /^\d{8}$/.test(v) || /^\d{4},\d{4}$/i.test(v));
+  if (tags.length === 0) return "";
+  return tags.map((t) => `includefield=${encodeURIComponent(t)}`).join("&");
+}
+
 router.get("/dicom-web/studies/:studyInstanceUID/series", async (req, res) => {
   const { studyInstanceUID } = req.params;
   if (!LAUNCH_UID.test(studyInstanceUID)) {
     res.status(400).json({ error: "invalid StudyInstanceUID" });
     return;
   }
+  const extra = includefieldQuery(req.query.includefield);
   const upstream = await orthancDicomWebFetch(
-    `/studies/${encodeURIComponent(studyInstanceUID)}/series`,
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series${extra ? `?${extra}` : ""}`,
     "application/dicom+json",
   );
   if (!upstream) {
@@ -794,8 +810,9 @@ router.get("/dicom-web/studies/:studyInstanceUID/series/:seriesInstanceUID/insta
     res.status(400).json({ error: "invalid UID" });
     return;
   }
+  const extra = includefieldQuery(req.query.includefield);
   const upstream = await orthancDicomWebFetch(
-    `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances`,
+    `/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(seriesInstanceUID)}/instances${extra ? `?${extra}` : ""}`,
     "application/dicom+json",
   );
   if (!upstream) {
@@ -1214,13 +1231,17 @@ router.get("/qr-query", async (req, res) => {
   const [risRaw, pacsRaw] = await Promise.all([
     risQuery,
     (async () => {
-      // radiologyWorklistTable.studyDate is stored as raw DICOM compact date YYYYMMDD.
-      // Frontend sends YYYY-MM-DD so we strip dashes before comparing.
-      const toCompact = (iso: string) => iso.replace(/-/g, "");
+      // radiologyWorklistTable.studyDate is free text holding whichever shape the
+      // writer used — DICOM compact YYYYMMDD from modality intake, an ISO day
+      // from CARE's own stamping. worklistDateConditions canonicalises both sides.
       const pacsConds: ReturnType<typeof eq>[] = [];
-      if (dateParam) pacsConds.push(eq(radiologyWorklistTable.studyDate, toCompact(dateParam)));
-      if (dateFrom && !dateParam) pacsConds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
-      if (dateTo && !dateParam) pacsConds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
+      for (const dateCond of worklistDateConditions(radiologyWorklistTable.studyDate, {
+        exact: dateParam,
+        dateFrom,
+        dateTo,
+      })) {
+        pacsConds.push(dateCond as ReturnType<typeof eq>);
+      }
       if (modalityList.length === 1) pacsConds.push(eq(radiologyWorklistTable.modality, modalityList[0]!));
       if (modalityList.length > 1) pacsConds.push(inArray(radiologyWorklistTable.modality, modalityList));
       if (accessionParam) pacsConds.push(ilike(radiologyWorklistTable.accessionNumber, `%${accessionParam}%`));

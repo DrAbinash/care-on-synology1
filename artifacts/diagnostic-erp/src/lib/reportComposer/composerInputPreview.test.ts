@@ -563,7 +563,10 @@ describe("AI input preview is wired into the existing panel, not a second surfac
       'data-testid="compose-in-background"',
       'data-testid="ai-compose-mode"',
       'data-testid="ai-session-model-select"',
-      "Instructions to AI (optional)",
+      // Was "Instructions to AI (optional)". The control is the same box; the label
+      // now names the action it performs, which is what the radiologist is asked to
+      // use. Pinned so a later edit cannot silently take the name back off.
+      "Refine Report — tell CARE AI what to change",
       'data-testid="ai-apply-accepted"',
       'data-testid="ai-micro-command"',
     ]) {

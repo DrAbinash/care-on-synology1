@@ -91,6 +91,16 @@ describe("assertsAbnormality — a denial is not a finding", () => {
     "No abnormal susceptibility foci on SWI.",
     "No diffusion restriction is present to suggest acute infarction.",
     "L4-L5: No significant disc bulge or protrusion is seen.",
+    // The three shapes above each sat six words from their denial, and the
+    // shipped per-level normals are not short: 32 of CARE's own 152 baseline
+    // sentences read as findings, because `L4-L5: ` pushed the opening `No` out
+    // of the look-back window and `^` never reached it behind a label. These are
+    // the sentences that actually broke, copied from the baselines themselves.
+    "C5-C6: No spinal canal or thecal sac compression is seen.",
+    "C2-C3: No exiting or traversing nerve root compression is seen.",
+    "L1-L2: No spinal canal or thecal sac compression is seen.",
+    "Cervical spine: No gross spinal canal compromise is seen.",
+    "Brain parenchyma shows no gross signal abnormality on screening sequences.",
     "Lumbar facet joints are unremarkable.",
     "Ligamentum flavum is not hypertrophied.",
     "Cauda equina nerve roots are normally distributed.",
@@ -110,6 +120,11 @@ describe("assertsAbnormality — a denial is not a finding", () => {
     "Moderate disc bulge with bilateral neural foraminal narrowing.",
     "Compressive myelopathy at C4-C5 with intramedullary T2 hyperintensity.",
     "Normal study; a small lesion is noted in the right temporal tip.",
+    // Reading a level label as metadata must not turn the sentence after it into
+    // a denial: these are what a radiologist types over a cervical normal.
+    "C5-C6: Disc herniation with cord compression.",
+    "L4-L5: Moderate canal stenosis with thecal sac compression.",
+    "C4-C5: No spinal canal stenosis, but a disc herniation is present.",
   ];
 
   for (const line of DENIED) {

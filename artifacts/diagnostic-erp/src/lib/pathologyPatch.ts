@@ -21,8 +21,11 @@ import {
 import { applySide, type Side } from "./sideSwap";
 import { fillTemplate, type AbnormalityInstance } from "./abnormalityEngine";
 import { stripNormalImpressionLinesProvenanceAware } from "./quickFindingsMerge";
+import { assertsAbnormality } from "./generateLocalImpression";
+import { globalNormalsSupersededBy } from "./conceptCanon/contentPacks";
 import {
   buildCanonicalObservation,
+  conceptsAssertedIn,
   extractLevel,
   hasStructuredOwnership,
   normalizeLevel,
@@ -348,6 +351,31 @@ export function applyPathologyPatch(opts: {
   // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
   // is identity, not ownership — unowned findings keep the legacy pathology path.
   const structured = hasStructuredOwnership(slotObs);
+  // A compound finding falsifies more than its own concept. The baseline walk
+  // below only had the tile's single declared concept to test with, so a basal
+  // ganglia hemorrhage retired "No intracranial hemorrhage is seen." and left
+  // "Basal ganglia and thalami are normal in signal intensity." standing in the
+  // same paragraph — the signed report asserted both. The extra concepts come
+  // from the tile's own words through the same oracle the catalogue tests use.
+  //
+  // Level-bearing tiles are deliberately excluded: spinal ownership is
+  // level-scoped by design, and "Disc herniation L4-L5" already widened to every
+  // level once and deleted all five normals. Cranial statements carry no level.
+  const alsoOwns = structured && !slotObs.level
+    ? conceptsAssertedIn(incomingHay, slotObs.concept).filter((c) => c !== slotObs.concept)
+    : [];
+  const claimedConcepts = new Set([slotObs.concept, ...alsoOwns].filter(Boolean) as string[]);
+  // A new statement may overwrite an existing ABNORMAL statement only when it
+  // says at least everything that statement says. "Cerebral edema" shares the
+  // word edema with "right mass lesion with surrounding edema and mass effect",
+  // and on the concept test alone it owned that sentence — so clicking the edema
+  // box after the mass box deleted the tumour from the report. Requiring the
+  // existing claim to be covered keeps a grade-2 Fazekas replacing a grade-1 one
+  // (same concepts, higher grade) while a second, different abnormality can only
+  // ever be added beside it.
+  const overwritesAbnormalClaim = (probe: string): boolean =>
+    !assertsAbnormality(probe)
+    || conceptsAssertedIn(probe, slotObs.concept).every((c) => claimedConcepts.has(c));
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
@@ -374,7 +402,9 @@ export function applyPathologyPatch(opts: {
         laterality: slotObs.laterality || opts.ownership.laterality || "",
         anatomicalSection: slotObs.anatomicalSection,
         baselineReplaces: baseline,
-      })
+        alsoOwns,
+        supersedesGlobals: globalNormalsSupersededBy(slotObs.concept ?? opts.ownership.concept ?? null),
+      }) && overwritesAbnormalClaim(probe)
       : Boolean(
         (baseline && probe.includes(baseline))
         || sentenceMentions(probe, keys)

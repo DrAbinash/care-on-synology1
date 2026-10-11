@@ -26,11 +26,8 @@ import {
   ohifAnchorFailureText,
 } from "@/lib/ohifViewerBridge";
 import { viewportToAnchor, type ViewportContext } from "@/lib/observationAnchor";
-import {
-  buildImageRefPayload,
-  nextDisplayOrder,
-  type ReportImageRef,
-} from "@/lib/reportImageRefs";
+import { buildViewerStillBody } from "@/lib/pacsImagePicker";
+import type { StudyIdentity } from "@/lib/openStudyIdentity";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
   removeStructuredMeasurementByAnnotation,
@@ -56,18 +53,22 @@ export type UseOhifViewerBridgeOptions = {
   captureBusy: boolean;
   showEmbeddedViewer: boolean;
   layoutMode: WorkspaceLayoutMode;
-  workflow: {
-    currentRow: {
-      studyInstanceUID?: string | null;
-      patientId?: number | null;
-      studyId?: number | null;
-      status?: string | null;
-    } | null;
-  };
   embeddedViewerRef: RefObject<EmbeddedViewerHandle | null>;
   toast: ReturnType<typeof import("@/hooks/use-toast").useToast>["toast"];
   ensureDraftOnce: () => Promise<number | null>;
-  imageRefs: any[];
+  /**
+   * The open report's study, resolved by id. The bridge deliberately has no access
+   * to the reading queue: `currentRow` answers to the modality/date filter and is
+   * null for a report opened by link, and an image must never be attached to — or
+   * read from — a study that is merely the queue's first row.
+   */
+  reportIdentity?: StudyIdentity | null;
+  /**
+   * Optional: attaching a viewer image now lets the server assign the next sort
+   * position, so the live-reference list is no longer read here. The workspace
+   * still passes it.
+   */
+  imageRefs?: any[];
   frozenKeyImagesQ: {
     data?: { items?: FrozenKeyImage[] } | undefined;
   };
@@ -95,14 +96,25 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     captureBusy,
     showEmbeddedViewer,
     layoutMode,
-    workflow,
     embeddedViewerRef,
     toast,
     ensureDraftOnce,
-    imageRefs,
+    reportIdentity,
     frozenKeyImagesQ,
     appliedPathologyPatches,
   } = opts;
+
+  /**
+   * The study this report is about, independent of the reading-queue filter.
+   * `reportIdentity` already merges the queue row when that row IS the anchored
+   * study, so a raw `workflow.currentRow` fallback here would only ever fire for
+   * a row belonging to some other study — which is how an image ends up attached
+   * to the queue's first patient instead of the open report.
+   */
+  const openStudyUid = reportIdentity?.studyInstanceUID ?? null;
+  const openPatientId = reportIdentity?.patientId ?? null;
+  const openLinkedStudyId = reportIdentity?.studyId ?? studyId ?? null;
+  const openAccession = reportIdentity?.accessionNumber ?? null;
 
   const qc = useQueryClient();
   const [ohifUnavailable, setOhifUnavailable] = useState(false);
@@ -156,7 +168,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     return () => window.removeEventListener("care:observation-reassigned", handler as EventListener);
   }, [draftId, isLocked, isFinalized, qc, frozenKeyImagesQ.data?.items]);
 
-  const viewerMeasurementsQ = useViewerMeasurements(workflow.currentRow?.studyInstanceUID);
+  const viewerMeasurementsQ = useViewerMeasurements(openStudyUid);
 
   // Bridge viewer_measurements → MEASURE rail (Zustand) + structured measurements.
   // Historical hydration never uses live Measure toolbar / selection / activeAnchor.
@@ -166,7 +178,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
   const viewerHydrationCompleteRef = useRef(false);
   useEffect(() => {
     if (isLocked || isFinalized) return;
-    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const uid = openStudyUid;
     if (uid !== viewerHydratedStudyUidRef.current) {
       knownViewerRowIdsRef.current = new Set();
       viewerHydrationCompleteRef.current = false;
@@ -236,7 +248,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     viewerMeasurementsQ.isSuccess,
     isLocked,
     isFinalized,
-    workflow.currentRow?.studyInstanceUID,
+    openStudyUid,
   ]);
 
   /**
@@ -321,23 +333,34 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       });
       return false;
     }
+    // The same call and the same request builder the PACS picker uses, so a
+    // viewer-selected image and a picked image are the same kind of thing: CARE
+    // re-checks the claim against Orthanc, renders the picture server-side and
+    // FREEZES it into radiology_report_key_images. Before this, the viewer wrote a
+    // live reference instead — it needed Orthanc to be up at print time, and it
+    // landed in a different store from the picker's images, which is how one
+    // report ended up with two competing image sets.
     try {
       await api.post(
-        "/api/radiology/report-generator/image-references",
-        buildImageRefPayload({
-          draftId: id,
-          studyId: workflow.currentRow?.studyId ?? studyId ?? null,
-          studyInstanceUID: ref.studyInstanceUID,
-          seriesInstanceUID: ref.seriesInstanceUID,
-          sopInstanceUID: ref.sopInstanceUID,
-          frameNumber: ref.frameNumber ?? null,
-          caption: ref.caption ?? "Key image (viewer)",
-          displayOrder: nextDisplayOrder(imageRefs as ReportImageRef[]),
-          isKeyImage: true,
-        }),
+        "/api/radiology/report-generator/key-images/from-pacs",
+        buildViewerStillBody(
+          {
+            seriesInstanceUid: ref.seriesInstanceUID,
+            sopInstanceUid: ref.sopInstanceUID,
+            frameNumber: ref.frameNumber ?? null,
+            caption: ref.caption,
+          },
+          {
+            draftId: id,
+            studyId: openLinkedStudyId,
+            patientId: openPatientId,
+            accessionNumber: openAccession,
+            studyInstanceUid: ref.studyInstanceUID,
+          },
+        ),
       );
-      void qc.invalidateQueries({ queryKey: ["report-image-references", id] });
-      toast({ title: "Added to report image rail" });
+      void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(id) });
+      toast({ title: "Added to report images" });
       return true;
     } catch (e) {
       toast({
@@ -347,7 +370,16 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       });
       return false;
     }
-  }, [draftId, ensureDraftOnce, imageRefs, qc, studyId, toast, workflow.currentRow?.studyId]);
+  }, [
+    draftId,
+    ensureDraftOnce,
+    qc,
+    studyId,
+    toast,
+    openAccession,
+    openPatientId,
+    openLinkedStudyId,
+  ]);
 
   /**
    * The radiologist's "Add Current OHIF Image": fresh identity, then CARE's own
@@ -428,7 +460,7 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
   }, [isLocked, isFinalized, captureBusy, toast, embeddedViewerRef]);
 
   useEffect(() => {
-    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const uid = openStudyUid;
     if (!uid || !showEmbeddedViewer) {
       setOhifUnavailable(false);
       return;
@@ -447,10 +479,10 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
     };
-  }, [workflow.currentRow?.studyInstanceUID, studyId, showEmbeddedViewer, layoutMode, embeddedViewerRef]);
+  }, [openStudyUid, studyId, showEmbeddedViewer, layoutMode, embeddedViewerRef]);
 
   useEffect(() => {
-    const uid = workflow.currentRow?.studyInstanceUID ?? null;
+    const uid = openStudyUid;
     if (!uid) return;
     const mutationsAllowed = !(isLocked || isFinalized);
     const liveLaunchUrl =
@@ -481,10 +513,10 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
 
     return subscribeCareOhifBridge({
       studyInstanceUID: uid,
-      patientId: workflow.currentRow?.patientId ?? null,
-      studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+      patientId: openPatientId,
+      studyId: openLinkedStudyId,
       draftId: draftId ?? null,
-      getImageRefs: () => imageRefs,
+      accessionNumber: openAccession,
       pendingCaptureRequestIds: ohifCapturePendingRef.current,
       pendingAnchorRequestIds: ohifAnchorPendingRef.current,
       mutationsAllowed,
@@ -496,7 +528,9 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       },
       onKeyImageSaved: () => {
         if (!mutationsAllowed) return;
-        void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
+        // The viewer's image now lands in the frozen store, not the live
+        // reference list, so that is the query the rail needs to refetch.
+        void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) });
         toast({ title: "Key image added from viewer" });
       },
       onActiveAnchor: (ctx, requestId) => {
@@ -597,12 +631,12 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
       },
     });
   }, [
-    workflow.currentRow?.studyInstanceUID,
-    workflow.currentRow?.patientId,
-    workflow.currentRow?.studyId,
+    openStudyUid,
+    openPatientId,
+    openLinkedStudyId,
+    openAccession,
     studyId,
     draftId,
-    imageRefs,
     qc,
     toast,
     ensureDraftOnce,

@@ -29,11 +29,26 @@ const PATHOLOGY_TERMS = [
   "desiccat", "degenerat", "stenosis", "narrowing", "spondylosis", "listhesis",
   "arthropathy", "hypertroph", "schmorl", "modic", "osteophyte", "discopathy",
   "myelopathy", "radiculopath", "loss of", "flavum thickening", "reduced",
+  // Added 2026-10-11 with the cervical Quick Select catalogue, whose lines printed
+  // in plain type: cord compression, myelomalacia, a syrinx, OPLL, kyphosis and an
+  // atlanto-axial instability are the six findings a radiologist least wants to
+  // scan past. Each is a stem, so "compressed"/"ossification"/"instabilities" all
+  // read. `compress` is the one that leans on rule 1: every shipped normal says
+  // "No cord compression is seen." / "…: No spinal canal or thecal sac compression
+  // is seen.", which the denial arm cancels, and "Normal thoracic kyphosis is
+  // maintained." likewise puts its denial ahead of the cue. Both word orders are
+  // pinned by name in abnormalEmphasis.test.ts, so a normal reworded to "Thoracic
+  // kyphosis is normal." fails a guard instead of bolding a normal page.
+  "compress", "myelomalaci", "syrinx", "kyphos", "instabilit", "ossif",
   // Brain, head, orbit
-  "infarct", "ischemi", "ischaemi", "lacune", "lacunar", "hemorrhage",
-  "haemorrhage", "bleed", "aneurysm", "thrombo", "embol", "occlus", "mass effect",
+  "infarct", "ischemi", "ischaemi", "lacune", "lacunar", "encephalomalaci",
+  "hemorrhage", "haemorrhage", "bleed", "subdural", "epidural", "subarachnoid",
+  "microbleed", "hemosiderin",
+  "cavernoma", "avm", "arteriovenous", "contusion", "diffuse axonal",
+  "aneurysm", "thrombo", "embol", "occlus", "mass effect",
   "midline shift", "hydrocephal", "atrophy", "fazekas", "leukoaraiosis",
-  "demyelinat", "edema", "oedema", "space-occupying", "lesion", "tumor", "tumour",
+  "demyelinat", "sclerosis", "hyperintens",
+  "edema", "oedema", "space-occupying", "lesion", "tumor", "tumour",
   "neoplasm", "metast", "proptosis", "cellulitis", "sinusitis",
   "thickening", "effusion",
   // Chest, abdomen, pelvis

@@ -115,16 +115,22 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * gated control, so the two changes are additive rather than competing; the
  * combined numbers were measured on the merged tree rather than summed from the
  * two PRs, and they agreed.
+ *
+ * VIEWER 7 → 8 is D2's "Add Current OHIF Image"; 8 → 10 is "SELECT IMAGES FROM
+ * PACS" — one early return in the handler that opens it, one that removes the
+ * affordance altogether. Both decided as clinical, not cosmetic: each writes
+ * pictures into the delivered document's image set, and an image added after
+ * signature changes what was signed. The server refuses the same writes on its
+ * own (`keyImagesLocked`), so the UI gate is the polite half of a guard that
+ * already holds. 10 is measured on the tree that carries both, not summed from
+ * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   // 61, not 60: Generate Professional Report is a new clinical writer in the
   // Starting Canvas header and gates on the composed lock like the rest of them.
   [CANVAS]: 61,
   [RAIL]: 34,
-  // 7 → 8: D2's "Add Current OHIF Image" is a gated control, and it writes
-  // clinical content — an image reference on the signed report's image set — so
-  // it is gated rather than counted as a hole. Measured on this tree.
-  [VIEWER]: 8,
+  [VIEWER]: 10,
 };
 
 /**
