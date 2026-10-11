@@ -144,6 +144,39 @@ export function dedupeObservations(obs: ComposeObservation[]): ComposeObservatio
 }
 
 /**
+ * Canonical supplied-report payload for a `COMBINE` job's `inputHash`.
+ * MUST be mirrored verbatim by the client (diagnostic-erp/src/lib/
+ * reportComposer/types.ts `canonicalAdditionalReportsHashPayload`).
+ *
+ * Order-sensitive, and the text participates in full: the second report is part
+ * of what the model was shown, so a READY combination draft composed against one
+ * version of it must not stay applicable after it is edited. The source
+ * REFERENCES participate too — merging the same words out of a different study is
+ * a different request, and a draft composed against Patient A's cervical report
+ * must not stay applicable because somebody pointed it at an identically worded
+ * report belonging to somebody else.
+ */
+export function canonicalAdditionalReportsHashPayload(s: ComposerInputSnapshot): string {
+  const norm = (v: string | null | undefined): string =>
+    (v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  const ref = (v: number | null | undefined): string => (v == null ? "" : String(v));
+  return (s.additionalReports ?? [])
+    .map((r) =>
+      [
+        ref(r.worklistId),
+        ref(r.reportId),
+        norm(r.studyInstanceUid),
+        norm(r.label),
+        norm(r.modality),
+        norm(r.region),
+        norm(r.findings),
+        norm(r.impression),
+      ].join("\u001f"),
+    )
+    .join("\n");
+}
+
+/**
  * Pure stale-decision for the READY → STALE_READY freshness path.
  *
  * Two invalidation axes (PR #656 final safety hardening):
@@ -222,6 +255,13 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
   // `canonicalStudyContextHashPayload` docstring for the rationale).
   const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
   const selectedImagesCanon = canonicalSelectedKeyImagesHashPayload(snapshot);
+  // Supplied reports for a COMBINE job participate too, so two combinations of
+  // the same study with different extra text cannot dedupe onto one another or
+  // apply onto one another. Appended ONLY when the list is non-empty: an
+  // unchanged array means every snapshot that predates this field keeps
+  // byte-identical hashes, so an in-flight READY draft from before a deploy does
+  // not silently turn STALE and does not silently stay applicable either.
+  const additionalReports = snapshot.additionalReports ?? [];
   const inputHash = hashText(
     [
       snapshot.jobKindHint ?? "",
@@ -239,6 +279,9 @@ export function computeSnapshotHashes(snapshot: ComposerInputSnapshot): {
       // so add/remove/reorder/caption change invalidates READY drafts.
       snapshot.aiMode ?? "TEXT_ONLY",
       selectedImagesCanon,
+      ...(additionalReports.length
+        ? [canonicalAdditionalReportsHashPayload(snapshot)]
+        : []),
     ].join("\u001e"),
   );
   // Revision is content-derived so multi-tab / unsaved editor state is self-describing.

@@ -7,7 +7,9 @@
  *
  * P0-7: the cloud arm must accept the key the admin saved in AI Provider
  * Settings, and must refuse to call the transport before that resolution and
- * the privacy gate have both passed.
+ * the privacy gate have both passed. Resolution includes the ON/OFF switch on
+ * the same row: a provider that is switched off is not used, and a provider
+ * configured only through the environment is not treated as switched off.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,6 +19,10 @@ const h = vi.hoisted(() => ({
   globalSettings: null as string | null,
   openaiEncryptedKey: null as string | null,
   openaiEndpointUrl: null as string | null,
+  /** The admin's ON/OFF switch on that same row. */
+  openaiIsEnabled: true,
+  /** When true the provider has no `ai_provider_settings` row at all. */
+  noOpenaiRow: false,
 }));
 
 const chatSpy = vi.hoisted(() => vi.fn());
@@ -38,10 +44,12 @@ vi.mock("@workspace/db", () => ({
               return h.globalSettings ? [{ settingsJson: h.globalSettings }] : [];
             }
             if (provider === "openai") {
+              if (h.noOpenaiRow) return [];
               return [
                 {
                   encryptedApiKey: h.openaiEncryptedKey,
                   endpointUrl: h.openaiEndpointUrl,
+                  isEnabled: h.openaiIsEnabled,
                 },
               ];
             }
@@ -106,6 +114,8 @@ beforeEach(() => {
   h.globalSettings = null;
   h.openaiEncryptedKey = null;
   h.openaiEndpointUrl = null;
+  h.openaiIsEnabled = true;
+  h.noOpenaiRow = false;
   delete process.env.OPENAI_API_KEY;
 });
 
@@ -229,6 +239,54 @@ describe("P0-7 — the composer sends with the key from AI Provider Settings", (
     if (r.ok) return;
     expect(r.safeError).toBe("openai_api_key_not_configured");
     expect(chatSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a provider the admin switched OFF, even though its key still resolves", async () => {
+    // The switch and the key live on the same row. Reading only the key meant a
+    // deliberately disabled OpenAI could still be handed patient text, while
+    // `/generate` and the interactive gateway refused the same screen setting.
+    h.openaiEncryptedKey = "settings-row-key";
+    h.openaiIsEnabled = false;
+    const r = await new OpenAiComposerAdapter().compose(request());
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.safeError).toBe("openai_provider_disabled");
+    expect(chatSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not read an environment-only configuration as switched OFF", async () => {
+    // No `ai_provider_settings` row is not a statement about enablement — it is
+    // how every pre-UI clinic and the CLI configured a vendor. Refusing here
+    // would silently disable drafting for installs that work today.
+    process.env.OPENAI_API_KEY = "sk-env";
+    h.noOpenaiRow = true;
+    chatSpy.mockResolvedValue({
+      ok: true,
+      text: '{"findings":"x","impression":"y"}',
+      model: "gpt-4o",
+      latencyMs: 12,
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+
+    const r = await new OpenAiComposerAdapter().compose(request());
+    expect(r.ok).toBe(true);
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the output ceiling so a long report is not cut off mid-JSON", async () => {
+    process.env.OPENAI_API_KEY = "sk-env";
+    chatSpy.mockResolvedValue({
+      ok: true,
+      text: '{"findings":"x","impression":"y"}',
+      model: "gpt-4o",
+      latencyMs: 12,
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+
+    await new OpenAiComposerAdapter().compose(request({ maxTokens: 2400 }));
+
+    const sent = chatSpy.mock.calls[0][0] as { maxTokens?: number };
+    expect(sent.maxTokens).toBe(2400);
   });
 });
 

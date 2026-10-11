@@ -1530,6 +1530,21 @@ export const AI_TASK_CATALOG: AiTaskDef[] = [
   { key: "report_composer", label: "Report Composer (Text)", description: "Structured radiology report composition from canonical observations. Default: local Ollama unless an admin sets Model Routing.", vision: false },
   /** Selected-image vision drafts in Report Composer. */
   { key: "selected_image_vision", label: "Selected Image Vision", description: "Vision compose from selected key images. Default: local Ollama unless an admin sets Model Routing.", vision: true },
+  /**
+   * The three reporting-assistant operations, each routable on its own
+   * (#919 continuation, owner's §4). Measured on the clinic AI PC and re-measured
+   * after the guards changed: prose transformation works on every installed local
+   * model; structuring a dictation into observation rows works on `qwen3:14b`
+   * (4 rows, 26 s) and on `medgemma1.5:4b` (4 rows, 9 s) and NOT on `gemma3:12b`,
+   * which collapses a four-fact dictation into one row. Combining two studies
+   * fails on `medgemma1.5:4b`, which returns only the first. Those numbers are a
+   * recommendation written into the label text, not a constant in code: the
+   * validator blocks a lost finding whatever the route says, and an unavailable
+   * provider is refused rather than swapped.
+   */
+  { key: "report_composer_professionalize", label: "Report Composer — Professionalize", description: "Rewrite a complete report more professionally, preserving every measurement, level and side. Measured: gemma3:12b and qwen3:14b both accepted every narrative case (15-29 s); medgemma1.5:4b also accepted and answers in 3-7 s. Falls back to Report Composer (Text) when unset.", vision: false },
+  { key: "report_composer_combine", label: "Report Composer — Combine", description: "Combine the current report with the additional reports the workspace supplied. Measured: qwen3:14b preferred, gemma3:12b alternative; medgemma1.5:4b discarded one study and was blocked. Falls back to Report Composer (Text) when unset.", vision: false },
+  { key: "report_composer_observations", label: "Report Composer — Structure Observations", description: "Structure dictated shorthand into reviewable observation rows. Measured: qwen3:14b (4 rows, 26 s) and medgemma1.5:4b (4 rows, 9 s) both preserve every fact; gemma3:12b compresses a four-fact dictation into one row and is blocked. This route should not be left to the generic default.", vision: false },
   /** Overnight shadow pipeline vision. Default MUST remain local Ollama. */
   { key: "overnight_vision", label: "Overnight Vision", description: "Overnight provisional AI draft from representative images. Default: local Ollama only.", vision: true },
   { key: "report_enhancement", label: "Report Enhancement", description: "Auto-generate findings, impression and measurements for a report.", vision: false },

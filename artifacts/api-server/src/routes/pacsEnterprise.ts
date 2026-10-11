@@ -17,6 +17,7 @@ import { writeWorklistFile, removeWorklistFile, syncWorklistForStatus, isMwlEnab
 import { resolveScheduledStationAeTitle } from "../lib/pacs/resolveScheduledStationAeTitle.js";
 import { getMwlDeploymentStatus, recordMwlSyncResult } from "../lib/pacs/mwlDeploymentStatus.js";
 import { getRadiologyAdminOverview } from "../lib/pacs/radiologyAdminOverview.js";
+import { worklistDateConditions } from "../lib/pacs/worklistDateFilter.js";
 import {
   NETWORK_LAN_HOST,
   DEFAULT_VIEWER_SETTINGS,
@@ -1230,13 +1231,17 @@ router.get("/qr-query", async (req, res) => {
   const [risRaw, pacsRaw] = await Promise.all([
     risQuery,
     (async () => {
-      // radiologyWorklistTable.studyDate is stored as raw DICOM compact date YYYYMMDD.
-      // Frontend sends YYYY-MM-DD so we strip dashes before comparing.
-      const toCompact = (iso: string) => iso.replace(/-/g, "");
+      // radiologyWorklistTable.studyDate is free text holding whichever shape the
+      // writer used — DICOM compact YYYYMMDD from modality intake, an ISO day
+      // from CARE's own stamping. worklistDateConditions canonicalises both sides.
       const pacsConds: ReturnType<typeof eq>[] = [];
-      if (dateParam) pacsConds.push(eq(radiologyWorklistTable.studyDate, toCompact(dateParam)));
-      if (dateFrom && !dateParam) pacsConds.push(sql`${radiologyWorklistTable.studyDate} >= ${toCompact(dateFrom)}`);
-      if (dateTo && !dateParam) pacsConds.push(sql`${radiologyWorklistTable.studyDate} <= ${toCompact(dateTo)}`);
+      for (const dateCond of worklistDateConditions(radiologyWorklistTable.studyDate, {
+        exact: dateParam,
+        dateFrom,
+        dateTo,
+      })) {
+        pacsConds.push(dateCond as ReturnType<typeof eq>);
+      }
       if (modalityList.length === 1) pacsConds.push(eq(radiologyWorklistTable.modality, modalityList[0]!));
       if (modalityList.length > 1) pacsConds.push(inArray(radiologyWorklistTable.modality, modalityList));
       if (accessionParam) pacsConds.push(ilike(radiologyWorklistTable.accessionNumber, `%${accessionParam}%`));

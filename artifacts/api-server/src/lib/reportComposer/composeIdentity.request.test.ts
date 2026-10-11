@@ -1108,6 +1108,48 @@ describe.skipIf(!hasDatabaseUrl())("Composer server-verified study identity", ()
     expect(enq.body.sources?.["quick-select"]).toBe(2);
   });
 
+  it("23. the three assistant kinds never carry key images into a vision model", async () => {
+    // A workspace can still have SELECTED_IMAGES left on from the last draft.
+    // Professionalise/combine/structure are requests about the WORDS the
+    // radiologist wrote, so enqueue rewrites the mode to TEXT_ONLY — otherwise a
+    // "make this more professional" click would ship the patient's pixels to a
+    // vision model, which is a different privacy exposure than the button says.
+    const withImages = (findings: string): ComposerInputSnapshot => ({
+      ...snapshotOf({ worklistId: wl1, studyId: st1, findings }),
+      aiMode: "SELECTED_IMAGES",
+      selectedKeyImages: [
+        {
+          keyImageId: 4112,
+          seriesInstanceUid: "1.2.3.4.5.6",
+          sopInstanceUid: "1.2.3.4.5.6.7",
+          frameNumber: null,
+          seriesDescription: "SAG T2",
+          caption: "L4-5 level",
+        },
+      ],
+    });
+
+    for (const kind of ["PROFESSIONALIZE", "COMBINE", "OBSERVATIONS"] as const) {
+      const enq = await enqueue(radiologist.token, withImages(`Identity 23: ${kind}.`), kind);
+      expect(enq.status).toBe(202);
+      const row = await jobRow(enq.body.jobId as number);
+      jobIds.push(row.id);
+      const stored = JSON.parse(row.inputSnapshotJson) as ComposerInputSnapshot;
+      expect(stored.aiMode).toBe("TEXT_ONLY");
+      expect(stored.selectedKeyImages ?? []).toEqual([]);
+    }
+
+    // Positive control: the image path is still the image path for the kind that
+    // means it, so the refusal above is a mode decision, not a broken field.
+    const draftEnq = await enqueue(radiologist.token, withImages("Identity 23: FULL_REPORT."), "FULL_REPORT");
+    expect(draftEnq.status).toBe(202);
+    const draftRow = await jobRow(draftEnq.body.jobId as number);
+    jobIds.push(draftRow.id);
+    const draftStored = JSON.parse(draftRow.inputSnapshotJson) as ComposerInputSnapshot;
+    expect(draftStored.aiMode).toBe("SELECTED_IMAGES");
+    expect(draftStored.selectedKeyImages).toHaveLength(1);
+  });
+
   // ── 20 ───────────────────────────────────────────────────────────────────
   it("20. the identity layer adds no network egress and no provider routing", async () => {
     const src = readFileSync(join(__dirname, "composeIdentity.ts"), "utf8");

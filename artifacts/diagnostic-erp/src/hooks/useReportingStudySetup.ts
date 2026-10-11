@@ -38,8 +38,6 @@ import {
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
-import { mergeBlock } from "@/lib/quickFindingsMerge";
-import { mergeTechnique } from "@/lib/reportFieldMerge";
 import type { InsertSource } from "@/lib/reportFieldMerge";
 import { resolveChocolateOwnership } from "@/lib/chocolateMacroOwnership";
 import type { ChocolateTile } from "@/lib/findingsMacros";
@@ -766,85 +764,51 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
   ]);
 
   /**
-   * One-click Start Report bootstrap: apply protocol(s) + matching template,
-   * fill technique / default findings / impression / recommendation.
-   * Returns a snapshot the caller can use for Undo.
+   * One-click Start Report — the SETUP half, and only the setup half.
+   *
+   * Which protocol and which structured template belong to this study is a fact
+   * about the examination, so applying it can never erase what the radiologist
+   * has already typed. The report prose is built by
+   * `useWorkspace.generateProfessionalReport`, which merges the approved normal
+   * format against the existing text and replays the observation ledger. This
+   * function writes no findings, no impression and no recommendation: the
+   * bootstrap it replaces called `setFindings`/`setImpression`/`setRecommendation`
+   * with template content, which deleted pre-selected Quick Select findings and
+   * dictated text, and filled "Please correlate with clinical findings." into
+   * every report whether or not anyone meant it.
    */
-  const startReportBootstrap = useCallback(() => {
+  const startReportSetup = useCallback(() => {
     if (disabled || studyRegions.length === 0) return null;
-    const before = setters.readFields();
-    const snapshot = {
-      ...before,
-      selectedTemplateId,
-      activeProtocolId: activeProtocol?.id ?? null,
-    };
-
-    let mergedTechnique = "";
-    for (const region of studyRegions) {
+    studyRegions.forEach((region, i) => {
       const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
-      if (protocol?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, protocol.techniqueText);
+      // replaceTechnique only for the primary region, and applyProtocol itself
+      // only replaces while the field is empty or still exactly what it last
+      // auto-inserted — anything the radiologist touched is merged into.
+      if (protocol) applyProtocol(protocol, i === 0);
       const tab = quickSelectData?.tabs?.find((t) => t.name === region);
-      if (tab?.techniqueText) mergedTechnique = mergeTechnique(mergedTechnique, tab.techniqueText);
-    }
-    const primaryProtocol = pickQuickProtocol(quickSelectData?.protocols ?? [], studyRegions[0]!, selectedStudyTabId);
-    if (primaryProtocol) {
-      applyProtocol(primaryProtocol, true);
-      for (const region of studyRegions.slice(1)) {
-        const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
-        if (protocol) applyProtocol(protocol, false);
-      }
-    }
-    if (mergedTechnique) {
-      setters.setTechnique(mergedTechnique);
-      lastInsertedTechniqueRef.current = mergedTechnique;
-    }
-
-    let match = pickStructuredTemplateForRegion(
+      if (tab?.techniqueText) setters.mergeTechnique(tab.techniqueText, "protocol");
+    });
+    const match = pickStructuredTemplateForRegion(
       templates,
       modality,
       studyRegions[0] ?? matchedStudyRegion,
       studyDescription,
     );
-    const sectionMap: Record<string, { normal: boolean; text: string }> = {};
-    if (match) {
-      selectTemplateManual(match.id);
-      const sections = parseSectionsJson(match.sectionsJson);
-      for (const item of sections.findingsItems) {
-        sectionMap[item.label] = { normal: true, text: item.normal };
-      }
-      const techniqueText = mergedTechnique.trim() || sections.technique || "";
-      if (techniqueText) {
-        setters.setTechnique(techniqueText);
-        lastInsertedTechniqueRef.current = techniqueText;
-      }
-      // The same resolution the automatic path uses, so choosing a format by
-      // hand cannot produce a different-looking report than the same format
-      // loaded on its own.
-      const body = findingsBodyForTemplate(match);
-      if (body) setters.setFindings(body);
-      if (match.defaultImpression) setters.setImpression(match.defaultImpression);
-      const baseRec = "Please correlate with clinical findings.";
-      setters.setRecommendation(
-        primaryProtocol?.recommendationText
-          ? mergeBlock(baseRec, primaryProtocol.recommendationText)
-          : baseRec,
-      );
-    } else if (primaryProtocol) {
-      if (primaryProtocol.normalText) setters.setFindings(primaryProtocol.normalText);
-      if (primaryProtocol.recommendationText) {
-        setters.setRecommendation(primaryProtocol.recommendationText);
-      }
-    }
-
-    onToast?.({
-      title: "Report started",
-      description: `${studyRegions.join(" + ")} — protocol & template applied. Undo available.`,
-    });
-    return { snapshot, sectionMap, templateId: match?.id ?? null };
+    if (!match) return { templateId: null };
+    // Selecting a template the way the Templates dropdown does —
+    // `selectTemplateManual` — is a CONTENT apply: the effect behind it replaces
+    // technique, findings and impression with the template's own copy and writes
+    // a recommendation if the box is empty. Start Report is allowed to say which
+    // template belongs to this examination. It is not allowed to overwrite prose
+    // with it, which is the exact thing this function used to do by hand.
+    // "auto" is the fill-empty-only source, and by the time the effect runs the
+    // generator has already written every field, so it settles into a no-op.
+    templateApplySourceRef.current = "auto";
+    setSelectedTemplateId(match.id);
+    return { templateId: match.id };
   }, [
-    disabled, studyRegions, setters, selectedTemplateId, activeProtocol,
-    quickSelectData, applyProtocol, templates, modality, studyDescription,
-    selectTemplateManual, onToast,
+    disabled, studyRegions, setters, quickSelectData, applyProtocol,
+    selectedStudyTabId, templates, modality, studyDescription, matchedStudyRegion,
   ]);
 
   /** Parse findings section cards from the selected structured template. */
@@ -921,7 +885,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     templateMismatch,
     loadCorrectTemplate,
     reapplyDefaults,
-    startReportBootstrap,
+    startReportSetup,
     templateFindingsSections,
     testName,
     checklistPercent,

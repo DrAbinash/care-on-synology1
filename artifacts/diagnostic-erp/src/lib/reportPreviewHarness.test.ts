@@ -31,7 +31,10 @@ import { parseFindingsDocument } from "./findingsDocument";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { MRI_BRAIN_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriBrainStandardNormal";
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./zai-workspace/fullReportBaseline";
+import { MRI_CERVICAL_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriCervicalStandardNormal";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-tiles.data";
+import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { useWorkspace } from "./zai-workspace/store";
 import {
   mergeStructuredNormalFormats,
   type StructuredNormalRow,
@@ -141,6 +144,76 @@ const spineDoc = {
   impression: "Normal MRI lumbo-sacral spine.",
   recommendation: "Clinical correlation.",
 };
+const CERVICAL_NORMAL = formatByName(MRI_CERVICAL_STANDARD_NORMAL_NAME);
+/**
+ * A click through the STORE rather than the sentence-level overlay, because the
+ * observation ledger is what retires the scaffold's own Conclusion line.
+ * `applyTile` above drives the pathology overlay only: faithful for the Findings
+ * body, but on the cervical page it left "No significant disc, canal, foraminal
+ * or cord compressive abnormality." printed standing above "Disc herniation at
+ * C5-C6." — a report answering itself, which the editor never shows because the
+ * ledger drops the normal's impression row. Measured 2026-10-11, so this case
+ * renders what the radiologist actually gets.
+ */
+function storeClick(region: string, label: string) {
+  const ctx = buildReportingStudyContext({
+    modality: "MR", studyDescription: `MRI ${region}`, regions: [region], source: "auto",
+  });
+  useWorkspace.setState({
+    findingsText: "", impressionText: "", recommendationText: "", techniqueText: "",
+    clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
+    impressionNeedsRefresh: false, impressionOrderFrozen: false,
+    lastPatchSnapshot: null, patchUndoStack: [], confirmOverwriteOpen: false,
+    pendingPathologyPatch: null, pendingFormatIds: [], mergePreviewOpen: false,
+    appliedFormatReportTitle: null, appliedFormatName: null, startingCanvasBaseline: null,
+    canalApProvenance: {}, dorsalCanalForced: false, isFinalized: false, isDirty: false,
+    reportingContext: ctx, reportFormats: DEFAULT_REPORT_FORMATS, selectedFormatIds: [],
+  });
+  useWorkspace.getState().generateProfessionalReport(ctx);
+  const tile = tileByLabel(label);
+  const side = /\{side\}/i.test(tile.sentence) ? ("right" as const) : undefined;
+  const outcome = useWorkspace
+    .getState()
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
+  if (outcome !== "applied") throw new Error(`store click refused ${label}: ${outcome}`);
+  const st = useWorkspace.getState();
+  return {
+    narrative: {
+      clinicalHistory: st.clinicalHistoryText,
+      technique: st.techniqueText,
+      findings: st.findingsText,
+      impression: st.impressionText,
+      recommendation: st.recommendationText,
+    },
+    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+  };
+}
+
+const cervicalHerniation = storeClick("Cervical Spine", "Disc herniation C5-C6");
+const cervicalCord = storeClick("Cervical Spine", "Cord compression C5-C6");
+
+const brainHemorrhage = storeClick("Brain", "Basal ganglia hemorrhage");
+const brainMass = storeClick("Brain", "Mass lesion");
+const brainSmallVessel = (() => {
+  const first = storeClick("Brain", "Fazekas 2");
+  const tile = tileByLabel("Lacunar infarcts");
+  const outcome = useWorkspace
+    .getState()
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", {}));
+  if (outcome !== "applied") throw new Error(`store click refused Lacunar infarcts: ${outcome}`);
+  const st = useWorkspace.getState();
+  return {
+    narrative: {
+      clinicalHistory: st.clinicalHistoryText,
+      technique: st.techniqueText,
+      findings: st.findingsText,
+      impression: st.impressionText,
+      recommendation: st.recommendationText,
+    },
+    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+  };
+})();
+
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
@@ -265,6 +338,41 @@ const CASES: Case[] = [
     },
   },
   {
+    key: "11-cervical-normal", title: "MRI Cervical Spine — Normal (one click)",
+    note: "Six disc levels described, C2-C3 through C7-T1 — the same six the canvas draws and the canal table measures. Paired with the cord-compression click below, which is the case that used to be unwritable here: abnormalEmphasis.ts had no `compress` cue, so the one line that must shout on the page printed in plain type and the harness would have had to assert a presentation defect. It ships corrected, in the same PR as the tiles that needed it.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" }, narrative: CERVICAL_NORMAL,
+  },
+  {
+    key: "12-cervical-herniation-click", title: "…then the Disc herniation C5-C6 box is clicked",
+    note: "The level's own disc normal must go; the other five levels must keep theirs, and the canal/foraminal normals stay because nothing was clicked for them.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" },
+    narrative: cervicalHerniation.narrative, replaced: cervicalHerniation.replaced,
+  },
+  {
+    key: "13-cervical-cord-click", title: "…then the Cord compression C5-C6 box is clicked",
+    note: "The critical case: the cord sentence has to reach the paper in bold, and the normals it contradicts have to be the ones it owns — the study-wide cord denial and the C5-C6 canal row it names — while the disc-contour row beside them stays.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" },
+    narrative: cervicalCord.narrative, replaced: cervicalCord.replaced,
+  },
+  {
+    key: "14-brain-hemorrhage", title: "MRI Brain — Basal ganglia hemorrhage (critical)",
+    note: "A critical hemorrhage click: the normal hemorrhage denial must retire, the impression must name the hemorrhage, and the printed page must bold the finding.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainHemorrhage.narrative, replaced: brainHemorrhage.replaced,
+  },
+  {
+    key: "15-brain-mass", title: "MRI Brain — Mass lesion with edema (critical)",
+    note: "Mass effect carries its own concept and retires the parenchyma normal; the impression must name the mass without importing advice from another box.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainMass.narrative, replaced: brainMass.replaced,
+  },
+  {
+    key: "16-brain-small-vessel", title: "MRI Brain — Fazekas 2 + Lacunar infarcts (two clicks)",
+    note: "Two small-vessel disease boxes on one report: both findings must coexist in the findings text, both impressions must appear, and neither may retire the other.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainSmallVessel.narrative, replaced: brainSmallVessel.replaced,
+  },
+  {
     key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
     note: "Read only to compare with the case above: same study, format chosen from the DICOM header alone. This is what #827 removed.",
     study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
@@ -357,6 +465,10 @@ const PATIENTS: Record<string, ReportData> = {  MRI_BRAIN: {
     patientName: "SITA DEVI", age: "45", sex: "F", accessionNumber: "PREVIEW-SPN-001",
     studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
   },
+  MRI_CERVICAL_SPINE: {
+    patientName: "ARJUN NAIR", age: "38", sex: "M", accessionNumber: "PREVIEW-CSP-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
 };
 
 /**
@@ -378,6 +490,12 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   // findings line — the only difference between them is which sequences were run.
   "9-brain-contrast-billed": { count: 0 },
   "10-brain-plain-by-dicom": { count: 0 },
+  "11-cervical-normal": { count: 0 },
+  "12-cervical-herniation-click": { count: 1, contains: "Central disc herniation at C5-C6" },
+  "13-cervical-cord-click": { count: 1, contains: "Cervical cord compression at C5-C6" },
+  "14-brain-hemorrhage": { count: 2, contains: "hemorrhage" },
+  "15-brain-mass": { count: 1, contains: "mass lesion" },
+  "16-brain-small-vessel": { count: 2, contains: "Fazekas grade 2" },
 };
 
 /**
@@ -404,6 +522,27 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
   "8-spine-auto-open": { must: [] },
   "9-brain-contrast-billed": { must: [] },
   "10-brain-plain-by-dicom": { must: [] },
+  "11-cervical-normal": { must: [] },
+  "12-cervical-herniation-click": {
+    must: ["Conservative management with physiotherapy"],
+    mustNot: ["Urgent neurosurgical consultation", "Immediate stroke team notification"],
+  },
+  "13-cervical-cord-click": {
+    must: ["Urgent neurosurgical consultation"],
+    mustNot: ["Conservative management with physiotherapy", "Immediate stroke team notification"],
+  },
+  "14-brain-hemorrhage": {
+    must: ["Immediate neurosurgical consultation"],
+    mustNot: ["Immediate stroke team notification", "Conservative management with NSAIDs"],
+  },
+  "15-brain-mass": {
+    must: [],
+    mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
+  },
+  "16-brain-small-vessel": {
+    must: ["Aggressive vascular risk factor management"],
+    mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
+  },
 };
 
 /** Bold spans inside the printed findings body, headings and the impression
@@ -420,7 +559,10 @@ describe("report preview harness", () => {
     const audit: Array<Record<string, unknown>> = [];
 
     for (const c of CASES) {
-      const patient = c.study.bodyPart === "Brain" ? PATIENTS.MRI_BRAIN : PATIENTS.MRI_LS_SPINE;
+      const patient =
+        c.study.bodyPart === "Brain" ? PATIENTS.MRI_BRAIN
+        : c.study.bodyPart === "Cervical Spine" ? PATIENTS.MRI_CERVICAL_SPINE
+        : PATIENTS.MRI_LS_SPINE;
       const report = toReportData(c, patient);
 
       const doc = generateReportPDF(report, { ...DEFAULT_PRINT_SETTINGS, watermark: "PREVIEW" }, CLINIC, { save: false });
@@ -497,7 +639,11 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    expect(CASES.length).toBe(10);
+    // Three of these sixteen are the cervical examination (the one-click normal,
+    // a disc click and a cord click) — added with the cervical catalogue so its
+    // wording can be read on paper before anything ships. Three more are the
+    // brain catalogue additions (hemorrhage, mass, small-vessel multi-click).
+    expect(CASES.length).toBe(16);
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
@@ -534,6 +680,27 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     for (const level of ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]) {
       expect(spineCanal.narrative.findings, `${level} canal row`)
         .toContain(`| ${level} | — |`);
+    }
+
+    // The cervical clicks, pinned to the rows they actually retire. The disc box
+    // owns exactly its own level's disc-contour normal. The cord box owns two: the
+    // study-wide "No cord compression is seen." because it is the same concept, and
+    // the C5-C6 canal row because the tile names that sentence in `baselineReplaces`
+    // — ownership matches on concept or on one named sentence, never on adjacency,
+    // so the disc-contour row beside it survives untouched.
+    expect(cervicalHerniation.replaced).toEqual([
+      "C5-C6: No significant disc bulge or protrusion is seen.",
+    ]);
+    expect(cervicalCord.replaced).toEqual([
+      "No cord compression is seen.",
+      "C5-C6: No spinal canal or thecal sac compression is seen.",
+    ]);
+    expect(cervicalCord.narrative.findings).toContain(
+      "C5-C6: No significant disc bulge or protrusion is seen.");
+    expect(cervicalCord.narrative.findings).not.toContain("No cord compression is seen.");
+    for (const level of ["C2-C3", "C3-C4", "C4-C5", "C6-C7", "C7-T1"]) {
+      expect(cervicalCord.narrative.findings, `${level} canal row stays`)
+        .toContain(`${level}: No spinal canal or thecal sac compression is seen.`);
     }
   });
 

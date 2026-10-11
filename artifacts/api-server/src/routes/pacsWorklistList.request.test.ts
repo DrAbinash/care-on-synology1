@@ -1,11 +1,11 @@
 /**
- * Request-level: GET /api/radiology/pacs-worklist must not ship heavy blobs.
+ * Request-level: GET /api/radiology/pacs-worklist — payload shape and date bounds.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   usersTable,
@@ -13,6 +13,7 @@ import {
   radiologyWorklistTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
+import { compactStudyDateDay, worklistDateConditions } from "../lib/pacs/worklistDateFilter";
 
 const dbReady = hasDatabaseUrl();
 
@@ -122,5 +123,217 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     expect(typeof row!.usgMeasurementCount).toBe("number");
     expect(typeof row!.usgKeyImageCount).toBe("number");
     expect(row).toHaveProperty("usgReportStatus");
+  });
+});
+
+/**
+ * Date bounds on the reading queue.
+ *
+ * `radiology_worklist.study_date` is TEXT and holds two shapes at once: the DICOM
+ * compact day from modality intake and the ISO day from CARE's own stamping. The
+ * filter used to convert the requested bound to compact and compare the raw
+ * column, which dropped every ISO row — and not just on the equality: `-` sorts
+ * before `0`, so all compact rows compare greater than all ISO rows and a range
+ * over the mixed column partitions by FORMAT, not by date. The symptom is a
+ * Reading Queue that shows an empty "Today" with no error anywhere.
+ *
+ * mriStudyWarmer.ts's own `inDayWindow` already did this correctly (strip, take
+ * eight digits, compare both sides); these two query sites were the outliers.
+ *
+ * The days are computed once and used for BOTH the inserted rows and the query,
+ * so nothing here depends on the difference between UTC and IST — the assertions
+ * are about which rows a given window returns, not about what today is.
+ */
+describe.skipIf(!dbReady)("pacs-worklist date bounds — request level", () => {
+  let app: Express;
+  const marker = `pacsdate-${randomUUID().slice(0, 8)}`;
+  const token = `vitest-date-token-${randomUUID()}`;
+  let userId = 0;
+  const rowIds: number[] = [];
+
+  const istDay = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - offset);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  };
+  const TODAY = istDay(0);
+  const YESTERDAY = istDay(1);
+  const OLDER = istDay(30);
+  const toCompact = (iso: string) => iso.replace(/-/g, "");
+
+  /** name → study_date, both shapes on purpose. */
+  const SEED: Array<{ name: string; studyDate: string | null }> = [
+    { name: "iso-today", studyDate: TODAY },
+    { name: "compact-today", studyDate: toCompact(TODAY) },
+    { name: "iso-yesterday", studyDate: YESTERDAY },
+    { name: "compact-yesterday", studyDate: toCompact(YESTERDAY) },
+    { name: "iso-older", studyDate: OLDER },
+    { name: "timestamp-today", studyDate: `${TODAY}T09:30:00` },
+    { name: "no-date", studyDate: null },
+  ];
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `Pacs Date ${marker}`,
+        email: `${marker}@vitest.invalid`,
+        username: marker,
+        role: "admin",
+        permissions: JSON.stringify(["/radiology", "/orders", "/patients", "/reports"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    userId = user.id;
+    await db.insert(portalSessionsTable).values({
+      token,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+
+    const inserted = await db
+      .insert(radiologyWorklistTable)
+      .values(SEED.map((s) => ({
+        patientName: `Date Probe ${s.name} ${marker}`,
+        modality: "MR",
+        status: "STUDY_RECEIVED",
+        studyDate: s.studyDate,
+        accessionNumber: `ACC-DT-${s.name}-${marker}`,
+        studyInstanceUID: `1.2.840.date.${s.name}.${marker}`,
+      })))
+      .returning({ id: radiologyWorklistTable.id, patientName: radiologyWorklistTable.patientName });
+    for (const r of inserted) rowIds.push(r.id);
+  });
+
+  afterAll(async () => {
+    for (const id of rowIds) {
+      await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+    }
+    if (token) await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token));
+    if (userId) await db.delete(usersTable).where(eq(usersTable.id, userId));
+  });
+
+  /** Every seeded row the queue returns for a window, keyed by its probe name. */
+  async function visible(opts: {
+    dateFrom?: string;
+    dateTo?: string;
+  }): Promise<string[]> {
+    const q = new URLSearchParams({ search: marker });
+    if (opts.dateFrom) q.set("dateFrom", opts.dateFrom);
+    if (opts.dateTo) q.set("dateTo", opts.dateTo);
+    const res = await request(app)
+      .get(`/api/radiology/pacs-worklist?${q.toString()}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    return (res.body as Array<{ patientName: string }>)
+      .map((r) => /Date Probe (\S+)/.exec(r.patientName)?.[1])
+      .filter((n): n is string => Boolean(n))
+      .sort();
+  }
+
+  it("a Today window returns the ISO row AND the compact row", async () => {
+    expect(await visible({ dateFrom: TODAY, dateTo: TODAY }))
+      .toEqual(["compact-today", "iso-today", "timestamp-today"]);
+  });
+
+  it("a Yesterday window is not format-blind either", async () => {
+    expect(await visible({ dateFrom: YESTERDAY, dateTo: YESTERDAY }))
+      .toEqual(["compact-yesterday", "iso-yesterday"]);
+  });
+
+  it("Today + Yesterday spans both days in both shapes", async () => {
+    expect(await visible({ dateFrom: YESTERDAY, dateTo: TODAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("an older window reaches studies the recent ones exclude", async () => {
+    const window = await visible({ dateFrom: OLDER, dateTo: YESTERDAY });
+    expect(window).toContain("iso-older");
+    expect(window).not.toContain("iso-today");
+    expect(window).not.toContain("compact-today");
+  });
+
+  it("the bounds are inclusive at both ends", async () => {
+    // OLDER..TODAY must hold the first day, the last day and the day between.
+    expect(await visible({ dateFrom: OLDER, dateTo: TODAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-older",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("an open lower bound keeps everything from that day forward", async () => {
+    expect(await visible({ dateFrom: YESTERDAY })).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-today",
+      "iso-yesterday",
+      "timestamp-today",
+    ]);
+  });
+
+  it("a single-day ?date= match works for either shape", async () => {
+    // The enterprise worklist route takes one ?date=; run its condition here
+    // against the same rows, since pacs-worklist only exposes a range.
+    const run = async (day: string) => {
+      const rows = await db
+        .select({ patientName: radiologyWorklistTable.patientName })
+        .from(radiologyWorklistTable)
+        .where(and(
+          like(radiologyWorklistTable.patientName, `%${marker}%`),
+          ...worklistDateConditions(radiologyWorklistTable.studyDate, { exact: day }),
+        ));
+      return rows
+        .map((r) => /Date Probe (\S+)/.exec(r.patientName)?.[1])
+        .filter((n): n is string => Boolean(n))
+        .sort();
+    };
+    expect(await run(TODAY)).toEqual(["compact-today", "iso-today", "timestamp-today"]);
+    expect(await run(YESTERDAY)).toEqual(["compact-yesterday", "iso-yesterday"]);
+    expect(await run(OLDER)).toEqual(["iso-older"]);
+  });
+
+  it("a row with no study date is excluded from any dated window", async () => {
+    expect(await visible({ dateFrom: OLDER, dateTo: TODAY })).not.toContain("no-date");
+  });
+
+  it("an unparseable bound refuses rows instead of silently widening the queue", async () => {
+    expect(await visible({ dateFrom: "not-a-date", dateTo: TODAY })).toEqual([]);
+  });
+
+  it("no bound at all still shows every shape", async () => {
+    expect(await visible({})).toEqual([
+      "compact-today",
+      "compact-yesterday",
+      "iso-older",
+      "iso-today",
+      "iso-yesterday",
+      "no-date",
+      "timestamp-today",
+    ]);
+  });
+
+  it("compactStudyDateDay accepts every shape the column holds", () => {
+    expect(compactStudyDateDay("2026-10-11")).toBe("20261011");
+    expect(compactStudyDateDay("20261011")).toBe("20261011");
+    expect(compactStudyDateDay("2026/10/11")).toBe("20261011");
+    expect(compactStudyDateDay("2026-10-11T09:30:00Z")).toBe("20261011");
+    expect(compactStudyDateDay("  2026-10-11  ")).toBe("20261011");
+    expect(compactStudyDateDay("2026-1")).toBeNull();
+    expect(compactStudyDateDay("")).toBeNull();
+    expect(compactStudyDateDay(null)).toBeNull();
+    expect(compactStudyDateDay(undefined)).toBeNull();
   });
 });

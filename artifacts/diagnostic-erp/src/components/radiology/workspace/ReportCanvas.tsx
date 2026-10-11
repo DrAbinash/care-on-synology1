@@ -129,7 +129,7 @@ import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/owners
 import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocolate-box-macros";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
-  Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
+  Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, ListChecks, ShieldCheck,
   FileCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
@@ -659,26 +659,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           type="button"
                           size="sm"
                           className="h-6 text-[10px] bg-sky-700 hover:bg-sky-800 text-white shrink-0"
-                          onClick={() => {
-                            const outcome = useWorkspace.getState().generateProfessionalReport(
-                              billedStudyContextForNormal(
-                                studySetup.studyContext,
-                                billedNameFromWorklistRow(workflow.currentRow),
-                              ),
-                            );
-                            if (outcome.status === "generated") {
-                              toast({
-                                title: "Professional report generated",
-                                description: outcome.observationsNeedingReview > 0
-                                  ? `${outcome.formatName} — ${outcome.observationsNeedingReview} finding(s) need your review.`
-                                  : `${outcome.formatName} — review, then save or print.`,
-                              });
-                              return;
-                            }
-                            // A refusal is not a failure to retry silently: the report
-                            // stayed exactly as it was, and the reason names what to do.
-                            toast({ variant: "destructive", title: "Nothing generated", description: outcome.reason });
-                          }}
+                          onClick={handleStartReport}
                           data-testid="generate-professional-report"
                           disabled={contentLocked}
                           title="Build the full report from this examination's approved normal, your recorded findings and your measurements. No AI."
@@ -833,7 +814,14 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                          is first-class above (WholeReportFormatControl). */}
                     <ReportAccordionSection {...accordionProps("region")}>
                     <div className="space-y-2">
-                    {/* One-click Start Report */}
+                    {/* One-click Start Report. Stays switched off on purpose, and
+                        not because it was forgotten: `handleStartReport` now IS the
+                        generator button in the Starting Canvas header above, so this
+                        strip would be a second button for one action, in an accordion
+                        that can be collapsed. Its copy is corrected rather than left
+                        to rot so that reviving it cannot resurrect the old promise —
+                        "applies protocol, template, and normal findings", which used
+                        to mean "overwrites what you had". */}
                     {false && !contentLocked && reportNeedsStart && (studySetup.matchedStudyRegion || studySetup.studyRegions[0]) && (
                       <div
                         className="flex flex-wrap items-center gap-2 p-3 rounded-lg border-2 border-amber-400/50 bg-gradient-to-r from-amber-50 via-orange-50/80 to-amber-50/40 shadow-sm"
@@ -847,7 +835,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             Ready to report — {studySetup.matchedStudyRegion ?? studySetup.studyRegions[0]}
                           </p>
                           <p className="text-[11px] text-amber-800/80">
-                            One click applies protocol, template, and normal findings. You can undo immediately.
+                            One click loads this study&apos;s protocol and builds the report from its
+                            approved normal, your selected findings and your measurements. Nothing you
+                            already typed is discarded, and you can undo immediately. No AI.
                           </p>
                         </div>
                         <Button
@@ -857,7 +847,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           onClick={handleStartReport}
                           data-testid="btn-start-report"
                         >
-                          <Zap size={14} /> Start Report
+                          <Zap size={14} /> Generate Professional Report
                         </Button>
                       </div>
                     )}
@@ -1870,7 +1860,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   data-testid="generate-local-impression"
                                   title="Generate impression from remaining abnormal findings"
                                 >
-                                  <Sparkles size={11} className="mr-1" /> Generate Impression
+                                  <ListChecks size={11} className="mr-1" /> Generate Impression
                                 </Button>
                               )}
                             </div>

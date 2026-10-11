@@ -549,19 +549,20 @@ describe("T25/T26 — the format-combination caller keeps both protocols and doe
   });
 
   it("T26 every shipped format pair merges without losing an acquisition fact", () => {
-    // Scope note: only formats WITHOUT `techniqueFragments`. When either side has
-    // fragments, `mergeTechniquePreservingScreening` delegates to
-    // `mergeTechniqueFragments` and never reaches the merge this PR fixed — and
-    // that path takes its text from the fragment list, not from `.technique`, so
-    // a fact carried only in `.technique` is not part of the combination at all.
-    // Measured here: the shipped "MRI Cervical Spine — Screening" fragment says
-    // "Limited cervical spine screening with sagittal T1W, T2W; selected axial
-    // T2W (limited planar and limited sequence)." while the same format's
-    // technique string says "MRI cervical spine screening on 3T." — the fragment
-    // dropped the field strength, so combining that format with any other loses
-    // "3T". That is a data/ownership question in the formats library, not a
-    // merge rule, and is reported as a finding instead of being fixed here (§22,
-    // §25). The assertion below is the path this PR owns.
+    // Scope note as written in #879: only formats WITHOUT `techniqueFragments`
+    // reached the merge this PR fixed, because `mergeTechniquePreservingScreening`
+    // delegated to `mergeTechniqueFragments` whenever either side had fragments,
+    // and that path takes its text from the fragment list rather than from
+    // `.technique` — so a fact carried only in `.technique` was never part of the
+    // combination. Measured then: the shipped "MRI Cervical Spine — Screening"
+    // fragments say "Limited cervical spine screening with sagittal T1W, T2W;
+    // selected axial T2W (limited planar and limited sequence)." while the same
+    // format's technique string says "MRI cervical spine screening on 3T."
+    //
+    // FIXED in the block at the end of this file: the fragment union is now
+    // followed by a rescue of every acquisition fact each side's own Technique line
+    // states, so the fragment list orders the text instead of deciding what is
+    // allowed to survive. This case still measures the path #879 owned.
     const withTech = DEFAULT_REPORT_FORMATS.filter(
       (f) => (f.technique ?? "").trim().length > 12 && !f.techniqueFragments?.length,
     );
@@ -585,12 +586,13 @@ describe("T25/T26 — the format-combination caller keeps both protocols and doe
   });
 
   it("T26b what the fragment path actually does, measured rather than assumed", () => {
-    // Positive control for the scope note above: the same pair through the same
-    // caller loses the field strength precisely because the fragment list wins.
-    // Recorded so the follow-up has an executable statement of the mechanism, and
-    // so nobody later mistakes this for the merge rule this PR removed. The
-    // defect itself is left unfixed and un-pinned: asserting the bad output as
-    // "expected" would make the follow-up fail.
+    // Positive control for the scope note above: it isolates the MECHANISM — the
+    // format's own technique string claims 3T and its fragment list, which the
+    // merge preferred, does not. Those facts are still exactly true and still the
+    // reason the loss happened; what changed is that the merge no longer stops at
+    // the fragment list (see the rescue tests at the end of this file, which pin
+    // the fixed outcome). Nothing here asserts the old bad output as expected, so
+    // the fix cannot be mistaken for a regression.
     const a = fmt("MRI Cervical Spine — Screening");
     const b = DEFAULT_REPORT_FORMATS.find(
       (f) => f.name !== a.name && !f.techniqueFragments?.length && (f.technique ?? "").trim().length > 12,
@@ -699,5 +701,82 @@ describe("contract — no similarity, no concept coverage, no length comparison 
     expect(fromSimilarity.slice(0, 160)).toMatch(/return jaccard\(tokenSet\(a\), tokenSet\(b\)\)/);
     // `tokenSet` likewise: one declaration + its two uses inside the helper.
     expect(codeOnly.match(/\btokenSet\(/g) ?? []).toHaveLength(3);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The fragment precedence — the defect T26's scope note reported and #919's
+// continuation was asked to investigate (owner's §3: loss of "3T").
+// ─────────────────────────────────────────────────────────────────────────────
+describe("sweep — no shipped FORMAT pair loses an acquisition fact", () => {
+  const fmt = (name: string) => DEFAULT_REPORT_FORMATS.find((f) => f.name === name)!;
+  const formats = DEFAULT_REPORT_FORMATS.filter((f) => (f.technique ?? "").trim().length > 12);
+
+  it("covers enough of the shipped library to mean anything", () => {
+    expect(formats.length).toBeGreaterThan(8);
+    expect(formats.some((f) => f.techniqueFragments?.length)).toBe(true);
+  });
+
+  it("cross-pairwise every format, fragments included", () => {
+    const offenders: string[] = [];
+    let pairs = 0;
+    for (const a of formats) {
+      for (const b of formats) {
+        if (a === b) continue;
+        pairs++;
+        const text = mergeTwoFormatsBySlot(a, b).technique;
+        const lost = [...factsIn(a.technique!), ...factsIn(b.technique!)].filter(
+          (f) => !factsIn(text).has(f),
+        );
+        if (lost.length > 0) offenders.push(`${a.name} + ${b.name} → lost [${lost.join(", ")}]`);
+      }
+    }
+    expect(pairs).toBeGreaterThan(50);
+    expect(offenders.slice(0, 8)).toEqual([]);
+    expect(offenders).toHaveLength(0);
+  });
+
+  it("keeps 3T that only the Technique line states", () => {
+    // The pair T26b measured and could not fix. The format's fragment list never
+    // mentions the field strength; its Technique line does. Before the rescue step
+    // the combination came back without 3T, and no merge rule was involved — the
+    // fact was absent before anything compared it.
+    const a = fmt("MRI Cervical Spine — Screening");
+    const b = DEFAULT_REPORT_FORMATS.find(
+      (f) => f.name !== a.name && !f.techniqueFragments?.length && (f.technique ?? "").trim().length > 12,
+    )!;
+    expect(a.technique).toMatch(/3T/i);
+    expect((a.techniqueFragments ?? []).some((f) => /\b3\s*t\b/i.test(f.text))).toBe(false);
+    const text = mergeTwoFormatsBySlot(a, b).technique;
+    expect(factsIn(text).has("3T")).toBe(true);
+  });
+
+  it("keeps 1.5T from one side and 3T from the other", () => {
+    const a = { name: "A", bodyPart: "SPINE_CERVICAL", technique: "MRI cervical spine performed at 1.5T.", techniqueFragments: [{ text: "Sagittal T2W and STIR sequences.", dedupeKey: "a-sequences", preserve: true }] };
+    const b = { name: "B", bodyPart: "SPINE_LS", technique: "MRI lumbo-sacral spine performed at 3T with gadolinium.", techniqueFragments: [{ text: "Axial T1W and T2W images.", dedupeKey: "b-sequences", preserve: true }] };
+    const text = mergeTwoFormatsBySlot(a as never, b as never).technique;
+    const facts = factsIn(text);
+    expect(facts.has("1.5T")).toBe(true);
+    expect(facts.has("3T")).toBe(true);
+    expect(facts.has("post-contrast")).toBe(true);
+  });
+
+  it("does not let a contrast study merge into a non-contrast one", () => {
+    const a = { name: "A", bodyPart: "BRAIN", technique: "MRI brain performed without contrast.", techniqueFragments: [{ text: "Sagittal T1W and T2W.", dedupeKey: "a1", preserve: true }] };
+    const b = { name: "B", bodyPart: "BRAIN", technique: "MRI brain with gadolinium.", techniqueFragments: [{ text: "Axial T1W post-contrast.", dedupeKey: "b1", preserve: true }] };
+    const facts = factsIn(mergeTwoFormatsBySlot(a as never, b as never).technique);
+    expect(facts.has("no-contrast")).toBe(true);
+    expect(facts.has("post-contrast")).toBe(true);
+  });
+
+  it("does not change the result when the fragments already say everything", () => {
+    // Positive control for the rescue step: it is a safety net, and on a format
+    // whose fragments are complete it must add nothing. Without this the rescue
+    // could be quietly duplicating technique sentences.
+    const a = fmt("MRI Cervical Spine — Screening");
+    const viaFragments = mergeTwoFormatsBySlot(a, a).technique;
+    const lost = [...factsIn(a.technique!)].filter((f) => !factsIn(viaFragments).has(f));
+    expect(lost).toEqual([]);
+    expect(viaFragments.match(/screening/gi)?.length).toBeLessThanOrEqual(2);
   });
 });

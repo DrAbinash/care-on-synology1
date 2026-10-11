@@ -33,7 +33,10 @@ import { buildTrackedChanges } from "./trackedChanges";
 import {
   resolveVerifiedComposeIdentity,
   verifyComposeJobIdentity,
+  verifyComposeSourceIdentities,
+  isFinalizedReportStatus,
   type ComposeStudyRefs,
+  type VerifiedComposeSource,
 } from "./composeIdentity";
 import {
   captureComposeBaseline,
@@ -75,6 +78,13 @@ function priorityForKind(kind: AiComposeJobKind): number {
     case "SHORTEN":
     case "EXPAND":
     case "TRANSLATE":
+    // Both are clicked-and-waited-for: the radiologist has a report on screen and
+    // asked for it back better. They queue ahead of a bulk FULL_REPORT.
+    case "PROFESSIONALIZE":
+    case "COMBINE":
+    // Structuring a dictation is the same class of click — the radiologist is
+    // standing at the keyboard waiting for the rows.
+    case "OBSERVATIONS":
       return 10;
     case "IMPRESSION":
       return 20;
@@ -106,9 +116,7 @@ async function loadPersistedReportToken(reportId: number | null | undefined): Pr
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
     if (!row) return { status: null, token: null, finalized: false, unresolved: true };
-    const finalized = ["final", "FINAL", "signed", "SIGNED", "amended", "verified", "delivered"].includes(
-      String(row.status),
-    );
+    const finalized = isFinalizedReportStatus(row.status);
     const token = createHash("sha256")
       .update(`${row.body ?? ""}\u001e${row.impression ?? ""}`)
       .digest("hex")
@@ -171,6 +179,17 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
     "SHORTEN",
     "EXPAND",
     "TRANSLATE",
+    // A report is professionalised from the words the radiologist wrote, not from
+    // pixels. Left out of this set, a study that still had key images selected
+    // would send them to a vision model as part of a "make this more
+    // professional" click — a different privacy exposure than the button implies.
+    "PROFESSIONALIZE",
+    "COMBINE",
+    // Structuring a dictation is text transformation, and the brief is explicit
+    // that a local model's first role is not independent image interpretation.
+    // Without this the same stale `aiMode: "SELECTED_IMAGES"` would put pixels in
+    // front of a vision model and call the result an observation proposal.
+    "OBSERVATIONS",
   ]);
   if (textOnlyKinds.has(jobKind) || !snapshot.aiMode) {
     snapshot.aiMode = "TEXT_ONLY";
@@ -237,6 +256,22 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   }
   const worklistId = identity.identity.worklistId;
   const reportId = identity.identity.reportId;
+
+  // Per-source patient identity for a combination. This sits BEFORE the insert
+  // and long before any provider is contacted, so a refused merge never becomes a
+  // job, never reaches a model, and cannot be argued past by anything the model
+  // answers afterwards.
+  const additionalReports = snapshot.additionalReports ?? [];
+  if (additionalReports.length > 0) {
+    const sources = await verifyComposeSourceIdentities({
+      anchor: { worklistId, patientId: identity.identity.patientId },
+      sources: additionalReports,
+    });
+    if (!sources.ok) {
+      return { ok: false, error: sources.message, code: sources.code };
+    }
+  }
+
   const persisted = await loadPersistedReportToken(reportId);
   if (persisted.finalized) {
     return { ok: false, error: "Report is finalized — composition not allowed", code: "finalized" };
@@ -413,6 +448,42 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: false, detail: "bad_stored_snapshot" };
   }
 
+  // Re-verify a combination's source identities HERE, not only at enqueue.
+  //
+  // Two ways a job that was honest when it was queued is not honest now: the
+  // clinic's queue is a background worker, so a QUEUED combination can sit for
+  // minutes; and Match Center can re-link a study to a different patient in that
+  // window (or the anchor can be signed by another workstation). The other
+  // reason is the upgrade: a job written by a build that pre-dates this gate has
+  // sources with no identity on them at all, and the only way it is refused is if
+  // the thing that contacts the model checks. Refusing here means no prompt is
+  // ever built from an unverified report, which is what makes "the AI cannot
+  // override an identity refusal" a property of the code rather than a promise.
+  let sourceIdentities: VerifiedComposeSource[] = [];
+  const sourcesToVerify = snapshot.additionalReports ?? [];
+  if (sourcesToVerify.length > 0) {
+    const anchor = await resolveVerifiedComposeIdentity({
+      worklistId: job.worklistId,
+      studyId: job.studyId,
+      reportId: job.reportId,
+    });
+    if (!anchor.ok) {
+      await failJob(job.id, job.worklistId, anchor.code);
+      return { ok: true, detail: anchor.code };
+    }
+    const verified = await verifyComposeSourceIdentities({
+      anchor: { worklistId: anchor.identity.worklistId, patientId: anchor.identity.patientId },
+      sources: sourcesToVerify,
+    });
+    if (!verified.ok) {
+      await failJob(job.id, job.worklistId, verified.code, undefined, undefined, undefined, {
+        sourceIdentity: { refused: verified.code, message: verified.message },
+      });
+      return { ok: true, detail: verified.code };
+    }
+    sourceIdentities = verified.sources;
+  }
+
   // Resolve authoritative draft for SELECTED_IMAGES ownership (never draftId: null).
   const { resolveAuthoritativeComposeDraft } = await import("./resolveComposeDraft");
   const authDraft = await resolveAuthoritativeComposeDraft({
@@ -450,6 +521,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     if (
       run.safeError === "composer_model_not_configured" ||
       run.safeError === "composer_provider_not_configured" ||
+      // A provider name CARE has no adapter for, and a provider the admin has
+      // switched off, are both settings problems. Retrying re-reads the same
+      // settings and produces the same refusal twice, with a longer wait.
+      run.safeError === "composer_provider_not_supported" ||
+      run.safeError?.endsWith("_provider_disabled") ||
       run.safeError === "malformed_json" ||
       // A server that answers with chain-of-thought only will answer that way
       // every time; retrying just burns the clinic GPU overnight and delays the
@@ -459,6 +535,10 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.safeError === "vision_capability_unverified" ||
       run.safeError === "composer_num_ctx_insufficient" ||
       run.safeError === "composer_context_budget_exceeded" ||
+      // The same request given the same output ceiling truncates the same way.
+      // Retrying repeats the mistake and hides which fix is needed: a shorter
+      // request, or a provider with a larger limit.
+      run.safeError === "composer_output_truncated" ||
       run.safeError?.startsWith("selected_images_")
     ) {
       return { ok: true, detail: run.safeError };
@@ -466,7 +546,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: false, detail: run.safeError };
   }
 
-  const validation = validateComposerOutput(snapshot, run.draft);
+  // `job.jobKind` is what switches the conservation contract on: a
+  // professionalize/refine/combine answer must contain everything the
+  // radiologist wrote, and a dropped measurement or level is now a failure
+  // rather than a warning the report of record never sees.
+  const validation = validateComposerOutput(snapshot, run.draft, { kind: job.jobKind });
   if (!validation.ok) {
     await failJob(
       job.id,
@@ -475,7 +559,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.model,
       run.fallbackUsed,
       run.latencyMs,
-      { ...validation, provenance: run.provenance ?? null },
+      {
+        ...validation,
+        provenance: run.provenance ?? null,
+        ...(sourceIdentities.length ? { sourceIdentities } : {}),
+      },
     );
     return { ok: true, detail: "validation_failed" };
   }
@@ -501,7 +589,22 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       proposedFindings: run.draft.findings,
       proposedImpression: run.draft.impression,
       proposedRecommendation: run.draft.recommendation,
-      validationJson: JSON.stringify({ ...validation, provenance: run.provenance ?? null }),
+      validationJson: JSON.stringify({
+        ...validation,
+        provenance: run.provenance ?? null,
+        // What actually answered, and what it cost. `ai_report_compose_jobs` has
+        // no provider/usage/token columns and this PR deliberately adds none, so
+        // this JSON is the record — which is also why `publicJobView` now lifts it
+        // out instead of leaving it unreachable.
+        provider: run.provenance?.provider ?? run.model ?? null,
+        usage: run.usage ?? null,
+        // The individual source study identifiers of a combination, as CARE
+        // resolved them (never as the browser declared them). Kept in this JSON
+        // for the same reason as provider/usage: the table has no column for it,
+        // `publicJobView` already returns this object, and a merged report that
+        // cannot say which study each half came from is not reviewable.
+        ...(sourceIdentities.length ? { sourceIdentities } : {}),
+      }),
       model: run.model ?? null,
       fallbackUsed: run.fallbackUsed ?? false,
       latencyMs: run.latencyMs ?? null,
@@ -791,6 +894,23 @@ export async function markComposeApplied(opts: {
         : c,
   );
 
+  // An OBSERVATIONS job proposes rows for the canonical finding ledger, not
+  // report text — it produces no tracked changes. Letting it reach Apply would
+  // "prove" that zero accepted sentences are present in the report, which is a
+  // vacuous pass stamping APPLIED on a job that applied nothing. Inserting a
+  // proposed observation is the workspace's own mutation path, with its own
+  // audit, and that is where the decision belongs.
+  if (job.jobKind === "OBSERVATIONS") {
+    return {
+      ok: false,
+      error: "compose_nothing_to_apply",
+      code: "compose_nothing_to_apply",
+      message:
+        "This AI job proposes structured findings rather than report text, so there is nothing to apply. "
+        + "Insert the observations you want from the proposal; your report was not changed.",
+    };
+  }
+
   // Durability before attribution.
   //
   // The accepted text has to be in the study's saved report before this job may
@@ -949,6 +1069,13 @@ export function publicJobView(job: typeof aiReportComposeJobsTable.$inferSelect)
     validation,
     sources,
     model: job.model,
+    // Derived from the JSON this service writes at READY, not from new columns:
+    // "which provider answered, and what did it cost" used to require reading
+    // `validation_json` by hand, and no screen did.
+    provider:
+      (validation as { provenance?: { provider?: string | null } } | null)?.provenance
+        ?.provider ?? null,
+    usage: (validation as { usage?: unknown } | null)?.usage ?? null,
     fallbackUsed: job.fallbackUsed,
     latencyMs: job.latencyMs,
     safeError: job.safeError,

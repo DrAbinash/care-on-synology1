@@ -32,7 +32,10 @@ describe("Phase 2 owned baselines", () => {
     );
     expect(counts).toEqual({
       "MRI Brain — Standard Normal": 13,
-      "MRI Cervical Spine — Standard Normal": 39,
+      // 8 region normals + 6 disc levels × 6 per-level normals. Six levels, not
+      // five: the cervical owned baseline used to stop at C6-C7 while the canvas,
+      // `CERVICAL_CANAL_LEVELS` and `mriSpineCanvas.test.ts` all run C2-C3→C7-T1.
+      "MRI Cervical Spine — Standard Normal": 45,
       "MRI Knee — Standard Normal": 12,
       "MRI Brain — Screening Normal": 7,
       "MRI Cervical Spine — Screening Normal": 8,

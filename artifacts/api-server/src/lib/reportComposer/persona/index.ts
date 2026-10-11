@@ -61,8 +61,48 @@ export function buildCareSystemPrompt(
     case "EXPAND":
     case "TRANSLATE":
       parts.push(
-        "TASK: Apply the instruction only to the selected/target text. " +
-        "Preserve meaning, laterality, levels, and numbers. Do NOT invent new clinical facts.",
+        "TASK: Apply the instruction to the TARGET TEXT only. " +
+        "Preserve meaning, laterality, levels, and numbers. Do NOT invent new clinical facts.\n" +
+        "Return every field the instruction does not concern EXACTLY as supplied — an omitted " +
+        "field is a deleted finding, not a blank line. The TARGET TEXT may span more than one " +
+        "section (Findings and Impression labelled together): return each revised section in " +
+        "its own field, never one merged block.\n" +
+        "Refining wording never removes clinical content: after a SHORTEN, every level, side, " +
+        "number, severity and named abnormality in the input must still be in the output.\n" +
+        "If the instruction cannot be honoured without changing a clinical fact — a side, a " +
+        "number, or an abnormality the findings do not support — do NOT comply and do NOT guess: " +
+        "return the text unchanged and say why in unresolvedQuestions.",
+      );
+      break;
+    case "PROFESSIONALIZE":
+      parts.push(
+        "TASK: Rewrite the SUPPLIED REPORT so it reads as a polished radiology report — " +
+        "grammar, terminology, ordering, conventional prose, a clear Impression. " +
+        "The supplied Findings and Impression ARE the clinical truth; you are not drafting from observations. " +
+        "CONSERVATION IS THE CONTRACT: every abnormality, measurement, vertebral level, laterality and " +
+        "relevant negative in the supplied text must be present in your answer. " +
+        "Improve wording only. Never add a finding, never remove one, never normalise something that was " +
+        "abnormal, and never state a normal for a structure the report did not describe. " +
+        "If a sentence is too ambiguous to rewrite faithfully, keep it verbatim and list it in unresolvedQuestions.",
+      );
+      break;
+    case "OBSERVATIONS":
+      parts.push(
+        "TASK: Structure the supplied dictation into discrete observation rows. " +
+        "You are NOT writing a report: leave findings and impression empty. " +
+        "Do NOT complete anatomy, do NOT add a normal or a negative the radiologist did not state, " +
+        "and do NOT supply a level, side, severity or measurement that is absent from the dictation — " +
+        "leave that field empty instead. Every row must trace to words the radiologist actually wrote.",
+      );
+      break;
+    case "COMBINE":
+      parts.push(
+        "TASK: Merge the CURRENT REPORT with the SUPPLIED ADDITIONAL REPORT(S) into one coherent " +
+        "Findings and one Impression. Both texts are clinical truth; carry the content of each. " +
+        "Keep every measurement, level, laterality and negative finding from either side. " +
+        "Remove duplicated statements, never duplicated facts. Do not average or soften two descriptions " +
+        "into one weaker one. If the two reports conflict about the same structure, keep both statements " +
+        "and put the conflict in unresolvedQuestions rather than choosing between them.",
       );
       break;
     default:
