@@ -656,7 +656,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                   <PacsImagePickerDialog
                     open={pacsPickerOpen}
                     onClose={() => setPacsPickerOpen(false)}
-                    studyInstanceUID={pacsStudyUid}
+                    studyInstanceUid={pacsStudyUid}
                     getContext={pacsContext}
                     onAttached={() => {
                       void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(pacsDraftId) });
