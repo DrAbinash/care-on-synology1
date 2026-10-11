@@ -33,6 +33,8 @@ export interface OpsThresholds {
   pendingStudiesWarn: number;
   syncWorkerStaleMinutes: number;
   diskWarnFreePercent: number;
+  /** How far back the Orthanc→ERP delivery comparison looks at StudyDate. */
+  syncDivergenceWindowHours: number;
 }
 
 export const DEFAULT_THRESHOLDS: OpsThresholds = {
@@ -42,7 +44,11 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
   pendingStudiesWarn: 25,
   syncWorkerStaleMinutes: 30,
   diskWarnFreePercent: 10,
+  syncDivergenceWindowHours: 48,
 };
+
+/** Hard cap on the Orthanc study window a single delivery comparison reads. */
+const SYNC_DIVERGENCE_LIMIT = 200;
 
 /** One row set from a read-only query (array of plain objects). */
 export type QueryFn = (text: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>;
@@ -103,6 +109,42 @@ function humanAge(mins: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** DICOM DA as written by a modality: YYYYMMDD, no zone. */
+function dicomDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+
+/**
+ * Whether an Orthanc study is overdue for the ERP, from its DICOM StudyDate
+ * (0008,0020) + StudyTime (0008,0030) — the only timestamps the native study
+ * list carries.
+ *
+ * Both are read as wall-clock in the same local zone the ERP's own clock uses:
+ * the scanner writes no offset, so pairing it against a local-time ctx.now is
+ * the only interpretation that does not invent a phantom hours-skew.
+ *
+ * This is what keeps the delivery check from crying wolf. A study scanned
+ * seconds ago is legitimately absent from radiology_worklist — Orthanc marks a
+ * study stable, then care-erp-sync walks /changes on its next 60-second poll.
+ * Calling that a fault would flash red during every examination, so anything
+ * still inside the polling grace is simply not compared.
+ */
+function studyDueForErp(studyDate: string, studyTime: string, now: Date, graceMinutes: number): boolean {
+  const day = new Date(
+    Number(studyDate.slice(0, 4)),
+    Number(studyDate.slice(4, 6)) - 1,
+    Number(studyDate.slice(6, 8)),
+  );
+  const m = /^(\d{2})(\d{2})/.exec(studyTime);
+  if (m) {
+    day.setHours(Number(m[1]), Number(m[2]), 0, 0);
+    return day.getTime() < now.getTime() - graceMinutes * 60000;
+  }
+  // Day precision only: anything dated today could still be in flight.
+  return day.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
 const CRITICAL_TABLES = [
@@ -305,33 +347,130 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
     },
   },
   {
+    id: "orthanc.sync_divergence", name: "Orthanc → ERP delivery", category: "radiology_pacs", required: false,
+    run: async (ctx) => {
+      if (!ctx.orthanc.configured || !ctx.orthanc.baseUrl) {
+        return { status: "SKIPPED", message: "Orthanc not configured — no study list to compare the worklist against" };
+      }
+      // Orthanc's study list has no documented "newest first" contract and the
+      // archive is far too large to expand whole, so the window is bounded by
+      // the DICOM StudyDate range instead.
+      const url =
+        `${ctx.orthanc.baseUrl}/studies?query=StudyDate` +
+        `&value=${dicomDate(new Date(ctx.now.getTime() - ctx.thresholds.syncDivergenceWindowHours * 3600000))}-${dicomDate(ctx.now)}` +
+        `&limit=${SYNC_DIVERGENCE_LIMIT}&expand=true`;
+      const r = await ctx.probe(url, {
+        headers: { Accept: "application/json", ...ctx.orthanc.headers },
+        parseJson: true,
+      });
+      if (r.status == null) {
+        return { status: "UNKNOWN", message: `Orthanc did not answer the study window query (${r.error ?? "no response"})` };
+      }
+      if (r.status >= 400) {
+        return { status: "UNKNOWN", message: `Orthanc returned ${r.status} for the study window query` };
+      }
+      if (!Array.isArray(r.json)) {
+        return { status: "UNKNOWN", message: "Orthanc study window query did not return a study list" };
+      }
+
+      const window = `${ctx.thresholds.syncDivergenceWindowHours}h`;
+      const dated: Array<{ uid: string; studyDate: string; studyTime: string }> = [];
+      let undated = 0;
+      for (const item of r.json) {
+        const tags = (item as { MainDicomTags?: Record<string, unknown> })?.MainDicomTags ?? {};
+        const uid = String(tags.StudyInstanceUID ?? "").trim();
+        const studyDate = String(tags.StudyDate ?? "").trim();
+        if (!uid || !/^\d{8}$/.test(studyDate)) {
+          undated++;
+          continue;
+        }
+        dated.push({ uid, studyDate, studyTime: String(tags.StudyTime ?? "").trim() });
+      }
+      // A study is comparable only if it has both a UID and a StudyDate; a list
+      // where none qualify means `expand` did not take effect, and reporting
+      // "0 missing" against an empty comparison is the most convincing kind of lie.
+      if (undated === r.json.length && r.json.length > 0) {
+        return { status: "UNKNOWN", message: `${undated} Orthanc studies returned without a readable StudyInstanceUID + StudyDate — delivery cannot be compared` };
+      }
+      const due = dated.filter((s) => studyDueForErp(s.studyDate, s.studyTime, ctx.now, ctx.thresholds.syncStaleMinutes));
+      if (due.length === 0) {
+        return {
+          status: "SKIPPED",
+          message: r.json.length === 0
+            ? `no Orthanc study dated in the last ${window}`
+            : `no Orthanc study in the last ${window} is due for the ERP yet`,
+          metadata: { window, seen: r.json.length, undated },
+        };
+      }
+
+      const uids = due.map((s) => s.uid);
+      // Radiology_worklist is the only table this pathway writes: the external
+      // care-erp-sync container POSTs to the internal intake, which upserts a
+      // worklist row keyed on study_instance_uid. dicom_studies belongs to the
+      // manual DICOM-study-manager ingest and is never touched by Orthanc.
+      const rows = await ctx.query(
+        "SELECT study_instance_uid FROM radiology_worklist WHERE study_instance_uid = ANY($1::text[])",
+        [uids],
+      );
+      const present = new Set(rows.map((row) => String(row.study_instance_uid ?? "")));
+      const missing = due.filter((s) => !present.has(s.uid));
+      const capped = r.json.length >= SYNC_DIVERGENCE_LIMIT;
+      const scope = `${due.length} Orthanc stud${due.length === 1 ? "y" : "ies"} due from the last ${window}${capped ? " (window capped)" : ""}`;
+
+      if (missing.length === 0) {
+        return {
+          status: "PASS",
+          message: `all ${scope} are in the ERP worklist`,
+          metadata: { window, due: due.length, delivered: due.length, missing: 0, undated, capped },
+        };
+      }
+      const names = missing.slice(0, 3).map((s) => `${s.studyDate.slice(0, 4)}-${s.studyDate.slice(4, 6)}-${s.studyDate.slice(6, 8)}${s.studyTime ? ` ${s.studyTime.slice(0, 2)}:${s.studyTime.slice(2, 4)}` : ""}`).join(", ");
+      return {
+        status: "FAIL",
+        message: `${missing.length} of ${scope} never reached the ERP worklist (${names}${missing.length > 3 ? ", …" : ""})`,
+        metadata: { window, due: due.length, delivered: due.length - missing.length, missing: missing.length, undated, capped },
+        recommendedAction:
+          "Studies are in Orthanc but not in the ERP. Check the care-erp-sync container: `docker logs care-erp-sync` — a held cursor is logged at ERROR " +
+          "with 'holding cursor' and means the bridge is refusing to advance rather than losing studies.",
+      };
+    },
+  },
+  {
     id: "orthanc.sync_fresh", name: "Orthanc → ERP sync freshness", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(last_sync_at) AS m, count(*)::int AS n FROM dicom_studies WHERE sync_status = 'synced'");
+      // radiology_worklist, not dicom_studies: care-erp-sync POSTs the internal
+      // intake, which inserts a worklist row. dicom_studies.sync_status/last_sync_at
+      // is only ever set by the manual "sync retry" button in the DICOM study
+      // manager, so reading it measured a road the clinic does not drive on and
+      // the check reported SKIPPED forever.
+      const rows = await ctx.query(
+        "SELECT max(created_at) AS m, count(*)::int AS n FROM radiology_worklist WHERE upper(coalesce(source_pacs, '')) = 'ORTHANC'",
+      );
       const n = Number(rows[0]?.n ?? 0);
       const m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
-      if (n === 0 || !m) return { status: "SKIPPED", message: "no successfully-synced studies yet (nothing to measure)" };
+      if (n === 0 || !m) return { status: "SKIPPED", message: "no study has arrived from Orthanc yet (nothing to measure)" };
       const age = minutesSince(ctx.now, m)!;
+      // Deliberately NOT on the ribbon: a quiet clinic and a dead bridge look
+      // identical here, and only the delivery check can tell them apart.
       return age > ctx.thresholds.syncStaleMinutes
-        ? { status: "WARNING", message: `last successful sync was ${humanAge(age)} ago`, metadata: { lastSyncAt: m, ageMinutes: age } }
-        : { status: "PASS", message: `last sync ${humanAge(age)} ago`, metadata: { lastSyncAt: m, ageMinutes: age } };
+        ? { status: "WARNING", message: `no Orthanc delivery for ${humanAge(age)} (quiet clinic, or the bridge stopped)`, metadata: { lastSyncAt: m, ageMinutes: age, delivered: n } }
+        : { status: "PASS", message: `last Orthanc delivery ${humanAge(age)} ago`, metadata: { lastSyncAt: m, ageMinutes: age, delivered: n } };
     },
   },
   {
     id: "radiology.last_dicom", name: "Last DICOM received", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT max(created_at) AS m FROM dicom_studies");
-      let m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
-      if (!m) {
-        const wl = await ctx.query("SELECT max(created_at) AS m FROM radiology_worklist");
-        m = wl[0]?.m ? new Date(wl[0].m as string).toISOString() : null;
-      }
+      // The intake row IS the receipt. On the Orthanc path nothing writes
+      // dicom_studies, so the old query could only report a table the clinic
+      // never fills.
+      const rows = await ctx.query("SELECT max(created_at) AS m FROM radiology_worklist");
+      const m = rows[0]?.m ? new Date(rows[0].m as string).toISOString() : null;
       if (!m) return { status: "SKIPPED", message: "no study received yet (nothing has been sent)" };
       const age = minutesSince(ctx.now, m)!;
       // "no recent study" is NEVER a failure — only a WARNING past the threshold.
       return age > ctx.thresholds.dicomStaleMinutes
-        ? { status: "WARNING", message: `last DICOM received ${humanAge(age)} ago (> ${ctx.thresholds.dicomStaleMinutes}m threshold)`, metadata: { lastReceivedAt: m, ageMinutes: age } }
-        : { status: "PASS", message: `last DICOM received ${humanAge(age)} ago`, metadata: { lastReceivedAt: m, ageMinutes: age } };
+        ? { status: "WARNING", message: `last study received into the ERP ${humanAge(age)} ago (> ${ctx.thresholds.dicomStaleMinutes}m threshold)`, metadata: { lastReceivedAt: m, ageMinutes: age } }
+        : { status: "PASS", message: `last study received into the ERP ${humanAge(age)} ago`, metadata: { lastReceivedAt: m, ageMinutes: age } };
     },
   },
   {
@@ -345,20 +484,28 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
     },
   },
   {
-    id: "radiology.sync_failures", name: "Recent sync failures", category: "radiology_pacs", required: false,
+    id: "radiology.sync_failures", name: "PACS errors reported to the ERP", category: "radiology_pacs", required: false,
     run: async (ctx) => {
-      const rows = await ctx.query("SELECT count(*)::int AS c FROM dicom_studies WHERE sync_status = 'failed'");
+      // dicom_studies.sync_status is written only by the study manager's manual
+      // retry button, so the old query counted failures of a pathway the clinic
+      // does not run. pacs_logs is what the PACS agents actually report into.
+      const rows = await ctx.query(
+        "SELECT count(*)::int AS c FROM pacs_logs WHERE severity = 'error' AND created_at >= $1",
+        [new Date(ctx.now.getTime() - 24 * 3600000).toISOString()],
+      );
       const c = Number(rows[0]?.c ?? 0);
       return c > 0
-        ? { status: "WARNING", message: `${c} studies in sync_status=failed`, metadata: { failed: c }, recommendedAction: "Review pacs_logs (log_type=sync) for the failing studies." }
-        : { status: "PASS", message: "no studies in a failed sync state" };
+        ? { status: "WARNING", message: `${c} PACS error${c === 1 ? "" : "s"} reported in the last 24h`, metadata: { errors: c }, recommendedAction: "Review pacs_logs (severity=error); Orthanc → ERP losses show under 'Orthanc → ERP delivery'." }
+        : { status: "PASS", message: "no PACS errors reported in the last 24h" };
     },
   },
   {
     id: "radiology.sync_worker", name: "Sync worker activity", category: "radiology_pacs", required: false,
     run: async (ctx) => {
       const pollerOn = (ctx.env("PACS_PROVIDER") ?? "").toLowerCase() === "orthanc" && !!ctx.env("INTERNAL_API_KEY") && ctx.env("ORTHANC_CHANGES_POLLER") !== "false";
-      if (!pollerOn) return { status: "SKIPPED", message: "Orthanc changes-poller not enabled (PACS_PROVIDER≠orthanc or INTERNAL_API_KEY unset)" };
+      // Off by design on the Synology deployment (care-orthanc does not resolve
+      // from care-api), so this must not read as "worker missing".
+      if (!pollerOn) return { status: "SKIPPED", message: "in-process poller off by design — delivery is done by the external care-erp-sync container (see 'Orthanc → ERP delivery')" };
       let m: string | null = null;
       try {
         const rows = await ctx.query("SELECT max(created_at) AS m FROM pacs_logs WHERE log_type = 'sync'");

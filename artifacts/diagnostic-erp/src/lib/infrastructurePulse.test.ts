@@ -38,4 +38,27 @@ describe("infrastructurePulse", () => {
     expect(icici?.tone).toBe("green");
     expect(icici).not.toHaveProperty("accent");
   });
+
+  // The Oct 2026 outage looked exactly like this: Orthanc answered /system
+  // perfectly while 352 studies never reached the ERP. Reachability alone
+  // could not have shown it.
+  it("Orthanc reachable but not delivering → the Orthanc pill goes red", () => {
+    const pills = buildInfrastructurePulse([
+      { id: "orthanc.reachable", status: "PASS", message: "Orthanc reachable, version 1.13" },
+      { id: "orthanc.sync_divergence", status: "FAIL", message: "352 Orthanc studies never reached the ERP worklist" },
+    ]);
+    const orthanc = pills.find((p) => p.key === "orthanc");
+    expect(orthanc?.tone).toBe("red");
+    expect(orthanc?.shouldBlink).toBe(true);
+    expect(orthanc?.message).toContain("never reached the ERP");
+  });
+
+  it("a stale last-sync age does NOT recolour the pill — a closed clinic looks the same", () => {
+    const pills = buildInfrastructurePulse([
+      { id: "orthanc.reachable", status: "PASS", message: "Orthanc reachable" },
+      { id: "orthanc.sync_divergence", status: "PASS", message: "all 4 Orthanc studies due are in the ERP worklist" },
+      { id: "orthanc.sync_fresh", status: "WARNING", message: "no Orthanc delivery for 2 days" },
+    ]);
+    expect(pills.find((p) => p.key === "orthanc")?.tone).toBe("green");
+  });
 });
