@@ -211,8 +211,11 @@ import {
 import {
   alreadySaysThis,
   canalApReportTable,
+  levelsContradictedByUnexplainedLines,
   radiologistObservations,
   reportHasDeviation,
+  rowLevelKey,
+  supersededBaselineTexts,
   unexplainedFindingLines,
   type ProfessionalReportOutcome,
 } from "./professionalReport";
@@ -1588,6 +1591,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // questions below: whether the format's own conclusion may be used at all,
     // and whether the conclusion has to be re-derived.
     const deviates = reportHasDeviation(get().appliedPathologyPatches, freeTextBefore);
+    // Which disc levels has the radiologist described in their own words? Those
+    // are the levels the scaffold must stop describing for it: typing
+    // "C5-C6: Disc herniation with cord compression." and pressing Generate used
+    // to write the approved normal underneath it, including "C5-C6: No significant
+    // disc bulge or protrusion is seen." — one report, both statements, nothing on
+    // the page to say which the examination showed.
+    const contradictedLevels = levelsContradictedByUnexplainedLines(freeTextBefore);
+    const supersededNormalSentences = supersededBaselineTexts(
+      format.baselineManifest?.observations ?? [],
+      contradictedLevels,
+    );
+    /** True for a scaffold sentence this examination has already contradicted. */
+    const supersededNormal = (line: string) => supersededNormalSentences.has(line.trim());
 
     // The scaffold is merged in, never dropped on top of the report. An identical
     // sentence is not written twice, and no sentence the format does not contain
@@ -1597,7 +1613,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().mergeField("technique", clinical.technique, "template");
     }
     if (clinical.findings.trim() && !alreadySaysThis(get().findingsText, clinical.findings)) {
-      get().mergeField("findings", clinical.findings, "template");
+      // Written without the superseded levels rather than written and deleted: a
+      // sentence removed from a block leaves the blank line it sat on, and the
+      // second press would then differ from the first by whitespace nobody chose.
+      const findingsToMerge = supersededNormalSentences.size === 0
+        ? clinical.findings
+        : clinical.findings.split("\n").filter((line) => !supersededNormal(line)).join("\n");
+      if (findingsToMerge.trim()) get().mergeField("findings", findingsToMerge, "template");
     }
     // A format's Impression is the clinic's sentence for THIS EXAMINATION BEING
     // NORMAL. Merging it underneath a recorded abnormality produces a conclusion
@@ -1629,6 +1651,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         observation: p.observation,
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
+        // No `stale` here on purpose. The row below this one is the only place
+        // that decides a normal has been superseded, and a second mechanism
+        // reaching the same label from a different condition makes each of them
+        // invisible to a test — a mutation of either half then passes, because
+        // the other half still marks the row.
       }));
     if (baselinePatches.length > 0) {
       set({ appliedPathologyPatches: [...get().appliedPathologyPatches, ...baselinePatches] });
@@ -1641,6 +1668,41 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     for (const input of retained) {
       const outcome = get().applyPathologyOverlay({ ...input, skipUndoSnapshot: true });
       if (outcome !== "applied") needingReview += 1;
+    }
+
+    // The case the merge above cannot reach: a normal that is ALREADY on the page,
+    // written by an earlier press before this level was described. Its text goes
+    // through the ledger's own removal, so a sentence the radiologist protected
+    // stays where they put it, and the row is marked superseded rather than
+    // deleted — one undo frame still takes the whole press back.
+    if (contradictedLevels.size > 0) {
+      const targets = get().appliedPathologyPatches.filter((p) => {
+        if (p.observation?.role !== "baseline" || p.stale) return false;
+        const key = rowLevelKey(p.observation.level);
+        return key !== "" && contradictedLevels.has(key);
+      });
+      if (targets.length > 0) {
+        let narrative = narrativeFromState(get());
+        let provenance = get().fieldProvenance;
+        for (const p of targets) {
+          const removed = removeLedgerObservation(narrative, provenance, toLedgerPatch(p));
+          narrative = removed.narrative;
+          provenance = removed.provenance;
+        }
+        const ids = new Set(targets.map((p) => p.id));
+        set({
+          clinicalHistoryText: narrative.clinicalHistory,
+          techniqueText: narrative.technique,
+          findingsText: narrative.findings,
+          impressionText: narrative.impression,
+          recommendationText: narrative.recommendation,
+          fieldProvenance: provenance,
+          appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+            ids.has(p.id) ? { ...p, stale: true } : p,
+          ),
+          isDirty: true,
+        });
+      }
     }
 
     const segment = resolveActiveCanalSegment({
@@ -2479,7 +2541,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       .filter((p) => !opts?.excludeBaselineObservations
         || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
       .map(toLedgerPatch);
-    const remaining = generateLocalImpression(get().findingsText);
+    // The picker reads the Findings text — and the Findings text holds the
+    // scaffold's own sentences too. Excluding the baseline patches above and then
+    // re-reading every sentence below let those same sentences back in through the
+    // door the ledger had just closed: measured on a cervical study with one
+    // hand-typed herniation, the Conclusion came back as six lines, five of them
+    // the report's own per-level normals ("C2-C3: No exiting or traversing nerve
+    // root compression is seen."). A sentence a ledger row already speaks for is
+    // not a leftover; only what nobody owns is still waiting to be concluded.
+    const remaining = generateLocalImpression(
+      unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n"),
+    );
     const next = refreshImpressionFromObservations({
       currentImpression: get().impressionText,
       patches,

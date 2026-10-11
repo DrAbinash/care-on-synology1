@@ -21,7 +21,25 @@ const ABNORMAL_CUE_RE =
  * which is how a complete normal report restated its own body in its conclusion.
  */
 const NORMAL_PREDICATE_RE =
-  /\b(unremarkable|within normal limits|appears?\s+normal|normal(?:ly)?\b|preserved|maintained|patent|intact|unchanged|no significant|not\s+\w+ed)\b/i;
+  /\b(unremarkable|within normal limits|appears?\s+normal|normal(?:ly)?\b|preserved|maintained|patent|intact|unchanged|no significant|not\s+\w+ed|limited)\b/i;
+
+/**
+ * A leading anatomical label — `C5-C6:`, `Cervical spine:` — is not prose.
+ *
+ * CARE's per-level normals are all written `<level>: <sentence>`, and the denial
+ * that opens the sentence denies everything the sentence then names. Testing the
+ * label-prefixed line against `^` instead said the label had pushed the denial
+ * out of scope, so 20 of the shipped per-level normals read as pathology:
+ * "C5-C6: No spinal canal or thecal sac compression is seen." arrived in a
+ * signed Conclusion as a compression. A label carrying a period or semicolon
+ * could be a sentence of its own, so the pattern refuses those.
+ */
+const LEADING_LABEL_RE = /^[^.;:]{1,40}:\s+/;
+
+/** The same sentence without the `<level>:` / `<region>:` it may open with. */
+function unlabelled(s: string): string {
+  return s.replace(LEADING_LABEL_RE, "");
+}
 
 /** How far from a cue a negation still governs it, in words. */
 const NEGATION_LOOK_BACK = 4;
@@ -58,7 +76,7 @@ function denied(s: string, at: number, end: number): boolean {
   // came back as a finding.
   if (words(clause).slice(-NEGATION_LOOK_BACK).some((w) => NEGATION_WORDS.has(w))) return true;
   if (words(s.slice(end)).slice(0, NEGATION_LOOK_FORWARD).some((w) => NEGATION_WORDS.has(w))) return true;
-  return LEADING_NEGATION_RE.test(s) && !CONTRAST_RE.test(before);
+  return LEADING_NEGATION_RE.test(unlabelled(s)) && !CONTRAST_RE.test(before);
 }
 
 /**
@@ -83,7 +101,14 @@ export function assertsAbnormality(line: string): boolean {
   }
   if (positive > 0) return true;
   if (deniedCount > 0) return false;
-  return !NORMAL_PREDICATE_RE.test(s) && !LEADING_NEGATION_RE.test(s);
+  // Nothing on the cue list, so decide between a normal and an unrecognised
+  // finding. Denial wording counts as a normal here: "Brain parenchyma shows no
+  // gross signal abnormality on screening sequences." denies a thing this file's
+  // cue list does not name, and defaulting it to a finding put the sentence in
+  // the Conclusion as though it asserted one.
+  return !NORMAL_PREDICATE_RE.test(s)
+    && !LEADING_NEGATION_RE.test(unlabelled(s))
+    && !words(s).some((w) => NEGATION_WORDS.has(w));
 }
 
 function splitFindingsLines(findingsText: string): string[] {
