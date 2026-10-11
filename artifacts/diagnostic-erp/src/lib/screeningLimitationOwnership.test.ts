@@ -182,6 +182,39 @@ describe("the report-level screening limitation", () => {
     expect(sentenceMatchesConcept(SCREENING_LIMITATION_TEXT, "screening_limitation")).toBe(true);
   });
 
+  it("holds a conflict group no region row can share", () => {
+    // A conflict group is a mutex: two rows under one group replace each other.
+    // The limitation is one row for the whole report, so borrowing a region's
+    // group would make the region's alignment row and the limitation row fight,
+    // and which sentence survives would be decided by click order.
+    openStudy("MRI WHOLE SPINE SCREENING", ["Whole Spine"]);
+    bookRoles("MRI WHOLE SPINE SCREENING");
+    for (const region of ["cervical", "dorsal", "ls"] as SpineScreeningRegion[]) {
+      const option = SCREENING_SCHEMAS[region].sections.find((s) => s.key === "alignment")?.options[0];
+      useWorkspace.getState().setScreeningRegion(region, {
+        role: "accompanying-screening",
+        performed: true,
+        selections: { alignment: [{ optionId: option!.id }] },
+      });
+    }
+    const ws = useWorkspace.getState();
+    const plan = screeningLedgerBundles({
+      state: ws.screening,
+      schemas: SCREENING_SCHEMAS,
+      sequences: ws.sequencesAvailable,
+      numbering: ws.lumbarNumbering,
+      ledgerRegion: "Whole Spine",
+    });
+    const group = screeningLimitationAtom().conflictGroup;
+    expect(group, "the limitation row must declare a conflict group").toBeTruthy();
+    const carriers = plan.flatMap((b) => b.observations
+      .filter((o) => (o.ownership?.conflictGroup ?? "") === group)
+      .map((o) => `${o.bundleId}|${(o.findingsText ?? "").trim()}`));
+    // Exactly the limitation row, from the limitation bundle, writing the
+    // limitation sentence — and no region row alongside it.
+    expect(carriers).toEqual([`${SCREENING_LIMITATION_BUNDLE_ID}|${SCREENING_LIMITATION_TEXT}`]);
+  });
+
   it("writes the canonical sentence, not a near copy of it", () => {
     // The pin above only bounds what the row may overwrite. If the sentence the
     // row WRITES drifts from the one the manifests carry, the report ends up with

@@ -438,8 +438,10 @@ export function composeScreeningRecommendationLines(
 }
 
 /**
- * Screening limitation atom — ONE row for the whole report, under its own
- * conflict group so rebuilding a region can never duplicate the sentence (§29).
+ * Screening limitation atom — ONE row for the whole report, under a conflict
+ * group of its own. A conflict group is a mutex, so borrowing a region's group
+ * would make this row and that region's alignment row replace each other, with
+ * click order deciding which sentence survives (§29).
  *
  * `baselineReplaces` is not a nicety here. Without it the row falls through to
  * `sentenceOwnedBySlot`'s section fallback, which tests whether the sentence
