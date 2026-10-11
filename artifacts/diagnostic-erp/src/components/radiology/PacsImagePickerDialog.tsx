@@ -56,7 +56,15 @@ export default function PacsImagePickerDialog({
   useEffect(() => {
     if (!open) return;
     setResult(null);
-    if (!studyInstanceUid) return;
+    // An empty list is not an honest answer when there is no study to browse. Say
+    // so, otherwise a report with no PACS link — or a mis-wired prop at the call
+    // site — reads to the radiologist as "this study has no images".
+    if (!studyInstanceUid) {
+      setSeries([]);
+      setActiveSeries(null);
+      setSeriesError("This report is not linked to a PACS study, so there is nothing to browse.");
+      return;
+    }
     let cancelled = false;
     setLoadingSeries(true);
     setSeriesError(null);
