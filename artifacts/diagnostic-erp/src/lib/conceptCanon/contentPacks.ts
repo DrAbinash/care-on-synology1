@@ -3227,3 +3227,75 @@ export function isSystemOwnedBaseline(concept: string | null | undefined): boole
   const pack = contentPackForConcept(concept);
   return Boolean(pack?.systemOwnedBaseline);
 }
+
+/**
+ * Global normal supersession — the explicit contract for whole-examination
+ * normals.
+ *
+ * A baseline manifest carries three different kinds of normal sentence, and only
+ * the first is at issue here:
+ *
+ *   1. a whole-examination claim about one territory — "Brain parenchyma shows
+ *      normal signal intensity with preserved grey-white differentiation.";
+ *   2. a structure-specific claim — "Cerebellar hemispheres show normal
+ *      morphology and signal intensity.";
+ *   3. a finding-specific denial — "No acute infarct is seen."
+ *
+ * Retirement matches a concept's aliases against the sentence already in the
+ * report. That handles (3), because the infarct concept is the infarct denial's
+ * concept, and it handles (2) whenever a tile's own words name that structure.
+ * It cannot handle (1) for a lesion described as "encephalomalacia",
+ * "intraparenchymal" or "MCA territory": none of those spell "brain parenchyma",
+ * so the global sentence survived, and the report stated that the whole
+ * parenchyma was normal in one line and that part of it was destroyed in the
+ * next.
+ *
+ * This table is that missing contract, and it is metadata rather than prose
+ * inference on purpose. A substring hunt for "parenchyma" would have reached the
+ * cerebellum, the brainstem and the basal ganglia as well, and would let any
+ * future wording delete a normal it says nothing about — which is the failure
+ * mode PR #926 was raised to stop.
+ *
+ * Keys are the concepts whose lesion sits INSIDE the territory named by the
+ * value, i.e. intra-axial brain pathology. Deliberately absent, each for its own
+ * clinical reason: the extra-axial collections (subdural, epidural,
+ * subarachnoid, extra_axial), the ventricular compartment (ventricles,
+ * hydrocephalus, ventriculomegaly, intraventricular hemorrhage), position
+ * (midline), the vessels (aneurysm, CVST and every MRA/MRV vessel concept), the
+ * sella, the orbit, and generalized atrophy — a brain can atrophy with normal
+ * signal, and reporting both is not a contradiction.
+ *
+ * The table is only ever consulted for a sentence that asserts nothing abnormal
+ * and names no level or side (see `sentenceOwnedBySlot`), so one lesion can never
+ * overwrite another and a side- or level-specific normal keeps its own claim.
+ */
+export const GLOBAL_NORMAL_SUPERSESSION: Readonly<Record<string, readonly CanonicalConceptId[]>> = {
+  infarct: ["brain_parenchyma"],
+  subacute_infarct: ["brain_parenchyma"],
+  encephalomalacia: ["brain_parenchyma"],
+  diffusion: ["brain_parenchyma"],
+  hemorrhage: ["brain_parenchyma"],
+  lacunar: ["brain_parenchyma"],
+  susceptibility: ["brain_parenchyma"],
+  fazekas: ["brain_parenchyma"],
+  demyelinating_lesion: ["brain_parenchyma"],
+  contusion: ["brain_parenchyma"],
+  dai: ["brain_parenchyma"],
+  hippocampus_pattern: ["brain_parenchyma"],
+  cavernoma: ["brain_parenchyma"],
+  avm: ["brain_parenchyma"],
+  mass_effect: ["brain_parenchyma"],
+  edema: ["brain_parenchyma"],
+};
+
+/**
+ * The whole-examination normals a concept supersedes. Unknown concepts and empty
+ * input supersede nothing — the same conservative default as the rest of the
+ * canon, so an unclassified concept cannot delete a sentence.
+ */
+export function globalNormalsSupersededBy(
+  concept: string | null | undefined,
+): readonly CanonicalConceptId[] {
+  if (!concept) return [];
+  return GLOBAL_NORMAL_SUPERSESSION[concept] ?? [];
+}

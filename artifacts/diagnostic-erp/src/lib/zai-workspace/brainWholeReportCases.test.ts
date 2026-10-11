@@ -101,6 +101,11 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.hasNormal("hemorrhage")).toBe(false);
     expect(r.hasNormal("basal_ganglia")).toBe(false);
     expect(r.hasNormal("midline")).toBe(false);
+    // An intraparenchymal hemorrhage is a parenchymal lesion, so the
+    // whole-examination "Brain parenchyma shows normal signal intensity…" goes
+    // with it. Explicit supersession, not a word match — see
+    // GLOBAL_NORMAL_SUPERSESSION in conceptCanon/contentPacks.ts.
+    expect(r.hasNormal("brain_parenchyma")).toBe(false);
     // Everything they say nothing about survives.
     expect(r.hasNormal("infarct")).toBe(true);
     expect(r.hasNormal("diffusion")).toBe(true);
@@ -129,6 +134,7 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.findings).toMatch(/no hemorrhagic transformation/i);
     expect(r.hasNormal("infarct")).toBe(false);
     expect(r.hasNormal("diffusion")).toBe(false);
+    expect(r.hasNormal("brain_parenchyma")).toBe(false);
     // An infarct is not a hemorrhage, and must not retire the hemorrhage denial.
     expect(r.hasNormal("hemorrhage")).toBe(true);
     expect(r.hasNormal("ventricles")).toBe(true);
@@ -244,12 +250,16 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.hasNormal("hemorrhage")).toBe(true);
     expect(r.hasNormal("ventricles")).toBe(true);
     expect(r.hasNormal("midline")).toBe(true);
-    // Deliberately not asserted: whether the study-wide parenchyma normal
-    // survives. A focal encephalomalacia does contradict "Brain parenchyma shows
-    // normal signal intensity", and the shipped tile leaves it standing — for the
-    // acute and hemorrhage boxes too (measured in the print artifacts). That is a
-    // separate defect from the DWI/ADC one this case pins, and it is recorded as
-    // open rather than blessed here.
+    // The parenchyma normal goes: encephalomalacia with gliosis is lost
+    // parenchyma, and an unqualified whole-examination statement that it is all
+    // normal cannot stand next to that. The structures this hemispheric lesion
+    // says nothing about keep their own normals — global statements fall, region
+    // statements do not. That split is the supersession contract, not a word
+    // match on "parenchyma".
+    expect(r.hasNormal("brain_parenchyma")).toBe(false);
+    expect(r.hasNormal("cerebellum")).toBe(true);
+    expect(r.hasNormal("brainstem")).toBe(true);
+    expect(r.hasNormal("basal_ganglia")).toBe(true);
 
     expect(r.impression).toMatch(/chronic right cerebral infarct/i);
     expect(r.impression).not.toMatch(/restricted diffusion/i);
@@ -258,8 +268,7 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.bolded.join(" ")).not.toMatch(/no restricted diffusion/i);
   });
 
-  it("a higher Fazekas grade replaces the lower one instead of sitting beside it", () => {
-    // The covering rule must not freeze the report: two statements that assert the
+  it("a higher Fazekas grade replaces the lower one instead of sitting beside it", () => {    // The covering rule must not freeze the report: two statements that assert the
     // same concepts differ only in grade, so the second legitimately overwrites
     // the first. Without that arm, a radiologist who upgrades 1 → 3 ends up
     // reporting both grades on the same patient.
@@ -293,7 +302,10 @@ describe("MRI Brain — whole reports from Quick Select", () => {
       reset();
       for (const [label, side] of script) click(label, side);
       const text = useWorkspace.getState().findingsText;
-      // Every scaffold normal that the report also contradicts by name is a defect.
+      // A scaffold normal the report also contradicts by name is a defect —
+      // including the global parenchyma row, which used to be exempted here
+      // because no mechanism could retire it. It has a supersession contract now,
+      // so the exemption is gone rather than left behind as a blind spot.
       for (const row of rows) {
         if (!text.includes(row.renderedText.trim())) continue;
         const claimsOppositeSite = script.some(([label]) => {
@@ -301,18 +313,152 @@ describe("MRI Brain — whole reports from Quick Select", () => {
           return tile.anatomicalSection
             && row.renderedText.toLowerCase().includes(tile.anatomicalSection.toLowerCase());
         });
-        if (claimsOppositeSite && row.concept !== "brain_parenchyma") {
+        if (claimsOppositeSite) {
           throw new Error(
             `${script.map(([l]) => l).join(" + ")} keeps "${row.renderedText}" standing `
             + `while also naming ${tileSectionOf(script)}`,
           );
         }
       }
-      // The scaffold's untouched rows are always present in all six.
+      // The scaffold's untouched rows are always present in all seven.
       expect(text).toMatch(/Brainstem shows normal morphology/);
       expect(text).toMatch(/Cerebellar hemispheres show normal morphology/);
     }
   });
+});
+
+/**
+ * Several abnormalities on one report — the cases where a retirement rule that
+ * reaches too far does its damage.
+ *
+ * Each script clicks two boxes and checks four things at once: both abnormalities
+ * survive in the findings body, the whole-examination parenchyma normal is gone
+ * exactly when at least one lesion sits inside the parenchyma, the region normals
+ * nobody spoke about are all still there, and every sentence on the page is one
+ * the radiologist either clicked or the scaffold shipped — the "no invented
+ * findings" half, which is what a fold or a paraphrase quietly breaks.
+ */
+describe("MRI Brain — several abnormalities in one report", () => {
+  const tileFor = (label: string) => {
+    const tile = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === label);
+    if (!tile) throw new Error(`${label} is not in the catalogue`);
+    return tile;
+  };
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const sentencesIn = (text: string) =>
+    text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.length > 8);
+  const BASELINE_SENTENCES = (MRI_BRAIN_STANDARD_NORMAL_MANIFEST.observations ?? [])
+    .filter((o) => o.field === "findings").map((o) => norm(o.renderedText.trim()));
+
+  type Script = {
+    clicks: Array<[string, "left" | "right" | undefined]>;
+    /** A phrase proving each clicked abnormality is still on the page. */
+    both: RegExp[];
+    /** Whether the global parenchyma normal should be gone after these clicks. */
+    globalGone: boolean;
+    /** Normals no box in this script speaks about, so all must survive. */
+    survive: string[];
+  };
+
+  const SCRIPTS: Script[] = [
+    {
+      // Acute infarction with small-vessel change: two parenchymal claims, one
+      // focal and one diffuse, neither allowed to eat the other.
+      clicks: [["Acute infarct (DWI)", "right"], ["Fazekas 2", undefined]],
+      both: [/Restricted diffusion in the right MCA territory/i, /Fazekas grade 2/i],
+      globalGone: true,
+      survive: ["hemorrhage", "ventricles", "basal_ganglia", "midline", "extra_axial",
+        "brainstem", "cerebellum", "posterior_fossa", "vascular_flow_voids"],
+    },
+    {
+      clicks: [["Basal ganglia hemorrhage", "left"], ["Cerebral edema", undefined]],
+      both: [/left basal ganglia/i, /diffuse edema/i],
+      globalGone: true,
+      survive: ["infarct", "diffusion", "ventricles", "extra_axial", "brainstem",
+        "cerebellum", "posterior_fossa"],
+    },
+    {
+      clicks: [["Mass lesion", "right"], ["Cerebral edema", undefined]],
+      both: [/right mass lesion/i, /surrounding edema/i, /diffuse edema/i],
+      globalGone: true,
+      survive: ["hemorrhage", "infarct", "diffusion", "ventricles", "midline",
+        "basal_ganglia", "extra_axial", "cerebellum"],
+    },
+    {
+      // Chronic infarct plus generalized atrophy: atrophy is a volume claim, so it
+      // retires nothing of its own, and neither box may decide the diffusion
+      // question for the radiologist.
+      clicks: [["Chronic infarct", "right"], ["Cerebral atrophy", undefined]],
+      both: [/consistent with chronic infarct/i, /Generalized cerebral atrophy/i],
+      globalGone: true,
+      survive: ["hemorrhage", "diffusion", "ventricles", "midline", "basal_ganglia",
+        "extra_axial", "brainstem", "cerebellum"],
+    },
+    {
+      clicks: [["Contusion", "right"], ["Chronic infarct", "left"]],
+      both: [/right cerebral contusion/i, /encephalomalacia with gliosis in the left hemisphere/i],
+      globalGone: true,
+      // `infarct` is not in the list: the chronic box denies it on purpose.
+      survive: ["diffusion", "ventricles", "midline", "basal_ganglia",
+        "extra_axial", "brainstem", "cerebellum"],
+    },
+    {
+      // Bilateral disease: a left-sided hemorrhage must not overwrite a
+      // right-sided contusion, and the laterality gate is what stops it.
+      clicks: [["Basal ganglia hemorrhage", "left"], ["Contusion", "right"]],
+      both: [/intraparenchymal hemorrhage in the left basal ganglia/i, /right cerebral contusion/i],
+      globalGone: true,
+      survive: ["infarct", "diffusion", "ventricles", "extra_axial", "brainstem",
+        "cerebellum", "posterior_fossa"],
+    },
+    {
+      // The negative control: a convexity collection with a shift is extra-axial
+      // work, so the parenchyma normal has to survive it.
+      clicks: [["Subdural hematoma", "left"], ["Midline shift", "right"]],
+      both: [/over the left cerebral convexity/i, /Midline shift of ___ mm toward the right/i],
+      globalGone: false,
+      survive: ["brain_parenchyma", "infarct", "diffusion", "ventricles", "basal_ganglia",
+        "brainstem", "cerebellum", "posterior_fossa"],
+    },
+  ];
+
+  for (const script of SCRIPTS) {
+    const name = script.clicks.map(([label]) => label).join(" + ");
+    it(`${name}: both findings survive, the global normal follows the lesion, nothing is invented`, () => {
+      reset();
+      for (const [label, side] of script.clicks) click(label, side);
+      const r = report();
+
+      for (const phrase of script.both) expect(r.findings).toMatch(phrase);
+      expect(r.hasNormal("brain_parenchyma")).toBe(!script.globalGone);
+      for (const concept of script.survive) {
+        expect(r.hasNormal(concept), `${name} retired the ${concept} normal`).toBe(true);
+      }
+
+      // Nothing invented: every sentence is either a surviving scaffold normal or
+      // part of a sentence the radiologist clicked, with {side} filled in.
+      const allowed = new Set<string>(BASELINE_SENTENCES);
+      for (const [label, side] of script.clicks) {
+        for (const s of sentencesIn(tileFor(label).sentence.replace(/\{side\}/g, side ?? ""))) {
+          allowed.add(norm(s));
+        }
+      }
+      for (const s of sentencesIn(r.findings)) {
+        expect(allowed.has(norm(s)), `${name} printed an invented sentence: ${s}`).toBe(true);
+      }
+
+      // The bottom line carries every clicked abnormality's own conclusion.
+      for (const [label, side] of script.clicks) {
+        const line = (tileFor(label) as { impressionSentence?: string }).impressionSentence;
+        if (!line || /\{(?!side\})/.test(line)) continue;
+        expect(norm(r.impression), `${name}: ${label} lost its impression line`)
+          .toContain(norm(line.replace(/\{side\}/g, side ?? "")));
+      }
+      const bolded = r.bolded.join(" ");
+      for (const phrase of script.both) expect(bolded).toMatch(phrase);
+      expect(bolded).not.toMatch(/normal signal intensity|shows normal morphology|are unremarkable|are preserved/);
+    });
+  }
 });
 
 function tileSectionOf(script: Array<[string, "left" | "right" | undefined]>): string {
