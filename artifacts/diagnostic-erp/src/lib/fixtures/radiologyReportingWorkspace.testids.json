@@ -3,7 +3,7 @@
   "phase": 1,
   "capturedAt": "2026-09-26",
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
-  "note": "Updated when the Print action joined the top bar (btn-workspace-print); previously when the MRI abnormal strip landed (mri-abnormal-*).",
+  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A).",
   "declaredInJsx": [
     "abnormal-pattern-apply",
     "abnormal-pattern-dismiss",
@@ -23,6 +23,7 @@
     "footer-save-and-next",
     "full-normal-starting-canvas",
     "generate-local-impression",
+    "generate-professional-report",
     "impression-needs-refresh",
     "layout-mode-selector",
     "leave-dirty-dialog",

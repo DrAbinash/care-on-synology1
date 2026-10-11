@@ -117,7 +117,9 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * two PRs, and they agreed.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  [CANVAS]: 60,
+  // 61, not 60: Generate Professional Report is a new clinical writer in the
+  // Starting Canvas header and gates on the composed lock like the rest of them.
+  [CANVAS]: 61,
   [RAIL]: 34,
   [VIEWER]: 7,
 };
