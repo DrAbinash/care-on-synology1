@@ -1182,12 +1182,6 @@ export function detectClinicalRelationLosses(
         .join("/")}`,
     );
   }
-  if (repositionedMeasurements.length > 0) {
-    errors.push("measurement_repositioned");
-    warnings.push(
-      `Measurement(s) moved to a different anatomical level: ${repositionedMeasurements.join("; ")}.`,
-    );
-  }
 
   // 1b) Several measurements dictated in one sentence: each number keeps the
   // level it was stated against.
@@ -1204,7 +1198,10 @@ export function detectClinicalRelationLosses(
       repositionedMeasurements.push(label);
     }
   }
-  if (repositionedMeasurements.length > 0 && !errors.includes("measurement_repositioned")) {
+  // One owner for the refusal, after both arms have reported: deleting this block
+  // turns both relation rules off, which is the only honest way for a mutation
+  // test to show that a duplicated push would have hidden it.
+  if (repositionedMeasurements.length > 0) {
     errors.push("measurement_repositioned");
     warnings.push(
       `Measurement(s) moved to a different anatomical level: ${repositionedMeasurements.join("; ")}.`,
