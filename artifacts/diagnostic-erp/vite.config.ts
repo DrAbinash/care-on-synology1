@@ -126,6 +126,15 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
+      // Frozen key images are served by the API at bare "/uploads/*" — a sibling
+      // of /api, not under it (docker/nginx.conf routes both). Their signed
+      // grant URLs are root-relative, so without this the dev server answers
+      // them with index.html and every attached image renders broken locally
+      // while working in production.
+      "/uploads": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
     },
   },
   preview: {
