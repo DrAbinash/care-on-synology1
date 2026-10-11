@@ -279,18 +279,56 @@ export const ComposerDraftOutputSchema = z.object({
 export type ComposerDraftOutput = z.infer<typeof ComposerDraftOutputSchema>;
 
 /**
- * Chat-style emphasis a report cannot carry. Measured live on 2026-10-11:
- * `gemma3:12b` answered a whole-spine PROFESSIONALIZE with
- * `**Cervical Spine:** There is loss of cervical lordosis.` and CARE's guards
- * accepted it — the report of record is rendered as plain text into print HTML
- * and PDF, where those two characters print literally. Nothing clinical lives in
- * an emphasis marker, so the marker is dropped at the parse boundary instead of
- * becoming wording the radiologist then has to delete by hand.
+ * Models put the printer's own markers into their prose. Seen in real output from
+ * this composer path (2026-10-11, gemma3:12b): `**Findings:**` for emphasis, a
+ * label-only line copied out of the context block, and a whole line beginning
+ * `TECHNIQUE:` repeated from the protected technique field.
+ *
+ * All three reach the patient's report as structure, not as text: the print
+ * surface would honour the asterisks, a `Findings:` line prints a nested FINDINGS
+ * heading, and an echoed technique duplicates a section the radiologist already
+ * owns. So the contract strips them here — one owner, every provider, before
+ * validation — and the two cases are handled differently on purpose:
+ *
+ *   TECHNIQUE / CLINICAL HISTORY / COMPARISON → the line goes. That content has
+ *     its own protected field and its own printed section; a copy inside Findings
+ *     is a duplicate, and dropping it loses nothing.
+ *   FINDINGS / IMPRESSION / RECOMMENDATION    → only the label goes, the sentence
+ *     stays. Deleting the sentence could delete a finding, which is never safe.
+ *
+ * No clinical wording is rewritten; only markup and echoed section labels move.
  */
-const EMPHASIS_MARKER_RE = /\*\*|__/g;
+const EMPHASIS_RE = /\*\*([^*\n]+)\*\*|__([^_\n]+)__/g;
+const OWN_SECTION_LINE_RE = /^\s*(?:TECHNIQUE|CLINICAL\s+HISTORY|COMPARISON)\s*(?::|$)/i;
+const FIELD_LABEL_ONLY_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:?\s*$/i;
+const FIELD_LABEL_PREFIX_RE = /^\s*(?:FINDINGS|IMPRESSION|RECOMMENDATION)\s*:\s+/i;
 
-function stripEmphasisMarkers(text: string): string {
-  return text.replace(EMPHASIS_MARKER_RE, "");
+export function normalizeComposerDraftText(text: string): string {
+  const unemphasised = (text ?? "").replace(EMPHASIS_RE, (_m, a, b) => String(a ?? b ?? ""));
+  const kept = unemphasised
+    .split("\n")
+    .filter((line) => !OWN_SECTION_LINE_RE.test(line) && !FIELD_LABEL_ONLY_RE.test(line))
+    .map((line) => line.replace(FIELD_LABEL_PREFIX_RE, ""));
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * A proposed observation row is prose destined for the canonical ledger, so it
+ * crosses the same printer-safe boundary as the three narrative fields. Without
+ * this a `**Diffuse** disc bulge at L4-5.` survives into a stored observation and
+ * the radiologist reviews markers the report cannot carry.
+ */
+function normalizeProposedObservation(o: ProposedObservation): ProposedObservation {
+  return {
+    ...o,
+    findingsText: normalizeComposerDraftText(o.findingsText),
+    ...(o.impressionText !== undefined && o.impressionText !== null
+      ? { impressionText: normalizeComposerDraftText(o.impressionText) }
+      : {}),
+  };
 }
 
 export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null {
@@ -304,18 +342,10 @@ export function parseComposerDraftJson(raw: string): ComposerDraftOutput | null 
     const draft = result.data;
     return {
       ...draft,
-      findings: stripEmphasisMarkers(draft.findings ?? ""),
-      impression: stripEmphasisMarkers(draft.impression ?? ""),
-      recommendation: stripEmphasisMarkers(draft.recommendation ?? ""),
-      ...(draft.observations
-        ? {
-            observations: draft.observations.map((o) => ({
-              ...o,
-              findingsText: stripEmphasisMarkers(o.findingsText ?? ""),
-              ...(o.impressionText ? { impressionText: stripEmphasisMarkers(o.impressionText) } : {}),
-            })),
-          }
-        : {}),
+      findings: normalizeComposerDraftText(draft.findings),
+      impression: normalizeComposerDraftText(draft.impression),
+      recommendation: normalizeComposerDraftText(draft.recommendation),
+      ...(draft.observations ? { observations: draft.observations.map(normalizeProposedObservation) } : {}),
     };
   } catch {
     return null;

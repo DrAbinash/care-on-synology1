@@ -265,6 +265,7 @@ already writes at READY — no new columns, so no migration.
 `level_dropped`, `laterality_dropped`, `section_dropped`, `severity_dropped`,
 `morphology_dropped`, `location_dropped`, `grade_changed`,
 `measurement_repositioned`, `certainty_escalation`, `clinical_polarity_flip`,
+`denied_finding_asserted`,
 `invented_normal_finding`, `technique_invention`, `contrast_status_changed`,
 `PHI_TEXT_CLOUD_BLOCKED`, `cloud_vision_not_allowed`. Every one of these arrives with
 `job.safeError` plus a `provenance.degradedReason` written as a sentence, not a code.
@@ -275,6 +276,14 @@ suspected finding stated as definite, a documented extrusion returned as "no ext
 normal cord for anatomy nobody described, 3T or an extra sequence or a comparison study the
 study never had, and contrast that was not given. They are errors, so the job never reaches
 READY, and each has a positive control proving the honest wording of the same report passes.
+
+`clinical_polarity_flip` covers one direction only — a documented abnormality returned as a
+negative. Its reverse, a denied finding returned as asserted, is `denied_finding_asserted`,
+which #915 already owns for the narrative fields with a stricter per-sentence rule that runs
+for every kind. Merging the two branches showed both guards firing on the same inverted
+sentence, so the relation guard's duplicate arm was deleted and #915's rule is now also put
+through the structured `OBSERVATIONS` rows, whose three narrative fields are empty by design.
+One inverted finding, one code, one sentence for the radiologist to read.
 
 ## Y.8 Deterministic independence
 
@@ -332,14 +341,15 @@ this tree, with its file:line, rather than assumed.
 
 | action | what it is | whose |
 | --- | --- | --- |
-| **Generate Professional Report** | deterministic report assembly from the format + observation ledger, no model in the loop | PR #917 — `store.ts:1528` in that head, button `data-testid="generate-professional-report"` |
+| **Generate Professional Report** | deterministic report assembly from the format + observation ledger, no model in the loop | PR #917 — `generateProfessionalReport` in `lib/zai-workspace/store.ts`, button `data-testid="generate-professional-report"` |
 | **Professionalize Report** | AI rewrite of the report the radiologist already has | this contract, `jobKind: "PROFESSIONALIZE"` |
 | **Structure Observations** | AI proposal of observation rows from dictated shorthand | this contract, `jobKind: "OBSERVATIONS"` |
 | **Combine Reports** | AI synthesis of the current report with reports the app supplied | this contract, `jobKind: "COMBINE"` |
 
-`generateProfessionalReport` does not exist in `main` yet; it arrives with #917. Nothing here
-renames it, writes to it, or replaces it — the AI operations produce a **proposal** and the
-deterministic generator produces the **report**. Keep them two buttons with two names.
+`generateProfessionalReport` is on `main` as of #917, and this branch is merged onto it.
+Nothing here renames it, writes to it, or replaces it — the AI operations produce a
+**proposal** and the deterministic generator produces the **report**. Keep them two buttons
+with two names.
 
 ## Z.2 What the caller must send
 
@@ -366,7 +376,8 @@ it, then `APPLIED | DISCARDED | CANCELLED | OBSOLETE`.
 - The write happens in `applyAccepted()` (`hooks/useReportComposer.ts:401`): freshness
   recheck, STALE refusal, clinical-significance guard, `materializeAcceptedText(...)`
   (`:15`, used at `:488`), then `applyAiComposerAccepted(...)`
-  (`lib/zai-workspace/store.ts:887`, implemented at `:3052`), then `opts.persistAccepted(tag)`
+  (`lib/zai-workspace/store.ts`, declared at `:911` and implemented at `:3250` on the merged
+  head), then `opts.persistAccepted(tag)`
   (`:518`) and `/applied` containment proof. **Reuse this path; do not write another applier.**
   `applyAiComposerAccepted` deliberately does not touch `appliedPathologyPatches` — AI wording
   is presentation, never a ledger edit.
@@ -375,7 +386,8 @@ it, then `APPLIED | DISCARDED | CANCELLED | OBSOLETE`.
   the workspace's own ledger action, not this API. Nothing may generate a final report from
   unreviewed extraction, and that is enforced server-side rather than by convention.
 - The signed-report protections are unchanged: a finalized report refuses composition at
-  enqueue (`finalized`) and refuses the write at apply (`refuseSignedMutation`, store.ts:3080).
+  enqueue (`finalized`) and refuses the write at apply (`refuseSignedMutation`, store.ts:3278
+  on the merged head).
 
 ## Z.4 Provider, model and cost are reported, not guessed
 

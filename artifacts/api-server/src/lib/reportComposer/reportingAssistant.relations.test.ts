@@ -286,6 +286,22 @@ describe("a documented abnormality may not come back as a negative", () => {
     ]));
     expect(r.errors).not.toContain("clinical_polarity_flip");
   });
+
+  it("reports the reverse inversion once, under its existing owner", () => {
+    // A denied finding coming back ASSERTED is the other half of a flipped
+    // polarity, and #915 already guards it for the narrative fields — with a
+    // per-sentence rule that runs for every kind, so it is the stronger of the
+    // two. The relation guard used to check the same direction a second way,
+    // which reached the radiologist as two faults for one inverted sentence. One
+    // finding, one code.
+    const r = pro(brainSnapshot(), brainBroken([
+      "SWI sequences demonstrate no haemorrhage.",
+      "SWI sequences demonstrate an intracranial haemorrhage.",
+    ]));
+    expect(r.errors).toContain("denied_finding_asserted");
+    expect(r.errors).not.toContain("clinical_polarity_flip");
+    expect(r.relations?.polarityFlips).toEqual([]);
+  });
 });
 
 describe("the examination may not be embellished", () => {
@@ -542,6 +558,29 @@ describe("the structured answer carries the same obligations", () => {
     ]);
     expect(r.errors).toContain("invented_normal_finding");
     expect(r.relations?.inventedNormals).toContain("conus");
+  });
+
+  it("blocks a row that asserts what the dictation denied", () => {
+    // The narrative-field denial rule reads Findings, Impression and
+    // Recommendation — all three empty for this task, because the answer is the
+    // rows. The row pruner keeps such a row on purpose (its own comment names
+    // "restates a negation as a finding" as the cost), so without this wiring a
+    // dictation of "No right disc extrusion at L5-S1" comes back as a proposed
+    // extrusion at that level and the radiologist is asked to approve an absence
+    // as a presence.
+    const dictated
+      = "L4-5 diffuse disc bulge with bilateral LR narrowing and canal 8.2 mm. No right disc extrusion at L5-S1.";
+    const draft = asDraft([
+      faithfulRows()[0]!,
+      row("L5-S1", "right", "", "Right disc extrusion is present at L5-S1."),
+    ]);
+    const r = validateComposerOutput(snap({ findings: dictated }), draft as ComposerDraftOutput, {
+      kind: "OBSERVATIONS",
+    });
+    expect(r.errors).toContain("denied_finding_asserted");
+    expect(r.warnings.join(" ")).toContain(
+      "A proposed observation asserts a finding the dictation denied",
+    );
   });
 
   it("deletes a row whose level the dictation never named", () => {

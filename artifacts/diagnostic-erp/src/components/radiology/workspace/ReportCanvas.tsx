@@ -130,6 +130,7 @@ import { ChocolateBoxMacros } from "@/components/radiology/zai-workspace/chocola
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
   Lock, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, Pause, Clock, Sparkles, ShieldCheck,
+  FileCheck,
   Brain, Activity, Zap, Share2, Eye, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen,
   CheckCircle2, Save,
@@ -657,7 +658,39 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         <Button
                           type="button"
                           size="sm"
-                          className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+                          className="h-6 text-[10px] bg-sky-700 hover:bg-sky-800 text-white shrink-0"
+                          onClick={() => {
+                            const outcome = useWorkspace.getState().generateProfessionalReport(
+                              billedStudyContextForNormal(
+                                studySetup.studyContext,
+                                billedNameFromWorklistRow(workflow.currentRow),
+                              ),
+                            );
+                            if (outcome.status === "generated") {
+                              toast({
+                                title: "Professional report generated",
+                                description: outcome.observationsNeedingReview > 0
+                                  ? `${outcome.formatName} — ${outcome.observationsNeedingReview} finding(s) need your review.`
+                                  : `${outcome.formatName} — review, then save or print.`,
+                              });
+                              return;
+                            }
+                            // A refusal is not a failure to retry silently: the report
+                            // stayed exactly as it was, and the reason names what to do.
+                            toast({ variant: "destructive", title: "Nothing generated", description: outcome.reason });
+                          }}
+                          data-testid="generate-professional-report"
+                          disabled={contentLocked}
+                          title="Build the full report from this examination's approved normal, your recorded findings and your measurements. No AI."
+                        >
+                          <FileCheck size={11} className="mr-1" />
+                          Generate Professional Report
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] shrink-0"
                           onClick={() => {
                             const state = useWorkspace.getState();
                             if (state.reportFormats.length === 0) {

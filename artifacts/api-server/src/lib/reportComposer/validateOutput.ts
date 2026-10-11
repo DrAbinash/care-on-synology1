@@ -877,11 +877,11 @@ export function detectConservationLosses(
 
 /** A claim lives in a sentence; a rewrite may move it but not detach it. */
 function claimSentences(text: string): string[] {
-  return (text ?? "")
-    .replace(/\r/g, "")
-    .split(/(?<=[.;])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  // Dictated findings run together with semicolons ("L4-5 bulge; L5-S1 extrusion"),
+  // and a measurement's anatomical owner is only knowable inside one level clause,
+  // so the relation rules read a finer sentence than the prose-preservation rules
+  // need. Same splitter, one extra boundary — not a second implementation.
+  return splitReportSentences(text, true);
 }
 
 /**
@@ -1128,12 +1128,17 @@ export function detectClinicalRelationLosses(
     );
   }
 
-  // 3) A documented abnormality may not come back as a negative (and the reverse).
+  // 3) A documented abnormality may not come back as a negative.
+  //
+  // The reverse direction — a denied finding reappearing as asserted — is owned
+  // by `denied_finding_asserted` above, which reads the same terms with a stricter
+  // per-sentence rule and reaches every kind, narrative fields and rows alike.
+  // Checking it here too would report one inverted finding as two separate faults
+  // and give the radiologist two sentences to read for one decision.
   for (const hint of ABNORMALITY_HINTS) {
     const inPolarity = termPolarity(inputClaims, hint);
     const outPolarity = termPolarity(outputClaims, hint);
     if (inPolarity === "positive" && outPolarity === "negative") polarityFlips.push(`${hint}→negated`);
-    else if (inPolarity === "negative" && outPolarity === "positive") polarityFlips.push(`${hint}→asserted`);
   }
   if (polarityFlips.length > 0) {
     errors.push("clinical_polarity_flip");
@@ -1319,6 +1324,77 @@ export function pruneUngroundedObservationRows(
 }
 
 /**
+ * Findings the radiologist denied AND never asserted anywhere in the input, plus
+ * the sentence splitter that decides it. A denial is a cue BEFORE the term in the
+ * same sentence ("No intracranial haemorrhage").
+ *
+ * A term the input both denies and affirms — "No significant disc bulge" next to
+ * an observation "L4-5 diffuse disc bulge" — is not a denial, it is a
+ * level-specific mixed finding, and treating it as a denial would refuse honest
+ * reports. Only a term that NEVER appears in an affirmative input sentence counts.
+ */
+const DENIAL_CUE_RE = /\b(no|not|without|absence|negative|unremarkable|free)\b/i;
+
+/**
+ * The one sentence splitter in this file.
+ *
+ * `splitClauses` additionally breaks a dictated semicolon list into its clauses.
+ * It is opt-in because the two callers ask different questions: "was this finding
+ * denied?" is answered per sentence, while "which level does this number belong
+ * to?" is only answerable per clause, since one dictated line often carries two
+ * levels.
+ */
+function splitReportSentences(text: string, splitClauses = false): string[] {
+  const boundary = splitClauses ? /(?<=[.;!?])\s+|\n+/ : /(?<=[.!?])\s+|\n+/;
+  return (text ?? "")
+    .split(boundary)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function findDeniedFindings(corpus: string): Set<string> {
+  const denied = new Set<string>();
+  const affirmed = new Set<string>();
+  for (const sentence of splitReportSentences(corpus.toLowerCase())) {
+    for (const hint of ABNORMALITY_HINTS) {
+      if (!sentence.includes(hint)) continue;
+      const at = sentence.indexOf(hint);
+      if (at > 0 && DENIAL_CUE_RE.test(sentence.slice(0, at))) denied.add(hint);
+      else affirmed.add(hint);
+    }
+  }
+  for (const term of affirmed) denied.delete(term);
+  return denied;
+}
+
+/**
+ * The sentences that assert a finding the input denied — `term: sentence`, one per
+ * distinct pair, so the refusal names the finding AND the wording that carries it.
+ *
+ * This is the one owner of "denied in, asserted out". The narrative fields and the
+ * structured OBSERVATIONS rows both come through here, because a row is the same
+ * medicine in a different container: `No intracranial haemorrhage.` dictating a
+ * proposed row `Haemorrhage, right basal ganglia.` is the inversion the rule
+ * exists for, and a check that only reads Findings/Impression would let it stand.
+ */
+function deniedFindingAssertions(corpus: string, texts: string[]): string[] {
+  const deniedTerms = findDeniedFindings(corpus);
+  if (deniedTerms.size === 0) return [];
+  const asserted: string[] = [];
+  for (const text of texts) {
+    for (const sentence of splitReportSentences(text)) {
+      const lower = sentence.toLowerCase();
+      for (const term of deniedTerms) {
+        if (!lower.includes(term) || DENIAL_CUE_RE.test(lower)) continue;
+        const label = `${term}: ${sentence.trim()}`;
+        if (!asserted.includes(label)) asserted.push(label);
+      }
+    }
+  }
+  return asserted;
+}
+
+/**
  * Flag abnormality terms that appear in AI output but nowhere in radiologist-supplied input.
  *
  * PR #657: also detects laterality swaps, level changes, and severity escalations.
@@ -1397,6 +1473,18 @@ export function validateComposerOutput(
         if (!errors.includes(e)) errors.push(e);
       }
       for (const w of relations.warnings) warnings.push(w);
+
+      // "A finding the input denied must not come back asserted" already has one
+      // owner in this file, and that owner reads the three narrative fields —
+      // which an OBSERVATIONS answer leaves empty by design. So the rows are put
+      // through the same rule rather than through a second implementation of it.
+      const deniedInRows = deniedFindingAssertions(corpus, [rowText]);
+      if (deniedInRows.length > 0) {
+        if (!errors.includes("denied_finding_asserted")) errors.push("denied_finding_asserted");
+        warnings.push(
+          `A proposed observation asserts a finding the dictation denied: ${deniedInRows.join(" | ")}`,
+        );
+      }
     }
   }
 
@@ -1411,6 +1499,20 @@ export function validateComposerOutput(
     warnings.push(
       `AI mentioned terms not grounded in supplied observations: ${unsupportedMentions.join(", ")}`,
     );
+  }
+
+  // A finding the input DENIED must not come back asserted. "No intracranial
+  // haemorrhage" rewritten into "Haemorrhage is present" keeps every keyword, so
+  // no grounding check sees it — the medicine is exactly inverted. Hard-fail only
+  // where it is unambiguous: a denied term in a sentence with no denial cue at all.
+  const deniedAssertions = deniedFindingAssertions(corpus, [
+    draft.findings,
+    draft.impression,
+    draft.recommendation,
+  ]);
+  if (deniedAssertions.length > 0) {
+    errors.push("denied_finding_asserted");
+    warnings.push(`AI asserted a finding the input denied: ${deniedAssertions.join(" | ")}`);
   }
 
   // Advisory heuristics (multi-finding false positives possible) — keep warnings.
@@ -1432,6 +1534,27 @@ export function validateComposerOutput(
   const missingMeasurements = detectMissingMeasurements(corpus, output);
   if (missingMeasurements.length > 0) {
     warnings.push(`AI may have dropped measurements (advisory): ${missingMeasurements.join(", ")}`);
+  }
+
+  // Verbatim repetition is not a second finding — it is one sentence printed twice,
+  // which CARE's style rules forbid. Advisory on purpose: the radiologist decides,
+  // and nothing here silently removes clinical text.
+  const seenSentence = new Map<string, string>();
+  const repeated: string[] = [];
+  for (const field of [draft.findings, draft.impression]) {
+    for (const raw of (field ?? "").split(/(?<=[.!?])\s+|\n+/)) {
+      const sentence = raw.trim();
+      const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (key.length < 24) continue; // "Normal." is not evidence of duplication
+      if (seenSentence.has(key)) {
+        if (!repeated.includes(seenSentence.get(key)!)) repeated.push(seenSentence.get(key)!);
+      } else {
+        seenSentence.set(key, sentence);
+      }
+    }
+  }
+  if (repeated.length > 0) {
+    warnings.push(`AI repeated a sentence verbatim: ${repeated.join(" | ")}`);
   }
 
   // ── Definite clinical mutations → hard-block READY ─────────────────────

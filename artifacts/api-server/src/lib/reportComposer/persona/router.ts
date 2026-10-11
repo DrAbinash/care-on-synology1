@@ -28,9 +28,41 @@ import { CARE_MRI_LUMBAR } from "./mriSpineLumbar";
 import { CARE_CT } from "./ct";
 import { CARE_USG } from "./usg";
 import { CARE_MAMMOGRAPHY } from "./mammography";
+import { CARE_XRAY } from "./xray";
+import { CARE_DOPPLER } from "./doppler";
+import { CARE_MRCP } from "./mrcp";
 import { CARE_SELECTED_IMAGE_ASSISTED } from "./selectedImages";
 
-export const CARE_PERSONA_VERSION = "care-persona-2026.09.selected-image.1";
+export const CARE_PERSONA_VERSION = "care-persona-2026.10.selected-image.modality-coverage.1";
+
+/**
+ * The only fields the router may read as a study-name signal: the canonical
+ * region strings, the DICOM StudyDescription, the resolved protocol and the
+ * structured bodyPart. Deliberately NOT the findings narrative — a report that
+ * happens to mention "carotid" is not evidence that the study WAS a carotid
+ * Doppler, and routing on prose would make the persona change when a
+ * radiologist types a word.
+ */
+function routingStudyText(snapshot: ComposerInputSnapshot): string {
+  return [
+    snapshot.region ?? "",
+    ...(snapshot.regions ?? []),
+    snapshot.studyType ?? "",
+    snapshot.protocol ?? "",
+    snapshot.bodyPart ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+/** Projection radiography. `DX` is shared with mammography, which is matched first. */
+const PLAIN_RADIOGRAPH_MODALITIES = new Set(["DX", "CR", "DR", "XR", "XRAY", "X-RAY"]);
+
+/** Vascular examination names carried by the study context, not the narrative. */
+const VASCULAR_RE = /doppler|venous|venography|artery|arterial|arteriography|carotid|vertebral artery|lower limb|lower extremity|upper limb|upper extremity|\bdvt\b|flux|vascular|haemodialysis|dialysis|fistula|thromb/;
+
+/** Biliary / pancreatic duct MR. */
+const MRCP_RE = /mrcp|cholangiopancreat|biliar|pancreatobiliary|pancreatic duct/;
 
 /**
  * Select the ordered list of persona modules to load for a given snapshot.
@@ -63,6 +95,19 @@ export function selectPersonaModules(snapshot: ComposerInputSnapshot): string[] 
     modules.push(CARE_CT);
   } else if (modality === "US" || modality === "USG") {
     modules.push(CARE_USG);
+  } else if (PLAIN_RADIOGRAPH_MODALITIES.has(modality)) {
+    modules.push(CARE_XRAY);
+  }
+
+  // Sub-specialty addenda — additive, never replacing the modality rules above.
+  // A lower-limb venous study still needs the ultrasound rules; an MRCP still
+  // needs whatever generic MRI rules apply to it.
+  const studyText = routingStudyText(snapshot);
+  if ((modality === "US" || modality === "USG" || modality === "D") && VASCULAR_RE.test(studyText)) {
+    modules.push(CARE_DOPPLER);
+  }
+  if ((modality === "MR" || modality === "MRI") && MRCP_RE.test(studyText)) {
+    modules.push(CARE_MRCP);
   }
 
   // Selected-image assisted mode — additive safety module (never replaces region rules).
@@ -103,3 +148,4 @@ export function hasScreeningComponent(snapshot: ComposerInputSnapshot): boolean 
 export { CARE_RADIOLOGY_MASTER, CARE_REPORT_STYLE, CARE_SAFETY_RULES };
 export { CARE_MRI_BRAIN, CARE_MRI_SPINE, CARE_CT, CARE_USG, CARE_MAMMOGRAPHY };
 export { CARE_MRI_CERVICAL, CARE_MRI_DORSAL, CARE_MRI_LUMBAR, CARE_SELECTED_IMAGE_ASSISTED };
+export { CARE_XRAY, CARE_DOPPLER, CARE_MRCP };

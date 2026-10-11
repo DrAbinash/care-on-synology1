@@ -25,6 +25,7 @@ import type { AiComposeJobKind } from "@workspace/db/schema";
 import { buildCareSystemPrompt, selectPersonaModules, hasScreeningComponent } from "./persona";
 import { CARE_RADIOLOGY_MASTER, CARE_REPORT_STYLE, CARE_SAFETY_RULES } from "./persona";
 import { CARE_MRI_BRAIN, CARE_MRI_SPINE, CARE_CT, CARE_USG, CARE_MAMMOGRAPHY } from "./persona";
+import { CARE_XRAY, CARE_DOPPLER, CARE_MRCP } from "./persona";
 import { validateComposerOutput } from "./validateOutput";
 import { computeSnapshotHashes } from "./snapshot";
 import { parseComposerSnapshot, type ComposerInputSnapshot } from "./types";
@@ -394,12 +395,15 @@ describe("§S 12. Manual protected narrative", () => {
 // ─── §S 13. Unknown family ───────────────────────────────────────────────
 
 describe("§S 13. Unknown family — master/safety only", () => {
-  it("unknown family loads only MASTER + STYLE + SAFETY (no crash)", () => {
+  it("a study no modality rule covers loads only MASTER + STYLE + SAFETY (no crash)", () => {
+    // Was `modality: "XR", region: "Knee"` — which is now a covered case: a knee
+    // film gets CARE_XRAY. The guarantee here is "an uncovered study still gets a
+    // valid persona", so the vehicle has to be a modality genuinely on its own.
     const snap = snapshot({
-      modality: "XR",
-      region: "Knee",
+      modality: "PT",
+      region: "Whole Body",
       family: "unknown",
-      bodyPart: "KNEE",
+      bodyPart: "WHOLE_BODY",
     });
     const modules = selectPersonaModules(snap);
     expect(modules).toHaveLength(3); // MASTER + STYLE + SAFETY only
@@ -408,6 +412,15 @@ describe("§S 13. Unknown family — master/safety only", () => {
     expect(modules[2]).toBe(CARE_SAFETY_RULES);
     // No crash, no irrelevant rules.
     expect(() => buildCareSystemPrompt("FULL_REPORT" as AiComposeJobKind, snap)).not.toThrow();
+  });
+
+  it("a knee X-ray is no longer an uncovered study", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "XR", region: "Knee", family: "unknown", bodyPart: "KNEE" }),
+    );
+    expect(modules).toContain(CARE_XRAY);
+    expect(modules).not.toContain(CARE_CT);
+    expect(modules).not.toContain(CARE_MAMMOGRAPHY);
   });
 });
 
@@ -705,5 +718,150 @@ describe("PR #657 hardening — validator advisory-only (A–E)", () => {
     expect(v.severityEscalations).toContain("mild→severe");
     expect(v.errors).toContain("severity_escalation");
     expect(v.ok).toBe(false);
+  });
+});
+
+// ─── §S 18. Modality coverage — X-ray / Doppler / MRCP ───────────────────
+//
+// "Generate Professional Report" promised seven examination families. Before this
+// PR, a plain film, a vascular study and an MRCP each routed to no modality rules
+// at all (or, for vascular, to the generic ultrasound module), so the model wrote
+// cross-sectional prose over a film report and a clean "no DVT" over a limb that
+// was only half examined.
+
+describe("§S 18. Modality coverage — X-ray / Doppler / MRCP", () => {
+  it("each promised family reaches at least one modality module", () => {
+    const cases: Array<[string, Parameters<typeof snapshot>[0], string]> = [
+      ["MRI spine", { modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar" }, CARE_MRI_SPINE],
+      ["MRI brain", { modality: "MR", region: "Brain", family: "brain" }, CARE_MRI_BRAIN],
+      ["CT", { modality: "CT", region: "Abdomen", family: "abdomen" }, CARE_CT],
+      ["Ultrasound", { modality: "USG", region: "Abdomen", family: "abdomen" }, CARE_USG],
+      ["Mammography", { modality: "MG", region: "Breast", family: "breast" }, CARE_MAMMOGRAPHY],
+      ["X-ray", { modality: "DX", region: "Chest", family: "chest" }, CARE_XRAY],
+      ["Doppler", { modality: "US", region: "Doppler Lower Limb Venous", family: "unknown" }, CARE_DOPPLER],
+      ["MRCP", { modality: "MR", region: "MRCP", family: "unknown" }, CARE_MRCP],
+    ];
+    for (const [label, opts, module] of cases) {
+      const modules = selectPersonaModules(snapshot(opts));
+      expect(modules, label).toContain(module);
+      expect(modules, label).toContain(CARE_RADIOLOGY_MASTER);
+      expect(modules, label).toContain(CARE_SAFETY_RULES);
+    }
+  });
+
+  it("a plain film gets radiograph rules and never mammography or CT rules", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "DX", region: "Chest", family: "chest", bodyPart: "CHEST" }),
+    );
+    expect(modules).toContain(CARE_XRAY);
+    expect(modules).not.toContain(CARE_MAMMOGRAPHY);
+    expect(modules).not.toContain(CARE_CT);
+    expect(CARE_XRAY).toMatch(/Do NOT describe cross-sectional anatomy/);
+  });
+
+  it("a DX breast examination stays mammography, not a plain film", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "DX", region: "Breast", family: "breast" }),
+    );
+    expect(modules).toContain(CARE_MAMMOGRAPHY);
+    expect(modules).not.toContain(CARE_XRAY);
+  });
+
+  it("a vascular study gets the ultrasound rules AND the vascular addendum", () => {
+    const modules = selectPersonaModules(
+      snapshot({
+        modality: "US",
+        region: "Doppler Lower Limb Venous",
+        family: "unknown",
+        studyType: "USG DOPPLER LLE VENOUS",
+      }),
+    );
+    expect(modules).toContain(CARE_USG);
+    expect(modules).toContain(CARE_DOPPLER);
+    // The rule that matters clinically: a half-examined limb cannot be declared clear.
+    expect(CARE_DOPPLER).toMatch(/only allowed when every segment/);
+    expect(CARE_DOPPLER).toMatch(/Do NOT invent a waveform/);
+  });
+
+  it("a routine abdominal ultrasound does not get vascular rules", () => {
+    const modules = selectPersonaModules(
+      snapshot({ modality: "USG", region: "Abdomen", family: "abdomen" }),
+    );
+    expect(modules).toContain(CARE_USG);
+    expect(modules).not.toContain(CARE_DOPPLER);
+  });
+
+  it("MRCP gets the ductal rules; an MRI brain does not", () => {
+    const mrcp = selectPersonaModules(
+      snapshot({ modality: "MR", region: "MRCP", family: "unknown", studyType: "MRI MRCP" }),
+    );
+    expect(mrcp).toContain(CARE_MRCP);
+    // MRCP is fluid-sequence imaging: enhancement is not assumed.
+    expect(CARE_MRCP).toMatch(/Do NOT describe contrast enhancement/);
+    expect(CARE_MRCP).toMatch(/limited sensitivity for small\s+gallbladder stones/);
+
+    const brain = selectPersonaModules(
+      snapshot({ modality: "MR", region: "Brain", family: "brain" }),
+    );
+    expect(brain).not.toContain(CARE_MRCP);
+  });
+
+  it("routing reads the study context, never the findings narrative", () => {
+    // The radiologist is allowed to TYPE the word "carotid" into a brain report.
+    // That must not silently switch the persona to a vascular study.
+    const modules = selectPersonaModules(
+      snapshot({
+        modality: "MR",
+        region: "Brain",
+        family: "brain",
+        findings: "The carotid vessels are normal. Biliary ducts unremarkable.",
+      }),
+    );
+    expect(modules).not.toContain(CARE_DOPPLER);
+    expect(modules).not.toContain(CARE_MRCP);
+    expect(modules).toContain(CARE_MRI_BRAIN);
+  });
+});
+
+// ─── §S 19. Printed-structure contract ──────────────────────────────────
+//
+// The composer returns three plain-text fields; CARE's printer owns the title,
+// the patient lines, the underlined headings, the abnormal-finding bold and any
+// table. That only works if the model writes the structure the printer already
+// parses (`findingsDocument.ts`) and does not write markdown emphasis, which the
+// screen and Word surfaces would print as literal asterisks.
+
+describe("§S 19. Printed-structure contract", () => {
+  it("the style module teaches the heading convention the printer parses", () => {
+    expect(CARE_REPORT_STYLE).toMatch(/PRINTED STRUCTURE/);
+    expect(CARE_REPORT_STYLE).toMatch(/prints as an\s+underlined section heading/);
+    expect(CARE_REPORT_STYLE).toMatch(/"Label: sentence" on one line stays a paragraph/);
+  });
+
+  it("the style module teaches the pipe-table convention for per-level values", () => {
+    expect(CARE_REPORT_STYLE).toMatch(/\| Level \| AP Canal \(mm\) \|/);
+    expect(CARE_REPORT_STYLE).toMatch(/never invent a level to complete a table/);
+  });
+
+  it("the style module forbids markdown emphasis, because the renderer bolds abnormalities itself", () => {
+    expect(CARE_REPORT_STYLE).toMatch(/No markdown emphasis anywhere/);
+    expect(CARE_REPORT_STYLE).toMatch(/CARE's printer bolds abnormal findings lines itself/);
+  });
+
+  it("the style module forbids a second conclusion and permits a supported differential only", () => {
+    expect(CARE_REPORT_STYLE).toMatch(/Do NOT write a second conclusion/);
+    expect(CARE_REPORT_STYLE).toMatch(/Differentials: give them only when/);
+  });
+
+  it("the FULL_REPORT task asks for a finished report and disclaims the title and patient lines", () => {
+    const prompt = buildCareSystemPrompt(
+      "FULL_REPORT" as AiComposeJobKind,
+      snapshot({ modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar" }),
+    );
+    expect(prompt).toMatch(/COMPLETE professional radiology report/);
+    expect(prompt).toMatch(/in CARE's printed order/);
+    expect(prompt).toMatch(/printed-structure convention/);
+    expect(prompt).toMatch(/concise prioritised Impression\s+that agrees with the Findings/);
+    expect(prompt).toMatch(/do not write a title, a patient name\s+line, or markdown emphasis/);
   });
 });
