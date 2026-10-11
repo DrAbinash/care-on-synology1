@@ -487,6 +487,31 @@ describe("a hand-typed deviation over a cervical normal", () => {
   });
 });
 
+describe("a selected observation speaks once in the Conclusion", () => {
+  it("does not put a selected observation's Findings sentence in the Conclusion", () => {
+    // The observation already speaks in the Conclusion, in the short form the tile
+    // carries. The picker's leftovers are what the ledger does NOT speak for, and
+    // reading them out of the whole Findings text instead appended the body's
+    // sentence underneath it — two lines for one finding, and the longer one is
+    // the prose that belongs in Findings.
+    reset({ reportingContext: lsCtx() });
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming: { findings: DISC_L45.sentence, impression: DISC_L45.impressionSentence ?? "" },
+      templates: { findings: DISC_L45.sentence, impression: DISC_L45.impressionSentence ?? "" },
+      ownership: {
+        concept: DISC_L45.concept, anatomicalSection: DISC_L45.anatomicalSection,
+        conflictGroup: DISC_L45.conflictGroup, baselineReplaces: DISC_L45.baselineReplaces,
+      },
+      source: "quick-select", field: "findings", label: DISC_L45.label,
+      region: "LS Spine", findingsText: DISC_L45.sentence,
+    });
+    useWorkspace.getState().generateProfessionalReport(lsCtx());
+    const impression = useWorkspace.getState().impressionText;
+    expect(impression).toContain("Disc herniation at L4-L5");
+    expect(impression).not.toContain("Broad-based disc bulge at L4-L5");
+  });
+});
+
 describe("a deviation retires the scaffold's description of the level it contradicts", () => {
   /**
    * The report used to carry both statements. Pressing Generate over a typed
@@ -559,13 +584,28 @@ describe("a deviation retires the scaffold's description of the level it contrad
     // removes are theirs: a tile's finding or a dictated line is what the level
     // was contradicted BY, never what gets deleted to make the report agree.
     reset({ reportingContext: cCtx() });
+    // A recorded finding AT the same level as the typed deviation — the only shape
+    // that tells the two kinds of row apart, and therefore the only fixture that
+    // can see this guard go missing.
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming: { findings: "C5-C6: Disc height loss with foraminal narrowing.", impression: "C5-C6: Disc height loss." },
+      templates: { findings: "C5-C6: Disc height loss with foraminal narrowing.", impression: "C5-C6: Disc height loss." },
+      ownership: {
+        concept: "disc_height", anatomicalSection: "C5-C6", conflictGroup: "disc height",
+        baselineReplaces: "C5-C6: Intervertebral disc height is maintained.",
+      },
+      source: "quick-select", field: "findings", label: "Reduced disc height C5-C6",
+      region: "Cervical Spine", findingsText: "C5-C6: Disc height loss with foraminal narrowing.",
+    });
     useWorkspace.getState().setField("findings", "C5-C6: Disc herniation with cord compression.", { source: "manual" });
     useWorkspace.getState().generateProfessionalReport(cCtx());
-    const retired = useWorkspace.getState().appliedPathologyPatches.filter((p) =>
-      p.observation?.role === "baseline" && p.stale,
-    );
-    expect(retired.every((p) => p.templates.findings?.startsWith("C5-C6:"))).toBe(true);
-    expect(useWorkspace.getState().findingsText).toContain("C5-C6: Disc herniation with cord compression.");
+    const findings = useWorkspace.getState().findingsText;
+    expect(findings).toContain("C5-C6: Disc height loss with foraminal narrowing.");
+    expect(findings).toContain("C5-C6: Disc herniation with cord compression.");
+    expect(findings).not.toContain("C5-C6: Intervertebral disc height is maintained.");
+    expect(useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => p.stale)
+      .every((p) => p.observation?.role === "baseline")).toBe(true);
   });
 });
 

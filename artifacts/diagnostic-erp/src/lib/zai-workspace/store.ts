@@ -1651,14 +1651,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         observation: p.observation,
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
-        // The row is recorded — this was the approved normal for the level — and
-        // born superseded, because its sentence was not written above. `stale` is
-        // how this store says "not on the page", and a row that claimed to be live
-        // with no text would make the next press disagree with this one.
-        stale: (() => {
-          const key = rowLevelKey(p.observation?.level);
-          return key !== "" && contradictedLevels.has(key);
-        })(),
+        // No `stale` here on purpose. The row below this one is the only place
+        // that decides a normal has been superseded, and a second mechanism
+        // reaching the same label from a different condition makes each of them
+        // invisible to a test — a mutation of either half then passes, because
+        // the other half still marks the row.
       }));
     if (baselinePatches.length > 0) {
       set({ appliedPathologyPatches: [...get().appliedPathologyPatches, ...baselinePatches] });
