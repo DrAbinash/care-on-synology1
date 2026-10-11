@@ -1,5 +1,5 @@
 /**
- * Six complete MRI Brain reports, built the way a radiologist builds them:
+ * Seven complete MRI Brain reports, built the way a radiologist builds them:
  * scaffold first, then Quick Select boxes, one click at a time.
  *
  * The catalogue file measures one box against one scaffold. This file measures
@@ -225,6 +225,39 @@ describe("MRI Brain — whole reports from Quick Select", () => {
     expect(r.impression).toMatch(/Fazekas grade 2/i);
   });
 
+  it("case G: chronic infarct with encephalomalacia — the DWI/ADC negative survives it", () => {
+    // The whole point of staging an infarct as chronic is that it does not
+    // restrict. A report that retires the sequence negative has answered a
+    // question nobody asked and hidden the one fact that separates this case
+    // from an acute occlusion, so the negative is asserted here in the printed
+    // artefact, not only in the store.
+    reset();
+    click("Chronic infarct", "right");
+    const r = report();
+
+    expect(r.findings).toMatch(/encephalomalacia with gliosis in the right hemisphere/i);
+    expect(r.findings).toMatch(/consistent with chronic infarct/i);
+    // The stage claim falsifies the infarct negative and nothing else.
+    expect(r.hasNormal("infarct")).toBe(false);
+    expect(r.hasNormal("diffusion")).toBe(true);
+    expect(r.findings).toContain("No restricted diffusion is seen on DWI/ADC.");
+    expect(r.hasNormal("hemorrhage")).toBe(true);
+    expect(r.hasNormal("ventricles")).toBe(true);
+    expect(r.hasNormal("midline")).toBe(true);
+    // Deliberately not asserted: whether the study-wide parenchyma normal
+    // survives. A focal encephalomalacia does contradict "Brain parenchyma shows
+    // normal signal intensity", and the shipped tile leaves it standing — for the
+    // acute and hemorrhage boxes too (measured in the print artifacts). That is a
+    // separate defect from the DWI/ADC one this case pins, and it is recorded as
+    // open rather than blessed here.
+
+    expect(r.impression).toMatch(/chronic right cerebral infarct/i);
+    expect(r.impression).not.toMatch(/restricted diffusion/i);
+    // The abnormality is emphasised on the page; the surviving negative is not.
+    expect(r.bolded.join(" ")).toMatch(/chronic infarct/i);
+    expect(r.bolded.join(" ")).not.toMatch(/no restricted diffusion/i);
+  });
+
   it("a higher Fazekas grade replaces the lower one instead of sitting beside it", () => {
     // The covering rule must not freeze the report: two statements that assert the
     // same concepts differ only in grade, so the second legitimately overwrites
@@ -242,7 +275,7 @@ describe("MRI Brain — whole reports from Quick Select", () => {
   });
 
   it("no case leaves a retired normal standing, and none loses the scaffold's unrelated rows", () => {
-    // The same invariant, measured across all six rather than one at a time: a
+    // The same invariant, measured across all seven rather than one at a time: a
     // report must never assert a region is normal in one line and abnormal in
     // another, and must never drop a row no box spoke about.
     const SCRIPTS: Array<Array<[string, "left" | "right" | undefined]>> = [
@@ -252,6 +285,7 @@ describe("MRI Brain — whole reports from Quick Select", () => {
       [["Subdural hematoma", "left"]],
       [["Mass lesion", "right"], ["Cerebral edema", undefined], ["Midline shift", "left"]],
       [["Microbleeds", undefined], ["Fazekas 2", undefined]],
+      [["Chronic infarct", "right"]],
     ];
     const rows = (MRI_BRAIN_STANDARD_NORMAL_MANIFEST.observations ?? [])
       .filter((o) => o.field === "findings");

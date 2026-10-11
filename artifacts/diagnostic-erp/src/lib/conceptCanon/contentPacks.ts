@@ -129,7 +129,17 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "infarct",
     label: "Cerebral Infarct",
     description: "Acute or chronic cerebral infarction.",
-    aliases: ["infarct", "acute infarct", "chronic infarct", "restricted diffusion", "stroke"],
+    /**
+     * "restricted diffusion" is deliberately NOT an alias of infarction.
+     *
+     * It is a DWI/ADC sequence observation and belongs to the `diffusion` concept
+     * below. Because ownership is decided by matching a concept's aliases against
+     * the sentence already in the report, carrying it here meant every infarction
+     * claim read onto "No restricted diffusion is seen on DWI/ADC." and retired it —
+     * so a CHRONIC infarct deleted the very negative that separates it from an
+     * acute one. An old infarct does not restrict.
+     */
+    aliases: ["infarct", "acute infarct", "chronic infarct", "stroke"],
     regions: ["brain"],
     modalities: ["MR", "CT"],
     impressionworthyAbnormal: true,
@@ -193,7 +203,28 @@ export const CLINICAL_CONTENT_PACKS: readonly ClinicalContentPack[] = [
     concept: "diffusion",
     label: "Diffusion Restriction",
     description: "DWI/ADC restricted diffusion (distinct from named infarct territory).",
-    aliases: ["diffusion", "dwi/adc", "dwi adc", "no restricted diffusion"],
+    // Restricted diffusion lives here, not on `infarct`: it is what the sequence
+    // shows, and a radiologist can select it without naming an infarct at all.
+    aliases: ["diffusion", "restricted diffusion", "dwi/adc", "dwi adc", "no restricted diffusion"],
+    regions: ["brain"],
+    modalities: ["MR"],
+    impressionworthyAbnormal: true,
+  },
+  {
+    /**
+     * Subacute infarction is its own concept because the diffusion question is
+     * genuinely open at this stage — restriction may persist, may be fading, or
+     * may have gone. Modelling it only as `infarct` would let a subacute statement
+     * inherit whatever the infarct concept implies; modelling it as `diffusion`
+     * would decide the sequence for the radiologist. Neither is honest.
+     *
+     * Bare "subacute" is deliberately not an alias: "subacute subdural hematoma"
+     * and "subacute infarct" must not resolve to the same concept.
+     */
+    concept: "subacute_infarct",
+    label: "Subacute Cerebral Infarct",
+    description: "Subacute infarction; diffusion restriction is variable and is never implied by the stage alone.",
+    aliases: ["subacute infarct", "subacute infarction"],
     regions: ["brain"],
     modalities: ["MR"],
     impressionworthyAbnormal: true,
