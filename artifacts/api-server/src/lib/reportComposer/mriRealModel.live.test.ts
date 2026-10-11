@@ -11,33 +11,40 @@
  * in Local/LAN mode — the same switch that has been blocking every report.
  *
  * Recorded 2026-10-11 against gemma3:12b at http://192.168.1.250:11434: passed in
- * 39.7 s, preserving all eight observations, all four levels and the bilateral
- * laterality, inventing no measurement. That is the first MRI report CARE has
- * ever produced through its own composer.
+ * 41.7 s on head `ac3d4bd0`, preserving all eight observations, all four levels and
+ * the bilateral laterality, inventing no measurement. That is the first MRI report
+ * CARE has ever produced through its own composer.
  *
- * RECORDED 2026-10-11, final run on the shipped head — the six operations × the
- * installed local text models, every answer scored by the shipped validator, on
- * the clinic AI PC. Seconds are wall time for the model call; tokens are the
- * prompt+completion the vendor reported.
+ * RECORDED 2026-10-11 on head `ac3d4bd0` (this branch merged through #920) — the
+ * six cases × the installed local text models, every answer scored by the shipped
+ * validator, on the clinic AI PC. Seconds are wall time for the model call; tokens
+ * are the prompt+completion the vendor reported. Generated from the run's own log
+ * by `node tmp/919-live-table.cjs <log>`, not transcribed.
  *
- *   operation                        gemma3:12b      medgemma1.5:4b  qwen3:14b
- *   PROFESSIONALIZE MRI LS spine     28.7 s / 2040    8.1 s / 1975    25.1 s / 2011   accepted
- *   REPHRASE MRI cervical            14.4 s / 1748    3.0 s / 1720     8.0 s / 1710   accepted
- *   PROFESSIONALIZE MRI brain        14.1 s / 1827    3.3 s / 1809     8.1 s / 1816   accepted
- *   PROFESSIONALIZE whole spine      22.1 s / 1924    4.0 s / 1870    10.5 s / 1893   accepted
- *   COMBINE cervical + lumbar        36.2 s / 2177    2.8 s BLOCKED   19.3 s / 2192   accepted
- *   OBSERVATIONS dictated shorthand   6.4 s BLOCKED   2.8 s BLOCKED   22.4 s / 2174   accepted, 4 rows
+ *   operation                                   gemma3:12b    medgemma1.5:4b    qwen3:14b
+ *   professionalize / MRI LS spine              29.4s / 2248  accepted          7.1s / 2177 accepted   25.8s / 2210 accepted
+ *   rephrase / MRI cervical                     14.8s / 1953  accepted          2.9s / 1922 accepted    8.6s / 1902 accepted
+ *   professionalize / MRI brain                 14.9s / 2035  accepted          2.8s / 1998 accepted    9.0s / 2009 accepted
+ *   professionalize / whole-spine screening     21.5s / 2125  accepted          3.4s / 2067 accepted   11.2s / 2081 accepted
+ *   combine / cervical + lumbar                 36.4s / 2409  accepted          3.3s BLOCKED           15.9s / 2321 accepted
+ *   observations / dictated shorthand            5.9s BLOCKED  9.0s / 2407 accepted (4 rows)           26.0s / 2422 accepted (4 rows)
  *
- * 15 of those 18 model calls were accepted. The three that were not are the guard
- * working, not the harness failing. `medgemma1.5:4b` answered the COMBINE with the
- * cervical report only — it discarded the study it was handed — and
- * `measurement_mutation`, `measurement_dropped`, `level_dropped` and
- * `laterality_dropped` stopped it reaching READY. `gemma3:12b` and
- * `medgemma1.5:4b` each turned a four-fact dictation into ONE observation row,
- * losing the 8.2 mm canal measurement (and the bilateral side), so Operation 1 is
- * usable on `qwen3:14b` and not on the two 4-billion-parameter models. That is a
- * capability boundary to route around by configuration; the brief's answer to it
- * is not fine-tuning.
+ * 16 of those 18 model calls were accepted, and the two that were not are the
+ * guard working, not the harness failing: `gemma3:12b` turned a four-fact dictation
+ * into ONE observation row (losing the 8.2 mm canal, the recess narrowing and its
+ * location), and `medgemma1.5:4b` answered the COMBINE with the cervical report
+ * only, discarding the lumbar study it was handed.
+ *
+ * The two defects this head fixed were found by THIS run, not by my fixtures. Both
+ * `qwen3:14b` and `medgemma1.5:4b` now produce four accepted rows for Operation 1 —
+ * they had been producing them all along, but the row pruner deleted the canal row
+ * because the model had filed "canal 8.2 mm" under the canonical concept "canal
+ * stenosis", a word the dictation never used. And three answers had been blocked
+ * for "inventing a normal spinal cord" in reports that dictated `Cord signal
+ * normal.`, because the guard compared the model's longer wording against the
+ * radiologist's shorter one. Both are pinned by cases in
+ * `reportingAssistant.relations.test.ts`, transcribed from these answers.
+ */
  *
  * Both of those refusals were invisible before this run: the added report was not
  * part of what the checks considered "supplied", and nothing required the rows to

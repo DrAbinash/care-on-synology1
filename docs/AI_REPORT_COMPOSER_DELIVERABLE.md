@@ -293,44 +293,64 @@ returns the radiologist's **own text unchanged** (`PROFESSIONALIZE`, `COMBINE`) 
 explicit "no mechanical equivalent" (`OBSERVATIONS`), with a warning naming that no model
 ran. The deterministic reporting engine does not gain a dependency on any of this.
 
-## Y.9 Measured on the clinic AI PC (11 Oct 2026, `192.168.1.250:11434`)
+## Y.9 Measured on the clinic AI PC (11 Oct 2026, `192.168.1.250:11434`, head `ac3d4bd0`)
 
 `RUN_LIVE_OLLAMA=1` drives the shipped prompts, transport, JSON contract **and the
-shipped validator** over six synthetic cases per model. 15 of the 18 model calls were
-accepted; the three refusals below are the guard working, not the harness failing.
-Seconds are wall time for the call; the token figure is what the vendor reported.
+shipped validator** over six synthetic cases per model. 16 of the 18 model calls were
+accepted; the two refusals below are the guard working, not the harness failing. Seconds
+are wall time for the call; the token figure is what the vendor reported. The table is
+generated from that run's own log (`node tmp/919-live-table.cjs <log>`), because a
+transcribed measurement becomes a rumour.
 
 | operation | gemma3:12b | medgemma1.5:4b | qwen3:14b |
 | --- | --- | --- | --- |
-| PROFESSIONALIZE MRI LS spine (8.2 mm canal, right S1 extrusion) | 28.7 s / 2,040 accepted | 8.1 s / 1,975 accepted | 25.1 s / 2,011 accepted |
-| REPHRASE MRI cervical ("make more professional") | 14.4 s / 1,748 accepted | 3.0 s / 1,720 accepted | 8.0 s / 1,710 accepted |
-| PROFESSIONALIZE MRI brain (Fazekas 2) | 14.1 s / 1,827 accepted | 3.3 s / 1,809 accepted | 8.1 s / 1,816 accepted |
-| PROFESSIONALIZE whole-spine screening | 22.1 s / 1,924 accepted | 4.0 s / 1,870 accepted | 10.5 s / 1,893 accepted |
-| COMBINE cervical + lumbar | 36.2 s / 2,177 accepted | **blocked** — discarded the lumbar study (`measurement_mutation`, `measurement_dropped`, `level_dropped`, `laterality_dropped`) | 19.3 s / 2,192 accepted |
-| OBSERVATIONS dictated shorthand | **blocked** — 1 row from a 4-fact dictation (`measurement_dropped`) | **blocked** — 1 row (`measurement_dropped`, `laterality_dropped`) | 22.4 s / 2,174 accepted, 4 rows |
+| professionalize MRI LS spine (8.2 mm canal, right S1 extrusion) | 29.4 s / 2,248 accepted | 7.1 s / 2,177 accepted | 25.8 s / 2,210 accepted |
+| rephrase MRI cervical ("make more professional") | 14.8 s / 1,953 accepted | 2.9 s / 1,922 accepted | 8.6 s / 1,902 accepted |
+| professionalize MRI brain (Fazekas 2) | 14.9 s / 2,035 accepted | 2.8 s / 1,998 accepted | 9.0 s / 2,009 accepted |
+| professionalize whole-spine screening | 21.5 s / 2,125 accepted | 3.4 s / 2,067 accepted | 11.2 s / 2,081 accepted |
+| combine cervical + lumbar | 36.4 s / 2,409 accepted | **blocked** — discarded the lumbar study (`measurement_mutation`, `measurement_dropped`, `level_dropped`, `laterality_dropped`, `severity_dropped`, `morphology_dropped`, `location_dropped`) | 15.9 s / 2,321 accepted |
+| observations dictated shorthand | **blocked** — 1 row from a 4-fact dictation (`measurement_dropped`, `morphology_dropped`, `location_dropped`) | 9.0 s / 2,407 accepted, 4 rows | 26.0 s / 2,422 accepted, 4 rows |
 
-The same run also re-generated a `FULL_REPORT` from scratch on `gemma3:12b`: 39.7 s,
-all eight observations, four levels and the bilateral laterality preserved, no
-measurement invented.
+The same run also re-generated a `FULL_REPORT` from scratch on `gemma3:12b`: 41.7 s, all
+eight observations, four levels and the bilateral laterality preserved, no measurement
+invented.
 
-So, stated plainly: **text transformation works on every installed local model,
-and structured extraction from dictation works only on `qwen3:14b`.** Nothing here
-was tuned for; the 4 B models are configured away from Operation 1 rather than
-trained. No language-quality claim is being made about diagnostic accuracy — the
-cases are synthetic and a radiologist has not read them on a screen.
+So, stated plainly: **text transformation works on every installed local model, `combine`
+works on the two larger models and not on `medgemma1.5:4b`, and structured extraction from
+dictation works on `qwen3:14b` and on `medgemma1.5:4b` — and not on `gemma3:12b`, which
+compresses four dictated facts into one row.** Nothing here was tuned for; a model that
+loses a measurement is configured away from that operation, not trained. No
+language-quality claim is being made about diagnostic accuracy — the cases are synthetic
+and a radiologist has not read them on a screen.
 
-Three defects this run found and fixed (all three would have made operations
-unusable or unsafe in the clinic while every mocked test stayed green):
-1. a faithful COMBINE was **blocked** as invented content, because "what the
-   radiologist supplied" did not include the second report the model had been
-   given — and, in the other direction, a merge that silently dropped that report
-   could not fail.
-2. "no acute infarct or **hemorrhage**" was blocked as an invented abnormality
-   against a dictation that said **haemorrhage** — a spelling, not a fact.
-3. `gemma3:12b` returned chat markdown (`**Cervical Spine:**`) and every guard
-   passed it. CARE renders reports as plain text into print HTML and PDF, so those
-   asterisks would have reached the report of record; emphasis markers are now
-   stripped at the parse boundary, before validation and before storage.
+Five defects these runs found and fixed. The first three came from the earlier run; the
+last two were found by THIS one, which is why the matrix is re-run whenever a guard
+changes — a guard change can only be judged against answers nobody scripted.
+
+1. A faithful COMBINE was **blocked** as invented content, because "what the radiologist
+   supplied" did not include the second report the model had been given — and, in the
+   other direction, a merge that silently dropped that report could not fail.
+2. "no acute infarct or **hemorrhage**" was blocked as an invented abnormality against a
+   dictation that said **haemorrhage** — a spelling, not a fact.
+3. `gemma3:12b` returned chat markdown (`**Cervical Spine:**`) and every guard passed it.
+   CARE renders reports as plain text into print HTML and PDF, so those asterisks would
+   have reached the report of record; emphasis markers are now stripped at the parse
+   boundary, before validation and before storage.
+4. **The row pruner deleted a faithful observation because of the model's choice of
+   label.** `qwen3:14b` filed the dictated "canal 8.2 mm" under the canonical concept
+   "canal stenosis"; "stenosis" is not in the dictation, so the row was dropped, the
+   8.2 mm went with it, and the conservation rule then failed the job for a loss the
+   pruner itself had caused. A concept unsupported *only as a label* now keeps the row
+   and names the mismatch to the reviewer; a concept unsupported in the row's own text is
+   still deleted. This is what made Operation 1 pass on `medgemma1.5:4b` as well as
+   `qwen3:14b` — it had been answering correctly all along.
+5. **A structure is licensed by any wording the radiologist used for it.** Three answers
+   were blocked for "inventing a normal spinal cord" in reports that dictated
+   `Cord signal normal.` / `no cord signal abnormality`: the model wrote the longer name
+   and the guard compared the longer name. Adding `vertebral` as an alias then produced a
+   fresh false positive — a lumbar report blocked for inventing a normal *vertebral
+   artery* over the phrase "at the L1 vertebral level" — so aliases are limited to short
+   forms that cannot denote a different structure.
 
 # Z. Integration guide for the Reporting Workspace (2026-10-11)
 
