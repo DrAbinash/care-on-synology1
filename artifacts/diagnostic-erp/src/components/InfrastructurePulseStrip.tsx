@@ -227,7 +227,7 @@ export function InfrastructurePulseStrip({
           {!isLoading && (
             <span className="text-[10px] text-muted-foreground hidden lg:inline">
               {alertCount > 0
-                ? `${alertCount} emergency alert${alertCount === 1 ? "" : "s"}`
+                ? `${alertCount} system alert${alertCount === 1 ? "" : "s"}`
                 : badCount === 0
                   ? `${okCount} OK`
                   : `${badCount} need attention`}
