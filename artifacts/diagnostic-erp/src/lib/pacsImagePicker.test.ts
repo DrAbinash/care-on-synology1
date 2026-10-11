@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildPacsStillBody, frameOptions, instanceListUrl, parsePacsInstances, parsePacsSeries,
+  buildPacsStillBody, buildViewerStillBody, frameOptions, instanceListUrl, parsePacsInstances, parsePacsSeries,
   pickKey, renderedImageUrl, seriesListUrl, TAG_NUMBER_OF_FRAMES,
   type PacsPick, type PacsStudyContext,
 } from "./pacsImagePicker";
@@ -142,6 +142,58 @@ describe("buildPacsStillBody", () => {
     expect("studyId" in body).toBe(false);
     expect("patientId" in body).toBe(false);
     expect("accessionNumber" in body).toBe(false);
+  });
+});
+
+/**
+ * The viewer's "add this image" answer, built by the same module as the picker's.
+ * Both paths must produce one shape of request, or a report ends up with two
+ * kinds of image record that print differently.
+ */
+describe("buildViewerStillBody", () => {
+  const ctx: PacsStudyContext = {
+    draftId: 9,
+    studyId: 11,
+    patientId: 42,
+    accessionNumber: "A-77",
+    studyInstanceUid: uid("3"),
+  };
+  const ref = {
+    seriesInstanceUid: uid("3.1"),
+    sopInstanceUid: uid("30101"),
+    frameNumber: null,
+    caption: null,
+  };
+
+  it("carries the identity triple and the report bindings, like a picked image", () => {
+    expect(buildViewerStillBody(ref, ctx)).toMatchObject({
+      draftId: 9,
+      studyId: 11,
+      patientId: 42,
+      accessionNumber: "A-77",
+      studyInstanceUid: uid("3"),
+      seriesInstanceUid: uid("3.1"),
+      sopInstanceUid: uid("30101"),
+    });
+  });
+
+  it("names a frame only when the object is multiframe", () => {
+    expect("frameNumber" in buildViewerStillBody(ref, ctx)).toBe(false);
+    expect("frameNumber" in buildViewerStillBody({ ...ref, frameNumber: 0 }, ctx)).toBe(false);
+    expect(buildViewerStillBody({ ...ref, frameNumber: 7 }, ctx).frameNumber).toBe(7);
+    expect(buildViewerStillBody({ ...ref, frameNumber: 7.4 }, ctx).frameNumber).toBe(7);
+  });
+
+  it("never sends a blank caption, because an unlabelled figure prints as one", () => {
+    expect(buildViewerStillBody(ref, ctx).caption).toBe("Key image (viewer)");
+    expect(buildViewerStillBody({ ...ref, caption: "   " }, ctx).caption).toBe("Key image (viewer)");
+    expect(buildViewerStillBody({ ...ref, caption: " T2 axial C4 " }, ctx).caption).toBe("T2 axial C4");
+  });
+
+  it("refuses a viewer answer that is not a DICOM identity", () => {
+    expect(() => buildViewerStillBody({ ...ref, sopInstanceUid: "javascript:alert(1)" }, ctx))
+      .toThrow(/valid DICOM/i);
+    expect(() => buildViewerStillBody(ref, { ...ctx, studyInstanceUid: "" })).toThrow(/valid DICOM/i);
   });
 });
 
