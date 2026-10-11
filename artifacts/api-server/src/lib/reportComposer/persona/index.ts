@@ -105,6 +105,37 @@ export function buildCareSystemPrompt(
         "and put the conflict in unresolvedQuestions rather than choosing between them.",
       );
       break;
+    case "PROFESSIONALIZE":
+      parts.push(
+        "TASK: Rewrite the SUPPLIED REPORT so it reads as a polished radiology report — " +
+        "grammar, terminology, ordering, conventional prose, a clear Impression. " +
+        "The supplied Findings and Impression ARE the clinical truth; you are not drafting from observations. " +
+        "CONSERVATION IS THE CONTRACT: every abnormality, measurement, vertebral level, laterality and " +
+        "relevant negative in the supplied text must be present in your answer. " +
+        "Improve wording only. Never add a finding, never remove one, never normalise something that was " +
+        "abnormal, and never state a normal for a structure the report did not describe. " +
+        "If a sentence is too ambiguous to rewrite faithfully, keep it verbatim and list it in unresolvedQuestions.",
+      );
+      break;
+    case "OBSERVATIONS":
+      parts.push(
+        "TASK: Structure the supplied dictation into discrete observation rows. " +
+        "You are NOT writing a report: leave findings and impression empty. " +
+        "Do NOT complete anatomy, do NOT add a normal or a negative the radiologist did not state, " +
+        "and do NOT supply a level, side, severity or measurement that is absent from the dictation — " +
+        "leave that field empty instead. Every row must trace to words the radiologist actually wrote.",
+      );
+      break;
+    case "COMBINE":
+      parts.push(
+        "TASK: Merge the CURRENT REPORT with the SUPPLIED ADDITIONAL REPORT(S) into one coherent " +
+        "Findings and one Impression. Both texts are clinical truth; carry the content of each. " +
+        "Keep every measurement, level, laterality and negative finding from either side. " +
+        "Remove duplicated statements, never duplicated facts. Do not average or soften two descriptions " +
+        "into one weaker one. If the two reports conflict about the same structure, keep both statements " +
+        "and put the conflict in unresolvedQuestions rather than choosing between them.",
+      );
+      break;
     default:
       parts.push(
         "TASK: Draft a COMPLETE professional radiology report (Findings, Impression, optional Recommendation) " +
