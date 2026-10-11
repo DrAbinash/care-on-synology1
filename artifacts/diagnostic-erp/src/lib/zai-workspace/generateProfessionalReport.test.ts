@@ -170,6 +170,20 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
     expect(useWorkspace.getState().findingsText).toContain("Brain parenchyma shows normal signal intensity");
   });
 
+  it("keeps the technique and recommendation already on the page", () => {
+    reset();
+    // Start Report loads the study's protocol first and generates second, so by
+    // the time this runs the Technique box holds what the protocol wrote and the
+    // Recommendation box may hold something dictated. The format owns neither,
+    // and replacing them is how a sequence list disappeared from a printed report.
+    useWorkspace.getState().setField("technique", "DWI, FLAIR, T1, T2 and SWI sequences were acquired.", { source: "manual" });
+    useWorkspace.getState().setField("recommendation", "Clinical correlation with the recent seizure.", { source: "manual" });
+    expect(useWorkspace.getState().generateProfessionalReport(brainCtx()).status).toBe("generated");
+    const s = useWorkspace.getState();
+    expect(s.techniqueText).toContain("DWI, FLAIR, T1, T2 and SWI sequences were acquired.");
+    expect(s.recommendationText).toContain("Clinical correlation with the recent seizure.");
+  });
+
   it("is idempotent — a second press changes not one character", () => {
     reset();
     expect(useWorkspace.getState().generateProfessionalReport(brainCtx()).status).toBe("generated");
@@ -178,6 +192,23 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
     expect(useWorkspace.getState().generateProfessionalReport(brainCtx()).status).toBe("generated");
     expect(narrative()).toEqual(first);
     expect(ledgerShape()).toEqual(firstLedger);
+  });
+
+  it("stays idempotent on a report that deviates — a second press must not re-add the normal", () => {
+    reset();
+    useWorkspace.getState().setField("findings", "Acute infarct in the left MCA territory.", { source: "manual" });
+    expect(useWorkspace.getState().generateProfessionalReport(brainCtx()).status).toBe("generated");
+    const first = narrative();
+    expect(first.impression).toContain("Acute infarct");
+    // The second press changes nothing in the Findings and the ledger, so it does
+    // not re-derive the Impression — and if it merged the format's own normal
+    // conclusion at that point, nothing downstream would remove it again. Measured:
+    // without the guard, "Normal MRI of the brain. No acute intracranial
+    // abnormality." arrives above the infarct on the SECOND press only, which an
+    // idempotence test on a normal study can never see.
+    expect(useWorkspace.getState().generateProfessionalReport(brainCtx()).status).toBe("generated");
+    expect(narrative()).toEqual(first);
+    expect(useWorkspace.getState().impressionText).not.toMatch(/Normal MRI of the brain/i);
   });
 
   it("keeps an observation selected before the press, and retires the normal it contradicts", () => {
@@ -305,18 +336,54 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
     // above an infarct the radiologist dictated minutes earlier.
     expect(impression).toContain("acute infarct");
     expect(impression).not.toBe("Normal MRI brain.");
+    // The absence is the other half of the claim, and it was not asserted until
+    // it was measured: a deviating report printed the format's own normal
+    // conclusion first and the abnormality under it — "Normal MRI of the brain.
+    // No acute intracranial abnormality." arriving immediately above "…consistent
+    // with an acute infarct." A conclusion that asserts both is not a draft
+    // waiting to be tidied; it is a report that can be signed exactly as written.
+    expect(impression).not.toMatch(/Normal MRI of the brain/i);
+    expect(impression).not.toMatch(/No acute intracranial abnormality/i);
+    // Nor may the body's own negatives be promoted into its place.
+    expect(impression).not.toMatch(/No restricted diffusion is seen/i);
+    expect(impression).not.toMatch(/No extra-axial collection is identified/i);
+    expect(impression).not.toMatch(/unremarkable/i);
+  });
+
+  it("does not read a normal sentence already on the page as a deviation", () => {
+    reset();
+    // A structured template autofills an empty Findings box with one normal
+    // sentence before anyone presses anything. Reading that as a deviation
+    // rebuilt the conclusion out of the report's own body — measured at seven
+    // lines, "Lumbar facet joints are unremarkable." among them, where the
+    // clinic had approved one.
+    useWorkspace.getState().setField("findings", "Lumbar lordosis is maintained.", { source: "template" });
+    expect(useWorkspace.getState().generateProfessionalReport(lsCtx()).status).toBe("generated");
+    const chosen = resolveNormalBootstrapFormat({ ctx: lsCtx(), formats: DEFAULT_REPORT_FORMATS });
+    expect(chosen?.status).toBe("apply");
+    if (chosen?.status !== "apply") return;
+    const asSentences = (t: string) => splitToSentences(t).map(normalizeForDedupe).filter(Boolean).sort();
+    expect(asSentences(useWorkspace.getState().impressionText))
+      .toEqual(asSentences(chosen.format.impression));
   });
 
   it("is undoable as one action", () => {
     reset();
     useWorkspace.getState().setField("findings", "Typed before the press.", { source: "manual" });
     const before = narrative();
+    const ledgerBefore = ledgerShape();
     const stackDepth = useWorkspace.getState().patchUndoStack.length;
     useWorkspace.getState().generateProfessionalReport(brainCtx());
     expect(useWorkspace.getState().patchUndoStack.length).toBe(stackDepth + 1);
     expect(narrative().findings).not.toBe(before.findings);
     useWorkspace.getState().undoLastPatch();
     expect(narrative()).toEqual(before);
+    // The prose is only half of what the press wrote. It also materialised the
+    // format's baseline observations into the ledger, and Start Report's Undo
+    // (which is this frame and no other) has to take those back with it: text
+    // restored while the ledger still claims forty normal observations is a
+    // report that disagrees with itself the moment anything re-renders from it.
+    expect(ledgerShape()).toEqual(ledgerBefore);
   });
 });
 

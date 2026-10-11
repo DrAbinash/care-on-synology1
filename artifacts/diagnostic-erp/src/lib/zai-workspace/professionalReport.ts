@@ -11,6 +11,7 @@
 
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
 import { isSystemNormalPatch } from "@/lib/conceptCanon/normalImpression";
+import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import type { Side } from "@/lib/sideSwap";
 import {
@@ -161,20 +162,21 @@ export function unexplainedFindingLines(
 /**
  * True when the report says something beyond the approved normal.
  *
- * `generateLocalImpression` promotes a findings sentence that carries a pathology
- * cue, and the negation in front of it does not cancel the cue: on a normal brain,
- * "No acute infarct is seen." matches `infarct` and is read as abnormal. Refreshed
- * over a complete normal, that turns one curated conclusion into "Normal MRI of the
- * brain." followed by five copies of the Findings' own relevant negatives — a
- * duplicated conclusion section, and a report that no longer reads as a normal.
- * So the derived Impression runs only where the radiologist has deviated; elsewhere
- * the format's own Impression, which the clinic approved, stands.
+ * Two sources count as a deviation: an observation the radiologist recorded, and
+ * a findings sentence that is not explained by any observation and actually
+ * ASSERTS pathology. The second test matters in both directions. Text that is
+ * only "nothing seen" must not be treated as a deviation, or a complete normal
+ * gets its conclusion rebuilt and its own negatives arrive in the Impression;
+ * and text that really does describe an infarct must be treated as one, or the
+ * report keeps the format's "Normal MRI of the brain." on top of it and
+ * contradicts itself. `assertsAbnormality` is what tells those two apart — a cue
+ * inside its own negation is not a deviation.
  */
 export function reportHasDeviation(
   patches: readonly AppliedPathologyPatch[],
   unexplainedLines: readonly string[],
 ): boolean {
-  if (unexplainedLines.length > 0) return true;
+  if (unexplainedLines.some(assertsAbnormality)) return true;
   return patches.some((p) => !p.stale
     && p.observation?.role !== "baseline"
     && !isSystemNormalPatch(p));
