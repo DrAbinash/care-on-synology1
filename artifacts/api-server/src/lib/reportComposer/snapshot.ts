@@ -150,16 +150,28 @@ export function dedupeObservations(obs: ComposeObservation[]): ComposeObservatio
  *
  * Order-sensitive, and the text participates in full: the second report is part
  * of what the model was shown, so a READY combination draft composed against one
- * version of it must not stay applicable after it is edited.
+ * version of it must not stay applicable after it is edited. The source
+ * REFERENCES participate too — merging the same words out of a different study is
+ * a different request, and a draft composed against Patient A's cervical report
+ * must not stay applicable because somebody pointed it at an identically worded
+ * report belonging to somebody else.
  */
 export function canonicalAdditionalReportsHashPayload(s: ComposerInputSnapshot): string {
   const norm = (v: string | null | undefined): string =>
     (v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  const ref = (v: number | null | undefined): string => (v == null ? "" : String(v));
   return (s.additionalReports ?? [])
     .map((r) =>
-      [norm(r.label), norm(r.modality), norm(r.region), norm(r.findings), norm(r.impression)].join(
-        "\u001f",
-      ),
+      [
+        ref(r.worklistId),
+        ref(r.reportId),
+        norm(r.studyInstanceUid),
+        norm(r.label),
+        norm(r.modality),
+        norm(r.region),
+        norm(r.findings),
+        norm(r.impression),
+      ].join("\u001f"),
     )
     .join("\n");
 }

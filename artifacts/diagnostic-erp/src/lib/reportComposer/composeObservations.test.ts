@@ -1067,6 +1067,9 @@ describe("composeObservations — review hardening (PR #654 review)", () => {
           label: "MRI LUMBOSACRAL SPINE (same patient, same day)",
           modality: "MRI",
           region: "LS Spine",
+          worklistId: 4412,
+          reportId: 9911,
+          studyInstanceUid: "1.2.826.0.1.4412",
           findings: "Broad-based disc bulge at L4-L5, AP canal 8.2 mm.",
           impression: "Canal stenosis at L4-L5.",
         },
@@ -1087,6 +1090,35 @@ describe("composeObservations — review hardening (PR #654 review)", () => {
       ],
     };
     expect((await computeSnapshotHashes(edited)).inputHash).not.toBe(clientHash.inputHash);
+
+    // The SOURCE REFERENCE is part of the request too, and both sides must agree
+    // on that. Identical words coming from a different study are a different
+    // combination, so a draft built against study 4412 must not stay applicable
+    // once the picker has been pointed at 4413 — the same requirement the server
+    // enforces before the AI is asked (#verifyComposeSourceIdentities).
+    const otherStudy = {
+      ...withExtra,
+      additionalReports: [{ ...withExtra.additionalReports[0], worklistId: 4413 }],
+    };
+    expect((await computeSnapshotHashes(otherStudy)).inputHash).not.toBe(clientHash.inputHash);
+    expect((await computeSnapshotHashes(otherStudy)).inputHash).toBe(
+      serverComputeSnapshotHashes(otherStudy).inputHash,
+    );
+    const noReference = {
+      ...withExtra,
+      additionalReports: [
+        {
+          ...withExtra.additionalReports[0],
+          worklistId: undefined,
+          reportId: undefined,
+          studyInstanceUid: undefined,
+        },
+      ],
+    };
+    expect((await computeSnapshotHashes(noReference)).inputHash).not.toBe(clientHash.inputHash);
+    expect((await computeSnapshotHashes(noReference)).inputHash).toBe(
+      serverComputeSnapshotHashes(noReference).inputHash,
+    );
   });
 
   function snapWithReports() {

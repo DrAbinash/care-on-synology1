@@ -27,10 +27,28 @@ export type ComposeObservation = {
   baselineReplaces?: string;
 };
 
+/**
+ * A second report for a `COMBINE` job. Mirrors the server's
+ * `ComposerReportSourceSchema`.
+ *
+ * At least one of `worklistId` / `reportId` is REQUIRED by the server for a real
+ * job (`verifyComposeSourceIdentities`): each source must name a CARE study, and
+ * CARE resolves it and proves it belongs to the same patient as the study being
+ * reported. Type them optional here because a source that names nothing is a
+ * legitimate thing for the UI to be holding while the clinician is still picking
+ * it — the refusal is the server's, and it arrives as one sentence to show.
+ * `label` is a caption for the clinician and proves nothing about identity.
+ */
 export type ComposerReportSource = {
   label?: string;
   modality?: string;
   region?: string;
+  /** radiology_worklist.id of the study the merged report came from. */
+  worklistId?: number | null;
+  /** patient_reports.id, for a source that is a report of record. */
+  reportId?: number | null;
+  /** Optional cross-check; CARE records the row's UID, not this one. */
+  studyInstanceUid?: string | null;
   findings?: string;
   impression?: string;
 };
@@ -362,11 +380,19 @@ export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot):
 export function canonicalAdditionalReportsHashPayload(s: ComposerInputSnapshot): string {
   const norm = (v: string | null | undefined): string =>
     (v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  const ref = (v: number | null | undefined): string => (v == null ? "" : String(v));
   return (s.additionalReports ?? [])
     .map((r) =>
-      [norm(r.label), norm(r.modality), norm(r.region), norm(r.findings), norm(r.impression)].join(
-        "\u001f",
-      ),
+      [
+        ref(r.worklistId),
+        ref(r.reportId),
+        norm(r.studyInstanceUid),
+        norm(r.label),
+        norm(r.modality),
+        norm(r.region),
+        norm(r.findings),
+        norm(r.impression),
+      ].join("\u001f"),
     )
     .join("\n");
 }

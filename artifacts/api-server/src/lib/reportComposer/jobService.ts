@@ -33,7 +33,10 @@ import { buildTrackedChanges } from "./trackedChanges";
 import {
   resolveVerifiedComposeIdentity,
   verifyComposeJobIdentity,
+  verifyComposeSourceIdentities,
+  isFinalizedReportStatus,
   type ComposeStudyRefs,
+  type VerifiedComposeSource,
 } from "./composeIdentity";
 import {
   captureComposeBaseline,
@@ -113,9 +116,7 @@ async function loadPersistedReportToken(reportId: number | null | undefined): Pr
       .where(eq(patientReportsTable.id, reportId))
       .limit(1);
     if (!row) return { status: null, token: null, finalized: false, unresolved: true };
-    const finalized = ["final", "FINAL", "signed", "SIGNED", "amended", "verified", "delivered"].includes(
-      String(row.status),
-    );
+    const finalized = isFinalizedReportStatus(row.status);
     const token = createHash("sha256")
       .update(`${row.body ?? ""}\u001e${row.impression ?? ""}`)
       .digest("hex")
@@ -255,6 +256,22 @@ export async function enqueueComposeJob(args: EnqueueComposeArgs): Promise<Enque
   }
   const worklistId = identity.identity.worklistId;
   const reportId = identity.identity.reportId;
+
+  // Per-source patient identity for a combination. This sits BEFORE the insert
+  // and long before any provider is contacted, so a refused merge never becomes a
+  // job, never reaches a model, and cannot be argued past by anything the model
+  // answers afterwards.
+  const additionalReports = snapshot.additionalReports ?? [];
+  if (additionalReports.length > 0) {
+    const sources = await verifyComposeSourceIdentities({
+      anchor: { worklistId, patientId: identity.identity.patientId },
+      sources: additionalReports,
+    });
+    if (!sources.ok) {
+      return { ok: false, error: sources.message, code: sources.code };
+    }
+  }
+
   const persisted = await loadPersistedReportToken(reportId);
   if (persisted.finalized) {
     return { ok: false, error: "Report is finalized — composition not allowed", code: "finalized" };
@@ -431,6 +448,42 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     return { ok: false, detail: "bad_stored_snapshot" };
   }
 
+  // Re-verify a combination's source identities HERE, not only at enqueue.
+  //
+  // Two ways a job that was honest when it was queued is not honest now: the
+  // clinic's queue is a background worker, so a QUEUED combination can sit for
+  // minutes; and Match Center can re-link a study to a different patient in that
+  // window (or the anchor can be signed by another workstation). The other
+  // reason is the upgrade: a job written by a build that pre-dates this gate has
+  // sources with no identity on them at all, and the only way it is refused is if
+  // the thing that contacts the model checks. Refusing here means no prompt is
+  // ever built from an unverified report, which is what makes "the AI cannot
+  // override an identity refusal" a property of the code rather than a promise.
+  let sourceIdentities: VerifiedComposeSource[] = [];
+  const sourcesToVerify = snapshot.additionalReports ?? [];
+  if (sourcesToVerify.length > 0) {
+    const anchor = await resolveVerifiedComposeIdentity({
+      worklistId: job.worklistId,
+      studyId: job.studyId,
+      reportId: job.reportId,
+    });
+    if (!anchor.ok) {
+      await failJob(job.id, job.worklistId, anchor.code);
+      return { ok: true, detail: anchor.code };
+    }
+    const verified = await verifyComposeSourceIdentities({
+      anchor: { worklistId: anchor.identity.worklistId, patientId: anchor.identity.patientId },
+      sources: sourcesToVerify,
+    });
+    if (!verified.ok) {
+      await failJob(job.id, job.worklistId, verified.code, undefined, undefined, undefined, {
+        sourceIdentity: { refused: verified.code, message: verified.message },
+      });
+      return { ok: true, detail: verified.code };
+    }
+    sourceIdentities = verified.sources;
+  }
+
   // Resolve authoritative draft for SELECTED_IMAGES ownership (never draftId: null).
   const { resolveAuthoritativeComposeDraft } = await import("./resolveComposeDraft");
   const authDraft = await resolveAuthoritativeComposeDraft({
@@ -506,7 +559,11 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
       run.model,
       run.fallbackUsed,
       run.latencyMs,
-      { ...validation, provenance: run.provenance ?? null },
+      {
+        ...validation,
+        provenance: run.provenance ?? null,
+        ...(sourceIdentities.length ? { sourceIdentities } : {}),
+      },
     );
     return { ok: true, detail: "validation_failed" };
   }
@@ -541,6 +598,12 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
         // out instead of leaving it unreachable.
         provider: run.provenance?.provider ?? run.model ?? null,
         usage: run.usage ?? null,
+        // The individual source study identifiers of a combination, as CARE
+        // resolved them (never as the browser declared them). Kept in this JSON
+        // for the same reason as provider/usage: the table has no column for it,
+        // `publicJobView` already returns this object, and a merged report that
+        // cannot say which study each half came from is not reviewable.
+        ...(sourceIdentities.length ? { sourceIdentities } : {}),
       }),
       model: run.model ?? null,
       fallbackUsed: run.fallbackUsed ?? false,

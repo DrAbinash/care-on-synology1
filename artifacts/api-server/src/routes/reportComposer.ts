@@ -83,6 +83,12 @@ function buildComposerTestSnapshot(body: Record<string, unknown>, kind = "FULL_R
   // A COMBINE test needs a second report to merge. Synthetic only, like every
   // other field here — this panel must never be the thing that puts a real
   // patient's text in front of a vendor.
+  //
+  // Note the divergence: these sources carry no `worklistId` / `reportId`, which
+  // `POST /jobs` now refuses. This panel runs the engine directly — it creates no
+  // job, and nothing it produces can be applied to a report — so there is no
+  // patient for an unverified merge to reach. A real combination goes through the
+  // job route and the identity gate.
   const additionalReportsRaw = Array.isArray(body.additionalReports)
     ? body.additionalReports.slice(0, 4).map((r) => {
         const row = (r ?? {}) as Record<string, unknown>;
@@ -162,6 +168,11 @@ reportComposerRouter.post("/jobs", async (req, res): Promise<void> => {
           // request was malformed when the database was simply unclear.
           || result.code === "compose_persistence_unavailable"
           || result.code === "compose_baseline_ambiguous"
+          // A refused source identity is the same class of answer: the request was
+          // well-formed, and what conflicts is the DATA behind it — the study is
+          // another patient's, or is not linked to a patient yet. 409 also tells
+          // the workspace this is a refusal to show as a refusal, not as a bug.
+          || String(result.code ?? "").startsWith("compose_source_")
           ? 409
           : 400;
     res.status(status).json(result);

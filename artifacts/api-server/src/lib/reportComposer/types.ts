@@ -40,19 +40,33 @@ export type ComposerAiMode = z.infer<typeof ComposerAiModeSchema>;
 
 /**
  * A SECOND report supplied for `COMBINE` — "combine the cervical and lumbar
- * findings", "add the supplied whole-spine screening report".
+ * findings", "add the whole-spine screening report that is already signed".
  *
  * It is context, not an override: the study's own Findings/Impression stay
  * authoritative and this text is merged into them by the model, under the same
- * conservation rule that forbids losing anything from either side. The calling
- * application is what established that these reports belong to the same patient
- * and study; CARE does not guess from names or dates, and nothing here accepts a
- * patient identifier — the composer is addressed by worklist/report identity.
+ * conservation rule that forbids losing anything from either side.
+ *
+ * WHOSE REPORT IT IS IS A SERVER QUESTION. `worklistId` / `reportId` name a CARE
+ * study and are resolved against `radiology_worklist` / `patient_reports` before
+ * any AI is contacted (`verifyComposeSourceIdentities`, composeIdentity.ts); a
+ * source that names nothing, names a row that is gone, names rows that disagree,
+ * or belongs to a different patient than the study being reported is refused.
+ * `label` is a caption for the clinician's own benefit and proves nothing — no
+ * part of CARE's identity check reads a name, a date or this string.
+ *
+ * `studyInstanceUid` is an optional cross-check: when both the caller and the
+ * row state a UID they must agree. The value that gets recorded and returned is
+ * the row's, never the caller's.
  */
 export const ComposerReportSourceSchema = z.object({
   label: z.string().max(200).optional(),
   modality: z.string().max(16).optional(),
   region: z.string().max(120).optional(),
+  /** radiology_worklist.id — the anchor every other CARE radiology path uses. */
+  worklistId: z.number().int().positive().nullish(),
+  /** patient_reports.id, for a source that is a report of record. */
+  reportId: z.number().int().positive().nullish(),
+  studyInstanceUid: z.string().max(128).nullish(),
   findings: z.string().default(""),
   impression: z.string().default(""),
 });
