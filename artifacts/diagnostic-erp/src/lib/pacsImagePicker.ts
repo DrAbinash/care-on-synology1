@@ -136,6 +136,45 @@ export function buildPacsStillBody(pick: PacsPick, ctx: PacsStudyContext): Recor
   };
 }
 
+/** What a viewer says is on its screen: a DICOM identity and nothing else. */
+export interface ViewerStillRef {
+  seriesInstanceUid: string;
+  sopInstanceUid: string;
+  frameNumber?: number | null;
+  caption?: string | null;
+}
+
+/**
+ * Body for the same `POST /key-images/from-pacs`, built from a viewer's answer
+ * instead of a browsed thumbnail. One builder owns the wire format for both
+ * paths, so a picked image and an "add this image" image cannot become two
+ * different kinds of record in two different tables.
+ *
+ * `ctx.studyInstanceUid` is the study CARE has open, not whatever the frame
+ * claimed; the server re-checks it against the report and PACS before storing.
+ */
+export function buildViewerStillBody(
+  ref: ViewerStillRef,
+  ctx: PacsStudyContext,
+): Record<string, unknown> {
+  if (!UID.test(ctx.studyInstanceUid) || !UID.test(ref.seriesInstanceUid) || !UID.test(ref.sopInstanceUid)) {
+    throw new Error("Not a valid DICOM reference");
+  }
+  return {
+    draftId: ctx.draftId,
+    ...(ctx.studyId ? { studyId: ctx.studyId } : {}),
+    ...(ctx.patientId ? { patientId: ctx.patientId } : {}),
+    ...(ctx.accessionNumber ? { accessionNumber: ctx.accessionNumber } : {}),
+    studyInstanceUid: ctx.studyInstanceUid,
+    seriesInstanceUid: ref.seriesInstanceUid,
+    sopInstanceUid: ref.sopInstanceUid,
+    ...(ref.frameNumber != null && ref.frameNumber >= 1
+      ? { frameNumber: Math.floor(ref.frameNumber) }
+      : {}),
+    caption: (ref.caption || "").trim() || "Key image (viewer)",
+  };
+}
+
 /** Series list for the study bound to this report. */
 export function seriesListUrl(studyInstanceUid: string): string {
   return `${BROWSER_DICOMWEB_BASE}/studies/${encodeURIComponent(studyInstanceUid)}/series`;

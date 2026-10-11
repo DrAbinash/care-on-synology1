@@ -20,7 +20,7 @@
  */
 
 import { api } from "@/lib/fetchApi";
-import { buildImageRefPayload, nextDisplayOrder, type ReportImageRef } from "@/lib/reportImageRefs";
+import { buildViewerStillBody } from "@/lib/pacsImagePicker";
 import { discLevelFromLabel, parseCanalApNumber } from "@/lib/spineCanalAp";
 import type { ViewportContext } from "@/lib/observationAnchor";
 import type { MeasurementIntent } from "@/lib/structuredViewerMeasurements";
@@ -215,7 +215,8 @@ export type OhifBridgeContext = {
   patientId: number | null | undefined;
   studyId: number | null | undefined;
   draftId: number | null | undefined;
-  getImageRefs?: () => ReportImageRef[];
+  /** Stored with a frozen image so the printed report can be traced to a bill. */
+  accessionNumber?: string | null;
   onMeasurementSaved?: () => void;
   onKeyImageSaved?: () => void;
   /**
@@ -409,20 +410,28 @@ export async function handleCareOhifMessage(
   const draftId = ctx.draftId;
   if (!draftId) return "error";
   try {
-    const refs = ctx.getImageRefs?.() ?? [];
+    // The same endpoint and the same frozen store the PACS picker writes to. This
+    // used to POST /image-references, which lands in a different table and only
+    // renders at print time if Orthanc is still up — one report, two competing
+    // sets of images. CARE now re-checks the claim against PACS and keeps the
+    // picture itself, so the printed report survives an Orthanc outage.
     await api.post(
-      "/api/radiology/report-generator/image-references",
-      buildImageRefPayload({
-        draftId,
-        studyId: ctx.studyId ?? null,
-        studyInstanceUID: msg.studyInstanceUID,
-        seriesInstanceUID: msg.seriesInstanceUID,
-        sopInstanceUID: msg.sopInstanceUID,
-        frameNumber: msg.frameNumber ?? null,
-        caption: msg.caption || "Key image (OHIF)",
-        displayOrder: nextDisplayOrder(refs),
-        isKeyImage: true,
-      }),
+      "/api/radiology/report-generator/key-images/from-pacs",
+      buildViewerStillBody(
+        {
+          seriesInstanceUid: msg.seriesInstanceUID,
+          sopInstanceUid: msg.sopInstanceUID,
+          frameNumber: msg.frameNumber ?? null,
+          caption: msg.caption || "Key image (OHIF)",
+        },
+        {
+          draftId,
+          studyId: ctx.studyId ?? null,
+          patientId: ctx.patientId ?? null,
+          accessionNumber: ctx.accessionNumber ?? null,
+          studyInstanceUid: msg.studyInstanceUID,
+        },
+      ),
     );
     ctx.onKeyImageSaved?.();
     return "ok";
