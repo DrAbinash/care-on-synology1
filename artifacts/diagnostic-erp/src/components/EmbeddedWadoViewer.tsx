@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   ZoomIn, ZoomOut, RotateCcw, Sun, Moon, ChevronLeft, ChevronRight,
-  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera,
+  Layers, Maximize2, Minimize2, Expand, Shrink, AlertTriangle, RefreshCw, ExternalLink, Camera, ImagePlus,
 } from "lucide-react";
 import { captureFramesViewport } from "@/lib/framesViewportCapture";
 import { framesAnchorStudyAllowed } from "@/lib/framesJumpBack";
@@ -121,12 +121,16 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
    */
   columnExpanded?: boolean;
   onColumnExpandedChange?: (expanded: boolean) => void;
-  /** Frames mode: add the visible instance to the report image rail. */
+  /**
+   * Frames mode: add the visible instance to the report image rail. No
+   * frameNumber — D2-I3/D2-I4 settled that Frames addresses INSTANCES, and a
+   * stack position sent as a DICOM frame is a guess the PACS then has to
+   * contradict (see the same decision on the published viewport context below).
+   */
   onAddCurrentFrameToReport?: (ref: {
     studyInstanceUID: string;
     seriesInstanceUID: string;
     sopInstanceUID: string;
-    frameNumber: number;
   }) => void;
   /** FRAMES-first live viewport context for Reporting Canvas R2 activeAnchor. */
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
@@ -145,6 +149,14 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   onRequestOhifAnnotatedCapture?: () => void;
   /** Preflight: OHIF launch URL was not available for this study. */
   ohifAnnotatedCaptureBlocked?: boolean;
+  /**
+   * D2: attach the image OHIF is displaying RIGHT NOW. The parent asks the viewer
+   * over the existing bridge, so nothing is taken from a cached anchor or from the
+   * launch URL; the identity is then verified by CARE's server before it is stored.
+   */
+  onAddCurrentOhifImage?: () => void | Promise<void>;
+  /** An ask is in flight — the button cannot be pressed twice. */
+  ohifImageAdding?: boolean;
 }>(function EmbeddedWadoViewer({
   studyInstanceUID,
   worklistId,
@@ -158,6 +170,8 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   captureBusy,
   onRequestOhifAnnotatedCapture,
   ohifAnnotatedCaptureBlocked,
+  onAddCurrentOhifImage,
+  ohifImageAdding,
 }, ref) {
   const initialUid = (studyInstanceUID ?? "").trim();
   const canResolve = !initialUid && typeof worklistId === "number" && worklistId > 0;
@@ -233,13 +247,15 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
       captureBusy={captureBusy}
       onRequestOhifAnnotatedCapture={onRequestOhifAnnotatedCapture}
       ohifAnnotatedCaptureBlocked={ohifAnnotatedCaptureBlocked}
+      onAddCurrentOhifImage={onAddCurrentOhifImage}
+      ohifImageAdding={ohifImageAdding}
     />
   );
 });
 
 export default EmbeddedWadoViewer;
 
-function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked }: {
+function ViewerContent({ studyInstanceUID, accessionNumber, patientName, controlRef, columnExpanded, onColumnExpandedChange, onAddCurrentFrameToReport, onViewportContextChange, onCaptureViewport, captureBusy, onRequestOhifAnnotatedCapture, ohifAnnotatedCaptureBlocked, onAddCurrentOhifImage, ohifImageAdding }: {
   studyInstanceUID: string;
   accessionNumber?: string | null;
   patientName?: string | null;
@@ -250,7 +266,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     studyInstanceUID: string;
     seriesInstanceUID: string;
     sopInstanceUID: string;
-    frameNumber: number;
   }) => void;
   onViewportContextChange?: (ctx: ViewportContext | null) => void;
   onCaptureViewport?: (payload: {
@@ -262,6 +277,8 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
   captureBusy?: boolean;
   onRequestOhifAnnotatedCapture?: () => void;
   ohifAnnotatedCaptureBlocked?: boolean;
+  onAddCurrentOhifImage?: () => void | Promise<void>;
+  ohifImageAdding?: boolean;
 }) {
   const [selectedSeriesUID, setSelectedSeriesUID] = useState<string | null>(null);
   const [selectedInstIdx, setSelectedInstIdx] = useState(0);
@@ -434,10 +451,15 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
     const inst = instances[selectedInstIdx];
     const url = `${dicomWebBase}/studies/${encodeURIComponent(studyInstanceUID)}/series/${encodeURIComponent(selectedSeriesUID)}/instances/${encodeURIComponent(inst.uid)}/rendered?quality=90&viewport=800,800`;
     setLoadingFrames(true);
+    // The URL that gets DISPLAYED has to be the authenticated one, not just the
+    // throwaway preloader that checks the frame exists: `<img>` cannot send the
+    // staff Bearer header, so the bare URL comes back 401 and the view box stays
+    // black while every guard downstream believes an image was loaded.
+    const displayUrl = withDicomWebAuth(url) ?? url;
     const img = new Image();
-    img.onload = () => { setFrameUrl(url); setLoadingFrames(false); };
+    img.onload = () => { setFrameUrl(displayUrl); setLoadingFrames(false); };
     img.onerror = () => { setLoadingFrames(false); };
-    img.src = withDicomWebAuth(url) ?? url;
+    img.src = displayUrl;
   }, [dicomWebBase, studyInstanceUID, selectedSeriesUID, instances, selectedInstIdx]);
 
   const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
@@ -692,6 +714,22 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
               <ExternalLink className="h-3.5 w-3.5" />
             </Button>
           )}
+          {viewMode === "OHIF" && onAddCurrentOhifImage ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md border border-emerald-400 bg-emerald-50 text-emerald-800 text-[10px] font-medium hover:bg-emerald-100 disabled:opacity-50"
+              title="Attach the image OHIF is showing right now. CARE asks the viewer which image that is and verifies it against PACS before saving it to this report."
+              data-testid="ohif-add-current-image"
+              disabled={ohifImageAdding}
+              onClick={(e) => {
+                e.stopPropagation();
+                void onAddCurrentOhifImage();
+              }}
+            >
+              <ImagePlus className="h-3 w-3 shrink-0" />
+              <span>{ohifImageAdding ? "Identifying…" : "Add Current OHIF Image"}</span>
+            </button>
+          ) : null}
           {viewMode === "OHIF" ? (
             <button
               type="button"
@@ -899,7 +937,6 @@ function ViewerContent({ studyInstanceUID, accessionNumber, patientName, control
                   studyInstanceUID,
                   seriesInstanceUID: selectedSeriesUID,
                   sopInstanceUID: instances[selectedInstIdx].uid,
-                  frameNumber: selectedInstIdx + 1,
                 })}
               >
                 Add to report

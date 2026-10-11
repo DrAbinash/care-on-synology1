@@ -12,6 +12,7 @@ import {
   CARE_REPORTING_SOURCE,
   isExpectedOhifSource,
   resolveOhifTargetOrigin,
+  ohifAnchorFailureText,
 } from "./ohifViewerBridge";
 
 vi.mock("@/lib/fetchApi", () => ({
@@ -377,8 +378,12 @@ describe("D2 identity gates on the receiving side", () => {
 
   it("an anchor reply is only honoured for the request that asked for it", async () => {
     const pending = new Set<string>();
-    const seen: unknown[] = [];
-    const ctx = { ...baseCtx, pendingAnchorRequestIds: pending, onActiveAnchor: (c: unknown) => seen.push(c) };
+    const seen: Array<{ ctx: unknown; requestId: string | null }> = [];
+    const ctx = {
+      ...baseCtx,
+      pendingAnchorRequestIds: pending,
+      onActiveAnchor: (c: unknown, requestId: string | null) => seen.push({ ctx: c, requestId }),
+    };
     const reply = {
       source: CARE_OHIF_SOURCE,
       type: "active-anchor",
@@ -395,6 +400,16 @@ describe("D2 identity gates on the receiving side", () => {
     expect(await handleCareOhifMessage({ ...reply, requestId: "anc-1" } as never, ctx)).toBe("ok");
     expect(seen.length).toBe(1);
     expect(pending.has("anc-1")).toBe(false); // consumed, so it cannot be replayed
+    // D2: the reply has to name the question it answers, or the click that is
+    // waiting cannot tell a fresh answer from one that arrived for an older ask.
+    expect(seen[0].requestId).toBe("anc-1");
+
+    // A push the viewer made on its own answers nothing.
+    pending.add("anc-2");
+    expect(await handleCareOhifMessage({ ...reply, requestId: undefined } as never, ctx)).toBe("ok");
+    expect(seen.length).toBe(2);
+    expect(seen[1].requestId).toBe(null);
+    expect(pending.has("anc-2")).toBe(true); // still waiting for ITS answer
   });
 
   it("a refusal from the viewer ends the request instead of leaving it to expire", async () => {
@@ -404,11 +419,15 @@ describe("D2 identity gates on the receiving side", () => {
     const pending = new Set(["anc-1"]);
     let unavailable = 0;
     let applied = 0;
+    const refusals: Array<{ reason?: string; requestId?: string | null }> = [];
     const ctx = {
       ...baseCtx,
       pendingAnchorRequestIds: pending,
       onActiveAnchor: () => { applied += 1; },
-      onActiveAnchorUnavailable: () => { unavailable += 1; },
+      onActiveAnchorUnavailable: (reason?: string, requestId?: string | null) => {
+        unavailable += 1;
+        refusals.push({ reason, requestId });
+      },
     };
     const refusal = {
       source: CARE_OHIF_SOURCE,
@@ -422,6 +441,9 @@ describe("D2 identity gates on the receiving side", () => {
     expect(unavailable).toBe(1);
     expect(applied).toBe(0);
     expect(pending.has("anc-1")).toBe(false);
+    // The radiologist has to be told WHY nothing was attached, and only the click
+    // that asked may be told — the viewer's own words are the only evidence.
+    expect(refusals[0]).toEqual({ reason: "no_displayed_image", requestId: "anc-1" });
 
     // A refusal for a request nobody made is silence, not a warning.
     expect(await handleCareOhifMessage({ ...refusal, requestId: "anc-old" } as never, ctx)).toBe("ignored");
@@ -463,5 +485,36 @@ describe("D2 identity gates on the receiving side", () => {
       }),
       "https://ohif.example",
     );
+  });
+});
+
+describe("ohifAnchorFailureText — what the radiologist is told when identity is unknown", () => {
+  const reasons = [
+    "no_viewer",
+    "no_origin",
+    "not_sent",
+    "timeout",
+    "services_unavailable",
+    "no_active_viewport",
+    "no_displayed_image",
+    "unparsable_image_id",
+    "incomplete_identity",
+    "unsupported_version",
+  ];
+
+  for (const reason of reasons) {
+    it(`"${reason}" says out loud that nothing reached the report`, () => {
+      const text = ohifAnchorFailureText(reason);
+      expect(text.length).toBeGreaterThan(24);
+      expect(/nothing was attached|use frames|needs rebuilding/i.test(text)).toBe(true);
+    });
+  }
+
+  it("a reason CARE has never seen still becomes a sentence, not a blank toast", () => {
+    expect(ohifAnchorFailureText("brand_new_viewer_reason")).toContain("brand_new_viewer_reason");
+    expect(ohifAnchorFailureText(undefined)).toContain("could not identify the displayed image");
+    // The one thing every branch owes the radiologist, whatever the reason.
+    expect(ohifAnchorFailureText("brand_new_viewer_reason")).toContain("Nothing was attached to this report.");
+    expect(ohifAnchorFailureText(undefined)).toContain("Nothing was attached to this report.");
   });
 });

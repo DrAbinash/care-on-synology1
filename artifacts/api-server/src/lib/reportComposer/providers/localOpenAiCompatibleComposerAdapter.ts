@@ -157,6 +157,7 @@ export class LocalOpenAiCompatibleComposerAdapter implements ComposerProviderAda
       images,
       temperature: request.temperature,
       timeoutMs: request.timeoutMs,
+      ...(request.maxTokens != null ? { maxTokens: request.maxTokens } : {}),
       jsonMode,
       allowEmptyApiKey: true,
       // SECURITY: Enforce DNS binding and disable redirects for local provider.

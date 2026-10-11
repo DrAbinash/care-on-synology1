@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles } from "lucide-react";
+import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles, ScanLine, ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/fetchApi";
@@ -72,6 +72,8 @@ export default function FrozenKeyImagesRail({
   onCaptureRequest,
   captureBusy,
   captureBlockedTitle,
+  onPickFromPacs,
+  pacsBlockedTitle,
 }: {
   draftId: number | null;
   disabled?: boolean;
@@ -86,6 +88,13 @@ export default function FrozenKeyImagesRail({
   captureBusy?: boolean;
   /** When set, the camera stays visible but cannot start an OHIF annotated capture. */
   captureBlockedTitle?: string;
+  /**
+   * Opens the Orthanc series/instance picker. This is the path that must work
+   * with no viewer at all, so it is deliberately independent of `ohifUnavailable`
+   * and of whether a draft exists yet — the host creates one silently.
+   */
+  onPickFromPacs?: () => void;
+  pacsBlockedTitle?: string;
 }) {
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState<FrozenKeyImage | null>(null);
@@ -111,6 +120,7 @@ export default function FrozenKeyImagesRail({
   const aiSelectionEnabled = typeof onAiSelectedIdsChange === "function";
   const canCapture = typeof onCaptureRequest === "function" && !disabled;
   const captureBlocked = Boolean(captureBlockedTitle);
+  const canPickFromPacs = typeof onPickFromPacs === "function" && !disabled && !pacsBlockedTitle;
 
   const toggleAi = (id: number) => {
     if (!onAiSelectedIdsChange || disabled) return;
@@ -147,10 +157,42 @@ export default function FrozenKeyImagesRail({
     onSuccess: () => void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }),
   });
 
+  // Reorder sends the draft's whole id list so every row gets a distinct
+  // sortOrder — a partial list would renumber only the ids it names and leave
+  // the rest colliding on the same positions.
+  const orderMut = useMutation({
+    mutationFn: (orderedIds: number[]) =>
+      api.post("/api/radiology/report-generator/key-images/reorder", { draftId, orderedIds }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: frozenKeyImagesQueryKey(draftId) }),
+  });
+
+  const move = (id: number, dir: -1 | 1) => {
+    const all = q.data?.items ?? [];
+    const i = all.findIndex((r) => r.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= all.length) return;
+    const next = all.map((r) => r.id);
+    [next[i], next[j]] = [next[j], next[i]];
+    orderMut.mutate(next);
+  };
+
   if (!draftId) {
     return (
-      <div className="border-t border-border px-2 py-1.5 text-[10px] text-muted-foreground" data-testid="frozen-key-images-rail-empty">
-        Save a draft to capture key images.
+      <div className="border-t border-border px-2 py-1.5" data-testid="frozen-key-images-rail-empty">
+        {canPickFromPacs && !disabled ? (
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 w-full justify-center gap-1.5 bg-indigo-600 text-[11px] font-bold uppercase tracking-wide text-white hover:bg-indigo-700"
+            onClick={onPickFromPacs}
+            data-testid="select-images-from-pacs"
+          >
+            <ScanLine className="h-3.5 w-3.5" />
+            Select images from PACS
+          </Button>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">Save a draft to capture key images.</p>
+        )}
       </div>
     );
   }
@@ -173,6 +215,25 @@ export default function FrozenKeyImagesRail({
           ) : null}
           {filterObservationId ? <Badge variant="outline" className="text-[9px] h-4">filtered</Badge> : null}
         </button>
+        {typeof onPickFromPacs === "function" && !disabled ? (
+          <Button
+            type="button"
+            size="sm"
+            variant={canPickFromPacs ? "default" : "outline"}
+            className="h-6 shrink-0 gap-1 bg-indigo-600 px-1.5 text-[9px] font-bold uppercase tracking-wide hover:bg-indigo-700"
+            title={pacsBlockedTitle ?? "Browse this study's sequences in PACS and attach chosen images to the report"}
+            data-testid="select-images-from-pacs"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!canPickFromPacs) return;
+              onPickFromPacs();
+            }}
+            disabled={!canPickFromPacs}
+          >
+            <ScanLine className="h-3 w-3" />
+            Select images from PACS
+          </Button>
+        ) : null}
         {canCapture || captureBlocked ? (
           <Button
             type="button"
@@ -267,6 +328,15 @@ export default function FrozenKeyImagesRail({
                     </p>
                     <div className="flex flex-wrap items-center gap-1 text-[8px] text-slate-500">
                       <span className="truncate">{label}</span>
+                      {img.sourceType === "DICOM" && img.sopInstanceUid ? (
+                        <span
+                          className="shrink-0 font-semibold text-indigo-700"
+                          title="Attached from PACS by the image picker"
+                          data-testid={`frozen-key-image-pacs-badge-${img.id}`}
+                        >
+                          PACS
+                        </span>
+                      ) : null}
                       {img.includeInReport ? (
                         <span className="text-emerald-700 shrink-0">✓ report</span>
                       ) : (
@@ -280,6 +350,28 @@ export default function FrozenKeyImagesRail({
                     </div>
                     {!disabled && (
                       <div className="flex flex-wrap gap-0.5 pt-0.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 px-1 text-[9px] text-slate-500"
+                          title="Move earlier in the report"
+                          data-testid={`frozen-key-image-up-${img.id}`}
+                          onClick={() => move(img.id, -1)}
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 px-1 text-[9px] text-slate-500"
+                          title="Move later in the report"
+                          data-testid={`frozen-key-image-down-${img.id}`}
+                          onClick={() => move(img.id, 1)}
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </Button>
                         {aiSelectionEnabled && eligible ? (
                           <Button
                             type="button"

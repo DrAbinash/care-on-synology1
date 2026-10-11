@@ -1230,4 +1230,62 @@ describe.skipIf(!hasDatabaseUrl())("Composer durable Apply and server-derived fr
     expect((res.body as { code?: string }).code).toBe("compose_not_persisted");
     expect((await evidence(jobId)).status).toBe("READY");
   });
+
+  it("27. an OBSERVATIONS job has nothing to apply, so APPLIED is refused", async () => {
+    // This kind answers in structured rows for the finding ledger and produces no
+    // tracked changes. Without the guard, the containment proof would ask "are
+    // the zero sentences I accepted present in the report?", hear "yes", and stamp
+    // a job that applied nothing — the same vacuous-pass class as an empty
+    // accepted set on a text job, which case 26 above exists to catch.
+    const findings = "Persistence 27: L4-5 diffuse bulge, bilateral recess narrowing, canal 8.2 mm.";
+    const saved = await saveDraft(reader.token, {
+      studyId: wlOpen,
+      worklistId: wlOpen,
+      patientId: p1,
+      rawFindings: findings,
+      impression: [""],
+      recommendation: "",
+    });
+    expect(saved.status).toBe(200);
+    cleanup.draftIds.push((saved.body as { draft: { id: number } }).draft.id);
+
+    const enq = await request(app)
+      .post("/api/radiology/report-composer/jobs")
+      .set("Authorization", `Bearer ${reader.token}`)
+      .send({ snapshot: snapshotOf({ worklistId: wlOpen, findings }), jobKind: "OBSERVATIONS" });
+    expect(enq.status).toBe(202);
+    const jobId = (enq.body as { jobId: number }).jobId;
+    cleanup.jobIds.push(jobId);
+
+    await db
+      .update(aiReportComposeJobsTable)
+      .set({
+        status: "READY",
+        trackedChangesJson: "[]",
+        outputPlanJson: JSON.stringify({
+          findings: "",
+          impression: "",
+          recommendation: "",
+          unresolvedQuestions: [],
+          warnings: [],
+          observations: [
+            { concept: "disc bulge", level: "L4-5", findingsText: "Diffuse disc bulge at L4-5." },
+          ],
+        }),
+      })
+      .where(eq(aiReportComposeJobsTable.id, jobId));
+
+    const res = await applied(reader.token, jobId, {
+      acceptedChangeIds: [],
+      target: { worklistId: wlOpen },
+    });
+    expect(res.status).toBe(409);
+    expect((res.body as { code?: string }).code).toBe("compose_nothing_to_apply");
+    expect((await evidence(jobId)).status).toBe("READY");
+
+    // And the text of the study is exactly what it was: a refused apply is not a
+    // failed apply, and nothing may have moved.
+    const row = await draftById((saved.body as { draft: { id: number } }).draft.id);
+    expect(row?.rawFindings).toBe(findings);
+  });
 });

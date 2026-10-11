@@ -1799,30 +1799,50 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     studySetup.activeProtocol, studySetup.availableProtocols.length, appliedFormatName,
   ]);
 
+  /**
+   * The one-click Start Report, and the workspace's only whole-report generator.
+   *
+   * It used to fill the four prose fields from the structured template with
+   * `setFindings`/`setImpression`/`setRecommendation`. That deleted whatever the
+   * radiologist had already selected or dictated, and wrote
+   * "Please correlate with clinical findings." into every report whether anyone
+   * meant it or not. It now does the two halves separately:
+   *
+   *  1. `startReportSetup` — which protocol and template belong to this study.
+   *     Setup only: it merges technique and never touches the prose.
+   *  2. `generateProfessionalReport` — merges the examination's approved normal
+   *     against the text that is already there and replays the observation
+   *     ledger, so a selected abnormality retires its own contradictory normal
+   *     sentence instead of sitting beside it.
+   *
+   * There is deliberately no second undo snapshot. The action pushes one clinical
+   * undo frame that restores the prose AND the ledger together, and the Starting
+   * Canvas header already offers it (`undo-full-report`). Restoring the four text
+   * fields by hand — what the old bootstrap did — leaves the ledger holding the
+   * baseline observations the text no longer mentions.
+   */
   const handleStartReport = useCallback(() => {
     if (contentLocked) return;
-    const fields = studySetupSetters.readFields();
-    startReportUndoRef.current = {
-      ...fields,
-      findingsMap: { ...findingsMap },
-      useStructured,
-      selectedTemplateId: studySetup.selectedTemplateId,
-    };
-    const result = studySetup.startReportBootstrap();
-    if (!result) {
-      startReportUndoRef.current = null;
+    studySetup.startReportSetup();
+    const outcome = useWorkspace.getState().generateProfessionalReport(
+      billedStudyContextForNormal(
+        studySetup.studyContext,
+        billedNameFromWorklistRow(workflow.currentRow),
+      ),
+    );
+    if (outcome.status === "generated") {
+      toast({
+        title: "Professional report generated",
+        description: outcome.observationsNeedingReview > 0
+          ? `${outcome.formatName} — ${outcome.observationsNeedingReview} finding(s) need your review.`
+          : `${outcome.formatName} — review, then save or print.`,
+      });
       return;
     }
-    if (Object.keys(result.sectionMap).length > 0) {
-      setFindingsMap(result.sectionMap);
-      setUseStructured(true);
-    } else {
-      setUseStructured(false);
-    }
-    setCanUndoStartReport(true);
-  }, [
-    contentLocked, studySetupSetters, findingsMap, useStructured, studySetup,
-  ]);
+    // A refusal is not a silent failure: nothing on the report changed, and the
+    // reason names the step the radiologist has to take next.
+    toast({ variant: "destructive", title: "Nothing generated", description: outcome.reason });
+  }, [contentLocked, studySetup, toast, workflow.currentRow]);
 
   const undoStartReport = useCallback(() => {
     const snap = startReportUndoRef.current;
@@ -2530,6 +2550,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     canalApByLevel,
     requestOhifAnnotatedCapture,
     requestFrozenKeyImageCapture,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
+    ohifImageAdding,
     ohifTargetOriginRef,
   } = useOhifViewerBridge({
     studyId,
@@ -3343,6 +3366,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     reportingToolsTab,
     requestFrozenKeyImageCapture,
     requestOhifAnnotatedCapture,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
+    ohifImageAdding,
     resolveLeaveChoice,
     restoredDraftForStudyRef,
     rightCollapsed,

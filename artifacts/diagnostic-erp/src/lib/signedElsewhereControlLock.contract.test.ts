@@ -115,11 +115,22 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * gated control, so the two changes are additive rather than competing; the
  * combined numbers were measured on the merged tree rather than summed from the
  * two PRs, and they agreed.
+ *
+ * VIEWER 7 → 8 is D2's "Add Current OHIF Image"; 8 → 10 is "SELECT IMAGES FROM
+ * PACS" — one early return in the handler that opens it, one that removes the
+ * affordance altogether. Both decided as clinical, not cosmetic: each writes
+ * pictures into the delivered document's image set, and an image added after
+ * signature changes what was signed. The server refuses the same writes on its
+ * own (`keyImagesLocked`), so the UI gate is the polite half of a guard that
+ * already holds. 10 is measured on the tree that carries both, not summed from
+ * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  [CANVAS]: 60,
+  // 61, not 60: Generate Professional Report is a new clinical writer in the
+  // Starting Canvas header and gates on the composed lock like the rest of them.
+  [CANVAS]: 61,
   [RAIL]: 34,
-  [VIEWER]: 7,
+  [VIEWER]: 10,
 };
 
 /**
@@ -478,17 +489,22 @@ describe("what this deliberately does not change", () => {
     // Disclosed rather than fixed here, for two different reasons.
     //
     // useOhifViewerBridge takes isLocked and isFinalized as parameters and has
-    // no contentLocked in scope, so gating its seven guards is a signature
-    // change and a call-site change, not a substitution. Its controls are
-    // reached through ViewerColumn, which this PR does gate, so the visible
-    // affordance is already closed.
+    // no contentLocked in scope, so gating its guards is a signature change and a
+    // call-site change, not a substitution. Its controls are reached through
+    // ViewerColumn, which this file does gate, so the visible affordance is
+    // already closed.
+    //
+    // 7 → 8 is D2's `addCurrentOhifImageToReport`, which guards internally for the
+    // same reason its siblings do (the rail's camera can be driven from the handle,
+    // not only from the gated button) and is additionally gated at the affordance in
+    // ViewerColumn — so it is one more of these session-only pairs, not a new hole.
     //
     // applyVoiceComposerWithUndo and insertRawDictation have no lock guard at
     // all — a hole wider than this PR's subject, because it is open for a report
     // signed in THIS session too. VoiceCommandBar is rendered without any lock
     // prop (WorkspaceTopBar.tsx:630-644), so closing it properly means deciding
     // whether that bar gets a disabled state.
-    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(7);
+    expect(count(read("hooks/radiology-workspace/useOhifViewerBridge.ts"), PAIR)).toBe(8);
     const hook = read(HOOK);
     for (const fn of [
       "const applyVoiceComposerWithUndo = useCallback((force?: boolean) => {",

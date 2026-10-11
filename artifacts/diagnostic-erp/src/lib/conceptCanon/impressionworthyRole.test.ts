@@ -148,10 +148,14 @@ describe("isImpressionworthyAbnormal — the authoritative (concept, role) rule"
     // X-ray Lumbosacral V3 registers 102 radiography concepts (452 -> 554), 72 of
     // them impression-worthy (329 -> 401); its posterior-element baseline reuses
     // #778's canonical concept instead of adding a 103rd.
+    // DWI/ADC ownership registers subacute_infarct (554 -> 555, 401 -> 402): the
+    // subacute stage is its own clinical claim, because restriction may persist,
+    // may be fading, or may have gone. It is not folded into `infarct`, which no
+    // longer aliases "restricted diffusion" at all.
     // Bumping either number has to mean somebody deliberately registered a concept.
     const impressionWorthy = CLINICAL_CONTENT_PACKS.filter((p) => p.impressionworthyAbnormal === true);
-    expect(CLINICAL_CONTENT_PACKS.length).toBe(554);
-    expect(impressionWorthy.length).toBe(401);
+    expect(CLINICAL_CONTENT_PACKS.length).toBe(555);
+    expect(impressionWorthy.length).toBe(402);
     const ids = new Set(impressionWorthy.map((p) => p.concept));
     for (const abnormal of [
       "posterior_elements",

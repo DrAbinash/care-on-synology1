@@ -23,8 +23,14 @@ import {
   requestOhifDisplayedAnchor,
   deriveOhifAllowedOrigins,
   resolveOhifTargetOrigin,
+  ohifAnchorFailureText,
 } from "@/lib/ohifViewerBridge";
-import { viewportToAnchor } from "@/lib/observationAnchor";
+import { viewportToAnchor, type ViewportContext } from "@/lib/observationAnchor";
+import {
+  buildImageRefPayload,
+  nextDisplayOrder,
+  type ReportImageRef,
+} from "@/lib/reportImageRefs";
 import { formatViewerMeasurementLabel } from "@/lib/formatViewerMeasurementLine";
 import {
   removeStructuredMeasurementByAnnotation,
@@ -68,6 +74,18 @@ export type UseOhifViewerBridgeOptions = {
   appliedPathologyPatches: any[];
 };
 
+/** The answer to "which image is on screen right now", or why it is unknown. */
+export type DisplayedImageOutcome =
+  | { ok: true; anchor: ViewportContext }
+  | { ok: false; reason: string };
+
+/**
+ * How long to wait for the viewer's answer before saying so out loud. The pinned
+ * OHIF answers in the same tick it is asked; anything slower than this is a viewer
+ * that is not going to answer at all.
+ */
+const ANCHOR_ANSWER_TIMEOUT_MS = 6_000;
+
 export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
   const {
     studyId,
@@ -88,6 +106,13 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
 
   const qc = useQueryClient();
   const [ohifUnavailable, setOhifUnavailable] = useState(false);
+  /**
+   * requestId → the promise the "Add Current OHIF Image" click is waiting on. An
+   * answer only settles the request that asked for it, so a reply to an earlier
+   * question can never be attached as if it were the current image.
+   */
+  const anchorWaitersRef = useRef<Map<string, (outcome: DisplayedImageOutcome) => void>>(new Map());
+  const [ohifImageAdding, setOhifImageAdding] = useState(false);
   const canalApProvenance = useWorkspace((s) => s.canalApProvenance);
 
   // Detach frozen key images when an observation is removed (preserve evidence).
@@ -239,24 +264,121 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
   const captionRefreshInFlightRef = useRef<Set<number>>(new Set());
 
   /**
-   * D2 Phase 6 — ask the viewer which image it is showing *now*, at the moment
-   * CARE needs to know, instead of trusting an anchor cached from an earlier
-   * push. Returns false when there is no viewer to ask (Frames mode, OHIF not
-   * loaded, or no resolved origin to send to) and the caller keeps the anchor it
-   * already has rather than inventing one.
+   * D2 — ask the viewer which image it is showing *right now* and wait for the
+   * answer. Nothing here reads the anchor already in the store: that is a record of
+   * what was on screen at some earlier moment, and attaching it as "the image I
+   * chose" is precisely the mistake D2 exists to prevent.
    */
-  const requestFreshDisplayedAnchor = useCallback(() => {
+  const askOhifForDisplayedImage = useCallback((): Promise<DisplayedImageOutcome> => {
+    const win = embeddedViewerRef.current?.getOhifWindow?.() ?? null;
+    if (!win) return Promise.resolve({ ok: false, reason: "no_viewer" });
+    const origin = ohifTargetOriginRef.current;
+    if (!origin) return Promise.resolve({ ok: false, reason: "no_origin" });
+
     const requestId = `anc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const ok = requestOhifDisplayedAnchor({
-      target: embeddedViewerRef.current?.getOhifWindow?.(),
-      requestId,
-      targetOrigin: ohifTargetOriginRef.current,
+    return new Promise<DisplayedImageOutcome>((resolve) => {
+      let settled = false;
+      let timer = 0;
+      const finish = (outcome: DisplayedImageOutcome) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        ohifAnchorPendingRef.current.delete(requestId);
+        anchorWaitersRef.current.delete(requestId);
+        resolve(outcome);
+      };
+      anchorWaitersRef.current.set(requestId, finish);
+      // The bridge drops an active-anchor whose requestId it was never told to
+      // expect, so the question has to be on record before it is asked.
+      ohifAnchorPendingRef.current.add(requestId);
+      timer = window.setTimeout(() => finish({ ok: false, reason: "timeout" }), ANCHOR_ANSWER_TIMEOUT_MS);
+      if (!requestOhifDisplayedAnchor({ target: win, requestId, targetOrigin: origin })) {
+        finish({ ok: false, reason: "not_sent" });
+      }
     });
-    if (!ok) return false;
-    ohifAnchorPendingRef.current.add(requestId);
-    window.setTimeout(() => ohifAnchorPendingRef.current.delete(requestId), 15_000);
-    return true;
   }, [embeddedViewerRef]);
+
+  /**
+   * Attach one displayed image to this report — the only place a viewer-selected
+   * image is persisted, shared by Frames and OHIF so the two cannot drift apart.
+   * CARE's server re-checks the claim against PACS before storing it; a refusal is
+   * shown in the server's own words and nothing is written.
+   */
+  const attachDisplayedImageRef = useCallback(async (ref: {
+    studyInstanceUID: string;
+    seriesInstanceUID: string;
+    sopInstanceUID: string;
+    frameNumber?: number | null;
+    caption?: string;
+  }): Promise<boolean> => {
+    let id = draftId;
+    if (!id) id = await ensureDraftOnce();
+    if (!id) {
+      toast({
+        title: "Could not save draft",
+        description: "Save a draft before adding key images.",
+        variant: "destructive",
+      });
+      return false;
+    }
+    try {
+      await api.post(
+        "/api/radiology/report-generator/image-references",
+        buildImageRefPayload({
+          draftId: id,
+          studyId: workflow.currentRow?.studyId ?? studyId ?? null,
+          studyInstanceUID: ref.studyInstanceUID,
+          seriesInstanceUID: ref.seriesInstanceUID,
+          sopInstanceUID: ref.sopInstanceUID,
+          frameNumber: ref.frameNumber ?? null,
+          caption: ref.caption ?? "Key image (viewer)",
+          displayOrder: nextDisplayOrder(imageRefs as ReportImageRef[]),
+          isKeyImage: true,
+        }),
+      );
+      void qc.invalidateQueries({ queryKey: ["report-image-references", id] });
+      toast({ title: "Added to report image rail" });
+      return true;
+    } catch (e) {
+      toast({
+        title: "Could not add image",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+      return false;
+    }
+  }, [draftId, ensureDraftOnce, imageRefs, qc, studyId, toast, workflow.currentRow?.studyId]);
+
+  /**
+   * The radiologist's "Add Current OHIF Image": fresh identity, then CARE's own
+   * verified persist — or an honest reason and nothing written. There is no
+   * fallback to a cached anchor and none to another image.
+   */
+  const addCurrentOhifImageToReport = useCallback(async () => {
+    if (isLocked || isFinalized || ohifImageAdding) return;
+    setOhifImageAdding(true);
+    try {
+      const outcome = await askOhifForDisplayedImage();
+      if (!outcome.ok) {
+        toast({ title: "Image not added", description: ohifAnchorFailureText(outcome.reason), variant: "destructive" });
+        return;
+      }
+      const a = outcome.anchor;
+      if (!a.studyInstanceUID || !a.seriesInstanceUID || !a.sopInstanceUID) {
+        toast({ title: "Image not added", description: ohifAnchorFailureText("incomplete_identity"), variant: "destructive" });
+        return;
+      }
+      await attachDisplayedImageRef({
+        studyInstanceUID: a.studyInstanceUID,
+        seriesInstanceUID: a.seriesInstanceUID,
+        sopInstanceUID: a.sopInstanceUID,
+        frameNumber: a.frameNumber ?? null,
+        caption: a.seriesDescription ? `Key image (OHIF) — ${a.seriesDescription}` : "Key image (OHIF)",
+      });
+    } finally {
+      setOhifImageAdding(false);
+    }
+  }, [askOhifForDisplayedImage, attachDisplayedImageRef, isFinalized, isLocked, ohifImageAdding, toast]);
 
   const requestOhifAnnotatedCapture = useCallback(() => {
     if (isLocked || isFinalized || ohifUnavailable) return;
@@ -377,10 +499,27 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         void qc.invalidateQueries({ queryKey: ["report-image-references", draftId] });
         toast({ title: "Key image added from viewer" });
       },
-      onActiveAnchor: (ctx) => {
+      onActiveAnchor: (ctx, requestId) => {
         useWorkspace.getState().setActiveAnchor(viewportToAnchor(ctx));
+        if (requestId) {
+          const settle = anchorWaitersRef.current.get(requestId);
+          if (settle) {
+            anchorWaitersRef.current.delete(requestId);
+            settle({ ok: true, anchor: ctx });
+          }
+        }
       },
-      onActiveAnchorUnavailable: () => {
+      onActiveAnchorUnavailable: (reason, requestId) => {
+        if (requestId) {
+          const settle = anchorWaitersRef.current.get(requestId);
+          if (settle) {
+            // The click that asked reports the reason itself; a second generic
+            // toast would be the same sentence twice.
+            anchorWaitersRef.current.delete(requestId);
+            settle({ ok: false, reason: reason ?? "identity_unavailable" });
+            return;
+          }
+        }
         // D2-I6: the viewer could not name the image it is showing. Say so and
         // leave the previous anchor alone — nothing here touches report text.
         toast({
@@ -522,7 +661,9 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
     viewerMeasurementsQ,
     canalApByLevel,
     requestOhifAnnotatedCapture,
-    requestFreshDisplayedAnchor,
+    attachDisplayedImageRef,
+    addCurrentOhifImageToReport,
+    ohifImageAdding,
     requestFrozenKeyImageCapture,
     ohifCapturePendingRef,
     ohifTargetOriginRef,

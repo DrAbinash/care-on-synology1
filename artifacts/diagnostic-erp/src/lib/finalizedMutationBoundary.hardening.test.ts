@@ -24,7 +24,7 @@
  * and comments, because loosening the line pattern instead counts destructuring
  * READS as writes (`recomputeCopilot`, `applySelectedFormats`).
  *
- * Of the 28, twenty-one refuse through the shared predicate, three keep a named
+ * Of the 29, twenty-two refuse through the shared predicate, three keep a named
  * one-off `isFinalized` check under an allowlist that has to state why, and four
  * are the reset/hydration paths a legitimate reopen depends on. That split used to
  * read "of the 25, eighteen … four … three" while the lists beside it already held
@@ -421,8 +421,19 @@ const GUARD_CASES: Array<{
   {
     // Armed with a hand-written Impression so the refresh has something to
     // overwrite; the unsigned control is the whole point of this action.
+    //
+    // It is also armed with a findings sentence the ledger does not own. Since
+    // Milestone 1 PR C the picker draws conclusions only from what is unexplained
+    // — a sentence a ledger row already speaks for arrives through that row, and
+    // reading it out of the Findings text again is how the scaffold's own normals
+    // re-entered a signed Conclusion. An arm whose every findings line is owned
+    // therefore leaves the action genuinely nothing to write, which is the case
+    // this control exists to catch, not a guard to fix.
     action: "refreshImpressionFromLedger",
-    arm: () => useWorkspace.getState().setField("impression", "Hand-written impression.", { source: "manual" }),
+    arm: () => {
+      useWorkspace.getState().setField("impression", "Hand-written impression.", { source: "manual" });
+      useWorkspace.getState().mergeField("findings", "Acute infarct in the left MCA territory.", "manual");
+    },
     call: () => useWorkspace.getState().refreshImpressionFromLedger(),
     refusal: undefined,
   },
@@ -560,6 +571,22 @@ const GUARD_CASES: Array<{
     }),
     refusal: "refused",
   },
+  {
+    // Vertical Integration M1's one-click report. Its button sits in the Starting
+    // Canvas header and is disabled while this session knows the report is signed —
+    // and `isFinalized` is exactly that session-only knowledge, so the shared
+    // predicate is the only thing behind it once the study is reopened after a
+    // signing made here. `reason` is matched loosely on purpose: the wording is the
+    // product's to change, the fact that a refusal names itself is not.
+    action: "generateProfessionalReport",
+    arm: () => {},
+    call: () => useWorkspace.getState().generateProfessionalReport(
+      buildReportingStudyContext({
+        modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
+      }),
+    ),
+    refusal: { status: "refused", code: "signed", reason: expect.any(String) },
+  },
 ];
 
 function runGuardCase(c: (typeof GUARD_CASES)[number], signed: boolean) {
@@ -581,7 +608,11 @@ describe("every remaining clinical writer refuses on a signed study", () => {
     it(`${c.action} changes nothing and says why`, () => {
       const { before, after, returned } = runGuardCase(c, true);
 
-      expect(returned, `${c.action} must report the refusal through its own return type`).toBe(c.refusal);
+      // `toEqual`, not `toBe`: a mutator whose declared refusal carries the reason
+      // it refused (generateProfessionalReport) returns an object, and an identity
+      // compare could never match one. Every other case here returns a string or
+      // undefined, for which the two are the same test.
+      expect(returned, `${c.action} must report the refusal through its own return type`).toEqual(c.refusal);
       expect(after, `${c.action} wrote to a signed report`).toEqual(before);
       // The shared predicate, not a one-off `if`: the wording and the study id it
       // reports cannot drift between mutators.
@@ -970,13 +1001,14 @@ describe("the boundary cannot regress silently", () => {
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
       "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
+      "generateProfessionalReport",
     ];
     // The four numbers the header comment states, pinned because they were prose
     // and prose drifted: the comment read "of the 25, eighteen … four … three"
     // while these very lists held nineteen and three. A count a reviewer has to
     // recompute by hand is a count that goes stale silently.
-    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(28);
-    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(21);
+    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(29);
+    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(22);
     expect(Object.keys(LEGACY_IF_GUARD).length, "header comment: this many keep a one-off isFinalized check").toBe(3);
     expect(Object.keys(EXEMPT).length, "header comment: this many are reset/hydration paths").toBe(4);
     for (const name of guardedByPredicate) {

@@ -186,7 +186,7 @@ export function buildStaffDayCloseSlipHtml(
   const clinicName = (clinic?.name || "CARE DIAGNOSTICS").toUpperCase();
   const logoHtml = clinic?.logoDataUrl
     ? `<img class="logo" src="${esc(clinic.logoDataUrl)}" alt="" />`
-    : `<div class="logo-ph">LOGO</div>`;
+    : "";
 
   const totalBilled = n(c.totalBilled);
   const outstanding = n(c.totalDue);
@@ -246,7 +246,7 @@ export function buildStaffDayCloseSlipHtml(
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Staff Reconciliation ${esc(c.closureDate)}</title>
 <style>
-  @page { size: 148mm 210mm; margin: 6mm; }
+  @page { size: 148mm 210mm; margin: 12mm 6mm 6mm; }
   * { box-sizing: border-box; }
   body {
     font-family: Arial, Helvetica, sans-serif;
@@ -259,7 +259,9 @@ export function buildStaffDayCloseSlipHtml(
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .slip { width: 100%; max-width: 136mm; margin: 0 auto; }
+  /* The clinic's printer clips anything sitting in the top band, so the header is
+     held clear by content padding as well as by the @page margin. */
+  .slip { width: 100%; max-width: 136mm; margin: 0 auto; padding-top: 3mm; }
   .top {
     display: flex;
     align-items: center;
@@ -269,11 +271,6 @@ export function buildStaffDayCloseSlipHtml(
     margin-bottom: 6px;
   }
   .logo { width: 90px; height: 90px; object-fit: contain; flex-shrink: 0; }
-  .logo-ph {
-    width: 90px; height: 90px; border: 2px solid #000;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 800; flex-shrink: 0;
-  }
   .brand { flex: 1; text-align: center; }
   .brand h1 { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.04em; }
   .brand .sub { font-size: 13px; font-weight: 700; margin-top: 2px; }
@@ -418,7 +415,6 @@ export function buildStaffDayCloseSlipHtml(
       ${summaryLine("Outstanding", outstanding)}
       ${summaryLine("Expense", expense)}
       ${summaryLine("Expected", expected, { strong: true })}
-      ${duesCollected > 0 ? `<div class="note ok">Expected = Bill Gen + Dues Collected − cancel/refund/outstanding/expense. UPI+CASH should match Expected (not Bill Gen alone).</div>` : ""}
       ${methodBlock}
     </div>
     <div class="col">
@@ -447,6 +443,27 @@ export function buildStaffDayCloseSlipHtml(
   </div>
 </div>
 </body></html>`;
+}
+
+/**
+ * Branding carries the letterhead logo *and* the auto-print switch, so it has to
+ * be resolved before a slip is built — printing whatever was in hand at click
+ * time sent reconciliation slips to staff with no logo. A slow or failed
+ * branding request must still not block closing the day, so this gives up after
+ * `timeoutMs` and prints without the logo.
+ */
+export async function resolveStaffSlipClinic(
+  load: () => Promise<StaffSlipClinic>,
+  timeoutMs = 3000,
+): Promise<StaffSlipClinic> {
+  const timeout = new Promise<StaffSlipClinic>((resolve) => {
+    setTimeout(() => resolve({}), timeoutMs);
+  });
+  try {
+    return await Promise.race([load(), timeout]);
+  } catch {
+    return {};
+  }
 }
 
 export function openStaffDayClosePrint(

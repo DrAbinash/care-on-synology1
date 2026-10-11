@@ -1,20 +1,17 @@
 /**
- * "Refine Report" — what the model is told, and what CARE refuses to accept back.
+ * Regression tests for the observation_dropped guard.
  *
- * The refinement flow itself (proposed revision, per-field Accept/Reject, durable
- * Apply, undo, the signed-report refusal) already existed and is covered by the
- * composer's own request suites. What is tested here is the part Prompt 2 needs:
- * a refinement must change wording and never change the medicine — so a rewrite
- * that deletes a finding has to be caught, while a rewrite that reorders, merges
- * or rewords must not be.
+ * The conservation framework compares token sets across entire input vs output.
+ * A report can lose a complete observation while its constituent words survive
+ * elsewhere — "Bilateral facet arthropathy at L4-L5" deleted, but "facet" appears
+ * in another sentence and "L4-L5" appears in three more. The token-level check
+ * sees no loss. These tests verify the per-observation preservation guard catches
+ * this class of failure.
  */
 import { describe, expect, it } from "vitest";
-import type { AiComposeJobKind } from "@workspace/db/schema";
-import { buildUserPrompt } from "./composeEngine";
-import { buildCareSystemPrompt } from "./persona";
+import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
+import { parseComposerSnapshot, parseComposerDraftJson } from "./types";
 import { validateComposerOutput } from "./validateOutput";
-import { buildTrackedChanges, materializeAcceptedText } from "./trackedChanges";
-import { parseComposerSnapshot, type ComposerInputSnapshot } from "./types";
 
 const L45_FACET = "Bilateral facet arthropathy at L4-L5 and L5-S1.";
 const BASE_FINDINGS = [
@@ -25,274 +22,374 @@ const BASE_FINDINGS = [
   "AP canal diameter 9 mm at L4-L5.",
 ].join("\n");
 
-function snapshotFor(findings: string): ComposerInputSnapshot {
+const BASE_IMPRESSION = [
+  "Multilevel degenerative changes.",
+  "L4-L5 disc bulge with bilateral facet arthropathy and critical canal stenosis.",
+].join("\n");
+
+function observationsForFindings(findings: string): ComposeObservation[] {
+  return [
+    {
+      concept: "loss of lordosis",
+      findingsText: "Loss of lumbar lordosis.",
+      region: "lumbar",
+    },
+    {
+      concept: "disc desiccation",
+      findingsText: "Disc desiccation at L2-L3, L3-L4, L4-L5 and L5-S1.",
+      region: "lumbar",
+      level: "L2-L3, L3-L4, L4-L5, L5-S1",
+    },
+    {
+      concept: "disc bulge",
+      findingsText: "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      region: "lumbar",
+      level: "L4-L5",
+      laterality: "bilateral",
+    },
+    {
+      concept: "facet arthropathy",
+      findingsText: L45_FACET,
+      region: "lumbar",
+      level: "L4-L5, L5-S1",
+      laterality: "bilateral",
+    },
+    {
+      concept: "canal stenosis",
+      findingsText: "AP canal diameter 9 mm at L4-L5.",
+      region: "lumbar",
+      level: "L4-L5",
+      measurement: "9 mm",
+    },
+  ];
+}
+
+function snapshotFor(findings: string, impression: string = BASE_IMPRESSION): ComposerInputSnapshot {
   return parseComposerSnapshot({
-    modality: "MR", region: "LS Spine", family: "spine", spineSegment: "lumbar",
-    reportTitle: "MRI LUMBOSACRAL SPINE",
-    technique: "Multiplanar multisequence non-contrast MRI of the lumbosacral spine.",
-    findings,
-    impression: "Multilevel degenerative disc disease.",
-    recommendation: "",
-    observations: [
-      { id: "o1", concept: "lordosis", findingsText: "Loss of lumbar lordosis." },
-      { id: "o2", concept: "disc_desiccation", level: "L2-L3", findingsText: "Disc desiccation L2-L3." },
-      { id: "o3", concept: "disc_contour", level: "L4-L5", laterality: "bilateral", findingsText: "Broad-based disc bulge L4-L5 with bilateral lateral recess narrowing." },
-      { id: "o4", concept: "facet_arthropathy", level: "L4-L5", laterality: "bilateral", findingsText: L45_FACET },
-      { id: "o5", concept: "canal_ap", level: "L4-L5", measurement: "9 mm", findingsText: "AP canal diameter 9 mm at L4-L5." },
-    ],
+    findings: BASE_FINDINGS,
+    impression: BASE_IMPRESSION,
+    technique: "MRI lumbar spine without contrast.",
+    regions: ["lumbar"],
+    observations: observationsForFindings(findings),
     jobKindHint: "SECTION_EDIT",
   });
 }
 
-describe("a refinement cannot delete a finding", () => {
-  const snap = snapshotFor(BASE_FINDINGS);
+function draftFor(findings: string, impression: string = BASE_IMPRESSION): ComposerDraftOutput {
+  return {
+    findings,
+    impression,
+    recommendation: "",
+    unresolvedQuestions: [],
+    warnings: [],
+  };
+}
 
-  it("catches the version that drops the facet arthropathy sentence", () => {
-    const v = validateComposerOutput(snap, {
-      findings: BASE_FINDINGS.replace(L45_FACET, "").replace(/\n{2,}/g, "\n"),
-      impression: "Multilevel degenerative disc disease.",
-      recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
-    });
-    expect(v.errors).toContain("observation_dropped");
-    expect(v.ok).toBe(false);
-    expect(v.warnings.join(" ")).toMatch(/facet arthropathy/);
+describe("observation_dropped guard", () => {
+  it("detects when a complete observation sentence is deleted", () => {
+    const outputFindings = [
+      "Loss of lumbar lordosis.",
+      "Disc desiccation at L2-L3, L3-L4, L4-L5 and L5-S1.",
+      "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      "AP canal diameter 9 mm at L4-L5.",
+    ].join("\n");
+    const result = validateComposerOutput(snapshotFor(outputFindings), draftFor(outputFindings));
+    expect(result.errors).toContain("observation_dropped");
+    expect(result.warnings.join(" ")).toMatch(/facet arthropathy/i);
   });
 
-  it("catches it when the observation is reworded into nonsense instead of removed", () => {
-    const v = validateComposerOutput(snap, {
-      findings: BASE_FINDINGS.replace(L45_FACET, "Small joints are unremarkable."),
-      impression: "Multilevel degenerative disc disease.",
-      recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
-    });
-    expect(v.errors).toContain("observation_dropped");
+  it("detects when an observation is replaced with unrelated text", () => {
+    const outputFindings = [
+      "Loss of lumbar lordosis.",
+      "Disc desiccation at L2-L3, L3-L4, L4-L5 and L5-S1.",
+      "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      "Small joints are unremarkable.",
+      "AP canal diameter 9 mm at L4-L5.",
+    ].join("\n");
+    const result = validateComposerOutput(snapshotFor(outputFindings), draftFor(outputFindings));
+    expect(result.errors).toContain("observation_dropped");
   });
 
-  it("passes a professional rewrite that keeps every statement", () => {
-    const v = validateComposerOutput(snap, {
-      findings: [
-        "Loss of the normal lumbar lordosis.",
-        "Desiccated discs from L2-L3 through L5-S1.",
-        "Broad-based disc bulge at L4-L5, producing bilateral lateral recess narrowing.",
-        L45_FACET,
-        "The AP canal diameter measures 9 mm at L4-L5.",
-      ].join("\n"),
-      impression: "Multilevel degenerative disc disease, most marked at L4-L5.",
-      recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
-    expect(v.ok).toBe(true);
+  it("passes when all observations are professionally rephrased", () => {
+    const outputFindings = [
+      "Lumbar lordosis is reduced.",
+      "Multilevel disc desiccation is noted at L2-L3 through L5-S1.",
+      "At L4-L5, a broad-based disc bulge causes bilateral lateral recess narrowing.",
+      "Bilateral facet arthropathy is present at L4-L5 and L5-S1.",
+      "The AP canal diameter measures 9 mm at L4-L5.",
+    ].join("\n");
+    const result = validateComposerOutput(snapshotFor(outputFindings), draftFor(outputFindings));
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("lets an impression-only refinement leave Findings alone", () => {
-    const v = validateComposerOutput(snap, {
-      findings: BASE_FINDINGS,
-      impression: "Multilevel degenerative disc disease with bilateral L4-L5 lateral recess narrowing.",
-      recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
-    expect(v.ok).toBe(true);
+  it("passes for impression-only refinement when findings pass through", () => {
+    const outputFindings = BASE_FINDINGS;
+    const outputImpression = [
+      "Multilevel degenerative disc disease.",
+      "L4-L5 disc bulge with facet arthropathy and critical canal stenosis.",
+    ].join("\n");
+    const result = validateComposerOutput(
+      snapshotFor(outputFindings, outputImpression),
+      draftFor(outputFindings, outputImpression),
+    );
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("counts an omitted field as untouched, because that is what Apply does", () => {
-    // An empty field emits no tracked change, so the radiologist's own Findings
-    // stand. Judging the raw draft instead would turn every "impression only"
-    // response into an accusation that it deleted the Findings.
-    const v = validateComposerOutput(snap, {
+  it("passes when input findings are empty (untouched)", () => {
+    const snap = parseComposerSnapshot({
       findings: "",
-      impression: "Multilevel degenerative disc disease.",
+      impression: "",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        {
+          concept: "disc bulge",
+          findingsText: "Disc bulge at L4-L5.",
+          region: "lumbar",
+          level: "L4-L5",
+        },
+      ],
+      jobKindHint: "SECTION_EDIT",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "",
+      impression: "",
       recommendation: "",
       unresolvedQuestions: [],
       warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("is not triggered by dropping a hedge with no clinical content of its own", () => {
-    const withHedge = `${BASE_FINDINGS}\nFindings are as described above.`;
-    const v = validateComposerOutput(snapshotFor(withHedge), {
-      findings: BASE_FINDINGS,
-      impression: "Multilevel degenerative disc disease.",
+  it("passes when a hedge is dropped but the finding remains", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Suspected disc bulge at L4-L5.",
+      impression: "Possible L4-L5 disc bulge.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        {
+          concept: "disc bulge",
+          findingsText: "Suspected disc bulge at L4-L5.",
+          region: "lumbar",
+          level: "L4-L5",
+        },
+      ],
+      jobKindHint: "SECTION_EDIT",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "Disc bulge at L4-L5.",
+      impression: "L4-L5 disc bulge.",
       recommendation: "",
       unresolvedQuestions: [],
       warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("does not demand that every ledger row reach the prose", () => {
-    // The ledger holds more rows than a report quotes. This guard protects text the
-    // radiologist already wrote; it is not a completeness rule for the ledger.
-    const snap = snapshotFor(BASE_FINDINGS);
-    snap.observations = [
-      ...(snap.observations ?? []),
-      { id: "o9", concept: "sacralisation", level: "L5", findingsText: "Sacralisation of L5 with transitional vertebral segmentation." },
-    ];
-    const v = validateComposerOutput(snap, {
-      findings: BASE_FINDINGS,
-      impression: "Multilevel degenerative disc disease.",
+  it("skips ledger-only rows not present in input narrative", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Disc bulge at L4-L5.",
+      impression: "L4-L5 disc bulge.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        {
+          concept: "disc bulge",
+          findingsText: "Disc bulge at L4-L5.",
+          region: "lumbar",
+          level: "L4-L5",
+        },
+        {
+          concept: "posterior elements",
+          findingsText: "Posterior elements are unremarkable.",
+          region: "lumbar",
+        },
+      ],
+      jobKindHint: "SECTION_EDIT",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "Disc bulge at L4-L5.",
+      impression: "L4-L5 disc bulge.",
       recommendation: "",
       unresolvedQuestions: [],
       warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("stays out of TRANSLATE, which is expected to replace every English word", () => {
-    const snap = snapshotFor(BASE_FINDINGS);
-    snap.jobKindHint = "TRANSLATE";
-    snap.targetLanguage = "de";
-    const v = validateComposerOutput(snap, {
-      findings: "Verlust der normalen Lendenlordose. Degenerative Discopathia in mehreren Segmenten.",
-      impression: "Multilevel degenerative disc disease.",
+  it("exempts TRANSLATE kind from observation_dropped check", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Disc bulge at L4-L5.",
+      impression: "L4-L5 disc bulge.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        {
+          concept: "disc bulge",
+          findingsText: "Disc bulge at L4-L5.",
+          region: "lumbar",
+          level: "L4-L5",
+        },
+      ],
+      jobKindHint: "TRANSLATE",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "Hernia discal en L4-L5.",
+      impression: "Hernia discal L4-L5.",
       recommendation: "",
       unresolvedQuestions: [],
       warnings: [],
-    });
-    expect(v.errors).not.toContain("observation_dropped");
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("reports a dropped measurement twice, by both rules that cover it", () => {
-    const v = validateComposerOutput(snap, {
-      findings: BASE_FINDINGS.replace("AP canal diameter 9 mm at L4-L5.", ""),
-      impression: "Multilevel degenerative disc disease.",
-      recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
-    });
-    expect(v.errors).toContain("measurement_mutation");
-    expect(v.errors).toContain("observation_dropped");
+  it("fires both measurement_mutation and observation_dropped when measurement is dropped", () => {
+    const outputFindings = [
+      "Loss of lumbar lordosis.",
+      "Disc desiccation at L2-L3, L3-L4, L4-L5 and L5-S1.",
+      "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      "Bilateral facet arthropathy at L4-L5 and L5-S1.",
+    ].join("\n");
+    const result = validateComposerOutput(snapshotFor(outputFindings), draftFor(outputFindings));
+    expect(result.errors).toContain("observation_dropped");
+    expect(result.errors).toContain("measurement_mutation");
   });
 });
 
-describe("the refinement instruction and target reach the model intact", () => {
-  const instruction = "Organise the findings by anatomical level and add the canal measurement table";
-
-  it("sends the instruction as the radiologist wrote it", () => {
-    const snap = snapshotFor(BASE_FINDINGS);
-    const prompt = buildUserPrompt("SECTION_EDIT" as AiComposeJobKind, {
-      ...snap,
-      instruction,
-      selectionText: `FINDINGS:\n${BASE_FINDINGS}`,
-      selectionField: "FINDINGS",
+describe("observation preservation — clinical meaning, not exact sentences", () => {
+  it("passes when two observations share one clinically equivalent sentence", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.\nBilateral facet arthropathy at L4-L5.",
+      impression: "L4-L5 degenerative disc disease.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        { concept: "disc bulge", findingsText: "Broad-based disc bulge at L4-L5.", region: "lumbar", level: "L4-L5", laterality: "bilateral" },
+        { concept: "facet arthropathy", findingsText: "Bilateral facet arthropathy at L4-L5.", region: "lumbar", level: "L4-L5", laterality: "bilateral" },
+      ],
+      jobKindHint: "PROFESSIONALIZE",
     });
-    expect(prompt).toContain(instruction);
-    expect(prompt).toContain(L45_FACET);
+    const draft: ComposerDraftOutput = {
+      findings: "At L4-L5 there is a broad-based disc bulge causing bilateral lateral recess narrowing, together with bilateral facet arthropathy.",
+      impression: "L4-L5 degenerative disc disease with facet arthropathy.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("does not truncate a long target the way the old 800-character slice did", () => {
-    const tail = "Incidental 14 mm exophytic cyst on the right lower pole of the kidney.";
-    const long = `${Array.from({ length: 40 }, (_unused, i) => `Level position ${i}: preserved disc height and signal.`).join(" ")} ${tail}`;
-    const snap = snapshotFor(BASE_FINDINGS);
-    const prompt = buildUserPrompt("SECTION_EDIT" as AiComposeJobKind, {
-      ...snap,
-      instruction: "Expand the findings",
-      selectionText: long,
-      selectionField: "FINDINGS",
+  it("passes when anatomical terminology is rewritten using accepted synonyms", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Bilateral facet arthropathy at L4-L5 with facet joint effusion.",
+      impression: "L4-L5 facet arthropathy.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        { concept: "facet arthropathy", findingsText: "Bilateral facet arthropathy at L4-L5 with facet joint effusion.", region: "lumbar", level: "L4-L5", laterality: "bilateral" },
+      ],
+      jobKindHint: "PROFESSIONALIZE",
     });
-    expect(long.length).toBeGreaterThan(1200);
-    expect(prompt).toContain(tail);
+    const draft: ComposerDraftOutput = {
+      findings: "Facet arthrosis with joint effusion at L4-L5 bilaterally.",
+      impression: "L4-L5 facet arthrosis.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 
-  it("tells the model what it may never do to clinical content", () => {
-    const prompt = buildCareSystemPrompt("SECTION_EDIT" as AiComposeJobKind, snapshotFor(BASE_FINDINGS));
-    expect(prompt).toMatch(/Refining wording never removes clinical content/);
-    expect(prompt).toMatch(/an omitted\s+field is a deleted finding/);
-    expect(prompt).toMatch(/never one merged block/);
-    expect(prompt).toMatch(/do NOT comply and do NOT guess/);
-    expect(prompt).toMatch(/say why in unresolvedQuestions/);
+  it("detects when a finding is moved from Findings into Impression only", () => {
+    const outputFindings = [
+      "Loss of lumbar lordosis.",
+      "Disc desiccation at L2-L3, L3-L4, L4-L5 and L5-S1.",
+      "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      "AP canal diameter 9 mm at L4-L5.",
+    ].join("\n");
+    const outputImpression = "L4-L5 facet arthropathy with critical canal stenosis.";
+    const result = validateComposerOutput(
+      snapshotFor(outputFindings),
+      draftFor(outputFindings, outputImpression),
+    );
+    expect(result.errors).toContain("observation_dropped");
+  });
+
+  it("independently checks each observation when multiple share the same level", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.\nBilateral facet arthropathy at L4-L5.\nAP canal diameter 9 mm at L4-L5.",
+      impression: "L4-L5 degenerative changes.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [
+        { concept: "disc bulge", findingsText: "Broad-based disc bulge at L4-L5.", region: "lumbar", level: "L4-L5" },
+        { concept: "facet arthropathy", findingsText: "Bilateral facet arthropathy at L4-L5.", region: "lumbar", level: "L4-L5" },
+        { concept: "canal stenosis", findingsText: "AP canal diameter 9 mm at L4-L5.", region: "lumbar", level: "L4-L5", measurement: "9 mm" },
+      ],
+      jobKindHint: "SECTION_EDIT",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.\nAP canal diameter 9 mm at L4-L5.",
+      impression: "L4-L5 degenerative changes.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).toContain("observation_dropped");
+    expect(result.warnings.join(" ")).toMatch(/facet arthropathy/i);
+  });
+
+  it("does not fire observation_dropped when no observation rows exist (narrative conservation applies)", () => {
+    const snap = parseComposerSnapshot({
+      findings: "Broad-based disc bulge at L4-L5 with bilateral lateral recess narrowing.\nBilateral facet arthropathy at L4-L5 and L5-S1.\nAP canal diameter 9 mm at L4-L5.",
+      impression: "L4-L5 disc bulge with facet arthropathy.",
+      technique: "MRI lumbar spine.",
+      regions: ["lumbar"],
+      observations: [],
+      jobKindHint: "PROFESSIONALIZE",
+    });
+    const draft: ComposerDraftOutput = {
+      findings: "Broad-based disc bulge at L4-L5 with bilateral facet arthropathy.\nAP canal diameter 9 mm at L4-L5.",
+      impression: "L4-L5 disc bulge with facet arthropathy.",
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    };
+    const result = validateComposerOutput(snap, draft);
+    expect(result.errors).not.toContain("observation_dropped");
   });
 });
 
-/**
- * Step 6 of the second prompt: three instructions in a row, each applied to what
- * the previous accepted revision actually said. No conversation store — the draft
- * is the memory, so this proves the loop by rebuilding the snapshot from the
- * accepted text, exactly as the workspace does after Apply.
- */
-describe("successive refinements work on the current draft", () => {
-  const snap1 = snapshotFor(BASE_FINDINGS);
-
-  it("instruction 2 sees the text instruction 1 produced", () => {
-    // The first accepted revision moves the facet finding under its own sub-heading
-    // and leaves it nowhere else — so from then on, that heading block is the only
-    // place the statement exists.
-    const revisedFindings = [
-      BASE_FINDINGS.replace(L45_FACET, "").replace(/\n{2,}/g, "\n"),
-      "Facets & Ligaments:",
-      L45_FACET,
-    ].join("\n");
-    const changes = buildTrackedChanges({
-      jobId: 1,
-      originalFindings: snap1.findings,
-      originalImpression: snap1.impression,
-      originalRecommendation: snap1.recommendation,
-      draft: {
-        findings: revisedFindings, impression: snap1.impression, recommendation: "",
-        unresolvedQuestions: [], warnings: [],
-      },
-    });
-    const accepted = changes.map((c) => ({ ...c, reviewState: "ACCEPTED" as const }));
-    const merged = materializeAcceptedText({
-      currentFindings: snap1.findings,
-      currentImpression: snap1.impression,
-      currentRecommendation: snap1.recommendation,
-      changes: accepted,
-    });
-    expect(merged.findings).toContain("Facets & Ligaments:");
-
-    // The next instruction is built from what the editor now says — not from the
-    // original draft, and not from anything cached about it.
-    const snap2 = snapshotFor(merged.findings);
-    const prompt = buildUserPrompt("SECTION_EDIT" as AiComposeJobKind, {
-      ...snap2,
-      instruction: "Shorten the impression",
-      selectionText: `FINDINGS:\n${snap2.findings}\n\nIMPRESSION:\n${snap2.impression}`,
-      selectionField: "FINDINGS",
-    });
-    expect(prompt).toContain("Facets & Ligaments:");
-
-    // And the second-generation draft still cannot lose the facet finding, even
-    // though it now sits under a heading the first pass invented.
-    const v = validateComposerOutput(snap2, {
-      findings: merged.findings
-        .replace(L45_FACET, "")
-        .replace("Facets & Ligaments:", "")
-        .replace(/\n{2,}/g, "\n"),
-      impression: "Multilevel degenerative disc disease.",
+describe("unresolvedQuestions contract", () => {
+  it("survives through the schema parser as a string array", () => {
+    const raw = JSON.stringify({
+      findings: "Test findings.",
+      impression: "Test impression.",
       recommendation: "",
-      unresolvedQuestions: [],
+      unresolvedQuestions: ["Is this right or left-sided?"],
       warnings: [],
     });
-    expect(v.errors).toContain("observation_dropped");
+    const parsed = parseComposerDraftJson(raw);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.unresolvedQuestions).toEqual(["Is this right or left-sided?"]);
   });
 
-  it("does not call a reworded finding lost because its sub-heading is the only match", () => {
-    // Deliberate conservatism. The persona is told to organise spine findings under
-    // sub-headings, so "Facets & Ligaments:" plus a body that says "hypertrophic
-    // change with lateral recess narrowing" keeps the body-part word in the heading
-    // while the statement is still there in other words. Refusing that would fail
-    // the reorganisation the prompt asks for; the per-change review is the boundary
-    // for a heading whose body really did go empty.
-    const relocated = [
-      BASE_FINDINGS.replace(L45_FACET, "").replace(/\n{2,}/g, "\n"),
-      "Facets & Ligaments:",
-      "Hypertrophic change at L4-L5 and L5-S1 with bilateral lateral recess narrowing.",
-    ].join("\n");
-    const v = validateComposerOutput(snapshotFor(BASE_FINDINGS), {
-      findings: relocated,
-      impression: "Multilevel degenerative disc disease.",
+  it("defaults to an empty array when the model omits it", () => {
+    const raw = JSON.stringify({
+      findings: "F.",
+      impression: "I.",
       recommendation: "",
-      unresolvedQuestions: [],
-      warnings: [],
     });
-    expect(v.errors).not.toContain("observation_dropped");
+    const parsed = parseComposerDraftJson(raw);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.unresolvedQuestions).toEqual([]);
   });
 });

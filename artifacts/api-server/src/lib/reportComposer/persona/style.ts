@@ -42,6 +42,7 @@ RECOMMENDATION RULES:
 - Do NOT freely invent follow-up tests.
 - No filler recommendations: never "Please correlate clinically", "Clinical correlation
   advised" or similar.
+- If no recommendation is indicated, leave recommendation empty.
 
 PRINTED STRUCTURE (what CARE's printer parses; anything else prints as prose):
 - A Findings line that is exactly a short "Label:" prints as an underlined section heading;

@@ -39,9 +39,115 @@ import { COMPOSER_MAX_SELECTED_KEY_IMAGES } from "./types";
 /** JSON draft of a full report needs room to answer, not just to read. */
 export const COMPOSER_OUTPUT_RESERVE_TOKENS = 1024;
 
+/**
+ * Ceiling on the answer the Composer asks a cloud model for. A professionalised
+ * spine report runs to ~1,200 tokens and a combined cervical+lumbar report
+ * beyond that; 4,096 leaves headroom without leaving the request unbounded,
+ * which is what `max_tokens` was declared for and never sent.
+ */
+export const COMPOSER_MAX_OUTPUT_TOKENS = 4096;
+
+/**
+ * Conservative context ceiling assumed for a cloud composer request.
+ *
+ * CARE does not know a vendor's real window from here, and guessing high would
+ * turn an over-long report into a provider error at the far end. Every model the
+ * composer can currently be pointed at (gpt-4o, qwen3.7-plus, deepseek-v4) is
+ * many times above this, so the number only ever refuses an absurdly large
+ * request rather than a real one.
+ */
+export const CLOUD_COMPOSER_MAX_CONTEXT_TOKENS = 16_384;
+
 /** Rough text-token cost of the prompt itself (same chars/4 convention as contextBudget). */
 export function composerPromptTextTokens(systemPrompt: string, userPrompt: string): number {
   return Math.ceil(((systemPrompt ?? "").length + (userPrompt ?? "").length) / 4);
+}
+
+/**
+ * How much room to leave for the answer. Half the input, at least one report,
+ * at most `COMPOSER_MAX_OUTPUT_TOKENS`: a request that grows grows its own
+ * output allowance, so a long report is not professionalised into a truncated
+ * one.
+ */
+export function composerOutputReserveTokens(inputTokens: number): number {
+  return Math.min(
+    COMPOSER_MAX_OUTPUT_TOKENS,
+    Math.max(COMPOSER_OUTPUT_RESERVE_TOKENS, Math.ceil(Math.max(0, inputTokens) / 2)),
+  );
+}
+
+export type ComposerTextContextPlan = {
+  fits: boolean;
+  /** num_ctx to send for THIS local request (Ollama only). */
+  numCtx: number;
+  /** max_tokens to send (both transports; the cloud ceiling on the answer). */
+  maxTokens: number;
+  estimatedTokens: number;
+  requiredTokens: number;
+  ceilingTokens: number;
+  reason: string;
+};
+
+/**
+ * Text-only Composer context plan — the same rule the selected-image path has
+ * used since #904, applied to the requests that carry NO images.
+ *
+ * Why this exists: the refinement/`PROFESSIONALIZE` prompt used to solve an
+ * oversized report by cutting the report (first 1,200 characters of Findings,
+ * first 12 observations). Cutting clinical text the radiologist wrote is the
+ * failure this file's sibling docstring already calls "the one outcome a
+ * radiology draft must never have". The prompt now carries the whole report and
+ * this planner answers the question the cut was pretending to solve: does it
+ * actually fit? When it does not, the request FAILS with the ceiling named in
+ * the message instead of sending a truncated report and calling the answer
+ * successful.
+ */
+export function planComposerTextContext(opts: {
+  systemPrompt: string;
+  userPrompt: string;
+  transport: "ollama" | "cloud";
+  /** Ollama only: the admin-configured composer window. */
+  configuredNumCtx?: number;
+}): ComposerTextContextPlan {
+  const estimatedTokens = composerPromptTextTokens(opts.systemPrompt, opts.userPrompt);
+  const maxTokens = composerOutputReserveTokens(estimatedTokens);
+  const requiredTokens = estimatedTokens + maxTokens;
+
+  if (opts.transport === "cloud") {
+    const ceiling = CLOUD_COMPOSER_MAX_CONTEXT_TOKENS;
+    const fits = requiredTokens <= ceiling;
+    return {
+      fits,
+      numCtx: requiredTokens,
+      maxTokens,
+      estimatedTokens,
+      requiredTokens,
+      ceilingTokens: ceiling,
+      reason: fits
+        ? `~${estimatedTokens} input tokens + ${maxTokens} reserved for the answer → ${requiredTokens} of ${ceiling}`
+        : `This request needs ~${requiredTokens} tokens and the Composer's cloud ceiling is ${ceiling}. `
+          + "Nothing was sent. Split the report into a Findings edit and a separate Impression edit, "
+          + "or shorten the narrative the AI is being asked to preserve.",
+    };
+  }
+
+  const configured = Math.max(2048, Math.floor(opts.configuredNumCtx || 0));
+  const ceiling = Math.max(PREFERRED_MULTI_IMAGE_DRAFT_NUM_CTX, configured);
+  const fits = requiredTokens <= ceiling;
+  return {
+    fits,
+    numCtx: Math.min(ceiling, Math.max(configured, requiredTokens)),
+    maxTokens,
+    estimatedTokens,
+    requiredTokens,
+    ceilingTokens: ceiling,
+    reason: fits
+      ? `~${estimatedTokens} input tokens + ${maxTokens} reserved for the answer → num_ctx ${Math.min(ceiling, Math.max(configured, requiredTokens))} (configured ${configured}, ceiling ${ceiling})`
+      : `This report needs ~${requiredTokens} tokens but the local Composer context ceiling is ${ceiling}, `
+        + "so nothing was sent — a truncated request would silently drop part of your report. "
+        + "Ask for one section at a time (Findings, then Impression), or route this study to a cloud "
+        + "model in AI Reporting Settings, which is not limited by the local window.",
+  };
 }
 
 export type ComposerVisionContextPlan = {

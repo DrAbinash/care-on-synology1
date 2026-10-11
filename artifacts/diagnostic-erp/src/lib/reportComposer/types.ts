@@ -27,6 +27,32 @@ export type ComposeObservation = {
   baselineReplaces?: string;
 };
 
+/**
+ * A second report for a `COMBINE` job. Mirrors the server's
+ * `ComposerReportSourceSchema`.
+ *
+ * At least one of `worklistId` / `reportId` is REQUIRED by the server for a real
+ * job (`verifyComposeSourceIdentities`): each source must name a CARE study, and
+ * CARE resolves it and proves it belongs to the same patient as the study being
+ * reported. Type them optional here because a source that names nothing is a
+ * legitimate thing for the UI to be holding while the clinician is still picking
+ * it — the refusal is the server's, and it arrives as one sentence to show.
+ * `label` is a caption for the clinician and proves nothing about identity.
+ */
+export type ComposerReportSource = {
+  label?: string;
+  modality?: string;
+  region?: string;
+  /** radiology_worklist.id of the study the merged report came from. */
+  worklistId?: number | null;
+  /** patient_reports.id, for a source that is a report of record. */
+  reportId?: number | null;
+  /** Optional cross-check; CARE records the row's UID, not this one. */
+  studyInstanceUid?: string | null;
+  findings?: string;
+  impression?: string;
+};
+
 export type ComposerInputSnapshot = {
   studyId?: number | null;
   worklistId?: number | null;
@@ -75,6 +101,13 @@ export type ComposerInputSnapshot = {
   selectionText?: string;
   selectionField?: "FINDINGS" | "IMPRESSION" | "RECOMMENDATION";
   instruction?: string;
+  /**
+   * Second report(s) supplied for a COMBINE job. Mirrors the server's
+   * `ComposerInputSnapshotSchema.additionalReports`. Optional, and the hash
+   * canon is only extended when this is non-empty, so a snapshot without it
+   * keeps exactly the hashes it had before the field existed.
+   */
+  additionalReports?: ComposerReportSource[];
   targetLanguage?: string;
   jobKindHint?: string;
   /** AI drafting mode. Absent/undefined = TEXT_ONLY (backward compatible). */
@@ -120,6 +153,27 @@ export type TrackedChange = {
   model?: string;
 };
 
+/**
+ * One structured observation the assistant is PROPOSING (Operation 1). Server
+ * mirror: `api-server/src/lib/reportComposer/types.ts` `ProposedObservationSchema`.
+ * It is a proposal for the canonical finding ledger, never report text — an
+ * OBSERVATIONS job has no Apply path, and inserting a row is the workspace's own
+ * audited mutation.
+ */
+export type ProposedObservation = {
+  concept: string;
+  region?: string | null;
+  level?: string | null;
+  severity?: string | null;
+  laterality?: string | null;
+  measurement?: string | null;
+  findingsText: string;
+  impressionText?: string | null;
+  recommendationText?: string | null;
+  /** Verbatim fragment of the dictation this row came from. */
+  sourceText?: string | null;
+};
+
 export type ComposeJobView = {
   id: number;
   studyId: number | null;
@@ -140,17 +194,21 @@ export type ComposeJobView = {
     findings?: string;
     impression?: string;
     recommendation?: string;
-    /**
-     * What CARE's prompt calls for whenever the instruction or the findings do not
-     * fit each other: the model's own question, instead of a guess dressed up as a
-     * finding. It has always been in the stored draft; nothing used to display it,
-     * so a draft that asked for clarification asked silently.
-     */
     unresolvedQuestions?: string[];
+    /** Operation 1's answer. Present on an OBSERVATIONS job, absent otherwise. */
+    observations?: ProposedObservation[];
   } | null;
   validation: unknown;
   sources: Record<string, number>;
   model: string | null;
+  /** Derived server-side from the job's provenance — not a column. */
+  provider?: string | null;
+  usage?: {
+    promptTokens: number | null;
+    completionTokens: number | null;
+    totalTokens: number | null;
+    approximateCostUsd: number | null;
+  } | null;
   fallbackUsed: boolean;
   latencyMs: number | null;
   safeError: string | null;
@@ -319,6 +377,27 @@ export function canonicalSelectedKeyImagesHashPayload(s: ComposerInputSnapshot):
     .join("\n");
 }
 
+/** MUST mirror server `canonicalAdditionalReportsHashPayload`. */
+export function canonicalAdditionalReportsHashPayload(s: ComposerInputSnapshot): string {
+  const norm = (v: string | null | undefined): string =>
+    (v ?? "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  const ref = (v: number | null | undefined): string => (v == null ? "" : String(v));
+  return (s.additionalReports ?? [])
+    .map((r) =>
+      [
+        ref(r.worklistId),
+        ref(r.reportId),
+        norm(r.studyInstanceUid),
+        norm(r.label),
+        norm(r.modality),
+        norm(r.region),
+        norm(r.findings),
+        norm(r.impression),
+      ].join("\u001f"),
+    )
+    .join("\n");
+}
+
 export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Promise<{
   findingsHash: string;
   impressionHash: string;
@@ -344,6 +423,7 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
   // `canonicalStudyContextHashPayload` docstring for the rationale).
   const studyCtxCanon = canonicalStudyContextHashPayload(snapshot);
   const selectedImagesCanon = canonicalSelectedKeyImagesHashPayload(snapshot);
+  const additionalReports = snapshot.additionalReports ?? [];
   const inputHash = await hashText(
     [
       snapshot.jobKindHint ?? "",
@@ -359,6 +439,9 @@ export async function computeSnapshotHashes(snapshot: ComposerInputSnapshot): Pr
       (snapshot.templateSections ?? []).join(","),
       snapshot.aiMode ?? "TEXT_ONLY",
       selectedImagesCanon,
+      // Appended only when non-empty, exactly as the server does — an unchanged
+      // array keeps every pre-existing snapshot's `inputHash` byte-identical.
+      ...(additionalReports.length ? [canonicalAdditionalReportsHashPayload(snapshot)] : []),
     ].join("\u001e"),
   );
   const reportRevision = await hashText(`${findingsHash}:${impressionHash}:${recommendationHash}:${obsCanon}`);

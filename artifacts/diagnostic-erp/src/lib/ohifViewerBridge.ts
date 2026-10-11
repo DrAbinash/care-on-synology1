@@ -218,9 +218,19 @@ export type OhifBridgeContext = {
   getImageRefs?: () => ReportImageRef[];
   onMeasurementSaved?: () => void;
   onKeyImageSaved?: () => void;
-  onActiveAnchor?: (ctx: ViewportContext) => void;
-  /** Called when the viewer answers that it cannot identify the displayed image. */
-  onActiveAnchorUnavailable?: (reason?: string) => void;
+  /**
+   * `requestId` is the id of the `displayed-anchor-request` this answer belongs to,
+   * or null for an anchor the viewer pushed on its own. Callers that asked "which
+   * image is on screen NOW" must match on it — otherwise an answer to an earlier
+   * question is served as a fresh one.
+   */
+  onActiveAnchor?: (ctx: ViewportContext, requestId: string | null) => void;
+  /**
+   * Called when the viewer answers that it cannot identify the displayed image.
+   * `reason` is the viewer's own word (`no_displayed_image`, `services_unavailable`,
+   * …) and `requestId` is the question it answers.
+   */
+  onActiveAnchorUnavailable?: (reason?: string, requestId?: string | null) => void;
   /**
    * Anchor requests CARE has asked the viewer to answer. An `active-anchor`
    * carrying a requestId that was never asked for is stale or foreign and is
@@ -283,7 +293,7 @@ export async function handleCareOhifMessage(
     const rid = String(msg.requestId ?? "").trim();
     if (!rid || !ctx.pendingAnchorRequestIds?.has(rid)) return "ignored";
     ctx.pendingAnchorRequestIds.delete(rid);
-    ctx.onActiveAnchorUnavailable?.();
+    ctx.onActiveAnchorUnavailable?.(msg.error, rid);
     return "ok";
   }
 
@@ -307,10 +317,10 @@ export async function handleCareOhifMessage(
     if (!msg.sopInstanceUID && !msg.seriesInstanceUID) {
       // The viewer could not name the displayed image. Keep the study context and
       // say so — do not turn an unknown into an anchor.
-      ctx.onActiveAnchorUnavailable?.();
+      ctx.onActiveAnchorUnavailable?.(undefined, rid || null);
       return "ignored";
     }
-    ctx.onActiveAnchor?.(ohifActiveAnchorToViewport(msg));
+    ctx.onActiveAnchor?.(ohifActiveAnchorToViewport(msg), rid || null);
     return "ok";
   }
 
@@ -509,6 +519,51 @@ export function requestOhifDisplayedAnchor(opts: {
     origin,
   );
   return true;
+}
+
+/**
+ * The viewer's refusal, in the radiologist's language. Every reason is a statement
+ * that CARE does not know which image is on screen, so each message has to say
+ * that NOTHING was attached — a failure that reads like a success is worse than
+ * the failure.
+ */
+export function ohifAnchorFailureText(reason: string | null | undefined): string {
+  const r = (reason ?? "").trim();
+  let sentence: string;
+  switch (r) {
+    case "no_viewer":
+    case "not_sent":
+      sentence = "OHIF is not open in this workspace, so there was no viewer to ask. Use Frames, or open the study in OHIF first.";
+      break;
+    case "no_origin":
+      sentence = "CARE is not allowed to address this OHIF viewer.";
+      break;
+    case "timeout":
+      sentence = "OHIF did not answer which image it is showing. Try again, or use Frames.";
+      break;
+    case "services_unavailable":
+      sentence = "OHIF is still starting and cannot name the image yet. Wait for the study to appear, then try again.";
+      break;
+    case "no_active_viewport":
+    case "no_displayed_image":
+    case "no_viewport":
+    case "viewport_lookup_failed":
+    case "active_viewport_query_failed":
+      sentence = "No single image is displayed in OHIF right now. Select the image in the viewer, then try again.";
+      break;
+    case "unparsable_image_id":
+    case "incomplete_identity":
+      sentence = "OHIF cannot name what it is showing as one DICOM image (a 3D reconstruction or a whole-series view).";
+      break;
+    case "unsupported_version":
+      sentence = "This viewer is too old for CARE's image identity protocol — it needs rebuilding.";
+      break;
+    default:
+      sentence = `OHIF could not identify the displayed image${r ? ` (${r})` : ""}.`;
+  }
+  // Stated once, for every reason: a failure that reads like a success is how an
+  // image ends up believed to be in the report when it is not.
+  return `${sentence} Nothing was attached to this report.`;
 }
 
 /** Decode capture imageData to a Blob for Phase 1 upload. */
