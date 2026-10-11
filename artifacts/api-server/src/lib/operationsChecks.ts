@@ -425,7 +425,9 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
         if (r.json.length === 0 && arrivedMinutes != null && arrivedMinutes <= windowMinutes) {
           return {
             status: "UNKNOWN",
-            message: `Orthanc listed no study dated in the last ${window} but the ERP received one ${humanAge(arrivedMinutes)} ago — the StudyDate range query is not answering as expected`,
+            message:
+              `Orthanc listed no study dated in the last ${window} but the ERP received one ${humanAge(arrivedMinutes)} ago — ` +
+              "either that StudyDate range is not answering as expected, or what arrived here carries a DICOM date outside the window",
             metadata: { window, undated, arrivedMinutes },
           };
         }
@@ -451,18 +453,22 @@ export const CHECK_DEFS: Array<OpsCheckDef<OpsCtx>> = [
       const missing = due.filter((s) => !present.has(s.uid));
       const capped = r.json.length >= SYNC_DIVERGENCE_LIMIT;
       const scope = `${due.length} Orthanc stud${due.length === 1 ? "y" : "ies"} due from the last ${window}${capped ? " (window capped)" : ""}`;
+      // "all of them arrived" is only true of the ones that could be matched, so
+      // the ones Orthanc returned without a readable UID + date are said out loud
+      // rather than dropped from the denominator in silence.
+      const excluded = undated > 0 ? `; ${undated} returned without a readable UID + StudyDate were not compared` : "";
 
       if (missing.length === 0) {
         return {
           status: "PASS",
-          message: `all ${scope} are in the ERP worklist`,
+          message: `all ${scope} are in the ERP worklist${excluded}`,
           metadata: { window, due: due.length, delivered: due.length, missing: 0, undated, capped },
         };
       }
       const names = missing.slice(0, 3).map((s) => `${s.studyDate.slice(0, 4)}-${s.studyDate.slice(4, 6)}-${s.studyDate.slice(6, 8)}${s.studyTime ? ` ${s.studyTime.slice(0, 2)}:${s.studyTime.slice(2, 4)}` : ""}`).join(", ");
       return {
         status: "FAIL",
-        message: `${missing.length} of ${scope} never reached the ERP worklist (${names}${missing.length > 3 ? ", …" : ""})`,
+        message: `${missing.length} of ${scope} never reached the ERP worklist (${names}${missing.length > 3 ? ", …" : ""})${excluded}`,
         metadata: { window, due: due.length, delivered: due.length - missing.length, missing: missing.length, undated, capped },
         recommendedAction:
           "Studies are in Orthanc but not in the ERP. Check the care-erp-sync container: `docker logs care-erp-sync` — a held cursor is logged at ERROR " +
