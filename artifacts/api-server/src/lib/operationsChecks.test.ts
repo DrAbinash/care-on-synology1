@@ -265,8 +265,8 @@ describe("orthanc.sync_divergence — is Orthanc actually delivering into the ER
     expect(params).toEqual([["1.2.3.10"]]); // bound as a parameter, never interpolated
     expect(sql).not.toContain("1.2.3.10");
     expect(url).toContain("/dicom-web/studies?StudyDate=20260719-20260721");
-    // Orthanc's DICOMweb MaxResourceCount defaults to 100: a larger limit is an
-    // error page, not a wider window.
+    // One comparison must fit the details panel's 4.5-second probe budget, so the
+    // window is capped rather than "however many studies exist".
     expect(url).toContain("&limit=100");
     expect(url).not.toContain("query=StudyDate"); // the native form is unproven on this deployment
   });

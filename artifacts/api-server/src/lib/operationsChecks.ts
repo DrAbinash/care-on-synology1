@@ -48,9 +48,10 @@ export const DEFAULT_THRESHOLDS: OpsThresholds = {
 };
 
 /**
- * Cap on the Orthanc study window a single delivery comparison reads. Orthanc's
- * DICOMweb MaxResourceCount defaults to 100, so asking for more is an error,
- * not a wider window.
+ * Cap on the Orthanc study window a single delivery comparison reads. The
+ * details panel polls with a 4.5-second budget, so the window is bounded by
+ * what one check can carry rather than by whatever page size the server
+ * happens to allow.
  */
 const SYNC_DIVERGENCE_LIMIT = 100;
 
