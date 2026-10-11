@@ -170,3 +170,47 @@ describe("a model answer becomes an MRI report draft", () => {
     expect(["ollama_unreachable", "ollama_timeout"]).toContain(r.safeError);
   });
 });
+
+describe("the answer ran out of room", () => {
+  /**
+   * A half-written JSON object is the other way a request exceeds a model, and
+   * it looks identical to `malformed_json` downstream — which told the
+   * radiologist the model had answered in prose, when in fact it had simply been
+   * cut off. `done_reason: "length"` is Ollama saying so, and CARE must pass it
+   * on rather than let the parser guess.
+   */
+  it("names a truncated answer as truncated, with the tokens it used", async () => {
+    seen.lastReply = {
+      message: { content: '{"findings":"There is straightening of the normal lumbar' },
+      done: true,
+      done_reason: "length",
+      eval_count: 512,
+      prompt_eval_count: 1480,
+    };
+    const r = await new OllamaComposerAdapter().compose({
+      ...REQUEST, endpoint: baseUrl, localOnly: true, maxTokens: 512,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.safeError).toBe("composer_output_truncated");
+    expect(r.detail).toContain("512");
+    expect(r.usage).toMatchObject({ promptTokens: 1480, completionTokens: 512, totalTokens: 1992 });
+  });
+
+  it("sends the output ceiling as num_predict, so the limit is CARE's and not Ollama's default", async () => {
+    seen.lastReply = { message: { content: MRI_DRAFT_JSON }, done: true, done_reason: "stop" };
+    seen.bodies.length = 0;
+    const r = await new OllamaComposerAdapter().compose({
+      ...REQUEST, endpoint: baseUrl, localOnly: true, maxTokens: 2400, numCtx: 8192,
+    });
+    expect(r.ok).toBe(true);
+    expect(seen.bodies[0].options).toMatchObject({ num_predict: 2400, num_ctx: 8192 });
+  });
+
+  it("does not invent a ceiling the caller never set", async () => {
+    seen.lastReply = { message: { content: MRI_DRAFT_JSON }, done: true };
+    seen.bodies.length = 0;
+    await new OllamaComposerAdapter().compose({ ...REQUEST, endpoint: baseUrl, localOnly: true });
+    expect(seen.bodies[0].options.num_predict).toBeUndefined();
+  });
+});

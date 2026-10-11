@@ -76,6 +76,14 @@ export type ComposerProviderRequest = {
   temperature: number;
   timeoutMs: number;
   numCtx?: number;
+  /**
+   * Output ceiling in tokens. Cloud vendors bill and generate without bound
+   * when it is omitted, which makes a runaway draft both slow and unpriced;
+   * the composer now always states one. Ollama receives it as `num_predict`,
+   * and an answer that hits the ceiling is reported as `composer_output_truncated`
+   * instead of being parsed and half-accepted.
+   */
+  maxTokens?: number;
   endpoint?: string;
   localOnly?: boolean;
   /** Prefer JSON object response when the provider supports it. */

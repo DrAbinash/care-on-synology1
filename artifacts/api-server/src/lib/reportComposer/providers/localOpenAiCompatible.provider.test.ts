@@ -395,7 +395,10 @@ describe("Ollama freeze — unchanged native path", () => {
       LocalOpenAiCompatibleComposerAdapter,
     );
     expect(parseComposerProviderName("local_openai_compatible")).toBe("local_openai_compatible");
-    expect(parseComposerProviderName("unknown")).toBe("ollama");
+    // An unrecognised name is no longer answered with the local model. Ollama is
+    // the default when NOBODY named a provider, not the guess when somebody named
+    // one CARE cannot serve — that guess decided local-vs-cloud for the request.
+    expect(parseComposerProviderName("unknown")).toBeNull();
   });
 });
 

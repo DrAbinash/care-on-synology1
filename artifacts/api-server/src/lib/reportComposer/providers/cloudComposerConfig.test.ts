@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   envKey: null as string | null,
   envUrl: null as string | null,
   throwOnLookup: false,
+  /** The `ai_provider_settings` row for this provider, or null when there is none. */
+  row: null as { isEnabled: boolean } | null,
 }));
 
 vi.mock("@workspace/ai-providers", () => ({
@@ -26,6 +28,11 @@ vi.mock("@workspace/ai-providers", () => ({
     return h.dbKey;
   },
   getProviderEndpointUrl: async () => h.dbUrl,
+  // The admin's ON/OFF switch, read from the same table as the key.
+  loadProviderConfig: async () => {
+    if (h.throwOnLookup) throw new Error("db down");
+    return h.row;
+  },
   readEnvApiKey: () => h.envKey,
   readEnvBaseUrl: () => h.envUrl,
   COMPATIBLE_PROVIDER_DEFAULTS: {
@@ -47,6 +54,7 @@ beforeEach(() => {
   h.envKey = null;
   h.envUrl = null;
   h.throwOnLookup = false;
+  h.row = null;
 });
 
 describe("resolveCloudComposerConfig", () => {
@@ -109,7 +117,51 @@ describe("resolveCloudComposerConfig", () => {
     h.dbKey = "sk-secret-value";
     const cfg = await resolveCloudComposerConfig("openai");
     const keys = Object.keys(cfg).sort();
-    expect(keys).toEqual(["apiKey", "baseURL", "configLookupFailed", "keyConfigured", "provider"]);
+    // `enabled` and `configLookupFailed` are booleans about the admin's own
+    // settings screen — they disclose nothing the UI does not already show, and
+    // `apiKey` is the only credential-bearing field.
+    expect(keys).toEqual([
+      "apiKey",
+      "baseURL",
+      "configLookupFailed",
+      "enabled",
+      "keyConfigured",
+      "provider",
+    ]);
+  });
+
+  describe("the admin's ON/OFF switch", () => {
+    it("reports the switch OFF when a settings row says OFF, even with a usable key", async () => {
+      h.dbKey = "sk-from-settings";
+      h.row = { isEnabled: false };
+      const cfg = await resolveCloudComposerConfig("openai");
+      // The key still resolves — this field is the honest answer to "is it on?",
+      // and it is the caller's job to refuse. Silent disablement here would make
+      // the env fallback look like a working provider.
+      expect(cfg.keyConfigured).toBe(true);
+      expect(cfg.enabled).toBe(false);
+    });
+
+    it("reports the switch ON when a settings row says ON", async () => {
+      h.row = { isEnabled: true };
+      const cfg = await resolveCloudComposerConfig("openai");
+      expect(cfg.enabled).toBe(true);
+    });
+
+    it("reports null, not false, when no settings row exists — env config makes no enablement statement", async () => {
+      h.envKey = "sk-from-env";
+      h.row = null;
+      const cfg = await resolveCloudComposerConfig("openai");
+      expect(cfg.enabled).toBeNull();
+      expect(cfg.keyConfigured).toBe(true);
+    });
+
+    it("reports null when the settings table cannot be read, so an outage is not read as OFF", async () => {
+      h.throwOnLookup = true;
+      const cfg = await resolveCloudComposerConfig("openai");
+      expect(cfg.enabled).toBeNull();
+      expect(cfg.configLookupFailed).toBe(true);
+    });
   });
 });
 

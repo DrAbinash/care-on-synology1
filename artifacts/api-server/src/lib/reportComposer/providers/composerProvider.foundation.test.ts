@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { assertComposerProviderPolicy } from "./assertComposerProviderPolicy";
-import { resolveComposerProvider, parseComposerProviderName } from "./resolveComposerProvider";
+import {
+  resolveComposerProvider,
+  parseComposerProviderName,
+  unsupportedComposerProviderMessage,
+} from "./resolveComposerProvider";
 import { OllamaComposerAdapter } from "./ollamaComposerAdapter";
 import { DeepSeekComposerAdapter } from "./deepseekComposerAdapter";
 import { OpenAiComposerAdapter } from "./openaiComposerAdapter";
@@ -130,7 +134,20 @@ describe("resolveComposerProvider", () => {
   it("defaults to Ollama", () => {
     expect(resolveComposerProvider().name).toBe("ollama");
     expect(resolveComposerProvider(null).name).toBe("ollama");
-    expect(parseComposerProviderName("unknown")).toBe("ollama");
+  });
+
+  it("refuses to read an unknown provider name as Ollama", () => {
+    // This used to return "ollama" for anything it did not recognise. Combined
+    // with the composer's request-level aborts, a name the clinic never
+    // configured became a silent local draft — the answer the admin asked for
+    // was replaced by a different provider, and the provenance said Ollama.
+    // Unknown now means null, and the caller must refuse.
+    expect(parseComposerProviderName("unknown")).toBeNull();
+    expect(parseComposerProviderName("  ")).toBeNull();
+    expect(parseComposerProviderName("gemini")).toBeNull();
+    expect(parseComposerProviderName("openai")).toBe("openai");
+    expect(parseComposerProviderName("ollama")).toBe("ollama");
+    expect(unsupportedComposerProviderMessage("gemini")).toContain("gemini");
   });
 
   it("returns cloud adapters that fail closed without keys", async () => {
