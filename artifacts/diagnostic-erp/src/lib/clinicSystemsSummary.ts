@@ -10,6 +10,8 @@ export interface ClinicOpsCheck {
   id: string;
   status: OpsCheckStatus;
   message: string;
+  /** Safe counts/ages only — the ops runner scrubs secrets and PHI on the way out. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface EmergencyStatusLike {
@@ -43,6 +45,9 @@ export interface ClinicSystemsAlert {
   id: string;
   severity: "red" | "amber";
   message: string;
+  /** Where to send the operator; defaults to the emergency-billing settings tab. */
+  detailsHref?: string;
+  linkLabel?: string;
 }
 
 export interface ClinicSystemsSection {
@@ -92,6 +97,37 @@ function backupRow(check: ClinicOpsCheck | undefined, key: string, label: string
     return { key, label, value: check.message || "unhealthy", tone: "red" };
   }
   return { key, label, value: check.message || "warning", tone: "amber" };
+}
+
+/**
+ * Orthanc → ERP delivery. This is the one PACS line that can tell a closed
+ * clinic from a dead bridge: freshness alone cannot, which is why the pair is
+ * shown together and only this one drives the ribbon light.
+ */
+function syncDeliveryRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
+  const label = "Orthanc → ERP";
+  if (!check || check.status === "SKIPPED") {
+    return { key: "sync-delivery", label, value: "nothing to compare", tone: "grey" };
+  }
+  if (check.status === "PASS") {
+    const due = Number(check.metadata?.due ?? 0);
+    return { key: "sync-delivery", label, value: due > 0 ? `✓ ${due} delivered` : "✓ delivered", tone: "green" };
+  }
+  if (check.status === "FAIL") {
+    const missing = Number(check.metadata?.missing ?? 0);
+    return { key: "sync-delivery", label, value: missing > 0 ? `${missing} NOT DELIVERED` : "not delivering", tone: "red" };
+  }
+  return { key: "sync-delivery", label, value: "cannot compare", tone: "amber" };
+}
+
+function syncFreshRow(check: ClinicOpsCheck | undefined): ClinicSystemsRow {
+  const label = "Last Orthanc sync";
+  if (!check || check.status === "SKIPPED") {
+    return { key: "sync-fresh", label, value: "never", tone: "grey" };
+  }
+  const mins = check.metadata?.ageMinutes;
+  const value = typeof mins === "number" ? ageShort(mins / 60) : "unknown";
+  return { key: "sync-fresh", label, value, tone: check.status === "PASS" ? "green" : "amber" };
 }
 
 export function buildClinicSystemsSummary(opts: {
@@ -177,6 +213,8 @@ export function buildClinicSystemsSummary(opts: {
   ];
 
   const orthanc = checkById(opts.checks, "orthanc.reachable");
+  const divergence = checkById(opts.checks, "orthanc.sync_divergence");
+  const syncFresh = checkById(opts.checks, "orthanc.sync_fresh");
   const ollama = checkById(opts.checks, "ai.ollama");
   const ocr = checkById(opts.checks, "integ.ocr_worker");
   const backupVerify = checkById(opts.checks, "backup.restore_verified");
@@ -189,6 +227,8 @@ export function buildClinicSystemsSummary(opts: {
       value: erpValue(orthanc, "ONLINE", "UNHEALTHY"),
       tone: erpTone(orthanc?.status),
     },
+    syncDeliveryRow(divergence),
+    syncFreshRow(syncFresh),
     {
       key: "ollama",
       label: "Local AI",
@@ -254,6 +294,19 @@ export function buildClinicSystemsSummary(opts: {
         message: `${em.failedImportCount24h} failed reconciliation/import row${em.failedImportCount24h === 1 ? "" : "s"} in the last 24h`,
       });
     }
+  }
+
+  if (divergence?.status === "FAIL") {
+    const missing = Number(divergence.metadata?.missing ?? 0);
+    alerts.push({
+      id: "pacs-not-delivering",
+      severity: "red",
+      message: missing > 0
+        ? `${missing} stud${missing === 1 ? "y" : "ies"} in Orthanc ha${missing === 1 ? "s" : "ve"} not reached the ERP`
+        : "Orthanc → ERP delivery is failing",
+      detailsHref: "/radiology/operational-health",
+      linkLabel: "Operational health",
+    });
   }
 
   return {
