@@ -167,6 +167,20 @@ describe("a measurement may not change anatomical owner", () => {
     expect(r.errors).not.toContain("measurement_repositioned");
   });
 
+  it("blocks a measurement stated at one vertebra moving to another", () => {
+    // The single-level form, which no pair-based case can reach: a dictation that
+    // names one vertebra has no component pair, so a matcher that treated every
+    // unmatched single as "close enough" would let L4 become L5 and report nothing.
+    const source = snap({
+      findings: "Disc desiccation at L4.\nAP canal diameter 8.2 mm at L4.\nNo spondylolisthesis.",
+      impression: "",
+    });
+    const r = pro(source, body(
+      "Disc desiccation is seen at L4.\nAP canal diameter 8.2 mm at L5.\nNo spondylolisthesis is identified.",
+    ));
+    expect(r.errors).toContain("measurement_repositioned");
+  });
+
   it("is not demanded of a drafting kind, which may restructure prose", () => {
     const draft = validateComposerOutput(
       snap(),
@@ -368,13 +382,19 @@ describe("severity, morphology, location and grade are facts", () => {
     expect(losses.droppedMorphology).not.toContain("facet hypertrophy");
   });
 
-  it("does not let facet arthropathy satisfy ligamentum flavum hypertrophy", () => {
+  it("does not let facet hypertrophy satisfy ligamentum flavum hypertrophy", () => {
+    // The word the answer keeps is exactly the one the dictation used, so this
+    // cannot be caught by a membership test — only by requiring the alias to sit
+    // in a sentence about the structure it belongs to. Removing that scoping from
+    // `mentionsAnyClass` leaves this case green, which is why it is written this
+    // way rather than by dropping "hypertrophy" from the answer altogether.
     const losses = detectConservationLosses(snap(), lsBroken([
       "Hypertrophy of the ligamentum flavum is noted at L5-S1.",
-      "Facet arthropathy is noted at L5-S1.",
+      "Facet hypertrophy is noted at L5-S1.",
     ]));
     expect(losses.errors).toContain("morphology_dropped");
     expect(losses.droppedMorphology).toContain("flavum hypertrophy");
+    expect(losses.droppedMorphology).not.toContain("facet hypertrophy");
   });
 
   it("blocks a foraminal narrowing that has lost its foramen", () => {
