@@ -235,6 +235,16 @@ already writes at READY — no new columns, so no migration.
 
 - `sessionProvider` (workspace selector) → explicit override → Model Routing task route →
   **Ollama only when nobody named a provider**.
+- Each of the three operations is routable on its own task key, asked before the generic
+  one: `report_composer_professionalize`, `report_composer_combine`,
+  `report_composer_observations`, then `report_composer`. Adding those keys to
+  `AI_TASK_CATALOG` is what makes them rows in the existing Model Routing screen, so the
+  measured model boundary is an administrator's setting and not a constant in code:
+  prose transformation runs on every installed local model, while structuring a dictation
+  was measured usable on `qwen3:14b` only. `composerTaskKeys()` is exported so the order is
+  testable rather than inferred from a resolver.
+- Falling through a task key is not substituting a provider. A route naming a provider with
+  no adapter is refused even when it came from an operation-specific row.
 - A named provider CARE has no adapter for is refused with
   `composer_provider_not_supported` and the message names it. It used to be coerced to
   `ollama`, which silently decided local-vs-cloud on the radiologist's behalf.
@@ -252,9 +262,19 @@ already writes at READY — no new columns, so no migration.
 `<provider>_api_key_not_configured`, `composer_context_budget_exceeded`,
 `composer_output_truncated`, `selection_edit_answer_truncated`, `malformed_json`,
 `empty_model_response`, `no_grounded_observations`, `measurement_dropped`,
-`level_dropped`, `laterality_dropped`, `section_dropped`, `PHI_TEXT_CLOUD_BLOCKED`,
-`cloud_vision_not_allowed`. Every one of these arrives with
+`level_dropped`, `laterality_dropped`, `section_dropped`, `severity_dropped`,
+`morphology_dropped`, `location_dropped`, `grade_changed`,
+`measurement_repositioned`, `certainty_escalation`, `clinical_polarity_flip`,
+`invented_normal_finding`, `technique_invention`, `contrast_status_changed`,
+`PHI_TEXT_CLOUD_BLOCKED`, `cloud_vision_not_allowed`. Every one of these arrives with
 `job.safeError` plus a `provenance.degradedReason` written as a sentence, not a code.
+
+The last seven are the relation guards (§2/§3 of the owner's brief): they fire when every
+fact survived and the medicine still changed — a canal diameter moved to another level, a
+suspected finding stated as definite, a documented extrusion returned as "no extrusion", a
+normal cord for anatomy nobody described, 3T or an extra sequence or a comparison study the
+study never had, and contrast that was not given. They are errors, so the job never reaches
+READY, and each has a positive control proving the honest wording of the same report passes.
 
 ## Y.8 Deterministic independence
 
@@ -302,3 +322,82 @@ unusable or unsafe in the clinic while every mocked test stayed green):
    passed it. CARE renders reports as plain text into print HTML and PDF, so those
    asterisks would have reached the report of record; emphasis markers are now
    stripped at the parse boundary, before validation and before storage.
+
+# Z. Integration guide for the Reporting Workspace (2026-10-11)
+
+Written for the agent that owns the workspace UI. Every frontend symbol below was read in
+this tree, with its file:line, rather than assumed.
+
+## Z.1 The boundary with the deterministic generator
+
+| action | what it is | whose |
+| --- | --- | --- |
+| **Generate Professional Report** | deterministic report assembly from the format + observation ledger, no model in the loop | PR #917 — `store.ts:1528` in that head, button `data-testid="generate-professional-report"` |
+| **Professionalize Report** | AI rewrite of the report the radiologist already has | this contract, `jobKind: "PROFESSIONALIZE"` |
+| **Structure Observations** | AI proposal of observation rows from dictated shorthand | this contract, `jobKind: "OBSERVATIONS"` |
+| **Combine Reports** | AI synthesis of the current report with reports the app supplied | this contract, `jobKind: "COMBINE"` |
+
+`generateProfessionalReport` does not exist in `main` yet; it arrives with #917. Nothing here
+renames it, writes to it, or replaces it — the AI operations produce a **proposal** and the
+deterministic generator produces the **report**. Keep them two buttons with two names.
+
+## Z.2 What the caller must send
+
+- `snapshot.worklistId` is **mandatory**. The server resolves the study and the report of
+  record from that one anchor (#905) and answers `compose_worklist_required` before any
+  model is contacted. `studyId` may be sent and must agree with the worklist row, or
+  `compose_study_conflict`. `reportId` may be omitted — the server derives it.
+- The rest of the snapshot is what `buildSnapshot()` already produces
+  (`hooks/useReportComposer.ts:211`): findings, impression, technique, observations from
+  `deriveComposeObservations(appliedPathologyPatches)` (`lib/reportComposer/composeObservations.ts:158`),
+  and the hash mirror the server recomputes. Do not build a second snapshot shape.
+- Operation-specific additions: `instruction` for a refine, and for `COMBINE` the array
+  `additionalReports: [{ label, modality, region, findings, impression }]`.
+
+## Z.3 Lifecycle the UI already knows
+
+`QUEUED → COMPOSING → READY | FAILED`, then `STALE_READY` if the live report moved underneath
+it, then `APPLIED | DISCARDED | CANCELLED | OBSOLETE`.
+
+- Poll `GET /jobs/:id`. The consumer now polls every 20 s with a re-entrancy guard, so a
+  click is answered in about the time the model takes rather than up to a minute.
+- Review per change with `/changes/:changeId/accept` and `/reject`; nothing is written to the
+  report by accepting a change.
+- The write happens in `applyAccepted()` (`hooks/useReportComposer.ts:401`): freshness
+  recheck, STALE refusal, clinical-significance guard, `materializeAcceptedText(...)`
+  (`:15`, used at `:488`), then `applyAiComposerAccepted(...)`
+  (`lib/zai-workspace/store.ts:887`, implemented at `:3052`), then `opts.persistAccepted(tag)`
+  (`:518`) and `/applied` containment proof. **Reuse this path; do not write another applier.**
+  `applyAiComposerAccepted` deliberately does not touch `appliedPathologyPatches` — AI wording
+  is presentation, never a ledger edit.
+- `OBSERVATIONS` has no Apply path: `/applied` is refused with `compose_nothing_to_apply`.
+  Rows are proposals to review; the route by which an accepted row becomes an observation is
+  the workspace's own ledger action, not this API. Nothing may generate a final report from
+  unreviewed extraction, and that is enforced server-side rather than by convention.
+- The signed-report protections are unchanged: a finalized report refuses composition at
+  enqueue (`finalized`) and refuses the write at apply (`refuseSignedMutation`, store.ts:3080).
+
+## Z.4 Provider, model and cost are reported, not guessed
+
+`GET /jobs/:id` returns `job.provider` and `job.usage` (prompt/completion/total tokens, and
+cost where the vendor reports it) alongside the model already on the row. The route that
+answered is chosen per operation (§Y.6): `report_composer_<operation>` then
+`report_composer` then the clinic default. An unavailable provider is refused by name and
+nothing is dialled — there is no silent substitution of a different provider or model, and a
+cloud failure never falls back to Ollama.
+
+## Z.5 Sequencing that matters, measured rather than guessed
+
+`inputHash` is computed from the snapshot the client froze. If the deterministic generator
+rewrites Findings first, an AI proposal queued against the earlier text arrives `STALE_READY`
+— correctly, because the report did move. So the order is **AI apply → deterministic
+generate**, never the reverse, and an operation whose proposal went stale should be re-run
+against the new text rather than forced.
+
+## Z.6 Refusal handling in the UI
+
+Every refusal in §Y.7 arrives as `job.safeError` plus a `provenance.degradedReason` that is a
+sentence written for a radiologist. Surface the sentence; do not show the code. A relation
+guard refusal (`measurement_repositioned`, `certainty_escalation`, `technique_invention`, …)
+means the model's answer lost or invented something, and the report is untouched — say that,
+because the failure the owner is guarding against is a lost measurement nobody noticed.
