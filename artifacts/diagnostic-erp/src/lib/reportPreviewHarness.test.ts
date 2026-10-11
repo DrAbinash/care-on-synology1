@@ -190,6 +190,7 @@ function storeClick(region: string, label: string) {
 }
 
 const cervicalHerniation = storeClick("Cervical Spine", "Disc herniation C5-C6");
+const cervicalCord = storeClick("Cervical Spine", "Cord compression C5-C6");
 
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
@@ -316,7 +317,7 @@ const CASES: Case[] = [
   },
   {
     key: "11-cervical-normal", title: "MRI Cervical Spine — Normal (one click)",
-    note: "Six disc levels described, C2-C3 through C7-T1 — the same six the canvas draws and the canal table measures. No cord-compression case is paired with it on purpose: abnormalEmphasis.ts carries no compress cue, so that line prints in plain type, and this harness must not write a presentation defect into its own expectations. Measured 2026-10-11; it is PR G work.",
+    note: "Six disc levels described, C2-C3 through C7-T1 — the same six the canvas draws and the canal table measures. Paired with the cord-compression click below, which is the case that used to be unwritable here: abnormalEmphasis.ts had no `compress` cue, so the one line that must shout on the page printed in plain type and the harness would have had to assert a presentation defect. It ships corrected, in the same PR as the tiles that needed it.",
     study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" }, narrative: CERVICAL_NORMAL,
   },
   {
@@ -324,6 +325,12 @@ const CASES: Case[] = [
     note: "The level's own disc normal must go; the other five levels must keep theirs, and the canal/foraminal normals stay because nothing was clicked for them.",
     study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" },
     narrative: cervicalHerniation.narrative, replaced: cervicalHerniation.replaced,
+  },
+  {
+    key: "13-cervical-cord-click", title: "…then the Cord compression C5-C6 box is clicked",
+    note: "The critical case: the cord sentence has to reach the paper in bold, and the normals it contradicts have to be the ones it owns — the study-wide cord denial and the C5-C6 canal row it names — while the disc-contour row beside them stays.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" },
+    narrative: cervicalCord.narrative, replaced: cervicalCord.replaced,
   },
   {
     key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
@@ -445,6 +452,7 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "10-brain-plain-by-dicom": { count: 0 },
   "11-cervical-normal": { count: 0 },
   "12-cervical-herniation-click": { count: 1, contains: "Central disc herniation at C5-C6" },
+  "13-cervical-cord-click": { count: 1, contains: "Cervical cord compression at C5-C6" },
 };
 
 /**
@@ -475,6 +483,10 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
   "12-cervical-herniation-click": {
     must: ["Conservative management with physiotherapy"],
     mustNot: ["Urgent neurosurgical consultation", "Immediate stroke team notification"],
+  },
+  "13-cervical-cord-click": {
+    must: ["Urgent neurosurgical consultation"],
+    mustNot: ["Conservative management with physiotherapy", "Immediate stroke team notification"],
   },
 };
 
@@ -572,10 +584,10 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    // Two of these twelve are the cervical examination (the one-click normal and
-    // one disc click) — added with the cervical catalogue so its wording can be
-    // read on paper before anything ships.
-    expect(CASES.length).toBe(12);
+    // Three of these thirteen are the cervical examination (the one-click normal,
+    // a disc click and a cord click) — added with the cervical catalogue so its
+    // wording can be read on paper before anything ships.
+    expect(CASES.length).toBe(13);
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
@@ -612,6 +624,27 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     for (const level of ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]) {
       expect(spineCanal.narrative.findings, `${level} canal row`)
         .toContain(`| ${level} | — |`);
+    }
+
+    // The cervical clicks, pinned to the rows they actually retire. The disc box
+    // owns exactly its own level's disc-contour normal. The cord box owns two: the
+    // study-wide "No cord compression is seen." because it is the same concept, and
+    // the C5-C6 canal row because the tile names that sentence in `baselineReplaces`
+    // — ownership matches on concept or on one named sentence, never on adjacency,
+    // so the disc-contour row beside it survives untouched.
+    expect(cervicalHerniation.replaced).toEqual([
+      "C5-C6: No significant disc bulge or protrusion is seen.",
+    ]);
+    expect(cervicalCord.replaced).toEqual([
+      "No cord compression is seen.",
+      "C5-C6: No spinal canal or thecal sac compression is seen.",
+    ]);
+    expect(cervicalCord.narrative.findings).toContain(
+      "C5-C6: No significant disc bulge or protrusion is seen.");
+    expect(cervicalCord.narrative.findings).not.toContain("No cord compression is seen.");
+    for (const level of ["C2-C3", "C3-C4", "C4-C5", "C6-C7", "C7-T1"]) {
+      expect(cervicalCord.narrative.findings, `${level} canal row stays`)
+        .toContain(`${level}: No spinal canal or thecal sac compression is seen.`);
     }
   });
 
