@@ -272,7 +272,7 @@ describe("a normal finding nobody described may not be added", () => {
   it("blocks inventing a normal spinal cord", () => {
     const r = pro(snap(), body(`${LS_REWRITTEN}\nThe spinal cord is normal.`));
     expect(r.errors).toContain("invented_normal_finding");
-    expect(r.relations?.inventedNormals).toContain("cord");
+    expect(r.relations?.inventedNormals).toContain("spinal cord");
   });
 
   it("blocks inventing a normal pituitary in a spine report", () => {
@@ -286,6 +286,49 @@ describe("a normal finding nobody described may not be added", () => {
     // made CARE's AI unusable before #919.
     const source = snap({ findings: `${LS_SPINE}\nConus terminates normally at L1.` });
     const r = pro(source, body(`${LS_REWRITTEN}\nThe conus medullaris terminates at L1 and is normal in signal.`));
+    expect(r.errors).not.toContain("invented_normal_finding");
+  });
+
+  it("accepts the longer name of a structure the report named shortly", () => {
+    // Both strings are transcribed from live answers on the clinic AI PC
+    // (11 Oct 2026): `qwen3:14b` rephrasing this cervical dictation and
+    // `gemma3:12b` professionalising a whole-spine screening were BLOCKED for
+    // inventing a normal spinal cord. The cord was described — as `cord`. A
+    // structure is licensed by any wording for it, so the flat stem list that
+    // compared "spinal cord" against "Cord signal normal." was the defect.
+    const cervical = snap({
+      region: "Cervical Spine",
+      spineSegment: "C",
+      findings: [
+        "Loss of cervical lordosis.",
+        "Left foraminal disc protrusion at C5-C6 narrowing the left C6 foramen.",
+        "Central disc bulge at C6-C7, no cord compression.",
+        "Cord signal normal. No syrinx.",
+      ].join("\n"),
+    });
+    const r = pro(cervical, body(
+      "There is loss of cervical lordosis. A left foraminal disc protrusion at C5-C6 narrows"
+      + " the left C6 foramen. A central disc bulge is seen at C6-C7, without cord compression."
+      + " The spinal cord signal is normal, and no syrinx is identified.",
+    ));
+    expect(r.errors).not.toContain("invented_normal_finding");
+  });
+
+  it("does not read a dictated absence of cord signal change as an invented normal cord", () => {
+    const whole = snap({
+      region: "Whole Spine",
+      spineSegment: "TOTAL",
+      findings: [
+        "Cervical: loss of lordosis; C4-C5 and C5-C6 disc bulges, no cord compression.",
+        "Dorsal: mild right thoracic curvature, no cord signal abnormality.",
+        "Lumbar: L3-L4 disc bulge; L4-L5 broad-based bulge with bilateral recess narrowing.",
+      ].join("\n"),
+    });
+    const r = pro(whole, body(
+      "Cervical spine: loss of lordosis with disc bulges at C4-C5 and C5-C6, without cord"
+      + " compression. Dorsal spine: mild right thoracic curvature; there is no abnormal"
+      + " signal intensity within the spinal cord.",
+    ));
     expect(r.errors).not.toContain("invented_normal_finding");
   });
 });

@@ -958,38 +958,47 @@ function termPolarity(text: string, term: string): "positive" | "negative" | "ab
 }
 
 /**
- * Anatomy CARE reports on, as stems so "cord", "the spinal cord" and "cord's" all
- * match. Used only to decide whether a NORMALITY claim names something the
- * radiologist never mentioned at all.
+ * Anatomy CARE reports on, each entry a label and every wording that means the
+ * same structure. Used only to decide whether a NORMALITY claim names something
+ * the radiologist never mentioned at all.
+ *
+ * The alias list is not cosmetic. Measured live on the clinic AI PC (11 Oct 2026),
+ * three of eighteen model answers were BLOCKED for "inventing" a normal spinal
+ * cord whose report had dictated `Cord signal normal.` and `no cord signal
+ * abnormality` — the model wrote the longer name, the flat stem list compared the
+ * longer name, and the medicine was identical. A structure is therefore
+ * considered discussed when ANY wording for it appears, and only the label is
+ * reported. Aliases are added only where the short form cannot mean a different
+ * structure in CARE's body sites: `cord` here, but not a bare `root`, which in a
+ * brain report is nothing of the sort.
  */
-const STRUCTURE_STEMS = [
-  "conus",
-  "spinal cord",
-  "cord",
-  "cauda equina",
-  "nerve root",
-  "thecal sac",
-  "ventricl",
-  "midline",
-  "falx",
-  "brainstem",
-  "cerebell",
-  "circle of willis",
-  "internal carotid",
-  "vertebral artery",
-  "basilar",
-  "dural sinus",
-  "sulci",
-  "gyri",
-  "pituitary",
-  "sellar",
-  "optic",
-  "mastoid",
-  "maxillary",
-  "paranasal",
-  "middle ear",
-  "canal",
-  "foramin",
+const CONSTRUCTED_STRUCTURES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["conus", ["conus"]],
+  ["spinal cord", ["spinal cord", "cord"]],
+  ["cauda equina", ["cauda equina", "cauda"]],
+  ["nerve root", ["nerve root"]],
+  ["thecal sac", ["thecal sac", "thecal"]],
+  ["ventricles", ["ventricl"]],
+  ["midline", ["midline"]],
+  ["falx", ["falx"]],
+  ["brainstem", ["brainstem", "brain stem"]],
+  ["cerebellum", ["cerebell"]],
+  ["circle of Willis", ["circle of willis"]],
+  ["internal carotid artery", ["internal carotid", "carotid"]],
+  ["vertebral artery", ["vertebral artery", "vertebral"]],
+  ["basilar artery", ["basilar"]],
+  ["dural sinus", ["dural sinus", "dural venous"]],
+  ["sulci", ["sulci", "sulcal"]],
+  ["gyri", ["gyri", "gyral"]],
+  ["pituitary", ["pituitary"]],
+  ["sellar region", ["sellar", "sella"]],
+  ["optic pathways", ["optic"]],
+  ["mastoids", ["mastoid"]],
+  ["maxillary sinuses", ["maxillary"]],
+  ["paranasal sinuses", ["paranasal"]],
+  ["middle ear", ["middle ear"]],
+  ["spinal canal", ["canal"]],
+  ["neural foramina", ["foramin"]],
 ] as const;
 
 const NORMALITY_RE =
@@ -1150,10 +1159,10 @@ export function detectClinicalRelationLosses(
   for (const sentence of claimSentences(outputClaims)) {
     if (!NORMALITY_RE.test(sentence)) continue;
     const lower = sentence.toLowerCase();
-    for (const stem of STRUCTURE_STEMS) {
-      if (!new RegExp(`\\b${stem}`, "i").test(lower)) continue;
-      if (new RegExp(`\\b${stem}`, "i").test(inputLower)) continue;
-      inventedNormals.push(stem);
+    for (const [label, aliases] of CONSTRUCTED_STRUCTURES) {
+      if (!aliases.some((a) => new RegExp(`\\b${a}`, "i").test(lower))) continue;
+      if (aliases.some((a) => new RegExp(`\\b${a}`, "i").test(inputLower))) continue;
+      inventedNormals.push(label);
     }
   }
   if (inventedNormals.length > 0) {
