@@ -26,6 +26,13 @@ export type ComposeValidationResult = {
    * radiologist wrote that the proposal does not contain.
    */
   conservation?: ConservationLosses;
+  /**
+   * Present for the same kinds: facts that all survived but whose RELATIONSHIP
+   * changed — a measurement on a different level, a suspected finding stated as
+   * definite, an abnormality flipped to a negative, a normal finding or a
+   * technique detail nobody supplied.
+   */
+  relations?: ClinicalRelationLosses;
 };
 
 const ABNORMALITY_HINTS = [
@@ -533,6 +540,138 @@ export function extractConservationLevels(text: string): ConservationLevelToken[
   return out;
 }
 
+/**
+ * Severity and morphology are the two remaining classes of fact a rewrite has
+ * no licence to restate into something else. Each entry is a CLINICAL CLASS with
+ * the wordings CARE's own templates and dictated text use for it, so "recess
+ * narrowing" rewritten as "recess stenosis" survives, while "mild" rewritten as
+ * "severe" or "bulge" rewritten as "extrusion" is an omission of what was
+ * dictated. The classes are deliberately small: a synonym list wide enough to
+ * fold "protrusion" into "extrusion" would fold two different operations.
+ */
+const CONSERVED_SEVERITY: ReadonlyArray<readonly [string, readonly string[], string?]> = [
+  ["mild", ["mild", "minimal", "slight", "early"]],
+  ["moderate", ["moderate", "moderately"]],
+  ["severe", ["severe", "marked", "significant", "gross", "profound"]],
+];
+
+const CONSERVED_MORPHOLOGY: ReadonlyArray<readonly [string, readonly string[], string?]> = [
+  ["bulge", ["bulge", "bulging", "bulged"]],
+  ["protrusion", ["protrusion", "protruding"]],
+  ["extrusion", ["extrusion", "extruded"]],
+  ["sequestration", ["sequestration", "sequestered", "migrated fragment"]],
+  ["diffuse", ["diffuse", "circumferential"]],
+  ["broad-based", ["broad-based", "broad based", "sessile", "wide-based"]],
+  ["focal", ["focal", "localised", "localized"]],
+  ["stenosis", ["stenosis", "narrowing", "narrowed"]],
+  ["facet hypertrophy", ["hypertrophy", "hypertrophied", "arthropathy", "arthrosis"], "facet"],
+  ["flavum hypertrophy", ["hypertrophy", "hypertrophied", "thickening", "thickened", "enlargement", "enlarged"], "flavum|ligament"],
+  ["compression", ["compression", "compressing", "compressed", "impingement", "effacement", "effaced"]],
+  ["oedema", ["oedema", "edema", "swelling"]],
+  ["desiccation", ["desiccation", "desiccated", "dehydration", "dewatered"]],
+  // The claims §2 names that are not a morphology word but must survive just the
+  // same. Each is `near`-scoped to its structure so one claim cannot satisfy
+  // another: "foraminal narrowing" is not preserved by "recess narrowing".
+  ["cord compression", ["compression", "compressed", "effaced", "impingement"], "cord"],
+  ["cord signal abnormality", ["abnormal signal", "signal abnormality", "abnormal cord signal", "abnormal signal intensity", "myelopathy", "cord oedema", "cord edema", "cord signal change"], "cord"],
+  ["root involvement", ["compressing", "compression", "effacing", "displacing", "involving", "impinging", "contact"], "root"],
+  ["foraminal narrowing", ["narrowing", "narrowed", "stenosis", "reduced", "compromised", "effacement"], "foramin"],
+  ["canal diameter", ["canal", "thecal sac"], ""],
+  ["midline shift", ["shift", "displacement", "deviation"], "midline"],
+  ["DWI restriction", ["restriction", "restricted diffusion", "bright dwi", "high dwi"], "dwi|adc|restriction"],
+];
+
+/**
+ * Where a lesion is. Anatomical attribution is part of the finding: a 2.4 cm
+ * "left MCA territory" infarct rewritten as a "right MCA infarct" keeps its size
+ * and its laterality word and is still a different patient's scan. Each entry is
+ * one term with the wordings that mean it; only terms actually present in the
+ * input are demanded of the output.
+ *
+ * Segment words ("lumbar", "cervical", "sacral") are deliberately NOT here. The
+ * level checks already demand L4-L5 and friends, the snapshot carries the region
+ * as structured data, and a rewrite is allowed to name the same part of the body
+ * differently — guarding the word would refuse honest reports for a fact that is
+ * already protected twice.
+ */
+const ANATOMICAL_LOCATION_TERMS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["MCA", ["mca", "middle cerebral"]],
+  ["ACA", ["aca", "anterior cerebral"]],
+  ["PCA", ["pca", "posterior cerebral"]],
+  ["basal ganglia", ["basal ganglia", "basal ganglion"]],
+  ["thalamus", ["thalamus", "thalamic"]],
+  ["hypothalamus", ["hypothalamus", "hypothalamic"]],
+  ["periventricular", ["periventricular", "periventricular region"]],
+  ["subcortical", ["subcortical", "sub-cortical"]],
+  ["deep white matter", ["deep white matter"]],
+  ["centrum semiovale", ["centrum semiovale"]],
+  ["cortical", ["cortical", "cortex"]],
+  ["temporal", ["temporal"]],
+  ["frontal", ["frontal"]],
+  ["parietal", ["parietal"]],
+  ["occipital", ["occipital"]],
+  ["insular", ["insular", "insula"]],
+  ["cerebellar", ["cerebellar", "cerebellum"]],
+  ["brainstem", ["brainstem", "brain stem", "pontine", "pons", "medullary", "midbrain"]],
+  ["posterior fossa", ["posterior fossa"]],
+  ["parasagittal", ["parasagittal"]],
+  ["sylvian", ["sylvian"]],
+  ["cavernous", ["cavernous"]],
+  ["sellar region", ["sellar", "suprasellar", "sello-suprasellar", "sellasuprasellar"]],
+  ["foraminal", ["foraminal", "foramen", "foramina"]],
+  ["lateral recess", ["lateral recess", "recess"]],
+  ["central canal", ["central canal", "spinal canal", "thecal sac"]],
+  ["paracentral", ["paracentral", "para-central"]],
+  ["paramedian", ["paramedian", "para-median"]],
+];
+
+/**
+ * Terms the uncertainty rule follows. Wider than `ABNORMALITY_HINTS` on purpose:
+ * the hint list gates INVENTION, where a synonym the validator does not know
+ * would block an honest draft, while this list only ever compares a sentence the
+ * radiologist already hedged against the same word in the answer, so a missed
+ * synonym loses detection power rather than refusing a good report.
+ */
+const UNCERTAINTY_TRACKED_TERMS: readonly string[] = [
+  ...ABNORMALITY_HINTS,
+  "oedema",
+  "edema",
+  "swelling",
+  "mass effect",
+  "midline shift",
+  "empyema",
+  "demyelination",
+  "demyelinating",
+  "hydrocephalus",
+  "venous thrombosis",
+  "arterial occlusion",
+  "cerebritis",
+  "meningitis",
+];
+
+/**
+ * A grading scale is a measurement. "Fazekas grade 2" rewritten as "Fazekas
+ * grade 1" changes the clinical grade while keeping the word, so the number
+ * beside the scale name is compared, not the scale name alone.
+ */
+const GRADE_RE = /\b(fazekas|matsubara|fisher grade|mcdr)\b[^\d]{0,12}(\d+|[ivx]+)\b/gi;
+
+/**
+ * Class membership. Without `near`, a class is present when any alias appears
+ * anywhere. With `near`, an alias only counts inside a sentence that also names
+ * the structure it belongs to — which is how one synonym pair is allowed without
+ * allowing the wrong one.
+ */
+function mentionsAnyClass(text: string, words: readonly string[], near?: string): boolean {
+  const wordRe = (w: string) =>
+    new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+  if (!near) return words.some((w) => wordRe(w).test(text));
+  const nearRe = new RegExp(`\\b(?:${near})\\b`, "i");
+  return claimSentences(text).some(
+    (sentence) => nearRe.test(sentence) && words.some((w) => wordRe(w).test(sentence)),
+  );
+}
+
 /** Did a whole section that had content come back empty? */
 function droppedSections(input: ComposerInputSnapshot, draft: ComposerDraftOutput): string[] {
   const out: string[] = [];
@@ -545,6 +684,10 @@ export type ConservationLosses = {
   droppedMeasurements: string[];
   droppedLevels: string[];
   droppedLaterality: string[];
+  droppedSeverity: string[];
+  droppedMorphology: string[];
+  droppedLocations: string[];
+  changedGrades: string[];
   droppedSections: string[];
   /** Facts carried only by the observation list, not the narrative. Advisory. */
   observationOnlyLosses: string[];
@@ -625,6 +768,60 @@ export function detectConservationLosses(
     );
   }
 
+  const droppedSeverity = CONSERVED_SEVERITY.filter(
+    ([, words, near]) =>
+      mentionsAnyClass(inputNarrative, words, near) && !mentionsAnyClass(outputText, words, near),
+  ).map(([name]) => name);
+  if (droppedSeverity.length > 0) {
+    errors.push("severity_dropped");
+    warnings.push(
+      `Dropped severity the radiologist had stated: ${droppedSeverity.join(", ")}.`,
+    );
+  }
+
+  const droppedMorphology = CONSERVED_MORPHOLOGY.filter(
+    ([, words, near]) =>
+      mentionsAnyClass(inputNarrative, words, near) && !mentionsAnyClass(outputText, words, near),
+  ).map(([name]) => name);
+  if (droppedMorphology.length > 0) {
+    errors.push("morphology_dropped");
+    warnings.push(
+      `Dropped disc/lesion morphology the radiologist had stated: ${droppedMorphology.join(", ")}.`,
+    );
+  }
+
+  const droppedLocations = ANATOMICAL_LOCATION_TERMS.filter(
+    ([, words]) => mentionsAnyClass(inputNarrative, words) && !mentionsAnyClass(outputText, words),
+  ).map(([name]) => name);
+  if (droppedLocations.length > 0) {
+    errors.push("location_dropped");
+    warnings.push(
+      `Dropped anatomical location the radiologist had written: ${droppedLocations.join(", ")}.`,
+    );
+  }
+
+  // A grade is a measurement. The scale name surviving while its number changes
+  // ("Fazekas grade 2" → "Fazekas grade 1") reads like a preserved finding and is
+  // not one, so the number is compared beside the scale that carried it.
+  const gradesIn = new Map<string, string>();
+  for (const m of inputNarrative.matchAll(GRADE_RE)) {
+    if (m[1] && m[2]) gradesIn.set(m[1].toLowerCase(), m[2].toUpperCase());
+  }
+  const gradesOut = new Map<string, string>();
+  for (const m of outputText.matchAll(GRADE_RE)) {
+    if (m[1] && m[2]) gradesOut.set(m[1].toLowerCase(), m[2].toUpperCase());
+  }
+  const changedGrades: string[] = [];
+  for (const [scale, value] of gradesIn) {
+    const out = gradesOut.get(scale);
+    if (out === value) continue;
+    changedGrades.push(`${scale} ${value}→${out ?? "absent"}`);
+  }
+  if (changedGrades.length > 0) {
+    errors.push("grade_changed");
+    warnings.push(`Grading scale altered: ${changedGrades.join(", ")}.`);
+  }
+
   const sections = droppedSections(snapshot, draft);
   if (sections.length > 0) {
     errors.push("section_dropped");
@@ -645,8 +842,359 @@ export function detectConservationLosses(
     droppedMeasurements,
     droppedLevels,
     droppedLaterality,
+    droppedSeverity,
+    droppedMorphology,
+    droppedLocations,
+    changedGrades,
     droppedSections: sections,
     observationOnlyLosses: obsOnly,
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * ─────────────────────────────── CLINICAL RELATIONS ───────────────────────────────
+ *
+ * Everything above counts facts: is "8.2mm" still present, is "left" still present.
+ * Counting cannot catch the four failures the owner named, because each of them
+ * keeps every token and changes the medicine anyway:
+ *
+ *   canal 8.2 mm at L4-L5        →  canal 8.2 mm at L5-S1   (same number, other level)
+ *   suspected acute infarct      →  acute infarct           (same lesion, higher certainty)
+ *   cord was never mentioned     →  the cord is normal      (an invented negative)
+ *   field strength never stated  →  performed at 3T         (an invented examination)
+ *   non-contrast study           →  post-contrast images    (a different examination)
+ *   documented disc extrusion    →  no disc extrusion       (a flipped polarity)
+ *
+ * So these rules compare RELATIONSHIPS between two texts rather than membership.
+ * Each one is written to stay quiet unless the change is definite: a rewrite that
+ * loses the level along with the measurement is caught by `level_dropped` and not
+ * claimed twice here, a hedge that survives under a different hedging word is not
+ * an escalation, and a negative the radiologist actually dictated ("No significant
+ * central canal stenosis documented.") is grounded text, never an invention.
+ */
+
+/** A claim lives in a sentence; a rewrite may move it but not detach it. */
+function claimSentences(text: string): string[] {
+  return (text ?? "")
+    .replace(/\r/g, "")
+    .split(/(?<=[.;])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Which levels each measurement is stated next to, sentence by sentence.
+ *
+ * Levels are kept as TOKENS, not flattened into their component vertebrae: the
+ * pair L4-L5 and the pair L5-S1 share L5, and comparing flattened sets would
+ * read "8.2 mm moved from L4-L5 to L5-S1" as a preserved fact. A pair still
+ * matches when the answer states its two vertebrae separately in the same
+ * sentence, which is the rewrite the level rules already allow.
+ */
+function measurementLevelFacts(text: string): Map<string, ConservationLevelToken[]> {
+  const facts = new Map<string, ConservationLevelToken[]>();
+  for (const sentence of claimSentences(text)) {
+    const measurements = extractConservationMeasurements(sentence);
+    if (measurements.size === 0) continue;
+    const tokens = extractConservationLevels(sentence);
+    for (const m of measurements) {
+      const existing = facts.get(m) ?? [];
+      for (const t of tokens) if (!existing.some((x) => x.canonical === t.canonical)) existing.push(t);
+      facts.set(m, existing);
+    }
+  }
+  return facts;
+}
+
+/** Was this level token stated in the sentence, or written as its two vertebrae? */
+function levelTokenPresent(token: ConservationLevelToken, present: ConservationLevelToken[]): boolean {
+  if (present.some((p) => p.canonical === token.canonical)) return true;
+  if (token.components.length !== 2) return false;
+  return token.components.every((c) => present.some((p) => p.canonical === c));
+}
+
+/**
+ * Wording that says the radiologist is not committing to the finding. Turning one
+ * of these into a plain assertion is a clinical change, not a stylistic one — it
+ * is the difference between "operate now" and "operate if it proves out".
+ */
+const HEDGE_RE =
+  /\b(?:suspected|suspect|suspicion for|likely|probable|possibly|possible|indeterminate|equivocal|query|cannot be excluded|cannot exclude|not excluded|no evidence to exclude|suggestive of|suggests|may represent|may reflect|cannot exclude|differential(?: diagnosis)?(?: includes)?|consider(?:ing)?|rule out|r\/o|work-up for|question of|early|evolving)\b/i;
+
+/** Negation immediately before a term is what makes a sentence a negative claim. */
+const NEGATION_BEFORE_TERM =
+  /\b(?:no|not|without|absent|negative|denies|excluded|free|clear of)\b[\s\S]{0,40}$/i;
+
+/**
+ * Where a term first appears, in either of its accepted spellings. Using
+ * `indexOf(term)` alone would report "not found" for a sentence that says
+ * "haemorrhage" while the term being tested is "hemorrhage", and the caller
+ * would then read that sentence as an unhedged, unnegated assertion.
+ */
+function firstTermIndex(lower: string, term: string): number {
+  let found = -1;
+  for (const variant of [term, ...(GROUNDEDNESS_SPELLINGS[term] ?? [])]) {
+    const at = lower.indexOf(variant);
+    if (at >= 0 && (found < 0 || at < found)) found = at;
+  }
+  return found;
+}
+
+function termPolarity(text: string, term: string): "positive" | "negative" | "absent" {
+  let sawPositive = false;
+  let sawNegative = false;
+  for (const sentence of claimSentences(text)) {
+    const lower = sentence.toLowerCase();
+    const at = firstTermIndex(lower, term);
+    if (at < 0) continue;
+    const head = lower.slice(0, at + term.length);
+    if (NEGATION_BEFORE_TERM.test(head)) sawNegative = true;
+    else sawPositive = true;
+  }
+  if (sawPositive) return "positive";
+  return sawNegative ? "negative" : "absent";
+}
+
+/**
+ * Anatomy CARE reports on, as stems so "cord", "the spinal cord" and "cord's" all
+ * match. Used only to decide whether a NORMALITY claim names something the
+ * radiologist never mentioned at all.
+ */
+const STRUCTURE_STEMS = [
+  "conus",
+  "spinal cord",
+  "cord",
+  "cauda equina",
+  "nerve root",
+  "thecal sac",
+  "ventricl",
+  "midline",
+  "falx",
+  "brainstem",
+  "cerebell",
+  "circle of willis",
+  "internal carotid",
+  "vertebral artery",
+  "basilar",
+  "dural sinus",
+  "sulci",
+  "gyri",
+  "pituitary",
+  "sellar",
+  "optic",
+  "mastoid",
+  "maxillary",
+  "paranasal",
+  "middle ear",
+  "canal",
+  "foramin",
+] as const;
+
+const NORMALITY_RE =
+  /\b(?:normal|normals?|unremarkable|preserved|maintained|patent|patency|within normal limits|wnl|no signal abnormality|no abnormal signal|no lesion|clear|free of disease|intact|negative)\b/i;
+
+/** Examination facts a report may state but may never invent. */
+const FIELD_STRENGTH_RE = new RegExp(String.raw`\b(\d(?:\.\d)?)\s*(?:t|tesla)(?![a-z0-9])`, "gi");
+const SEQUENCE_RE =
+  /\b(?:t1\s*(?:w|weighted)?|t2\s*(?:w|weighted)?|stir|flair|dwi|adc|swi|gre|dti|t2\s*star|b1000|asl|mra|mrv)\b/gi;
+const COMPARISON_RE =
+  /\b(?:comparison|compared)\b[\s\S]{0,60}?\b(?:with|to)\b[\s\S]{0,40}?\b(?:ct|x[- ]?ray|radiograph|usg|ultrasound|pet|prior|previous|recent|mr)\b|\bprior (?:ct|mr[ai]?v?|usg|x[- ]?ray|study)\b|\bprevious (?:ct|mr[ai]?v?|study)\b/gi;
+
+const CONTRAST_GIVEN_RE =
+  /\b(?:with contrast|contrast administration|contrast media|gadolinium|gadopentetate|post[- ]?contrast|postcontrast|contrast[- ]enhanced|enhanced images|enhanced sequences|iv contrast)\b/i;
+const CONTRAST_WITHHELD_RE =
+  /\b(?:non[- ]?contrast|unenhanced|without contrast|no contrast|no gadolinium|without gadolinium|pre[- ]?contrast only)\b/i;
+
+export type ClinicalRelationLosses = {
+  repositionedMeasurements: string[];
+  lostUncertainty: string[];
+  polarityFlips: string[];
+  inventedNormals: string[];
+  inventedTechnique: string[];
+  contrastClaims: string[];
+  errors: string[];
+  warnings: string[];
+};
+
+function fieldStrengths(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(FIELD_STRENGTH_RE)) {
+    const value = (m[1] ?? "").trim();
+    if (value) out.add(`${value.toLowerCase()}t`);
+  }
+  return out;
+}
+
+function sequenceNames(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(SEQUENCE_RE)) {
+    const name = (m[0] ?? "").toLowerCase().replace(/\s*(w|weighted)$/u, "").replace(/\s+/g, "");
+    if (name) out.add(name);
+  }
+  return out;
+}
+
+/**
+ * What the answer did to the RELATIONSHIPS between facts, not just the facts.
+ *
+ * @param inputClaims everything the radiologist supplied as clinical text (narrative
+ * + observation rows + the added report of a COMBINE).
+ * @param techniqueCorpus the above plus Technique and Protocol — what the examination
+ * itself was, which is the only place an AI may read field strength from.
+ * @param scope `rewrite` is a preserving kind, whose whole contract is to keep what
+ * it was handed, so a measurement changing anatomical owner is a fault. `draft` is
+ * FULL_REPORT/IMPRESSION, which is allowed to restructure prose — but it is no more
+ * allowed to invent field strength, contrast, a normal finding or a certainty the
+ * radiologist did not state.
+ */
+export function detectClinicalRelationLosses(
+  snapshot: ComposerInputSnapshot,
+  draft: ComposerDraftOutput,
+  scope: "rewrite" | "draft" = "rewrite",
+): ClinicalRelationLosses {
+  const narrative = [
+    snapshot.findings ?? "",
+    snapshot.impression ?? "",
+    additionalReportNarrative(snapshot),
+  ].join("\n");
+  const obsText = (snapshot.observations ?? [])
+    .map((o) =>
+      [o.level, o.laterality, o.severity, o.measurement, o.findingsText, o.impressionText]
+        .filter(Boolean)
+        .join(" "),
+    )
+    .join("\n");
+  const inputClaims = `${narrative}\n${obsText}`;
+  const outputClaims = [draft.findings, draft.impression, draft.recommendation].join("\n");
+  const techniqueCorpus = [
+    snapshot.technique ?? "",
+    snapshot.protocol ?? "",
+    inputClaims,
+  ].join("\n");
+
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const repositionedMeasurements: string[] = [];
+  const lostUncertainty: string[] = [];
+  const polarityFlips: string[] = [];
+  const inventedNormals: string[] = [];
+  const inventedTechnique: string[] = [];
+  const contrastClaims: string[] = [];
+
+  // 1) A measurement may not change anatomical owner. (Rewrite contract only.)
+  const emptyLevelFacts = new Map<string, ConservationLevelToken[]>();
+  const inFacts = scope === "rewrite" ? measurementLevelFacts(inputClaims) : emptyLevelFacts;
+  const outFacts = scope === "rewrite" ? measurementLevelFacts(outputClaims) : emptyLevelFacts;
+  for (const [measurement, inLevels] of inFacts) {
+    if (inLevels.length === 0) continue;
+    const outLevels = outFacts.get(measurement);
+    // No level next to the number in the answer is not a repositioning — that is
+    // `level_dropped`'s job, and claiming both would double-count one fault.
+    if (!outLevels || outLevels.length === 0) continue;
+    if (inLevels.some((t) => levelTokenPresent(t, outLevels))) continue;
+    repositionedMeasurements.push(
+      `${measurement}: ${inLevels.map((t) => t.canonical).join("/")} → ${outLevels
+        .map((t) => t.canonical)
+        .join("/")}`,
+    );
+  }
+  if (repositionedMeasurements.length > 0) {
+    errors.push("measurement_repositioned");
+    warnings.push(
+      `Measurement(s) moved to a different anatomical level: ${repositionedMeasurements.join("; ")}.`,
+    );
+  }
+
+  // 2) A hedged finding must stay hedged.
+  for (const sentence of claimSentences(inputClaims)) {
+    if (!HEDGE_RE.test(sentence)) continue;
+    const lower = sentence.toLowerCase();
+    for (const hint of UNCERTAINTY_TRACKED_TERMS) {
+      if (!lower.includes(hint)) continue;
+      const outputSentences = claimSentences(outputClaims).filter((s) =>
+        mentionsGroundedTerm(s.toLowerCase(), hint),
+      );
+      if (outputSentences.length === 0) continue; // gone missing → conservation catches it
+      if (outputSentences.some((s) => HEDGE_RE.test(s))) continue;
+      lostUncertainty.push(hint);
+    }
+  }
+  if (lostUncertainty.length > 0) {
+    errors.push("certainty_escalation");
+    warnings.push(
+      `Suspected/likely findings stated as definite: ${[...new Set(lostUncertainty)].join(", ")}.`,
+    );
+  }
+
+  // 3) A documented abnormality may not come back as a negative (and the reverse).
+  for (const hint of ABNORMALITY_HINTS) {
+    const inPolarity = termPolarity(inputClaims, hint);
+    const outPolarity = termPolarity(outputClaims, hint);
+    if (inPolarity === "positive" && outPolarity === "negative") polarityFlips.push(`${hint}→negated`);
+    else if (inPolarity === "negative" && outPolarity === "positive") polarityFlips.push(`${hint}→asserted`);
+  }
+  if (polarityFlips.length > 0) {
+    errors.push("clinical_polarity_flip");
+    warnings.push(`Findings whose presence/absence was reversed: ${[...new Set(polarityFlips)].join(", ")}.`);
+  }
+
+  // 4) A normality claim about anatomy nobody mentioned is an invented finding.
+  const inputLower = inputClaims.toLowerCase();
+  for (const sentence of claimSentences(outputClaims)) {
+    if (!NORMALITY_RE.test(sentence)) continue;
+    const lower = sentence.toLowerCase();
+    for (const stem of STRUCTURE_STEMS) {
+      if (!new RegExp(`\\b${stem}`, "i").test(lower)) continue;
+      if (new RegExp(`\\b${stem}`, "i").test(inputLower)) continue;
+      inventedNormals.push(stem);
+    }
+  }
+  if (inventedNormals.length > 0) {
+    errors.push("invented_normal_finding");
+    warnings.push(
+      `Normal findings added for anatomy the supplied report never mentioned: ${[...new Set(inventedNormals)].join(", ")}.`,
+    );
+  }
+
+  // 5) The examination itself may not be embellished.
+  for (const fs of fieldStrengths(outputClaims)) {
+    if (!fieldStrengths(techniqueCorpus).has(fs)) inventedTechnique.push(fs.toUpperCase());
+  }
+  for (const seq of sequenceNames(outputClaims)) {
+    if (!sequenceNames(techniqueCorpus).has(seq)) inventedTechnique.push(seq.toUpperCase());
+  }
+  const outputComparisons = (outputClaims.match(COMPARISON_RE) ?? []).length;
+  const inputComparisons = (techniqueCorpus.match(COMPARISON_RE) ?? []).length;
+  if (outputComparisons > inputComparisons) inventedTechnique.push("comparison study");
+  if (inventedTechnique.length > 0) {
+    errors.push("technique_invention");
+    warnings.push(
+      `Technique details stated that the supplied study does not support: ${[...new Set(inventedTechnique)].join(", ")}.`,
+    );
+  }
+
+  // 6) Contrast is a different examination, not a style choice.
+  const inputGiven = CONTRAST_GIVEN_RE.test(techniqueCorpus);
+  const inputHeld = CONTRAST_WITHHELD_RE.test(techniqueCorpus);
+  const outputGiven = CONTRAST_GIVEN_RE.test(outputClaims);
+  const outputHeld = CONTRAST_WITHHELD_RE.test(outputClaims);
+  if (!inputGiven && outputGiven) contrastClaims.push("contrast was given");
+  if (inputGiven && !inputHeld && outputHeld && !outputGiven) contrastClaims.push("contrast was withheld");
+  if (inputHeld && !inputGiven && outputGiven && !outputHeld) contrastClaims.push("contrast was given");
+  if (contrastClaims.length > 0) {
+    errors.push("contrast_status_changed");
+    warnings.push(`Contrast status changed against the supplied study: ${[...new Set(contrastClaims)].join("; ")}.`);
+  }
+
+  return {
+    repositionedMeasurements,
+    lostUncertainty: [...new Set(lostUncertainty)],
+    polarityFlips: [...new Set(polarityFlips)],
+    inventedNormals: [...new Set(inventedNormals)],
+    inventedTechnique: [...new Set(inventedTechnique)],
+    contrastClaims: [...new Set(contrastClaims)],
     errors,
     warnings,
   };
@@ -800,6 +1348,7 @@ export function validateComposerOutput(
   // not be read as a model that said nothing.
   const isObservationTask = opts?.kind === "OBSERVATIONS";
   let conservation: ConservationLosses | undefined;
+  let relations: ClinicalRelationLosses | undefined;
 
   if (!isObservationTask && !draft.findings.trim() && !draft.impression.trim()) {
     errors.push("empty_output");
@@ -825,14 +1374,29 @@ export function validateComposerOutput(
             .join(" "),
         )
         .join("\n");
+      const rowDraft: ComposerDraftOutput = {
+        ...draft,
+        findings: rowText,
+        impression: "",
+        recommendation: "",
+      };
       conservation = detectConservationLosses(
         { ...snapshot, impression: "", recommendation: "" },
-        { ...draft, findings: rowText, impression: "", recommendation: "" },
+        rowDraft,
       );
       for (const e of conservation.errors) {
         if (!errors.includes(e)) errors.push(e);
       }
       for (const w of conservation.warnings) warnings.push(w);
+
+      // The same relations hold for a structured answer: a row that puts the
+      // 8.2 mm canal measurement on the wrong level, or adds "conus normal" to
+      // a dictation that never looked at the conus, is not a usable proposal.
+      relations = detectClinicalRelationLosses(snapshot, rowDraft);
+      for (const e of relations.errors) {
+        if (!errors.includes(e)) errors.push(e);
+      }
+      for (const w of relations.warnings) warnings.push(w);
     }
   }
 
@@ -889,6 +1453,20 @@ export function validateComposerOutput(
     for (const w of definite.warnings) warnings.push(w);
   }
 
+  // ── A drafting kind may restructure prose, not the examination ──────────
+  // FULL_REPORT and IMPRESSION are allowed to write the report in their own
+  // words — that is the task. They are not allowed to invent field strength,
+  // contrast, sequences, a normal finding for anatomy nobody described, or a
+  // certainty the radiologist did not state, so the relation rules run there
+  // too, minus the one that compares prose the draft was never asked to keep.
+  if (opts?.kind && !isObservationTask && !isPreservingComposeKind(opts.kind)) {
+    relations = detectClinicalRelationLosses(snapshot, draft, "draft");
+    for (const e of relations.errors) {
+      if (!errors.includes(e)) errors.push(e);
+    }
+    for (const w of relations.warnings) warnings.push(w);
+  }
+
   // ── Conservation: nothing the radiologist wrote may go missing ──────────
   // Only for the kinds whose whole purpose is to keep the report and improve
   // its prose. A DRAFT kind (`FULL_REPORT`, `IMPRESSION`) is free to
@@ -900,6 +1478,12 @@ export function validateComposerOutput(
       if (!errors.includes(e)) errors.push(e);
     }
     for (const w of conservation.warnings) warnings.push(w);
+
+    relations = detectClinicalRelationLosses(snapshot, draft);
+    for (const e of relations.errors) {
+      if (!errors.includes(e)) errors.push(e);
+    }
+    for (const w of relations.warnings) warnings.push(w);
   }
 
   const hasScreening = (snapshot.regions ?? []).some((r) => /screening/i.test(r))
@@ -992,5 +1576,6 @@ export function validateComposerOutput(
     levelChanges,
     severityEscalations,
     ...(conservation ? { conservation } : {}),
+    ...(relations ? { relations } : {}),
   };
 }
