@@ -108,7 +108,8 @@ describe("institutionalReportStyle", () => {
     // contained it. The square belongs to .image-viewport, never to .image-cell.
     for (const aspect of [undefined, ...KEY_IMAGE_ASPECTS, "not-a-shape"] as const) {
       const css = keyImageLayoutCss({ keyImageAspect: aspect });
-      const cellRules = (css.match(/\.image-cell\s*\{[^}]*\}/g) ?? []).filter((r) => !r.includes(".image-cell ."));
+      const allRules: string[] = css.match(/\.image-cell\s*\{[^}]*\}/g) ?? [];
+      const cellRules = allRules.filter((r) => !r.includes(".image-cell ."));
       expect(cellRules.length, `aspect=${aspect}: no .image-cell rule found at all`).toBeGreaterThan(0);
       for (const rule of cellRules) {
         expect(rule, `aspect=${aspect}`).not.toMatch(/aspect-ratio:\s*1\s*\/\s*1/);

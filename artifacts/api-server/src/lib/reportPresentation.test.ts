@@ -500,16 +500,16 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
 describe("a caption is the radiologist's words, or there is none", () => {
   const img = (tag: string) => `data:image/jpeg;base64,${tag}`;
   const render = (
-    keyImages: Array<{ src: string; caption?: string; displayOrder: number; isKeyImage?: boolean }>,
+    keyImages: ReportDocumentModel["keyImages"],
     templateId = "care-premium",
   ) => renderReportDocument(baseModel({ keyImages }), resolvePresentationTemplate(templateId));
-  const cells = (html: string) => html.match(/<figure class="image-cell[\s\S]*?<\/figure>/g) ?? [];
-  const captionOf = (cell: string) => /class="image-caption">([\s\S]*?)<\/figcaption>/.exec(cell)?.[1] ?? "";
+  const cells = (html: string): string[] => html.match(/<figure class="image-cell[\s\S]*?<\/figure>/g) ?? [];
+  const captionOf = (cell: string | undefined) => /class="image-caption">([\s\S]*?)<\/figcaption>/.exec(cell ?? "")?.[1] ?? "";
 
   it("prints the caption beneath its own image, in both shipped templates", () => {
     for (const templateId of ["care-classic", "care-premium"]) {
       const html = render([{ src: img("AAA"), caption: "T2 AXIAL C4-L5", displayOrder: 0 }], templateId);
-      const cell = cells(html)[0];
+      const cell = cells(html)[0] ?? "";
       expect(captionOf(cell)).toBe("T2 AXIAL C4-L5");
       // Beneath, not beside: the caption follows the viewport it labels.
       expect(cell.indexOf("image-viewport")).toBeLessThan(cell.indexOf("image-caption"));
@@ -556,8 +556,8 @@ describe("a caption is the radiologist's words, or there is none", () => {
     // Two rules share this selector — the @media print one comes first — so the
     // assertion is bound to the rule that actually sizes the port. An earlier
     // version of this test matched the print rule and could not be broken.
-    const sizing = (html.match(/\.image-panel-side \.image-cell\s*\{[^}]*\}/g) ?? [])
-      .find((rule) => rule.includes("--ki-size")) ?? "";
+    const cellRules: string[] = html.match(/\.image-panel-side \.image-cell\s*\{[^}]*\}/g) ?? [];
+    const sizing = cellRules.find((rule) => rule.includes("--ki-size")) ?? "";
     expect(sizing).not.toBe("");
     expect(sizing).not.toContain("aspect-ratio");
     // The port itself stays square, so an uncaptioned image is laid out as before.
