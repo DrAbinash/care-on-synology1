@@ -134,6 +134,14 @@ calls the other.
 `instruction` (already hashed into `inputHash`) and `additionalReports` (new, optional)
 are added.
 
+**Every example below must also carry the study identity the workspace already has.**
+`worklistId` is mandatory — the server resolves the study and the report of record from
+that one anchor (#905) and answers `compose_worklist_required` if it is absent, before any
+model is contacted. Send `studyId` when you have it (it must agree with the worklist row,
+or `compose_study_conflict`), and `reportId` when the workspace knows it; omitting
+`reportId` is legal and the server derives it. The examples show only the fields that
+distinguish one operation from another, not a complete body.
+
 PROFESSIONALIZE — the radiologist's report is complete; AI improves the prose:
 
 ```json
