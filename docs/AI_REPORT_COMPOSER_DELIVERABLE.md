@@ -351,6 +351,13 @@ Nothing here renames it, writes to it, or replaces it — the AI operations prod
 **proposal** and the deterministic generator produces the **report**. Keep them two buttons
 with two names.
 
+#920 later fixed the same clinical defect on the deterministic side — a denied finding
+reading as a positive one — inside `generateLocalImpression.ts` (`assertsAbnormality`,
+`isAbnormalFindingLine`) and the impression-refresh path. The composer validator does not
+import either function, and nothing in this branch re-pins them: the deterministic side
+decides what a *generated* report may conclude, `denied_finding_asserted` decides what a
+*model* may propose. Two surfaces, one rule each, no shared code to break.
+
 ## Z.2 What the caller must send
 
 - `snapshot.worklistId` is **mandatory**. The server resolves the study and the report of
