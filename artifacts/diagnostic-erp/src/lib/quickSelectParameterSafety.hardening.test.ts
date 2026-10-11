@@ -509,9 +509,16 @@ describe("T8 — census over every shipped Quick Select template", () => {
   it("counts the parameterized tiles at HEAD", () => {
     const affected = DEFAULT_QUICK_SELECT_TILES.filter((t) => quickSelectParametersIn(tileText(t)).size > 0);
     expect(affected.map((t) => t.label).sort()).toEqual([
+      "AVM",
       "Acute hemorrhage",
       "Acute infarct (DWI)",
+      "Aneurysm",
       "Basal ganglia hemorrhage",
+      "Cavernoma",
+      "Chronic infarct",
+      "Contusion",
+      "Epidural hematoma",
+      "Extra-axial collection",
       // The cervical catalogue added two laterality boxes, at levels the lumbar
       // set had no tile for. Both put `{side}` in the findings sentence and again
       // in the impression sentence, which is why the token count below moves by
@@ -519,14 +526,18 @@ describe("T8 — census over every shipped Quick Select template", () => {
       "Foraminal stenosis C5-C6",
       "Foraminal stenosis L4-L5",
       "Hip effusion",
+      "Hippocampal sclerosis",
+      "Mass lesion",
       "Maxillary sinusitis",
       "Meniscus tear",
+      "Midline shift",
       "Nerve root compression C6",
       "Orbital cellulitis",
       "Renal calculus",
       "Rotator cuff tear",
+      "Subdural hematoma",
     ]);
-    expect(affected.length).toBe(12);
+    expect(affected.length).toBe(23);
   });
 
   it("counts the tokens so a new one cannot arrive uncounted", () => {
@@ -540,7 +551,7 @@ describe("T8 — census over every shipped Quick Select template", () => {
         + ((t.impressionSentence ?? "").match(/\{severity\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{severity\}/g) ?? []).length;
     }
-    expect(side).toBe(18);
+    expect(side).toBe(40);
     expect(severity).toBe(1);
   });
 
