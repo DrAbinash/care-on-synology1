@@ -40,6 +40,7 @@ vi.mock("./providers", async () => {
 
 import {
   buildUserPrompt,
+  composerTaskKeys,
   runReportComposer,
   selectionAnswerLosesField,
 } from "./composeEngine";
@@ -364,5 +365,100 @@ describe("the deterministic engine keeps working with no AI at all", () => {
     const out = deterministicComposeFromSnapshot(snap({ findings: "L4-5 bulge." }), "OBSERVATIONS");
     expect(out.observations).toBeUndefined();
     expect(out.warnings).toContain("deterministic_cannot_structure_dictation");
+  });
+});
+
+describe("per-operation model routing (owner's §4)", () => {
+  it("names the operation's own task first and the generic task second", () => {
+    expect(composerTaskKeys("PROFESSIONALIZE", "TEXT_ONLY")).toEqual([
+      "report_composer_professionalize",
+      "report_composer",
+    ]);
+    expect(composerTaskKeys("COMBINE", "TEXT_ONLY")).toEqual([
+      "report_composer_combine",
+      "report_composer",
+    ]);
+    expect(composerTaskKeys("OBSERVATIONS", "TEXT_ONLY")).toEqual([
+      "report_composer_observations",
+      "report_composer",
+    ]);
+    // Only the three assistant operations are routable on their own. A draft or a
+    // micro-edit falls to the generic task, which is the pre-existing behaviour.
+    expect(composerTaskKeys("FULL_REPORT", "TEXT_ONLY")).toEqual(["report_composer"]);
+    expect(composerTaskKeys("SELECTION_EDIT", "TEXT_ONLY")).toEqual(["report_composer"]);
+    expect(composerTaskKeys("FULL_REPORT", "SELECTED_IMAGES")).toEqual([
+      "selected_image_vision",
+      "report_composer",
+    ]);
+  });
+
+  it("asks for the operation's route before the generic one", async () => {
+    resolveTaskRoute.mockImplementation(async () => null);
+    await runReportComposer({
+      kind: "OBSERVATIONS",
+      snapshot: snap(),
+      allowDeterministicFallback: false,
+    });
+    expect(resolveTaskRoute.mock.calls.map((c) => c[0])).toEqual([
+      "report_composer_observations",
+      "report_composer",
+    ]);
+  });
+
+  it("uses the operation-specific route when there is one", async () => {
+    resolveTaskRoute.mockImplementation(async (key: string) =>
+      key === "report_composer_observations" ? { provider: "ollama", model: "qwen3:14b" } : null,
+    );
+    const run = await runReportComposer({
+      kind: "OBSERVATIONS",
+      snapshot: snap(),
+      allowDeterministicFallback: false,
+    });
+    expect(run.ok).toBe(true);
+    expect(run.provider).toBe("ollama");
+    // The route's model is the one that was dialled, not the clinic default.
+    expect(composeMock.mock.calls[0]![0].model).toBe("qwen3:14b");
+  });
+
+  it("falls through to the generic composer route, which is a stated default and not a substitution", async () => {
+    resolveTaskRoute.mockImplementation(async (key: string) =>
+      key === "report_composer" ? { provider: "ollama", model: "gemma3:12b" } : null,
+    );
+    const run = await runReportComposer({
+      kind: "PROFESSIONALIZE",
+      snapshot: snap(),
+      allowDeterministicFallback: false,
+    });
+    expect(run.ok).toBe(true);
+    expect(composeMock.mock.calls[0]![0].model).toBe("gemma3:12b");
+  });
+
+  it("refuses an operation route naming a provider CARE has no adapter for, and dials nothing", async () => {
+    resolveTaskRoute.mockImplementation(async (key: string) =>
+      key === "report_composer_combine" ? { provider: "anthropic", model: "claude" } : null,
+    );
+    const run = await runReportComposer({
+      kind: "COMBINE",
+      snapshot: snap(),
+      allowDeterministicFallback: false,
+    });
+    expect(run.safeError).toBe("composer_provider_not_supported");
+    expect(composeMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the catalog entries the UI needs to make any of this configurable", async () => {
+    // `AI_TASK_CATALOG` is what turns a task key into a row an administrator can
+    // set (lib/ai-providers/src/index.ts). Without the entries the keys above are
+    // unresolvable constants, and the owner's "do not hard-code these choices"
+    // would be false. Asserted against the real catalog, not a copy.
+    const { AI_TASK_CATALOG } = await import("@workspace/ai-providers");
+    const keys = AI_TASK_CATALOG.map((t) => t.key);
+    for (const expected of [
+      "report_composer_professionalize",
+      "report_composer_combine",
+      "report_composer_observations",
+    ]) {
+      expect(keys).toContain(expected);
+    }
   });
 });

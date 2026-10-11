@@ -271,6 +271,34 @@ function effectiveAiMode(
   return snapshot.aiMode === "SELECTED_IMAGES" ? "SELECTED_IMAGES" : "TEXT_ONLY";
 }
 
+/**
+ * Which Model Routing tasks may answer for one composer call, most specific
+ * first. CARE already has `ai_model_routes` (one active route per task key) and
+ * `AI_TASK_CATALOG`, whose comment makes the contract explicit: adding a task
+ * there is what makes it configurable in the Model Routing UI. So the measured
+ * per-operation model boundary — text transformation on every installed local
+ * model, structured extraction only on the larger one — is an administrator's
+ * setting, not a constant in this file.
+ *
+ * A task with no route of its own falls through to the generic `report_composer`
+ * route, and only if NEITHER exists does the clinic default apply. Falling
+ * through is not substituting: nothing here picks a different provider behind the
+ * caller's back, and an unavailable provider is reported as its own refusal.
+ */
+export function composerTaskKeys(
+  kind: AiComposeJobKind,
+  aiMode: "TEXT_ONLY" | "SELECTED_IMAGES",
+): string[] {
+  if (aiMode === "SELECTED_IMAGES") return ["selected_image_vision", "report_composer"];
+  const perOperation: Partial<Record<AiComposeJobKind, string>> = {
+    PROFESSIONALIZE: "report_composer_professionalize",
+    COMBINE: "report_composer_combine",
+    OBSERVATIONS: "report_composer_observations",
+  };
+  const specific = perOperation[kind];
+  return specific ? [specific, "report_composer"] : ["report_composer"];
+}
+
 export async function runReportComposer(opts: {
   kind: AiComposeJobKind;
   snapshot: ComposerInputSnapshot;
@@ -330,12 +358,16 @@ export async function runReportComposer(opts: {
     }
     providerName = parsed;
   } else {
-    const taskKey = aiMode === "SELECTED_IMAGES" ? "selected_image_vision" : "report_composer";
+    const taskKeys = composerTaskKeys(opts.kind, aiMode);
     let routeProvider: string | null = null;
     try {
-      const route = await resolveTaskRoute(taskKey);
-      routeProvider = route?.provider?.trim() || null;
-      routeModel = (route?.model ?? "").trim() || null;
+      for (const taskKey of taskKeys) {
+        const route = await resolveTaskRoute(taskKey);
+        if (!route?.provider?.trim()) continue;
+        routeProvider = route.provider.trim();
+        routeModel = (route.model ?? "").trim() || null;
+        break;
+      }
     } catch {
       // Model Routing unreadable (no database, early boot): the clinic default,
       // which is a stated policy, not a guessed provider name.
