@@ -613,9 +613,13 @@ describe("CARE's own baseline sentences can never read as findings", () => {
   /**
    * A content-wide gate rather than another hand-picked example: every sentence
    * the shipped formats write into Findings is a normal, so not one of them may
-   * be recognised as pathology. Measured before the fix, 32 of 152 were — all of
-   * them level-labelled or region-labelled denials and screening scope notices —
-   * and every one of them was arriving in a signed Conclusion as an abnormality.
+   * be recognised as pathology. Re-measured against this corpus by putting the
+   * pre-fix predicate back (`git show 200cc58a^:…/generateLocalImpression.ts`) and
+   * counting: 31 of these 149 sentences read as pathology, all of them
+   * level-labelled or region-labelled denials and screening scope notices, and
+   * every one of them arrived in a signed Conclusion as an abnormality. With the
+   * shipped predicate the same scan returns none — the count below is what makes
+   * that reproducible instead of remembered.
    */
   it("none of the baseline findings sentences asserts abnormality", () => {
     const offenders: string[] = [];
@@ -627,9 +631,10 @@ describe("CARE's own baseline sentences can never read as findings", () => {
         if (assertsAbnormality(observation.renderedText)) offenders.push(`${format.name}: ${observation.renderedText}`);
       }
     }
-    // The scan itself has to be non-vacuous: a manifest that stopped loading
-    // would satisfy `toEqual([])` on nothing.
-    expect(scanned).toBeGreaterThan(100);
+    // The scan itself has to be non-vacuous, and the corpus is named rather than
+    // bounded: a manifest that stopped loading, or one that grew, moves this number
+    // and has to say so.
+    expect(scanned).toBe(149);
     expect(offenders).toEqual([]);
   });
 });
