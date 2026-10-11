@@ -67,9 +67,14 @@ export function buildCareSystemPrompt(
       break;
     default:
       parts.push(
-        "TASK: Draft a COMPLETE radiologist-quality report (Findings, Impression, optional Recommendation) " +
-          "from the CLINICAL TRUTH block. Preserve technique. Overlay abnormalities onto any normal scaffold. " +
-          "Do not invent pathology, laterality, levels, measurements, or filler recommendations.",
+        "TASK: Draft a COMPLETE professional radiology report (Findings, Impression, optional Recommendation) " +
+          "from the CLINICAL TRUTH block, in CARE's printed order: technique (supplied text only); Findings by " +
+          "anatomy and by LEVEL using the printed-structure convention (`Label:` section lines, a pipe table for " +
+          "a per-level series); normal anatomy the input covers; a concise prioritised Impression that agrees " +
+          "with the Findings and is not repeated as a second conclusion; a Recommendation only if supported. " +
+          "Do not invent pathology, laterality, levels, measurements, or filler recommendations. CARE's printer " +
+          "adds the examination title, the patient lines and the heading style — do not write a title, a patient " +
+          "name line, or markdown emphasis.",
       );
       break;
   }
@@ -96,4 +101,7 @@ export {
   CARE_MRI_DORSAL,
   CARE_MRI_LUMBAR,
   CARE_SELECTED_IMAGE_ASSISTED,
+  CARE_XRAY,
+  CARE_DOPPLER,
+  CARE_MRCP,
 } from "./router";

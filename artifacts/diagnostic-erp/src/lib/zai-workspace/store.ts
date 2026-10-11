@@ -198,11 +198,24 @@ import {
   flagRenumberedCanalLevels,
   normalizeDiscLevel,
   parseCanalApNumber,
+  resolveActiveCanalSegment,
   type CanalApCellProvenance,
   type CanalApProvenanceMap,
   type CanalSegment,
   type CanalViewerValueWrite,
 } from "@/lib/spineCanalAp";
+import {
+  quickNormalOutcomeMessage,
+  resolveNormalBootstrapFormat,
+} from "./normalBootstrap";
+import {
+  alreadySaysThis,
+  canalApReportTable,
+  radiologistObservations,
+  reportHasDeviation,
+  unexplainedFindingLines,
+  type ProfessionalReportOutcome,
+} from "./professionalReport";
 import {
   defaultVascularTechnique,
   markVascularTechniqueManual,
@@ -726,6 +739,17 @@ export type WorkspaceStore = S & {
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  /**
+   * VERTICAL INTEGRATION M1 — the one deterministic "Generate Professional Report"
+   * action. Builds the report from material that already exists: the study's
+   * approved Full Normal Format, the observations in the ledger, the canal AP
+   * numbers recorded for this study, and the Impression the ledger implies. No AI,
+   * no second composer, and no sentence CARE has not been given — a study whose
+   * identity or normal format cannot be resolved is refused with a reason rather
+   * than filled with a guess. Never replaces a field: the radiologist's own text
+   * is merged in, so nothing typed is lost by pressing it.
+   */
+  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "protocolName" | "studyDescription">) => ProfessionalReportOutcome;
   ingestStructuredNormalFormats: (rows: StructuredNormalRow[]) => void;
   toggleFormatFavorite: (id: string) => void;
   /** `"refused"` is the signed-report boundary declining the write. Distinct from
@@ -1500,6 +1524,180 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (get().isFinalized) return;
     set({ selectedFormatIds: [id] });
     get().applySelectedFormats();
+  },
+  generateProfessionalReport: (ctx) => {
+    // The whole report from one press, with no model in the loop. Every string it
+    // writes is one the clinic or the radiologist already supplied: the approved
+    // Full Normal Format for this examination, the observations in the ledger, the
+    // canal AP numbers recorded for this study, and the Impression those
+    // observations imply. Nothing is composed here, and an examination whose
+    // identity or normal format cannot be resolved is refused with a reason rather
+    // than filled with a guess.
+    if (refuseSignedMutation(get(), "generateProfessionalReport")) {
+      return {
+        status: "refused",
+        code: "signed",
+        reason: "This report is signed. Withdraw it before regenerating.",
+      };
+    }
+    // A confirmation already on screen is CARE asking the radiologist about a
+    // write it has not answered. Generating underneath it would answer for them.
+    if (get().confirmOverwriteOpen || get().pendingPathologyPatch || get().mergePreviewOpen) {
+      return {
+        status: "refused",
+        code: "confirmation-open",
+        reason: "Answer the confirmation already on screen first.",
+      };
+    }
+    if (get().reportFormats.length === 0) {
+      return {
+        status: "refused",
+        code: "library-loading",
+        reason: "Report formats are still loading. Try again in a moment.",
+      };
+    }
+    const decision = resolveNormalBootstrapFormat({ ctx, formats: get().reportFormats });
+    if (!decision) {
+      return {
+        status: "refused",
+        code: "identity-unresolved",
+        reason: "This examination is not identified yet. Set the study region, then generate again.",
+      };
+    }
+    if (decision.status !== "apply") {
+      const message = quickNormalOutcomeMessage(decision);
+      return {
+        status: "refused",
+        code: decision.status === "ambiguous" ? "ambiguous" : "no-normal-format",
+        reason: `${message.title} — ${message.description}`,
+      };
+    }
+
+    const format = decision.format;
+    const clinical = clinicalFieldsFromFormat(format);
+    const undoSnap = captureClinicalSnapshot(get());
+    const findingsBefore = get().findingsText;
+    const patchCountBefore = get().appliedPathologyPatches.length;
+    // Read before anything is written: these are the statements the report must
+    // still make when the action finishes.
+    const retained = radiologistObservations(get().appliedPathologyPatches);
+    const freeTextBefore = unexplainedFindingLines(findingsBefore, get().appliedPathologyPatches);
+
+    // The scaffold is merged in, never dropped on top of the report. An identical
+    // sentence is not written twice, and no sentence the format does not contain
+    // is removed — so pressing this on a study that already has dictated text
+    // cannot lose it, and pressing it twice changes nothing the second time.
+    if (clinical.technique.trim() && !alreadySaysThis(get().techniqueText, clinical.technique)) {
+      get().mergeField("technique", clinical.technique, "template");
+    }
+    if (clinical.findings.trim() && !alreadySaysThis(get().findingsText, clinical.findings)) {
+      get().mergeField("findings", clinical.findings, "template");
+    }
+    if (clinical.impression.trim() && !alreadySaysThis(get().impressionText, clinical.impression)) {
+      get().mergeField("impression", clinical.impression, "template");
+    }
+    if (clinical.recommendation.trim() && !alreadySaysThis(get().recommendationText, clinical.recommendation)) {
+      get().mergeField("recommendation", clinical.recommendation, "template");
+    }
+
+    // Record which sentences the scaffold owns. Without these ledger rows an
+    // abnormality recorded later sits beside the normal it contradicts instead of
+    // taking its place. Idempotent by patch id, so a second press adds nothing.
+    const baselineRegion = get().reportingContext.region || format.bodyPart || "";
+    const knownIds = new Set(get().appliedPathologyPatches.map((p) => p.id));
+    const baselinePatches = materializeFormatBaseline(format, baselineRegion)
+      .filter((p) => !knownIds.has(p.id))
+      .map((p) => ({
+        id: p.id,
+        ownership: ownershipFromObservation(p.observation),
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        source: p.source,
+        observation: p.observation,
+        replacedBaseline: p.replacedBaseline,
+        protected: p.protected,
+      }));
+    if (baselinePatches.length > 0) {
+      set({ appliedPathologyPatches: [...get().appliedPathologyPatches, ...baselinePatches] });
+    }
+
+    // Each observation reclaims the slot it owns. Same id, so its measurements and
+    // key-image evidence stay attached, and one undo frame for the whole press
+    // rather than one per finding.
+    let needingReview = 0;
+    for (const input of retained) {
+      const outcome = get().applyPathologyOverlay({ ...input, skipUndoSnapshot: true });
+      if (outcome !== "applied") needingReview += 1;
+    }
+
+    const segment = resolveActiveCanalSegment({
+      spineSegment: get().reportingContext.spineSegment,
+      regionHint: get().reportingContext.region,
+      reportingRegion: get().reportingContext.region,
+      studyDescription: ctx.studyDescription,
+      regions: ctx.regions,
+      forceDorsal: get().dorsalCanalForced,
+    });
+    const measurementTable = canalApReportTable(get().canalApProvenance, segment);
+    const measurementTableIncluded = Boolean(measurementTable);
+    if (measurementTableIncluded && !alreadySaysThis(get().findingsText, measurementTable)) {
+      get().mergeField("findings", measurementTable, "companion");
+    }
+
+    // Re-derive the Impression from the Findings as they now stand — but only over
+    // a report that actually deviates from the approved normal, and only if this
+    // press changed the Findings. Two separate reasons, both measured:
+    //  - `generateLocalImpression` reads "No acute infarct is seen." as abnormal,
+    //    because the cue survives its own negation. Refreshed over a complete
+    //    normal it appends the Findings' relevant negatives to the Impression, so
+    //    "Normal MRI of the brain." arrives followed by five repetitions of the
+    //    body — the duplicated conclusion section this milestone forbids. Where the
+    //    radiologist has recorded nothing but the normal, the format's own
+    //    Impression, which the clinic approved, is the professional conclusion.
+    //  - The refresh writes unconditionally (it sets the dirty flag even when the
+    //    text comes back identical), so a press that changed nothing must not call it.
+    // `impressionNeedsRefresh` cannot be the test either way: merging the format's
+    // own Impression clears it, because a template is a source that owns both sides.
+    if (
+      (get().findingsText !== findingsBefore || get().appliedPathologyPatches.length !== patchCountBefore)
+      && reportHasDeviation(get().appliedPathologyPatches, freeTextBefore)
+    ) {
+      get().refreshImpressionFromLedger();
+    }
+    get().orderImpressionByPriority();
+
+    set({
+      ...withPushedClinicalUndo(get(), undoSnap),
+      appliedFormatReportTitle: clinical.reportTitle || null,
+      appliedFormatName: format.name || null,
+      startingCanvasBaseline: {
+        formatName: format.name || "",
+        formatRevision: format.baselineManifest?.revision ?? reportFormatRevision(format),
+        findings: get().findingsText,
+        impression: get().impressionText,
+        appliedAt: new Date().toISOString(),
+      },
+      // No `isDirty` here on purpose. Every write this action can make goes through
+      // mergeField or applyPathologyOverlay, and each one sets the flag itself. A
+      // second, unconditional `isDirty: true` would mark a report dirty that had
+      // nothing change — which is exactly what pressing this twice does.
+    });
+    getFormatApplyBridge()?.invalidatePendingAutosave?.();
+    void bumpReportFormatUsage(format.id);
+    get().pushNotification({
+      kind: "ledger",
+      text: needingReview > 0
+        ? `Professional report built from “${format.name}”. ${needingReview} finding(s) need your review.`
+        : `Professional report built from “${format.name}”.`,
+    });
+    return {
+      status: "generated",
+      formatName: format.name || "",
+      baselineConcepts: baselinePatches.length,
+      observationsRetained: retained.length,
+      observationsNeedingReview: needingReview,
+      measurementTableIncluded,
+    };
   },
   toggleFormatFavorite: (id) => {
     const nf = get().reportFormats.map((x: ReportFormat) => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x);

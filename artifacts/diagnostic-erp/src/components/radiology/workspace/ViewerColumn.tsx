@@ -8,7 +8,6 @@ import {
   ResizableHandle, ResizablePanel,
 } from "@/components/ui/resizable";
 import { useState } from "react";
-import { api } from "@/lib/fetchApi";
 import EmbeddedWadoViewer, { type EmbeddedViewerHandle } from "@/components/EmbeddedWadoViewer";
 import PrintImagePicker from "@/components/radiology/PrintImagePicker";
 import PacsImagePickerDialog from "@/components/radiology/PacsImagePickerDialog";
@@ -59,6 +58,8 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     activeReportSection,
     activeReportSectionRef,
     activeStudyId,
+    addCurrentOhifImageToReport,
+    attachDisplayedImageRef,
     aiAssistantMinimized,
     aiFinalizeBypassRef,
     aiFinalizeGate,
@@ -180,7 +181,6 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleVerifyReport,
     headerToggleTimerRef,
     headingCase,
-    imageRefs,
     impressionContradictionWarnings,
     impressionManuallyEdited,
     impressionNeedsRefresh,
@@ -239,6 +239,7 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     normalBootstrapDoneRef,
     observationLabels,
     ohifTargetOriginRef,
+    ohifImageAdding,
     ohifUnavailable,
     onStudySwitchPageReset,
     openComposerForObservation,
@@ -594,36 +595,14 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       onAddCurrentFrameToReport={
                         contentLocked
                           ? undefined
-                          : async (ref) => {
-                              let id = draftId;
-                              if (!id) id = await ensureDraftOnce();
-                              if (!id) {
-                                toast({ title: "Could not save draft", description: "Save a draft before adding key images.", variant: "destructive" });
-                                return;
-                              }
-                              try {
-                                const { buildImageRefPayload, nextDisplayOrder } = await import("@/lib/reportImageRefs");
-                                await api.post(
-                                  "/api/radiology/report-generator/image-references",
-                                  buildImageRefPayload({
-                                    draftId: id,
-                                    studyId: workflow.currentRow?.studyId ?? studyId ?? null,
-                                    studyInstanceUID: ref.studyInstanceUID,
-                                    seriesInstanceUID: ref.seriesInstanceUID,
-                                    sopInstanceUID: ref.sopInstanceUID,
-                                    frameNumber: ref.frameNumber,
-                                    caption: "Key image (viewer)",
-                                    displayOrder: nextDisplayOrder(imageRefs),
-                                    isKeyImage: true,
-                                  }),
-                                );
-                                void qc.invalidateQueries({ queryKey: ["report-image-references", id] });
-                                toast({ title: "Added to report image rail" });
-                              } catch (e) {
-                                toast({ title: "Could not add image", description: String(e), variant: "destructive" });
-                              }
-                            }
+                          : (ref) => { void attachDisplayedImageRef(ref); }
                       }
+                      onAddCurrentOhifImage={
+                        contentLocked || ohifUnavailable
+                          ? undefined
+                          : addCurrentOhifImageToReport
+                      }
+                      ohifImageAdding={ohifImageAdding}
                     />
                   </div>
                   {!viewerColumnExpanded && workflow.currentRow && (
