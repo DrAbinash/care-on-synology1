@@ -440,6 +440,17 @@ export function composeScreeningRecommendationLines(
 /**
  * Screening limitation atom — ONE row for the whole report, under its own
  * conflict group so rebuilding a region can never duplicate the sentence (§29).
+ *
+ * `baselineReplaces` is not a nicety here. Without it the row falls through to
+ * `sentenceOwnedBySlot`'s section fallback, which tests whether the sentence
+ * already in the report contains the row's `anatomicalSection` — the literal
+ * word "screening". Every shipped screening manifest writes its normals as
+ * "<Region> spine: … on screening sequences.", so one limitation row deleted
+ * them: measured on main, 29 of the 149 baseline findings sentences across the
+ * five screening manifests, 13 of the 16 lines on the whole-spine screening page,
+ * while all of those ledger rows stayed live — the report and the ledger disagreed
+ * and nothing on screen said a sentence had gone. A limitation says nothing about
+ * the anatomy, so it owns its own sentence and nothing else.
  */
 export function screeningLimitationAtom(): SpineAtomSpec {
   return {
@@ -447,6 +458,7 @@ export function screeningLimitationAtom(): SpineAtomSpec {
     conflictGroup: "screen-limitation",
     anatomicalSection: "screening",
     findings: SCREENING_LIMITATION_TEXT,
+    baselineReplaces: SCREENING_LIMITATION_TEXT,
     role: "screening",
   };
 }

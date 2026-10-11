@@ -442,12 +442,20 @@ describe("screening ledger integration (spec §22, §34, §38)", () => {
     applyRegion("cervical", state);
     const dorsalBefore = useWorkspace.getState().appliedPathologyPatches.filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-dorsal-"));
     expect(dorsalBefore).toHaveLength(0);
+    const cervicalBefore = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-cervical-"))
+      .map((p) => `${p.id}|${p.lastRendered.findings}`);
+    expect(cervicalBefore.length).toBeGreaterThan(0);
     applyRegion("dorsal", state);
     const after = useWorkspace.getState().appliedPathologyPatches;
     expect(after.filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-dorsal-")).length).toBeGreaterThan(0);
-    expect(after.filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-cervical-")).length).toBe(
-      after.filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-cervical-")).length,
-    );
+    // Compared against what the cervical pass actually left behind. This used to
+    // be `X.length).toBe(X.length)` — a self-comparison that cannot fail, so the
+    // independence this test is named for was never actually asserted.
+    const cervicalAfter = after
+      .filter((p) => (p.observation?.conflictGroup ?? "").startsWith("screen-cervical-"))
+      .map((p) => `${p.id}|${p.lastRendered.findings}`);
+    expect(cervicalAfter).toEqual(cervicalBefore);
     expect(after.some((p) => /cervical/i.test(p.lastRendered.findings ?? ""))).toBe(true);
   });
 
