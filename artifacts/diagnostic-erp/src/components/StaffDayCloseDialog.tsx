@@ -14,6 +14,7 @@ import {
 import {
   autoPrintStaffDayClose,
   openStaffDayClosePrint,
+  resolveStaffSlipClinic,
   type StaffPrintActivity,
   type StaffSlipClinic,
   type StaffSlipClosure,
@@ -130,11 +131,19 @@ export default function StaffDayCloseDialog({
     staleTime: 0,
   });
 
-  const clinicQ = useQuery<StaffSlipClinic>({
+  const clinicBrandingQuery = {
     queryKey: ["clinic-settings"],
     queryFn: () => api.get<StaffSlipClinic>("/api/clinic-settings/branding"),
     staleTime: 60_000,
-  });
+  };
+
+  // Prefetched on mount so the slip usually resolves from cache instantly.
+  useQuery<StaffSlipClinic>(clinicBrandingQuery);
+
+  // A slip must not be built from a branding request that has not landed yet —
+  // that is how reconciliation reached staff with no letterhead.
+  const ensureClinicBranding = () =>
+    resolveStaffSlipClinic(() => qc.ensureQueryData<StaffSlipClinic>(clinicBrandingQuery));
 
   const [actuals, setActuals] = useState({ cash: "", upi: "", card: "", cheque: "", other: "" });
   const [varianceNote, setVarianceNote] = useState("");
@@ -188,9 +197,12 @@ export default function StaffDayCloseDialog({
       qc.invalidateQueries({ queryKey: ["day-close-preview"] });
       qc.invalidateQueries({ queryKey: ["day-close-list"] });
       qc.invalidateQueries({ queryKey: ["staff-day-close-preview", userName] });
-      if (clinicQ.data?.dayCloseAutoPrint !== false) {
-        autoPrintStaffDayClose(row, clinicQ.data ?? {}, row.userName);
-      }
+      void (async () => {
+        const clinic = await ensureClinicBranding();
+        if (clinic.dayCloseAutoPrint !== false) {
+          autoPrintStaffDayClose(row, clinic, row.userName);
+        }
+      })();
     },
     onError: (e: Error) => toast({ title: "Close failed", description: e.message, variant: "destructive" }),
   });
@@ -203,6 +215,11 @@ export default function StaffDayCloseDialog({
       setActuals({ cash: "", upi: "", card: "", cheque: "", other: "" });
     }
     onOpenChange(o);
+  };
+
+  const printJustClosed = async () => {
+    if (!justClosed) return;
+    openStaffDayClosePrint(justClosed, await ensureClinicBranding(), justClosed.userName);
   };
 
   const expected = previewQ.data?.expected;
@@ -248,7 +265,7 @@ export default function StaffDayCloseDialog({
             </div>
 
             <DialogFooter>
-              <Button variant="outline" onClick={() => openStaffDayClosePrint(justClosed, clinicQ.data ?? {}, justClosed.userName)}>
+              <Button variant="outline" onClick={() => void printJustClosed()}>
                 <Printer size={14} className="mr-2" /> Print
               </Button>
               <Button onClick={() => close(false)}>Done</Button>
