@@ -841,6 +841,9 @@ describe("§S 19. Printed-structure contract", () => {
   it("the style module teaches the pipe-table convention for per-level values", () => {
     expect(CARE_REPORT_STYLE).toMatch(/\| Level \| AP Canal \(mm\) \|/);
     expect(CARE_REPORT_STYLE).toMatch(/never invent a level/);
+    // The unit belongs in the cell: validateComposerOutput re-checks every supplied
+    // measurement, and a bare "14" in a table is not a measurement it can see.
+    expect(CARE_REPORT_STYLE).toMatch(/\| L1-L2 \| 14 mm \|/);
   });
 
   it("the style module forbids markdown emphasis, because the renderer bolds abnormalities itself", () => {

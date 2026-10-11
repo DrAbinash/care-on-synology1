@@ -217,3 +217,42 @@ describe("the AI-authored report shape prints as intended", () => {
     expect(renderFindingsDocumentHtml(withStars, { renderBody: (t) => t })).toContain("<strong>");
   });
 });
+
+/**
+ * Verbatim FINDINGS from a real model answering "Organise the findings by anatomical
+ * level and add the canal measurement table" (gemma3:12b on the clinic's LAN host,
+ * 21.9 s). Two things only live output shows: the model repeats the value in prose AND
+ * puts it in a table, and it writes the Markdown separator row the clinic's own template
+ * never emits. Neither may break the printed report, and the number may not be lost.
+ */
+describe("live model output prints as the clinic's own table", () => {
+  const LIVE = [
+    "Loss of lumbar lordosis is present.",
+    "",
+    "L2-L3: Disc desiccation is noted.",
+    "L3-L4: Disc desiccation is noted.",
+    "",
+    "L4-L5: A broad-based disc bulge is present, resulting in bilateral lateral recess narrowing. The AP canal diameter measures 9 mm at this level.",
+    "",
+    "L5-S1: Disc desiccation is noted. Bilateral facet arthropathy is present at L5-S1.",
+    "",
+    "| Level | AP Canal (mm) |",
+    "|---|--- |",
+    "| L4-L5 | 9 |",
+  ].join("\n");
+
+  it("drops the separator row and keeps the header and the value", () => {
+    const screen = renderFindingsDocumentHtml(LIVE);
+    expect(screen).toContain("findings-table");
+    expect(screen).toContain("AP Canal");
+    expect(screen).not.toMatch(/---/);
+    expect(screen.match(/<td[^>]*>\s*9\s*<\/td>/g) ?? []).toHaveLength(1);
+  });
+
+  it("reaches the signed print body the same way", () => {
+    const html = signed(LIVE);
+    expect(html).toContain("AP Canal");
+    expect(html).not.toMatch(/---/);
+    expect(html).toContain("9");
+  });
+});

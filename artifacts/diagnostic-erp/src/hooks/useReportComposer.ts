@@ -10,6 +10,7 @@ import {
   buildComposerInputPreview,
   type ComposerInputPreview,
 } from "@/lib/reportComposer/composerInputPreview";
+import { resolveRefineTarget } from "@/lib/reportComposer/refineTarget";
 import {
   computeSnapshotHashes,
   materializeAcceptedText,
@@ -559,6 +560,39 @@ export function useReportComposer(opts: {
     await enqueue("FULL_REPORT");
   };
 
+  /**
+   * "Refine Report" — the radiologist's sentence, sent as it was typed.
+   *
+   * Nothing here classifies the instruction. The path this replaces matched the
+   * words against /translat|shorten|expand/ and fell through to REPHRASE, so
+   * "organise the findings by anatomical level" reached the model labelled as a
+   * request to rephrase — and it only ever saw `findingsText.slice(0, 800)`, so a
+   * long report was refined from its first two paragraphs while everything after
+   * character 800 was invisible to the prompt and could be dropped without anyone
+   * noticing.
+   *
+   * With a selection, the selection is the target and its field is decided by
+   * containment in the current text rather than by assumption. Without one, the
+   * target is the whole draft — Findings and Impression, plus Recommendation when
+   * the report has one — because "improve the impression" and "remove the
+   * duplicated conclusion" are not Findings-only operations.
+   */
+  const refineReport = (instruction: string) => {
+    const target = resolveRefineTarget({
+      instruction,
+      selection: window.getSelection?.()?.toString() ?? "",
+      findings: findingsText,
+      impression: impressionText,
+      recommendation: recommendationText,
+    });
+    if (!target) return Promise.resolve(null);
+    return enqueue(target.jobKind, {
+      selectionText: target.selectionText,
+      selectionField: target.selectionField,
+      instruction: target.instruction,
+    });
+  };
+
   const pendingCount = job?.trackedChanges.filter((c) => c.reviewState === "PENDING").length ?? 0;
 
   return {
@@ -573,6 +607,7 @@ export function useReportComposer(opts: {
     inputPreview,
     previewInput,
     composeFull: () => enqueue("FULL_REPORT"),
+    refineReport,
     composeImpression: () => enqueue("IMPRESSION", { aiMode: "TEXT_ONLY", selectedKeyImages: [] }),
     microEdit: (kind: JobKind, selectionText: string, selectionField: "FINDINGS" | "IMPRESSION" | "RECOMMENDATION", instruction: string, targetLanguage?: string) =>
       enqueue(kind, {
