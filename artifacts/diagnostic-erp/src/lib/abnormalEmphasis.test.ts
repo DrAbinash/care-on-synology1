@@ -44,7 +44,8 @@ describe("abnormal print emphasis — library guards", () => {
     // The one-click normal page is assembled from these manifests, not from the
     // format's own findings string, so the guard above cannot see the per-level
     // rows — every "No spinal canal or thecal sac compression is seen." in the
-    // product lives here and nowhere else.
+    // product lives here and nowhere else. Measured 2026-10-11: 118 lines across
+    // the eight manifests, 45 of them the cervical standard normal.
     const offenders: string[] = [];
     let lines = 0;
     for (const baseline of ownedBaselineCatalog()) {
