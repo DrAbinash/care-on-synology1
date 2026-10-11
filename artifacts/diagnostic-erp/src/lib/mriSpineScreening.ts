@@ -448,8 +448,8 @@ export function composeScreeningRecommendationLines(
  * already in the report contains the row's `anatomicalSection` — the literal
  * word "screening". Every shipped screening manifest writes its normals as
  * "<Region> spine: … on screening sequences.", so one limitation row deleted
- * them: measured on main, 29 of the 149 baseline findings sentences across the
- * five screening manifests, 13 of the 16 lines on the whole-spine screening page,
+ * them: measured on main, 29 of the 43 baseline findings sentences across the
+ * five screening manifests, 13 of the 16 on the whole-spine screening page,
  * while all of those ledger rows stayed live — the report and the ledger disagreed
  * and nothing on screen said a sentence had gone. A limitation says nothing about
  * the anatomy, so it owns its own sentence and nothing else.

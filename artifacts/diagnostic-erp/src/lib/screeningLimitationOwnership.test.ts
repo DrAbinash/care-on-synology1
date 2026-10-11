@@ -10,10 +10,11 @@
  * `anatomicalSection`. That section is the literal word "screening", and CARE's
  * five screening manifests write every one of their normals as
  * "<Region> spine: … on screening sequences." / "… on screening images.". The
- * measured result on main: applying one limitation row deleted 29 of the 149
- * shipped baseline findings sentences — 13 of the 17 in the whole-spine
- * manifest alone — while all of those ledger rows stayed live, so the report and
- * the ledger disagreed and nothing on screen said a sentence had gone.
+ * measured result on main: applying one limitation row deleted 29 of the 43
+ * screening-manifest baseline findings sentences — 13 of the 16 in the
+ * whole-spine manifest alone — while all of those ledger rows stayed live, so
+ * the report and the ledger disagreed and nothing on screen said a sentence had
+ * gone.
  *
  * The existing screening suite could not see this: every ledger test in
  * `mriSpineScreening.test.ts` starts from `resetLedger()` — an empty report — so

@@ -232,7 +232,7 @@ const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
  * It is in this harness because of what the store used to produce: the panel
  * writes its one limitation sentence as its own ledger row, and until that row
  * declared what it owns, the sentence it deleted was every scaffold normal that
- * happened to contain the word "screening" — 13 of the 17 findings lines of this
+ * happened to contain the word "screening" — 13 of the 16 findings rows of this
  * very examination. The printed page is the only place that mistake was readable.
  */
 const wholeSpineScreeningAbnormal = (() => {
