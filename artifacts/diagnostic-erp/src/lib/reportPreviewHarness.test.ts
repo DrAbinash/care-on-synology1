@@ -194,6 +194,7 @@ const cervicalCord = storeClick("Cervical Spine", "Cord compression C5-C6");
 
 const brainHemorrhage = storeClick("Brain", "Basal ganglia hemorrhage");
 const brainMass = storeClick("Brain", "Mass lesion");
+const brainChronicInfarct = storeClick("Brain", "Chronic infarct");
 const brainSmallVessel = (() => {
   const first = storeClick("Brain", "Fazekas 2");
   const tile = tileByLabel("Lacunar infarcts");
@@ -373,6 +374,12 @@ const CASES: Case[] = [
     narrative: brainSmallVessel.narrative, replaced: brainSmallVessel.replaced,
   },
   {
+    key: "17-brain-chronic-infarct", title: "MRI Brain — Chronic infarct (encephalomalacia)",
+    note: "The staging case: an old infarct retires the acute-infarct denial and nothing else. The DWI/ADC negative is the fact that makes the case chronic, so it has to reach the paper — and the page must not carry the acute pathway's stroke-team advice.",
+    study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
+    narrative: brainChronicInfarct.narrative, replaced: brainChronicInfarct.replaced,
+  },
+  {
     key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
     note: "Read only to compare with the case above: same study, format chosen from the DICOM header alone. This is what #827 removed.",
     study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
@@ -496,6 +503,7 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   "14-brain-hemorrhage": { count: 2, contains: "hemorrhage" },
   "15-brain-mass": { count: 1, contains: "mass lesion" },
   "16-brain-small-vessel": { count: 2, contains: "Fazekas grade 2" },
+  "17-brain-chronic-infarct": { count: 1, contains: "consistent with chronic infarct" },
 };
 
 /**
@@ -541,6 +549,10 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
   },
   "16-brain-small-vessel": {
     must: ["Aggressive vascular risk factor management"],
+    mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
+  },
+  "17-brain-chronic-infarct": {
+    must: [],
     mustNot: ["Immediate stroke team notification", "Immediate neurosurgical consultation"],
   },
 };
@@ -639,11 +651,22 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    // Three of these sixteen are the cervical examination (the one-click normal,
+    // Three of these seventeen are the cervical examination (the one-click normal,
     // a disc click and a cord click) — added with the cervical catalogue so its
-    // wording can be read on paper before anything ships. Three more are the
-    // brain catalogue additions (hemorrhage, mass, small-vessel multi-click).
-    expect(CASES.length).toBe(16);
+    // wording can be read on paper before anything ships. Four more are the brain
+    // catalogue additions (hemorrhage, mass, small-vessel multi-click, chronic
+    // infarct).
+    expect(CASES.length).toBe(17);
+
+    // Staging an infarct as chronic retires the acute-infarct denial and nothing
+    // else. The DWI/ADC negative is the fact that makes the case chronic, so it has
+    // to still be on the page — measured off the rendered narrative, because the
+    // alias that used to own it (infarct → "restricted diffusion") deleted it on
+    // exactly this click.
+    expect(brainChronicInfarct.replaced).toEqual(["No acute infarct is seen."]);
+    expect(brainChronicInfarct.narrative.findings).not.toContain("No acute infarct is seen.");
+    expect(brainChronicInfarct.narrative.findings).toContain("No restricted diffusion is seen on DWI/ADC.");
+    expect(brainChronicInfarct.narrative.impression).toMatch(/chronic right cerebral infarct/i);
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
