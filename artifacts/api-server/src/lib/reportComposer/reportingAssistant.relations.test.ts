@@ -289,6 +289,20 @@ describe("a normal finding nobody described may not be added", () => {
     expect(r.errors).not.toContain("invented_normal_finding");
   });
 
+  it("does not read a vertebra as a vertebral artery", () => {
+    // The live run after the alias fix blocked a LUMBAR report for "inventing a
+    // normal vertebral artery", because the model wrote that the conus terminates
+    // "at the L1 vertebral level and demonstrates normal signal intensity". A
+    // vertebra is not an artery, so `vertebral` cannot license that structure and
+    // was taken back out of the alias list.
+    const source = snap({ findings: `${LS_SPINE}\nConus terminates normally at L1.` });
+    const r = pro(source, body(
+      `${LS_REWRITTEN}\nThe conus medullaris terminates at the L1 vertebral level and`
+      + " demonstrates normal signal intensity.",
+    ));
+    expect(r.errors).not.toContain("invented_normal_finding");
+  });
+
   it("accepts the longer name of a structure the report named shortly", () => {
     // Both strings are transcribed from live answers on the clinic AI PC
     // (11 Oct 2026): `qwen3:14b` rephrasing this cervical dictation and
@@ -656,6 +670,51 @@ describe("the structured answer carries the same obligations", () => {
     });
     expect(r.warnings.join(" ")).toContain("Observation dropped as ungrounded");
     expect(draft.observations).toHaveLength(2);
+  });
+
+  it("keeps a row whose text is dictated and whose concept is only a label", () => {
+    // Transcribed from the live run: `qwen3:14b` filed the dictated "canal 8.2 mm"
+    // under the canonical concept "canal stenosis". The word "stenosis" is not in
+    // the dictation, so the pruner deleted the row — and the 8.2 mm left with it,
+    // which the conservation rule then (correctly) failed the job for. A concept
+    // is the slot the model chose; the narrative is what the radiologist said, and
+    // deleting the row destroys the latter for the former.
+    const dictated = "L4-5 diffuse disc bulge with bilateral LR narrowing and canal 8.2 mm.";
+    const draft = asDraft([
+      row(
+        "L4-L5",
+        "bilateral",
+        "",
+        "Diffuse disc bulge at L4-L5 with bilateral lateral recess narrowing.",
+      ),
+      { ...row("L4-L5", "bilateral", "8.2 mm", "Canal 8.2 mm."), concept: "canal stenosis" },
+    ]);
+    const r = validateComposerOutput(snap({ findings: dictated }), draft as ComposerDraftOutput, {
+      kind: "OBSERVATIONS",
+    });
+    expect(r.errors).toEqual([]);
+    expect(draft.observations).toHaveLength(2);
+    expect(r.warnings.join(" ")).toContain(
+      'Observation kept, but its concept "canal stenosis" is wording the dictation never used',
+    );
+  });
+
+  it("still deletes a row whose own text asserts a finding nobody dictated", () => {
+    // The positive control for the rule above: the exception is for the LABEL,
+    // not for the sentence. A row that says the radiologist saw a herniation when
+    // the dictation never mentions one is an invention and does not survive.
+    const draft = asDraft([
+      faithfulRows()[0]!,
+      {
+        ...row("L4-L5", "bilateral", "", "Disc herniation with sequestration at L4-L5."),
+        concept: "disc herniation",
+      },
+    ]);
+    const r = validateComposerOutput(snap({ findings: DICTATION }), draft as ComposerDraftOutput, {
+      kind: "OBSERVATIONS",
+    });
+    expect(r.warnings.join(" ")).toContain('Observation dropped as ungrounded (finding "herniation"');
+    expect(draft.observations).toHaveLength(1);
   });
 });
 

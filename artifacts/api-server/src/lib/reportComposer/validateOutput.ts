@@ -970,7 +970,10 @@ function termPolarity(text: string, term: string): "positive" | "negative" | "ab
  * considered discussed when ANY wording for it appears, and only the label is
  * reported. Aliases are added only where the short form cannot mean a different
  * structure in CARE's body sites: `cord` here, but not a bare `root`, which in a
- * brain report is nothing of the sort.
+ * brain report is nothing of the sort. `vertebral` and `carotid` were tried and
+ * taken back — the next live run blocked a lumbar report for "inventing a normal
+ * vertebral artery" because the model wrote "at the L1 vertebral level", which is
+ * a vertebra, not an artery.
  */
 const CONSTRUCTED_STRUCTURES: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["conus", ["conus"]],
@@ -984,8 +987,8 @@ const CONSTRUCTED_STRUCTURES: ReadonlyArray<readonly [string, readonly string[]]
   ["brainstem", ["brainstem", "brain stem"]],
   ["cerebellum", ["cerebell"]],
   ["circle of Willis", ["circle of willis"]],
-  ["internal carotid artery", ["internal carotid", "carotid"]],
-  ["vertebral artery", ["vertebral artery", "vertebral"]],
+  ["internal carotid artery", ["internal carotid"]],
+  ["vertebral artery", ["vertebral artery"]],
   ["basilar artery", ["basilar"]],
   ["dural sinus", ["dural sinus", "dural venous"]],
   ["sulci", ["sulci", "sulcal"]],
@@ -1292,6 +1295,9 @@ export function pruneUngroundedObservationRows(
         if (!dictationMeasurements.has(token)) problems.push(`measurement ${token}`);
       }
     }
+    const narrativeLower = `${row.findingsText ?? ""} ${row.impressionText ?? ""}`.toLowerCase();
+    const conceptLower = (row.concept ?? "").toLowerCase();
+    const labelOnly: string[] = [];
     for (const hint of ABNORMALITY_HINTS) {
       if (!rowText.toLowerCase().includes(hint)) continue;
       if (mentionsGroundedTerm(dictationLower, hint)) continue;
@@ -1306,6 +1312,17 @@ export function pruneUngroundedObservationRows(
       // are for — an observation row is a proposal, never a report.
       const head = hint.trim().split(/\s+/).slice(-1)[0];
       if (head && dictationLower.includes(head)) continue;
+      // …and when the unsupported word is only in the LABEL, deleting the row
+      // deletes the dictated text with it. Measured live on the clinic AI PC
+      // (11 Oct 2026): `qwen3:14b` proposed the concept "canal stenosis" over the
+      // dictated row text "Canal 8.2 mm", the row was dropped as ungrounded, and
+      // the 8.2 mm left the report — the conservation rule then correctly failed
+      // the job for a loss the pruner itself caused. A concept is vocabulary the
+      // model is supposed to supply; the narrative is what the radiologist said.
+      if (!narrativeLower.includes(hint) && conceptLower.includes(hint)) {
+        labelOnly.push(hint);
+        continue;
+      }
       problems.push(`finding "${hint}"`);
     }
 
@@ -1315,6 +1332,13 @@ export function pruneUngroundedObservationRows(
           + `"${(row.findingsText || row.concept).slice(0, 120)}"`,
       );
       continue;
+    }
+    if (labelOnly.length > 0) {
+      warnings.push(
+        `Observation kept, but its concept "${row.concept}" is wording the dictation never `
+        + `used (${[...new Set(labelOnly)].join(", ")}) while its text is dictated content: `
+        + `"${(row.findingsText || "").slice(0, 120)}" — review the label before accepting.`,
+      );
     }
     kept.push(row);
   }
