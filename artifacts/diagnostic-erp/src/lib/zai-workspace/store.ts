@@ -790,7 +790,7 @@ export type WorkspaceStore = S & {
    * Never silently overwrites manually protected Impression text.
    */
   setObservationImpressionParticipation: (id: string, include: boolean) => "applied" | "blocked" | "missing";
-  refreshImpressionFromLedger: () => void;
+  refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => void;
   /**
    * §18 (mra/mrv) / §37 (spine): re-sort the Impression by clinical priority. A caller
    * may propose the order it computed (brain vascular protects hand-written lines before
@@ -1578,10 +1578,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const undoSnap = captureClinicalSnapshot(get());
     const findingsBefore = get().findingsText;
     const patchCountBefore = get().appliedPathologyPatches.length;
+    const flaggedBefore = get().impressionNeedsRefresh;
     // Read before anything is written: these are the statements the report must
     // still make when the action finishes.
     const retained = radiologistObservations(get().appliedPathologyPatches);
     const freeTextBefore = unexplainedFindingLines(findingsBefore, get().appliedPathologyPatches);
+    // Does this examination deviate from its approved normal? Decided once, from
+    // what is on the page before the press, because it answers two separate
+    // questions below: whether the format's own conclusion may be used at all,
+    // and whether the conclusion has to be re-derived.
+    const deviates = reportHasDeviation(get().appliedPathologyPatches, freeTextBefore);
 
     // The scaffold is merged in, never dropped on top of the report. An identical
     // sentence is not written twice, and no sentence the format does not contain
@@ -1593,7 +1599,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (clinical.findings.trim() && !alreadySaysThis(get().findingsText, clinical.findings)) {
       get().mergeField("findings", clinical.findings, "template");
     }
-    if (clinical.impression.trim() && !alreadySaysThis(get().impressionText, clinical.impression)) {
+    // A format's Impression is the clinic's sentence for THIS EXAMINATION BEING
+    // NORMAL. Merging it underneath a recorded abnormality produces a conclusion
+    // that asserts both — measured on the shipped Brain format: "Normal MRI of
+    // the brain. No acute intracranial abnormality." arriving immediately above
+    // "Acute infarct in the left MCA territory." A deviating report's conclusion
+    // is derived from its own findings below, not borrowed from a normal one.
+    if (!deviates && clinical.impression.trim()
+      && !alreadySaysThis(get().impressionText, clinical.impression)) {
       get().mergeField("impression", clinical.impression, "template");
     }
     if (clinical.recommendation.trim() && !alreadySaysThis(get().recommendationText, clinical.recommendation)) {
@@ -1644,25 +1657,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().mergeField("findings", measurementTable, "companion");
     }
 
-    // Re-derive the Impression from the Findings as they now stand — but only over
-    // a report that actually deviates from the approved normal, and only if this
-    // press changed the Findings. Two separate reasons, both measured:
-    //  - `generateLocalImpression` reads "No acute infarct is seen." as abnormal,
-    //    because the cue survives its own negation. Refreshed over a complete
-    //    normal it appends the Findings' relevant negatives to the Impression, so
-    //    "Normal MRI of the brain." arrives followed by five repetitions of the
-    //    body — the duplicated conclusion section this milestone forbids. Where the
-    //    radiologist has recorded nothing but the normal, the format's own
-    //    Impression, which the clinic approved, is the professional conclusion.
-    //  - The refresh writes unconditionally (it sets the dirty flag even when the
-    //    text comes back identical), so a press that changed nothing must not call it.
-    // `impressionNeedsRefresh` cannot be the test either way: merging the format's
-    // own Impression clears it, because a template is a source that owns both sides.
-    if (
-      (get().findingsText !== findingsBefore || get().appliedPathologyPatches.length !== patchCountBefore)
-      && reportHasDeviation(get().appliedPathologyPatches, freeTextBefore)
-    ) {
-      get().refreshImpressionFromLedger();
+    // Re-derive the Impression — only over a report that deviates from its
+    // approved normal, and only when this press (or the radiologist before it)
+    // actually changed something.
+    //  - A complete normal has nothing to derive: the format's own Impression is
+    //    the clinic-approved conclusion, and deriving over it restates the
+    //    Findings body. That is the duplicated conclusion section this milestone
+    //    forbids, and it is why `deviates` is the gate rather than "always".
+    //  - `refreshImpressionFromLedger` writes unconditionally and sets the dirty
+    //    flag even when the text comes back identical, so a press that changed
+    //    nothing must not call it. `flaggedBefore` is the case the press itself
+    //    cannot see: an abnormality typed after the format was already applied,
+    //    where the Findings and the ledger both stay exactly as they are.
+    const changed = get().findingsText !== findingsBefore
+      || get().appliedPathologyPatches.length !== patchCountBefore;
+    if (deviates && (changed || flaggedBefore)) {
+      get().refreshImpressionFromLedger({ excludeBaselineObservations: true });
     }
     get().orderImpressionByPriority();
 
@@ -2449,7 +2459,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (anyRemoved) return "removed";
     return "no-op-unproven";
   },
-  refreshImpressionFromLedger: () => {
+  refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => {
     // Six callers. Four are already gated: two handlers in useWorkspaceClinicalUi
     // open with `if (contentLocked) return`, ReportCanvas hands the warning strip
     // `disabled={contentLocked}`, and XrayLsSpineCanvas reaches it only
@@ -2459,7 +2469,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // impression effect in useWorkspaceClinicalUi, which nothing gates at all.
     // Those two are what this refuses: a silent rewrite of a signed Impression.
     if (refuseSignedMutation(get(), "refreshImpressionFromLedger")) return;
-    const patches = get().appliedPathologyPatches.map(toLedgerPatch);
+    // `excludeBaselineObservations` is for a report that has already been judged
+    // to deviate from its approved normal. The scaffold rows ARE the normal, and
+    // their impression contributions — for the Brain format, "Normal MRI of the
+    // brain. No acute intracranial abnormality." — would otherwise be collected
+    // straight back into the conclusion of a study that has an infarct in it.
+    // Callers that do not know yet keep the previous behaviour: the full ledger.
+    const patches = get().appliedPathologyPatches
+      .filter((p) => !opts?.excludeBaselineObservations
+        || (p.observation?.role !== "baseline" && !isSystemNormalPatch(p)))
+      .map(toLedgerPatch);
     const remaining = generateLocalImpression(get().findingsText);
     const next = refreshImpressionFromObservations({
       currentImpression: get().impressionText,

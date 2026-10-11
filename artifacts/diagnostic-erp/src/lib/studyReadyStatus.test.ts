@@ -42,14 +42,14 @@ describe("deriveStudyReadyStatus", () => {
     expect(s.canUndo).toBe(false);
   });
 
-  it("empty report · Start Report", () => {
+  it("empty report names the generator the workspace actually shows", () => {
     const s = deriveStudyReadyStatus({
       restoredDraft: false,
       appliedNormalFormat: false,
       protocolLoaded: false,
       emptyNeedsStart: true,
     });
-    expect(s.label).toBe("Empty report · Start Report");
+    expect(s.label).toBe("Empty report · press Generate Professional Report");
     expect(s.canUndo).toBe(false);
   });
 
@@ -115,7 +115,7 @@ describe("deriveStudyReadyStatus", () => {
         protocolLoaded: false,
         emptyNeedsStart: true,
       });
-      expect(s.label).toBe("Empty report · Start Report");
+      expect(s.label).toBe("Empty report · press Generate Professional Report");
       expect(s.kind).toBe("empty_start");
     });
   });
