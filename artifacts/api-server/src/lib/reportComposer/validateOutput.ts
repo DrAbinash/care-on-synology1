@@ -1218,6 +1218,156 @@ export function detectClinicalRelationLosses(
 }
 
 /**
+ * ──────────────────── OBSERVATION PRESERVATION ────────────────────
+ *
+ * `detectConservationLosses` compares token sets across entire input vs output.
+ * A report can lose a complete observation while its constituent words survive
+ * elsewhere — "Bilateral facet arthropathy at L4-L5" deleted, but "facet" appears
+ * in another sentence and "L4-L5" appears in three more. The token-level check
+ * sees no loss. This rule checks each narrative-backed observation individually:
+ * does the output contain at least one sentence that preserves this observation's
+ * clinical facts (level + morphology + laterality)?
+ *
+ * An observation is "narrative-backed" when its key content words appear in the
+ * input Findings/Impression — the radiologist dictated this fact and it was
+ * structured into an observation. Ledger-only rows (whose words don't appear in
+ * the narrative) are skipped: a preserving rewrite has no duty to prose the
+ * radiologist never wrote.
+ *
+ * TRANSLATE is excluded even though it is a preserving kind: cross-language
+ * rewording makes word-level matching meaningless. OBSERVATIONS is excluded
+ * because its answer is structured rows, not prose.
+ */
+
+const OBSERVATION_STOP_WORDS = new Set([
+  "with", "from", "that", "this", "were", "been", "have", "will", "each",
+  "which", "their", "there", "about", "would", "could", "should", "also",
+  "into", "more", "than", "other", "some", "very", "when", "what", "your",
+  "just", "over", "such", "take", "these", "then", "them", "those",
+  "through", "under", "where", "while", "being", "does", "done",
+  "going", "here", "how", "much", "must", "need", "never", "only", "shall",
+  "still", "thus", "upon", "used", "using", "write", "written",
+  "noted", "seen", "observed", "demonstrated", "present",
+  "evidence", "regional", "generalized", "generalised", "change", "changes",
+  "within", "without", "suggest", "suggests", "consistent", "compatible",
+  "secondary", "associated", "remarkable", "unremarkable", "significant",
+  "significant", "moderate", "mild", "severe",
+]);
+
+function observationContentWords(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z]{5,}/g) ?? []).filter((w) => !OBSERVATION_STOP_WORDS.has(w));
+}
+
+function activeMorphologyInText(text: string): Array<{ name: string; words: readonly string[]; near?: string }> {
+  const active: Array<{ name: string; words: readonly string[]; near?: string }> = [];
+  for (const [name, words, near] of CONSERVED_MORPHOLOGY) {
+    if (mentionsAnyClass(text, words, near)) {
+      active.push({ name, words, near });
+    }
+  }
+  return active;
+}
+
+function sentenceCoversObservation(
+  sentence: string,
+  obs: ComposeObservation,
+  activeClasses: Array<{ name: string; words: readonly string[]; near?: string }>,
+): boolean {
+  const obsLevels = extractConservationLevels(
+    [obs.level ?? "", obs.findingsText, obs.impressionText ?? ""].join(" "),
+  );
+  const hasLevelRequirement = obsLevels.length > 0 || (obs.level && obs.level.trim().length > 0);
+
+  if (hasLevelRequirement) {
+    const obsLevelSet = new Set<string>();
+    for (const t of obsLevels) {
+      obsLevelSet.add(t.canonical);
+      for (const c of t.components) obsLevelSet.add(c);
+    }
+    if (obs.level && obs.level.trim()) {
+      for (const t of extractConservationLevels(obs.level)) {
+        obsLevelSet.add(t.canonical);
+        for (const c of t.components) obsLevelSet.add(c);
+      }
+    }
+    const sentLevels = new Set<string>();
+    for (const t of extractConservationLevels(sentence)) {
+      sentLevels.add(t.canonical);
+      for (const c of t.components) sentLevels.add(c);
+    }
+    const hasLevel = [...obsLevelSet].some((lv) => sentLevels.has(lv));
+    if (!hasLevel) return false;
+  }
+
+  if (activeClasses.length > 0) {
+    const hasMorph = activeClasses.some((cls) => mentionsAnyClass(sentence, cls.words, cls.near));
+    if (!hasMorph) return false;
+  } else {
+    const obsWords = new Set(observationContentWords(obs.findingsText));
+    if (obsWords.size === 0) return true;
+    const sentWords = new Set(observationContentWords(sentence));
+    let overlap = 0;
+    for (const w of obsWords) if (sentWords.has(w)) overlap++;
+    const threshold = Math.min(2, obsWords.size);
+    if (overlap < threshold) return false;
+  }
+
+  return true;
+}
+
+export function detectDroppedObservations(
+  snapshot: ComposerInputSnapshot,
+  draft: ComposerDraftOutput,
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const kind = snapshot.jobKindHint ?? null;
+  if (!kind || !isPreservingComposeKind(kind) || kind === "TRANSLATE") {
+    return { errors, warnings };
+  }
+
+  const inputNarrative = [
+    snapshot.findings ?? "",
+    snapshot.impression ?? "",
+    additionalReportNarrative(snapshot),
+  ].join("\n");
+  // Observations' findingsText came from the input findings, so they must
+  // survive in the output findings. The impression is a summary section —
+  // an observation mentioned there but dropped from findings is still lost.
+  const outputText = draft.findings;
+
+  if (!outputText.trim()) return { errors, warnings };
+
+  const outputSentences = claimSentences(outputText);
+  const inputLower = inputNarrative.toLowerCase();
+  const observations = snapshot.observations ?? [];
+
+  for (const obs of observations) {
+    if (!obs.findingsText || !obs.findingsText.trim()) continue;
+
+    const obsWords = observationContentWords(obs.findingsText);
+    if (obsWords.length === 0) continue;
+    const narrativeHits = obsWords.filter((w) => inputLower.includes(w));
+    const threshold = Math.min(2, obsWords.length);
+    if (narrativeHits.length < threshold) continue;
+
+    const activeClasses = activeMorphologyInText(obs.findingsText);
+    const covered = outputSentences.some((sentence) =>
+      sentenceCoversObservation(sentence, obs, activeClasses),
+    );
+
+    if (!covered) {
+      if (!errors.includes("observation_dropped")) errors.push("observation_dropped");
+      const label = obs.concept || obs.findingsText.slice(0, 80);
+      warnings.push(`Observation dropped from output: "${label}".`);
+    }
+  }
+
+  return { errors, warnings };
+}
+
+/**
  * Shorthand a radiologist dictates for a structure whose canonical name the
  * structured proposal should use. Grounding compares facts, not characters:
  * without this, a faithful row for "LF hypertrophy" is deleted because the
@@ -1640,6 +1790,18 @@ export function validateComposerOutput(
       if (!errors.includes(e)) errors.push(e);
     }
     for (const w of relations.warnings) warnings.push(w);
+  }
+
+  // ── Observation-level preservation: a sentence can be deleted while its
+  // words survive elsewhere. The token-level conservation above cannot see
+  // this; the per-observation check fills the gap. Uses jobKindHint so that
+  // tests (which don't pass opts) and the real path (which does) both work.
+  if (!isObservationTask) {
+    const dropped = detectDroppedObservations(snapshot, draft);
+    for (const e of dropped.errors) {
+      if (!errors.includes(e)) errors.push(e);
+    }
+    for (const w of dropped.warnings) warnings.push(w);
   }
 
   const hasScreening = (snapshot.regions ?? []).some((r) => /screening/i.test(r))

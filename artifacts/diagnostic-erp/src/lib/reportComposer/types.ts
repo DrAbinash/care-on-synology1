@@ -194,6 +194,7 @@ export type ComposeJobView = {
     findings?: string;
     impression?: string;
     recommendation?: string;
+    unresolvedQuestions?: string[];
     /** Operation 1's answer. Present on an OBSERVATIONS job, absent otherwise. */
     observations?: ProposedObservation[];
   } | null;
