@@ -31,7 +31,10 @@ import { parseFindingsDocument } from "./findingsDocument";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { MRI_BRAIN_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriBrainStandardNormal";
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./zai-workspace/fullReportBaseline";
+import { MRI_CERVICAL_STANDARD_NORMAL_NAME } from "./zai-workspace/baselines/mriCervicalStandardNormal";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-tiles.data";
+import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { useWorkspace } from "./zai-workspace/store";
 import {
   mergeStructuredNormalFormats,
   type StructuredNormalRow,
@@ -141,6 +144,53 @@ const spineDoc = {
   impression: "Normal MRI lumbo-sacral spine.",
   recommendation: "Clinical correlation.",
 };
+const CERVICAL_NORMAL = formatByName(MRI_CERVICAL_STANDARD_NORMAL_NAME);
+/**
+ * A click through the STORE rather than the sentence-level overlay, because the
+ * observation ledger is what retires the scaffold's own Conclusion line.
+ * `applyTile` above drives the pathology overlay only: faithful for the Findings
+ * body, but on the cervical page it left "No significant disc, canal, foraminal
+ * or cord compressive abnormality." printed standing above "Disc herniation at
+ * C5-C6." — a report answering itself, which the editor never shows because the
+ * ledger drops the normal's impression row. Measured 2026-10-11, so this case
+ * renders what the radiologist actually gets.
+ */
+function storeClick(region: string, label: string) {
+  const ctx = buildReportingStudyContext({
+    modality: "MR", studyDescription: `MRI ${region}`, regions: [region], source: "auto",
+  });
+  useWorkspace.setState({
+    findingsText: "", impressionText: "", recommendationText: "", techniqueText: "",
+    clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
+    impressionNeedsRefresh: false, impressionOrderFrozen: false,
+    lastPatchSnapshot: null, patchUndoStack: [], confirmOverwriteOpen: false,
+    pendingPathologyPatch: null, pendingFormatIds: [], mergePreviewOpen: false,
+    appliedFormatReportTitle: null, appliedFormatName: null, startingCanvasBaseline: null,
+    canalApProvenance: {}, dorsalCanalForced: false, isFinalized: false, isDirty: false,
+    reportingContext: ctx, reportFormats: DEFAULT_REPORT_FORMATS, selectedFormatIds: [],
+  });
+  useWorkspace.getState().generateProfessionalReport(ctx);
+  const tile = tileByLabel(label);
+  const side = /\{side\}/i.test(tile.sentence) ? ("right" as const) : undefined;
+  const outcome = useWorkspace
+    .getState()
+    .applyPathologyOverlay(quickSelectTilePatch(tile, "findings", side ? { side } : {}));
+  if (outcome !== "applied") throw new Error(`store click refused ${label}: ${outcome}`);
+  const st = useWorkspace.getState();
+  return {
+    narrative: {
+      clinicalHistory: st.clinicalHistoryText,
+      technique: st.techniqueText,
+      findings: st.findingsText,
+      impression: st.impressionText,
+      recommendation: st.recommendationText,
+    },
+    replaced: st.appliedPathologyPatches.flatMap((patch) => patch.replacedBaseline?.findings ?? []),
+  };
+}
+
+const cervicalHerniation = storeClick("Cervical Spine", "Disc herniation C5-C6");
+
 const spineHerniation = applyTile(spineDoc, "Disc herniation L4-L5");
 const spineCanal = applyTile(spineDoc, "Mild canal stenosis L4-L5");
 
@@ -265,6 +315,17 @@ const CASES: Case[] = [
     },
   },
   {
+    key: "11-cervical-normal", title: "MRI Cervical Spine — Normal (one click)",
+    note: "Six disc levels described, C2-C3 through C7-T1 — the same six the canvas draws and the canal table measures. No cord-compression case is paired with it on purpose: abnormalEmphasis.ts carries no compress cue, so that line prints in plain type, and this harness must not write a presentation defect into its own expectations. Measured 2026-10-11; it is PR G work.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" }, narrative: CERVICAL_NORMAL,
+  },
+  {
+    key: "12-cervical-herniation-click", title: "…then the Disc herniation C5-C6 box is clicked",
+    note: "The level's own disc normal must go; the other five levels must keep theirs, and the canal/foraminal normals stay because nothing was clicked for them.",
+    study: { modality: "MRI", bodyPart: "Cervical Spine", title: "MRI CERVICAL SPINE" },
+    narrative: cervicalHerniation.narrative, replaced: cervicalHerniation.replaced,
+  },
+  {
     key: "10-brain-plain-by-dicom", title: "…and the page that study used to open as",
     note: "Read only to compare with the case above: same study, format chosen from the DICOM header alone. This is what #827 removed.",
     study: { modality: "MRI", bodyPart: "Brain", title: "MRI BRAIN (PLAIN)" },
@@ -357,6 +418,10 @@ const PATIENTS: Record<string, ReportData> = {  MRI_BRAIN: {
     patientName: "SITA DEVI", age: "45", sex: "F", accessionNumber: "PREVIEW-SPN-001",
     studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
   },
+  MRI_CERVICAL_SPINE: {
+    patientName: "ARJUN NAIR", age: "38", sex: "M", accessionNumber: "PREVIEW-CSP-001",
+    studyDate: "04/10/2026", referringDoctor: "Dr. Preview Referral",
+  },
 };
 
 /**
@@ -378,6 +443,8 @@ const PRINT_EMPHASIS: Record<string, { count: number; contains?: string }> = {
   // findings line — the only difference between them is which sequences were run.
   "9-brain-contrast-billed": { count: 0 },
   "10-brain-plain-by-dicom": { count: 0 },
+  "11-cervical-normal": { count: 0 },
+  "12-cervical-herniation-click": { count: 1, contains: "Central disc herniation at C5-C6" },
 };
 
 /**
@@ -404,6 +471,11 @@ const PRINT_ADVICE: Record<string, { must: string[]; mustNot?: string[] }> = {
   "8-spine-auto-open": { must: [] },
   "9-brain-contrast-billed": { must: [] },
   "10-brain-plain-by-dicom": { must: [] },
+  "11-cervical-normal": { must: [] },
+  "12-cervical-herniation-click": {
+    must: ["Conservative management with physiotherapy"],
+    mustNot: ["Urgent neurosurgical consultation", "Immediate stroke team notification"],
+  },
 };
 
 /** Bold spans inside the printed findings body, headings and the impression
@@ -420,7 +492,10 @@ describe("report preview harness", () => {
     const audit: Array<Record<string, unknown>> = [];
 
     for (const c of CASES) {
-      const patient = c.study.bodyPart === "Brain" ? PATIENTS.MRI_BRAIN : PATIENTS.MRI_LS_SPINE;
+      const patient =
+        c.study.bodyPart === "Brain" ? PATIENTS.MRI_BRAIN
+        : c.study.bodyPart === "Cervical Spine" ? PATIENTS.MRI_CERVICAL_SPINE
+        : PATIENTS.MRI_LS_SPINE;
       const report = toReportData(c, patient);
 
       const doc = generateReportPDF(report, { ...DEFAULT_PRINT_SETTINGS, watermark: "PREVIEW" }, CLINIC, { save: false });
@@ -497,7 +572,10 @@ ${CASES.map((c) => `<section><h2>${c.title}</h2><p>${c.note}</p>
     // that signed out plain sequences for a contrast exam is a false clinical claim.
     expect(brainContrastAuto.name).toBe("MRI Brain — Normal (Contrast)");
     expect(brainPlainAuto.name).toBe("MRI Brain — Standard Normal");
-    expect(CASES.length).toBe(10);
+    // Two of these twelve are the cervical examination (the one-click normal and
+    // one disc click) — added with the cervical catalogue so its wording can be
+    // read on paper before anything ships.
+    expect(CASES.length).toBe(12);
 
     // A canal box speaks about the canal, so it owns the document's study-wide
     // canal denial and must land in the canal section — not beside the disc
