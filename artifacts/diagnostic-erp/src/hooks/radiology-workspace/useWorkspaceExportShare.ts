@@ -87,12 +87,16 @@ export type UseWorkspaceExportShareOptions = {
    * The frozen key-image rows, in store order. The caption is the stored record's
    * own — Download PDF labels an image with it and prints nothing when it is
    * empty, so this stays one list rather than an image list plus a label list.
+   * `id`/`sopInstanceUid` travel with it because an attachment whose pixels cannot
+   * be read has to be identified by something other than a caption.
    */
   frozenKeyImages: Array<{
+    id: number;
     includeInReport: boolean;
     sortOrder: number;
     imageUrl: string;
     caption: string;
+    sopInstanceUid?: string | null;
   }>;
   studySetup: { matchedStudyRegion?: string | null };
   doctorsCatalog: { name: string; degree?: string | null }[];
@@ -298,31 +302,38 @@ const handleExportPdf = useCallback(async () => {
       .sort((a, b) => a.sortOrder - b.sortOrder);
     let frozenDataUrls: ReportKeyImage[] = [];
     if (frozenForPdf.length > 0) {
-      frozenDataUrls = (
-        await Promise.all(
-          frozenForPdf.map(async (img): Promise<ReportKeyImage | null> => {
-            try {
-              // Authenticated blob, no credential in the URL. `fetch` can send
-              // the Bearer header, and the guarded key-image mount accepts it
-              // (with the /radiology permission) precisely so that callers like
-              // this one never need a grant. A stored key image is PHI-bearing
-              // pixels and is no longer fetched anonymously.
-              const blob = await api.getBlob(img.imageUrl);
-              const src = await new Promise<string | null>((resolve) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(String(reader.result || "") || null);
-                reader.onerror = () => resolve(null);
-                reader.readAsDataURL(blob);
-              });
-              // The caption rides with its own pixels instead of living in a
-              // parallel array whose index could drift from the image it labels.
-              return src ? { src, caption: img.caption.trim() } : null;
-            } catch {
-              return null;
-            }
-          }),
-        )
-      ).filter((u): u is ReportKeyImage => Boolean(u));
+      frozenDataUrls = await Promise.all(
+        frozenForPdf.map(async (img): Promise<ReportKeyImage> => {
+          // The stored attachment travels with its own identity whether or not the
+          // pixels arrive, because "could not be read" has to name WHICH one. A
+          // rejected read used to be filtered out of the list, so the PDF simply
+          // had fewer images than the study and nothing said so.
+          const carries = {
+            caption: img.caption.trim(),
+            attachmentId: img.id,
+            sopInstanceUid: img.sopInstanceUid ?? null,
+          };
+          try {
+            // Authenticated blob, no credential in the URL. `fetch` can send
+            // the Bearer header, and the guarded key-image mount accepts it
+            // (with the /radiology permission) precisely so that callers like
+            // this one never need a grant. A stored key image is PHI-bearing
+            // pixels and is no longer fetched anonymously.
+            const blob = await api.getBlob(img.imageUrl);
+            const src = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result || ""));
+              reader.onerror = () => resolve("");
+              reader.readAsDataURL(blob);
+            });
+            // The caption rides with its own pixels instead of living in a
+            // parallel array whose index could drift from the image it labels.
+            return { src, ...carries };
+          } catch {
+            return { src: "", ...carries };
+          }
+        }),
+      );
     }
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,

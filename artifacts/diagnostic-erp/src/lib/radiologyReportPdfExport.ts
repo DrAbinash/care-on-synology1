@@ -60,11 +60,16 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 }
 
 /**
- * Best-effort fetch of up to `limit` selected images as base64 data URLs for
- * jsPDF's keyImages, in the radiologist's chosen display order. Reuses the
- * SAME browser DICOMweb base + rendered-image endpoint the embedded viewer
- * and image picker already use (M1.2 launch contract) — no new PACS access
- * path. A single broken/unreachable image is skipped, not fatal.
+ * Fetch the selected images as base64 data URLs for jsPDF's key-image rail, in the
+ * radiologist's chosen display order. Reuses the SAME browser DICOMweb base +
+ * rendered-image endpoint the embedded viewer and image picker already use (M1.2
+ * launch contract) — no new PACS access path.
+ *
+ * Every reference comes back, whether its pixels did or not: a reference whose
+ * render failed is returned with an empty `src` and its own identity, which is
+ * what lets the PDF draw a placeholder and name the attachment instead of quietly
+ * exporting a shorter study. `limit` remains for callers that genuinely want one;
+ * there is no default, because a selected image is evidence.
  *
  * Each result keeps the label its stored reference carries, so a reference the
  * radiologist named prints with that name and one they left alone prints bare.
@@ -75,24 +80,28 @@ export async function fetchKeyImageDataUrls(
   opts: { limit?: number; size?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<ReportKeyImage[]> {
   if (!dicomWebBase || refs.length === 0) return [];
-  const limit = opts.limit ?? 12;
+  const limit = opts.limit ?? Infinity;
   const size = opts.size ?? 600;
   const fetchImpl = opts.fetchImpl ?? dicomWebFetch;
   const ordered = [...refs].sort((a, b) => a.displayOrder - b.displayOrder).slice(0, limit);
-  const fetched = await Promise.all(
-    ordered.map(async (ref): Promise<ReportKeyImage | null> => {
+  return Promise.all(
+    ordered.map(async (ref): Promise<ReportKeyImage> => {
+      const identity = {
+        caption: ref.description.trim(),
+        attachmentId: ref.id,
+        sopInstanceUid: ref.sopInstanceUid,
+      };
       const url = thumbnailRenderedUrl(dicomWebBase, ref, size);
-      if (!url) return null;
+      if (!url) return { src: "", ...identity };
       try {
         const res = await fetchImpl(url);
-        if (!res.ok) return null;
-        return { src: await blobToDataUrl(await res.blob()), caption: ref.description.trim() };
+        if (!res.ok) return { src: "", ...identity };
+        return { src: await blobToDataUrl(await res.blob()), ...identity };
       } catch {
-        return null;
+        return { src: "", ...identity };
       }
     }),
   );
-  return fetched.filter((v): v is ReportKeyImage => Boolean(v));
 }
 
 /** Captions are the radiologist's words, and they go into innerHTML. */
@@ -110,13 +119,16 @@ function escapeHtmlAttr(value: string): string {
  * uncaptioned image gets no element, no label and no reserved strip.
  */
 export function buildKeyImagesRailHtml(images: ReportKeyImage[]): string {
-  const cells = images.map((img) => {
+  const cells = images.map((img, i) => {
     const caption = (img.caption ?? "").trim();
     const alt = escapeHtmlAttr(caption);
     const fig = caption ? `<figcaption class="image-caption">${alt}</figcaption>` : "";
-    return (
-      `<div class="image-cell"><div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${img.src}" class="dicom-img" alt="${alt}"/></div></div>${fig}</div>`
-    );
+    // An attachment whose pixels did not arrive still occupies its cell, and says
+    // so in its own words — never with a caption invented for it.
+    const viewport = img.src
+      ? `<div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${img.src}" class="dicom-img" alt="${alt}"/></div></div>`
+      : `<div class="image-viewport"><div class="image-unreadable" role="img" aria-label="Key image #${i + 1} could not be read" style="display:flex;align-items:center;justify-content:center;min-height:96px;background:#e2e8f0;border:1px solid #b91c1c;color:#b91c1c;font:700 8px/1.2 system-ui,sans-serif;text-align:center;padding:6px;">IMAGE COULD NOT BE READ</div></div>`;
+    return `<div class="image-cell">${viewport}${fig}</div>`;
   }).join("");
   return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${images.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
@@ -200,17 +212,20 @@ export async function hydratePrintPreviewKeyImages(
     /dicom-img-pending|image-cell-pending|class="dicom-img"[^>]*src=""|src=""[^>]*class="dicom-img"/.test(html);
   // Re-hydrate when the rail is missing pixels, has pending placeholders, or
   // when fewer inlined images than selected refs (server budget/skip left blanks).
+  // The comparison is against every selected reference: this used to cap the
+  // budget at 6, so a 14-image study was declared "complete" once 6 were inlined
+  // and the remaining 8 never reached the page.
   if (
     !opts?.force
     && !pendingEmpty
     && alreadyInlined > 0
-    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? 6)
+    && alreadyInlined >= Math.min(refs.length, opts?.limit ?? Infinity)
   ) {
     return html;
   }
 
   const urls = await fetchKeyImageDataUrls(dicomWebBase, refs, {
-    limit: opts?.limit ?? 6,
+    limit: opts?.limit,
     size: opts?.size ?? 800,
     fetchImpl: opts?.fetchImpl,
   });
