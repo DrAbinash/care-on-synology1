@@ -27,6 +27,10 @@ const PNG_3_2 =
 /** 4 x 6 */
 const PNG_2_3 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAGCAIAAABrW6giAAAAEElEQVR4nGO4UyEHRwyUcgBbOSKxloCk8wAAAABJRU5ErkJggg==";
+/** Bytes that carry a PNG data-URL prefix but are not a PNG: the attachment the
+ *  object store handed back is corrupt, which is a different fault from an
+ *  attachment that is simply absent. */
+const CORRUPT = "data:image/png;base64,NOTACTUALPIXELSAAAA";
 
 const PT_PER_MM = 72 / 25.4;
 const SQUARE_MM = 32;
@@ -76,11 +80,65 @@ const tiles = (pdf: string) =>
 const drawnText = (pdf: string) =>
   [...pdf.matchAll(/\(((?:[^()]|\([^)]*\))*)\)\s*Tj/g)].map((m) => m[1]);
 
-const textRuns = (pdf: string) =>
-  [...pdf.matchAll(/BT\s*[\s\S]*?([\d.-]+) ([\d.-]+) Td\s*\(((?:[^()]|\([^)]*\))*)\) Tj/g)]
-    .map((m) => ({ x: +m[1], y: +m[2], s: m[3] }));
+/**
+ * Every string jsPDF drew, at the point it drew it. A text object sets the matrix
+ * once, then walks the wrapped lines with `T*` under the leading it declared with
+ * `TL`, so a two-line caption is two runs — reading only the first made the second
+ * half of a label look as though it had never been printed.
+ */
+function textRuns(pdf: string) {
+  const runs: { x: number; y: number; s: string }[] = [];
+  for (const block of pdf.matchAll(/BT([\s\S]*?)ET/g)) {
+    let x = 0;
+    let y = 0;
+    let leading = 0;
+    for (const tok of block[1].matchAll(
+      /(-?[\d.]+) (-?[\d.]+) (Td|Tm)|(-?[\d.]+) TL|T\*|\(((?:\\.|[^\\()])*)\)\s*Tj/g,
+    )) {
+      if (tok[3] === "Td") {
+        x += +tok[1];
+        y += +tok[2];
+      } else if (tok[3] === "Tm") {
+        x = +tok[1];
+        y = +tok[2];
+      } else if (tok[4] !== undefined) {
+        leading = +tok[4];
+      } else if (tok[0] === "T*") {
+        y -= leading;
+      } else {
+        runs.push({ x, y, s: tok[5] });
+      }
+    }
+  }
+  return runs;
+}
 
 const pageCount = (pdf: string) => (pdf.match(/\/Type\s*\/Page[^s]/g) || []).length;
+
+/**
+ * Per-page ports and text. jsPDF writes one content stream per page, and a port
+ * on page 3 sits at the same coordinates as a caption on page 1 — geometry
+ * compared across pages reports collisions that appear on no single sheet, and
+ * hides the ones that do.
+ */
+function pagesOf(pdf: string) {
+  return [...pdf.matchAll(/stream\r?\n([\s\S]*?)endstream/g)]
+    .map((m) => m[1])
+    .filter((s) => /\/I\d+ Do|\/F\d+ [\d.]+ Tf/.test(s))
+    .map((s) => ({ ports: tiles(s), text: textRuns(s) }));
+}
+
+/**
+ * Per-page ports and text. jsPDF writes one content stream per page, and a port
+ * on page 2 sits at the same coordinates as the body text on page 1 — comparing
+ * across pages would report a collision that appears on no single sheet.
+ */
+function pages(pdf: string) {
+  return [...pdf.matchAll(/stream\r?\n([\s\S]*?)endstream/g)]
+    .map((m) => m[1])
+    .filter((s) => /\/I\d+ Do/.test(s) || /BT/.test(s))
+    .map((s) => ({ tiles: tiles(s), runs: textRuns(s) }));
+}
 
 /**
  * The caption jsPDF wrote under this port. A caption's first line sits about
@@ -94,6 +152,19 @@ function captionUnder(tile: { x: number; y: number }, runs: { x: number; y: numb
     .filter((r) => Math.abs(r.x - tile.x) < 3 && tile.y - r.y > 0 && tile.y - r.y < 9)
     .sort((a, b) => b.y - a.y);
   return below[0]?.s ?? null;
+}
+
+/**
+ * Text whose baseline lands inside a port's rectangle. PDF user space has its
+ * origin at the bottom-left, so the placement `w 0 0 h x y cm` covers
+ * [y, y + h] and a caption sits just under y. Only a failed cell's own label is
+ * allowed inside — a caption that has drifted in is printed over the image.
+ */
+function insidePort(
+  r: { x: number; y: number },
+  p: { x: number; y: number; w: number; h: number },
+) {
+  return r.x >= p.x - 0.01 && r.x <= p.x + p.w + 0.01 && r.y >= p.y - 0.01 && r.y <= p.y + p.h + 0.01;
 }
 
 const img = (caption = ""): ReportKeyImage => ({ src: JPEG, caption });
@@ -126,15 +197,35 @@ describe("Download PDF carries every attached key image", () => {
   });
 
   it("never lets two ports or a port and the caption above it overlap", () => {
-    const t = tiles(pdfBytes(series(14, (i) => img(`T${i}`))));
-    expect(t.length).toBe(14);
-    for (const a of t) {
-      for (const b of t) {
-        if (a === b) continue;
-        const xOverlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-        const yOverlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-        expect(Math.min(xOverlap, yOverlap), JSON.stringify({ a, b })).toBeLessThanOrEqual(0.01);
+    const per = pagesOf(pdfBytes(series(14, (i) => img(`T${i}`))));
+    expect(per.reduce((a, p) => a + p.ports.length, 0)).toBe(14);
+    for (const { ports: t } of per) {
+      for (const a of t) {
+        for (const b of t) {
+          if (a === b) continue;
+          const xOverlap = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+          const yOverlap = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+          expect(Math.min(xOverlap, yOverlap), JSON.stringify({ a, b })).toBeLessThanOrEqual(0.01);
+        }
       }
+    }
+  });
+
+  it("keeps every caption clear of the port below it", () => {
+    // Wrapping is measured with the same call that draws, so a caption has to
+    // occupy the height it was measured for. Words landing inside the next
+    // image's port is unreadable, and only a long caption reveals it.
+    const long = (i: number) =>
+      `Broad-based posterior disc extrusion at L${4 + (i % 2)}-L${5 + (i % 2)} compressing the traversing root ${i}`;
+    const pdf = pdfBytes(series(14, (i) => img(long(i))));
+    const per = pagesOf(pdf);
+    // Non-vacuous split: every page's stream must carry both its ports and its
+    // text, or "clear of the port below it" is only comparing one page to itself.
+    expect(per).toHaveLength(pageCount(pdf));
+    expect(per.reduce((a, p) => a + p.ports.length, 0)).toBe(14);
+    for (const { ports, text } of per) {
+      const onImage = text.filter((r) => ports.some((p) => insidePort(r, p)));
+      expect(onImage.map((r) => r.s), "text drawn on top of an image").toEqual([]);
     }
   });
 
@@ -185,7 +276,9 @@ describe("Download PDF carries every attached key image", () => {
     const pdf = pdfBytes([img("FIRST"), failed, img("THIRD")]);
     // Counted as a tile: 3 attachments in, 3 cells on the page — the radiologist
     // can see the gap rather than trusting a number they cannot check.
-    expect(tiles(pdf)).toHaveLength(3);
+    const t = tiles(pdf);
+    const runs = textRuns(pdf);
+    expect(t).toHaveLength(3);
     const text = drawnText(pdf).join(" | ");
     expect(/could not be read|unreadable|not available on disk/i.test(text)).toBe(true);
     expect(text).toContain("1.2.826.0.1.3680043.9.5500.3.1.101");
@@ -193,11 +286,64 @@ describe("Download PDF carries every attached key image", () => {
     // Identified by its position in the rail as well as by its stored keys, so the
     // radiologist can find the attachment in the panel and re-select it.
     expect(/#2\b/.test(text)).toBe(true);
+    // The cell itself has to carry that identification, not only the line at the
+    // top of the page: a blank port with a short word in it reads like a caption
+    // the software invented, which is exactly what the brief forbids.
+    const failedTile = t[1];
+    const inCell = runs
+      .filter((r) => insidePort(r, failedTile))
+      .map((r) => r.s)
+      .join(" ");
+    expect(inCell).toContain("KEY IMAGE #2 COULD NOT BE READ");
+    // The failed cell gets no band beneath it either — its caption is empty, and
+    // nothing may be written there in the radiologist's name.
+    expect(captionUnder(failedTile, runs)).toBe(null);
     // The warning must not become the image's caption.
-    const runs = textRuns(pdf);
-    const bands = tiles(pdf).map((tile) => captionUnder(tile, runs));
+    const bands = t.map((tile) => captionUnder(tile, runs));
     expect(bands.filter((b) => b !== null && !/could not be read|unreadable/i.test(b)))
       .toEqual(["FIRST", "THIRD"]);
+  });
+
+  it("keeps the caption of an attachment whose stored bytes are corrupt", () => {
+    // A corrupt file is a different fault from a missing one: the row exists, the
+    // radiologist wrote a sentence for it, and that sentence must survive the
+    // failed read rather than being replaced by the warning.
+    const pdf = pdfBytes([
+      { src: CORRUPT, caption: "Left basal ganglia T2 hyperintensity", attachmentId: 901, sopInstanceUid: "1.2.826.0.1.3680043.9.777" },
+      img("OK"),
+    ]);
+    expect(tiles(pdf)).toHaveLength(2);
+    const text = drawnText(pdf).join(" | ");
+    expect(text).toContain("INTEGRITY: 1 of 2");
+    expect(text).toContain("901");
+    expect(text).toContain("1.2.826.0.1.3680043.9.777");
+    expect(text).toContain("Left basal ganglia T2 hyperintensity");
+    // The line may not claim no caption exists when the page prints one.
+    expect(text).not.toContain("No caption has been written");
+  });
+
+  it("never overprints two strings inside one image cell", () => {
+    // Every failed cell gets exactly one label. Two runs at the same coordinate
+    // inside a port is a smear the radiologist cannot read.
+    const pdf = pdfBytes([
+      { src: CORRUPT, caption: "C1", attachmentId: 901, sopInstanceUid: "1.2.3.4" },
+      { src: "", caption: "", attachmentId: 902, sopInstanceUid: null },
+      img("C3"),
+      img("C4"),
+    ]);
+    const per = pagesOf(pdf);
+    expect(per.reduce((a, p) => a + p.ports.length, 0)).toBe(4);
+    for (const { ports: t, text: runs } of per) {
+      for (const tile of t) {
+        const inside = runs.filter((r) => insidePort(r, tile));
+        const at = new Set<string>();
+        for (const r of inside) {
+          const key = `${Math.round(r.x)},${Math.round(r.y)}`;
+          expect(at.has(key), `overprint at ${key} in ${JSON.stringify(inside.map((q) => q.s))}`).toBe(false);
+          at.add(key);
+        }
+      }
+    }
   });
 
   it("still fits the page-1 rail exactly as it did when everything fitted", () => {

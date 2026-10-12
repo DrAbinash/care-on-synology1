@@ -640,17 +640,15 @@ function drawKeyImageCell(
     doc.addImage(pixels, ext, x + (square - dw) / 2, yTop + (square - dh) / 2, dw, dh);
   } catch {
     // The bytes themselves refused to decode. The cell still occupies its place,
-    // and the integrity line names it, so a corrupt attachment cannot vanish.
+    // and the label inside it names it, so a corrupt attachment cannot vanish.
     try {
       doc.addImage(KEY_IMAGE_PLACEHOLDER, "PNG", x, yTop, square, square);
     } catch { /* nothing more can be drawn here */ }
-    doc.setFont(font, "bold");
-    doc.setFontSize(KEY_IMAGE.capSize);
-    doc.setTextColor(...ink);
-    doc.text("IMAGE COULD NOT BE READ", x + 1.5, yTop + square / 2, { maxWidth: square - 3 });
     cell.unreadable = true;
     cell.src = "";
   }
+  // One label per failed cell, drawn here and nowhere else — a second string at
+  // this coordinate would overprint it into an unreadable smear.
   if (!cell.src && cell.unreadable) {
     doc.setFont(font, "bold");
     doc.setFontSize(KEY_IMAGE.capSize);
@@ -1045,7 +1043,14 @@ export function generateReportPDF(
       doc.setFont(font, "bold");
       doc.setFontSize(fs.body - 0.5);
       doc.setTextColor(185, 28, 28);
-      const warn = `INTEGRITY: ${unreadable} of ${keyImageList.length} key images could not be read and are shown as placeholders — ${which}. No caption has been written for them.`;
+      // Whether anyone captioned the failed attachments is a fact about the stored
+      // rows, not a guess: a caption entered for an unreadable image is still
+      // printed, so the line must not claim the opposite of what the page shows.
+      const captioned = keyImageList.some((c) => c.unreadable && c.caption !== "");
+      const warn =
+        `INTEGRITY: ${unreadable} of ${keyImageList.length} key images could not be read ` +
+        `and are shown as placeholders — ${which}.` +
+        (captioned ? " Their captions are printed as entered." : " No caption has been written for them.");
       const warnLines = doc.splitTextToSize(warn, textW) as string[];
       doc.text(warnLines, m.left, y + lineH * 0.8);
       y += warnLines.length * lineH * 0.8 + lineH * 0.4;
