@@ -172,6 +172,22 @@ describe("fetchKeyImageDataUrls", () => {
 });
 
 describe("hydratePrintPreviewKeyImages", () => {
+  it("re-hydrates the whole selection when the server only inlined part of it", async () => {
+    // The skip test above is the danger: a budget that declared the rail "done"
+    // at six images is how a fourteen-image study printed six. Inlining seven of
+    // fourteen must still fetch and place all fourteen.
+    const longJpeg = "data:image/jpeg;base64," + "A".repeat(80);
+    const inlined = Array.from({ length: 7 }, () =>
+      `<div class="image-cell"><img class="dicom-img" src="${longJpeg}"/></div>`).join("");
+    const html = `<div class="image-panel image-panel-side"><div class="image-panel-heading">KEY IMAGES</div>` +
+      `<div class="image-grid">${inlined}</div></div>`;
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false });
+    const refs = Array.from({ length: 14 }, (_, i) => makeRef({ id: i + 1, displayOrder: i }));
+    const out = await hydratePrintPreviewKeyImages(html, "https://pacs.example/dicomweb", refs, { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(14);
+    expect(out).toContain('data-image-count="14"');
+  });
+
   it("leaves HTML alone when enough usable data URLs are already inlined", async () => {
     const longJpeg =
       "data:image/jpeg;base64," + "A".repeat(80);
