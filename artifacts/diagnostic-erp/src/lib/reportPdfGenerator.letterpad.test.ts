@@ -73,6 +73,42 @@ describe("letter-pad PDF preview artifact", () => {
     expect(CARE_LETTERHEAD_LOGO_DATA_URL).toContain(publicPng.toString("base64").slice(0, 80));
   });
 
+  it("prints the UHID and accession the workspace has, and no label when it has none", () => {
+    // Read off the PDF's own text operators, so this needs no pdftotext binary.
+    const drawn = (report: Parameters<typeof generateReportPDF>[0]) => {
+      const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, null, { save: false });
+      const pdf = Buffer.from(doc.output("arraybuffer")).toString("latin1");
+      return [...pdf.matchAll(/\(((?:[^()]|\([^)]*\))*)\)\s*Tj/g)].map((m) => m[1]).join(" | ");
+    };
+    const base = {
+      patientName: "Premchand Mandal", age: "4 Y", sex: "M", studyDate: "20260818",
+      referringDoctor: "Dr Tushar Jyoti", findings: "Normal.", impression: "Normal.",
+      reportTitle: "MRI LSPINE",
+    };
+    const withIds = drawn({ ...base, uhid: "UH-2026-000457", accessionNumber: "ACC-8891" });
+    expect(withIds).toContain("UHID: UH-2026-000457");
+    expect(withIds).toContain("ACCESSION: ACC-8891");
+    // The demography the clinic already reads is still there, in the same order.
+    expect(withIds.indexOf("NAME:")).toBeLessThan(withIds.indexOf("AGE/SEX:"));
+    expect(withIds).toContain("REFD. BY:");
+
+    const withoutIds = drawn({ ...base, uhid: "", accessionNumber: "" });
+    expect(withoutIds).not.toContain("UHID:");
+    expect(withoutIds).not.toContain("ACCESSION:");
+    expect(withoutIds).toContain("NAME:");
+
+    // Each cell is gated on its own value. A study that has an accession but no
+    // master-index number must not print "UHID:" followed by nothing, and an
+    // `if (uhid && accession)` gate would silently drop the identifier the
+    // clinic does have — which is the whole point of printing them.
+    const accessionOnly = drawn({ ...base, uhid: "", accessionNumber: "ACC-8891" });
+    expect(accessionOnly).toContain("ACCESSION: ACC-8891");
+    expect(accessionOnly).not.toContain("UHID:");
+    const uhidOnly = drawn({ ...base, uhid: "UH-2026-000457", accessionNumber: "" });
+    expect(uhidOnly).toContain("UHID: UH-2026-000457");
+    expect(uhidOnly).not.toContain("ACCESSION:");
+  });
+
   it("uses presentation-template letterhead copy when provided", () => {
     const doc = generateReportPDF(
       {

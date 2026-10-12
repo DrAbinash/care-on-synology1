@@ -39,7 +39,6 @@ export type PrintSettings = {
     title: string;
     logo: string | null;
     showDate: boolean;
-    showAccession: boolean;
   };
   footer: {
     enabled: boolean;
@@ -90,7 +89,6 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
     title: "CARE DIAGNOSTICS",
     logo: null,
     showDate: true,
-    showAccession: false,
   },
   footer: {
     enabled: true,
@@ -168,6 +166,8 @@ export type ReportData = {
   age?: string;
   sex?: string;
   accessionNumber?: string;
+  /** The patient's UHID / master index number, when the record has one. */
+  uhid?: string;
   studyDate?: string;
   referringDoctor?: string;
   modality?: string;
@@ -964,7 +964,26 @@ export function generateReportPDF(
       }
       if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.4;
 
-      // Tight gap between REFD/DATE row and the double rule under demography.
+      // The two identifiers that tie this sheet back to the study — a report with
+      // no accession on it cannot be traced to the PACS study it describes. Only
+      // a row the data can fill is drawn, so a study with neither prints no
+      // labels rather than "ACCESSION:" followed by nothing. Nothing gates them by
+      // setting: `header.showAccession` was a switch no code ever read, and a
+      // traceability line is not a cosmetic option.
+      const uhid = (report.uhid || "").trim();
+      const accession = (report.accessionNumber || "").trim();
+      if (uhid || accession) {
+        doc.setFont(font, "bold");
+        if (uhid) doc.text(`UHID: ${uhid.toUpperCase()}`, leftX, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 55),
+        });
+        if (accession) {
+          const full = `ACCESSION: ${accession.toUpperCase()}`;
+          doc.text(full, rightEdge, cursor, { align: "right" });
+        }
+        cursor += lineH + 0.4;
+      }
+      // Tight gap between the last demography row and the double rule under it.
       cursor += 0.6;
 
       doc.setDrawColor(0);

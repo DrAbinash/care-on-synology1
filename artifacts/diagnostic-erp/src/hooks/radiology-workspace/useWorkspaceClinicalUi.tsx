@@ -781,6 +781,8 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     referringDoctor?: string | null;
     studyId?: number | null;
     patientId?: number | null;
+    /** The patients-master UHID, joined server-side through `patientId`. */
+    uhid?: string | null;
     patientName?: string | null;
     accessionNumber?: string | null;
     studyInstanceUID?: string | null;
@@ -2499,7 +2501,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         age: erpAge,
         sex: detail?.sex ?? row?.sex ?? master?.gender,
         patientId: detail?.patientId ?? row?.patientId,
-        uhid: row?.uhid,
+        // The by-id read carries the UHID too, so a queue filter that hides the
+        // open study cannot drop the identifier from the printed report.
+        uhid: detail?.uhid ?? row?.uhid,
         accessionNumber: detail?.accessionNumber ?? row?.accessionNumber,
         studyDescription: detail?.studyDescription ?? row?.studyDescription,
         studyDate: detail?.studyDate ?? row?.studyDate,

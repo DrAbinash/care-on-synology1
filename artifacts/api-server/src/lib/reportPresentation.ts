@@ -329,17 +329,31 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
   return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
 }
 
-/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE (matches jsPDF). */
+/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION. */
 function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const name = rowByLabel(rows, "patient", "name");
   const ageSex = rowByLabel(rows, "age / sex", "age/sex");
   const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
   const dateRaw = rowByLabel(rows, "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
+  // The two identifiers that tie the sheet back to the study. Both arrive in
+  // `rows` already — the block simply never drew them. A row whose value is the
+  // route's own "no value" placeholder (an em dash) is absent, not blank: printing
+  // "UHID: —" reads as an identifier to whoever receives the report.
+  const blank = (v: string) => (/^[-–—.\s]*$/.test(v) ? "" : v);
+  const uhid = blank(rowByLabel(rows, "uhid", "patient id", "patient id / uhid"));
+  const accession = blank(rowByLabel(rows, "accession no.", "accession", "accession number"));
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
       : "";
+  const identifiers = uhid || accession
+    ? `
+    <tr>
+      <td class="ld-left">${cell("UHID:", uhid)}</td>
+      <td class="ld-right">${cell("ACCESSION:", accession)}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name, true)}</td>
@@ -348,7 +362,7 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", refDr)}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>
+    </tr>${identifiers}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }

@@ -351,13 +351,16 @@ export type FinalizePrintPreviewOpts = {
   imageRefs: ReportImageRef[];
   /** Screen preview only — skip for Word export and browser print. */
   includeProvenanceChrome?: boolean;
-  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY. */
+  /** Client canonical demography — patches letterpad AGE/SEX + REFD. BY + the two study identifiers. */
   demography?: {
     patientName?: string | null;
     age?: string | null;
     sex?: string | null;
     referringDoctor?: string | null;
     studyDate?: string | null;
+    uhid?: string | null;
+    patientId?: string | null;
+    accessionNumber?: string | null;
   };
 };
 

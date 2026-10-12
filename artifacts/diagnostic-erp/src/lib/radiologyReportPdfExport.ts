@@ -265,6 +265,9 @@ export interface RadiologyPdfExportInput {
   age: string;
   sex: string;
   accessionNumber: string;
+  /** Optional so the pages that have not got a UHID in scope keep compiling; the
+   *  reporting workspace always passes it, and the header prints it when present. */
+  uhid?: string;
   studyDate: string;
   referringDoctor: string;
   modality: string;
@@ -308,6 +311,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       age: input.age,
       sex: input.sex,
       accessionNumber: input.accessionNumber,
+      uhid: input.uhid ?? "",
       studyDate: input.studyDate,
       referringDoctor: input.referringDoctor,
       modality: input.modality,
