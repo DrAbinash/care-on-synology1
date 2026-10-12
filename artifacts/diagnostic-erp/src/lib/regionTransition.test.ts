@@ -15,8 +15,8 @@ import { DEFAULT_REPORT_FORMATS } from "@/lib/zai-workspace/report-formats-libra
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import type { AppliedPathologyPatch } from "@/lib/zai-workspace/store";
 import {
-  applyPlanToFindingsText,
   coverageOfRegion,
+  coverageUnionOfRegions,
   planRegionTransition,
   rowSegment,
   unownedLines,
@@ -110,31 +110,29 @@ describe("Whole Spine → Cervical Spine", () => {
     );
   });
 
-  it("takes only the retired sentences out of the findings text and changes nothing else", () => {
+  it("names eleven of the sixteen Findings lines as at stake", () => {
     const { plan, findings } = transition();
-    const next = applyPlanToFindingsText(findings, plan);
     const before = findings.split("\n").map((l) => l.trim()).filter(Boolean);
-    const after = next.split("\n").map((l) => l.trim()).filter(Boolean);
     // The findings field holds the limitation plus fifteen segment normals = sixteen
     // lines; twelve rows retire and one of them (the normal-study Impression) writes to
-    // Conclusion, so eleven lines leave Findings and the fifth line of the report is
-    // still the first cervical normal.
+    // Conclusion, so eleven Findings lines are the ones at stake. That ONLY those
+    // sentences leave, and every other line stays byte-identical, is proved on the path the
+    // radiologist presses: regionTransitionCommit.test.ts.
     expect(before).toHaveLength(16);
     expect(plan.retire.filter((r) => before.includes(r.text.trim()))).toHaveLength(11);
-    expect(after).toHaveLength(5);
-    expect(after).toEqual(before.filter((l) => l.startsWith("Cervical spine:")));
-    expect(after.every((l) => plan.keep.some((r) => r.text.trim() === l))).toBe(true);
+    expect(plan.retire.every((r) => r.text.trim().length > 0)).toBe(true);
   });
 
-  it("preserves what the radiologist typed themselves", () => {
+  it("counts what the radiologist typed themselves as preserved, and says it", () => {
     const { rows, findings } = wholeSpineScreeningNormal();
     const manual = "Prior C5-C6 discectomy with residual anterior fusion hardware.";
     const withManual = `${findings}\n${manual}\n`;
     const plan = planRegionTransition({ fromRegion: "Whole Spine", toRegion: "Cervical Spine", rows, findingsText: withManual });
     expect(plan.manualLines).toEqual([manual]);
-    const next = applyPlanToFindingsText(withManual, plan);
-    expect(next).toContain(manual);
-    expect(unownedLines(next, rows)).toEqual([manual]);
+    // The sentence the strip shows is the radiologist's guarantee that their own words
+    // are not part of the deal. Singular agreement, because one line is one line.
+    expect(plan.summary).toContain("your own 1 line stays");
+    expect(unownedLines(withManual, rows)).toEqual([manual]);
   });
 
   it("keeps an out-of-region abnormality and says so instead of deleting it", () => {
@@ -151,8 +149,7 @@ describe("Whole Spine → Cervical Spine", () => {
     expect(plan.outOfRegionAbnormalities.map((r) => r.id)).toEqual(["injected-d8-fracture"]);
     expect(plan.retire.some((r) => r.id === "injected-d8-fracture")).toBe(false);
     expect(plan.keep.some((r) => r.id === "injected-d8-fracture")).toBe(true);
-    expect(applyPlanToFindingsText(`${findings}\n${abnormal.text}`, plan)).toContain("Wedge compression deformity of D8");
-    expect(plan.summary).toContain("a finding does not disappear with the label");
+    expect(plan.summary).toContain("1 finding stays because a finding does not disappear with the label");
   });
 
   it("records the transition with the reason each row went", () => {
@@ -169,11 +166,56 @@ describe("Whole Spine → Cervical Spine", () => {
     expect(record.at).toBe("2026-10-12T09:00:00.000Z");
   });
 
-  it("never removes a row from the ledger — retirement is a flag, not a deletion", () => {
+  it("accounts for every row it was given: kept, or retired with its sentence quoted", () => {
     const { plan, rows } = transition();
-    // Every row the product holds is still accounted for: kept, or retired WITH its text.
+    // Nothing is retired that is not quoted, which is what makes the withdrawal recoverable
+    // after it has been written. The removal itself runs through `removeObservation` and is
+    // tested there (regionTransitionCommit.test.ts), not by a second text rewriter here.
     expect(plan.keep.length + plan.retire.length).toBe(rows.length);
     expect(plan.retire.every((r) => r.text.trim().length > 0)).toBe(true);
+  });
+});
+
+describe("a multi-region selection is covered as the union of its regions", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+  });
+
+  it("unions the segments the list acquires, and has no opinion on one that is not spine", () => {
+    expect([...coverageUnionOfRegions(["Cervical Spine", "LS Spine"])!].sort()).toEqual(["cervical", "lumbar"]);
+    expect([...coverageUnionOfRegions(["Cervical Spine", "Whole Spine"])!].sort()).toEqual(["cervical", "dorsal", "lumbar"]);
+    expect(coverageUnionOfRegions(["Brain", "Knee"])).toBeNull();
+    expect(coverageUnionOfRegions([])).toBeNull();
+  });
+
+  it("asks nothing when the chips are only re-ordered", () => {
+    const { rows, findings } = wholeSpineScreeningNormal();
+    // Clicking a chip that is already selected makes it primary (nextStudyRegions, so the
+    // UI can show what the macros follow). The selection does not change, so coverage does
+    // not change, and a dialog here would ask permission for a click that costs nothing.
+    const reorder = planRegionTransition({
+      fromRegions: ["Cervical Spine", "LS Spine"],
+      toRegions: ["LS Spine", "Cervical Spine"],
+      rows, findingsText: findings,
+    });
+    expect(reorder.requiresConfirmation).toBe(false);
+    expect(reorder.retire).toEqual([]);
+  });
+
+  it("retires the lumbar normals when the lumbar chip comes off", () => {
+    const { rows, findings } = wholeSpineScreeningNormal();
+    const narrowed = planRegionTransition({
+      fromRegions: ["Cervical Spine", "LS Spine"],
+      toRegions: ["Cervical Spine"],
+      rows, findingsText: findings,
+    });
+    expect(narrowed.requiresConfirmation).toBe(true);
+    expect(narrowed.retire.filter((r) => rowSegment(r) === "lumbar")).toHaveLength(5);
+    expect(narrowed.keep.filter((r) => rowSegment(r) === "cervical")).toHaveLength(5);
+    expect(narrowed.retire.some((r) => r.text.includes("Cervical spine:"))).toBe(false);
+    // Positive control: the second region is the one being dropped, so reading only the
+    // first entry of the selection would have answered "nothing to retire".
+    expect(narrowed.summary).toContain("Cervical Spine");
   });
 });
 
@@ -189,7 +231,6 @@ describe("Cervical Spine → Whole Spine, and the transitions that must ask for 
     expect(cervicalOnly.requiresConfirmation).toBe(false);
     expect(cervicalOnly.retire).toEqual([]);
     expect(cervicalOnly.keep).toEqual(rows);
-    expect(applyPlanToFindingsText(findings, cervicalOnly)).toBe(findings);
   });
 
   it("treats the same coverage under a different spelling as no transition at all", () => {
@@ -231,7 +272,6 @@ describe("Cervical Spine → Whole Spine, and the transitions that must ask for 
     expect(plan.unplaced.map((r) => r.id)).toEqual(["no-segment"]);
     expect(plan.retire).toEqual([]);
     expect(plan.requiresConfirmation).toBe(false);
-    expect(applyPlanToFindingsText(unplaceable.text, plan)).toBe(unplaceable.text);
   });
 
   it("does not invent a segment from a level it was never given", () => {

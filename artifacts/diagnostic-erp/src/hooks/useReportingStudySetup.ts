@@ -36,6 +36,7 @@ import {
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
+import { planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -822,6 +823,79 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     }
   }, [selectedTemplate]);
 
+  /**
+   * ADR-004 — a region change that would invalidate report content stops here until the
+   * radiologist confirms it. The plan is computed from the LIVE ledger at the moment of the
+   * click and carried unchanged to the confirm; nothing is written to the report or to the
+   * region in between, and cancelling writes nothing at all.
+   */
+  const [pendingRegionTransition, setPendingRegionTransition] = useState<{
+    plan: RegionTransitionPlan;
+    /** What the region list becomes on confirm; null restores the auto-detected region. */
+    nextRegions: string[] | null;
+    /**
+     * Which control the click came from. Confirming has to finish that control's own work
+     * and only that: the manual dropdown replays protocol/technique for the new region,
+     * while the chip toggle and "reset to auto" write the region and stop.
+     */
+    source: "toggle" | "primary" | "reset";
+  } | null>(null);
+
+  /**
+   * What this transition would invalidate, or null when there is nothing to talk about. An
+   * empty ledger returns null deliberately: a dialog that asks permission to change a report
+   * which does not exist yet trains the radiologist to click through confirmations, which is
+   * the failure mode ADR-004 §Consequences names.
+   */
+  const transitionPlanFor = useCallback((toRegions: readonly string[]) => {
+    if (toRegions.length === 0) return null;
+    const state = useWorkspace.getState();
+    // A `protected` row is left out on purpose: protection is the product's own refusal to
+    // withdraw a sentence, so announcing one as removable would promise the radiologist a
+    // deletion the store then declines to make. Measured on the whole-spine screening
+    // normal: its limitation row comes out of the format apply already protected, and the
+    // plan the hook builds retires eleven rows, not twelve. What the strip names is
+    // exactly what leaves.
+    const rows = state.appliedPathologyPatches
+      .filter((p) => !p.stale && !p.protected)
+      .map((p) => ({
+        id: p.id,
+        role: p.observation?.role ?? null,
+        concept: p.observation?.concept ?? null,
+        region: p.observation?.region ?? null,
+        level: p.observation?.level ?? null,
+        // Whichever field the row actually writes: normals go to Findings, the normal-study
+        // conclusion to Impression. Both are report content that is at stake.
+        text: (p.lastRendered.findings ?? "").trim() || (p.lastRendered.impression ?? "").trim(),
+      }))
+      .filter((r) => r.text.length > 0);
+    if (rows.length === 0) return null;
+    return planRegionTransition({ fromRegions: studyRegions, toRegions, rows, findingsText: state.findingsText });
+  }, [studyRegions]);
+
+  const confirmRegionTransition = useCallback(() => {
+    const pending = pendingRegionTransition;
+    if (!pending) return;
+    setRegionOverrides(pending.nextRegions);
+    // Retirement runs after the region is written, through the store's own withdrawal path:
+    // one undo frame, a manual sentence refused by `removeObservation` rather than deleted,
+    // any baseline a retired row had been covering restored, and the decision recorded with
+    // every sentence that left the report.
+    useWorkspace.getState().commitRegionTransition(pending.plan, regionTransitionActor());
+    if (pending.source === "primary" && pending.nextRegions) {
+      const only = pending.nextRegions[0] ?? null;
+      const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === only)?.id ?? null;
+      syncTechniqueOnRegionChange(only, tabId);
+    }
+    setPendingRegionTransition(null);
+  }, [pendingRegionTransition, quickSelectData, syncTechniqueOnRegionChange]);
+
+  const cancelRegionTransition = useCallback(() => {
+    // Nothing was written on the way here, so nothing has to be undone: the region and the
+    // report stay exactly as the radiologist left them.
+    setPendingRegionTransition(null);
+  }, []);
+
   /** Toggle a study region (multi-select). Last-clicked region becomes
    *  primary so macros / Quick Select follow what the radiologist just clicked. */
   const handleRegionToggle = useCallback((regionName: string) => {
@@ -829,6 +903,15 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     const next = nextStudyRegions(studyRegions, regionName);
     if (!next) return;
     const added = !studyRegions.includes(regionName);
+    // Adding a region only widens what the examination covers, so it can invalidate no
+    // sentence already on the page; the policy answers that with an empty plan and the
+    // click stays silent. Re-ordering (clicking a non-primary chip) leaves the coverage
+    // unchanged for the same reason. Only a narrowing reaches `requiresConfirmation`.
+    const plan = transitionPlanFor(next);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ plan, nextRegions: next, source: "toggle" });
+      return;
+    }
     setRegionOverrides(next);
     if (!added) return;
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
@@ -840,23 +923,47 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (tab?.techniqueText && !fields.technique.trim()) {
       setters.mergeTechnique(tab.techniqueText, "protocol");
     }
-  }, [disabled, studyRegions, quickSelectData, applyProtocol, setters]);
+  }, [disabled, studyRegions, quickSelectData, applyProtocol, setters, transitionPlanFor]);
 
   const resetRegionOverrides = useCallback(() => {
+    // The link is only offered after a manual selection, so this click replaces whatever the
+    // radiologist chose with what the billing/DICOM resolved — a narrowing like any other, and
+    // the third of the three writers of `regionOverrides` that had to stop writing silently.
+    const plan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ plan, nextRegions: null, source: "reset" });
+      return;
+    }
     setRegionOverrides(null);
-  }, []);
+  }, [transitionPlanFor, autoStudyRegion]);
 
   /** Replace the region list with a single primary region (manual dropdown). */
   const selectPrimaryRegion = useCallback((regionName: string | null) => {
     if (disabled) return;
     if (!regionName) {
+      // Clearing the selection falls back to whatever billing/DICOM resolved, which can be
+      // narrower than what is on the page — the same event the "reset to auto" link is, so
+      // it is gated the same way. Choosing the placeholder must not quietly cost a report its
+      // sentences.
+      const clearedPlan = transitionPlanFor(autoStudyRegion ? [autoStudyRegion] : []);
+      if (clearedPlan?.requiresConfirmation) {
+        setPendingRegionTransition({ plan: clearedPlan, nextRegions: null, source: "primary" });
+        return;
+      }
       setRegionOverrides(null);
+      return;
+    }
+    // ADR-004: the dropdown REPLACES the region, so the report may now contain normals for
+    // anatomy the chosen examination does not acquire. Ask before writing anything.
+    const plan = transitionPlanFor([regionName]);
+    if (plan?.requiresConfirmation) {
+      setPendingRegionTransition({ plan, nextRegions: [regionName], source: "primary" });
       return;
     }
     setRegionOverrides([regionName]);
     const tabId = (quickSelectData?.tabs ?? []).find((t) => t.isActive && t.name === regionName)?.id ?? null;
     syncTechniqueOnRegionChange(regionName, tabId);
-  }, [disabled, quickSelectData, syncTechniqueOnRegionChange]);
+  }, [disabled, quickSelectData, syncTechniqueOnRegionChange, matchedStudyRegion, transitionPlanFor]);
 
   return {
     studyHint,
@@ -869,6 +976,9 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     handleRegionToggle,
     resetRegionOverrides,
     selectPrimaryRegion,
+    pendingRegionTransition,
+    confirmRegionTransition,
+    cancelRegionTransition,
     availableRegions,
     availableStudyTabs,
     availableProtocols,

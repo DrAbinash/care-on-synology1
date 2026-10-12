@@ -40,6 +40,13 @@ export type StructuredJsonEnvelope = {
   careVascularTechnique?: unknown;
   /** Applied whole-report format identity (care.report_format_identity.v1). */
   careReportFormatIdentity?: unknown;
+  /**
+   * ADR-004 — the region transitions this report has been through, oldest first. Each entry
+   * names the sentences that left the report and who decided it. It is provenance, not prose:
+   * nothing renders it, but a reload that cannot see it reports the retired normals as a lost
+   * draft instead of a decision somebody made.
+   */
+  careRegionTransitions?: CareRegionTransition[];
   /** Second worklist row combined into this draft. */
   linkedStudyId?: number | string | null;
   careLinkedStudy?: CareLinkedStudy | null;
@@ -129,6 +136,60 @@ export function extractCareVascularTechnique(column: unknown): unknown {
   return null;
 }
 
+export const CARE_REGION_TRANSITION_KIND = "care.region_transition.v1";
+
+/**
+ * One confirmed narrowing of the reporting region (docs/ADR/ADR-004).
+ *
+ * `retired` and `keptAbnormalities` are kept as the client sent them (each row is
+ * `{ id, concept, segment, text }`): the server neither re-derives nor edits them, because
+ * the sentences they quote are the point of the record. Structural validation is deliberately
+ * shallow — the fields that decide whether the row is a transition at all are checked, the
+ * prose is stored as authored.
+ */
+export type CareRegionTransition = {
+  kind: typeof CARE_REGION_TRANSITION_KIND;
+  fromRegion: string | null;
+  toRegion: string;
+  retired: unknown[];
+  keptAbnormalities: unknown[];
+  manualLinesPreserved: number;
+  decidedBy: string;
+  at: string;
+};
+
+function isCareRegionTransitionRow(item: unknown): item is CareRegionTransition {
+  if (!isRecord(item)) return false;
+  if (item.kind !== CARE_REGION_TRANSITION_KIND) return false;
+  if (typeof item.toRegion !== "string" || item.toRegion.trim() === "") return false;
+  return Array.isArray(item.retired);
+}
+
+/**
+ * Read the transition history back. Rows that do not carry the contract are dropped rather
+ * than coerced: a half-parsed record on screen would state who removed a sentence that was
+ * never provably removed.
+ */
+export function extractCareRegionTransitions(column: unknown): CareRegionTransition[] {
+  if (!isRecord(column)) return [];
+  const raw = Array.isArray(column.careRegionTransitions)
+    ? column.careRegionTransitions
+    : Array.isArray(column.regionTransitions)
+      ? column.regionTransitions
+      : null;
+  if (!raw) return [];
+  return raw.filter(isCareRegionTransitionRow).map((row) => ({
+    kind: CARE_REGION_TRANSITION_KIND,
+    fromRegion: typeof row.fromRegion === "string" ? row.fromRegion : null,
+    toRegion: row.toRegion,
+    retired: Array.isArray(row.retired) ? row.retired : [],
+    keptAbnormalities: Array.isArray(row.keptAbnormalities) ? row.keptAbnormalities : [],
+    manualLinesPreserved: typeof row.manualLinesPreserved === "number" ? row.manualLinesPreserved : 0,
+    decidedBy: typeof row.decidedBy === "string" ? row.decidedBy : "",
+    at: typeof row.at === "string" ? row.at : "",
+  }));
+}
+
 export function isCareReportFormatIdentity(v: unknown): v is CareReportFormatIdentity {
   return isRecord(v) && v.kind === CARE_REPORT_FORMAT_IDENTITY_KIND && typeof v.name === "string" && v.name.trim() !== "";
 }
@@ -200,6 +261,7 @@ export function composeStructuredJsonColumn(opts: {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  regionTransitions?: CareRegionTransition[] | null;
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
   linkedStudy?: CareLinkedStudy | null;
@@ -220,6 +282,13 @@ export function composeStructuredJsonColumn(opts: {
   const vascularTech = opts.vascularTechnique !== undefined
     ? opts.vascularTechnique
     : extractCareVascularTechnique(opts.existing);
+  // `undefined` keeps the stored history. A save that carries no transition never rewrites
+  // it, and a save that carries an empty array is not a client that sent nothing — the
+  // client omits the key entirely when the history is empty (regionTransitionPayload), so
+  // the only writer that can clear it is one that explicitly says so.
+  const regionTransitions = opts.regionTransitions !== undefined
+    ? (opts.regionTransitions ?? [])
+    : extractCareRegionTransitions(opts.existing);
   const reportFormatIdentity = opts.reportFormatIdentity !== undefined
     ? opts.reportFormatIdentity
     : extractCareReportFormatIdentity(opts.existing);
@@ -230,7 +299,8 @@ export function composeStructuredJsonColumn(opts: {
     ? (opts.appliedPatterns ?? [])
     : extractCareAppliedPatterns(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !reportFormatIdentity && !linkedStudy && !hasApplied) return a4 ?? null;
+  const hasTransitions = regionTransitions.length > 0;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -246,6 +316,7 @@ export function composeStructuredJsonColumn(opts: {
     env.careLinkedStudy = linkedStudy;
   }
   if (hasApplied) env.careAppliedPatterns = appliedPatterns;
+  if (hasTransitions) env.careRegionTransitions = regionTransitions;
   return env;
 }
 
@@ -267,6 +338,7 @@ export type StructuredJsonPatchInput = {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  regionTransitions?: unknown;
   appliedPatterns?: CareAppliedPattern[] | null;
   linkedStudy?: CareLinkedStudy | null;
   reportFormatIdentity?: Record<string, unknown> | null;
@@ -319,6 +391,13 @@ export function buildCareStructuredJsonPatch(
     patch.viewerMeasurements = input.viewerMeasurements ?? undefined;
     patch.canalApProvenance = input.canalApProvenance ?? undefined;
     patch.vascularTechnique = input.vascularTechnique ?? undefined;
+  }
+
+  // ADR-004. Only an array of transition records is a write signal: an absent or null field
+  // keeps the stored history, because a report that has been through a transition cannot be
+  // un-transitioned by an unrelated autosave.
+  if (Array.isArray(input.regionTransitions)) {
+    patch.regionTransitions = extractCareRegionTransitions({ careRegionTransitions: input.regionTransitions });
   }
 
   if (input.appliedPatterns !== undefined) {

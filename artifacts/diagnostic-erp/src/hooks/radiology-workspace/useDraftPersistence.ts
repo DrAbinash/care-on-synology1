@@ -32,6 +32,10 @@ import {
 } from "@/lib/structuredFormat";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { extractCareObservationLedger } from "@/lib/observationLedger";
+import {
+  extractCareRegionTransitions,
+  regionTransitionPayload,
+} from "@/lib/regionTransition";
 import { resolveDraftTechnique } from "@/lib/draftTechniqueRoundTrip";
 import {
   extractCareViewerMeasurements,
@@ -317,6 +321,13 @@ useEffect(() => {
     if (restoredVascular) {
       useWorkspace.getState().setVascularTechnique(restoredVascular);
     }
+    // ADR-004 — the sentences this report stopped claiming, and who decided it, have to
+    // survive save → close → reopen. Without the history a reopened report looks like a
+    // draft that lost normals on its own, and the region on screen no longer explains the
+    // text under it.
+    useWorkspace.getState().hydrateRegionTransitions(
+      extractCareRegionTransitions(draft.structuredJson),
+    );
     const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
     setSelectedQuickIds(new Set(ids));
     // Restore the persisted baseline format identity (banner / canvas state).
@@ -499,6 +510,9 @@ const saveDraft = useCallback(async (opts?: {
         }),
         // Undefined while untouched, so existing reports gain no envelope key.
         vascularTechnique: vascularTechniquePayload(useWorkspace.getState().vascularTechnique),
+        // ADR-004 — undefined while the report has never been re-regioned, so every other
+        // save sends exactly the body it always sent.
+        regionTransitions: regionTransitionPayload(useWorkspace.getState().regionTransitions),
         // Baseline format identity — survives save → close → reopen so the
         // applied-format banner stays and the bootstrap never re-fires.
         linkedStudy: linkedStudyPayload(useWorkspace.getState().linkedStudy),
