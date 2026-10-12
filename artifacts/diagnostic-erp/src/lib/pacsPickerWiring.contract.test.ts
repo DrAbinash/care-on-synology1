@@ -223,9 +223,14 @@ describe("the open report's image identity does not ride on the filtered queue",
 
   it("the rail mounts on the open report, not on a queue row", () => {
     const src = read(COLUMN);
-    const mount = src.slice(src.indexOf("{!viewerColumnExpanded && reportIdentity"));
-    expect(mount.length, "the key-images rail no longer mounts on reportIdentity").toBeGreaterThan(0);
+    const at = src.indexOf("{!viewerColumnExpanded && ");
+    expect(at).toBeGreaterThan(-1);
+    const mount = src.slice(at);
     expect(mount.slice(0, 400)).toContain("<FrozenKeyImagesRail");
+    // The anchor is the study opened in the URL. It used to be `reportIdentity`,
+    // which is null until a network read describes the study — so a refused read
+    // deleted the strip, its error banner and its retry button together.
+    expect(mount.slice(0, 120)).toContain("keyImageRailShouldMount(studyId)");
     expect(src).not.toContain("{!viewerColumnExpanded && workflow.currentRow");
   });
 

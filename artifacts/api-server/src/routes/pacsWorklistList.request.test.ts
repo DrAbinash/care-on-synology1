@@ -11,6 +11,7 @@ import {
   usersTable,
   portalSessionsTable,
   radiologyWorklistTable,
+  patientsTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
 import { compactStudyDateDay, worklistDateConditions } from "../lib/pacs/worklistDateFilter";
@@ -23,6 +24,8 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
   const token = `vitest-token-${randomUUID()}`;
   let userId = 0;
   let worklistId = 0;
+  let patientId = 0;
+  const uhid = `UH-PL-${randomUUID().slice(0, 8).toUpperCase()}`;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -47,9 +50,23 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
       expiresAt: new Date(Date.now() + 60 * 60_000),
     });
 
+    const [patient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: uhid,
+        firstName: `List ${marker}`,
+        lastName: "Probe",
+        dateOfBirth: "1974-03-02",
+        gender: "F",
+        phone: "0000000000",
+      })
+      .returning();
+    patientId = patient.id;
+
     const [wl] = await db
       .insert(radiologyWorklistTable)
       .values({
+        patientId: patient.id,
         patientName: `List Probe ${marker}`,
         modality: "MR",
         status: "STUDY_RECEIVED",
@@ -74,6 +91,9 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     }
     if (userId) {
       await db.delete(usersTable).where(eq(usersTable.id, userId));
+    }
+    if (patientId) {
+      await db.delete(patientsTable).where(eq(patientsTable.id, patientId));
     }
   });
 
@@ -111,6 +131,30 @@ describe.skipIf(!dbReady)("pacs-worklist list payload — request level", () => 
     expect(res.body).toHaveProperty("sex");
     expect(res.body).not.toHaveProperty("aiDraftJson");
     expect(String(res.body.dicomMetadata)).toContain("PatientAge");
+  });
+
+  it("the per-study detail read carries the patients-master UHID, not just the key", async () => {
+    // The workspace prints the UHID from the canonical demography. Its queue row
+    // is keyed on the active filter and is null for a study the filter excludes,
+    // so the by-id read is the only source that survives — without `uhid` here
+    // the report fell back to `patientId`, a Postgres sequence value, and
+    // printed "UHID: 47" on a signed sheet.
+    const res = await request(app)
+      .get(`/api/radiology/pacs-worklist/${worklistId}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    expect(res.body).toHaveProperty("uhid", uhid);
+    expect(res.body.patientId).toBe(patientId);
+    expect(String(res.body.uhid)).not.toBe(String(patientId));
+
+    const list = await request(app)
+      .get(`/api/radiology/pacs-worklist`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const row = (list.body as Array<{ id: number; uhid?: string | null }>).find(
+      (r) => r.id === worklistId,
+    );
+    expect(row?.uhid).toBe(uhid);
   });
 
   it("list USG aggregates are present and numeric for seeded rows", async () => {

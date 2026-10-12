@@ -221,7 +221,11 @@ export default function ReportImagePicker({
       toast({ title: `Maximum ${MAX_REPORT_IMAGES} images per report`, variant: "destructive" });
       return;
     }
-    const caption = seriesEntry.description || `Image ${inst.instanceNumber ?? ""}`.trim();
+    // No caption is invented here. CARE used to write the series description (or
+    // "Image 7") so an unlabelled figure would still read on the printed report —
+    // which put words on the patient's report that no radiologist typed. A caption
+    // is entered in the rail, or the image prints without one.
+    const caption = "";
     if (effectiveDraftId) {
       try {
         addRef.mutate(buildImageRefPayload({

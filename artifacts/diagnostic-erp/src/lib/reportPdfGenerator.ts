@@ -39,7 +39,6 @@ export type PrintSettings = {
     title: string;
     logo: string | null;
     showDate: boolean;
-    showAccession: boolean;
   };
   footer: {
     enabled: boolean;
@@ -90,7 +89,6 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
     title: "CARE DIAGNOSTICS",
     logo: null,
     showDate: true,
-    showAccession: false,
   },
   footer: {
     enabled: true,
@@ -168,6 +166,8 @@ export type ReportData = {
   age?: string;
   sex?: string;
   accessionNumber?: string;
+  /** The patient's UHID / master index number, when the record has one. */
+  uhid?: string;
   studyDate?: string;
   referringDoctor?: string;
   modality?: string;
@@ -179,11 +179,61 @@ export type ReportData = {
   technique?: string;
   comparison?: string;
   measurements?: Array<{ label: string; value: string }>;
-  /** Optional array of key-image data URLs (base64 JPEG/PNG) */
-  keyImages?: string[];
+  /**
+   * Key images for the rail. A bare data URL is still accepted because that is
+   * what the non-radiology pages have always passed; the reporting workspace
+   * passes the stored record, whose caption is the radiologist's own words.
+   */
+  keyImages?: Array<string | ReportKeyImage>;
   reportTitle?: string;
   printedBy?: string;
 };
+
+/** One frozen key image as the rail needs it: pixels, plus a caption if one exists. */
+export interface ReportKeyImage {
+  src: string;
+  caption?: string | null;
+  /**
+   * The stored attachment's own identity. Only a cell whose pixels could not be
+   * read needs it, but then it is the whole point: the warning has to name which
+   * attachment is missing, and an image silently absent from a signed-looking PDF
+   * names nothing at all.
+   */
+  attachmentId?: number | null;
+  sopInstanceUid?: string | null;
+}
+
+/**
+ * 1×1 slate-grey pixel, drawn at the port's size where a key image exists in the
+ * record but its bytes could not be read. The alternative — skipping the cell — is
+ * what made a 14-image study export 5 images with no trace of the other 9.
+ */
+const KEY_IMAGE_PLACEHOLDER = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGN49OIDAAVqAru/zcVKAAAAAElFTkSuQmCC";
+
+interface KeyImageCell {
+  src: string;
+  caption: string;
+  attachmentId: number | null;
+  sopInstanceUid: string | null;
+  /** True when the record holds an attachment but no readable pixels. */
+  unreadable: boolean;
+}
+
+function normalizeKeyImages(list: ReportData["keyImages"]): KeyImageCell[] {
+  // An attachment with no pixels is KEPT: it is drawn as a placeholder and named
+  // in the integrity line. Dropping it here was one of the two ways the Download
+  // PDF lost images without saying so.
+  return (list ?? []).map((img) => {
+    const rec = typeof img === "string" ? { src: img } : img;
+    return {
+      src: rec.src ?? "",
+      caption: (typeof img === "string" ? "" : img.caption ?? "").trim(),
+      attachmentId: typeof img === "string" ? null : img.attachmentId ?? null,
+      sopInstanceUid: typeof img === "string" ? null : img.sopInstanceUid ?? null,
+      unreadable: !rec.src,
+    };
+  });
+}
 
 /** Slightly compact sizes so a full MRI report fits one A4 page with air between lines. */
 const FONT_SIZES = {
@@ -532,29 +582,136 @@ function drawNumberedImpression(
   return y;
 }
 
-/** Key images beside report text — extreme-right rail, square ports, equal frame pad. */
+/** Shared metrics for every key-image surface: the rail and the continuation grid. */
+const KEY_IMAGE = {
+  framePad: 2.5,
+  gap: 1.4,
+  headingH: 5,
+  square: 32,
+  capSize: 5,
+  capPad: 0.6,
+  capLineH: 5 * 0.3528 * 1.25, // pt -> mm, with leading
+};
+
+/** The caption wrapped to the port's width — empty for an image nobody captioned. */
+function keyImageCaptionLines(doc: jsPDF, caption: string, square: number, font: string): string[] {
+  if (!caption) return [];
+  doc.setFont(font, "normal");
+  doc.setFontSize(KEY_IMAGE.capSize);
+  return doc.splitTextToSize(caption, square - 1) as string[];
+}
+
+function keyImageCellHeight(doc: jsPDF, cell: KeyImageCell, square: number, font: string): number {
+  const lines = keyImageCaptionLines(doc, cell.caption, square, font);
+  return square + (lines.length ? lines.length * KEY_IMAGE.capLineH + KEY_IMAGE.capPad : 0);
+}
+
+/**
+ * One key image: black square port, pixels letterboxed inside it so the study's
+ * own aspect ratio survives, and the radiologist's caption directly beneath.
+ * Returns the height consumed, excluding the gap to the next cell.
+ *
+ * `frame` is the navy panel the page-1 rail sits in — on the rail the caption is
+ * white on navy, in the flow it is black on the page, so the ink is chosen here
+ * rather than by the caller.
+ */
+function drawKeyImageCell(
+  doc: jsPDF,
+  cell: KeyImageCell,
+  x: number,
+  yTop: number,
+  square: number,
+  font: string,
+  opts: { frame: boolean; ordinal: number },
+): number {
+  const ink: [number, number, number] = opts.frame ? [255, 255, 255] : [17, 17, 17];
+  doc.setFillColor(0, 0, 0);
+  doc.rect(x, yTop, square, square, "F");
+  const pixels = cell.src || KEY_IMAGE_PLACEHOLDER;
+  try {
+    const ext = pixels.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
+    const props = doc.getImageProperties(pixels);
+    const iw = Math.max(1, props.width);
+    const ih = Math.max(1, props.height);
+    const scale = Math.min(square / iw, square / ih);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    // Center DICOM pixels inside the square port (equal letterbox if needed).
+    doc.addImage(pixels, ext, x + (square - dw) / 2, yTop + (square - dh) / 2, dw, dh);
+  } catch {
+    // The bytes themselves refused to decode. The cell still occupies its place,
+    // and the label inside it names it, so a corrupt attachment cannot vanish.
+    try {
+      doc.addImage(KEY_IMAGE_PLACEHOLDER, "PNG", x, yTop, square, square);
+    } catch { /* nothing more can be drawn here */ }
+    cell.unreadable = true;
+    cell.src = "";
+  }
+  // One label per failed cell, drawn here and nowhere else — a second string at
+  // this coordinate would overprint it into an unreadable smear.
+  if (!cell.src && cell.unreadable) {
+    doc.setFont(font, "bold");
+    doc.setFontSize(KEY_IMAGE.capSize);
+    doc.setTextColor(...ink);
+    doc.text(`KEY IMAGE #${opts.ordinal} COULD NOT BE READ`, x + 1.5, yTop + square / 2, {
+      maxWidth: square - 3,
+    });
+  }
+  let y = yTop + square;
+  const lines = keyImageCaptionLines(doc, cell.caption, square, font);
+  if (lines.length) {
+    doc.setFont(font, "normal");
+    doc.setFontSize(KEY_IMAGE.capSize);
+    doc.setTextColor(...ink);
+    doc.text(lines, x + 0.3, y + KEY_IMAGE.capLineH * 0.85, { maxWidth: square - 1 });
+    y += lines.length * KEY_IMAGE.capLineH + KEY_IMAGE.capPad;
+  }
+  return y - yTop;
+}
+
+/**
+ * Key images beside report text — extreme-right rail, square ports, equal frame
+ * pad. Only the cells that fit on page 1 belong here; the caller receives the
+ * count it drew and continues the rest below the report body. Returning that
+ * number is the whole point: silently stopping at the page edge is what lost the
+ * attachments the clinic had selected.
+ */
 function drawSideRailKeyImages(
   doc: jsPDF,
-  images: string[],
+  images: KeyImageCell[],
   railX: number,
   railW: number,
   startY: number,
   contentBottom: number,
   font: string,
   headingSize: number,
-): number {
-  if (images.length === 0 || railW <= 8) return startY;
-  const framePad = 2.5; // equal L/R (and top/bottom) navy frame around the stack
-  const gap = 1.4;
-  const headingH = 5;
+): { bottomY: number; drawn: number } {
+  if (images.length === 0 || railW <= 8) return { bottomY: startY, drawn: 0 };
+  const framePad = KEY_IMAGE.framePad;
+  const gap = KEY_IMAGE.gap;
+  const headingH = KEY_IMAGE.headingH;
   const innerW = Math.max(10, railW - 2 * framePad);
   const avail = Math.max(20, contentBottom - startY - headingH - 2 * framePad);
   // Cap square for page fit, then shrink the navy panel to that square so
   // left/right framePad stay equal (no leftover blue band on the right).
-  const square = Math.min(innerW, 32);
-  const maxCells = Math.max(1, Math.floor((avail + gap) / (square + gap)));
-  const shown = images.slice(0, Math.min(images.length, maxCells));
-  const stackH = headingH + shown.length * square + gap * Math.max(0, shown.length - 1);
+  const square = Math.min(innerW, KEY_IMAGE.square);
+
+  // A caption belongs BELOW its square, so it costs height that a uniform cell
+  // count cannot see. Measured first, then the fit decision uses each real cell
+  // height: a report with no captions occupies exactly the space it did before.
+  const heights = images.map((cell) => keyImageCellHeight(doc, cell, square, font));
+
+  const picked: number[] = [];
+  let used = 0;
+  for (let i = 0; i < images.length; i++) {
+    const add = heights[i] + (picked.length ? gap : 0);
+    if (used + add > avail && picked.length > 0) break;
+    if (picked.length === 0 && add > avail) break;
+    picked.push(i);
+    used += add;
+  }
+  if (picked.length === 0) return { bottomY: startY, drawn: 0 };
+  const stackH = headingH + used;
   const frameH = stackH + 2 * framePad;
   const panelW = square + 2 * framePad;
   const panelX = railX + Math.max(0, railW - panelW);
@@ -572,26 +729,81 @@ function drawSideRailKeyImages(
   doc.setTextColor(255, 255, 255);
   doc.text("KEY IMAGES", imgX, imgY + 3.2);
   imgY += headingH;
-  for (const img of shown) {
-    if (!img) continue;
-    try {
-      const ext = img.startsWith("data:image/jpeg") ? "JPEG" : "PNG";
-      doc.setFillColor(0, 0, 0);
-      doc.rect(imgX, imgY, square, square, "F");
-      const props = doc.getImageProperties(img);
-      const iw = Math.max(1, props.width);
-      const ih = Math.max(1, props.height);
-      const scale = Math.min(square / iw, square / ih);
-      const dw = iw * scale;
-      const dh = ih * scale;
-      // Center DICOM pixels inside the square port (equal letterbox if needed).
-      const ox = imgX + (square - dw) / 2;
-      const oy = imgY + (square - dh) / 2;
-      doc.addImage(img, ext, ox, oy, dw, dh);
-      imgY += square + gap;
-    } catch { /* skip broken image */ }
+  for (const i of picked) {
+    imgY += drawKeyImageCell(doc, images[i], imgX, imgY, square, font, {
+      frame: true,
+      ordinal: i + 1,
+    }) + gap;
   }
-  return startY + frameH;
+  return { bottomY: startY + frameH, drawn: picked.length };
+}
+
+/**
+ * The images that did not fit beside page 1's body, continued below the report in
+ * rows of up to three, adding pages as needed. Same ports, same caption rule,
+ * same order — so the attachment the radiologist put third is still third, and
+ * the count on the page equals the count in the record.
+ */
+function drawContinuedKeyImages(
+  doc: jsPDF,
+  images: KeyImageCell[],
+  ctx: {
+    left: number;
+    contentW: number;
+    contentBottom: number;
+    font: string;
+    headingSize: number;
+    firstOrdinal: number;
+    /**
+     * Returns the y this row must start at: the caller's flow position, or the top
+     * of a fresh page when the row would otherwise run past the footer reserve.
+     * The cursor is passed in rather than read from the closure because the grid
+     * keeps its own y while it lays rows out.
+     */
+    ensureRoom: (needed: number, at: number) => number;
+    /** Where the page-1 rail ends, so a full-width row cannot run under it. */
+    railBottomY: number;
+    onPage: () => number;
+  },
+  startY: number,
+): { y: number; drawn: number } {
+  if (images.length === 0) return { y: startY, drawn: 0 };
+  const { framePad, gap, square: maxSquare, headingH } = KEY_IMAGE;
+  const cols = Math.max(1, Math.min(3, Math.floor((ctx.contentW + gap) / (maxSquare + gap))));
+  const square = Math.min(maxSquare, (ctx.contentW - (cols - 1) * gap) / cols);
+  let y = startY;
+  if (ctx.onPage() === 1) y = Math.max(y, ctx.railBottomY + 2);
+
+  const rowHeight = (row: number[]) =>
+    Math.max(...row.map((i) => keyImageCellHeight(doc, images[i], square, ctx.font)));
+
+  let drawn = 0;
+  for (let start = 0; start < images.length; start += cols) {
+    const row = images.map((_, i) => i).slice(start, start + cols);
+    const need = headingH + rowHeight(row) + framePad * 2;
+    y = ctx.ensureRoom(start === 0 ? need + gap : need, y);
+    if (start === 0) {
+      doc.setFont(ctx.font, "bold");
+      doc.setFontSize(ctx.headingSize);
+      doc.setTextColor(17, 17, 17);
+      doc.text("KEY IMAGES (CONTINUED)", ctx.left, y + headingH * 0.7);
+      y += headingH;
+    }
+    let tallest = 0;
+    row.forEach((i, col) => {
+      const x = ctx.left + col * (square + gap);
+      tallest = Math.max(
+        tallest,
+        drawKeyImageCell(doc, images[i], x, y + framePad, square, ctx.font, {
+          frame: false,
+          ordinal: ctx.firstOrdinal + i,
+        }),
+      );
+      drawn += 1;
+    });
+    y += framePad + tallest + gap;
+  }
+  return { y, drawn };
 }
 
 export function generateReportPDF(
@@ -751,7 +963,27 @@ export function generateReportPDF(
         doc.text(full, rightEdge, cursor, { align: "right" });
       }
       if (refBy || (settings.header.showDate !== false && dateStr)) cursor += lineH + 0.4;
-      // Tight gap between REFD/DATE row and the double rule under demography.
+
+      // The two identifiers that tie this sheet back to the study — a report with
+      // no accession on it cannot be traced to the PACS study it describes. Only
+      // a row the data can fill is drawn, so a study with neither prints no
+      // labels rather than "ACCESSION:" followed by nothing. Nothing gates them by
+      // setting: `header.showAccession` was a switch no code ever read, and a
+      // traceability line is not a cosmetic option.
+      const uhid = (report.uhid || "").trim();
+      const accession = (report.accessionNumber || "").trim();
+      if (uhid || accession) {
+        doc.setFont(font, "bold");
+        if (uhid) doc.text(`UHID: ${uhid.toUpperCase()}`, leftX, cursor, {
+          maxWidth: Math.max(40, rightEdge - leftX - 55),
+        });
+        if (accession) {
+          const full = `ACCESSION: ${accession.toUpperCase()}`;
+          doc.text(full, rightEdge, cursor, { align: "right" });
+        }
+        cursor += lineH + 0.4;
+      }
+      // Tight gap between the last demography row and the double rule under it.
       cursor += 0.6;
 
       doc.setDrawColor(0);
@@ -771,7 +1003,7 @@ export function generateReportPDF(
   // Key-image rail starts just under AGE/SEX/DATE (demography), right column.
   // Capture before the study title so images hug the demography block.
   const demographyBottomY = y;
-  const keyImageList = (report.keyImages ?? []).filter(Boolean);
+  const keyImageList = normalizeKeyImages(report.keyImages);
   const sideRail =
     keyImageList.length > 0 && settings.show.keyImages;
   const framePadMm = 2.5;
@@ -804,12 +1036,51 @@ export function generateReportPDF(
   const contentBottom = pageH - FOOTER_STACK_MM - SIG_RESERVE_MM;
 
   // Draw KEY IMAGES on page 1 immediately (below demography / beside title+body).
+  // Pixels that will not decode are found here, before anything is drawn, so the
+  // integrity line at the top of the page can name every attachment that failed
+  // rather than only the ones the loop happened to trip over.
+  let railDrawn = 0;
   if (sideRail) {
-    railBottomY = drawSideRailKeyImages(
+    for (const cell of keyImageList) {
+      if (!cell.src) continue;
+      try {
+        doc.getImageProperties(cell.src);
+      } catch {
+        cell.unreadable = true;
+        cell.src = "";
+      }
+    }
+    const unreadable = keyImageList.filter((c) => c.unreadable).length;
+    if (unreadable > 0) {
+      const which = keyImageList
+        .map((c, i) => ({ c, ordinal: i + 1 }))
+        .filter(({ c }) => c.unreadable)
+        .map(({ c, ordinal }) =>
+          `#${ordinal}${c.attachmentId != null ? ` (attachment ${c.attachmentId})` : ""}` +
+          `${c.sopInstanceUid ? ` SOP ${c.sopInstanceUid}` : ""}`)
+        .join("; ");
+      doc.setFont(font, "bold");
+      doc.setFontSize(fs.body - 0.5);
+      doc.setTextColor(185, 28, 28);
+      // Whether anyone captioned the failed attachments is a fact about the stored
+      // rows, not a guess: a caption entered for an unreadable image is still
+      // printed, so the line must not claim the opposite of what the page shows.
+      const captioned = keyImageList.some((c) => c.unreadable && c.caption !== "");
+      const warn =
+        `INTEGRITY: ${unreadable} of ${keyImageList.length} key images could not be read ` +
+        `and are shown as placeholders — ${which}.` +
+        (captioned ? " Their captions are printed as entered." : " No caption has been written for them.");
+      const warnLines = doc.splitTextToSize(warn, textW) as string[];
+      doc.text(warnLines, m.left, y + lineH * 0.8);
+      y += warnLines.length * lineH * 0.8 + lineH * 0.4;
+      doc.setTextColor(0, 0, 0);
+    }
+    const rail = drawSideRailKeyImages(
       doc, keyImageList, railX, railW, demographyBottomY, contentBottom, font, fs.heading,
     );
-    // Body continues on page 1; rail must not move the text cursor.
-    void railBottomY;
+    railBottomY = rail.bottomY;
+    railDrawn = rail.drawn;
+    // Body continues on page 1; the rail must not move the text cursor.
   }
 
   /** Page index (1-based) where the report body last drew — signature stays here. */
@@ -882,7 +1153,32 @@ export function generateReportPDF(
         break;
       }
       case "keyImages": {
-        // Side rail already drawn on page 1 below demography.
+        // Side rail already drew what fitted beside page 1's body. Everything the
+        // radiologist selected beyond that continues here, in order, adding pages
+        // as needed — this used to be a no-op, which is how a 14-image study
+        // exported 5 images with nothing on the page to say so.
+        if (!sideRail) break;
+        const rest = keyImageList.slice(railDrawn);
+        if (rest.length === 0) break;
+        y = drawContinuedKeyImages(doc, rest, {
+          left: m.left,
+          contentW,
+          contentBottom,
+          font,
+          headingSize: fs.heading,
+          firstOrdinal: railDrawn + 1,
+          railBottomY,
+          onPage: () => bodyPage,
+          ensureRoom: (needed, at) => {
+            if (at + needed > contentBottom) {
+              doc.addPage();
+              y = drawLetterPadChrome();
+              bodyPage = doc.getNumberOfPages();
+              return y;
+            }
+            return at;
+          },
+        }, y).y;
         break;
       }
       case "impression": {

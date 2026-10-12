@@ -324,7 +324,11 @@ export function mergeReportDemography(input: {
       normalizeSex(dicomMeta.PatientSex as string),
     ),
     patientId: pick(erp.patientId, erp.dicomPatientId, dicom.dicomPatientId, dicomMeta.PatientID),
-    uhid: pick(erp.uhid, erp.patientId),
+    // A patient primary key is a Postgres sequence value, not a clinic UHID, and
+    // a report must not print one as if it were. The UHID arrives as text from
+    // the patients master; a text patient code is still accepted because that
+    // is what older callers hand in.
+    uhid: pick(erp.uhid, typeof erp.patientId === "number" ? "" : erp.patientId),
     accessionNumber: pick(erp.accessionNumber, dicom.accessionNumber, dicomMeta.AccessionNumber),
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),
@@ -466,23 +470,40 @@ export function buildDemographyHeaderHtml(d: ReportDemography): string {
 </table>`.trim();
 }
 
-/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE). */
+/** CARE letter-pad demography table (NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION). */
 export function buildLetterpadDemographyHtml(d: {
   patientName?: string | null;
   age?: string | null;
   sex?: string | null;
   referringDoctor?: string | null;
   studyDate?: string | null;
+  uhid?: string | null;
+  patientId?: string | null;
+  accessionNumber?: string | null;
 }): string {
   const esc = escDemographyHtml;
   const name = String(d.patientName ?? "").trim();
   const ageSex = formatDemographyAgeSexLine(d.age, d.sex);
   const ref = formatReferringDoctorDisplay(d.referringDoctor);
   const dateStr = String(d.studyDate ?? "").trim();
+  // The identifiers that tie the sheet back to the study. `uhid` falls back to
+  // patientId exactly as buildClassicDemographyHeaderParts does, so the two
+  // header styles name the same number for the same patient.
+  const uhid = String(d.uhid ?? d.patientId ?? "").trim();
+  const accession = String(d.accessionNumber ?? "").trim();
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${esc(label)}</strong> ${boldValue ? `<strong>${esc(value)}</strong>` : esc(value)}`
       : "";
+  // A row the data cannot fill is not drawn at all: "ACCESSION:" followed by
+  // nothing invites a reader to believe the study has no accession.
+  const idRow = uhid || accession
+    ? `
+    <tr>
+      <td class="ld-left">${cell("UHID:", uhid.toUpperCase())}</td>
+      <td class="ld-right">${cell("ACCESSION:", accession.toUpperCase())}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name.toUpperCase(), true)}</td>
@@ -491,7 +512,7 @@ export function buildLetterpadDemographyHtml(d: {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", ref.toUpperCase())}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>
+    </tr>${idRow}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -508,6 +529,9 @@ export function patchLetterpadDemographyHtml(
     sex?: string | null;
     referringDoctor?: string | null;
     studyDate?: string | null;
+    uhid?: string | null;
+    patientId?: string | null;
+    accessionNumber?: string | null;
   },
 ): string {
   if (!html?.includes("letterpad-demo")) return html;

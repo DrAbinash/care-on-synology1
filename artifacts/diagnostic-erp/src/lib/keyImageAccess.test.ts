@@ -166,4 +166,55 @@ describe("fetchKeyImageAccessUrls", () => {
     await fetchKeyImageAccessUrls([7, 7, 7]);
     expect(calls[0].body).toEqual({ ids: [7] });
   });
+
+  it("a rail and its four tiles, asking in the same tick, send one request", async () => {
+    // This is the real mount shape: each thumbnail is its own component that asks
+    // for just itself, React runs child effects before the parent's, and then the
+    // rail asks for the whole set. Before the collection window that was 5 POSTs
+    // for 4 images.
+    installFetch(() =>
+      respondWith({
+        success: true,
+        expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+        items: [
+          { id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T7", thumbnailUrl: null },
+          { id: 8, imageUrl: "/uploads/radiology-key-images/b.jpg?kimg=T8", thumbnailUrl: null },
+          { id: 9, imageUrl: "/uploads/radiology-key-images/c.jpg?kimg=T9", thumbnailUrl: null },
+        ],
+      }),
+    );
+
+    const tile7 = fetchKeyImageAccessUrls([7]);
+    const tile8 = fetchKeyImageAccessUrls([8]);
+    const tile9 = fetchKeyImageAccessUrls([9]);
+    const rail = fetchKeyImageAccessUrls([7, 8, 9]);
+    const [m7, m8, m9, mrail] = await Promise.all([tile7, tile8, tile9, rail]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ ids: [7, 8, 9] });
+    // Every asker gets its own slice of that one answer.
+    expect(m7.get(7)?.imageUrl).toContain("kimg=T7");
+    expect(m8.get(8)?.imageUrl).toContain("kimg=T8");
+    expect(m9.get(9)?.imageUrl).toContain("kimg=T9");
+    expect(mrail.get(7)?.imageUrl).toContain("kimg=T7");
+    expect(mrail.get(9)?.imageUrl).toContain("kimg=T9");
+  });
+
+  it("a failed grant releases the id so the next render can try again", async () => {
+    let fail = true;
+    installFetch(() => (fail
+      ? new Response(JSON.stringify({ error: "boom" }), { status: 500 })
+      : respondWith({
+        success: true,
+        expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+        items: [{ id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T2", thumbnailUrl: null }],
+      })));
+
+    const first = await fetchKeyImageAccessUrls([7]);
+    expect(first.size).toBe(0);
+    fail = false;
+    const second = await fetchKeyImageAccessUrls([7]);
+    expect(second.get(7)?.imageUrl).toContain("kimg=T2");
+    expect(calls).toHaveLength(2);
+  });
 });

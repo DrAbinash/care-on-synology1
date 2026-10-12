@@ -329,17 +329,31 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
   return `<div class="patient-stacked" style="--ps-label:${pal.labelColor};--ps-value:${pal.valueColor}">${lines.join("")}</div>`;
 }
 
-/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE (matches jsPDF). */
+/** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION. */
 function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
   const name = rowByLabel(rows, "patient", "name");
   const ageSex = rowByLabel(rows, "age / sex", "age/sex");
   const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
   const dateRaw = rowByLabel(rows, "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
+  // The two identifiers that tie the sheet back to the study. Both arrive in
+  // `rows` already — the block simply never drew them. A row whose value is the
+  // route's own "no value" placeholder (an em dash) is absent, not blank: printing
+  // "UHID: —" reads as an identifier to whoever receives the report.
+  const blank = (v: string) => (/^[-–—.\s]*$/.test(v) ? "" : v);
+  const uhid = blank(rowByLabel(rows, "uhid", "patient id", "patient id / uhid"));
+  const accession = blank(rowByLabel(rows, "accession no.", "accession", "accession number"));
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`
       : "";
+  const identifiers = uhid || accession
+    ? `
+    <tr>
+      <td class="ld-left">${cell("UHID:", uhid)}</td>
+      <td class="ld-right">${cell("ACCESSION:", accession)}</td>
+    </tr>`
+    : "";
   return `<table class="letterpad-demo">
     <tr>
       <td class="ld-left">${cell("NAME:", name, true)}</td>
@@ -348,7 +362,7 @@ function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
     <tr>
       <td class="ld-left">${cell("REFD. BY:", refDr)}</td>
       <td class="ld-right">${cell("DATE:", dateStr)}</td>
-    </tr>
+    </tr>${identifiers}
   </table>
   <div class="letterpad-demo-rule"></div>`;
 }
@@ -416,8 +430,13 @@ function keyImagesHtml(
   const useViewport = placement === "side-panel";
   const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
-    .map((img, i) => {
-      const alt = escapeHtml(img.caption || `Image ${i + 1}`);
+    .map((img) => {
+      // Captions are the radiologist's choice, so an absent one must leave no
+      // trace: no element, no invented "Image N" label, no reserved strip.
+      // Whitespace-only is treated as absent — a stray space typed into the
+      // caption box would otherwise print an empty navy band.
+      const caption = String(img.caption ?? "").trim();
+      const alt = escapeHtml(caption);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
       const src = String(img.src ?? "").trim();
@@ -427,8 +446,7 @@ function keyImagesHtml(
         : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
       return `
         <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
-          ${badge}${imgTag}
-          <figcaption class="image-caption">${alt}</figcaption>
+          ${badge}${imgTag}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
         </figure>`;
     })
     .join("");
@@ -875,13 +893,20 @@ export function renderReportDocument(
       flex-direction: column;
       width: var(--ki-size, 48mm);
       max-width: 100%;
-      aspect-ratio: 1 / 1;
+      /* Height = the square .image-viewport plus any caption that exists. A 1/1
+         ratio here left a caption zero space and overflow:hidden clipped it —
+         that is why it used to be display:none. */
       min-height: 0;
       align-self: center;
       break-inside: auto;
       page-break-inside: auto;
     }
-    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
+    .image-panel-side .image-caption {
+      padding: 1px 5px; font-size: 6.5px; line-height: 1.3; flex-shrink: 0;
+      /* Break a long unbroken series name inside the port instead of widening
+         the rail and shifting the report column. */
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -923,7 +948,10 @@ export function renderReportDocument(
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
-      padding: 2px 6px; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 2px 6px; letter-spacing: 0.05em;
+      /* No text-transform: a caption is the radiologist's own sentence, not a
+         field label. Upper-casing it turned a 146-character finding into a
+         shouting block and made the printed words differ from the stored ones. */
     }
 
     /* ── Footer + signatures slots ── */

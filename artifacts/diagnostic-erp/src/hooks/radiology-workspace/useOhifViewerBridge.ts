@@ -405,7 +405,10 @@ export function useOhifViewerBridge(opts: UseOhifViewerBridgeOptions) {
         seriesInstanceUID: a.seriesInstanceUID,
         sopInstanceUID: a.sopInstanceUID,
         frameNumber: a.frameNumber ?? null,
-        caption: a.seriesDescription ? `Key image (OHIF) — ${a.seriesDescription}` : "Key image (OHIF)",
+        // No caption: the viewer was asked what is on screen, not what to call it.
+        // The series description is kept as DICOM metadata by the server, and a
+        // printed label is only ever the radiologist's own words.
+        caption: "",
       });
     } finally {
       setOhifImageAdding(false);

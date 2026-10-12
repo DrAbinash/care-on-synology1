@@ -187,13 +187,32 @@ a changed file under the same name.
 
 ## Rollback
 
-If a migration causes a problem:
+There are no automatic rollbacks. Forward-only migrations only. If a migration
+causes a problem:
 
 1. Revert the SQL file and the entrypoint line
 2. Deploy — the file will not run again (it is no longer registered)
 3. If data was already inserted: write a compensating SQL and apply it manually via `docker exec -it care-db psql -U erp -d diagnostic_erp`
 
-There are no automatic rollbacks. Forward-only migrations only.
+Two facts measured above change how step 3 has to be read:
+
+- **A failed feature migration leaves the database partway through that file.**
+  It runs as one `psql -f` with `ON_ERROR_STOP=1`, so every statement before the
+  one that failed is already committed unless the file wraps itself in
+  `BEGIN`/`COMMIT` (25 of the 189 do). Write the compensating SQL against that
+  mixed state, not against "nothing happened".
+- **Nothing was recorded as applied**, which is the part that makes recovery
+  possible: no `schema_migrations_log` row, and on the Drizzle side no
+  `drizzle.__drizzle_migrations` hash, so fixing the file and re-deploying
+  re-runs it. `schema_deploy_state` is never written, so `GET /api/health/schema`
+  answers 503 and `scripts/deploy-health.mjs` refuses the deployment — the clinic
+  cannot be handed a half-migrated schema by accident.
+
+Restore-from-backup is the other path, and the only one that undoes *data* a
+migration changed. Verify the backup **before** migrating, not after
+(`docs/CARE_ERP_BACKUP_RESTORE.md`, `scripts/verify-backup-restore.sh`): a backup
+job that reports success without a restorable artifact is the failure mode this
+section exists for.
 
 ## Known-benign clean-boot Drizzle statements
 
@@ -211,19 +230,60 @@ they emit harmless `... does not exist` lines:
 Both paths handle these safely and the final schema is identical either way:
 - `docker/db-patch-entrypoint.sh` runs Drizzle migrations with `ON_ERROR_STOP=0`
   and filters out exactly these two lines (exact patterns, so a genuine
-  "does not exist" is never hidden).
+  "does not exist" is never hidden). Because `ON_ERROR_STOP=0` also makes `psql`
+  exit 0 whatever happened, the step now **reads the captured output**: any other
+  `ERROR:` line stops the run through `fail`, before the migration's hash is
+  recorded. See "What a failed migration actually does" below.
 - `lib/db/scripts/db-deploy.ts` (the manual `care-migrate` path) applies each
   statement individually and tolerates the same benign cleanups — which is what
   lets `care-migrate` bootstrap an empty database end-to-end.
 - `pnpm db:smoke` proves a clean boot + a populated re-run still yields the
-  correct schema, so a genuinely broken Drizzle migration (one that fails *hard*)
-  would fail the test suite; only these two known no-ops are tolerated.
+  correct schema. It does **not** catch a broken Drizzle migration: its
+  `applyDrizzle()` collects warnings and asserts nothing on them, which is
+  exactly how the hole below survived the suite.
 
 **Do not "fix" these by editing `0006`/`0010`.** Editing an applied migration
 changes its file hash, which forces a one-time full re-apply on every existing
 production database (0006 is ~2600 lines and would re-run ~40 `ADD CONSTRAINT`
 statements as swallowed "already exists" errors). The runtime tolerance above is
 the safe handling.
+
+## What a failed migration actually does (measured, not inferred)
+
+Run against real Postgres databases with the shipped `docker/db-patch-entrypoint.sh`
+(the two bind-mount paths rewritten, nothing else), on a throwaway server:
+
+| Case | Before | Now |
+|---|---|---|
+| Feature migration with a failing statement | exits 1, `✗ Feature migration FAILED: <file>`, no ledger row, `schema_deploy_state` never written | unchanged — this step was always honest |
+| Drizzle migration with a failing statement | **exited 0**, printed `✓ All migrations complete — API may start`, wrote the file's hash into `drizzle.__drizzle_migrations` and `schema_migrations_log`, set `db_patch_ok=true` | exits 1, names the migration and the error, and records nothing |
+| Clean boot, no injected failure | exits 0, 15 Drizzle + 189 feature applied, 204 tracked | exits 0, same numbers — the new check has no false positive |
+| Second run over the same database | 0 applied, 15 + 189 "already current", rows untouched | unchanged |
+
+The old Drizzle behaviour was worse than a wrong log line: because the hash was
+recorded, every later deploy **skipped the half-applied migration forever**. And
+the net that was assumed to be underneath it is not there — `care-schema-verify`
+checks the columns the migration files declare and reported
+`SCHEMA VERIFICATION PASSED` on the database that the failed migration left
+behind (it noticed only the stray extra table, as "out-of-band drift").
+
+So a statement that fails inside a Drizzle file used to produce a schema the API
+serves traffic against and nobody ever revisits. `scripts/db-patch-entrypoint.test.mjs`
+now pins the ordering that prevents it (scan → `fail` → only then record), with
+six mutants that each make the pinned rule fail.
+
+Reproduce on any box with `psql` and `sh` (never against the clinic's database):
+
+```sh
+createdb care_mig_probe                       # throwaway, on a scratch server
+DB_HOST=127.0.0.1 DB_NAME=care_mig_probe sh docker/db-patch-entrypoint.sh   # exit 0
+DB_HOST=127.0.0.1 DB_NAME=care_mig_probe sh docker/db-patch-entrypoint.sh   # exit 0, 0 applied
+```
+
+To test the failure path, copy `migrations/` and `lib/db/drizzle/` to a scratch
+directory, add a file whose statement fails, point `FEATURE_DIR`/`DRIZZLE_DIR` at
+the copies, and confirm the exit status and the absence of a ledger row.
+
 
 ## Cleanly re-baselining the Drizzle history (scheduled maintenance)
 

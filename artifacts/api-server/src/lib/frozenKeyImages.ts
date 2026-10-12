@@ -33,7 +33,8 @@ export const FROZEN_PRINT_MAX_INLINE_BYTES = 2_500_000;
 export const FROZEN_STORE_MAX_EDGE_PX = 1800;
 export const FROZEN_STORE_JPEG_QUALITY = 85;
 
-export const FROZEN_UNAVAILABLE_CAPTION_PREFIX = "Frozen key image unavailable";
+/** The words shown when frozen pixels cannot be read — never a caption. */
+export const FROZEN_UNAVAILABLE_NOTICE = "Frozen key image unavailable";
 
 /** Explicit SVG placeholder — never empty src with a SOP uid (would Orthanc-hydrate). */
 export const FROZEN_UNAVAILABLE_PLACEHOLDER_SRC =
@@ -41,7 +42,7 @@ export const FROZEN_UNAVAILABLE_PLACEHOLDER_SRC =
   encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360" viewBox="0 0 480 360">` +
       `<rect width="480" height="360" fill="#111"/>` +
-      `<text x="240" y="170" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="700">Frozen key image unavailable</text>` +
+      `<text x="240" y="170" text-anchor="middle" fill="#fbbf24" font-family="sans-serif" font-size="18" font-weight="700">${FROZEN_UNAVAILABLE_NOTICE}</text>` +
       `<text x="240" y="200" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="12">Evidence file missing or unreadable</text>` +
       `</svg>`,
   );
@@ -187,13 +188,13 @@ async function fileToDataUrl(diskPath: string): Promise<FileLoadResult> {
 }
 
 function unavailableModel(row: FrozenKeyImageRow): ReportKeyImageModel {
-  const base = (row.caption || "").trim();
-  const caption = base
-    ? `${FROZEN_UNAVAILABLE_CAPTION_PREFIX} — ${base}`.slice(0, 500)
-    : FROZEN_UNAVAILABLE_CAPTION_PREFIX;
   return {
     src: FROZEN_UNAVAILABLE_PLACEHOLDER_SRC,
-    caption,
+    // The missing-pixels notice belongs to the picture and to the report-level
+    // integrity banner, not to the caption: a caption is the radiologist's own
+    // words, and an uncaptioned image must print with nothing under it even when
+    // its file is gone. The placeholder SVG already says it inside the frame.
+    caption: (row.caption || "").trim().slice(0, 500),
     displayOrder: row.sortOrder ?? 0,
     // CRITICAL: clear SOP so print hydrate cannot substitute live Orthanc pixels.
     sopInstanceUid: null,

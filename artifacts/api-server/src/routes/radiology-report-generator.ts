@@ -2766,7 +2766,7 @@ radiologyReportGeneratorRouter.post(
           accessionNumber: req.body.accessionNumber ? String(req.body.accessionNumber).slice(0, 64) : null,
           imageUrl,
           thumbnailUrl,
-          caption: String(req.body.caption ?? "").slice(0, 500),
+          caption: String(req.body.caption ?? "").trim().slice(0, 500),
           captionManual,
           sortOrder,
           includeInReport,
@@ -2944,7 +2944,7 @@ radiologyReportGeneratorRouter.post(
 
 // PUT /key-images/:id
 const UpdateKeyImageBody = z.object({
-  caption: z.string().max(500).optional(),
+  caption: z.string().trim().max(500).optional(),
   captionManual: z.boolean().optional(),
   includeInReport: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
@@ -3663,7 +3663,7 @@ const PacsStillSchema = z.object({
   instanceNumber: z.number().int().min(0).max(999_999).optional().nullable(),
   seriesDescription: z.string().max(200).optional(),
   modality: z.string().max(16).optional(),
-  caption: z.string().max(500).optional(),
+  caption: z.string().trim().max(500).optional(),
   sortOrder: z.number().int().min(0).max(10_000).optional(),
 });
 
@@ -3781,12 +3781,11 @@ radiologyReportGeneratorRouter.post(
         thumbAbs = path.join(KEY_IMAGE_DIR, path.basename(thumb));
       }
 
-      const caption = (
-        claim.caption?.trim()
-        || claim.seriesDescription?.trim()
-        || `Image ${claim.instanceNumber ?? ""}`.trim()
-        || "Key image"
-      ).slice(0, 500);
+      // A caption is the radiologist's words or nothing. The series description
+      // and instance number are stored in their own columns and stay available to
+      // the rail and the print layout; inventing a caption from them made every
+      // attachment print a label nobody wrote.
+      const caption = (claim.caption?.trim() ?? "").slice(0, 500);
 
       const [row] = await db
         .insert(radiologyReportKeyImagesTable)
@@ -3798,7 +3797,7 @@ radiologyReportGeneratorRouter.post(
           imageUrl,
           thumbnailUrl,
           caption,
-          captionManual: Boolean(claim.caption?.trim()),
+          captionManual: caption.length > 0,
           sortOrder: claim.sortOrder ?? existing.reduce((m, r) => Math.max(m, r.sortOrder ?? 0), -1) + 1,
           includeInReport: true,
           sourceType: "DICOM",

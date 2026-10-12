@@ -422,7 +422,7 @@ export async function handleCareOhifMessage(
           seriesInstanceUid: msg.seriesInstanceUID,
           sopInstanceUid: msg.sopInstanceUID,
           frameNumber: msg.frameNumber ?? null,
-          caption: msg.caption || "Key image (OHIF)",
+          caption: msg.caption ?? "",
         },
         {
           draftId,

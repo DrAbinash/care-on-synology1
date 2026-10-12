@@ -16,7 +16,7 @@ import {
   FROZEN_KEY_IMAGE_DIR,
   FROZEN_PRINT_MAX_INLINE_BYTES,
   FROZEN_STORE_MAX_EDGE_PX,
-  FROZEN_UNAVAILABLE_CAPTION_PREFIX,
+  FROZEN_UNAVAILABLE_NOTICE,
   FROZEN_UNAVAILABLE_PLACEHOLDER_SRC,
   frozenRowsToPresentationModels,
   isSafeKeyImageFilename,
@@ -226,9 +226,10 @@ describe.skipIf(!hasDb)("frozenKeyImages DB", () => {
     expect(result.source).toBe("frozen");
     expect(result.integrityOk).toBe(false);
     expect(result.unavailableFrozenCount).toBeGreaterThanOrEqual(1);
-    const bad = result.images.find((m) => m.caption.includes(FROZEN_UNAVAILABLE_CAPTION_PREFIX));
+    const bad = result.images.find((m) => m.src === FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
     expect(bad).toBeTruthy();
-    expect(bad!.src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
+    // The stored words survive; the missing-file notice does not become the caption.
+    expect(bad!.caption).toBe("Gone");
     expect(bad!.sopInstanceUid).toBeNull();
   });
 
@@ -257,7 +258,34 @@ describe.skipIf(!hasDb)("frozenKeyImages DB", () => {
     expect(unavailableCount).toBe(1);
     expect(images[0].src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
     expect(images[0].sopInstanceUid).toBeNull();
-    expect(images[0].caption).toContain(FROZEN_UNAVAILABLE_CAPTION_PREFIX);
+    expect(images[0].caption).toBe("Corrupt");
+    expect(images[0].caption).not.toContain(FROZEN_UNAVAILABLE_NOTICE);
+  });
+
+  it("a missing frozen file with no caption invents no words of its own", async () => {
+    // The failure state has to obey the same rule as the normal one: an image the
+    // radiologist never captioned must print with nothing beneath it. The report
+    // banner and the placeholder picture still say the pixels are gone.
+    const [row] = await db
+      .insert(radiologyReportKeyImagesTable)
+      .values({
+        draftId,
+        imageUrl: `/uploads/radiology-key-images/${randomUUID()}-blank-missing.jpg`,
+        thumbnailUrl: `/uploads/radiology-key-images/${randomUUID()}-blank-missing-thumb.jpg`,
+        caption: "   ",
+        includeInReport: true,
+        sourceType: "VIEWPORT_CAPTURE",
+        sopInstanceUid: "1.2.3.blank.missing",
+        sortOrder: 101,
+      })
+      .returning();
+    createdIds.push(row.id);
+
+    const { images, unavailableCount } = await frozenRowsToPresentationModels([row]);
+    expect(unavailableCount).toBe(1);
+    expect(images[0].src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
+    expect(images[0].caption).toBe("");
+    expect(images[0].caption).not.toContain(FROZEN_UNAVAILABLE_NOTICE);
   });
 
   it("Phase 1 acceptance: finalized draft prints frozen image without Orthanc", async () => {

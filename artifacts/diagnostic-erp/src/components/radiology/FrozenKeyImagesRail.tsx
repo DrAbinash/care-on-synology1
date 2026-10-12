@@ -8,7 +8,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles, ScanLine, ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/fetchApi";
+import { api, isRateLimited, rateAwareRetry } from "@/lib/fetchApi";
+import { frozenKeyImageRailState, type RailReadState } from "@/lib/frozenKeyImageRailState";
 import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
@@ -58,7 +59,53 @@ export function useFrozenKeyImages(draftId: number | null | undefined) {
       api.get(`/api/radiology/report-generator/key-images?draftId=${draftId}`),
     enabled: !!draftId,
     staleTime: 5_000,
+    // A 429 is a scheduling problem, not an absence of images: fetchApi waits
+    // out a short window itself and throws RateLimitedError for a longer one,
+    // which is rescheduled here on the server's clock so the rail comes back by
+    // itself instead of staying on "no images exist".
+    ...rateAwareRetry,
   });
+}
+
+/**
+ * What the strip says when it cannot show images. One component because both
+ * places that need it — the no-draft-yet shell and the rail body — must say the
+ * same true thing, and the second one used to fall through to "no frozen
+ * captures yet".
+ */
+function RailReadNotice({ state, onRetry }: { state: RailReadState; onRetry: () => void }) {
+  if (state.kind === "loading") {
+    return (
+      <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-loading" role="status">
+        Loading the key images attached to this report…
+      </p>
+    );
+  }
+  if (state.kind !== "rate-limited" && state.kind !== "read-failed") return null;
+  return (
+    <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5" data-testid="frozen-key-images-rail-error" role="status">
+      <p className="text-[10px] font-semibold text-amber-900">
+        {state.kind === "rate-limited"
+          ? "The server is busy — these images are still attached to this report."
+          : "The key images could not be loaded."}
+      </p>
+      <p className="text-[10px] text-amber-800">
+        {state.kind === "rate-limited"
+          ? `Retrying automatically in ${state.waitSeconds} s.`
+          : "Nothing was deleted. Retry below, or reopen the study."}
+      </p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="mt-1 h-6 text-[10px]"
+        onClick={onRetry}
+        data-testid="frozen-key-images-retry"
+      >
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 export default function FrozenKeyImagesRail({
@@ -74,6 +121,9 @@ export default function FrozenKeyImagesRail({
   captureBlockedTitle,
   onPickFromPacs,
   pacsBlockedTitle,
+  draftReadPending,
+  draftError,
+  onRetryDraftRead,
 }: {
   draftId: number | null;
   disabled?: boolean;
@@ -95,6 +145,12 @@ export default function FrozenKeyImagesRail({
    */
   onPickFromPacs?: () => void;
   pacsBlockedTitle?: string;
+  /** The study's draft anchor has not been read yet: images are unknown, not absent. */
+  draftReadPending?: boolean;
+  /** The anchor read failed — with a 429 among its causes. */
+  draftError?: unknown;
+  /** Re-run the anchor read; the images query is disabled while it has no draft id. */
+  onRetryDraftRead?: () => void;
 }) {
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState<FrozenKeyImage | null>(null);
@@ -106,6 +162,29 @@ export default function FrozenKeyImagesRail({
     if (!filterObservationId) return all;
     return all.filter((i) => i.observationId === filterObservationId);
   }, [q.data?.items, filterObservationId]);
+
+  /**
+   * Whether this strip is allowed to claim anything about the study's images.
+   * `No frozen captures yet` and `Save a draft to capture key images` are
+   * statements about the patient's report, so they are reachable only when a
+   * read answered — never while one is in flight, waiting out a rate-limit
+   * window, or has failed.
+   */
+  const readState = frozenKeyImageRailState({
+    draftId,
+    draftPending: Boolean(draftReadPending),
+    draftError,
+    imagesPending: q.isPending && draftId != null,
+    imagesError: q.error,
+    itemCount: items.length,
+  });
+  const anchorFailed = Boolean(draftError);
+  const retryRead = () => {
+    // The images query is `enabled: !!draftId`, so refetching it while the
+    // anchor has no draft id asks nothing at all. Retry the read that failed.
+    if (anchorFailed) onRetryDraftRead?.();
+    else void q.refetch();
+  };
 
   // One grant request for the whole rail instead of one per thumbnail; the
   // images then read the shared cache. See components/radiology/KeyImageWithAccess.tsx.
@@ -176,6 +255,20 @@ export default function FrozenKeyImagesRail({
     orderMut.mutate(next);
   };
 
+  // Every hook above must run on every render, so both early returns below stay
+  // after them.
+  //
+  // The anchor is unknown — still being read, or refused. The study may hold
+  // fourteen images; nothing here is allowed to imply otherwise, and the picker
+  // stays closed because it would create a second draft behind the read's back.
+  if (!draftId && readState.kind !== "empty") {
+    return (
+      <div className="border-t border-border px-2 py-1.5" data-testid="frozen-key-images-rail-empty">
+        <RailReadNotice state={readState} onRetry={retryRead} />
+      </div>
+    );
+  }
+
   if (!draftId) {
     return (
       <div className="border-t border-border px-2 py-1.5" data-testid="frozen-key-images-rail-empty">
@@ -207,7 +300,7 @@ export default function FrozenKeyImagesRail({
           data-testid="frozen-key-images-rail-toggle"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Key Images ({items.length})
+          Key Images ({q.isError ? "—" : items.length})
           {aiSelectionEnabled && aiSelected.size > 0 ? (
             <Badge variant="outline" className="text-[9px] h-4 border-violet-300 text-violet-800" data-testid="frozen-key-images-ai-count">
               AI {aiSelected.size}/{COMPOSER_MAX_SELECTED_KEY_IMAGES}
@@ -285,14 +378,27 @@ export default function FrozenKeyImagesRail({
           </div>
         ) : null}
       </div>
+      {/* The images live on the server. When the read fails, saying "no frozen
+          captures yet" is a statement about the study that is not true, and a
+          radiologist who believes it re-attaches images they already have — or
+          signs a report thinking the pictures are missing. So a failed read is
+          named as a failed read, with what to do next and a manual retry, and it
+          shows even when the strip is collapsed. */}
+      {readState.kind !== "images" && readState.kind !== "empty" ? (
+        <div className="mx-2 mb-1.5">
+          <RailReadNotice state={readState} onRetry={retryRead} />
+        </div>
+      ) : null}
       {open && (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {items.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-empty-hint">
-              {canCapture
-                ? "No frozen captures yet. Click the camera to capture the active viewer, or use Capture key image in Frames mode."
-                : "No frozen captures yet. Use Capture key image in Frames mode."}
-            </p>
+            readState.kind === "empty" ? (
+              <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-empty-hint">
+                {canCapture
+                  ? "No frozen captures yet. Click the camera to capture the active viewer, or use Capture key image in Frames mode."
+                  : "No frozen captures yet. Use Capture key image in Frames mode."}
+              </p>
+            ) : null
           ) : (
             items.map((img) => {
               const label = img.observationId
@@ -317,15 +423,17 @@ export default function FrozenKeyImagesRail({
                       id={img.id}
                       src={img.thumbnailUrl || img.imageUrl}
                       variant="thumbnail"
-                      alt={img.caption || "Key image"}
+                      alt={img.caption}
                       className="h-full w-full object-contain"
                       loading="lazy"
                     />
                   </button>
                   <div className="px-1.5 py-1 space-y-0.5">
-                    <p className="text-[9px] font-medium text-slate-800 line-clamp-2" title={img.caption}>
-                      {img.caption || "Untitled"}
-                    </p>
+                    {img.caption.trim() ? (
+                      <p className="text-[9px] font-medium text-slate-800 line-clamp-2" title={img.caption}>
+                        {img.caption}
+                      </p>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-1 text-[8px] text-slate-500">
                       <span className="truncate">{label}</span>
                       {img.sourceType === "DICOM" && img.sopInstanceUid ? (
@@ -469,7 +577,7 @@ export default function FrozenKeyImagesRail({
             />
             <div className="p-3 space-y-2">
               {disabled ? (
-                <p className="text-sm">{preview.caption}</p>
+                preview.caption.trim() ? <p className="text-sm">{preview.caption}</p> : null
               ) : (
                 <input
                   className="w-full border rounded px-2 py-1 text-sm"
