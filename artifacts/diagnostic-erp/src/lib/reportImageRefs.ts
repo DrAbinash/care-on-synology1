@@ -60,7 +60,7 @@ export function buildImageRefPayload(input: NewImageRefInput): Record<string, un
     seriesInstanceUid: input.seriesInstanceUID,
     sopInstanceUid: input.sopInstanceUID,
     ...(input.frameNumber && input.frameNumber >= 1 ? { frameNumber: Math.floor(input.frameNumber) } : {}),
-    description: (input.caption || "Key image").slice(0, 500),
+    description: (input.caption ?? "").trim().slice(0, 500),
     displayOrder: input.displayOrder,
     ...(input.isKeyImage ? { isKeyImage: true } : {}),
   };

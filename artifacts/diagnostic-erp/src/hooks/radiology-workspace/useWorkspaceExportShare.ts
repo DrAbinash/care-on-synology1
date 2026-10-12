@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
 import { exportRadiologyReportToWord, safeFileNamePart } from "@/lib/radiologyReportWordExport";
 import { exportRadiologyReportToPdf } from "@/lib/radiologyReportPdfExport";
+import type { ReportKeyImage } from "@/lib/reportPdfGenerator";
 import {
   buildLivePrintBodyHtml,
   finalizePrintPreviewHtml,
@@ -82,10 +83,16 @@ export type UseWorkspaceExportShareOptions = {
   signerLine: string;
   findingsProvenance: FieldProvenanceMap;
   impressionProvenance: FieldProvenanceMap;
+  /**
+   * The frozen key-image rows, in store order. The caption is the stored record's
+   * own — Download PDF labels an image with it and prints nothing when it is
+   * empty, so this stays one list rather than an image list plus a label list.
+   */
   frozenKeyImages: Array<{
     includeInReport: boolean;
     sortOrder: number;
     imageUrl: string;
+    caption: string;
   }>;
   studySetup: { matchedStudyRegion?: string | null };
   doctorsCatalog: { name: string; degree?: string | null }[];
@@ -289,11 +296,11 @@ const handleExportPdf = useCallback(async () => {
     const frozenForPdf = frozenKeyImages
       .filter((img) => img.includeInReport)
       .sort((a, b) => a.sortOrder - b.sortOrder);
-    let frozenDataUrls: string[] = [];
+    let frozenDataUrls: ReportKeyImage[] = [];
     if (frozenForPdf.length > 0) {
       frozenDataUrls = (
         await Promise.all(
-          frozenForPdf.map(async (img) => {
+          frozenForPdf.map(async (img): Promise<ReportKeyImage | null> => {
             try {
               // Authenticated blob, no credential in the URL. `fetch` can send
               // the Bearer header, and the guarded key-image mount accepts it
@@ -301,18 +308,21 @@ const handleExportPdf = useCallback(async () => {
               // this one never need a grant. A stored key image is PHI-bearing
               // pixels and is no longer fetched anonymously.
               const blob = await api.getBlob(img.imageUrl);
-              return await new Promise<string | null>((resolve) => {
+              const src = await new Promise<string | null>((resolve) => {
                 const reader = new FileReader();
                 reader.onload = () => resolve(String(reader.result || "") || null);
                 reader.onerror = () => resolve(null);
                 reader.readAsDataURL(blob);
               });
+              // The caption rides with its own pixels instead of living in a
+              // parallel array whose index could drift from the image it labels.
+              return src ? { src, caption: img.caption.trim() } : null;
             } catch {
               return null;
             }
           }),
         )
-      ).filter((u): u is string => Boolean(u));
+      ).filter((u): u is ReportKeyImage => Boolean(u));
     }
     await exportRadiologyReportToPdf({
       patientName: canonicalDemography.patientName,

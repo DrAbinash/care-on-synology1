@@ -425,7 +425,9 @@ export function keyImageLayoutCss(style: InstitutionalReportStyle | null | undef
       .image-panel-side[data-image-count="6"] { --ki-size: 18mm !important; }
       .image-panel-side .image-cell {
         flex: 0 0 auto !important;
-        aspect-ratio: 1 / 1 !important;
+        /* The SQUARE belongs to the port, not to the tile. A 1/1 ratio on the cell
+           left a caption zero space and the cell's overflow:hidden clipped it out
+           of the print entirely — the words were in the HTML and never on paper. */
         width: min(100%, var(--ki-size, 48mm)) !important;
         max-width: 100% !important;
         align-self: flex-start !important;

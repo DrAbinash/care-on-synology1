@@ -416,8 +416,13 @@ function keyImagesHtml(
   const useViewport = placement === "side-panel";
   const cells = [...usable]
     .sort((a, b) => a.displayOrder - b.displayOrder)
-    .map((img, i) => {
-      const alt = escapeHtml(img.caption || `Image ${i + 1}`);
+    .map((img) => {
+      // Captions are the radiologist's choice, so an absent one must leave no
+      // trace: no element, no invented "Image N" label, no reserved strip.
+      // Whitespace-only is treated as absent — a stray space typed into the
+      // caption box would otherwise print an empty navy band.
+      const caption = String(img.caption ?? "").trim();
+      const alt = escapeHtml(caption);
       const sop = img.sopInstanceUid ? ` data-sop-instance-uid="${escapeHtml(img.sopInstanceUid)}"` : "";
       const badge = img.isKeyImage ? `<span class="key-image-badge">★ KEY</span>` : "";
       const src = String(img.src ?? "").trim();
@@ -427,8 +432,7 @@ function keyImagesHtml(
         : `<img src="${pending ? "" : src}" class="dicom-img${pending ? " dicom-img-pending" : ""}" alt="${alt}" />`;
       return `
         <figure class="image-cell${pending ? " image-cell-pending" : ""}"${sop}>
-          ${badge}${imgTag}
-          <figcaption class="image-caption">${alt}</figcaption>
+          ${badge}${imgTag}${caption ? `\n          <figcaption class="image-caption">${alt}</figcaption>` : ""}
         </figure>`;
     })
     .join("");
@@ -875,13 +879,20 @@ export function renderReportDocument(
       flex-direction: column;
       width: var(--ki-size, 48mm);
       max-width: 100%;
-      aspect-ratio: 1 / 1;
+      /* Height = the square .image-viewport plus any caption that exists. A 1/1
+         ratio here left a caption zero space and overflow:hidden clipped it —
+         that is why it used to be display:none. */
       min-height: 0;
       align-self: center;
       break-inside: auto;
       page-break-inside: auto;
     }
-    .image-panel-side .image-caption { padding: 1px 5px; font-size: 6.5px; flex-shrink: 0; display: none; }
+    .image-panel-side .image-caption {
+      padding: 1px 5px; font-size: 6.5px; line-height: 1.3; flex-shrink: 0;
+      /* Break a long unbroken series name inside the port instead of widening
+         the rail and shifting the report column. */
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     .image-cell {
       margin: 0; border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       background: #000; text-align: center;
@@ -923,7 +934,10 @@ export function renderReportDocument(
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
-      padding: 2px 6px; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 2px 6px; letter-spacing: 0.05em;
+      /* No text-transform: a caption is the radiologist's own sentence, not a
+         field label. Upper-casing it turned a 146-character finding into a
+         shouting block and made the printed words differ from the stored ones. */
     }
 
     /* ── Footer + signatures slots ── */

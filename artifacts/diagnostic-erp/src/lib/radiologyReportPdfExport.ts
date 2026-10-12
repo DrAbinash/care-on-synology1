@@ -17,7 +17,7 @@
  */
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
-import { generateReportPDF, loadPrintSettings, type PrintClinic } from "./reportPdfGenerator";
+import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage } from "./reportPdfGenerator";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
 
@@ -65,39 +65,60 @@ function blobToDataUrl(blob: Blob): Promise<string> {
  * SAME browser DICOMweb base + rendered-image endpoint the embedded viewer
  * and image picker already use (M1.2 launch contract) — no new PACS access
  * path. A single broken/unreachable image is skipped, not fatal.
+ *
+ * Each result keeps the label its stored reference carries, so a reference the
+ * radiologist named prints with that name and one they left alone prints bare.
  */
 export async function fetchKeyImageDataUrls(
   dicomWebBase: string | null,
   refs: ReportImageRef[],
   opts: { limit?: number; size?: number; fetchImpl?: typeof fetch } = {},
-): Promise<string[]> {
+): Promise<ReportKeyImage[]> {
   if (!dicomWebBase || refs.length === 0) return [];
   const limit = opts.limit ?? 12;
   const size = opts.size ?? 600;
   const fetchImpl = opts.fetchImpl ?? dicomWebFetch;
   const ordered = [...refs].sort((a, b) => a.displayOrder - b.displayOrder).slice(0, limit);
-  const dataUrls = await Promise.all(
-    ordered.map(async (ref) => {
+  const fetched = await Promise.all(
+    ordered.map(async (ref): Promise<ReportKeyImage | null> => {
       const url = thumbnailRenderedUrl(dicomWebBase, ref, size);
       if (!url) return null;
       try {
         const res = await fetchImpl(url);
         if (!res.ok) return null;
-        return await blobToDataUrl(await res.blob());
+        return { src: await blobToDataUrl(await res.blob()), caption: ref.description.trim() };
       } catch {
         return null;
       }
     }),
   );
-  return dataUrls.filter((v): v is string => Boolean(v));
+  return fetched.filter((v): v is ReportKeyImage => Boolean(v));
 }
 
-/** Build a CARE letter-pad key-images rail matching reportPresentation markup. */
-export function buildKeyImagesRailHtml(dataUrls: string[]): string {
-  const cells = dataUrls.map((src, i) => (
-    `<div class="image-cell"><div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${src}" class="dicom-img" alt="Key image ${i + 1}"/></div></div></div>`
-  )).join("");
-  return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${dataUrls.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
+/** Captions are the radiologist's words, and they go into innerHTML. */
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Build a CARE letter-pad key-images rail matching reportPresentation markup.
+ * A cell carries a `<figcaption>` only when that image has a caption: an
+ * uncaptioned image gets no element, no label and no reserved strip.
+ */
+export function buildKeyImagesRailHtml(images: ReportKeyImage[]): string {
+  const cells = images.map((img) => {
+    const caption = (img.caption ?? "").trim();
+    const alt = escapeHtmlAttr(caption);
+    const fig = caption ? `<figcaption class="image-caption">${alt}</figcaption>` : "";
+    return (
+      `<div class="image-cell"><div class="image-viewport"><div class="image-framed" style="--img-zoom:1;--img-ox:0%;--img-oy:0%;--img-fit:contain;"><img src="${img.src}" class="dicom-img" alt="${alt}"/></div></div>${fig}</div>`
+    );
+  }).join("");
+  return `<div class="image-panel image-panel-side image-panel-keyrail" data-image-count="${images.length}"><div class="image-panel-heading">KEY IMAGES</div><div class="image-grid">${cells}</div></div>`;
 }
 
 /** Count dicom-img tags that already carry a usable inlined data URL. */
@@ -248,7 +269,7 @@ export interface RadiologyPdfExportInput {
    * Frozen viewport artifacts (data URLs). When non-empty, these are used for
    * the KEY IMAGES rail instead of live Orthanc rendering of imageRefs.
    */
-  frozenKeyImages?: string[];
+  frozenKeyImages?: ReportKeyImage[];
   clinic: PrintClinic;
   letterhead?: CareLetterpadChrome;
   /** When false, the CARE letterpad header (logo + address) is omitted — for pre-printed letterheads. */

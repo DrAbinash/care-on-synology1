@@ -497,6 +497,113 @@ describe("premium two-column print rail (page-1 images beside findings)", () => 
   });
 });
 
+describe("a caption is the radiologist's words, or there is none", () => {
+  const img = (tag: string) => `data:image/jpeg;base64,${tag}`;
+  const render = (
+    keyImages: ReportDocumentModel["keyImages"],
+    templateId = "care-premium",
+  ) => renderReportDocument(baseModel({ keyImages }), resolvePresentationTemplate(templateId));
+  const cells = (html: string): string[] => html.match(/<figure class="image-cell[\s\S]*?<\/figure>/g) ?? [];
+  const captionOf = (cell: string | undefined) => /class="image-caption">([\s\S]*?)<\/figcaption>/.exec(cell ?? "")?.[1] ?? "";
+
+  it("prints the caption beneath its own image, in both shipped templates", () => {
+    for (const templateId of ["care-classic", "care-premium"]) {
+      const html = render([{ src: img("AAA"), caption: "T2 AXIAL C4-L5", displayOrder: 0 }], templateId);
+      const cell = cells(html)[0] ?? "";
+      expect(captionOf(cell)).toBe("T2 AXIAL C4-L5");
+      // Beneath, not beside: the caption follows the viewport it labels.
+      expect(cell.indexOf("image-viewport")).toBeLessThan(cell.indexOf("image-caption"));
+    }
+  });
+
+  it("an absent caption renders no element, no label and no CARE-invented text", () => {
+    const html = render([{ src: img("AAA"), caption: "", displayOrder: 0 }]);
+    expect(html).not.toContain("figcaption");
+    expect(html).not.toMatch(/Image 1\b/);
+    // The image carries no substitute name either, so a tile that fails to load
+    // cannot print a label the radiologist never wrote.
+    expect(html).toContain('class="dicom-img" alt=""');
+  });
+
+  it("whitespace is not a caption", () => {
+    for (const blank of ["   ", "\n", " \t ", null as unknown as string, undefined as unknown as string]) {
+      expect(render([{ src: img("AAA"), caption: blank, displayOrder: 0 }])).not.toContain("figcaption");
+    }
+  });
+
+  it("mixed captions stay attached to the image they belong to", () => {
+    const html = render([
+      { src: img("AAA"), caption: "", displayOrder: 0 },
+      { src: img("BBB"), caption: "FLAIR", displayOrder: 1 },
+      { src: img("CCC"), caption: "   ", displayOrder: 2 },
+      { src: img("DDD"), caption: "ADC b=1000", displayOrder: 3 },
+    ]);
+    const found = cells(html);
+    expect(found).toHaveLength(4);
+    expect(found.map(captionOf)).toEqual(["", "FLAIR", "", "ADC b=1000"]);
+    // Four figures but only two pieces of caption markup: an uncaptioned image
+    // reserves nothing.
+    expect((html.match(/<figcaption/g) ?? []).length).toBe(2);
+  });
+
+  it("the rail neither hides the caption nor leaves it no room", () => {
+    // Both halves of the original defect: display:none, and a cell pinned to a
+    // square that overflow:hidden then clipped the caption against.
+    const html = render([{ src: img("AAA"), caption: "T2", displayOrder: 0 }]);
+    const side = html.match(/\.image-panel-side \.image-caption\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(side).not.toBe("");
+    expect(side).not.toContain("display: none");
+    // Two rules share this selector — the @media print one comes first — so the
+    // assertion is bound to the rule that actually sizes the port. An earlier
+    // version of this test matched the print rule and could not be broken.
+    const cellRules: string[] = html.match(/\.image-panel-side \.image-cell\s*\{[^}]*\}/g) ?? [];
+    const sizing = cellRules.find((rule) => rule.includes("--ki-size")) ?? "";
+    expect(sizing).not.toBe("");
+    expect(sizing).not.toContain("aspect-ratio");
+    // The port itself stays square, so an uncaptioned image is laid out as before.
+    expect(html).toMatch(/\.image-viewport\s*\{[^}]*aspect-ratio: 1 \/ 1/);
+  });
+
+  it("a caption prints in the radiologist's own capitalisation", () => {
+    // Field labels are uppercased by this template; a caption is a sentence the
+    // clinician typed, and shouting it changed what the report said on paper
+    // without changing what was stored.
+    const html = render([{ src: img("AAA"), caption: "Small focus of oedema, left cerebellum", displayOrder: 0 }]);
+    const capRules: string[] = html.match(/\.image-caption\s*\{[^}]*\}/g) ?? [];
+    expect(capRules.length).toBeGreaterThan(0);
+    for (const raw of capRules) {
+      // Comments are stripped first: the rule that documents why there is no
+      // text-transform must not be mistaken for one.
+      const rule = raw.replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(rule).not.toMatch(/text-transform/);
+    }
+    // The words themselves reach the page exactly as typed.
+    expect(html).toContain("Small focus of oedema, left cerebellum");
+    expect(html).not.toContain("SMALL FOCUS OF OEDEMA");
+  });
+
+  it("a long caption wraps inside the port instead of stretching the rail", () => {
+    const long = "Broad-based posterior disc extrusion with severe thecal sac compression and bilateral facet hypertrophy at L4-L5 with traversing root impingement";
+    const html = render([{ src: img("AAA"), caption: long, displayOrder: 0 }]);
+    expect(html).toContain(long); // nothing truncated
+    const css = html.match(/\.image-panel-side \.image-caption\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(css).toContain("overflow-wrap: anywhere");
+    expect(css).toContain("word-break: break-word");
+  });
+
+  it("the ★ KEY indicator and the caption coexist, neither replacing the other", () => {
+    const html = render([{ src: img("AAA"), caption: "T2 SAG", displayOrder: 0, isKeyImage: true }]);
+    expect(html).toContain("★ KEY");
+    expect(captionOf(cells(html)[0])).toBe("T2 SAG");
+  });
+
+  it("a hostile caption is escaped in every copy it reaches", () => {
+    const html = render([{ src: img("AAA"), caption: `<b>bad</b>`, displayOrder: 0 }]);
+    expect(html).not.toContain("<b>bad</b>");
+    expect(html.match(/&lt;b&gt;bad&lt;\/b&gt;/g) ?? []).toHaveLength(2);
+  });
+});
+
 describe("R1.4 — report number no longer overlaps the banded title bar", () => {
   it("premium's study-title-bar clears the floated report-number span", () => {
     const html = renderReportDocument(baseModel(), resolvePresentationTemplate("care-premium"));

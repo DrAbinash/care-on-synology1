@@ -223,7 +223,12 @@ describe.skipIf(!dbReady)("PACS image picker — attach from Orthanc", () => {
       studyInstanceUid: MRI_STUDY,
       seriesInstanceUid: MRI_SERIES,
       sopInstanceUid: MRI_SINGLE,
-      caption: "T2 TSE AXIAL",
+      // The picker sent a series description and NO caption, so the stored
+      // caption is empty: the series name stays in its own column instead of
+      // being re-labelled as a caption nobody wrote.
+      caption: "",
+      captionManual: false,
+      seriesDescription: "T2 TSE AXIAL",
       modality: "MR",
     });
     // A single-frame object is stored with NO frame claim, so later rendering
