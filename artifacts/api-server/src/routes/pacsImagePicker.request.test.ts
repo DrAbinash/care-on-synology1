@@ -418,4 +418,116 @@ describe.skipIf(!dbReady)("PACS image picker — attach from Orthanc", () => {
       await db.delete(radiologyImageReferencesTable).where(eq(radiologyImageReferencesTable.id, ref.id));
     }
   });
+
+  /**
+   * Acceptance leg 1 of 2 — a rate-limited PACS.
+   *
+   * Orthanc answers 429 when it is busy, which is the opposite of being down: it
+   * reached us, understood us, and asked us to come back. #950 fixed that
+   * distinction on the browser side; this measures the server side, because the
+   * print/PDF leg fetches pixels through `fetchPrintImageBytes`, which returns
+   * `null` for every non-OK status (reportImages.ts:186) and therefore hands 429,
+   * 500, a timeout and a corrupt object to the caller as the same event.
+   *
+   * The clinical claim pinned here is the one that must never regress: a refused
+   * attach leaves no row and no file, so a busy PACS cannot silently shorten the
+   * report that gets signed. Whether the operator is TOLD it was rate limiting is
+   * asserted separately, and the answer is recorded rather than assumed.
+   */
+  it("a 429 from the PACS fabricates nothing: no row, no file", async () => {
+    const before = await diskFiles();
+    const countBefore = (await db
+      .select({ id: radiologyReportKeyImagesTable.id })
+      .from(radiologyReportKeyImagesTable)
+      .where(eq(radiologyReportKeyImagesTable.draftId, draftId))).length;
+
+    pacs.setMode("limited");
+    let status = 0;
+    let detail = "";
+    try {
+      const res = await attach(body({ sopInstanceUid: MRI_CINE, frameNumber: 5 }));
+      status = res.status;
+      detail = res.text;
+    } finally {
+      pacs.setMode("serve");
+    }
+
+    // A busy PACS must never be accepted as a successful attach.
+    expect(status, `expected a refusal, got ${status}: ${detail}`).toBeGreaterThanOrEqual(400);
+
+    const countAfter = (await db
+      .select({ id: radiologyReportKeyImagesTable.id })
+      .from(radiologyReportKeyImagesTable)
+      .where(eq(radiologyReportKeyImagesTable.draftId, draftId))).length;
+    expect(countAfter).toBe(countBefore);
+    // and it must not leave a half-written picture on the print volume either
+    expect(await diskFiles()).toEqual(before);
+  });
+
+  /**
+   * Acceptance leg 2 of 2 — the whole attach → label → order → save → reload
+   * journey, in one test, because the stations are individually covered and the
+   * journey is not: a report can pass every unit check and still reopen with its
+   * images in the wrong order or its labels moved onto the wrong picture.
+   */
+  it("attaches, labels, reorders, and reopens exactly as the radiologist left it", async () => {
+    // Frames 6-8 of the 8-frame cine object: the only objects this file's earlier
+    // cases have not already frozen, since a duplicate attach is correctly refused.
+    const labelled = [
+      { frame: 6, caption: "T2W axial at the lateral ventricles" },
+      { frame: 7, caption: "" },
+      { frame: 8, caption: "   " },
+    ];
+    const ids: number[] = [];
+    for (const [i, l] of labelled.entries()) {
+      const res = await attach(
+        body({ sopInstanceUid: MRI_CINE, frameNumber: l.frame, caption: l.caption, sortOrder: i }),
+      );
+      expect(res.status, res.text).toBe(201);
+      const id = (res.body as { item: { id: number } }).item.id;
+      ids.push(id);
+    }
+
+    const reload = async () => {
+      const res = await request(app)
+        .get(`/api/radiology/report-generator/key-images?draftId=${draftId}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status, res.text).toBe(200);
+      const rows = (res.body as { items?: { id: number }[]; images?: { id: number }[] }).items
+        ?? (res.body as { images?: { id: number }[] }).images
+        ?? [];
+      return rows as { id: number; caption: string; displayOrder?: number; imageUrl?: string }[];
+    };
+
+    const mine = (rows: Awaited<ReturnType<typeof reload>>) =>
+      rows.filter((r) => ids.includes(r.id)).map((r) => ({ id: r.id, caption: String(r.caption ?? "") }));
+
+    const first = mine(await reload());
+    expect(first.map((r) => r.id)).toEqual(ids);
+    // An absent caption stays absent; whitespace stays out. Nothing here invents
+    // text for the two images nobody labelled.
+    expect(first.map((r) => r.caption)).toEqual(["T2W axial at the lateral ventricles", "", ""]);
+
+    // Reverse the three, then reopen and read the order back from the database.
+    const reversed = [...ids].reverse();
+    const reorder = await request(app)
+      .post("/api/radiology/report-generator/key-images/reorder")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ draftId, orderedIds: reversed });
+    expect(reorder.status, reorder.text).toBeLessThan(400);
+
+    const after = mine(await reload());
+    expect(after.map((r) => r.id)).toEqual(reversed);
+    expect(after.map((r) => r.caption)).toEqual(["", "", "T2W axial at the lateral ventricles"]);
+
+    // The rows on disk are the same rows the browser just read — the reload is
+    // served from the table, not from client state that happens to still be warm.
+    const stored = await db
+      .select({ id: radiologyReportKeyImagesTable.id, caption: radiologyReportKeyImagesTable.caption })
+      .from(radiologyReportKeyImagesTable)
+      .where(inArray(radiologyReportKeyImagesTable.id, ids));
+    expect(stored.map((s) => String(s.caption ?? "")).sort()).toEqual(["", "", "T2W axial at the lateral ventricles"]);
+
+    for (const id of ids) createdImageIds.push(id);
+  });
 });
