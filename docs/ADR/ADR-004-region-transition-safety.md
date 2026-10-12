@@ -317,6 +317,38 @@ header arrived in #945, which merged to `main` after this branch's base, so it i
 the stacked base, not of this change.
 
 
+## The session-only override, and what it gates (PR E PRIORITY 1)
+
+The row above — "`region-match-source` reads `billed` again" — was written as an accepted
+limitation. It is not inert: `generateProfessionalReport` resolves the examination from the
+context it is handed and merges that format's sentences into whatever is on the page, so on a
+reloaded report it regenerates the **booked** examination over the narrowed one. Measured through
+the real store and the shipped format library before this change: whole-spine screening generates
+16 Findings lines, the confirmed transition retires 11 and leaves 6 with no dorsal or lumbar text,
+save → reload preserves those 6, and one press of Generate against the reloaded region writes
+**10 lines back — every one of them a dorsal or lumbar normal the radiologist had just retired**.
+The mount-time auto-bootstrap cannot do this — its `if (existingDraft) return;` guard refuses any
+study with a saved draft; the press can, which is why the one-click action needed a gate.
+
+`regionIdentityConflictsWithTransition` / `regionIdentityConflictMessage` in
+`src/lib/regionTransition.ts` decide it from two things only: the provenance of the region being
+used, and the last recorded transition. The recorded decision outranks a region CARE read by
+itself — `billed`, `dicom`, `auto` — and an explicit radiologist choice (`override`) always
+clears it, so widening the study back is never blocked. Nothing here reads report prose: inferring
+a region from sentences is the guessing this ADR exists to prevent. Both writers check it before
+any write — `handleStartReport` before its setup half (setup merges Technique, so a refusal after
+it would still have left an acquisition paragraph for the wrong examination), and
+`generateProfessionalReport` before it resolves a format, which also covers any future caller.
+
+Reopened in a browser afterwards, the same press says:
+
+> Nothing generated. This report was moved to Cervical Spine and that decision is recorded, but
+> the examination is being read as Whole Spine. Choose Cervical Spine in the Region control, then
+> generate again.
+
+and leaves Findings, Impression, Technique, the ledger and the transition record unchanged.
+
+
 ## Future review
 
 * When the region engine next changes (multi-region exams, companion studies), re-derive the

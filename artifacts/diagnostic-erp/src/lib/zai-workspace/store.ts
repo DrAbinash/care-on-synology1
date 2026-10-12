@@ -244,6 +244,7 @@ import {
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
 import type { RegionTransitionPlan, RegionTransitionRecord } from "@/lib/regionTransition";
+import { regionIdentityConflictMessage } from "@/lib/regionTransition";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -785,7 +786,7 @@ export type WorkspaceStore = S & {
    * than filled with a guess. Never replaces a field: the radiologist's own text
    * is merged in, so nothing typed is lost by pressing it.
    */
-  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "protocolName" | "studyDescription">) => ProfessionalReportOutcome;
+  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">) => ProfessionalReportOutcome;
   ingestStructuredNormalFormats: (rows: StructuredNormalRow[]) => void;
   toggleFormatFavorite: (id: string) => void;
   /** `"refused"` is the signed-report boundary declining the write. Distinct from
@@ -1618,6 +1619,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         code: "confirmation-open",
         reason: "Answer the confirmation already on screen first.",
       };
+    }
+    // ADR-004, PR E PRIORITY 1 — the region a reloaded report is READ as is the booked one,
+    // because the override is session state and only the transition record survives the draft.
+    // Generating from that region would merge the booked examination's normals back over the
+    // report the radiologist narrowed: measured as 10 retired dorsal/lumbar normal sentences
+    // returning to a 6-line cervical-only report on one press. The recorded decision outranks
+    // an unconfirmed region reading; an explicit region choice clears it (see the predicate).
+    const regionConflict = regionIdentityConflictMessage({
+      source: ctx.source,
+      regions: ctx.regions.length ? ctx.regions : [ctx.region],
+      records: get().regionTransitions,
+    });
+    if (regionConflict) {
+      return { status: "refused", code: "region-transition", reason: regionConflict };
     }
     if (get().reportFormats.length === 0) {
       return {
