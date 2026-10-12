@@ -12,6 +12,20 @@ command was checked against the file that ships it, at `main` = `46d36612` (the 
 procedures themselves landed in #965). **None of them
 has been run against the clinic**, because that is the owner's box and the owner's decision.
 
+## What is already verified, and what this page cannot verify for you
+
+| Already verified, with evidence | Never performed — only the clinic NAS can answer it |
+| --- | --- |
+| CI green on both required jobs at the merged head (`0e801cf1` → `9d87cfc2`) and at this document's head | §A against **the clinic database**. The audit has only ever run against synthetic ones |
+| Fresh Windows `core.autocrlf=true` checkout: shebangs, fixtures, compose and `.mjs`/`.cjs` all land as LF; **65 passed / 65** across the four affected suites | §B against **the clinic's backup artifacts**, on the clinic's Docker host |
+| The audit's detection proven on three synthetic databases, clean control **0 critical / 0 warnings / 1 informational** | §C's Orthanc/OHIF legs against **the running containers** and the real `care-pacs` image |
+| The audit's read-only guarantee asserted by the suite (29 tests) and broken deliberately by 4/4 mutants | §D's connectivity in both directions, and HOPE's side of the contract |
+| Every code citation in this file re-checked against files that are byte-identical in current `main` | §C.9 read by a human on a real report from today's queue |
+
+So this page is a set of instructions, not a result. **Nothing in Part 1 has been executed
+anywhere**, which is why every box is empty; a filled-in Part 1 is the artifact this gate asks
+for, and Part 2 is only closed by reading it back.
+
 Run everything from the deploy checkout — not `/volume1/homes/abinash/care-on-synology1`,
 not `/volume1/docker/care-pacs`:
 
@@ -48,7 +62,7 @@ A.3 is the only step in this document that touches the clinic database, and it i
 against it. Get the owner's go-ahead before running it.
 
 ```sh
-docker exec care-api sh -c 'printenv DATABASE_URL | sed -E "s#://[^@/]*@#://REDACTED@"'
+docker exec care-api sh -c 'printenv DATABASE_URL | sed -E "s#://[^@/]*@#://REDACTED@#"'
 ```
 
 ```sh
@@ -246,6 +260,7 @@ is not a fact this repository owns. There is no `OHIF_PUBLIC_BASE_URL` in compos
 
 | # | Check | Pass condition | Result |
 |---|---|---|---|
+| D.0 | What is configured, and what has already happened | the live callback URL host is written down, and the outbox status distribution + last errors are read **before** anything is sent | ☐ |
 | D.1 | Which side is configured | the four names report `set`/`unset`; **no value is printed** | ☐ |
 | D.2 | The HOPE partner row exists and is active | `code=HOPE`, `is_active=t`, `callback_url` matches D.1 | ☐ |
 | D.3 | Traffic is enabled | `ff_hope_care_referrals.enabled = t`, or `HOPE_CARE_INTEGRATION_FORCE=1` | ☐ |
@@ -254,6 +269,34 @@ is not a fact this repository owns. There is no `OHIF_PUBLIC_BASE_URL` in compos
 | D.6 | One authorized test send, from the UI | `200` with `emitted: true, alreadySent: false` | ☐ |
 | D.7 | The expected report status reached HOPE | outbox row `status=sent`, `external_result_links.delivered_at` non-null, `report_status` as intended | ☐ |
 | D.8 | No duplicate was created | re-sending the same report returns `alreadySent: true` and the row counts do not move | ☐ |
+
+D.0 — run this first, because it needs no probe and no send, and it usually settles the
+question on its own. `integration_delivery_attempts` already holds HOPE's status code and
+response body for every attempt ever made. The callback URL is an endpoint, not a credential, so
+printing it is safe — and it is worth checking, because the tracked template
+(`deploy/synology/care.env:125`) and `deploy/synology/README.md:9` both say
+`http://172.16.1.139:7080/…` while `deploy/synology/NAS_OVERNIGHT_ENV_PATCH.env:3` records the
+**live** value as `http://192.168.1.137:7080/…`. Two different NAS addresses; one of the two
+documents is stale. **Do not diagnose from a template — read the container.**
+
+```sh
+docker exec care-api sh -c 'echo "callback=$INTEGRATION_HOPE_CALLBACK_URL"'
+```
+
+```sh
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select status, last_error, count(*), max(attempts) attempts, min(created_at::date) first, max(created_at::date) last from public.integration_outbox group by 1,2 order by 3 desc"'
+```
+
+```sh
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select o.event_type, a.attempt_no, a.http_status, left(coalesce(a.error,'"'"'''"'"'),40) error, left(coalesce(a.response_body,'"'"'''"'"'),60) response, a.created_at from public.integration_delivery_attempts a join public.integration_outbox o on o.id = a.outbox_id order by a.id desc limit 20"'
+```
+
+Read those three before D.4. `sent` + `delivered_at` on real rows means the path has worked from
+this container, and no hairpin theory applies to it. Rows stuck at `pending` with
+`delivery_not_configured` mean a missing URL or secret, not a network. `timeout`/`fetch failed`
+means transport. `http_status` 401/403 means the far end rejected the signature. A 4xx with a
+response body naming a business rule means HOPE received it and said no — which is a
+**connectivity pass** and an application problem, and they need completely different fixes.
 
 D.1 — `HOPE_PARTNER_KEY` and `INTEGRATION_HOPE_SIGNING_SECRET` are live credentials. Print
 presence, never values:
@@ -292,14 +335,33 @@ is a no-op on the far side; a GET cannot create a report and still proves the so
 docker exec care-api sh -c 'wget -S -qO /dev/null -T 8 "$INTEGRATION_HOPE_CALLBACK_URL" 2>&1 | head -4'
 ```
 
-Any HTTP status line — 200, 401, 405, 404 — means the endpoint is reachable and answering.
-Read `deploy/synology/care.env:125` before you interpret a failure: the configured default is
-`http://172.16.1.139:7080/api/integration/care-callback`, and **172.16.1.139 is this NAS's own
-LAN address** (`care.env:6`, `NETWORK_LAN_HOST`). That is the exact address form measured to
-be blocked for container-originated calls (hairpin/DNAT). So a `fetch failed` / timeout here,
-while a browser on the LAN opens `http://172.16.1.139:7080/` fine, is **not** "HOPE is down" —
-it means the callback URL must be a container-DNS name on a shared bridge or the docker
-gateway, and it will keep failing dispatch until someone changes it. `hope.env:51`
+Any HTTP status line — 200, 401, 405, 404 — means the endpoint is reachable and answering, and
+then the hairpin question is settled for this container pair and no further.
+
+Do **not** assume the NAS's own LAN address is unreachable from every container. What was
+measured on the clinic NAS is one pair, on the staging project: a container calling
+`192.168.1.137:8043` got `fetch failed` while the same URL worked from the LAN and from a
+browser. Whether `care-api → :7080` behaves the same way is a fact about *this* pair, so run the
+two controls and let them agree or disagree:
+
+```sh
+HOPE_URL=$(docker exec care-api printenv INTEGRATION_HOPE_CALLBACK_URL); curl -sS -o /dev/null -w "host→$HOPE_URL %{http_code} in %{time_total}s\n" --max-time 8 "$HOPE_URL"
+```
+
+```sh
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select callback_url from public.integration_partners where code='"'"'HOPE'"'"'"'
+```
+
+The first runs **on the NAS host**, outside any container, against the same URL — which is why it
+reads the value out of the container first: `INTEGRATION_HOPE_CALLBACK_URL` exists in the API's
+environment, not in your shell's. If the host gets a status and `care-api` does not, that is the
+container-side address form — the fix is a shared user-defined network or the docker gateway, not
+a HOPE restart, and HOPE is fine. If **neither** answers, HOPE itself is down or not listening on
+that port. If both answer, CL-6's network half is closed and anything left is signature or
+application level. The second command checks which URL the running bootstrap actually stored,
+because `bootstrapHopeCareIntegration()` overwrites `callback_url` from the container environment
+on every API start (`bootstrapHopeCareIntegration.ts:68-70,103`) — so the row is the live value,
+and `deploy/synology/care.env` may not be. `hope.env:51`
 (`CARE_REFERRAL_URL=http://172.16.1.139:8888/api/integration/v1`) has the same shape in the
 opposite direction.
 
@@ -380,6 +442,29 @@ deployment stops.
 
 ---
 
+## Part 1 · Run order — the ten steps, in the order to do them
+
+`SAFE NOW` means the command cannot change anything: it reads a container, a socket or a
+`SELECT`. `AUTHORIZATION` means stop and get the owner's go-ahead first, because it either
+touches the clinic database, spends a real test case, or changes what staff see. Nothing here
+restarts, rebuilds, redeploys or reconfigures.
+
+| # | Step | Where | Command or gate | Safe now? |
+|---|---|---|---|---|
+| 1 | Identify the production containers actually running | §Conventions | `docker compose ls` · `docker ps --format '{{.Names}} {{.Status}} {{.Image}}'` — expect `care-db care-api care-web care-redis care-db-patch-v2 care-schema-verify` from the ERP project, plus `care-orthanc care-ohif care-erp-sync care-tailscale-ohif` from `care-pacs`, and a Hope container if one exists | **SAFE NOW** |
+| 2 | Verify the target database's identity | §A.1–A.2 | the three redacted pre-flight reads, then the read-only refusal proof | **SAFE NOW** |
+| 3 | Run the migration-ledger audit | §A.3 | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs` | **AUTHORIZATION** — it connects to the clinic DB. It is read-only by construction and proves so in step 2, but it is still the clinic database |
+| 4 | Verify current backup availability | §B.1–B.2 | `ls -lt /volume1/backups/caredeoghar \| head -12` | **SAFE NOW** |
+| 5 | Restore into an isolated temporary database | §B.3–B.7 | `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | **SAFE NOW for production** — no published port, its own container and database, cleanup on every exit path. Say it out loud anyway: it starts a Postgres and reads a real patient dump into a sandbox on this box |
+| 6 | Verify Orthanc | §C.1–C.5 | `wget -qO- "$ORTHANC_INTERNAL_URL/system"`, QIDO, then one `/rendered` status | **SAFE NOW** |
+| 7 | Verify OHIF | §C.5–C.7 | `docker inspect`, `build-info.json`, the injected `<script src>` list | **SAFE NOW** |
+| 8 | Verify the HOPE callback path | §D.0–D.5 | read the outbox history, then the GET from inside `care-api`, then the host-side control, then the unsigned inbound POST for 401 | **SAFE NOW** (D.0–D.5 send no clinical event). **D.6 is AUTHORIZATION** — one synthetic or owner-named case, clicked once, counted twice |
+| 9 | Record the evidence | §Recording rule, §Sign-off | the `N critical / M warnings / K informational` line, the restore's `🎉 PASS`, the artifact name + timestamp, the two unchanged D.8 counts, and the §C.9 human read | **SAFE NOW** |
+| 10 | Update the clearance register | Part 2 | move each CL row from *open* to *closed with evidence*, or leave it open and say why | **SAFE NOW** — but the update is what makes the next deploy decision readable |
+
+If step 3 prints any critical, **stop the whole sequence there**: steps 4–8 are pointless over a
+schema nobody can vouch for, and step 10 must record the finding rather than the intent.
+
 ## Part 2 — Deployment clearance register
 
 Every outstanding P0 and P1 from `CARE_ERP_PRODUCTION_READINESS.md` (the component view) and
@@ -393,7 +478,7 @@ of the world, not an intention.
 | CL-3 | `deploy-synology.sh` takes no backup before `git reset --hard` + `compose down --remove-orphans` | **P1** | A fresh artifact exists **and** §B has proved it, inside the same window as the deploy | B.1's filename with today's timestamp, plus the app-image IDs recorded before the build: `docker inspect --format '{{.Name}}={{.Image}}' care-api care-web` | **Yes if CL-2 is not done.** The script is the clinic's only deploy path and it will not stop itself |
 | CL-4 | Orthanc may not resolve from inside `care-api`, because `care-pacs` is a separate compose project | **P1** | §C.2 returns `"Version"`, or §C.3 shows the two containers sharing a user-defined bridge and names the fix | C.2's JSON, or the two network lists from C.3 | **No** for the ERP serving reports — it degrades to whatever image set is already frozen. **Yes** for rolling out PACS image attach |
 | CL-5 | The `care-pacs` commit of the running `care-ohif` is unknown, and an ERP deploy cannot rebuild it | **P1** | §C.6's `<script src>` list has been read and compared against `care-pacs` main, or the image has been rebuilt and re-read | the `build-info.json` output + the script list + the decision (rebuild or accept) | **No** for the ERP. **Yes** for claiming any viewer-side fix (D2 displayed-image identity) is live — merged code in `care-pacs` is dormant until someone rebuilds that image |
-| CL-6 | HOPE callback liveness is unverified, and the configured default URL is the NAS's own LAN IP on a published port — the shape measured to fail from inside a container | **P1** | §D.4 answers with an HTTP status, §D.6–D.8 pass on one authorized test case, and both sides record the same status | D.7's outbox + `external_result_links` lines, D.8's unchanged counts, and HOPE's own confirmation | **No** for the ERP serving reports. **Yes** for Hope referral traffic — enabling the flag without this sends into an endpoint nobody has reached |
+| CL-6 | HOPE callback liveness has never been observed, and the two tracked config documents disagree about which NAS address it points at (`care.env:125` / `README.md:9` say `172.16.1.139:7080`, `NAS_OVERNIGHT_ENV_PATCH.env:3` says the live value is `192.168.1.137:7080`) | **P1** | §D.0's outbox history has been read, §D.4 answers with an HTTP status from inside `care-api`, §D.6–D.8 pass on one authorized test case, and both sides record the same status | D.0's status distribution, D.7's outbox + `external_result_links` lines, D.8's unchanged counts, and HOPE's own confirmation | **No** for the ERP serving reports. **Yes** for Hope referral traffic — enabling the flag without this sends into an endpoint nobody has observed answering |
 | CL-7 | Live production secrets are committed in `deploy/synology/care.env`, `hope.env` and are re-appended by `deploy-synology.sh:117-120` | **P1** (owner-deferred) | The owner's rotation window runs, with history remediation | an owner decision, not a command | **No** — deferred deliberately and by name. Recorded so nobody reports it as fixed. It is not a deploy gate; it is a standing exposure |
 | CL-8 | The server-side print leg collapses 429 / 500 / timeout / corrupt into one "no image" event (`lib/reportImages.ts:186`) | **P1** for what staff are told | `fetchPrintImageBytes` returns a typed outcome and a `*.request.test.ts` pins each class | the test, plus the four messages read on a screen | **No.** The client legs (#950) are green; this is the P2-for-deploy / P1-for-trust item already listed in the readiness matrix |
 
