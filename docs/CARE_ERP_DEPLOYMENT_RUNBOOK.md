@@ -43,12 +43,27 @@ care-db → healthy
 `care-api` will **not** start unless `care-db-patch-v2` and `care-schema-verify` both exit 0 — a schema mismatch cannot silently serve traffic.
 
 ## 3. Post-deploy verification (required)
+
+The ERP is published on the host as `${HOST_PORT:-8888}:80`. **Nothing publishes
+8080 on the host** — 8080 exists only inside `care-api`, where its own healthcheck
+calls it. A command that curls `localhost:8080` from the NAS host cannot work; §10
+records what happened the last time a script did exactly that.
+
 ```sh
 docker ps --format '{{.Names}}\t{{.Status}}'         # all healthy / patch+verify Exited(0)
-pnpm operations:verify-deployment                     # full stack health
-curl -fsS http://localhost:8080/health                # {"ok":true}
-curl -fsS http://localhost:8080/api/system/version    # deployed version/commit
+node scripts/deploy-health.mjs --host-port 8888      # the same gate the deploy uses
+curl -fsS http://localhost:8888/api/healthz          # liveness
+curl -fsS http://localhost:8888/api/health/schema    # schema-verify actually passed
+curl -fsS http://localhost:8888/api/system/version   # deployed version/commit
+pnpm operations:verify-deployment                    # full stack health
 ```
+
+`scripts/deploy-health.mjs` is the authoritative one: it checks the container states
+and the three endpoints above, prints each answer it got, and exits non-zero if any
+of them is wrong. Note that an unknown path on `care-web` returns the SPA's
+`index.html` with status **200**, so "curl succeeded" is not evidence on its own —
+the gate checks the response body, which is why it exists.
+
 Expected: verifier prints "✓ No deployment-blocking failures." External services you haven't configured show **SKIPPED — NOT CONFIGURED** (not a failure).
 
 Then the owner smoke: log in → Operational Health → `/radiology/usg-demo` (see `CARE_ERP_MASTER_HANDOVER.md` §Owner checklist).
@@ -85,48 +100,61 @@ Migrations are **forward-only** — there is no automatic data rollback. To roll
 
 ## 9. Deployment-readiness checklist (10 checks, with the command and what counts as evidence)
 
-Audited 2026-10-12 against `main` = `cd752a43`. Nothing here was run against the
-clinic: it needs the NAS, and a deploy is the owner's decision. Each row says
-**LOCAL** (measured in this repo) or **NAS** (must be run on the box).
+Audited 2026-10-12 against `main` = `cd752a43`; re-checked 2026-10-13 against
+`main` = `8ca20cf9` (#950, #951, #952, #954, #955, #957, #958 merged — #958 is
+docs-only). Nothing here was run
+against the clinic: it needs the NAS, and a deploy is the owner's decision. Each row
+says **LOCAL** (measured in this repo) or **NAS** (must be run on the box). Row 9's
+probe changed after #952 — it is `node scripts/deploy-health.mjs`, not port 8080.
 
 | # | Check | Command | Evidence that it passed | Where |
 |---|---|---|---|---|
-| 1 | A backup exists, and it is proven to restore | `bash scripts/synology-nas-backup.sh` then §"2. Verifying a backup restores" of `CARE_ERP_BACKUP_RESTORE.md` | a `.sql.gz` (or `.enc`) file whose size is > 0, restored into a scratch DB with row counts printed from both sides | NAS |
+| 1 | A backup exists, and it is proven to restore | `bash scripts/synology-nas-backup.sh` then `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` (§"2. Verifying a backup restores" of `CARE_ERP_BACKUP_RESTORE.md`) | the verifier exits 0: it restored the real artifact into a throwaway container with `ON_ERROR_STOP=1`, and its printed `patients`/`bills`/`payments`/`vouchers`/`patient_reports` counts are non-zero. It checks the restored side only — comparing against the live counts is yours to do | NAS |
 | 2 | Migrations this deploy will run | `git log --name-only --diff-filter=A <last-deploy>..origin/main -- migrations/*.sql` | every added file is reviewed; `deploy-synology.sh` prints the commit it reset to, and `<last-deploy>` is that SHA | NAS |
-| 3 | Migration order and idempotency | `node scripts/check-migration-order.cjs` | `✓ No ordering violations` — **LOCAL: ran at `cd752a43`, 189 files, clean.** Re-application is refused by `schema_migrations_log(name, kind, sha256)` (`docker/db-patch-entrypoint.sh:223,347`), so an edited file cannot silently re-run | LOCAL + NAS |
+| 3 | Migration order and idempotency | `node scripts/check-migration-order.cjs` | `✓ No ordering violations` — **LOCAL: re-ran at `8ca20cf9`, 189 files, clean.** Re-application is refused by `schema_migrations_log(name, kind, sha256)` (`docker/db-patch-entrypoint.sh:223,347`), so an edited file cannot silently re-run | LOCAL + NAS |
 | 4 | What actually mutated the schema | `docker logs care-db-patch-v2 --tail 60` and `docker inspect --format '{{.State.ExitCode}}' care-db-patch-v2` | `Exited (0)`, and the log names each file applied. `care-api` will not start unless patch **and** `care-schema-verify` both exit 0 (`depends_on: … service_completed_successfully`) | NAS |
 | 5 | Container image versions match the code | `docker inspect --format '{{.Config.Image}} {{index .Config.Labels "com.caredeoghar.git-commit"}} {{index .Config.Labels "com.caredeoghar.build"}}' care-api care-web` then `curl -fsS http://localhost:8888/api/system/version` | the label's commit equals the SHA `deploy-synology.sh` printed, and the endpoint reports the same. `db` = `postgres:16-alpine`, `redis` = `redis:7-alpine` — the only pinned images; app images are built, so the label is the only identity they have | NAS |
 | 6 | Env vars the app needs are present | `docker compose config --quiet` (fails on an unset required var) then `node scripts/check-env-secrets.mjs --file .env` | `SESSION_SECRET` uses `${SESSION_SECRET:?…}` so compose cannot start without it; the secret-strength gate runs inside `deploy-synology.sh` and must print `Guarded secrets acceptable`. Degrade-silently set: `ORTHANC_URL`, `ORTHANC_INTERNAL_URL`, `ORTHANC_USERNAME/PASSWORD`, `ENABLE_SCHEDULERS` | LOCAL + NAS |
 | 7 | Uploads and objects survive | `docker volume ls \| grep -E "db_data\|object_storage\|uploads_data"` and `docker volume inspect care_main_db_data` | `object_storage` → `/app/data/object-storage`, `uploads_data` → `/app/data/uploads`, and the worklist bind mounts of `/volume1/docker/care-pacs/orthanc/worklists`. **`db_data` is `external: true, name: care_main_db_data` — the real patient database.** `deploy-synology.sh` runs `down --remove-orphans` with no `-v`, so volumes are not touched; never add `-v`, and never `docker volume prune` on this box | NAS |
 | 8 | Orthanc is reachable from the API | `docker exec care-api sh -c 'wget -qO- $ORTHANC_INTERNAL_URL/system'` | JSON with the Orthanc version. `care-pacs` is a **different compose project on its own bridge network**, so `care-orthanc` does not resolve from `care-api` unless they share one — that is why `ORTHANC_CHANGES_POLLER` exists and must be `false` when `care-erp-sync` runs (see the comment block at `docker-compose.yml` api env) | NAS |
 | 9 | The app is actually serving | `docker inspect --format '{{.State.Health.Status}}' care-api care-web` then `curl -fsS http://localhost:8888/api/health/schema` | `healthy` for both, and the schema probe returns `"ok":true`. Reach it on **8888** — see §10 for why the script's own probe cannot work | NAS |
-| 10 | No patient data deleted or altered by the deploy | `grep -lnE "^\s*(DELETE\|TRUNCATE\|DROP TABLE\|DROP SCHEMA)" migrations/*.sql` | **LOCAL at `cd752a43`: three files match, all long-applied and none touches patient records** — `zzzz_ct_knowledge_packs.sql` / `zzzz_xr_knowledge_packs.sql` re-seed non-system configuration packs, and `add_report_image_panel_r13.sql:38` de-duplicates image references *only for drafts that are not finalized*, keeping the earliest row so a signed report's image set is never rewritten. The script itself only does `git reset --hard` (repo files; data lives in named volumes) and `compose down`/`up` | LOCAL + NAS |
+| 10 | No patient data deleted or altered by the deploy | `grep -lnE "^\s*(DELETE\|TRUNCATE\|DROP TABLE\|DROP SCHEMA)" migrations/*.sql` | **LOCAL at `8ca20cf9`: three files match, all long-applied and none touches patient records** — `zzzz_ct_knowledge_packs.sql` / `zzzz_xr_knowledge_packs.sql` re-seed non-system configuration packs, and `add_report_image_panel_r13.sql:38` de-duplicates image references *only for drafts that are not finalized*, keeping the earliest row so a signed report's image set is never rewritten. The script itself only does `git reset --hard` (repo files; data lives in named volumes) and `compose down`/`up` | LOCAL + NAS |
 
-## 10. Two defects in `deploy-synology.sh` — found by reading it, not yet changed
+## 10. The deploy gate, before and after PR #952
 
-Both make a failed deploy look like a successful one. They are listed here rather
-than fixed in the same change as a feature, because this file is the clinic's
-only deploy path and the fix must be tried on the box deliberately.
+Both defects below made a failed deploy look like a successful one. **#952 fixed
+them and is merged** (`0203b826`); this section is kept because the failure modes
+are what the new gate is guarding, and because one item in it is still open.
 
-1. **Its health gate can never pass.** Step 5 waits on
+1. **Its health gate could never pass** (fixed). Step 5 used to wait on
    `http://localhost:8080/api/health/schema`, but **no service publishes port 8080 on
    the host** — `grep -n ':8080' docker-compose.yml` returns only the API's own
-   in-container healthcheck (`CMD curl -fsS http://localhost:8080/health`), and the ERP
-   is published as `${HOST_PORT:-8888}:80`. The loop therefore always exhausts its 90
-   seconds and falls through, and the script still prints
-   `✓ DEPLOYMENT COMPLETE`. Correct probe:
-   `curl -fsS http://localhost:8888/api/health/schema`.
-2. **Both wait loops report success on timeout.** Step 4 (migrations) treats a missing
-   `care-db-patch-v2` as `missing 0` and, after 120 s, continues; step 5 does the same
-   after 90 s. Neither sets a failure. A deploy that never started the API prints the
-   same banner as one that worked. The loops should `fail` on timeout, or the script
-   should gate on `docker inspect --format '{{.State.Health.Status}}' care-api`.
-
-Also worth knowing before the next deploy: the script takes **no backup** before
-`git reset --hard` + `compose down --remove-orphans`, although `scripts/synology-nas-
-backup.sh` exists and is fast. Run it first. The older `scripts/synology-backup.sh`
-still downloads from `https://caredeoghar.replit.app`, a host the clinic no longer
-uses — do not schedule it.
+   in-container healthcheck (`CMD curl -fsS http://localhost:8080/health`), while the
+   ERP is published as `${HOST_PORT:-8888}:80`. The loop always exhausted its 90
+   seconds and fell through, and the script still printed `✓ DEPLOYMENT COMPLETE`.
+   It now reads `HOST_PORT` from `.env` (`deploy-synology.sh:187-196`, guarding the
+   `${HOST_PORT:-8888}` compose default and rejecting a non-numeric value) and hands
+   the number to `node scripts/deploy-health.mjs --wait --timeout-seconds
+   "$DEPLOY_TIMEOUT" --host-port "$HOST_PORT"` (`deploy-synology.sh:254`). If that
+   exits non-zero the script `fail`s — `Deployment NOT verified. Do not use the ERP
+   until the check above passes.` The banner is printed only after it passes.
+2. **Both wait loops reported success on timeout** (fixed). Step 4 (migrations)
+   treated a missing `care-db-patch-v2` as `missing 0` and, after 120 s, continued;
+   step 5 did the same after 90 s. A timeout is now a failure in both loops
+   (`deploy-synology.sh:230-235`: `Migrations did not complete within ${MIGRATION_TIMEOUT}s.
+   Nothing was verified`), and `DEPLOY_HEALTH_TIMEOUT_SECONDS` /
+   `MIGRATION_TIMEOUT_SECONDS` override the 300 s / 240 s defaults.
+3. **Still open: the script takes no backup.** `deploy-synology.sh` runs
+   `git reset --hard` and `docker compose down --remove-orphans` before anything is
+   saved, although `scripts/synology-nas-backup.sh` exists and is fast (it dumps
+   straight out of the `care-db` container with `pg_dump`, so it does not need
+   `care-api` up). §12 step 3 is where the backup belongs; it is a human step until
+   the owner decides the script should do it. Do not add `-v` to the `down`, and never
+   run `docker volume prune` on this box — `db_data` is `external: true, name:
+   care_main_db_data`, the real patient database.
+4. Also note the older `scripts/synology-backup.sh` still downloads from
+   `https://caredeoghar.replit.app`, a host the clinic no longer uses — do not schedule
+   it; use `scripts/synology-nas-backup.sh`.
 
 ## 11. Rollback, in the order that actually works
 
@@ -138,7 +166,45 @@ if a true image rollback is ever wanted without a rebuild. Schema columns added 
 migration are inert to an older app, which is why §6's "remove the file, write a
 compensating additive migration" is safe; `DROP`-style neutralisation is not.
 
-## 12. Secrets in tracked files — reported, not corrected here
+## 12. The exact production deployment sequence
+
+Twelve steps, in order, for the Synology box. Every command, path, port and service
+name below is taken from this repository at `8ca20cf9` — `deploy-synology.sh`,
+`docker-compose.yml` and the `scripts/` directory — not from memory. **Nothing in this
+section has been executed against the clinic**, because that is a deploy, and a deploy
+is the owner's decision.
+
+The directory is the one `deploy-synology.sh` documents in its own header:
+
+```sh
+cd /volume1/docker/care-erp-github/care-on-synology1
+```
+
+| # | Step | Command | Stop the deploy if |
+|---|---|---|---|
+| 1 | Pre-deployment checks | `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak |
+| 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
+| 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass `SESSION_SECRET=<the value in force when the file was written>` |
+| 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md` |
+| 5 | Record what to go back to, then rebuild | `docker inspect --format '{{.Image}}' care-api care-web > /volume1/docker/backups/images-$(date +%F).txt` · `bash deploy-synology.sh` | the image IDs cannot be written (disk), or the script exits non-zero. The script does `git reset --hard origin/main` → `docker compose down --remove-orphans` → `sudo GIT_COMMIT=… docker compose up -d --build`, forwarding the version stamps explicitly because `sudo` resets the environment (§11 explains why the image IDs matter) |
+| 6 | Migration execution | `docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2` · `docker logs care-db-patch-v2 --tail 60` | it is anything other than `exited 0`. Since #955 a Drizzle file that raises an unexpected error **fails the container** instead of being recorded and skipped forever; the log names the file and the statement. `deploy-synology.sh` already waits for this and fails on timeout (§10.2), so this step is the human double-check, not the only check |
+| 7 | Schema verification | `docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-schema-verify` · `sed -n '1,40p' STARTUP_SCHEMA_VERIFICATION.md` | it did not exit 0. Note the limits: `SCHEMA_REPAIR` defaults to `false` and `SCHEMA_VERIFY_STRICT` to `false`, so drift is *reported* not blocked, and this container checks the columns the migration files declare — which is exactly the check that **passed** on a half-migrated database before #955. Step 4 is the audit that closes that gap; one is not a substitute for the other |
+| 8 | Container startup | `docker ps --format '{{.Names}}\t{{.Status}}'` | `care-db`, `care-api`, `care-web`, `care-redis` are not `healthy`/`Up`, or `care-db-patch-v2`/`care-schema-verify` are still running. `care-api` cannot start unless both exited 0 (`depends_on: … service_completed_successfully`), so an API that is restarting while the others are fine means the schema, not the app |
+| 9 | Health verification | `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` · `curl -fsS "http://localhost:${HOST_PORT:-8888}/api/system/version"` | the gate exits non-zero. It probes `/nginx-health`, `/api/healthz` and `/api/health/schema` and checks the **bodies**, because an unknown path on `care-web` answers `index.html` with status 200 — a bare successful curl proves nothing. The version endpoint must report the SHA from step 2 |
+| 10 | PACS connectivity | `docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/system"'` · `curl -fsS "$OHIF_PUBLIC_BASE_URL"` | Orthanc does not answer from inside the API container. `ORTHANC_INTERNAL_URL` defaults to `http://care-orthanc:8042`, but **`care-pacs` is a different compose project on its own bridge network**, so that name only resolves if the two projects share a network — the reason `ORTHANC_CHANGES_POLLER` exists and must be `false` when `care-erp-sync` runs. A failure here does not stop reports: the frozen-image path prints a reference image with the PACS down, which `pacsImagePicker.request.test.ts` pins |
+| 11 | Clinical reporting smoke | in the browser at `http://172.16.1.139:${HOST_PORT:-8888}`: open a worklist row → one Quick Select finding → save → reopen → Print → Download PDF → durable PDF | any step differs from the same report before the deploy. What has to be true: the UHID is the patient's own code and never a numeric FK; the accession prints **only** where the server can prove it belongs to that patient (#954); attached images keep their order; a caption prints with the radiologist's own capitalisation and an absent caption prints no blank band. `pnpm preview:reports` renders the same chain locally with no server and no database — use it before you blame the NAS |
+| 12 | Rollback | `git reset --hard <previous-sha>` · `docker compose up -d --build` · re-run steps 8–9 | see §11: migrations are **forward-only**, so rollback means the older app runs against the newer schema (safe, because migrations only ADD) or the image IDs from step 5 are used to retag. Never edit or delete a ledger row to make a finding disappear, and never re-run a destructive migration file; if data is implicated, `bash scripts/synology-restore.sh <artifact>` into a scratch container first and confirm, then restore for real |
+
+**Steps 3 and 4 are not optional and not interchangeable.** Step 3 is the only thing
+that makes step 12 possible; step 4 is the only thing that can tell you the database you
+are about to migrate is not the database the ledger thinks you have.
+
+Two things this sequence deliberately does not do: it does not rotate any credential
+(`deploy/synology/care.env` and `hope.env` are reported in §13 and left alone by owner
+decision), and it does not touch Git history.
+
+
+## 13. Secrets in tracked files — reported, not corrected here
 
 `git ls-files` shows two tracked env templates that carry live values, not
 placeholders: `deploy/synology/care.env` and `deploy/synology/hope.env`. In
