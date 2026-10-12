@@ -160,6 +160,7 @@ import {
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
+import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
 import {
   CLINICAL_UNDO_DEPTH,
   pushClinicalUndoSnapshot,
@@ -1675,8 +1676,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // sentence is not written twice, and no sentence the format does not contain
     // is removed — so pressing this on a study that already has dictated text
     // cannot lose it, and pressing it twice changes nothing the second time.
+    //
+    // One exception, and it is bounded by provenance rather than by text: the setup half of
+    // Start Report runs before this and writes the Study Tab's or protocol's own acquisition
+    // sentence, so on a study that started with an empty Technique box the approved statement
+    // would merge beside a machine claim nobody authored — measured as three printed accounts
+    // of one whole-spine screening examination. Machine-authored technique is replaced by what
+    // this examination's format actually establishes; anything a person typed, dictated or
+    // accepted stays on the page and the approved sentence joins it.
     if (clinical.technique.trim() && !alreadySaysThis(get().techniqueText, clinical.technique)) {
-      get().mergeField("technique", clinical.technique, "template");
+      const regionCount = (ctx.regions && ctx.regions.length ? ctx.regions : [ctx.region]).length;
+      const replacesMachineText = mayReplaceMachineTechniqueWithApproved({
+        techniqueText: get().techniqueText,
+        provenance: get().fieldProvenance.technique,
+        regionCount,
+      });
+      if (replacesMachineText) {
+        get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      } else {
+        get().mergeField("technique", clinical.technique, "template");
+      }
     }
     if (clinical.findings.trim() && !alreadySaysThis(get().findingsText, clinical.findings)) {
       // Written without the superseded levels rather than written and deleted: a
