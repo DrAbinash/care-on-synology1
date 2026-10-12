@@ -27,11 +27,19 @@ import { once } from "node:events";
 
 export type MockInstance = { sopUid: string; numberOfFrames?: number | null };
 
+export type MockDicomWebMode = "serve" | "down" | "limited";
+
 export type MockDicomWeb = {
   port: number;
   url: string;
-  /** "down" makes every request 500, which the verifier must read as unreachable. */
-  setMode(mode: "serve" | "down"): void;
+  /**
+   * "down" makes every request 500, which the verifier must read as unreachable.
+   * "limited" answers 429 with a Retry-After, which is what a rate-limited PACS
+   * does: it is reachable, it is answering, and it is telling CARE to come back.
+   * Collapsing that into "unreachable" is the defect #950 fixed on the browser
+   * side; these modes exist so the server side can be measured too.
+   */
+  setMode(mode: MockDicomWebMode): void;
   /** Requests received (decoded, query included), so a test can prove the check really went to the PACS. */
   hits(): string[];
   close(): Promise<void>;
@@ -72,7 +80,7 @@ export async function startMockDicomWeb(
   opts: { renderedJpeg?: Buffer } = {},
 ): Promise<MockDicomWeb> {
   const seen: string[] = [];
-  let mode: "serve" | "down" = "serve";
+  let mode: MockDicomWebMode = "serve";
 
   const server: Server = createServer((req, res) => {
     const raw = req.url || "";
@@ -84,6 +92,13 @@ export async function startMockDicomWeb(
     };
 
     if (mode === "down") return send(500, {});
+    if (mode === "limited") {
+      res.writeHead(429, {
+        "Content-Type": "application/json",
+        "Retry-After": "1",
+      });
+      return res.end(JSON.stringify({ HttpError: "Too Many Requests", Message: "rate limited" }));
+    }
 
     const [pathRaw, queryRaw = ""] = raw.split("?");
     const path = decodeURIComponent(pathRaw);
