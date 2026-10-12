@@ -188,7 +188,23 @@ export function useReportComposer(opts: {
     }, POLL_MS);
   }, [refreshJob, stopPoll]);
 
-  // Reopen: load latest job for worklist
+  // Reopen: load latest job for worklist.
+  //
+  // Keyed on worklistId ALONE, deliberately. This effect used to list
+  // `startPoll` in its deps, and `startPoll` depends on `refreshJob`, which
+  // depends on the whole live editor snapshot — so every re-render of the
+  // workspace re-ran it and re-issued GET /report-composer/latest for the same
+  // study. Measured in a real browser: 13 of those requests inside one 3.1 s
+  // mount, and 11 more during 90 s in which the radiologist did nothing. Each
+  // response was identical to the last, and the workspace shares a
+  // 300-requests-per-minute-per-IP budget, so this one effect was the largest
+  // consumer of it — and the reason the key-image rail's own request was the one
+  // that got refused. An in-flight job is still followed by startPoll's 2 s tick.
+  const startPollRef = useRef(startPoll);
+  useEffect(() => {
+    startPollRef.current = startPoll;
+  }, [startPoll]);
+
   useEffect(() => {
     if (!opts.worklistId) return;
     let cancelled = false;
@@ -197,7 +213,7 @@ export function useReportComposer(opts: {
         const res = await reportComposerApi.latest(opts.worklistId!);
         if (cancelled || !res.ok || !res.job) return;
         setJob(res.job);
-        if (["QUEUED", "COMPOSING"].includes(res.job.status)) startPoll(res.job.id);
+        if (["QUEUED", "COMPOSING"].includes(res.job.status)) startPollRef.current(res.job.id);
         if (["READY", "STALE_READY"].includes(res.job.status)) setReviewOpen(true);
       } catch {
         /* soft */
@@ -207,7 +223,9 @@ export function useReportComposer(opts: {
       cancelled = true;
       stopPoll();
     };
-  }, [opts.worklistId, startPoll, stopPoll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stopPoll is stable
+    // ([] deps); the only value this effect must re-run on is the study it is for.
+  }, [opts.worklistId]);
 
   const buildSnapshot = useCallback(async (extra?: Partial<ComposerInputSnapshot>, jobKind?: JobKind): Promise<ComposerInputSnapshot> => {
     // Canonical observations are derived from the live workspace observation

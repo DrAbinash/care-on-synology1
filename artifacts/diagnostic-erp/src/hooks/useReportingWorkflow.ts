@@ -11,6 +11,8 @@ import { filterQueueByScope, type QueueScope } from "@/lib/studyLockState";
 import { matchesReadingQueueModality } from "@/lib/readingQueueModality";
 import { toISTDateStr, studyDateInRange } from "@/lib/dateRangePresets";
 import { buildPacsWorklistUrl, shouldIncludeOrthanc } from "@/lib/pacsWorklistQuery";
+import { useIsTabVisible } from "@/hooks/useIsTabVisible";
+import { visibleTabRefetchInterval } from "@/lib/workspaceGuards";
 
 /**
  * useReportingWorkflow — Ticket M1.5 Phase 2: the ONE workflow controller for
@@ -93,6 +95,7 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
     searchOrthanc = false,
   } = options;
   const qc = useQueryClient();
+  const isTabVisible = useIsTabVisible();
 
   const includeOrthanc = shouldIncludeOrthanc({
     enabled: searchOrthanc,
@@ -135,7 +138,13 @@ export function useReportingWorkflow(currentStudyId: number | undefined, options
         orthanc: false,
       }),
     )),
-    refetchInterval: 30_000,
+    // A radiologist who has switched tabs or gone back to the list does not need
+    // the whole queue re-drawn every 30 s in the background: the reading queue
+    // poll shares the 300-requests-per-minute-per-IP budget with the study they
+    // are actually reporting, and a hidden tab's polling is what pushed the
+    // visible one over it. Returning to the tab refetches (refetchOnWindowFocus),
+    // so the queue is at most one interval stale, never stale-by-surprise.
+    refetchInterval: visibleTabRefetchInterval(isTabVisible, 30_000),
     placeholderData: (prev) => prev,
   });
 

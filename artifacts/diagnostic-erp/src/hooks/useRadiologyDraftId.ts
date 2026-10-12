@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, rateAwareRetry } from "@/lib/fetchApi";
 import {
   pickAdoptedDraftId, withDraftId as withDraftIdPure, type RadiologyDraftRow,
 } from "@/lib/radiologyDraftId";
@@ -36,6 +36,10 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
       return res?.drafts?.[0] ?? null;
     },
     enabled: !!studyId,
+    // This query decides whether the key-image rail exists on screen at all: a
+    // single 429 collapsed `draftId` to null and the rail presented a study with
+    // no images.
+    ...rateAwareRetry,
   });
 
   // Study switch: drop Patient A's draft id immediately, then adopt B's once loaded.

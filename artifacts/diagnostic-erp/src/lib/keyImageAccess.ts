@@ -28,6 +28,18 @@ const EXPIRY_SLACK_MS = 60_000;
 
 const cache = new Map<number, KeyImageAccessUrls>();
 
+/**
+ * One POST per image, however many callers ask for it at the same moment.
+ *
+ * Three components mount the same rail (`useWorkspaceClinicalUi` twice and the
+ * rail itself), so the first render of a study fired three identical batch
+ * grants before any of them had filled `cache` — measured at 5 POSTs to
+ * `/key-images/access-urls` inside one 3.1 s mount, in a workspace whose whole
+ * request budget is 300/min per IP. The cache only dedupes *after* a response
+ * lands; the gap while one is in flight is what this closes.
+ */
+const inFlight = new Map<number, Promise<KeyImageAccessUrls | null>>();
+
 /** True when this URL is served by the guarded prefix and therefore needs a grant. */
 export function isGuardedKeyImageUrl(url: string | null | undefined): boolean {
   return typeof url === "string" && url.startsWith(KEY_IMAGE_URL_PREFIX);
@@ -46,8 +58,15 @@ export function cachedKeyImageUrls(id: number): KeyImageAccessUrls | undefined {
 }
 
 export function invalidateKeyImageUrls(id?: number): void {
-  if (id == null) cache.clear();
-  else cache.delete(id);
+  if (id == null) {
+    cache.clear();
+    inFlight.clear();
+  } else {
+    cache.delete(id);
+    // A caller that asks for a fresh grant must not be handed the in-flight
+    // request it is already being served from.
+    inFlight.delete(id);
+  }
 }
 
 type AccessResponse = {
@@ -74,30 +93,65 @@ export async function fetchKeyImageAccessUrls(
   const missing: number[] = [];
   for (const id of unique) {
     const cached = cache.get(id);
-    if (isFresh(cached, now)) out.set(id, cached!);
-    else missing.push(id);
-  }
-  if (missing.length === 0) return out;
-
-  try {
-    const res = await api.post<AccessResponse>(
-      "/api/radiology/report-generator/key-images/access-urls",
-      { ids: missing },
-    );
-    const expiresAtMs = res?.expiresAt ? Date.parse(res.expiresAt) : null;
-    for (const item of res?.items ?? []) {
-      const entry: KeyImageAccessUrls = {
-        id: item.id,
-        imageUrl: item.imageUrl ?? null,
-        thumbnailUrl: item.thumbnailUrl ?? null,
-        expiresAtMs: Number.isFinite(expiresAtMs) ? (expiresAtMs as number) : null,
-      };
-      cache.set(entry.id, entry);
-      out.set(entry.id, entry);
+    if (isFresh(cached, now)) {
+      out.set(id, cached!);
+      continue;
     }
-  } catch {
-    // No grant, no image. The report text and the study are untouched; the rail
-    // shows an empty frame rather than an unauthenticated fetch.
+    if (!inFlight.has(id)) missing.push(id);
+  }
+
+  if (missing.length > 0) {
+    const batch = (async (): Promise<Map<number, KeyImageAccessUrls>> => {
+      const got = new Map<number, KeyImageAccessUrls>();
+      try {
+        const res = await api.post<AccessResponse>(
+          "/api/radiology/report-generator/key-images/access-urls",
+          { ids: missing },
+        );
+        const expiresAtMs = res?.expiresAt ? Date.parse(res.expiresAt) : null;
+        for (const item of res?.items ?? []) {
+          const entry: KeyImageAccessUrls = {
+            id: item.id,
+            imageUrl: item.imageUrl ?? null,
+            thumbnailUrl: item.thumbnailUrl ?? null,
+            expiresAtMs: Number.isFinite(expiresAtMs) ? (expiresAtMs as number) : null,
+          };
+          cache.set(entry.id, entry);
+          got.set(entry.id, entry);
+        }
+      } catch {
+        // No grant, no image. The report text and the study are untouched; the rail
+        // shows an empty frame rather than an unauthenticated fetch.
+      }
+      return got;
+    })();
+
+    // Every id in this batch shares the one request, and each caller awaits its
+    // own slice of it. The entry removes itself so a later, expired call is free
+    // to re-mint.
+    for (const id of missing) {
+      const settled: Promise<KeyImageAccessUrls | null> = batch.then((got) => {
+        // Only drop the registration if it is still this request's — a caller
+        // that arrives after it settles must be free to re-mint an expired grant.
+        if (inFlight.get(id) === settled) inFlight.delete(id);
+        return got.get(id) ?? null;
+      });
+      inFlight.set(id, settled);
+    }
+  }
+
+  // Collect every promise this call still needs BEFORE awaiting anything: a
+  // settled batch unregisters its own ids, and looking them up again afterwards
+  // would hand the caller nothing for all but the first.
+  const pending: Array<[number, Promise<KeyImageAccessUrls | null>]> = [];
+  for (const id of unique) {
+    if (out.has(id)) continue;
+    const inflight = inFlight.get(id);
+    if (inflight) pending.push([id, inflight]);
+  }
+  for (const [id, promise] of pending) {
+    const granted = await promise;
+    if (granted) out.set(id, granted);
   }
   return out;
 }

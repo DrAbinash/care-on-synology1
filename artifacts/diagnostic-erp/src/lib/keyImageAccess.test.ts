@@ -166,4 +166,58 @@ describe("fetchKeyImageAccessUrls", () => {
     await fetchKeyImageAccessUrls([7, 7, 7]);
     expect(calls[0].body).toEqual({ ids: [7] });
   });
+
+  it("three components mounting the same rail share one request, not three", async () => {
+    // The reporting workspace reads the rail from three places at once, so the
+    // first render of a study fired 5 POSTs to /key-images/access-urls before any
+    // response had filled the cache. Nothing may be minted twice while a request
+    // for that id is still in flight.
+    const resolvers: Array<(r: Response) => void> = [];
+    installFetch(() => new Promise<Response>((res) => { resolvers.push(res); }));
+
+    const a = fetchKeyImageAccessUrls([7, 8]);
+    const b = fetchKeyImageAccessUrls([7, 8]);
+    const c = fetchKeyImageAccessUrls([8, 9]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // One batch for 7+8, and a second only for the id nobody had asked for.
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body).toEqual({ ids: [7, 8] });
+    expect(calls[1].body).toEqual({ ids: [9] });
+
+    const payload = {
+      success: true,
+      expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+      items: [
+        { id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T7", thumbnailUrl: null },
+        { id: 8, imageUrl: "/uploads/radiology-key-images/b.jpg?kimg=T8", thumbnailUrl: null },
+        { id: 9, imageUrl: "/uploads/radiology-key-images/c.jpg?kimg=T9", thumbnailUrl: null },
+      ],
+    };
+    for (const res of resolvers) res(respondWith(payload));
+
+    const [ma, mb, mc] = await Promise.all([a, b, c]);
+    expect(ma.get(7)?.imageUrl).toContain("kimg=T7");
+    expect(mb.get(8)?.imageUrl).toContain("kimg=T8");
+    expect(mc.get(9)?.imageUrl).toContain("kimg=T9");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("a failed grant releases the id so the next render can try again", async () => {
+    let fail = true;
+    installFetch(() => (fail
+      ? new Response(JSON.stringify({ error: "boom" }), { status: 500 })
+      : respondWith({
+        success: true,
+        expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+        items: [{ id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T2", thumbnailUrl: null }],
+      })));
+
+    const first = await fetchKeyImageAccessUrls([7]);
+    expect(first.size).toBe(0);
+    fail = false;
+    const second = await fetchKeyImageAccessUrls([7]);
+    expect(second.get(7)?.imageUrl).toContain("kimg=T2");
+    expect(calls).toHaveLength(2);
+  });
 });

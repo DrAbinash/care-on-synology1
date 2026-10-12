@@ -237,6 +237,73 @@ export function isAuthHttpError(err: unknown): boolean {
   return err instanceof HttpError && (err.status === 401 || err.status === 403);
 }
 
+// ── Rate limiting ────────────────────────────────────────────────────────────
+//
+// A 429 is the one 4xx that means "nothing happened yet": express-rate-limit
+// refuses the request before any handler runs, so replaying it cannot double a
+// bill or overwrite a draft — unlike 400/401/409, where a retry repeats a
+// decision the server already made. That makes it recoverable rather than
+// terminal, and a busy reporting workspace really does reach it: measured against
+// a running API, one study open + 90 s idle + 20 s of typing is 89 requests on a
+// 300-per-minute-per-IP budget
+// (artifacts/api-server/src/middleware/rateLimits.ts:124), and the request that
+// gets refused is the key-image rail's own.
+//
+// What the server sends was read off a live 429 rather than assumed:
+//   Retry-After: 60 · RateLimit-Reset: 60 · RateLimit-Remaining: 0
+//   RateLimit-Policy: 300;w=60 · body {"error":"Too many requests. Please slow down."}
+// Both wait headers are seconds-from-now. The general window is 60 s and the
+// upload limiters wait 300 s and 600 s, so sleeping the whole window inside a
+// request is not something to do to a radiologist. The split is therefore:
+//   * a wait of at most RATE_LIMIT_AUTO_WAIT_MS is slept off here, invisible to the caller;
+//   * anything longer throws RateLimitedError carrying the wait, so the caller
+//     shows an honest "server is busy" state and schedules the retry itself —
+//     instead of the rail silently rendering "no images exist".
+const RATE_LIMIT_AUTO_WAIT_MS = 10_000;
+const RATE_LIMIT_AUTO_WAITS = 2;
+
+export class RateLimitedError extends HttpError {
+  /** Seconds-from-now the server says to wait, or null when it did not say. */
+  readonly retryAfterMs: number | null;
+
+  constructor(message: string, retryAfterMs: number | null) {
+    super(message, 429);
+    this.name = "RateLimitedError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export function isRateLimited(err: unknown): err is RateLimitedError {
+  return err instanceof RateLimitedError;
+}
+
+/** The wait the server asked for, in ms, from the headers it actually sends. */
+export function rateLimitWaitMs(headers: Headers): number | null {
+  for (const name of ["retry-after", "ratelimit-reset"]) {
+    const raw = headers.get(name);
+    if (raw === null) continue;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  }
+  return null;
+}
+
+/**
+ * Spread into a `useQuery` whose failure silently removes something from the
+ * screen (the key-image rail, the draft that anchors it). A 429 is not "there is
+ * nothing here" — it is "ask again after the window" — so it is rescheduled on
+ * the server's own clock, capped at the general limiter's minute, instead of
+ * being given up on after the app-wide single retry. Every other error keeps
+ * that default of 1, because re-attempting a 409 or a 500 is a different
+ * decision.
+ */
+export const rateAwareRetry = {
+  retry: (failureCount: number, error: unknown) =>
+    isRateLimited(error) ? failureCount < 2 : failureCount < 1,
+  retryDelay: (_failureCount: number, error: unknown) =>
+    isRateLimited(error) ? Math.min(error.retryAfterMs ?? 30_000, 60_000) : undefined,
+};
+
 /**
  * True when a billing save should queue locally instead of failing outright.
  * Covers pure network failures AND gateway errors (502/503/504) common during
@@ -300,6 +367,7 @@ async function doFetch(path: string, init?: RequestInit): Promise<Response> {
 // its own way (text/JSON vs. binary).
 async function fetchWithRetry(path: string, init?: RequestInit): Promise<Response> {
   let lastErr: unknown;
+  let rateLimitWaits = 0;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     // ALWAYS attempt the request, even when navigator.onLine is false. The
@@ -331,6 +399,24 @@ async function fetchWithRetry(path: string, init?: RequestInit): Promise<Respons
       if (attempt < MAX_RETRIES && isTransientError(null, res.status)) {
         await backoffBeforeRetry(path, init, attempt, `got ${res.status}`, false);
         continue;
+      }
+
+      if (res.status === 429) {
+        const waitMs = rateLimitWaitMs(res.headers);
+        if (waitMs !== null && waitMs <= RATE_LIMIT_AUTO_WAIT_MS && rateLimitWaits < RATE_LIMIT_AUTO_WAITS && attempt < MAX_RETRIES) {
+          rateLimitWaits++;
+          console.warn(`[fetchApi] ${init?.method ?? "GET"} ${path} was rate-limited (429), waiting the server's ${waitMs}ms (wait ${rateLimitWaits}/${RATE_LIMIT_AUTO_WAITS})`);
+          await sleep(waitMs);
+          continue;
+        }
+        // Too long to sleep off, too many waits already, or the server gave no
+        // window: surface it as a distinct, schedulable error. The body is read
+        // here because this branch returns.
+        const limitedBody = await res.text();
+        throw new RateLimitedError(
+          sanitizeApiErrorMessage(limitedBody, 429, res.statusText),
+          waitMs,
+        );
       }
 
       const text = await res.text();
