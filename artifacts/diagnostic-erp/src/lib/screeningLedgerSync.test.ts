@@ -99,11 +99,18 @@ describe("rebuilding a screening region", () => {
     expect(limitationCount(after)).toBe(1);
     // The report must not be shorter than the single limitation sentence it kept.
     expect(after.length).toBeGreaterThan(before.length - 120);
-    // The rows carry the study tab the panel was mounted for, not a default: the
-    // plan's region is what routes a multi-study report's sub-sections.
+    // Each region's rows carry the region they DESCRIBE, not the examination's
+    // region. This assertion used to require "Whole Spine" for every row, on the
+    // reasoning that the plan's region routes a multi-study report's sub-sections;
+    // that is not what routes them (`anatomicalSection` and `level` do, and both were
+    // already per region), and the study-level stamp is what made the slot gate
+    // unable to pair a screening abnormality with the normal it replaces
+    // (`observationSlot.ts:360` compares `region` first). Pinned here so the defect
+    // cannot come back as a "correct" expectation again.
     const rows = useWorkspace.getState().appliedPathologyPatches.filter((p) => !p.stale && p.observation?.bundleId?.startsWith(SCREENING_BUNDLE_PREFIX));
     expect(rows.length).toBeGreaterThan(1);
-    expect(rows.every((p) => p.observation?.region === "Whole Spine")).toBe(true);
+    expect(rows.filter((p) => p.observation?.bundleId === "spm-screen-dorsal").every((p) => p.observation?.region === "Dorsal Spine")).toBe(true);
+    expect(rows.filter((p) => p.observation?.bundleId === SCREENING_LIMITATION_BUNDLE_ID).every((p) => p.observation?.region === "Whole Spine")).toBe(true);
   });
 
   it("keeps the limitation exactly once across two rebuilds of the same region", () => {

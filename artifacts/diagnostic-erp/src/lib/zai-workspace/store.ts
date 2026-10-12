@@ -2426,7 +2426,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         get().appliedPathologyPatches.filter((p) => p.id !== fallbackId),
         probe,
       );
-      const id = siblings[0]?.id ?? fallbackId;
+      // A format baseline is not one of those siblings. Adopting its id blinds the
+      // overlay's own lookup, which filters `p.id !== draftId`: the row it was meant
+      // to supersede disappears from view, the apply falls to the insert path, and
+      // that path drops the baseline row without its prose contract — so the row
+      // vanishes while its sentence keeps printing. Measured on MRI Whole Spine: one
+      // click on Dorsal → Compression deformity left that region's normal printing
+      // beside the new abnormality. Keeping the baseline's identity lets the update
+      // path below retire it and record `baselineReplaces`.
+      const id = siblings.find((s) => s.observation.role !== "baseline")?.id ?? fallbackId;
       const r = get().applyPathologyOverlay({ ...obs, bundleId, id, skipUndoSnapshot: true });
       if (r === "pending") status = "pending";
     }
