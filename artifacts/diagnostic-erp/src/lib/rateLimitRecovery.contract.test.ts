@@ -51,7 +51,10 @@ describe("the embedded viewer distinguishes a rate limit from an Orthanc outage"
     expect(at).toBeGreaterThan(-1);
     const block = VIEWER.slice(at, VIEWER.indexOf("...rateAwareRetry", at));
     expect(block).toMatch(/catch \(err\) \{/);
-    expect(block).toContain("setRefusal(");
+    // Not just "a setRefusal call exists" — it must store the refusal it just
+    // described, or the wait renders nothing and the gate is decoration.
+    expect(block).toContain("describeStudyUidLookupFailure(err)");
+    expect(block).toMatch(/setRefusal\(\(prev\)[\s\S]{0,400}: said,/);
     expect(block).toContain("throw err;");
     expect(VIEWER).toContain("selectLookupNotice({ canResolve, committedError: resolveError, refusal })");
     // A refusal belongs to one worklist entry; switching studies must not carry
@@ -121,8 +124,13 @@ describe("the key-image rail is not deleted by the failure it reports", () => {
     const hooks = [...body.matchAll(/\buse[A-Z]\w*\(/g)];
     const lastHook = hooks.length ? hooks[hooks.length - 1].index ?? -1 : -1;
     expect(lastHook).toBeGreaterThan(-1);
-    const firstReturn = body.search(/^ {4}return [(<]/m);
-    expect(firstReturn, "a block-bodied return sits above the last hook call").toBeGreaterThan(lastHook);
+    // Three shapes a component-level exit can take — a bare `return`, an inline
+    // `if (…) return`, and a guard block whose body returns. Narrowing this to
+    // `return (` alone let a `return null;` above the hooks pass this test while
+    // it would crash the same way on screen.
+    const GUARD = /^ {2}(?:return\b|if \([^\n]*\) return\b)|^ {2}if \([^\n]*\) \{\n {4}return\b|^ {4}return [(<]/m;
+    const firstReturn = body.search(GUARD);
+    expect(firstReturn, "a component-level exit sits above the last hook call").toBeGreaterThan(lastHook);
   });
 });
 
