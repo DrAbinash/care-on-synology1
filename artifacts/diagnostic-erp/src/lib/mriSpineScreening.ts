@@ -171,6 +171,23 @@ export function screeningRegionBundleId(region: SpineScreeningRegion): string {
   return `spm-screen-${region}`;
 }
 
+/**
+ * The anatomical region a screening region's ledger rows DESCRIBE, matching the
+ * per-entry `region` the whole-spine normal baseline stamps its own rows with.
+ * Slot exclusivity is keyed region → concept → level → laterality, so a row
+ * carrying the examination's region ("Whole Spine") can never pair with the
+ * region's normal ("Dorsal Spine") and the contradiction prints both.
+ */
+const SCREENING_LEDGER_REGION: Record<SpineScreeningRegion, string> = {
+  cervical: "Cervical Spine",
+  dorsal: "Dorsal Spine",
+  ls: "LS Spine",
+};
+
+export function screeningLedgerRegion(region: SpineScreeningRegion): string {
+  return SCREENING_LEDGER_REGION[region];
+}
+
 /** Levels offered for an option — LS always comes from the numbering resolver. */
 export function availableScreeningLevels(
   option: ScreeningOption,
@@ -262,8 +279,6 @@ export function buildScreeningRegionBundle(opts: {
   state: ScreeningRegionState;
   sequences: SpineSequencesAvailable;
   numbering?: LumbarNumberingState | null;
-  /** Study Tab / reporting region owning the ledger rows. */
-  ledgerRegion?: string;
 }): ScreeningBuildResult {
   const { region, schema, state } = opts;
   const bundleId = screeningRegionBundleId(region);
@@ -577,7 +592,7 @@ export function screeningLedgerBundles(opts: {
       sequences: opts.sequences,
       numbering: opts.numbering ?? null,
     });
-    const observations = spineAtomsToPatches(ledgerRegion, built.bundleId, built.atoms);
+    const observations = spineAtomsToPatches(screeningLedgerRegion(region), built.bundleId, built.atoms);
     if (observations.length > 0) out.push({ bundleId: built.bundleId, observations });
     // Any screening prose at all counts as contributing — a region reduced to
     // "cannot be assessed" notices still needs the report-level limitation.
