@@ -20,6 +20,7 @@ import {
 import { pickQuickProtocol, protocolsForStudyTabDetailed } from "@/lib/pickQuickProtocol";
 import { findingsBodyForTemplate } from "@/lib/reportSubHeadings";
 import {
+  mayAddAutoTechniqueStatement,
   recordTechniqueAutoOrigin,
   shouldAutoReplaceTechniqueOnRegionChange,
   techniqueRegionMismatch,
@@ -362,12 +363,16 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     protocol: QuickProtocol | null,
     replaceTechnique: boolean,
     tabContext?: { tabId: number | null; tabName: string },
+    /** `technique: false` selects the protocol for this examination without writing its
+     *  acquisition text — used by the automatic setup pass when the report already states one. */
+    options?: { technique?: boolean },
   ) => {
     setActiveProtocol(protocol);
     if (!protocol || disabled) return;
     if (protocol.recommendationText) {
       setters.mergeRecommendation(protocol.recommendationText, "protocol");
     }
+    if (options?.technique === false) return;
     if (protocol.techniqueText) {
       const fields = setters.readFields();
       const tabId = tabContext?.tabId ?? protocol.studyTabId ?? selectedStudyTabId;
@@ -782,12 +787,22 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (disabled || studyRegions.length === 0) return null;
     studyRegions.forEach((region, i) => {
       const protocol = pickQuickProtocol(quickSelectData?.protocols ?? [], region, selectedStudyTabId);
+      // Which protocol and Study Tab belong to this examination is setup information, and it is
+      // recorded either way. Writing their Technique is not: this runs on every Generate press,
+      // and by then the approved template's Technique is already on the page, so a second machine
+      // sentence was a second account of one scan — measured on MRI Dorsal Spine, where it printed
+      // an STIR claim no dorsal template establishes. One region, one statement; a multi-region
+      // examination composes one per part, which is what its report has to say.
+      const allowTechnique = mayAddAutoTechniqueStatement({
+        techniqueText: setters.readFields().technique,
+        regionCount: studyRegions.length,
+      });
       // replaceTechnique only for the primary region, and applyProtocol itself
       // only replaces while the field is empty or still exactly what it last
       // auto-inserted — anything the radiologist touched is merged into.
-      if (protocol) applyProtocol(protocol, i === 0);
+      if (protocol) applyProtocol(protocol, i === 0, undefined, { technique: allowTechnique });
       const tab = quickSelectData?.tabs?.find((t) => t.name === region);
-      if (tab?.techniqueText) setters.mergeTechnique(tab.techniqueText, "protocol");
+      if (tab?.techniqueText && allowTechnique) setters.mergeTechnique(tab.techniqueText, "protocol");
     });
     const match = pickStructuredTemplateForRegion(
       templates,
