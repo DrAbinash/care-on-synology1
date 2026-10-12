@@ -27,7 +27,13 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
   const [draftId, setDraftId] = useState<number | null>(null);
   const adoptedForRef = useRef<number | null>(null);
 
-  const { data: existingDraft, isLoading: isLoadingExistingDraft } = useQuery<RadiologyDraftRow | null>({
+  const {
+    data: existingDraft,
+    isLoading: isLoadingExistingDraft,
+    isPending: draftReadPending,
+    error: existingDraftError,
+    refetch: refetchExistingDraft,
+  } = useQuery<RadiologyDraftRow | null>({
     queryKey: ["radiology-existing-draft", studyId],
     queryFn: async () => {
       const res = await api.get<{ success: boolean; drafts: RadiologyDraftRow[] }>(
@@ -49,11 +55,15 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
   }, [studyId]);
 
   useEffect(() => {
-    if (!studyId || isLoadingExistingDraft) return;
+    if (!studyId || draftReadPending) return;
+    // A read that FAILED has not answered. Adopting "no draft" here would stamp
+    // this study as settled and a later successful refetch would be ignored, so
+    // the rail would sit on "no captures" for a study that has them.
+    if (existingDraftError) return;
     if (adoptedForRef.current === studyId) return; // already adopted for this study — a save's captureSavedDraftId always wins from here on
     adoptedForRef.current = studyId;
     setDraftId(pickAdoptedDraftId(existingDraft ?? null));
-  }, [studyId, existingDraft, isLoadingExistingDraft]);
+  }, [studyId, existingDraft, draftReadPending, existingDraftError]);
 
   /** Call with the id returned by a successful save so the next save
    *  updates this same row instead of creating another one. */
@@ -67,6 +77,13 @@ export function useRadiologyDraftId(studyId: number | null | undefined) {
     draftId,
     existingDraft: existingDraft ?? null,
     isLoadingExistingDraft,
+    /**
+     * The anchor read has not settled for this study — "unknown", which is not
+     * the same claim as "this study has no draft".
+     */
+    draftReadPending: Boolean(studyId) && draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
     withDraftId: <T extends object>(body: T) => withDraftIdPure(body, draftId),
     captureSavedDraftId,
   };

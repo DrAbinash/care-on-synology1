@@ -834,7 +834,15 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   const contentLocked = isLocked || signedContentLocked;
 
   // 3. Draft ID (server-side persistence)
-  const { draftId, existingDraft, captureSavedDraftId, isLoadingExistingDraft } = useRadiologyDraftId(studyId ?? null);
+  const {
+    draftId,
+    existingDraft,
+    captureSavedDraftId,
+    isLoadingExistingDraft,
+    draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
+  } = useRadiologyDraftId(studyId ?? null);
 
   // 4. Local draft backup (30-snapshot localStorage)
   const draftBackup = useLocalDraftBackup({
@@ -3236,6 +3244,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     draftHydratedStudyId,
     draftId,
     draftIdRef,
+    draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
     embeddedViewerRef,
     ensureDraftOnce,
     enterClinicalEditorFocus,
