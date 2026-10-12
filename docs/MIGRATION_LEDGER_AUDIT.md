@@ -61,8 +61,24 @@ DATABASE_URL=… node scripts/audit-migration-ledger.mjs --json=audit.json   # m
 DATABASE_URL=… node scripts/audit-migration-ledger.mjs --strict            # warnings also exit 1
 ```
 
-On the NAS the URL is the one `care-api` uses; run it from the host with
-`docker exec`:
+On the NAS, run it inside the image that already has `scripts/` and its dependencies, mounted
+against the same read-only SQL directories `care-schema-verify` uses. `DATABASE_URL` comes from the
+service environment, so no password is typed and nothing is written outside the deploy checkout:
+
+```sh
+docker compose run --rm --no-deps schema-verify \
+  node scripts/audit-migration-ledger.mjs --json=output/ledger-audit.json
+```
+
+`--no-deps` starts no database and no API; the container runs one command and exits. The `migrate`
+stage bakes `scripts/node_modules` into the image (see the note in `docker-compose.yml` about why
+`scripts/` is deliberately **not** bind-mounted), which is also why `pg` is imported lazily inside
+`main()` here: the audit's tests must not need it. `care-db-patch-v2` itself is
+`postgres:16-alpine` and has no Node, so it cannot run this — the audit is a documented pre-deploy
+step, not something the patch container enforces.
+
+`care-db` publishes only `127.0.0.1:${DB_HOST_PORT:-5400}`, so a host-side psql probe needs both
+the port and the password:
 
 ```sh
 docker exec care-db psql -U erp -d diagnostic_erp -Atc "select count(*) from schema_migrations_log"
