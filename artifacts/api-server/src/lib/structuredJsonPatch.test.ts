@@ -80,6 +80,31 @@ describe("buildCareStructuredJsonPatch — which keys a request writes", () => {
     ]);
   });
 
+  it("keeps a stored transition history unless the request brings one", () => {
+    const transition = {
+      kind: "care.region_transition.v1",
+      fromRegion: "Whole Spine",
+      toRegion: "Cervical Spine",
+      retired: [{ id: "d1", concept: "alignment", segment: "dorsal", text: "Dorsal spine: Normal." }],
+      keptAbnormalities: [],
+      manualLinesPreserved: 0,
+      decidedBy: "abinashsingh@gmail.com",
+      at: "2026-10-12T09:00:00.000Z",
+    };
+    // Absent or null is not an instruction to forget a decision: the report was re-regioned,
+    // and an unrelated autosave that carries no transition must leave the history standing.
+    expect(buildCareStructuredJsonPatch({}, FIXED_NOW)).not.toHaveProperty("regionTransitions");
+    expect(buildCareStructuredJsonPatch({ regionTransitions: null }, FIXED_NOW))
+      .not.toHaveProperty("regionTransitions");
+    // What does arrive is normalized through the same reader a reload uses, so a request
+    // cannot store a row the reader would later refuse and present as nothing.
+    expect(buildCareStructuredJsonPatch({ regionTransitions: [transition] }, FIXED_NOW).regionTransitions)
+      .toEqual([transition]);
+    expect(buildCareStructuredJsonPatch({
+      regionTransitions: [{ kind: "care.something_else", toRegion: "X", retired: [] }, transition],
+    }, FIXED_NOW).regionTransitions).toEqual([transition]);
+  });
+
   it("fills the format-state defaults composeStructuredJsonColumn requires", () => {
     const patch = buildCareStructuredJsonPatch({
       structuredFormatState: { formatId: 9, values: { "discs::l4-5": "bulge" } },

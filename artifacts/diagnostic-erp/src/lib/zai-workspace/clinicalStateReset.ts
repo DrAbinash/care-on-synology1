@@ -100,6 +100,9 @@ export const CLINICAL_RESET_FIELDS = [
   "pendingFormatRegion",
   "appliedFormatReportTitle",
   "appliedPathologyPatches",
+  // ADR-004 — the transition history describes THIS study's ledger. Carrying it to the next
+  // study would claim a transition that study never went through.
+  "regionTransitions",
   "pendingPathologyPatch",
   "patchUndoStack",
   "lastPatchSnapshot",
@@ -185,6 +188,7 @@ export function emptyClinicalState(): ClinicalResetState {
     pendingFormatRegion: null,
     appliedFormatReportTitle: null,
     appliedPathologyPatches: [],
+    regionTransitions: [],
     pendingPathologyPatch: null,
     patchUndoStack: [],
     lastPatchSnapshot: null,
