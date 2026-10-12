@@ -11,6 +11,7 @@
  * the failure notice are all read back out of the file.
  */
 import { describe, expect, it } from "vitest";
+import zlib from "node:zlib";
 import {
   DEFAULT_PRINT_SETTINGS,
   generateReportPDF,
@@ -72,10 +73,63 @@ function placed(pdf: string) {
   }));
 }
 
-/** The 32 mm key-image ports only. The letterhead wordmark is an image too, and
- *  is drawn at its own height, so sizing the filter keeps it out of the count. */
+/** The 32 mm key-image PORTS, as rectangles on the page. A port's picture never
+ *  exceeds 32 mm on either edge, while the letterhead wordmark is 183 pt wide, so
+ *  the widest side separates the two — and it still finds a 4:3 DICOM render,
+ *  which sits inside its port at 32 × 24 mm and is NOT square. Reporting the
+ *  placement instead of the port was the mistake a square test fixture let
+ *  through: the caption belongs to the port, and so does the space it reserves.
+ *
+ *  jsPDF centres the picture inside the port, so the port is the placement grown
+ *  back to 32 mm on both axes. */
 const tiles = (pdf: string) =>
-  placed(pdf).filter((p) => Math.abs(p.w - SQUARE_PT) < 1.5 && Math.abs(p.h - SQUARE_PT) < 1.5);
+  placed(pdf)
+    .filter((p) => Math.abs(Math.max(p.w, p.h) - SQUARE_PT) < 1.5)
+    .map((p) => ({
+      x: p.x - (SQUARE_PT - p.w) / 2,
+      y: p.y - (SQUARE_PT - p.h) / 2,
+      w: SQUARE_PT,
+      h: SQUARE_PT,
+      pictureW: p.w,
+      pictureH: p.h,
+    }));
+
+/** A solid-colour PNG of exactly the pixel size asked for, so a study image can
+ *  be tested in the shape the clinic's renders actually have. */
+function pngPixels(width: number, height: number): string {
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) raw[y * (width * 3 + 1)] = 0; // filter byte
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolour
+  const crc = (b: Buffer) => {
+    let c = ~0;
+    for (const byte of b) {
+      c ^= byte;
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    }
+    return ~c >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length, 0);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(body), 0);
+    return Buffer.concat([len, body, c]);
+  };
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+/** 240 x 180 — the aspect ratio every frozen Orthanc render in the clinic has. */
+const RENDER_4_3 = pngPixels(240, 180);
 
 const drawnText = (pdf: string) =>
   [...pdf.matchAll(/\(((?:[^()]|\([^)]*\))*)\)\s*Tj/g)].map((m) => m[1]);
@@ -343,6 +397,24 @@ describe("Download PDF carries every attached key image", () => {
           at.add(key);
         }
       }
+    }
+  });
+
+  it("counts every port when the study image is not square", () => {
+    // A frozen Orthanc render is 240x180, so the picture inside a 32 mm port is
+    // 32 x 24 mm — the port is square, the image is not. Counting only square
+    // placements reported 0 ports for a real 14-image study while every image
+    // was on the page. The association is re-checked here in the shape the
+    // clinic actually exports.
+    const keyImages = series(14, (i) => ({ src: RENDER_4_3, caption: `CAP-${String(i).padStart(2, "0")}` }));
+    const pdf = pdfBytes(keyImages);
+    const t = tiles(pdf);
+    expect(t, `${t.length} ports for 14 stored images`).toHaveLength(14);
+    const runs = textRuns(pdf);
+    expect(t.map((tile) => captionUnder(tile, runs))).toEqual(keyImages.map((k) => k.caption));
+    for (const p of t) {
+      expect(Math.max(p.pictureW, p.pictureH)).toBeLessThanOrEqual(SQUARE_PT + 0.5);
+      expect(Math.min(p.pictureW, p.pictureH)).toBeLessThan(SQUARE_PT - 1);
     }
   });
 
