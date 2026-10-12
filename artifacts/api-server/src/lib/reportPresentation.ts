@@ -934,7 +934,10 @@ export function renderReportDocument(
     .image-panel-overflow { margin-top: 10px; }
     .image-caption {
       background: ${pal.accent}; color: #fff; font-weight: 600;
-      padding: 2px 6px; letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 2px 6px; letter-spacing: 0.05em;
+      /* No text-transform: a caption is the radiologist's own sentence, not a
+         field label. Upper-casing it turned a 146-character finding into a
+         shouting block and made the printed words differ from the stored ones. */
     }
 
     /* ── Footer + signatures slots ── */

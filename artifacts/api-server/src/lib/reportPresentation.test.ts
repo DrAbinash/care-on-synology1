@@ -564,6 +564,24 @@ describe("a caption is the radiologist's words, or there is none", () => {
     expect(html).toMatch(/\.image-viewport\s*\{[^}]*aspect-ratio: 1 \/ 1/);
   });
 
+  it("a caption prints in the radiologist's own capitalisation", () => {
+    // Field labels are uppercased by this template; a caption is a sentence the
+    // clinician typed, and shouting it changed what the report said on paper
+    // without changing what was stored.
+    const html = render([{ src: img("AAA"), caption: "Small focus of oedema, left cerebellum", displayOrder: 0 }]);
+    const capRules: string[] = html.match(/\.image-caption\s*\{[^}]*\}/g) ?? [];
+    expect(capRules.length).toBeGreaterThan(0);
+    for (const raw of capRules) {
+      // Comments are stripped first: the rule that documents why there is no
+      // text-transform must not be mistaken for one.
+      const rule = raw.replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(rule).not.toMatch(/text-transform/);
+    }
+    // The words themselves reach the page exactly as typed.
+    expect(html).toContain("Small focus of oedema, left cerebellum");
+    expect(html).not.toContain("SMALL FOCUS OF OEDEMA");
+  });
+
   it("a long caption wraps inside the port instead of stretching the rail", () => {
     const long = "Broad-based posterior disc extrusion with severe thecal sac compression and bilateral facet hypertrophy at L4-L5 with traversing root impingement";
     const html = render([{ src: img("AAA"), caption: long, displayOrder: 0 }]);
