@@ -20,9 +20,11 @@
  *     surfaced in the confirmation and kept.
  *  3. Text the radiologist wrote themselves is never retired, never rewritten, and its
  *     count is stated in the confirmation.
- *  4. Retirement is a flag plus a reason, never a removal: the row stays in the ledger
- *     with its `lastRendered` contribution intact, so the transition is auditable and
- *     recoverable. Removing a row would be silent data deletion.
+ *  4. Retirement runs through the report's own withdrawal path (`removeObservation`) in ONE
+ *     undo frame, and every sentence that leaves is copied into a `care.region_transition.v1`
+ *     record. A `stale` flag was the first design and is wrong here: `serializeObservationLedger`
+ *     whitelists the fields it writes and `stale` is not among them, so a flagged row would
+ *     come back as a live normal after a reload and print the sentence the transition removed.
  *  5. A transition that retires nothing needs no confirmation — Whole Spine after
  *     Cervical is additive, and asking about it would train the radiologist to press
  *     through dialogs.
@@ -32,6 +34,7 @@
  */
 
 import { canonicalContentRegion, spineSegmentFromRegion } from "./reportingStudyContext";
+import { readStaffSession } from "./staffSession";
 
 export type SpineCoverageSegment = "cervical" | "dorsal" | "lumbar";
 
@@ -54,6 +57,29 @@ export function coverageOfRegion(region: string | null | undefined): Set<SpineCo
     default:
       return null;
   }
+}
+
+/**
+ * The union of what a whole region SELECTION acquires.
+ *
+ * The Study / Region chips are multi-select, and clicking one that is already selected
+ * makes it primary rather than removing it (`nextStudyRegions`). Coverage is therefore a
+ * property of the list, not of its first entry: Cervical + LS Spine acquires two segments,
+ * and re-ordering it must not read as a narrowing that retires anything.
+ * Null when nothing in the list is spine — the same "no opinion" answer `coverageOfRegion`
+ * gives for a single region.
+ */
+export function coverageUnionOfRegions(
+  regions: readonly (string | null | undefined)[],
+): Set<SpineCoverageSegment> | null {
+  let union: Set<SpineCoverageSegment> | null = null;
+  for (const region of regions) {
+    const coverage = coverageOfRegion(region);
+    if (!coverage) continue;
+    if (!union) union = new Set(coverage);
+    else for (const segment of coverage) union.add(segment);
+  }
+  return union;
 }
 
 const LEVEL_SEGMENT: Record<string, SpineCoverageSegment> = {
@@ -144,17 +170,30 @@ function sameText(a: string, b: string): boolean {
 }
 
 export function planRegionTransition(input: {
-  fromRegion: string | null;
-  toRegion: string | null;
+  /**
+   * The region the report is about now. Either form is accepted: a single region, or the
+   * whole multi-select list (the Study / Region chips are multi-select, and clicking one
+   * that is already selected makes it primary rather than removing it). The list wins,
+   * and coverage is its union — see `coverageUnionOfRegions`.
+   */
+  fromRegion?: string | null;
+  fromRegions?: readonly string[];
+  toRegion?: string | null;
+  toRegions?: readonly string[];
   rows: TransitionRow[];
   findingsText: string;
 }): RegionTransitionPlan {
-  const toRegion = (input.toRegion ?? "").trim();
-  const to = coverageOfRegion(toRegion);
-  const from = coverageOfRegion(input.fromRegion);
+  const toList = (input.toRegions ?? []).filter((r) => r.trim().length > 0);
+  const toRegion = (toList.length > 0 ? toList.join(" + ") : input.toRegion ?? "").trim();
+  const to = toList.length > 0 ? coverageUnionOfRegions(toList) : coverageOfRegion(toRegion);
+  const fromList = input.fromRegions ?? [];
+  const from = fromList.length > 0
+    ? coverageUnionOfRegions(fromList)
+    : coverageOfRegion(input.fromRegion);
+  const fromLabel = fromList.length > 0 ? fromList.join(" + ") : input.fromRegion ?? null;
 
   const empty = (actionable: boolean): RegionTransitionPlan => buildPlan({
-    fromRegion: input.fromRegion, toRegion, actionable, to,
+    fromRegion: fromLabel, toRegion, actionable, to,
     retire: [], keep: input.rows, abnormal: [], unplaced: [], manualLines: [],
   });
 
@@ -187,7 +226,7 @@ export function planRegionTransition(input: {
 
   const manualLines = unownedLines(input.findingsText, input.rows);
   return buildPlan({
-    fromRegion: input.fromRegion, toRegion, actionable: true, to,
+    fromRegion: fromLabel, toRegion, actionable: true, to,
     retire, keep, abnormal, unplaced, manualLines,
   });
 }
@@ -226,18 +265,87 @@ export function unownedLines(findingsText: string, rows: TransitionRow[]): strin
     .filter((l) => l.length > 0 && !owned.some((t) => sameText(t, l) || t.includes(l)));
 }
 
+// There is deliberately no text-rewriting helper here. The report's sentences are owned by
+// the observation ledger, and `removeObservation` is the product's one withdrawal path:
+// it takes the row's sentence out of the text, brings back the baseline that row had been
+// covering, detaches its measurements and re-aligns the Recommendation. A line filter in
+// this module would have been a second, smaller version of the same job — it would have
+// removed text while leaving the ledger row, the covered baseline and the linked
+// measurements pointing at a sentence that was no longer on the page.
+
+/** The save-draft REQUEST field the payload below is written to. */
+export const REGION_TRANSITION_REQUEST_FIELD = "regionTransitions";
 /**
- * The findings text as it reads AFTER the transition: every retired row's own lines are
- * gone, every other line is byte-identical and in the same order. Never re-joins with a
- * different separator, never trims a manual line, never re-wraps.
+ * The structured_json ENVELOPE key the server stores it under. Two names on purpose, exactly
+ * the way vascularTechnique / careVascularTechnique already work: the request field is what the
+ * client sends, the envelope key is what comes back on a reload, and reading only the first
+ * silently restores nothing — which is how Technique was destroyed by save → reopen once before
+ * (B-01, PR #876).
  */
-export function applyPlanToFindingsText(findingsText: string, plan: RegionTransitionPlan): string {
-  if (!plan.actionable || plan.retire.length === 0) return findingsText;
-  const retired = plan.retire.map((r) => r.text).filter((t) => t.trim().length > 0);
-  return findingsText
-    .split("\n")
-    .filter((line) => !retired.some((t) => sameText(t, line) || sameText(line, t)))
-    .join("\n");
+export const REGION_TRANSITION_ENVELOPE_KEY = "careRegionTransitions";
+
+/**
+ * The draft envelope entry. `undefined` when nothing has been retired, so a report nobody
+ * has re-regioned gains no key — the same rule `vascularTechniquePayload` follows.
+ */
+export function regionTransitionPayload(
+  records: readonly RegionTransitionRecord[] | null | undefined,
+): RegionTransitionRecord[] | undefined {
+  if (!records || records.length === 0) return undefined;
+  return records.map((r) => ({ ...r, retired: r.retired.map((x) => ({ ...x })), keptAbnormalities: r.keptAbnormalities.map((x) => ({ ...x })) }));
+}
+
+/**
+ * Read the envelope back. Structural, not trusting: a row that does not carry the contract's
+ * fields is dropped rather than coerced, because a half-parsed transition record on screen
+ * would present an unproven claim about who removed what.
+ */
+export function extractCareRegionTransitions(column: unknown): RegionTransitionRecord[] {
+  const col = (column as { [k: string]: unknown } | null | undefined) ?? null;
+  const raw = col?.[REGION_TRANSITION_ENVELOPE_KEY] ?? col?.[REGION_TRANSITION_REQUEST_FIELD];
+  if (!Array.isArray(raw)) return [];
+  const out: RegionTransitionRecord[] = [];
+  for (const item of raw) {
+    const r = item as Record<string, unknown> | null;
+    if (!r || r.kind !== "care.region_transition.v1") continue;
+    if (typeof r.toRegion !== "string" || !Array.isArray(r.retired)) continue;
+    const retired = (r.retired as unknown[]).filter((x) => {
+      const e = x as Record<string, unknown> | null;
+      return !!e && typeof e.id === "string" && typeof e.text === "string";
+    }) as RegionTransitionRecord["retired"];
+    const kept = Array.isArray(r.keptAbnormalities)
+      ? (r.keptAbnormalities as unknown[]).filter((x) => {
+          const e = x as Record<string, unknown> | null;
+          return !!e && typeof e.id === "string" && typeof e.text === "string";
+        }) as RegionTransitionRecord["keptAbnormalities"]
+      : [];
+    out.push({
+      kind: "care.region_transition.v1",
+      fromRegion: typeof r.fromRegion === "string" ? r.fromRegion : null,
+      toRegion: r.toRegion,
+      retired,
+      keptAbnormalities: kept,
+      manualLinesPreserved: typeof r.manualLinesPreserved === "number" ? r.manualLinesPreserved : 0,
+      decidedBy: typeof r.decidedBy === "string" ? r.decidedBy : "",
+      at: typeof r.at === "string" ? r.at : "",
+    });
+  }
+  return out;
+}
+
+/**
+ * Who pressed the button, as far as the browser can tell. The record is an audit *claim*
+ * about a client action; the server attests the actor at finalize, the same division the
+ * draft's own identity fields live under. Empty string rather than a guess when no session
+ * is present (tests, offline).
+ */
+export function regionTransitionActor(): string {
+  // The product's own reader, because it is the product's own key: reading a name off a
+  // guessed localStorage path returns "" in the live app, and an empty `decidedBy` is an
+  // audit record that says nobody decided. `name` is what staff-login puts there; `email`
+  // is the fallback for a session seeded without one.
+  const user = readStaffSession()?.user;
+  return (user?.name ?? "").trim() || (user?.email ?? "").trim();
 }
 
 function buildPlan(input: {
@@ -253,12 +361,19 @@ function buildPlan(input: {
 }): RegionTransitionPlan {
   const requiresConfirmation = input.retire.length > 0 || input.abnormal.length > 0;
   const segments = [...new Set(input.retire.map((r) => rowSegment(r)))].filter(Boolean);
+  // The strip shows this sentence to a radiologist, so it agrees with itself: one normal
+  // "is" not covered, two "are"; one finding "stays", two "stay".
+  const countWord = (n: number, singular: string, plural: string) => `${n} ${n === 1 ? singular : plural}`;
   const summary = requiresConfirmation
-    ? `${input.retire.length} normal${input.retire.length === 1 ? "" : "s"} from ${
+    ? `${countWord(input.retire.length, "normal", "normals")} from ${
         segments.length ? segments.join(" and ") : "the previous region"
-      } are not covered by ${input.toRegion}${
-        input.abnormal.length ? `; ${input.abnormal.length} finding${input.abnormal.length === 1 ? "" : "s"} stay because a finding does not disappear with the label` : ""
-      }${input.manualLines.length ? `; your own ${input.manualLines.length} line${input.manualLines.length === 1 ? "" : "s"} stay` : ""}.`
+      } ${input.retire.length === 1 ? "is" : "are"} not covered by ${input.toRegion}${
+        input.abnormal.length
+          ? `; ${countWord(input.abnormal.length, "finding", "findings")} ${input.abnormal.length === 1 ? "stays" : "stay"} because a finding does not disappear with the label`
+          : ""
+      }${input.manualLines.length
+        ? `; your own ${countWord(input.manualLines.length, "line", "lines")} ${input.manualLines.length === 1 ? "stays" : "stay"}`
+        : ""}.`
     : `Nothing in the report falls outside ${input.toRegion}.`;
 
   return {

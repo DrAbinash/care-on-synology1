@@ -242,6 +242,7 @@ import {
 } from "@/lib/coverageMarks";
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
+import type { RegionTransitionPlan, RegionTransitionRecord } from "@/lib/regionTransition";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -340,6 +341,14 @@ type PatchSnapshot = {
    * restore nothing rather than forcing the flag to a value they never recorded.
    */
   impressionNeedsRefresh?: boolean;
+  /**
+   * ADR-004 — the transition history, optional for the same reason as the four above: a
+   * frame captured before this field existed restores nothing rather than forcing the
+   * history to a value it never recorded. Undo has to roll the record back WITH the
+   * sentences: leaving it behind would claim lines left the report while they are sitting
+   * on the page, and the next autosave would persist that claim as provenance.
+   */
+  regionTransitions?: RegionTransitionRecord[];
 };
 
 const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
@@ -361,6 +370,7 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     startingCanvasBaseline: s.startingCanvasBaseline ?? null,
     appliedPatternMarkers: s.appliedPatternMarkers.map((m) => ({ ...m })),
     impressionNeedsRefresh: s.impressionNeedsRefresh,
+    regionTransitions: [...s.regionTransitions],
   };
 }
 
@@ -618,6 +628,13 @@ interface S {
   /** Canal AP cell provenance (manualOverride + DICOM UIDs) — draft-scoped. */
   canalApProvenance: CanalApProvenanceMap;
   /**
+   * ADR-004 — the confirmed region transitions this report has been through, oldest first.
+   * One entry per decision, carrying every sentence the report stopped claiming and who
+   * decided it. Persisted in the draft envelope so a reload names the transition instead of
+   * reporting the missing rows as a lost draft.
+   */
+  regionTransitions: RegionTransitionRecord[];
+  /**
    * MRI Lumbar V3: vertebral numbering mode + LSTV detail. Level keys, AP rows,
    * root mapping, findings prose and LS screening all read this through
    * `LumbarNumberingResolver` — never a hard-coded level array (spec §5).
@@ -776,6 +793,19 @@ export type WorkspaceStore = S & {
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
+   * ADR-004 — commit a region transition the radiologist has CONFIRMED. Each retired row goes
+   * through the same per-observation withdrawal a bundle deselection uses, so its sentence
+   * leaves the text, any baseline it was covering comes back, linked measurements detach and
+   * the Recommendation re-aligns — inside ONE clinical undo frame, and with the decision
+   * recorded: only the rows whose sentence really left the report appear in it. Returns null
+   * without writing a record when the plan retires nothing, when nothing was actually
+   * removable, or when the report is signed: a confirmed dialog is not a licence to edit a
+   * signed report (#838's boundary).
+   */
+  commitRegionTransition: (plan: RegionTransitionPlan, decidedBy: string) => RegionTransitionRecord | null;
+  /** Restore the transition history a saved draft carries (ADR-004: provenance survives reload). */
+  hydrateRegionTransitions: (records: RegionTransitionRecord[]) => void;
+  /**
    * The screening panel's whole ledger truth: plan from `screeningLedgerBundles`,
    * remove what the plan no longer holds, re-apply the changed region and the
    * once-only limitation row. Lives here rather than in the component so the
@@ -786,7 +816,12 @@ export type WorkspaceStore = S & {
     changed: SpineScreeningRegion;
     ledgerRegion?: string;
   }) => void;
-  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
+  /**
+   * `skipUndoSnapshot` is for a withdrawal that is one step of a larger action: the caller
+   * captures the frame itself, so one Undo restores the whole action instead of its last row.
+   * Same option `applyPathologyOverlay` already takes.
+   */
+  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null; skipUndoSnapshot?: boolean }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
    * When editingId's clinical slot changes to an occupied sibling, updates that sibling
@@ -984,6 +1019,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
   dorsalCanalForced: false,
   canalApProvenance: {},
+  regionTransitions: [],
   lumbarNumbering: defaultLumbarNumbering(),
   dorsalNumbering: defaultDorsalNumbering(),
   dorsoLumbarNumbering: defaultDorsoLumbarState(),
@@ -2545,6 +2581,38 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (anyRemoved) return "removed";
     return "no-op-unproven";
   },
+  commitRegionTransition: (plan, decidedBy) => {
+    if (refuseSignedMutation(get(), "commitRegionTransition")) return null;
+    if (!plan.actionable || plan.retire.length === 0) return null;
+    const snap = captureClinicalSnapshot(get());
+    const removedIds = new Set<string>();
+    for (const row of plan.retire) {
+      // removeObservation owns the clinical semantics: it will NOT delete a line the
+      // radiologist wrote themselves (it returns "preserved-manual"), and it restores the
+      // baseline a retired row had been covering.
+      const outcome = get().removeObservation(row.id, { skipUndoSnapshot: true });
+      if (outcome === "removed") removedIds.add(row.id);
+    }
+    // Nothing actually left the report, so there is nothing to record. A row the
+    // radiologist had rewritten by hand is refused by the withdrawal above, and its
+    // surviving line is already counted in `manualLinesPreserved`; a record naming it would
+    // claim a sentence was taken out while it sits on the page.
+    if (removedIds.size === 0) return null;
+    const full = plan.record({ decidedBy });
+    const record: RegionTransitionRecord = {
+      ...full,
+      retired: full.retired.filter((r) => removedIds.has(r.id)),
+    };
+    set({
+      regionTransitions: [...get().regionTransitions, record],
+      ...withPushedClinicalUndo(get(), snap),
+      isDirty: true,
+    });
+    return record;
+  },
+  hydrateRegionTransitions: (records) => {
+    set({ regionTransitions: Array.isArray(records) ? records : [] });
+  },
   syncScreeningLedger: (opts: { state: ScreeningState; changed: SpineScreeningRegion; ledgerRegion?: string }) => {
     const plan = screeningLedgerBundles({
       state: opts.state,
@@ -3178,7 +3246,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         ? (remapTo || null)
         : get().selectedObservationId,
       structuredViewerMeasurements: nextMs,
-      ...withPushedClinicalUndo(get(), snap),
+      ...(opts?.skipUndoSnapshot
+        ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack }
+        : withPushedClinicalUndo(get(), snap)),
       isDirty: true,
     });
     if (typeof window !== "undefined") {
@@ -3272,6 +3342,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         : {}),
       ...(snap.impressionNeedsRefresh !== undefined
         ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
+        : {}),
+      ...(snap.regionTransitions !== undefined
+        ? { regionTransitions: snap.regionTransitions }
         : {}),
       patchUndoStack: remaining,
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),

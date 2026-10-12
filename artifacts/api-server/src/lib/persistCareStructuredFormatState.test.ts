@@ -75,6 +75,7 @@ const {
   extractCareCanalApProvenance,
   extractCareObservationLedger,
   extractCareViewerMeasurements,
+  extractCareRegionTransitions,
 } = await import("./structuredJsonColumn");
 
 beforeEach(() => {
@@ -125,6 +126,35 @@ describe("persistCareStructuredJsonPatch", () => {
     expect(extractCareObservationLedger(written)).toEqual({ entries: [{ id: "e1" }] });
     expect(extractCareCanalApProvenance(written)).toEqual({ "l4-5": { manualOverride: true } });
     expect(extractA4Cache(written)).toEqual([{ findingId: 7 }]);
+  });
+
+  it("preserves a stored region-transition history that the patch says nothing about", async () => {
+    // composeStructuredJsonColumn rebuilds the envelope from the keys it recognises, so a
+    // key with no arm in it is dropped on the next unrelated write. ADR-004's history is
+    // provenance: losing it turns a confirmed decision into a report that appears to have
+    // lost normals on its own.
+    existingColumn = {
+      kind: STRUCTURED_JSON_ENVELOPE_KIND,
+      a4Cache: null,
+      careStructuredFormat: null,
+      careRegionTransitions: [{
+        kind: "care.region_transition.v1",
+        fromRegion: "Whole Spine",
+        toRegion: "Cervical Spine",
+        retired: [{ id: "d1", concept: "alignment", segment: "dorsal", text: "Dorsal spine: Normal." }],
+        keptAbnormalities: [],
+        manualLinesPreserved: 0,
+        decidedBy: "abinashsingh@gmail.com",
+        at: "2026-10-12T09:00:00.000Z",
+      }],
+    };
+
+    await persistCareStructuredJsonPatch(42, { observationLedger: { entries: [{ id: "e1" }] } });
+
+    const written = updateSetCalls[0]!.structuredJson;
+    expect(extractCareRegionTransitions(written).map((r) => r.toRegion)).toEqual(["Cervical Spine"]);
+    expect(extractCareRegionTransitions(written)[0]!.retired).toHaveLength(1);
+    expect(extractCareObservationLedger(written)).toEqual({ entries: [{ id: "e1" }] });
   });
 
   it("treats a draft with no stored column as an empty envelope", async () => {

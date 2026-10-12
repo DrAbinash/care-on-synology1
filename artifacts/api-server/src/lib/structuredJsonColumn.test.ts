@@ -6,8 +6,10 @@ import {
   composeStructuredJsonColumn,
   extractA4Cache,
   extractCareLinkedStudy,
+  extractCareRegionTransitions,
   extractCareReportFormatIdentity,
   extractCareStructuredFormat,
+  isStructuredJsonEnvelope,
   extractCareVascularTechnique,
 } from "./structuredJsonColumn";
 
@@ -184,6 +186,32 @@ describe("structured_json envelope (A4 cache + format values)", () => {
     expect(extractCareLinkedStudy(regen)?.studyId).toBe(88);
     const cleared = composeStructuredJsonColumn({ existing: regen, linkedStudy: null });
     expect(extractCareLinkedStudy(cleared)).toBeNull();
+  });
+
+  it("treats a region-transition history as enough to compose an envelope", () => {
+    const history = [{
+      kind: "care.region_transition.v1",
+      fromRegion: "Whole Spine",
+      toRegion: "Cervical Spine",
+      retired: [{ id: "d1", concept: "alignment", segment: "dorsal", text: "Dorsal spine: Normal." }],
+      keptAbnormalities: [],
+      manualLinesPreserved: 0,
+      decidedBy: "abinashsingh@gmail.com",
+      at: "2026-10-12T09:00:00.000Z",
+    }];
+    // A report whose only structured content is what it stopped claiming still needs the
+    // envelope. composeStructuredJsonColumn falls back to the legacy A4 shape when it
+    // believes there is nothing to write, and that would erase the provenance silently.
+    const col = composeStructuredJsonColumn({ existing: null, regionTransitions: history });
+    expect(isStructuredJsonEnvelope(col)).toBe(true);
+    expect(extractCareRegionTransitions(col)).toHaveLength(1);
+    // A later save that says nothing about it keeps it — the same rule that protects the
+    // ledger, the measurements and the vascular technique.
+    const regen = composeStructuredJsonColumn({ existing: col, a4Cache: [{ findingId: 3 }] });
+    expect(extractCareRegionTransitions(regen).map((r) => r.toRegion)).toEqual(["Cervical Spine"]);
+    expect(extractCareRegionTransitions(regen)[0]!.retired).toHaveLength(1);
+    // Garbage is dropped, not coerced into a claim about who removed a sentence.
+    expect(extractCareRegionTransitions({ careRegionTransitions: [{ kind: "x" }, null] })).toEqual([]);
   });
 
   it("malformed identity payloads are ignored, not persisted", () => {
