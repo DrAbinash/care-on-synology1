@@ -16,6 +16,7 @@ import FrozenKeyImagesRail, {
   useFrozenKeyImages,
   frozenKeyImagesQueryKey,
 } from "@/components/radiology/FrozenKeyImagesRail";
+import { keyImageRailShouldMount } from "@/lib/frozenKeyImageRailState";
 import { buildObservationKeyImageCaption } from "@/lib/keyImageCaption";
 import { viewportToAnchor } from "@/lib/observationAnchor";
 import {
@@ -134,6 +135,9 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
     draftHydratedStudyId,
     draftId,
     draftIdRef,
+    draftReadPending,
+    existingDraftError,
+    refetchExistingDraft,
     embeddedViewerRef,
     ensureDraftOnce,
     enterClinicalEditorFocus,
@@ -609,10 +613,13 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                       ohifImageAdding={ohifImageAdding}
                     />
                   </div>
-                  {!viewerColumnExpanded && reportIdentity && (
+                  {!viewerColumnExpanded && keyImageRailShouldMount(studyId) && (
                     <div className={reportImagesOpen ? "flex-1 min-h-0 overflow-hidden" : "border-t border-border shrink-0"}>
                       <FrozenKeyImagesRail
                         draftId={draftId ?? null}
+                        draftReadPending={draftReadPending}
+                        draftError={existingDraftError}
+                        onRetryDraftRead={() => void refetchExistingDraft()}
                         disabled={contentLocked}
                         filterObservationId={keyImageFilterObsId}
                         observationLabels={observationLabels}
@@ -628,7 +635,13 @@ export function ViewerColumn({ vm }: { vm: RadiologyWorkspaceVm }) {
                         pacsBlockedTitle={
                           pacsStudyUid
                             ? undefined
-                            : "This report is not linked to a PACS study yet"
+                            : !reportIdentity
+                              // Nothing has described this study yet — most often
+                              // because the server refused to. Saying "not linked
+                              // to a PACS study" would send the radiologist to
+                              // re-search an archive that was never asked.
+                              ? "Waiting for the reporting server to describe this study. Try again in a moment."
+                              : "This report is not linked to a PACS study yet"
                         }
                         onCaptureRequest={
                           contentLocked || ohifUnavailable
