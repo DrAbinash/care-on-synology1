@@ -21,6 +21,10 @@ import {
   MRI_CERVICAL_STANDARD_NORMAL_FINDINGS,
   MRI_CERVICAL_STANDARD_NORMAL_IMPRESSION,
   MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSAL_STANDARD_NORMAL_NAME,
+  MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
   MRI_CERVICAL_SCREENING_NORMAL_NAME,
   MRI_CERVICAL_SCREENING_NORMAL_FINDINGS,
   MRI_CERVICAL_SCREENING_NORMAL_IMPRESSION,
@@ -54,6 +58,9 @@ import {
 import {
   MRI_CERVICAL_SCREENING_NORMAL_META,
 } from "./baselines/mriCervicalScreeningNormal";
+import {
+  MRI_DORSAL_STANDARD_NORMAL_META,
+} from "./baselines/mriDorsalStandardNormal";
 import {
   MRI_KNEE_STANDARD_NORMAL_META,
 } from "./baselines/mriKneeStandardNormal";
@@ -173,6 +180,15 @@ export const DEFAULT_REPORT_FORMATS: ReportFormat[] = [
     recommendation: MRI_CERVICAL_STANDARD_NORMAL_META.recommendation,
     reportTitle: MRI_CERVICAL_STANDARD_NORMAL_META.reportTitle,
     baselineManifest: MRI_CERVICAL_STANDARD_NORMAL_MANIFEST,
+  }, true),
+  fmt(MRI_DORSAL_STANDARD_NORMAL_NAME, "MR", "Dorsal Spine", ["normal", "standard", "owned baseline"], {
+    clinicalHistory: MRI_DORSAL_STANDARD_NORMAL_META.clinicalHistory,
+    technique: MRI_DORSAL_STANDARD_NORMAL_META.technique,
+    findings: MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+    impression: MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+    recommendation: MRI_DORSAL_STANDARD_NORMAL_META.recommendation,
+    reportTitle: MRI_DORSAL_STANDARD_NORMAL_META.reportTitle,
+    baselineManifest: MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
   }, true),
   fmt(MRI_KNEE_STANDARD_NORMAL_NAME, "MR", "Knee", ["normal", "standard", "owned baseline"], {
     clinicalHistory: MRI_KNEE_STANDARD_NORMAL_META.clinicalHistory,

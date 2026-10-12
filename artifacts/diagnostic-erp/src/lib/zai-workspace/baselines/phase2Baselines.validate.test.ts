@@ -12,11 +12,15 @@ import {
 describe("Phase 2 owned baselines", () => {
   const catalog = ownedBaselineCatalog();
 
-  it("exports exactly 8 owned formats", () => {
-    expect(catalog).toHaveLength(8);
+  it("exports exactly 9 owned formats", () => {
+    expect(catalog).toHaveLength(9);
     expect(catalog.map((e) => e.name)).toEqual([
       "MRI Brain — Standard Normal",
       "MRI Cervical Spine — Standard Normal",
+      // Dorsal joined on purpose: it was the one MRI region whose billed normal
+      // report had no owned rows, so Generate wrote fourteen sentences nobody could
+      // retire ("baselineConcepts": 0).
+      "MRI Dorsal Spine — Standard Normal",
       "MRI Knee — Standard Normal",
       "MRI Brain — Screening Normal",
       "MRI Cervical Spine — Screening Normal",
@@ -36,6 +40,10 @@ describe("Phase 2 owned baselines", () => {
       // five: the cervical owned baseline used to stop at C6-C7 while the canvas,
       // `CERVICAL_CANAL_LEVELS` and `mriSpineCanvas.test.ts` all run C2-C3→C7-T1.
       "MRI Cervical Spine — Standard Normal": 45,
+      // 10 region normals + the normal impression. No per-level rows: the dorsal
+      // standard normal states each claim once for the whole region, which is what
+      // its shipped template said.
+      "MRI Dorsal Spine — Standard Normal": 11,
       "MRI Knee — Standard Normal": 12,
       "MRI Brain — Screening Normal": 7,
       "MRI Cervical Spine — Screening Normal": 8,

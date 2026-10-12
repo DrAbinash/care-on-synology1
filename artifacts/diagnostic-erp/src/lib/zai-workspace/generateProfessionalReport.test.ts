@@ -633,8 +633,9 @@ describe("CARE's own baseline sentences can never read as findings", () => {
     }
     // The scan itself has to be non-vacuous, and the corpus is named rather than
     // bounded: a manifest that stopped loading, or one that grew, moves this number
-    // and has to say so.
-    expect(scanned).toBe(149);
+    // and has to say so. 149 → 159 with the MRI Dorsal Spine standard normal, whose
+    // ten owned region normals were previously unowned prose.
+    expect(scanned).toBe(159);
     expect(offenders).toEqual([]);
   });
 });
