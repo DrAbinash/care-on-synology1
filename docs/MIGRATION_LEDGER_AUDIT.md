@@ -120,6 +120,27 @@ wolf was 167 lines long before these were fixed.
    matching: two names that differ inside the first 63 bytes stay distinct, and the
    `form_f_records` pair below is resolved by *key equivalence*, not by name.
 
+   Measured on the server rather than assumed — a 76-character key name:
+
+   ```
+   ALTER TABLE trunc_probe ADD CONSTRAINT a_70_char_name_aaaa… (76 chars) FOREIGN KEY (ref) REFERENCES trunc_probe(id);
+   → ALTER TABLE                                   (no error, no notice)
+   → stored conname: a_70_char_name_aaa…aaa        length 63
+   ```
+
+**Read-only is enforced, not promised.** The session option
+`default_transaction_read_only=on` is what the script connects with, and the same
+option refuses a write:
+
+```
+PGOPTIONS='-c default_transaction_read_only=on' psql … -c "update schema_migrations_log set name='tampered' …"
+→ ERROR:  cannot execute UPDATE in a read-only transaction
+```
+
+Every statement in the script is a `SELECT` or a `SHOW` — including the existence
+probes, which are `SELECT to_regclass($1) IS NOT NULL`. There is no DDL, no ledger
+write, and no re-application of any migration file anywhere in it.
+
 **Key equivalence.** `migrations/zzzzzzz_bill_dependent_referential_integrity.sql`
 conditionally drops Drizzle's `form_f_records_bill_id_bills_id_fk` and reinstalls
 the same foreign key as `form_f_records_bill_id_fk` with `ON DELETE SET NULL`. The
@@ -129,6 +150,28 @@ the earlier migration looked like a failure. The audit now asks whether the effe
 and adds an informational line naming the constraint that actually holds it. That
 `ON DELETE` difference is a real clinical fact, so it is surfaced rather than
 swallowed.
+
+## Known limitations and false positives
+
+Counted over the 204 migration files this audit reads, so the size of each blind
+spot is known rather than guessed:
+
+| Limitation | Measured in this repository | What it means when reading the output |
+| --- | --- | --- |
+| **Conditional DDL inside `DO $$ … $$` is never asserted** | 38 guarded blocks holding 34 `CREATE`/`ALTER`/`DROP` statements across 15 files (most in `add_runtime_startup_columns.sql`, `add_ai_shadow_uniqueness_hardening.sql`, `add_referral_indexes.sql`) | A statement that ran only under a runtime condition proves nothing, so it is excluded. The cost: a conditional `CREATE` that never ran is invisible here. |
+| **The mirror case is solved for constraints only** | — | When a *guarded* later migration drops an object an earlier one declared, a constraint is rescued by key equivalence (below). A guarded `DROP COLUMN` / `DROP INDEX` / `DROP TABLE` of that same kind still yields `RECORDED_BUT_ABSENT`. The line is true about the object and wrong about the blame. |
+| **Columns declared inline in a `CREATE TABLE` body are not decomposed** | most of the schema's columns are written that way | Only the table's existence is asserted. A table created with a missing column reads as applied; the 12 named `CRITICAL_COLUMNS` are what guard the important cases. |
+| **A `DROP TABLE a, b, c` list asserts only the first target** | 0 such statements today | Currently vacuous. If one is added, `b` and `c` go unchecked — silently, which is the safe direction. |
+| **Truncated names are matched on their first 63 bytes** | 6 declared names exceed 63 bytes, and all 6 truncate to **different** prefixes | Unambiguous today. Two future names sharing a 63-byte prefix would be indistinguishable to the lookup — and Postgres itself refuses the second creation, so that would surface at deploy time rather than silently. |
+| **An unqualified object is accepted in any schema** | — | Deliberate: matching `public` only would invent findings, because search_path decides. The cost is that an object sitting in the *wrong* schema reads as present. |
+| **Data statements are invisible** | 275 `INSERT`/`UPDATE`/`DELETE` statements in the migration tree | A migration that half-applied its data is precisely what a schema audit cannot see — which is why remediation keeps "restore from backup" on the list. |
+| **Types, defaults and nullability are not compared** | — | Two databases can differ there and this audit will say they match. `scripts/db-schema-verify.cjs` covers part of that from the other direction. |
+| **It reads the working tree, not the deployed commit** | — | Run it from a checkout of the revision that actually deployed the database. A dirty or older checkout changes the verdict; `ORPHAN_RECORD` is what a deleted file looks like. |
+
+So a `RECORDED_BUT_ABSENT` line is a question with a precise subject — *this object,
+declared by this recorded file, is not in this database* — and not a verdict about
+which statement failed, or who removed it. That is still the most useful thing to
+know before a deploy, because the deploy itself will never ask it.
 
 ## Detection proved on synthetic databases
 
