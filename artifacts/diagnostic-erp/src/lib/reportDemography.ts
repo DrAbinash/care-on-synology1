@@ -324,7 +324,11 @@ export function mergeReportDemography(input: {
       normalizeSex(dicomMeta.PatientSex as string),
     ),
     patientId: pick(erp.patientId, erp.dicomPatientId, dicom.dicomPatientId, dicomMeta.PatientID),
-    uhid: pick(erp.uhid, erp.patientId),
+    // A patient primary key is a Postgres sequence value, not a clinic UHID, and
+    // a report must not print one as if it were. The UHID arrives as text from
+    // the patients master; a text patient code is still accepted because that
+    // is what older callers hand in.
+    uhid: pick(erp.uhid, typeof erp.patientId === "number" ? "" : erp.patientId),
     accessionNumber: pick(erp.accessionNumber, dicom.accessionNumber, dicomMeta.AccessionNumber),
     studyDescription: pick(erp.studyDescription, erp.testName, dicom.studyDescription, dicomMeta.StudyDescription),
     studyDate: pick(erp.studyDate, dicom.studyDate, dicomMeta.StudyDate),

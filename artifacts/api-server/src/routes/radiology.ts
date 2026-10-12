@@ -1088,6 +1088,10 @@ radiologyRouter.get("/pacs-worklist/:id", async (req, res) => {
   const [row] = await db
     .select(PACS_WORKLIST_DETAIL_SELECT)
     .from(radiologyWorklistTable)
+    .leftJoin(
+      patientsTable,
+      eq(patientsTable.id, radiologyWorklistTable.patientId),
+    )
     .where(eq(radiologyWorklistTable.id, id))
     .limit(1);
 

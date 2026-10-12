@@ -129,3 +129,22 @@ describe("the reporting workspace passes the identifiers it has", () => {
     }
   });
 });
+
+describe("the canonical demography reads the identifiers off the authoritative record", () => {
+  const src = readFileSync(
+    new URL("../hooks/radiology-workspace/useWorkspaceClinicalUi.tsx", import.meta.url),
+    "utf8",
+  );
+  const at = src.indexOf("const canonicalDemography = useMemo");
+  it("the memo exists to be read by this test", () => expect(at).toBeGreaterThan(-1));
+
+  it("takes the UHID from the per-study read, which no queue filter can hide", () => {
+    // `workflow.currentRow` is a row of the *filtered* queue and is null for any
+    // study outside it. Reading the UHID from there alone made the identifier
+    // vanish on print, and the only fallback available was the numeric patient
+    // key — which is not a UHID and must never be printed as one.
+    const erp = objectArgument(src.slice(at), "erp: {");
+    expect(erp).toContain("uhid: detail?.uhid ?? row?.uhid");
+    expect(erp).toContain("accessionNumber: detail?.accessionNumber ?? row?.accessionNumber");
+  });
+});

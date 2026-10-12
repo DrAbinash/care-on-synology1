@@ -92,6 +92,35 @@ describe("mergeReportDemography — ERP > DICOM > manual override", () => {
     expect(html).toContain("EDITED NAME");
     expect(html).not.toContain("JANE DOE");
   });
+
+  it("never turns the patient primary key into a printed UHID", () => {
+    // `patientId` on the workspace path is radiology_worklist.patient_id — a
+    // Postgres sequence value the clinic never issued. A report that reads
+    // "UHID: 47" invents an identifier, and it is reachable the moment a queue
+    // filter hides the open study so the list row (and its real UHID) is gone.
+    const merged = mergeReportDemography({
+      erp: { patientName: "Renu Keshri", patientId: 47, accessionNumber: "ACC-9" },
+    });
+    expect(merged.patientId).toBe("47");
+    expect(merged.uhid).toBe("");
+    expect(buildLetterpadDemographyHtml(merged)).not.toContain("UHID:");
+    expect(buildLetterpadDemographyHtml(merged)).toContain(
+      "<strong>ACCESSION:</strong> ACC-9",
+    );
+    expect(buildClassicDemographyHeaderHtml(merged)).not.toContain("UHID:");
+  });
+
+  it("still reads a patient code that arrives as text", () => {
+    // The fallback predates the worklist detail read: some callers hand the
+    // merge a patient code rather than a primary key, and that one is real.
+    const merged = mergeReportDemography({
+      erp: { patientName: "Renu Keshri", patientId: "PID-4471" },
+    });
+    expect(merged.uhid).toBe("PID-4471");
+    expect(buildLetterpadDemographyHtml(merged)).toContain(
+      "<strong>UHID:</strong> PID-4471",
+    );
+  });
 });
 
 describe("dicomAgeToDisplay", () => {
