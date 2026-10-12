@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/fetchApi";
+import { api, rateAwareRetry } from "@/lib/fetchApi";
+import { describeStudyUidLookupFailure, selectLookupNotice, type StudyUidLookupNotice } from "@/lib/studyUidLookupNotice";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -176,21 +177,57 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   const initialUid = (studyInstanceUID ?? "").trim();
   const canResolve = !initialUid && typeof worklistId === "number" && worklistId > 0;
 
-  const { data: resolved, isFetching: resolving, isError: resolveFailed } = useQuery({
+  // The refusal of the attempt that just failed, kept while `rateAwareRetry`
+  // waits out the server's window. `error` below only fills in after those
+  // retries are spent, which with a 60-second Retry-After is two minutes of
+  // saying nothing about a request the reporting server refused.
+  const [refusal, setRefusal] = useState<StudyUidLookupNotice | null>(null);
+
+  // A refusal belongs to one worklist entry. Switching studies must not carry
+  // the previous one's "server is busy" onto a study whose lookup has not run.
+  useEffect(() => {
+    setRefusal(null);
+  }, [worklistId]);
+
+  const {
+    data: resolved,
+    isFetching: resolving,
+    error: resolveError,
+    refetch: refetchResolve,
+  } = useQuery({
     queryKey: ["resolve-study-uid", worklistId],
     enabled: canResolve,
-    queryFn: () => api.post<{
-      studyInstanceUID: string | null;
-      status?: "resolved" | "unresolved" | "ambiguous" | "conflict";
-      provenance?: string | null;
-      reason?: string;
-      candidateCount?: number;
-      error?: string;
-    }>(
-      `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
-      {},
-    ),
-    retry: 1,
+    queryFn: async () => {
+      try {
+        const answer = await api.post<{
+          studyInstanceUID: string | null;
+          status?: "resolved" | "unresolved" | "ambiguous" | "conflict";
+          provenance?: string | null;
+          reason?: string;
+          candidateCount?: number;
+          error?: string;
+        }>(
+          `/api/radiology/pacs-worklist/${worklistId}/resolve-study-uid`,
+          {},
+        );
+        setRefusal(null);
+        return answer;
+      } catch (err) {
+        const said = describeStudyUidLookupFailure(err);
+        setRefusal((prev) =>
+          prev && prev.kind === said.kind && prev.headline === said.headline &&
+          prev.detail === said.detail && prev.waitSeconds === said.waitSeconds
+            ? prev
+            : said,
+        );
+        throw err;
+      }
+    },
+    // The app-wide default of one immediate retry is the wrong policy here: the
+    // second attempt lands inside the same rate-limit window, after which this
+    // query gave up permanently and the panel sat on its error until the page
+    // was reloaded. `rateAwareRetry` waits the server's own `Retry-After`.
+    ...rateAwareRetry,
     staleTime: 60_000,
   });
 
@@ -203,14 +240,42 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
   const effectiveUid = initialUid || boundUid;
 
   if (!effectiveUid) {
+    // Shown even while the next attempt is scheduled: the wait time is the
+    // information, and "Looking up…" would hide why it is taking a minute.
+    const notice = selectLookupNotice({ canResolve, committedError: resolveError, refusal });
     return (
       <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground text-sm px-4 text-center">
         <AlertTriangle className="h-8 w-8" />
         <p>No StudyInstanceUID available for this worklist entry.</p>
-        {canResolve && resolving ? (
+        {notice ? (
+          <div
+            className="flex flex-col items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1.5"
+            role="status"
+            data-testid="study-uid-lookup-notice"
+          >
+            <p className="text-xs font-semibold text-amber-900">{notice.headline}</p>
+            <p className="text-[11px] text-amber-800">
+              {resolving
+                ? "Retrying now…"
+                : notice.kind === "rate-limited"
+                  ? `${notice.detail} Retrying automatically in ${notice.waitSeconds} s.`
+                  : notice.detail}
+            </p>
+            {notice.showRetry ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 text-[10px]"
+                onClick={() => void refetchResolve()}
+                data-testid="study-uid-lookup-retry"
+              >
+                Try again
+              </Button>
+            ) : null}
+          </div>
+        ) : canResolve && resolving ? (
           <p className="text-xs">Looking up study in Orthanc archive…</p>
-        ) : canResolve && resolveFailed ? (
-          <p className="text-xs">Orthanc lookup failed. Try Search Orthanc archive on the worklist with the scan date.</p>
         ) : resolved?.status === "ambiguous" ? (
           <p className="text-xs">
             {resolved.candidateCount ?? 0} Orthanc studies match this accession — the scan is
