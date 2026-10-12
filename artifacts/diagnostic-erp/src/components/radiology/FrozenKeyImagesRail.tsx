@@ -212,7 +212,7 @@ export default function FrozenKeyImagesRail({
           data-testid="frozen-key-images-rail-toggle"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Key Images ({items.length})
+          Key Images ({q.isError ? "—" : items.length})
           {aiSelectionEnabled && aiSelected.size > 0 ? (
             <Badge variant="outline" className="text-[9px] h-4 border-violet-300 text-violet-800" data-testid="frozen-key-images-ai-count">
               AI {aiSelected.size}/{COMPOSER_MAX_SELECTED_KEY_IMAGES}

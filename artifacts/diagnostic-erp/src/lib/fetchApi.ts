@@ -300,8 +300,12 @@ export function rateLimitWaitMs(headers: Headers): number | null {
 export const rateAwareRetry = {
   retry: (failureCount: number, error: unknown) =>
     isRateLimited(error) ? failureCount < 2 : failureCount < 1,
-  retryDelay: (_failureCount: number, error: unknown) =>
-    isRateLimited(error) ? Math.min(error.retryAfterMs ?? 30_000, 60_000) : undefined,
+  retryDelay: (failureCount: number, error: unknown) =>
+    isRateLimited(error)
+      ? Math.min(error.retryAfterMs ?? 30_000, 60_000)
+      // TanStack's own default, restated because this policy replaces it for the
+      // rate-limited case too and must not silently change the other one.
+      : Math.min(1000 * 2 ** failureCount, 30_000),
 };
 
 /**

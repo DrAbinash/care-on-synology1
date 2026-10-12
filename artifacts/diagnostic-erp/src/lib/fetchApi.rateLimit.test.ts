@@ -154,6 +154,8 @@ describe("rateAwareRetry (the React Query policy the rails use)", () => {
   it("keeps the app-wide single retry for anything that is not a rate limit", () => {
     expect(rateAwareRetry.retry(0, other)).toBe(true);
     expect(rateAwareRetry.retry(1, other)).toBe(false);
-    expect(rateAwareRetry.retryDelay(0, other)).toBeUndefined();
+    // TanStack's default pacing, not a new one.
+    expect(rateAwareRetry.retryDelay(0, other)).toBe(1_000);
+    expect(rateAwareRetry.retryDelay(1, other)).toBe(2_000);
   });
 });

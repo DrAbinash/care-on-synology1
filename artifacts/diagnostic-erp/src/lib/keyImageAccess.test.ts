@@ -167,40 +167,37 @@ describe("fetchKeyImageAccessUrls", () => {
     expect(calls[0].body).toEqual({ ids: [7] });
   });
 
-  it("three components mounting the same rail share one request, not three", async () => {
-    // The reporting workspace reads the rail from three places at once, so the
-    // first render of a study fired 5 POSTs to /key-images/access-urls before any
-    // response had filled the cache. Nothing may be minted twice while a request
-    // for that id is still in flight.
-    const resolvers: Array<(r: Response) => void> = [];
-    installFetch(() => new Promise<Response>((res) => { resolvers.push(res); }));
+  it("a rail and its four tiles, asking in the same tick, send one request", async () => {
+    // This is the real mount shape: each thumbnail is its own component that asks
+    // for just itself, React runs child effects before the parent's, and then the
+    // rail asks for the whole set. Before the collection window that was 5 POSTs
+    // for 4 images.
+    installFetch(() =>
+      respondWith({
+        success: true,
+        expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
+        items: [
+          { id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T7", thumbnailUrl: null },
+          { id: 8, imageUrl: "/uploads/radiology-key-images/b.jpg?kimg=T8", thumbnailUrl: null },
+          { id: 9, imageUrl: "/uploads/radiology-key-images/c.jpg?kimg=T9", thumbnailUrl: null },
+        ],
+      }),
+    );
 
-    const a = fetchKeyImageAccessUrls([7, 8]);
-    const b = fetchKeyImageAccessUrls([7, 8]);
-    const c = fetchKeyImageAccessUrls([8, 9]);
-    await new Promise((r) => setTimeout(r, 0));
+    const tile7 = fetchKeyImageAccessUrls([7]);
+    const tile8 = fetchKeyImageAccessUrls([8]);
+    const tile9 = fetchKeyImageAccessUrls([9]);
+    const rail = fetchKeyImageAccessUrls([7, 8, 9]);
+    const [m7, m8, m9, mrail] = await Promise.all([tile7, tile8, tile9, rail]);
 
-    // One batch for 7+8, and a second only for the id nobody had asked for.
-    expect(calls).toHaveLength(2);
-    expect(calls[0].body).toEqual({ ids: [7, 8] });
-    expect(calls[1].body).toEqual({ ids: [9] });
-
-    const payload = {
-      success: true,
-      expiresAt: new Date(Date.now() + 9 * 60 * 1000).toISOString(),
-      items: [
-        { id: 7, imageUrl: "/uploads/radiology-key-images/a.jpg?kimg=T7", thumbnailUrl: null },
-        { id: 8, imageUrl: "/uploads/radiology-key-images/b.jpg?kimg=T8", thumbnailUrl: null },
-        { id: 9, imageUrl: "/uploads/radiology-key-images/c.jpg?kimg=T9", thumbnailUrl: null },
-      ],
-    };
-    for (const res of resolvers) res(respondWith(payload));
-
-    const [ma, mb, mc] = await Promise.all([a, b, c]);
-    expect(ma.get(7)?.imageUrl).toContain("kimg=T7");
-    expect(mb.get(8)?.imageUrl).toContain("kimg=T8");
-    expect(mc.get(9)?.imageUrl).toContain("kimg=T9");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ ids: [7, 8, 9] });
+    // Every asker gets its own slice of that one answer.
+    expect(m7.get(7)?.imageUrl).toContain("kimg=T7");
+    expect(m8.get(8)?.imageUrl).toContain("kimg=T8");
+    expect(m9.get(9)?.imageUrl).toContain("kimg=T9");
+    expect(mrail.get(7)?.imageUrl).toContain("kimg=T7");
+    expect(mrail.get(9)?.imageUrl).toContain("kimg=T9");
   });
 
   it("a failed grant releases the id so the next render can try again", async () => {
