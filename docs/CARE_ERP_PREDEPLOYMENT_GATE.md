@@ -8,7 +8,8 @@ implements each leg._
 
 What this document does **not** do: it deploys nothing, restarts nothing, merges nothing,
 migrates nothing, restores over no live data, rotates and prints no credential. Every
-command was checked against the file that ships it at `main` = `0e801cf1`. **None of them
+command was checked against the file that ships it, at `main` = `46d36612` (the §A–§C
+procedures themselves landed in #965). **None of them
 has been run against the clinic**, because that is the owner's box and the owner's decision.
 
 Run everything from the deploy checkout — not `/volume1/homes/abinash/care-on-synology1`,
