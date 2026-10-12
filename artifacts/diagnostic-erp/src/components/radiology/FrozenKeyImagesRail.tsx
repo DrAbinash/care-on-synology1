@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, ChevronDown, ChevronRight, Trash2, Unlink, Check, X, Sparkles, ScanLine, ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/fetchApi";
+import { api, isRateLimited, rateAwareRetry } from "@/lib/fetchApi";
 import { fetchKeyImageAccessUrls } from "@/lib/keyImageAccess";
 import { KeyImageWithAccess } from "@/components/radiology/KeyImageWithAccess";
 import { readStaffSession } from "@/lib/staffSession";
@@ -58,6 +58,11 @@ export function useFrozenKeyImages(draftId: number | null | undefined) {
       api.get(`/api/radiology/report-generator/key-images?draftId=${draftId}`),
     enabled: !!draftId,
     staleTime: 5_000,
+    // A 429 is a scheduling problem, not an absence of images: fetchApi waits
+    // out a short window itself and throws RateLimitedError for a longer one,
+    // which is rescheduled here on the server's clock so the rail comes back by
+    // itself instead of staying on "no images exist".
+    ...rateAwareRetry,
   });
 }
 
@@ -207,7 +212,7 @@ export default function FrozenKeyImagesRail({
           data-testid="frozen-key-images-rail-toggle"
         >
           {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          Key Images ({items.length})
+          Key Images ({q.isError ? "—" : items.length})
           {aiSelectionEnabled && aiSelected.size > 0 ? (
             <Badge variant="outline" className="text-[9px] h-4 border-violet-300 text-violet-800" data-testid="frozen-key-images-ai-count">
               AI {aiSelected.size}/{COMPOSER_MAX_SELECTED_KEY_IMAGES}
@@ -285,9 +290,39 @@ export default function FrozenKeyImagesRail({
           </div>
         ) : null}
       </div>
+      {/* The images live on the server. When the read fails, saying "no frozen
+          captures yet" is a statement about the study that is not true, and a
+          radiologist who believes it re-attaches images they already have — or
+          signs a report thinking the pictures are missing. So a failed read is
+          named as a failed read, with what to do next and a manual retry, and it
+          shows even when the strip is collapsed. */}
+      {q.isError ? (
+        <div className="mx-2 mb-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1.5" data-testid="frozen-key-images-rail-error" role="status">
+          <p className="text-[10px] font-semibold text-amber-900">
+            {isRateLimited(q.error)
+              ? "The server is busy — these images are still attached to this report."
+              : "The key images could not be loaded."}
+          </p>
+          <p className="text-[10px] text-amber-800">
+            {isRateLimited(q.error)
+              ? `Retrying automatically in ${Math.max(1, Math.round((q.error.retryAfterMs ?? 60_000) / 1000))} s.`
+              : "Nothing was deleted. Retry below, or reopen the study."}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="mt-1 h-6 text-[10px]"
+            onClick={() => void q.refetch()}
+            data-testid="frozen-key-images-retry"
+          >
+            Try again
+          </Button>
+        </div>
+      ) : null}
       {open && (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
-          {items.length === 0 ? (
+          {items.length === 0 && !q.isError ? (
             <p className="text-[10px] text-muted-foreground py-2" data-testid="frozen-key-images-empty-hint">
               {canCapture
                 ? "No frozen captures yet. Click the camera to capture the active viewer, or use Capture key image in Frames mode."
