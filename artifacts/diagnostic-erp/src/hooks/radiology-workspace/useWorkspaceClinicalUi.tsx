@@ -2281,7 +2281,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       useStructured,
       selectedTemplateId: studySetup.selectedTemplateId,
     };
-    state.applyFormatById(decision.format.id);
+    // `automatic` because nobody pressed anything: the study's region came from the
+    // billed code, and letting the format that opened itself write a region override
+    // would make the report claim the radiologist chose it.
+    state.applyFormatById(decision.format.id, { regionChoice: "automatic" });
     // The complete normal report is the visible narrative baseline (the
     // structured-template cards remain available via the template picker).
     setUseStructured(false);
