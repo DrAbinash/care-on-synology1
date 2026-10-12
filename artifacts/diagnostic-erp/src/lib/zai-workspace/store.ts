@@ -746,7 +746,17 @@ export type WorkspaceStore = S & {
   saveQuickSelectTile: (i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void; deleteQuickSelectTile: (id: string) => void;
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
-  applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  /**
+   * `regionChoice` says who is responsible for the region the format implies.
+   * `"radiologist"` (the default — a press in the picker, the strip or Quick Normal)
+   * syncs the reporting region onto the format's own region. `"automatic"` is the
+   * auto-open normal bootstrap: the study's region was resolved from the billed code
+   * before the report existed, and a report that opened itself must not come back
+   * later claiming the radiologist overrode it.
+   */
+  applySelectedFormats: (opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
+  applyFormatById: (id: string, opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
+  confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   /**
    * VERTICAL INTEGRATION M1 — the one deterministic "Generate Professional Report"
    * action. Builds the report from material that already exists: the study's
@@ -1492,7 +1502,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
-  applySelectedFormats: () => {
+  applySelectedFormats: (opts?: { regionChoice?: "radiologist" | "automatic" }) => {
     if (get().isFinalized) return;
     const ids = get().selectedFormatIds;
     if (!ids.length) return;
@@ -1501,8 +1511,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const bridge = getFormatApplyBridge();
     const availableRegions = bridge?.availableRegions() ?? [];
     const currentRegion = bridge?.currentRegion() ?? get().reportingContext.region ?? null;
+    // An automatic apply takes no region decision at all — see the type comment. It
+    // also keeps the analysis on the study's own region, so a report that opened
+    // itself cannot be described as a region change the radiologist made.
+    const automatic = opts?.regionChoice === "automatic";
     let pendingRegion: string | null = null;
-    if (fs.length === 1) {
+    if (!automatic && fs.length === 1) {
       const resolved = resolveReportingRegionForFormat(fs[0]!, availableRegions);
       if (resolved.status === "resolved") {
         pendingRegion = resolved.region;
@@ -1539,10 +1553,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ pendingFormatIds: ids, pendingFormatOverwrite: analysis, pendingFormatRegion: pendingRegion });
     get().confirmOverwriteAndApply();
   },
-  applyFormatById: (id) => {
+  applyFormatById: (id, opts) => {
     if (get().isFinalized) return;
     set({ selectedFormatIds: [id] });
-    get().applySelectedFormats();
+    get().applySelectedFormats(opts);
   },
   generateProfessionalReport: (ctx) => {
     // The whole report from one press, with no model in the loop. Every string it
