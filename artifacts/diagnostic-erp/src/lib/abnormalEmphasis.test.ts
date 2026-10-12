@@ -44,8 +44,8 @@ describe("abnormal print emphasis — library guards", () => {
     // The one-click normal page is assembled from these manifests, not from the
     // format's own findings string, so the guard above cannot see the per-level
     // rows — every "No spinal canal or thecal sac compression is seen." in the
-    // product lives here and nowhere else. Measured 2026-10-11: 118 lines across
-    // the eight manifests, 45 of them the cervical standard normal.
+    // product lives here and nowhere else. Measured 2026-10-12: 129 lines across the
+    // nine manifests, 45 of them the cervical standard normal and 11 the dorsal one.
     const offenders: string[] = [];
     let lines = 0;
     for (const baseline of ownedBaselineCatalog()) {
@@ -105,17 +105,31 @@ describe("abnormal print emphasis — the reading itself", () => {
       // The six shipped word orders that `compress`, `kyphos`, `syrinx`, `ossif`,
       // `instabilit` and `myelomalaci` now depend on. They are pinned here, and not
       // only by the catalog scan above, because the cancel is positional: the
-      // denial has to sit before the cue in the same sentence. Reorder one of these
-      // to put the cue first — "Thoracic kyphosis is normal." — and the classifier
-      // bolds a normal while the catalog scan may never reach that sentence.
+      // denial has to sit before the cue in the same sentence.
       "Normal thoracic kyphosis is maintained.",
       "C5-C6: No spinal canal or thecal sac compression is seen.",
       "C5-C6: No exiting or traversing nerve root compression is seen.",
       "Normal MRI of the cervical spine. No significant disc, canal, foraminal or cord compressive abnormality.",
       "No gross cord compression is seen.",
+      // The same statement in the other word order, which the comment above used to
+      // warn about: the cue comes FIRST. The canonical dorsal library alignment
+      // normal is written this way ("Thoracic kyphosis is within normal limits."),
+      // and the dorsal owned baseline prints that sentence on the one-click normal
+      // page, so the normality predicate has to cancel the cue it is made about
+      // rather than the page being bolded.
+      "Thoracic kyphosis is within normal limits.",
+      "Thoracic alignment and kyphosis are preserved.",
     ]) {
       expect(isAbnormalFindingsLine(line), line).toBe(false);
     }
+  });
+
+  it("keeps a normality predicate inside the clause it speaks for", () => {
+    // The predicate belongs to the canal, not to the bulge, so the bulge stays bold.
+    expect(isAbnormalFindingsLine("Small disc bulge at C5-C6, the spinal canal is normal.")).toBe(true);
+    expect(isAbnormalFindingsLine("Disc bulge is present; the foramina are patent.")).toBe(true);
+    // And a cue whose own clause declares it normal is plain.
+    expect(isAbnormalFindingsLine("The visualized cervical kyphosis is unremarkable.")).toBe(false);
   });
 
   it("judges each sentence on its own", () => {

@@ -76,6 +76,21 @@ const DENIAL_TERMS = [
  *  word boundary: "spondylolisthesis" is one word, and `\blisthesis` never matches. */
 const PATHOLOGY_SUFFIX_STEMS = ["olisthesis"];
 
+/**
+ * The cue named as the subject of a normality predicate: "Thoracic kyphosis is
+ * within normal limits." Rule 1 is positional — it cancels a cue that has a denial
+ * ahead of it — and the canonical dorsal alignment normal puts the cue first, so a
+ * line of the one-click normal page came out bold. Same statement, other word
+ * order, so it cancels the same way. The predicate must sit in the cue's own
+ * clause: "Small disc bulge, the canal is normal." stays bold because the
+ * normality belongs to the canal, not to the bulge.
+ */
+const NORMALITY_PREDICATE =
+  /\b(is|are|was|were)\s+(within\s+|in\s+)?(the\s+)?(limits\s+of\s+)?(normal|unremarkable|preserved|maintained|intact|patent|adequate|free)\b/i;
+
+/** Clause boundaries inside a sentence — a predicate only speaks for its own clause. */
+const CLAUSE_SPLIT_CHARS = [",", ";"];
+
 const termRe = (terms: string[]) => new RegExp(`\\b(${terms.join("|")})`, "i");
 
 const PATHOLOGY_RE = new RegExp(
@@ -112,8 +127,20 @@ export function isAbnormalFindingsLine(line: string | null | undefined): boolean
     let m: RegExpExecArray | null;
     while ((m = re.exec(lower)) !== null) {
       if (DENIAL_RE.test(lower.slice(0, m.index))) continue;
+      if (NORMALITY_PREDICATE.test(clauseFromCue(lower, m.index, m[0].length))) continue;
       return true;
     }
   }
   return false;
+}
+
+/** From the cue to the end of its own clause: a normality predicate in a
+ *  neighbouring clause is about other anatomy and must not cancel this cue. */
+function clauseFromCue(lower: string, at: number, length: number): string {
+  let end = lower.length;
+  for (const ch of CLAUSE_SPLIT_CHARS) {
+    const after = lower.indexOf(ch, at + length);
+    if (after !== -1 && after < end) end = after;
+  }
+  return lower.slice(at, end);
 }
