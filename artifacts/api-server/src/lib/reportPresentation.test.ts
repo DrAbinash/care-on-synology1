@@ -190,6 +190,89 @@ describe("premium layout (Phase 7)", () => {
     expect(html).toContain("letterpad-demo-rule");
   });
 
+  // The clinic could not trace a printed report back to the PACS study it came
+  // from: the route resolved UHID from the patient master and the accession from
+  // the by-id worklist read, put both into patientRows, and the letter-pad block
+  // drew only four of the seven cells.
+  it("prints the UHID and accession the study record already has", () => {
+    const html = renderReportDocument(baseModel({
+      patientRows: [
+        { label: "Patient", value: "Premchand Mandal" },
+        { label: "Age / Sex", value: "4 YRS / M" },
+        { label: "UHID", value: "UH-2026-000457" },
+        { label: "Study Date", value: "20260818" },
+        { label: "Accession No.", value: "ACC-8891" },
+      ],
+    }), resolvePresentationTemplate("care-classic"));
+    expect(html).toContain("UHID:");
+    expect(html).toContain("UH-2026-000457");
+    expect(html).toContain("ACCESSION:");
+    expect(html).toContain("ACC-8891");
+    // The four cells the clinic already reads are untouched.
+    expect(html).toContain("Premchand Mandal");
+    expect(html).toContain("AGE/SEX:");
+    expect(html).toContain("4 YRS / M");
+    expect(html).toContain("18/08/2026");
+    // Exactly one extra row, holding both identifiers.
+    expect(letterpadRows(html)).toBe(3);
+  });
+
+  /** The letter-pad demography table on its own — the document has other tables. */
+  function letterpadRows(html: string): number {
+    const table = html.match(/<table class="letterpad-demo">([\s\S]*?)<\/table>/);
+    expect(table, "no letterpad demography table in the output").not.toBeNull();
+    return ((table as RegExpMatchArray)[1].match(/<tr>/g) || []).length;
+  }
+
+  it("prints no identifier label when the record has no identifier", () => {
+    const html = renderReportDocument(baseModel({
+      patientRows: [
+        { label: "Patient", value: "No Uhid Here" },
+        { label: "Age / Sex", value: "30 Y / F" },
+        { label: "UHID", value: "" },
+        { label: "Accession No.", value: "" },
+      ],
+    }), resolvePresentationTemplate("care-classic"));
+    expect(html).not.toContain("UHID:");
+    expect(html).not.toContain("ACCESSION:");
+    expect(html).toContain("No Uhid Here");
+    // No empty third row: the layout a study without identifiers prints is the
+    // layout it printed before the identifiers existed.
+    expect(letterpadRows(html)).toBe(2);
+  });
+
+  // The print route fills a missing Patient ID with an em dash, so an absent
+  // identifier arrives here as a non-empty string. "UHID: —" reads as an
+  // identifier to whoever receives the sheet.
+  it("treats the route's dash placeholder as no identifier at all", () => {
+    const html = renderReportDocument(baseModel({
+      patientRows: [
+        { label: "Patient", value: "Premchand Mandal" },
+        { label: "Age / Sex", value: "4 YRS / M" },
+        { label: "Patient ID", value: "\u2014" },
+        { label: "Accession No.", value: "-" },
+        { label: "Study Date", value: "20260818" },
+      ],
+    }), resolvePresentationTemplate("care-classic"));
+    expect(html).not.toContain("UHID:");
+    expect(html).not.toContain("ACCESSION:");
+    expect(html).toContain("Premchand Mandal");
+  });
+
+  it("prints the identifier the study has and no label for the one it has not", () => {
+    const html = renderReportDocument(baseModel({
+      patientRows: [
+        { label: "Patient", value: "Premchand Mandal" },
+        { label: "Age / Sex", value: "4 YRS / M" },
+        { label: "Patient ID", value: "\u2014" },
+        { label: "Accession No.", value: "ACC-8891" },
+      ],
+    }), resolvePresentationTemplate("care-classic"));
+    expect(html).toContain("ACCESSION:");
+    expect(html).toContain("ACC-8891");
+    expect(html).not.toContain("UHID:");
+  });
+
   it("only data:/same-origin srcs are ever emitted (no public PACS URLs by construction)", () => {
     const html = renderReportDocument(baseModel({ keyImages: images }), resolvePresentationTemplate("care-premium"));
     const srcs = [...html.matchAll(/class="dicom-img"[^>]*/g)];

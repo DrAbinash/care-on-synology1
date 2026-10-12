@@ -238,6 +238,9 @@ const handleExportWord = useCallback(async () => {
               sex: canonicalDemography.sex,
               referringDoctor: canonicalDemography.referringDoctor,
               studyDate: canonicalDemography.studyDate,
+              uhid: canonicalDemography.uhid,
+              patientId: canonicalDemography.patientId,
+              accessionNumber: canonicalDemography.accessionNumber,
             },
           });
         }
@@ -340,6 +343,7 @@ const handleExportPdf = useCallback(async () => {
       age: canonicalDemography.age,
       sex: canonicalDemography.sex,
       accessionNumber: canonicalDemography.accessionNumber,
+      uhid: canonicalDemography.uhid,
       studyDate: canonicalDemography.studyDate,
       referringDoctor: canonicalDemography.referringDoctor,
       modality: workflow.currentRow?.modality ?? "",
@@ -415,6 +419,9 @@ const handlePrintLikeFinal = useCallback(async () => {
         sex: canonicalDemography.sex,
         referringDoctor: canonicalDemography.referringDoctor,
         studyDate: canonicalDemography.studyDate,
+        uhid: canonicalDemography.uhid,
+        patientId: canonicalDemography.patientId,
+        accessionNumber: canonicalDemography.accessionNumber,
       },
     });
     w.document.open();

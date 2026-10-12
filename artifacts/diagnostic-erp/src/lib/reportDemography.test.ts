@@ -236,6 +236,19 @@ describe("buildClassicDemographyHeaderHtml", () => {
     expect(html).not.toContain("REF. BY:");
   });
 
+  it("uses the patient id as the UHID when the record has none of its own", () => {
+    // The letter-pad block falls back the same way; the two header styles must
+    // not name the same patient with two different numbers.
+    const html = buildClassicDemographyHeaderHtml({
+      patientName: "Rita Devi",
+      sex: "F",
+      patientId: "PID-4471",
+      studyDate: "20260813",
+    });
+    expect(html).toContain("UHID:");
+    expect(html).toContain("PID-4471");
+  });
+
   it("shows REF. BY after reconcile and hides fake ACC", () => {
     const reconciled = reconcileAccessionVsReferringDoctor({
       accessionNumber: "DR.SANJAY KUMAR",
@@ -323,5 +336,87 @@ describe("letterpad demography patch", () => {
     expect(out).toContain("52 YRS / F");
     expect(out).toContain("SURYA UDAI SINGH");
     expect(out).not.toContain("SELF");
+  });
+
+  // The workspace does not print the server's letter-pad block: it replaces it
+  // with this one. Adding UHID/ACCESSION to the server and the PDF but not here
+  // would print the identifiers on the durable PDF and lose them on Print.
+  it("prints the UHID and accession the canonical record has", () => {
+    const html = buildLetterpadDemographyHtml({
+      patientName: "Premchand Mandal",
+      age: "4 Yrs",
+      sex: "M",
+      referringDoctor: "Dr Tushar Jyoti",
+      studyDate: "18/08/2026",
+      uhid: "UH-2026-000457",
+      accessionNumber: "ACC-8891",
+    });
+    expect(html).toContain("UHID:");
+    expect(html).toContain("UH-2026-000457");
+    expect(html).toContain("ACCESSION:");
+    expect(html).toContain("ACC-8891");
+    // The four cells the clinic already reads are untouched.
+    expect(html).toContain("PREMCHAND MANDAL");
+    expect(html).toContain("4 YRS / M");
+    expect(html).toContain("TUSHAR JYOTI");
+    expect(html).toContain("18/08/2026");
+    // Three rows: the identifiers add one, and a study with neither adds none.
+    expect((html.match(/<tr>/g) || []).length).toBe(3);
+  });
+
+  it("uses the patient id for UHID when the record has no UHID of its own", () => {
+    // Same fallback buildClassicDemographyHeaderParts uses, so the two header
+    // styles cannot name the same patient differently.
+    const html = buildLetterpadDemographyHtml({
+      patientName: "Renu Keshri",
+      age: "52 Yrs",
+      sex: "F",
+      patientId: "PID-4471",
+    });
+    expect(html).toContain("UHID:");
+    expect(html).toContain("PID-4471");
+    expect(html).not.toContain("ACCESSION:");
+  });
+
+  it("prints no identifier label when the record has no identifier", () => {
+    const html = buildLetterpadDemographyHtml({
+      patientName: "No Uhid Here",
+      age: "30 Yrs",
+      sex: "F",
+      uhid: "",
+      patientId: "",
+      accessionNumber: "",
+    });
+    expect(html).not.toContain("UHID:");
+    expect(html).not.toContain("ACCESSION:");
+    expect(html).toContain("NO UHID HERE");
+    // The blank row is not drawn either: an empty third line pushes the double
+    // rule down and changes the layout of every report that has no identifiers.
+    expect((html.match(/<tr>/g) || []).length).toBe(2);
+  });
+
+  it("keeps the identifiers when it replaces the server's letter-pad block", () => {
+    const server = `<div class="letterpad-demo-wrap"><table class="letterpad-demo">
+      <tr><td class="ld-left"><strong>NAME:</strong> <strong>RENU</strong></td>
+      <td class="ld-right"><strong>AGE/SEX:</strong> F</td></tr>
+      <tr><td class="ld-left"><strong>REFD. BY:</strong> X</td>
+      <td class="ld-right"><strong>DATE:</strong> 13/08/2026</td></tr>
+      <tr><td class="ld-left"><strong>UHID:</strong> UH-1</td>
+      <td class="ld-right"><strong>ACCESSION:</strong> ACC-2</td></tr>
+    </table><div class="letterpad-demo-rule"></div></div>`;
+    const out = patchLetterpadDemographyHtml(server, {
+      patientName: "Renu Keshri",
+      age: "52 Yrs",
+      sex: "F",
+      referringDoctor: "Dr. Tushar Jyoti",
+      studyDate: "13/08/2026",
+      uhid: "UH-1",
+      accessionNumber: "ACC-2",
+    });
+    expect(out).toContain("UH-1");
+    expect(out).toContain("ACC-2");
+    // Replaced, not appended: the block must not carry two identifier rows.
+    expect(out.match(/UHID:/g)).toHaveLength(1);
+    expect(out).not.toContain("<strong>REFD. BY:</strong> X");
   });
 });
