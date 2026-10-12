@@ -27,6 +27,8 @@ import { once } from "node:events";
 
 export type MockInstance = { sopUid: string; numberOfFrames?: number | null };
 
+export type MockDicomWebMode = "serve" | "down" | "limited";
+
 export type MockDicomWeb = {
   port: number;
   url: string;
@@ -37,7 +39,7 @@ export type MockDicomWeb = {
    * Collapsing that into "unreachable" is the defect #950 fixed on the browser
    * side; these modes exist so the server side can be measured too.
    */
-  setMode(mode: "serve" | "down" | "limited"): void;
+  setMode(mode: MockDicomWebMode): void;
   /** Requests received (decoded, query included), so a test can prove the check really went to the PACS. */
   hits(): string[];
   close(): Promise<void>;
@@ -78,7 +80,7 @@ export async function startMockDicomWeb(
   opts: { renderedJpeg?: Buffer } = {},
 ): Promise<MockDicomWeb> {
   const seen: string[] = [];
-  let mode: "serve" | "down" = "serve";
+  let mode: MockDicomWebMode = "serve";
 
   const server: Server = createServer((req, res) => {
     const raw = req.url || "";

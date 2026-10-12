@@ -54,9 +54,14 @@ function hasChromium(): boolean {
 type PrintBox = { left: number; top: number; width: number; height: number };
 type PrintGeo = { col: PrintBox | null; rail: PrintBox | null; cellCount: number };
 
+type BrowserNode = {
+  innerText: string;
+  getBoundingClientRect: () => PrintBox;
+};
+
 type BrowserDocument = {
-  querySelector: (sel: string) => { getBoundingClientRect: () => PrintBox } | null;
-  querySelectorAll: (sel: string) => { length: number; item: (i: number) => { getBoundingClientRect: () => PrintBox } | null };
+  querySelector: (sel: string) => BrowserNode | null;
+  querySelectorAll: (sel: string) => { length: number; item: (i: number) => BrowserNode | null };
 };
 
 function measureSideRail(): PrintGeo {
@@ -74,6 +79,23 @@ function measureSideRail(): PrintGeo {
     rail: rail ? { left: rail.left, top: rail.top, width: rail.width, height: rail.height } : null,
     cellCount: cells.length,
   };
+}
+
+type CaptionRow = { text: string; height: number };
+
+function measureCaptions(): CaptionRow[] {
+  const doc = (globalThis as unknown as { document: BrowserDocument }).document;
+  const nodes = doc.querySelectorAll(".image-caption");
+  const out: CaptionRow[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes.item(i);
+    if (!el) continue;
+    // Measured: a caption suppressed by CSS still reports its innerText (an
+    // unrendered element falls back to its text), so the text alone cannot see
+    // the suppression — the measured box height is what does. Both are returned.
+    out.push({ text: el.innerText.trim(), height: el.getBoundingClientRect().height });
+  }
+  return out;
 }
 
 function pdfPageCount(buf: Buffer): number {
@@ -295,12 +317,7 @@ describe.skipIf(!hasChromium())("premium print layout (Chromium)", () => {
       await page.setContent(html, { waitUntil: "networkidle" });
       // What the page actually shows, not what the markup says: an empty caption
       // would occupy a line of its own and change the rail's measured text.
-      const visible = await page.evaluate(() =>
-        Array.from(document.querySelectorAll<HTMLElement>(".image-caption")).map((el) => ({
-          text: el.innerText.trim(),
-          height: el.getBoundingClientRect().height,
-        })),
-      );
+      const visible = await page.evaluate(measureCaptions);
       expect(visible.length).toBe(2);
       expect(visible.map((v) => v.text)).toEqual([
         "T2W axial through the lateral ventricles",
