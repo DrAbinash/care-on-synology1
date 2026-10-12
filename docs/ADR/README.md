@@ -9,3 +9,4 @@ Trade-offs / Future Review / Notes).
 | [ADR-001](./ADR-001-public-booking-authentication.md) | Public Booking Authentication Strategy | Accepted (Temporary) |
 | [ADR-002](./ADR-002-pathology-analyte-registry.md) | Universal Pathology Analyte & Panel Registry | Accepted |
 | [ADR-003](./ADR-003-staff-hr-performance-module.md) | Staff, Attendance, Performance & Recognition Module | Accepted (Phase 0/1) |
+| [ADR-004](./ADR-004-region-transition-safety.md) | Safe Reporting-Region Transitions | Proposed (logic implemented, wiring pending) |
