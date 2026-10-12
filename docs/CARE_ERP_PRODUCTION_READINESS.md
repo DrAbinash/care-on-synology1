@@ -98,6 +98,8 @@ this repository can ask but cannot answer:
    not before the ERP serves reports.
 
 Then the sequence in `CARE_ERP_DEPLOYMENT_RUNBOOK.md` §12 is safe for the **owner to run
-manually, one step at a time**. This is not a green light for anything automatic: nothing in
-this assessment was executed against the clinic, no credential was read, changed or rotated,
-no production database was touched, and no container was restarted.
+manually, one step at a time**. Each of those four items is carried, with the exact condition
+that closes it and whether it blocks a code-only versus a schema-touching deploy, as CL-1…CL-8
+in `CARE_ERP_PREDEPLOYMENT_GATE.md` Part 2. This is not a green light for anything automatic:
+nothing in this assessment was executed against the clinic, no credential was read, changed or
+rotated, no production database was touched, and no container was restarted.
