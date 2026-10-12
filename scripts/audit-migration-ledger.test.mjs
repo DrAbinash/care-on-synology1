@@ -369,3 +369,38 @@ describe("the parser against the files that actually ship", () => {
     expect(shifted.map((s) => s.kind)).toEqual([]);
   });
 });
+
+describe("the audit cannot write to the database it is auditing", () => {
+  // Comments go first, always: the script's own header says "it never UPDATEs,
+  // DELETEs or INSERTs a ledger row", and its usage block contains
+  // `postgresql://…`. A scan over raw text therefore fails on the sentence that
+  // denies the write, and a `//` strip that runs before the `/* */` strip eats the
+  // rest of that usage line.
+  const raw = fs.readFileSync(path.join(REPO, "scripts", "audit-migration-ledger.mjs"), "utf8");
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+
+  it("opens the session read-only, and stops if Postgres did not honour it", () => {
+    expect(code).toContain('options: "-c default_transaction_read_only=on"');
+    const asked = code.indexOf('client.query("SHOW default_transaction_read_only")');
+    expect(asked).toBeGreaterThan(-1);
+    // The guard has to be within arm's reach of the check it guards. A `process.exit`
+    // somewhere else in the file proves nothing about this path.
+    const arm = code.slice(asked, asked + 900);
+    expect(arm).toContain('default_transaction_read_only !== "on"');
+    expect(/process\.exit\(1\)/.test(arm)).toBe(true);
+  });
+
+  it("answers every query site with SELECT or SHOW", () => {
+    // Bounded on the call shape, never on a character budget or a remembered line
+    // count. `sites` only matches a `client.query(` whose first argument starts with
+    // a string literal, so the second assertion is what stops a dynamically built
+    // statement — invisible to the verb check — from hiding in the difference.
+    const sites = [...code.matchAll(/client\.query\(\s*([`"'])/g)];
+    expect(sites.length).toBe((code.match(/client\.query\(/g) || []).length);
+    expect(sites.length).toBeGreaterThan(10);
+    const verbs = sites.map((s) =>
+      code.slice(s.index + s[0].length).trimStart().split(/\s/, 1)[0].toUpperCase().replace(/[^A-Z]/g, ""),
+    );
+    expect(verbs.filter((v) => v !== "SELECT" && v !== "SHOW")).toEqual([]);
+  });
+});

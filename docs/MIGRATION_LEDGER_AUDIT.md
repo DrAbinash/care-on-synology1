@@ -139,7 +139,11 @@ PGOPTIONS='-c default_transaction_read_only=on' psql … -c "update schema_migra
 
 Every statement in the script is a `SELECT` or a `SHOW` — including the existence
 probes, which are `SELECT to_regclass($1) IS NOT NULL`. There is no DDL, no ledger
-write, and no re-application of any migration file anywhere in it.
+write, and no re-application of any migration file anywhere in it. That is no longer
+only a sentence: the test file scans the shipped script and goes red on any query site
+that is not `SELECT`/`SHOW`, on any site whose SQL is built dynamically instead of
+written as a literal, and on either half of the read-only guard being removed. See
+*The gate under the gate*.
 
 **Key equivalence.** `migrations/zzzzzzz_bill_dependent_referential_integrity.sql`
 conditionally drops Drizzle's `form_f_records_bill_id_bills_id_fk` and reinstalls
@@ -228,6 +232,21 @@ no identifier truncation, quoted-dot parsing, keyword-as-column, positional grou
 shift, no key equivalence, suppressed info line, a parser returning nothing, and
 judging unrecorded migrations) each turn the gate red, and the shipped file is
 restored byte-identically afterwards.
+
+The read-only promise got the same treatment, because "the script never writes" is
+worthless as prose. Four more mutants, each reverted byte-exact afterwards:
+
+| Mutant injected into `audit-migration-ledger.mjs` | What went red |
+| --- | --- |
+| `await client.query("UPDATE public.schema_migrations_log SET kind = kind")` | `expected [ 'UPDATE' ] to deeply equal []` |
+| a `client.query(sql)` whose SQL is concatenated at run time | `expected 13 to be 14` — the literal-site count must equal the call-site count, or a dynamic statement hides from the verb check |
+| the `options: "-c default_transaction_read_only=on"` line deleted | the guard test's first assertion |
+| the refusal branch kept but its `process.exit(1)` neutered | `expected false to be true` |
+
+Comment handling is the reason the scanner is careful: the script's own header *says*
+"it never UPDATEs, DELETEs or INSERTs a ledger row", and its usage block contains
+`postgresql://…`. Comments are therefore stripped before the code is scanned, block
+comments before line comments, or the denial itself reads as a violation.
 
 Exit status is part of the contract, not an afterthought: `0` when the audit ran,
 whatever it found; `1` when a critical finding needs a decision (or any finding,
