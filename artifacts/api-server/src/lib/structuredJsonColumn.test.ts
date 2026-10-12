@@ -3,6 +3,7 @@ import {
   CARE_REPORT_FORMAT_IDENTITY_KIND,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
   STRUCTURED_JSON_ENVELOPE_KIND,
+  type CareRegionTransition,
   composeStructuredJsonColumn,
   extractA4Cache,
   extractCareLinkedStudy,
@@ -189,7 +190,7 @@ describe("structured_json envelope (A4 cache + format values)", () => {
   });
 
   it("treats a region-transition history as enough to compose an envelope", () => {
-    const history = [{
+    const history: CareRegionTransition[] = [{
       kind: "care.region_transition.v1",
       fromRegion: "Whole Spine",
       toRegion: "Cervical Spine",
