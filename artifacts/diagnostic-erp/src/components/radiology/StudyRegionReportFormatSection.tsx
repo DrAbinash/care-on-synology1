@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Pencil, Plus } from "lucide-react";
+import { AlertTriangle, Pencil, Plus } from "lucide-react";
 import { groupStudyTabsByFamily, studyTabFamily } from "@/lib/studyRegion";
 import {
   type StudyTabRef,
@@ -27,6 +27,7 @@ import {
   writeLastStudyFamily,
   writeStoredQuickTabIds,
 } from "@/lib/workspaceRegionPrefs";
+import type { RegionTransitionPlan } from "@/lib/regionTransition";
 import { AddStudyRegionDialog } from "./AddStudyRegionDialog";
 
 export type StudyRegionReportFormatSectionProps = {
@@ -50,6 +51,14 @@ export type StudyRegionReportFormatSectionProps = {
   billedMatchedRegion?: string | null;
   /** Protocol still applies internally when region changes — metadata only. */
   activeProtocolName?: string | null;
+  /**
+   * ADR-004 — a region change that would take sentences out of this report is held here
+   * until the radiologist confirms it. The plan is the policy's own object: this component
+   * only reads it, it decides nothing about what the transition costs.
+   */
+  pendingRegionTransition?: RegionTransitionPlan | null;
+  onConfirmRegionTransition?: () => void;
+  onCancelRegionTransition?: () => void;
   onReapplyDefaults?: () => void;
   canReapplyDefaults?: boolean;
 };
@@ -68,6 +77,9 @@ export function StudyRegionReportFormatSection({
   dicomMatchedRegion = null,
   billedMatchedRegion = null,
   activeProtocolName,
+  pendingRegionTransition,
+  onConfirmRegionTransition,
+  onCancelRegionTransition,
   onReapplyDefaults,
   canReapplyDefaults,
 }: StudyRegionReportFormatSectionProps) {
@@ -291,6 +303,15 @@ export function StudyRegionReportFormatSection({
         )}
       </div>
 
+      {pendingRegionTransition ? (
+        <RegionTransitionConfirmStrip
+          plan={pendingRegionTransition}
+          disabled={disabled}
+          onConfirm={() => onConfirmRegionTransition?.()}
+          onCancel={() => onCancelRegionTransition?.()}
+        />
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-1.5 px-0.5" data-testid="study-region-quick">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mr-0.5">Quick</span>
         {quickTabs.length === 0 ? (
@@ -391,6 +412,115 @@ export function StudyRegionReportFormatSection({
         onCreated={handleRegionCreated}
         modalityHint={modality}
       />
+    </div>
+  );
+}
+
+/**
+ * ADR-004 — the confirmation a narrowing region change has to earn.
+ *
+ * It states the cost in the report's own sentences: the exact lines that will leave the
+ * page, the findings that stay even though they name anatomy the new examination does not
+ * acquire, the sentences that belong to no ledger row at all (never touched, and said so),
+ * and the sentences this module could not place on a spine segment (kept, because it never
+ * guesses at anatomy). Pressing Cancel writes nothing — the pending plan is the only thing
+ * this component can affect — and the region itself does not change until Confirm.
+ */
+const REGION_TRANSITION_SHOWN = 6;
+
+function RegionTransitionConfirmStrip({
+  plan,
+  disabled,
+  onConfirm,
+  onCancel,
+}: {
+  plan: RegionTransitionPlan;
+  disabled?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const shown = plan.retire.slice(0, REGION_TRANSITION_SHOWN);
+  const hidden = plan.retire.length - shown.length;
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-[11px] text-amber-950 shadow-sm"
+      data-testid="region-transition-strip"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+        <div className="min-w-0 space-y-1.5">
+          <div
+            className="text-[10px] font-semibold uppercase tracking-wider text-amber-800/90"
+            data-testid="region-transition-heading"
+          >
+            Region change: {plan.fromRegion ?? "not set"} → {plan.toRegion}
+          </div>
+          <div className="font-medium" data-testid="region-transition-summary">
+            {plan.summary}
+          </div>
+          {plan.retire.length > 0 ? (
+            <ul className="list-disc space-y-0.5 pl-4" data-testid="region-transition-retired-list">
+              {shown.map((row) => (
+                <li key={row.id} data-testid={`region-transition-retired-${row.id}`}>
+                  {row.text}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {hidden > 0 ? (
+            <div className="text-[10px] text-amber-800/90" data-testid="region-transition-retired-more">
+              +{hidden} more sentence{hidden === 1 ? "" : "s"}
+            </div>
+          ) : null}
+          {plan.outOfRegionAbnormalities.length > 0 ? (
+            <div data-testid="region-transition-kept-abnormalities">
+              Kept, because a finding does not disappear when the label changes:{" "}
+              {plan.outOfRegionAbnormalities
+                .slice(0, REGION_TRANSITION_SHOWN)
+                .map((row) => row.text)
+                .join(" ")}
+            </div>
+          ) : null}
+          {plan.manualLines.length > 0 ? (
+            <div data-testid="region-transition-manual-note">
+              Your own {plan.manualLines.length} line{plan.manualLines.length === 1 ? "" : "s"} are
+              untouched.
+            </div>
+          ) : null}
+          {plan.unplaced.length > 0 ? (
+            <div data-testid="region-transition-unplaced-note">
+              {plan.unplaced.length} sentence{plan.unplaced.length === 1 ? "" : "s"} this tool could not
+              place on a spine segment are kept — nothing is guessed at.
+            </div>
+          ) : null}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 text-[11px]"
+              disabled={disabled}
+              onClick={onCancel}
+              data-testid="region-transition-cancel"
+            >
+              Cancel — report unchanged
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 bg-amber-600 text-[11px] hover:bg-amber-700 text-white"
+              disabled={disabled}
+              onClick={onConfirm}
+              data-testid="region-transition-confirm"
+            >
+              {plan.retire.length > 0
+                ? `Change region and remove ${plan.retire.length}`
+                : "Change region"}
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

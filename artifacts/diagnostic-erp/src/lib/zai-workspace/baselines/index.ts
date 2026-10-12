@@ -39,6 +39,13 @@ import {
   MRI_DORSAL_SCREENING_NORMAL_NAME,
 } from "./mriDorsalScreeningNormal";
 import {
+  MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
+  MRI_DORSAL_STANDARD_NORMAL_META,
+  MRI_DORSAL_STANDARD_NORMAL_NAME,
+} from "./mriDorsalStandardNormal";
+import {
   MRI_LS_SCREENING_NORMAL_FINDINGS,
   MRI_LS_SCREENING_NORMAL_IMPRESSION,
   MRI_LS_SCREENING_NORMAL_MANIFEST,
@@ -95,6 +102,10 @@ export {
   MRI_DORSAL_SCREENING_NORMAL_FINDINGS,
   MRI_DORSAL_SCREENING_NORMAL_IMPRESSION,
   MRI_DORSAL_SCREENING_NORMAL_MANIFEST,
+  MRI_DORSAL_STANDARD_NORMAL_NAME,
+  MRI_DORSAL_STANDARD_NORMAL_FINDINGS,
+  MRI_DORSAL_STANDARD_NORMAL_IMPRESSION,
+  MRI_DORSAL_STANDARD_NORMAL_MANIFEST,
   MRI_LS_SCREENING_NORMAL_NAME,
   MRI_LS_SCREENING_NORMAL_FINDINGS,
   MRI_LS_SCREENING_NORMAL_IMPRESSION,
@@ -124,11 +135,13 @@ function asEntry(meta: OwnedBaselineCatalogEntry): OwnedBaselineCatalogEntry {
   return meta;
 }
 
-/** Phase 2 owned baseline catalog (8 formats). Does not include LS Standard Normal. */
+/** Phase 2 owned baseline catalog (8 formats) plus the Dorsal Standard Normal that was
+ *  missing from it — without which a billed MRI Dorsal Spine report has no owned rows. */
 export function ownedBaselineCatalog(): OwnedBaselineCatalogEntry[] {
   return [
     asEntry(MRI_BRAIN_STANDARD_NORMAL_META),
     asEntry(MRI_CERVICAL_STANDARD_NORMAL_META),
+    asEntry(MRI_DORSAL_STANDARD_NORMAL_META),
     asEntry(MRI_KNEE_STANDARD_NORMAL_META),
     asEntry(MRI_BRAIN_SCREENING_NORMAL_META),
     asEntry(MRI_CERVICAL_SCREENING_NORMAL_META),

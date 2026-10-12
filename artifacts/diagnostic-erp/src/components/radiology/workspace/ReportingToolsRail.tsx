@@ -77,6 +77,7 @@ import {
 import UsgCompanionPanel from "@/components/radiology/UsgCompanionPanel";
 import ObDashboardStrip from "@/components/radiology/ObDashboardStrip";
 import FindingsAnatomyChips from "@/components/radiology/FindingsAnatomyChips";
+import FindingsAnatomyStrip from "@/components/radiology/FindingsAnatomyStrip";
 import { ModuleErrorBoundary } from "@/components/ModuleErrorBoundary";
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import { CopilotRail } from "@/components/radiology/zai-workspace/copilot-rail";
@@ -550,6 +551,22 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   onAnatomyChange={setActiveFindingsAnatomy}
                                   disabled={contentLocked}
                                   sticky
+                                />
+                                {/* The chips select a section; this is the section. It was mounted
+                                    only in the canvas's retired inline-assistance block, so the
+                                    navigation had nothing to navigate and a level chip like L1-L2
+                                    showed the radiologist no finding tile at all. Same catalogue,
+                                    same selection, same write path as QuickFindingsPanel below. */}
+                                <FindingsAnatomyStrip
+                                  findings={catalogQuickFindings}
+                                  selectedStudyTabId={studySetup.selectedStudyTabId}
+                                  selectedStudyTabName={studySetup.matchedStudyRegion}
+                                  activeAnatomy={activeFindingsAnatomy}
+                                  selectedIds={selectedQuickIds}
+                                  blockedIds={blockedQuickFindingIds}
+                                  onToggle={handleQuickToggle}
+                                  onFindingClick={(f) => studySetup.handleFindingClick(f, selectedQuickIds, handleQuickToggle)}
+                                  disabled={contentLocked}
                                 />
                                 <QuickSelectStrip
                                   field="findings"

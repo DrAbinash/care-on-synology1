@@ -919,6 +919,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                       regionOverridden={studySetup.regionOverrides != null}
                       onSelectRegion={studySetup.selectPrimaryRegion}
                       onResetAutoRegion={studySetup.resetRegionOverrides}
+                      pendingRegionTransition={studySetup.pendingRegionTransition?.plan ?? null}
+                      onConfirmRegionTransition={studySetup.confirmRegionTransition}
+                      onCancelRegionTransition={studySetup.cancelRegionTransition}
                       modality={workflow.currentRow?.modality ?? null}
                       disabled={contentLocked}
                       testName={studyNameForExport || studySetup.testName}

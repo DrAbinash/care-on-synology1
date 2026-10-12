@@ -24,6 +24,7 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
   const cases: Array<{ name: string; region: string; studyDescription: string }> = [
     { name: "MRI Brain — Standard Normal", region: "Brain", studyDescription: "MRI BRAIN PLAIN" },
     { name: "MRI Cervical Spine — Standard Normal", region: "Cervical Spine", studyDescription: "MRI CERVICAL SPINE" },
+    { name: "MRI Dorsal Spine — Standard Normal", region: "Dorsal Spine", studyDescription: "MRI DORSAL SPINE" },
     { name: "MRI Knee — Standard Normal", region: "Knee", studyDescription: "MRI KNEE" },
     { name: "MRI Brain — Screening Normal", region: "Brain", studyDescription: "MRI BRAIN SCREENING" },
     { name: "MRI Cervical Spine — Screening Normal", region: "Cervical Spine", studyDescription: "MRI CERVICAL SPINE SCREENING" },
@@ -32,7 +33,7 @@ describe("Phase 2 normalBootstrap — owned formats resolve uniquely", () => {
     { name: "MRI Whole Spine — Screening Normal", region: "Whole Spine", studyDescription: "MRI WHOLE SPINE SCREENING" },
   ];
 
-  it("catalog lists exactly the 8 Phase 2 formats under test", () => {
+  it("catalog lists exactly the 9 Phase 2 formats under test", () => {
     expect(ownedBaselineCatalog().map((e) => e.name).sort()).toEqual(
       cases.map((c) => c.name).sort(),
     );

@@ -160,6 +160,7 @@ import {
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
+import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
 import {
   CLINICAL_UNDO_DEPTH,
   pushClinicalUndoSnapshot,
@@ -242,6 +243,7 @@ import {
 } from "@/lib/coverageMarks";
 import { coverageScopeKey } from "@/lib/mriLumbarLevelState";
 import { materializeFormatBaseline, reportFormatRevision } from "./fullReportBaseline";
+import type { RegionTransitionPlan, RegionTransitionRecord } from "@/lib/regionTransition";
 
 function parseCoverageFromRaw(raw: unknown): CoverageMark[] | null {
   return parseCoverageMarks(raw);
@@ -340,6 +342,14 @@ type PatchSnapshot = {
    * restore nothing rather than forcing the flag to a value they never recorded.
    */
   impressionNeedsRefresh?: boolean;
+  /**
+   * ADR-004 — the transition history, optional for the same reason as the four above: a
+   * frame captured before this field existed restores nothing rather than forcing the
+   * history to a value it never recorded. Undo has to roll the record back WITH the
+   * sentences: leaving it behind would claim lines left the report while they are sitting
+   * on the page, and the next autosave would persist that claim as provenance.
+   */
+  regionTransitions?: RegionTransitionRecord[];
 };
 
 const CLINICAL_UNDO_MAX = CLINICAL_UNDO_DEPTH;
@@ -361,6 +371,7 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     startingCanvasBaseline: s.startingCanvasBaseline ?? null,
     appliedPatternMarkers: s.appliedPatternMarkers.map((m) => ({ ...m })),
     impressionNeedsRefresh: s.impressionNeedsRefresh,
+    regionTransitions: [...s.regionTransitions],
   };
 }
 
@@ -618,6 +629,13 @@ interface S {
   /** Canal AP cell provenance (manualOverride + DICOM UIDs) — draft-scoped. */
   canalApProvenance: CanalApProvenanceMap;
   /**
+   * ADR-004 — the confirmed region transitions this report has been through, oldest first.
+   * One entry per decision, carrying every sentence the report stopped claiming and who
+   * decided it. Persisted in the draft envelope so a reload names the transition instead of
+   * reporting the missing rows as a lost draft.
+   */
+  regionTransitions: RegionTransitionRecord[];
+  /**
    * MRI Lumbar V3: vertebral numbering mode + LSTV detail. Level keys, AP rows,
    * root mapping, findings prose and LS screening all read this through
    * `LumbarNumberingResolver` — never a hard-coded level array (spec §5).
@@ -746,7 +764,17 @@ export type WorkspaceStore = S & {
   saveQuickSelectTile: (i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void; deleteQuickSelectTile: (id: string) => void;
   incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
-  applySelectedFormats: () => void; applyFormatById: (id: string) => void; confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
+  /**
+   * `regionChoice` says who is responsible for the region the format implies.
+   * `"radiologist"` (the default — a press in the picker, the strip or Quick Normal)
+   * syncs the reporting region onto the format's own region. `"automatic"` is the
+   * auto-open normal bootstrap: the study's region was resolved from the billed code
+   * before the report existed, and a report that opened itself must not come back
+   * later claiming the radiologist overrode it.
+   */
+  applySelectedFormats: (opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
+  applyFormatById: (id: string, opts?: { regionChoice?: "radiologist" | "automatic" }) => void;
+  confirmOverwriteAndApply: () => void; cancelOverwrite: () => void; applyMergedResult: () => void; cancelMerge: () => void;
   /**
    * VERTICAL INTEGRATION M1 — the one deterministic "Generate Professional Report"
    * action. Builds the report from material that already exists: the study's
@@ -776,6 +804,19 @@ export type WorkspaceStore = S & {
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
+   * ADR-004 — commit a region transition the radiologist has CONFIRMED. Each retired row goes
+   * through the same per-observation withdrawal a bundle deselection uses, so its sentence
+   * leaves the text, any baseline it was covering comes back, linked measurements detach and
+   * the Recommendation re-aligns — inside ONE clinical undo frame, and with the decision
+   * recorded: only the rows whose sentence really left the report appear in it. Returns null
+   * without writing a record when the plan retires nothing, when nothing was actually
+   * removable, or when the report is signed: a confirmed dialog is not a licence to edit a
+   * signed report (#838's boundary).
+   */
+  commitRegionTransition: (plan: RegionTransitionPlan, decidedBy: string) => RegionTransitionRecord | null;
+  /** Restore the transition history a saved draft carries (ADR-004: provenance survives reload). */
+  hydrateRegionTransitions: (records: RegionTransitionRecord[]) => void;
+  /**
    * The screening panel's whole ledger truth: plan from `screeningLedgerBundles`,
    * remove what the plan no longer holds, re-apply the changed region and the
    * once-only limitation row. Lives here rather than in the component so the
@@ -786,7 +827,12 @@ export type WorkspaceStore = S & {
     changed: SpineScreeningRegion;
     ledgerRegion?: string;
   }) => void;
-  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
+  /**
+   * `skipUndoSnapshot` is for a withdrawal that is one step of a larger action: the caller
+   * captures the frame itself, so one Undo restores the whole action instead of its last row.
+   * Same option `applyPathologyOverlay` already takes.
+   */
+  removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null; skipUndoSnapshot?: boolean }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
    * When editingId's clinical slot changes to an occupied sibling, updates that sibling
@@ -984,6 +1030,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
   dorsalCanalForced: false,
   canalApProvenance: {},
+  regionTransitions: [],
   lumbarNumbering: defaultLumbarNumbering(),
   dorsalNumbering: defaultDorsalNumbering(),
   dorsoLumbarNumbering: defaultDorsoLumbarState(),
@@ -1492,7 +1539,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },
   clearFormatSelection: () => set({ selectedFormatIds: [] }),
-  applySelectedFormats: () => {
+  applySelectedFormats: (opts?: { regionChoice?: "radiologist" | "automatic" }) => {
     if (get().isFinalized) return;
     const ids = get().selectedFormatIds;
     if (!ids.length) return;
@@ -1501,8 +1548,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const bridge = getFormatApplyBridge();
     const availableRegions = bridge?.availableRegions() ?? [];
     const currentRegion = bridge?.currentRegion() ?? get().reportingContext.region ?? null;
+    // An automatic apply takes no region decision at all — see the type comment. It
+    // also keeps the analysis on the study's own region, so a report that opened
+    // itself cannot be described as a region change the radiologist made.
+    const automatic = opts?.regionChoice === "automatic";
     let pendingRegion: string | null = null;
-    if (fs.length === 1) {
+    if (!automatic && fs.length === 1) {
       const resolved = resolveReportingRegionForFormat(fs[0]!, availableRegions);
       if (resolved.status === "resolved") {
         pendingRegion = resolved.region;
@@ -1539,10 +1590,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ pendingFormatIds: ids, pendingFormatOverwrite: analysis, pendingFormatRegion: pendingRegion });
     get().confirmOverwriteAndApply();
   },
-  applyFormatById: (id) => {
+  applyFormatById: (id, opts) => {
     if (get().isFinalized) return;
     set({ selectedFormatIds: [id] });
-    get().applySelectedFormats();
+    get().applySelectedFormats(opts);
   },
   generateProfessionalReport: (ctx) => {
     // The whole report from one press, with no model in the loop. Every string it
@@ -1625,8 +1676,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // sentence is not written twice, and no sentence the format does not contain
     // is removed — so pressing this on a study that already has dictated text
     // cannot lose it, and pressing it twice changes nothing the second time.
+    //
+    // One exception, and it is bounded by provenance rather than by text: the setup half of
+    // Start Report runs before this and writes the Study Tab's or protocol's own acquisition
+    // sentence, so on a study that started with an empty Technique box the approved statement
+    // would merge beside a machine claim nobody authored — measured as three printed accounts
+    // of one whole-spine screening examination. Machine-authored technique is replaced by what
+    // this examination's format actually establishes; anything a person typed, dictated or
+    // accepted stays on the page and the approved sentence joins it.
     if (clinical.technique.trim() && !alreadySaysThis(get().techniqueText, clinical.technique)) {
-      get().mergeField("technique", clinical.technique, "template");
+      const regionCount = (ctx.regions && ctx.regions.length ? ctx.regions : [ctx.region]).length;
+      const replacesMachineText = mayReplaceMachineTechniqueWithApproved({
+        techniqueText: get().techniqueText,
+        provenance: get().fieldProvenance.technique,
+        regionCount,
+      });
+      if (replacesMachineText) {
+        get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
+      } else {
+        get().mergeField("technique", clinical.technique, "template");
+      }
     }
     if (clinical.findings.trim() && !alreadySaysThis(get().findingsText, clinical.findings)) {
       // Written without the superseded levels rather than written and deleted: a
@@ -2426,7 +2495,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         get().appliedPathologyPatches.filter((p) => p.id !== fallbackId),
         probe,
       );
-      const id = siblings[0]?.id ?? fallbackId;
+      // A format baseline is not one of those siblings. Adopting its id blinds the
+      // overlay's own lookup, which filters `p.id !== draftId`: the row it was meant
+      // to supersede disappears from view, the apply falls to the insert path, and
+      // that path drops the baseline row without its prose contract — so the row
+      // vanishes while its sentence keeps printing. Measured on MRI Whole Spine: one
+      // click on Dorsal → Compression deformity left that region's normal printing
+      // beside the new abnormality. Keeping the baseline's identity lets the update
+      // path below retire it and record `baselineReplaces`.
+      const id = siblings.find((s) => s.observation.role !== "baseline")?.id ?? fallbackId;
       const r = get().applyPathologyOverlay({ ...obs, bundleId, id, skipUndoSnapshot: true });
       if (r === "pending") status = "pending";
     }
@@ -2536,6 +2613,38 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (anyPreserved && !anyRemoved) return "preserved-manual";
     if (anyRemoved) return "removed";
     return "no-op-unproven";
+  },
+  commitRegionTransition: (plan, decidedBy) => {
+    if (refuseSignedMutation(get(), "commitRegionTransition")) return null;
+    if (!plan.actionable || plan.retire.length === 0) return null;
+    const snap = captureClinicalSnapshot(get());
+    const removedIds = new Set<string>();
+    for (const row of plan.retire) {
+      // removeObservation owns the clinical semantics: it will NOT delete a line the
+      // radiologist wrote themselves (it returns "preserved-manual"), and it restores the
+      // baseline a retired row had been covering.
+      const outcome = get().removeObservation(row.id, { skipUndoSnapshot: true });
+      if (outcome === "removed") removedIds.add(row.id);
+    }
+    // Nothing actually left the report, so there is nothing to record. A row the
+    // radiologist had rewritten by hand is refused by the withdrawal above, and its
+    // surviving line is already counted in `manualLinesPreserved`; a record naming it would
+    // claim a sentence was taken out while it sits on the page.
+    if (removedIds.size === 0) return null;
+    const full = plan.record({ decidedBy });
+    const record: RegionTransitionRecord = {
+      ...full,
+      retired: full.retired.filter((r) => removedIds.has(r.id)),
+    };
+    set({
+      regionTransitions: [...get().regionTransitions, record],
+      ...withPushedClinicalUndo(get(), snap),
+      isDirty: true,
+    });
+    return record;
+  },
+  hydrateRegionTransitions: (records) => {
+    set({ regionTransitions: Array.isArray(records) ? records : [] });
   },
   syncScreeningLedger: (opts: { state: ScreeningState; changed: SpineScreeningRegion; ledgerRegion?: string }) => {
     const plan = screeningLedgerBundles({
@@ -3170,7 +3279,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         ? (remapTo || null)
         : get().selectedObservationId,
       structuredViewerMeasurements: nextMs,
-      ...withPushedClinicalUndo(get(), snap),
+      ...(opts?.skipUndoSnapshot
+        ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack }
+        : withPushedClinicalUndo(get(), snap)),
       isDirty: true,
     });
     if (typeof window !== "undefined") {
@@ -3264,6 +3375,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         : {}),
       ...(snap.impressionNeedsRefresh !== undefined
         ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
+        : {}),
+      ...(snap.regionTransitions !== undefined
+        ? { regionTransitions: snap.regionTransitions }
         : {}),
       patchUndoStack: remaining,
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),

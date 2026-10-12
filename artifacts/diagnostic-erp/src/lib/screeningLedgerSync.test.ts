@@ -19,6 +19,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { useWorkspace } from "@/lib/zai-workspace/store";
+import { DEFAULT_REPORT_FORMATS } from "@/lib/zai-workspace/report-formats-library";
 import { SCREENING_SCHEMAS } from "@/lib/mriSpineScreeningSchemas";
 import {
   SCREENING_BUNDLE_PREFIX,
@@ -48,11 +49,15 @@ function openBlankStudy() {
 }
 
 /** Exactly what the panel does on a click: set the region, then sync the ledger. */
-function setRegion(region: SpineScreeningRegion, patch: Partial<ScreeningState[SpineScreeningRegion]>) {
+function setRegion(
+  region: SpineScreeningRegion,
+  patch: Partial<ScreeningState[SpineScreeningRegion]>,
+  ledgerRegion = "Whole Spine",
+) {
   const ws = useWorkspace.getState();
   ws.setScreeningRegion(region, patch);
   const state = { ...useWorkspace.getState().screening, [region]: { ...useWorkspace.getState().screening[region], ...patch } };
-  ws.syncScreeningLedger({ state, changed: region, ledgerRegion: "Whole Spine" });
+  ws.syncScreeningLedger({ state, changed: region, ledgerRegion });
   useWorkspace.setState({ screening: state });
   return state;
 }
@@ -94,11 +99,18 @@ describe("rebuilding a screening region", () => {
     expect(limitationCount(after)).toBe(1);
     // The report must not be shorter than the single limitation sentence it kept.
     expect(after.length).toBeGreaterThan(before.length - 120);
-    // The rows carry the study tab the panel was mounted for, not a default: the
-    // plan's region is what routes a multi-study report's sub-sections.
+    // Each region's rows carry the region they DESCRIBE, not the examination's
+    // region. This assertion used to require "Whole Spine" for every row, on the
+    // reasoning that the plan's region routes a multi-study report's sub-sections;
+    // that is not what routes them (`anatomicalSection` and `level` do, and both were
+    // already per region), and the study-level stamp is what made the slot gate
+    // unable to pair a screening abnormality with the normal it replaces
+    // (`observationSlot.ts:360` compares `region` first). Pinned here so the defect
+    // cannot come back as a "correct" expectation again.
     const rows = useWorkspace.getState().appliedPathologyPatches.filter((p) => !p.stale && p.observation?.bundleId?.startsWith(SCREENING_BUNDLE_PREFIX));
     expect(rows.length).toBeGreaterThan(1);
-    expect(rows.every((p) => p.observation?.region === "Whole Spine")).toBe(true);
+    expect(rows.filter((p) => p.observation?.bundleId === "spm-screen-dorsal").every((p) => p.observation?.region === "Dorsal Spine")).toBe(true);
+    expect(rows.filter((p) => p.observation?.bundleId === SCREENING_LIMITATION_BUNDLE_ID).every((p) => p.observation?.region === "Whole Spine")).toBe(true);
   });
 
   it("keeps the limitation exactly once across two rebuilds of the same region", () => {
@@ -181,5 +193,35 @@ describe("rebuilding a screening region", () => {
       useWorkspace.getState().appliedPathologyPatches.filter((p) => !p.stale).map((p) => p.observation?.bundleId),
     );
     expect(liveBundles.has(SCREENING_LIMITATION_BUNDLE_ID)).toBe(false);
+  });
+
+  it("keeps every screening row in its bundle after the professional report is generated", () => {
+    // `generateProfessionalReport` re-submits every radiologist row through
+    // `reapplyInputFromPatch`. A row that comes back without its bundle identity is
+    // invisible to every bundle operation, because a bundle deselect walks the ledger
+    // by `bundleId` — so the module the radiologist switches off after that press can
+    // never be withdrawn again.
+    useWorkspace.setState({ reportFormats: DEFAULT_REPORT_FORMATS });
+    setRegion("ls", {
+      role: "accompanying-screening",
+      performed: true,
+      selections: screeningPresetSelections(SCREENING_SCHEMAS.ls),
+    }, "LS Spine");
+    const before = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => (p.observation?.bundleId ?? "").startsWith(SCREENING_BUNDLE_PREFIX));
+    expect(before.length).toBeGreaterThan(4);
+
+    const outcome = useWorkspace.getState().generateProfessionalReport({
+      modality: "MR",
+      region: "LS Spine",
+      regions: ["LS Spine"],
+      protocolName: null,
+      studyDescription: "MRI LS Spine",
+    });
+    expect(outcome.status).toBe("generated");
+
+    const after = useWorkspace.getState().appliedPathologyPatches
+      .filter((p) => (p.observation?.bundleId ?? "").startsWith(SCREENING_BUNDLE_PREFIX) && !p.stale);
+    expect(after.map((p) => p.observation?.bundleId)).toEqual(before.map((p) => p.observation?.bundleId));
   });
 });

@@ -93,6 +93,13 @@ export function reapplyInputFromPatch(
     role: obs.role,
     specificity: obs.specificity,
     anchor: obs.anchor ?? null,
+    // A preset row must keep saying which preset it came from. Without it the
+    // rebuilt row is invisible to every bundle operation — `removeMacroBundle`
+    // walks the ledger by `bundleId` — so a module the radiologist switches off
+    // after one press of Generate can never be taken out of the report again.
+    // Measured on MRI LS Spine: the five lumbar screening rows and the report-level
+    // limitation row all came back from the rebuild with no bundle at all.
+    bundleId: obs.bundleId || undefined,
   };
 }
 

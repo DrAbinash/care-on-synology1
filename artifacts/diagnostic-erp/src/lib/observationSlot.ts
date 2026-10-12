@@ -489,6 +489,25 @@ export function lateralityMentionedInSentence(sentence: string): string {
 }
 
 /**
+ * Does an explicit baseline claim cover this sentence?
+ *
+ * A claim may state its normal in more than one sentence — the dorsal alignment
+ * normal is "Thoracic kyphosis is within normal limits. Normal alignment of the
+ * dorsal and dorsolumbar spine without listhesis." The report is walked one
+ * sentence at a time (`pathologyPatch` splits every line), so a whole-string test
+ * matched none of its parts: the contract named both sentences as contradicted
+ * while the engine retired neither, and a documented retrolisthesis printed under
+ * "Normal alignment … without listhesis". Each sentence of the claim is its own
+ * claim. Sentences the claim does not state are untouched.
+ */
+function baselineClaimCovers(claim: string, sentence: string): boolean {
+  if (sentence.includes(claim)) return true;
+  const parts = splitToSentences(claim);
+  if (parts.length < 2) return false;
+  return parts.some((part) => sentence.includes(part));
+}
+
+/**
  * Slot-aware sentence ownership. Does not use broad "disc"/organ matching.
  * Legacy callers without a resolved concept must use pathologyPatch's old path.
  * Opposite laterality is a different clinical identity, not an owned sibling.
@@ -506,7 +525,7 @@ export function sentenceOwnedBySlot(
   },
 ): boolean {
   const baseline = (obs.baselineReplaces ?? "").trim();
-  if (baseline && sentence.includes(baseline)) return true;
+  if (baseline && baselineClaimCovers(baseline, sentence)) return true;
   // Prose-derived concepts may widen retirement over the scaffold's NORMALS only.
   // A second aneurysm, a second DAI site and a second lacune all name their own
   // family's word, so letting prose decide would let one abnormality delete
