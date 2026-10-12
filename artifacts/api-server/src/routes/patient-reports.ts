@@ -29,6 +29,7 @@ import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../m
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
+import { accessionPrintRow, loadReportAccessionForReport } from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -3126,6 +3127,20 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
 
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
+  // The study this report was written for, named only when it can be proved to
+  // be the same study. `patient_reports.study_id` holds a
+  // `radiology_worklist.id` on the finalize path and a `radiology_studies.id` on
+  // older rows, and those two serials collide, so this cannot be a bare join:
+  // the loader resolves both shapes and refuses any row whose `patient_id` is
+  // not this report's patient. When nothing is verified the row is omitted —
+  // an "Accession:" label with nothing after it would itself be a claim.
+  const accessionVerdict = await loadReportAccessionForReport({
+    type: r.type,
+    studyId: r.studyId,
+    patientId: r.patientId,
+  });
+  const accessionRow = accessionPrintRow(accessionVerdict);
+
   // Load institutional style if radiology report
   let instStyle: any = null;
   if (r.type === "radiology") {
@@ -3288,6 +3303,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     patientRows: [
       { label: "Patient", value: patientName },
       { label: "Patient ID", value: row.patientCode ?? "\u2014" },
+      // Placed next to the UHID, the pair the workspace header already prints.
+      ...(accessionRow ? [accessionRow] : []),
       { label: "Age / Sex", value: `${ageStr}${ageStr && row.patientGender ? " / " : ""}${row.patientGender ?? ""}` },
       { label: "Date", value: new Date(r.createdAt).toLocaleDateString("en-IN") },
       { label: "Test", value: row.testName ?? "\u2014" },
