@@ -181,15 +181,37 @@ echo ""
 ok "Containers started"
 
 # ── Step 4: Wait for migrations ───────────────────────────────────────────────
+# HOST_PORT lives in .env — `docker compose` interpolates it, the shell does not
+# — and the gate below must probe the port the clinic actually opens rather than
+# a number copied into a script (the last one was wrong, and quietly).
+HOST_PORT=8888
+if [ -f .env ]; then
+  RAW_HOST_PORT=$(grep -E '^HOST_PORT=' .env | tail -1 | cut -d= -f2-)
+  PARSED=$(printf '%s' "$RAW_HOST_PORT" | tr -d '[:space:]"' | tr -d "'")
+  case "$PARSED" in
+    ''|*[!0-9]*) : ;;           # not a number: keep the compose default
+    *) HOST_PORT="$PARSED" ;;
+  esac
+fi
+ok "ERP address to verify: http://localhost:${HOST_PORT}"
+
+# Kept because a failed migration has a log worth showing the owner. What was
+# wrong before: the loop only ever `break`ed on success or non-zero exit, so a
+# container that never appeared (`docker inspect` → "missing 0") or one still
+# running at 120s fell straight through, and the script went on to print
+# DEPLOYMENT COMPLETE. Now a timeout is a failure.
 info "Waiting for database migrations..."
+MIGRATION_TIMEOUT=${MIGRATION_TIMEOUT_SECONDS:-240}
 waited=0
-while [ $waited -lt 120 ]; do
-  state=$(sudo docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing 0")
+migrated=false
+while [ $waited -lt $MIGRATION_TIMEOUT ]; do
+  state=$(sudo docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2 2>/dev/null || echo "missing -1")
   status=$(echo $state | awk '{print $1}')
   code=$(echo $state | awk '{print $2}')
-  
+
   if [ "$status" = "exited" ] && [ "$code" = "0" ]; then
     ok "Database migrations complete"
+    migrated=true
     break
   elif [ "$status" = "exited" ] && [ "$code" != "0" ]; then
     echo ""
@@ -199,37 +221,61 @@ while [ $waited -lt 120 ]; do
     echo ""
     fail "Migrations failed. Please share the error above with your developer."
   fi
-  
+
   printf "    Migrating... (${waited}s)\r"
   sleep 5
   waited=$((waited+5))
 done
 
-# ── Step 5: Wait for API health ───────────────────────────────────────────────
-info "Waiting for ERP to start..."
-waited=0
-while [ $waited -lt 90 ]; do
-  response=$(wget -qO- "http://localhost:8080/api/health/schema" 2>/dev/null || echo "")
-  if echo "$response" | grep -q '"ok":true'; then
-    ok "ERP is healthy and ready"
-    break
-  fi
-  printf "    Starting... (${waited}s)\r"
-  sleep 5
-  waited=$((waited+5))
-done
+if [ "$migrated" != "true" ]; then
+  echo ""
+  sudo docker inspect --format='  care-db-patch-v2 is {{.State.Status}} (exit {{.State.ExitCode}})' care-db-patch-v2 2>/dev/null || echo "  No care-db-patch-v2 container exists."
+  sudo docker logs care-db-patch-v2 --tail 30 2>/dev/null
+  fail "Migrations did not complete within ${MIGRATION_TIMEOUT}s. Nothing was verified — fix this before the clinic opens the ERP."
+fi
+
+# ── Step 5: Verify the deployment on the endpoint the ERP actually publishes ──
+# This used to be `wget http://localhost:8080/api/health/schema` in a 90s loop.
+# Nothing publishes 8080 on the host: `grep -n ':8080' docker-compose.yml`
+# returns only care-api's in-container healthcheck, the API service has no
+# `ports:` block at all, and the ERP is published as ${HOST_PORT:-8888}:80. So
+# the probe failed on every deploy ever made, the loop timed out, and the
+# banner printed anyway. The gate now checks the published address AND the
+# containers, and it has to pass for the script to succeed.
+info "Verifying the deployment (containers and endpoints)..."
+NODE_BIN=$(command -v node || true)
+if [ -z "$NODE_BIN" ]; then
+  fail "node is required to verify the deployment, and it is not on PATH. Refusing to claim success unchecked."
+fi
+DEPLOY_TIMEOUT=${DEPLOY_HEALTH_TIMEOUT_SECONDS:-300}
+echo ""
+# `sudo` for the node process so its own `docker inspect` needs no nested sudo;
+# the absolute node path is used because root's PATH does not always have node.
+if ! sudo "$NODE_BIN" scripts/deploy-health.mjs --wait --timeout-seconds "$DEPLOY_TIMEOUT" --host-port "$HOST_PORT"; then
+  echo ""
+  echo -e "${RED}  ✗ The deployment did not pass its health checks.${NC}"
+  echo -e "${RED}  Nothing above was assumed — each line is what the NAS actually answered.${NC}"
+  echo ""
+  echo "  Read the failing line, then:"
+  echo "    sudo docker logs care-api --tail 60"
+  echo "    sudo docker logs care-db-patch-v2 --tail 40"
+  echo "    sudo docker logs care-schema-verify --tail 40"
+  echo ""
+  fail "Deployment NOT verified. Do not use the ERP until the check above passes."
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}============================================================${NC}"
-echo -e "${BOLD}${GREEN}  ✓ DEPLOYMENT COMPLETE${NC}"
+echo -e "${BOLD}${GREEN}  ✓ DEPLOYMENT COMPLETE — HEALTH CHECKED${NC}"
 echo -e "${BOLD}${GREEN}============================================================${NC}"
 echo ""
-echo -e "  ERP Address : ${BOLD}http://172.16.1.139:8888${NC}"
+echo -e "  ERP Address : ${BOLD}http://172.16.1.139:${HOST_PORT}${NC}"
 echo -e "  Version     : Care ERP v${ERP_VERSION} build ${BUILD_NUMBER}"
 echo -e "  Completed   : $(date '+%d %B %Y  %H:%M')"
 echo ""
-echo -e "  Hope↔Care   : partner + ff_hope_care_referrals auto on API start"
+echo -e "  Verified    : care-db, care-db-patch-v2, care-schema-verify, care-api,"
+echo -e "                care-web + /nginx-health, /api/healthz, /api/health/schema"
 echo -e "  ${YELLOW}If login doesn't work after 1 minute, run:${NC}"
 echo -e "  ${YELLOW}docker logs care-api --tail 40${NC}"
 echo ""
