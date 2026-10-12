@@ -916,6 +916,71 @@ function levelTokenPresent(token: ConservationLevelToken, present: ConservationL
 }
 
 /**
+ * When ONE sentence dictates several measurements, which level pair each number
+ * sits nearest to.
+ *
+ * `measurementLevelFacts` pairs every measurement in a sentence with every level
+ * in it, which is right for the one-fact-per-line dictation CARE usually gets and
+ * is exactly why a canal run is invisible to `measurement_repositioned`: measured
+ * on this branch, "11.8 mm at L1-L2, 12.3 mm at L2-L3" against a dictated
+ * "12.3 mm at L1-L2, 11.8 mm at L2-L3" keeps every number, every level and every
+ * cross-product pair, and swaps which vertebra is stenosed.
+ *
+ * Deliberately narrow, because the failure mode of this whole file is over-rejecting
+ * honest prose: it only resolves a sentence with at least TWO measurements and at
+ * least TWO level pairs, and it only compares PAIR spellings. A run written as a
+ * list, or as "12.3 mm between L1 and L2", resolves to nothing here and stays with
+ * the rules that already handle it.
+ */
+function pairedMeasurementLevels(text: string): Map<string, ConservationLevelToken> {
+  const out = new Map<string, ConservationLevelToken>();
+  for (const sentence of claimSentences(text)) {
+    const measurements: Array<{ value: string; at: number }> = [];
+    for (const m of sentence.matchAll(MEASUREMENT_SINGLE_RE)) {
+      const hit = m[0] ?? "";
+      const value = hit.match(/\d+(?:\.\d+)?/)?.[0];
+      const unit = hit.match(/(mm|cm|ml|cc|hu)/i)?.[1];
+      if (!value || !unit || m.index === undefined) continue;
+      measurements.push({ value: normMeasurement(value, unit), at: m.index });
+    }
+    if (measurements.length < 2) continue;
+    const levels: Array<{ token: ConservationLevelToken; at: number }> = [];
+    const seen = new Set<string>();
+    for (const m of sentence.matchAll(LEVEL_PAIR_RE)) {
+      const openLetter = (m[1] ?? "").toUpperCase();
+      const first = m[2] ?? "";
+      const closeLetter = (m[3] ?? "").toUpperCase() || openLetter;
+      const second = m[4] ?? "";
+      if (!openLetter || !first || !second || m.index === undefined) continue;
+      const canonical = `${openLetter}${first}-${second}`;
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      levels.push({
+        token: { canonical, components: [`${openLetter}${first}`, `${closeLetter}${second}`] },
+        at: m.index,
+      });
+    }
+    if (levels.length < 2) continue;
+    // Pair each number with the nearest level that FOLLOWS it — "12.3 mm at
+    // L1-L2" — and refuse to resolve a sentence that is not in that idiom. Two
+    // numbers landing on the same level, or one with no level after it, means the
+    // dictation is shaped like "at L1-L2 and L2-L3 the canal measures 12.3 mm and
+    // 11.8 mm", and guessing there would fire on honest prose.
+    const resolved: Array<{ value: string; token: ConservationLevelToken }> = [];
+    for (const measurement of measurements) {
+      const following = levels.filter((l) => l.at > measurement.at).sort((a, b) => a.at - b.at)[0];
+      if (!following || resolved.some((r) => r.token.canonical === following.token.canonical)) {
+        resolved.length = 0;
+        break;
+      }
+      resolved.push({ value: measurement.value, token: following.token });
+    }
+    for (const r of resolved) out.set(r.value, r.token);
+  }
+  return out;
+}
+
+/**
  * Wording that says the radiologist is not committing to the finding. Turning one
  * of these into a plain assertion is a clinical change, not a stylistic one — it
  * is the difference between "operate now" and "operate if it proves out".
@@ -1026,6 +1091,10 @@ export type ClinicalRelationLosses = {
   inventedNormals: string[];
   inventedTechnique: string[];
   contrastClaims: string[];
+  /** Two supplied reports stating opposite things about the same finding — a
+   * warning, never an error, because a newer study superseding an older one is
+   * often the reason they are being combined. */
+  sourceContradictions: string[];
   errors: string[];
   warnings: string[];
 };
@@ -1097,6 +1166,7 @@ export function detectClinicalRelationLosses(
 
   // 1) A measurement may not change anatomical owner. (Rewrite contract only.)
   const emptyLevelFacts = new Map<string, ConservationLevelToken[]>();
+  const emptyPairs = new Map<string, ConservationLevelToken>();
   const inFacts = scope === "rewrite" ? measurementLevelFacts(inputClaims) : emptyLevelFacts;
   const outFacts = scope === "rewrite" ? measurementLevelFacts(outputClaims) : emptyLevelFacts;
   for (const [measurement, inLevels] of inFacts) {
@@ -1112,6 +1182,25 @@ export function detectClinicalRelationLosses(
         .join("/")}`,
     );
   }
+
+  // 1b) Several measurements dictated in one sentence: each number keeps the
+  // level it was stated against.
+  const inPairs = scope === "rewrite" ? pairedMeasurementLevels(inputClaims) : emptyPairs;
+  const outPairs = scope === "rewrite" ? pairedMeasurementLevels(outputClaims) : emptyPairs;
+  for (const [measurement, inLevel] of inPairs) {
+    const outLevel = outPairs.get(measurement);
+    // One side resolved to nothing (a list, or vertebrae spelled out) is not a
+    // swap — rule 1 and `level_dropped` own those shapes.
+    if (!outLevel) continue;
+    if (levelTokenPresent(inLevel, [outLevel]) || levelTokenPresent(outLevel, [inLevel])) continue;
+    const label = `${measurement}: ${inLevel.canonical} → ${outLevel.canonical}`;
+    if (!repositionedMeasurements.some((r) => r.startsWith(`${measurement}:`))) {
+      repositionedMeasurements.push(label);
+    }
+  }
+  // One owner for the refusal, after both arms have reported: deleting this block
+  // turns both relation rules off, which is the only honest way for a mutation
+  // test to show that a duplicated push would have hidden it.
   if (repositionedMeasurements.length > 0) {
     errors.push("measurement_repositioned");
     warnings.push(
@@ -1205,6 +1294,38 @@ export function detectClinicalRelationLosses(
     warnings.push(`Contrast status changed against the supplied study: ${[...new Set(contrastClaims)].join("; ")}.`);
   }
 
+  // 7) Two supplied reports that disagree about the same finding are a clinical
+  // fact in themselves.
+  //
+  // A combination merges two corpora, and every rule above reads them as ONE
+  // input. So when the open study says "no disc extrusion" and the added report
+  // says there is one, an answer that keeps only the positive side passes
+  // `clinical_polarity_flip` (the merged corpus is positive) and passes
+  // conservation (the term survived) — the disagreement simply vanishes, and a
+  // printed report can carry one side of a contradiction nobody reconciled.
+  //
+  // This does not refuse it, and that is deliberate. A follow-up legitimately
+  // supersedes an older study, which is often exactly why the two are being
+  // combined; blocking it would be the over-rejection this validator's history is
+  // full of. What the machine owes the radiologist is the sentence: which finding,
+  // and what each side said. The decision is theirs, and it is now visible.
+  const addedNarrative = additionalReportNarrative(snapshot);
+  const sourceContradictions: string[] = [];
+  if (addedNarrative.trim().length > 0) {
+    const openStudy = `${snapshot.findings ?? ""}\n${snapshot.impression ?? ""}\n${obsText}`;
+    for (const hint of ABNORMALITY_HINTS) {
+      const a = termPolarity(openStudy, hint);
+      const b = termPolarity(addedNarrative, hint);
+      if (a === "absent" || b === "absent" || a === b) continue;
+      sourceContradictions.push(`${hint}: ${a} in the study being reported, ${b} in the report added`);
+    }
+    if (sourceContradictions.length > 0) {
+      warnings.push(
+        `The two reports disagree, and the merge must not hide it: ${[...new Set(sourceContradictions)].join("; ")}.`,
+      );
+    }
+  }
+
   return {
     repositionedMeasurements,
     lostUncertainty: [...new Set(lostUncertainty)],
@@ -1212,6 +1333,7 @@ export function detectClinicalRelationLosses(
     inventedNormals: [...new Set(inventedNormals)],
     inventedTechnique: [...new Set(inventedTechnique)],
     contrastClaims: [...new Set(contrastClaims)],
+    sourceContradictions: [...new Set(sourceContradictions)],
     errors,
     warnings,
   };

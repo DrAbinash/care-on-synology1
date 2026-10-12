@@ -718,6 +718,329 @@ describe("the structured answer carries the same obligations", () => {
   });
 });
 
+// ── PRIORITY 4 (owner's brief of 11 Oct): the shapes a dictation actually comes in ──
+//
+// The cases above each isolate one fact. Real reports do not: three abnormalities
+// share a level, a canal run puts several numbers in one sentence, "bilateral" is
+// a laterality of its own, and a combination hands the model two corpora that can
+// disagree. Each case below is written against the shipped validator, and the
+// assertion names the code that ACTUALLY fires, so a guard that quietly stopped
+// reaching one of these shapes is visible here rather than in the clinic.
+describe("several abnormalities at the same level", () => {
+  const SAME_LEVEL = [
+    "Broad-based posterior disc bulge at L4-L5.",
+    "Mild bilateral facet hypertrophy at L4-L5.",
+    "AP canal diameter 8.2 mm at L4-L5.",
+    "No spondylolisthesis.",
+  ].join("\n");
+  const atOneLevel = () => snap({ findings: SAME_LEVEL });
+
+  it("accepts three facts about one level written as one sentence", () => {
+    const r = pro(atOneLevel(), body(
+      "At L4-L5 there is a broad-based posterior disc bulge with mild bilateral facet"
+      + " hypertrophy, and the AP canal diameter measures 8.2 mm. No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+
+  it("blocks the answer that keeps the level and drops one of its abnormalities", () => {
+    // L4-L5 is still in the report and 8.2 mm is still at L4-L5, so nothing that
+    // counts levels or numbers can see this: one of three findings at that level
+    // is simply gone.
+    const r = pro(atOneLevel(), body(
+      "Broad-based posterior disc bulge at L4-L5 with an AP canal diameter of 8.2 mm."
+      + " No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toContain("morphology_dropped");
+    expect(r.errors).toContain("laterality_dropped");
+  });
+
+  it("blocks one abnormality at that level coming back as a negative", () => {
+    const r = pro(atOneLevel(), body(
+      "Broad-based posterior disc bulge at L4-L5 with AP canal diameter 8.2 mm at L4-L5."
+      + " No facet hypertrophy is seen, and no spondylolisthesis.",
+    ));
+    expect(r.errors).toContain("clinical_polarity_flip");
+    expect(r.relations?.polarityFlips.join(" ")).toContain("facet hypertrophy");
+  });
+});
+
+describe("several measurements in one dictated sentence", () => {
+  const RUN = [
+    "AP canal diameters: 12.3 mm at L1-L2, 11.8 mm at L2-L3 and 8.2 mm at L4-L5.",
+    "No spondylolisthesis.",
+  ].join("\n");
+  const runStudy = () => snap({ findings: RUN });
+
+  it("blocks two values swapping levels inside the one sentence", () => {
+    // Every number and every level survives; only which number belongs to which
+    // level changed, which is the failure a stenosis level is decided by.
+    const r = pro(runStudy(), body(
+      "The AP canal diameters measure 11.8 mm at L1-L2, 12.3 mm at L2-L3 and 8.2 mm at L4-L5."
+      + " No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toContain("measurement_repositioned");
+    expect(r.relations?.repositionedMeasurements.join(" ")).toContain("12.3mm");
+    expect(r.relations?.repositionedMeasurements.join(" ")).toContain("11.8mm");
+  });
+
+  it("accepts the same run written as a list, or spelled out in words", () => {
+    const asList = pro(runStudy(), body(
+      "AP canal diameters:\n- L1-L2: 12.3 mm\n- L2-L3: 11.8 mm\n- L4-L5: 8.2 mm\n"
+      + "No spondylolisthesis identified.",
+    ));
+    expect(asList.errors).toEqual([]);
+    const asWords = pro(runStudy(), body(
+      "The canal measures 12.3 mm between L1 and L2, 11.8 mm between L2 and L3, and 8.2 mm"
+      + " between L4 and L5 in the AP dimension. There is no spondylolisthesis.",
+    ));
+    expect(asWords.errors).toEqual([]);
+  });
+
+  it("blocks the run that silently loses one value", () => {
+    const r = pro(runStudy(), body(
+      "AP canal diameters are 12.3 mm at L1-L2 and 8.2 mm at L4-L5. No spondylolisthesis.",
+    ));
+    expect(r.errors).toContain("measurement_dropped");
+  });
+
+  it("accepts a run dictated with the levels first", () => {
+    // The pairing rule reads the "12.3 mm at L1-L2" idiom and refuses to guess
+    // outside it. This is the sentence it must not guess at: every level precedes
+    // every number, so there is no following level to pair with, and the rule
+    // stays silent rather than inventing a pairing to be angry about.
+    const levelsFirst = snap({
+      findings: [
+        "AP canal diameters at L1-L2, L2-L3 and L4-L5 are 12.3 mm, 11.8 mm and 8.2 mm.",
+        "No spondylolisthesis.",
+      ].join("\n"),
+    });
+    const r = pro(levelsFirst, body(
+      "The AP canal diameters measure 12.3 mm at L1-L2, 11.8 mm at L2-L3 and 8.2 mm at L4-L5."
+      + " No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("bilateral findings", () => {
+  const BILATERAL = [
+    "Diffuse posterior disc bulge at L4-L5 with mild bilateral lateral recess narrowing.",
+    "No spondylolisthesis.",
+  ].join("\n");
+  const bothSides = () => snap({ findings: BILATERAL });
+
+  it("blocks one side being reported and the other forgotten", () => {
+    const r = pro(bothSides(), body(
+      "Diffuse posterior disc bulge at L4-L5 with mild right lateral recess narrowing."
+      + " No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toContain("laterality_dropped");
+  });
+
+  it("blocks bilateral becoming unilateral", () => {
+    // Two guards reach this shape and both are reported: the conservation rule
+    // deletes a laterality that has gone (`laterality_dropped`, an error), and the
+    // advisory names the pair it moved within. The advisory stays advisory because
+    // a report with several findings on different sides trips it for honest
+    // rewording — the error is what protects the report.
+    const r = pro(bothSides(), body(
+      "Diffuse posterior disc bulge at L4-L5 with mild unilateral lateral recess narrowing."
+      + " No spondylolisthesis is seen.",
+    ));
+    expect(r.errors).toContain("laterality_dropped");
+    expect(r.warnings.join(" ")).toContain("bilateral→unilateral");
+  });
+
+  it("accepts both sides stated in other words", () => {
+    const r = pro(bothSides(), body(
+      "There is a diffuse posterior disc bulge at L4-L5 showing mild bilateral lateral recess"
+      + " narrowing. No spondylolisthesis is identified.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("uncertainty carried by more than one finding", () => {
+  const HEDGED = [
+    "Suspected small subdural empyema along the left frontoparietal region.",
+    "A likely middle cerebral artery territory infarct.",
+    "No haemorrhage on SWI.",
+  ].join("\n");
+  const hedgedStudy = () => brainSnapshot(HEDGED);
+
+  it("blocks the answer that states both hedges as facts", () => {
+    const r = pro(hedgedStudy(), body(
+      "A small subdural empyema is present along the left frontoparietal region."
+      + " There is a middle cerebral artery territory infarct. No haemorrhage is seen on SWI.",
+    ));
+    expect(r.errors).toContain("certainty_escalation");
+    expect(r.relations?.lostUncertainty).toEqual(["empyema", "infarct"]);
+  });
+
+  it("names only the hedge that was escalated when the other is kept", () => {
+    const r = pro(hedgedStudy(), body(
+      "A small subdural empyema is present along the left frontoparietal region."
+      + " A middle cerebral artery territory infarct is suspected. No haemorrhage on SWI.",
+    ));
+    expect(r.errors).toContain("certainty_escalation");
+    expect(r.relations?.lostUncertainty).toEqual(["empyema"]);
+  });
+
+  it("accepts each hedge carried by a different word", () => {
+    const r = pro(hedgedStudy(), body(
+      "A middle cerebral artery territory infarct is likely. A small subdural empyema along the"
+      + " left frontoparietal region cannot be excluded. SWI shows no haemorrhage.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("brain lesion laterality and size", () => {
+  const LESION = "A 6 mm right cerebellar lesion with no enhancement.";
+  const SHIFT = "Mild midline shift of 3 mm to the right.";
+
+  it("blocks a lesion changing side", () => {
+    // Isolated on purpose. In a report that also describes a left-sided infarct,
+    // "right" survives elsewhere and no token-set rule can see the swap — which is
+    // why the pair rules above compare levels as pairs and this one compares a
+    // finding with the side it was stated on.
+    const r = pro(brainSnapshot(LESION), body(
+      "A 6 mm left cerebellar lesion is seen, without enhancement.",
+    ));
+    expect(r.errors).toContain("laterality_dropped");
+    expect(r.warnings.join(" ")).toContain("right→left");
+  });
+
+  it("blocks the shift reversing direction", () => {
+    // The direction of a midline shift is the finding, not an adjective: the
+    // hemisphere being compressed is decided by it.
+    const r = pro(brainSnapshot(SHIFT), body(
+      "Mild midline shift of 3 mm to the left.",
+    ));
+    expect(r.errors).toContain("laterality_dropped");
+    expect(r.warnings.join(" ")).toContain("right→left");
+  });
+
+  it("accepts the same lesion measured and described differently", () => {
+    const r = pro(brainSnapshot(LESION), body(
+      "A lesion measuring 6 mm is seen in the right cerebellar hemisphere, showing no"
+      + " enhancement.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+
+  it("accepts the shift written as its direction, with the number where it was", () => {
+    const r = pro(brainSnapshot(SHIFT), body(
+      "There is mild midline shift by 3 mm towards the right.",
+    ));
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("combining reports from two studies", () => {
+  const CERVICAL = [
+    "Loss of cervical lordosis.",
+    "Central disc bulge at C5-C6, no cord compression.",
+    "AP canal diameter 9.1 mm at C5-C6.",
+  ].join("\n");
+
+  const combined = (addedFindings: string, over: Partial<ComposerInputSnapshot> = {}) =>
+    snap({
+      jobKindHint: "COMBINE",
+      additionalReports: [
+        {
+          label: "MRI Cervical Spine",
+          modality: "MR",
+          region: "Cervical Spine",
+          findings: addedFindings,
+          impression: "",
+        },
+      ],
+      ...over,
+    });
+
+  const combine = (snapshot: ComposerInputSnapshot, draft: ComposerDraftOutput) =>
+    validateComposerOutput(snapshot, draft, { kind: "COMBINE" });
+
+  const lumbarReworded =
+    "The normal lumbar lordosis is lost. Desiccated discs at L2-L3, L3-L4 and L4-L5."
+    + " Diffuse posterior disc bulge at L3-L4. Broad-based posterior disc bulge at L4-L5 with"
+    + " mild bilateral lateral recess narrowing. The AP canal diameter measures 8.2 mm at L4-L5."
+    + " Right paramedian disc extrusion at L5-S1 compressing the right S1 traversing root."
+    + " Moderate left foraminal narrowing at L5-S1. Mild bilateral facet hypertrophy at L4-L5."
+    + " Ligamentum flavum hypertrophy at L5-S1. No significant central canal stenosis at L1-L2."
+    + " No spondylolisthesis.";
+
+  it("accepts two studies merged with every fact of the added one present", () => {
+    const r = combine(
+      combined(CERVICAL),
+      body(
+        lumbarReworded
+        + "\n\nCervical spine: the cervical lordosis is lost. A central disc"
+        + " bulge is seen at C5-C6 without cord compression, and the AP canal diameter at C5-C6"
+        + " measures 9.1 mm.",
+      ),
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.relations?.sourceContradictions).toEqual([]);
+  });
+
+  it("blocks the merge that loses the added study measurement", () => {
+    // The conservation corpus is not just the editor's text: what the clinician
+    // asked to add is guarded exactly like what they wrote, because a combination
+    // that drops the second study's canal diameter is a wrong report, not a
+    // shorter one. The level survives here — which is precisely why counting
+    // levels alone could not catch it.
+    const r = combine(
+      combined(CERVICAL),
+      body(
+        `${lumbarReworded}\n\nCervical spine: the lordosis is lost, with a central disc bulge at`
+        + " C5-C6 and no cord compression.",
+      ),
+    );
+    expect(r.errors).toContain("measurement_dropped");
+    expect(r.errors).not.toContain("level_dropped");
+  });
+
+  it("warns, without blocking, when the two studies disagree", () => {
+    // The clinical shape this exists for: the earlier study of the same patient
+    // recorded no extrusion, the current one found it. Both statements are the
+    // radiologist's own, so neither guard may delete one — and an answer that kept
+    // only the positive side would leave the printed report silently rejecting a
+    // documented negative.
+    const earlier = "No disc extrusion is seen at L5-S1.\nDisc desiccation at L4-L5.";
+    const r = combine(
+      combined(earlier),
+      body(
+        `${lumbarReworded}\n\nThe comparison study recorded no disc extrusion at L5-S1, with`
+        + " disc desiccation at L4-L5.",
+      ),
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.relations?.sourceContradictions.join(" ")).toContain("extrusion");
+    expect(r.relations?.sourceContradictions.join(" ")).toContain("positive in the study being reported");
+    expect(r.relations?.sourceContradictions.join(" ")).toContain("negative in the report added");
+    expect(r.warnings.join(" ")).toContain("The two reports disagree");
+  });
+
+  it("says nothing about disagreement when both studies say the same thing", () => {
+    const r = combine(
+      combined("Central disc bulge at C5-C6, no cord compression."),
+      body(
+        `${lumbarReworded}\n\nCervical spine: central disc bulge at C5-C6 without cord`
+        + " compression.",
+      ),
+    );
+    expect(r.relations?.sourceContradictions).toEqual([]);
+  });
+
+  it("leaves a single-study rewrite out of it entirely", () => {
+    expect(pro(snap(), body(LS_REWRITTEN)).relations?.sourceContradictions).toEqual([]);
+  });
+});
+
 describe("the detectors are reachable on their own", () => {
   it("returns no relation error for the honest rewrite", () => {
     // The mutation harness needs one entry point it can prove is wired: if the

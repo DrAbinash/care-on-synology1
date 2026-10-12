@@ -43,6 +43,17 @@ describe("InfrastructurePulseStrip hover panel", () => {
     expect(src).toContain("{detailsOpen && (");
   });
 
+  test("alert links honour the alert's own destination, and the ribbon names them honestly", () => {
+    // Every Clinic Systems alert used to link to Emergency Billing and the
+    // always-visible counter called all of them "emergency alerts" — which is
+    // what a PACS delivery failure would have read as.
+    expect(src).toContain("href={alert.detailsHref ?? \"/settings?tab=emergency-billing\"}");
+    expect(src).toContain("{alert.linkLabel ?? \"Emergency Billing\"}");
+    expect(src).toContain("${alertCount} system alert");
+    expect(src).not.toContain("emergency alert${alertCount === 1");
+    expect(src).toContain("data-testid={`clinic-systems-alert-link-${alert.id}`}");
+  });
+
   test("dense desktop ribbon + grid layout markers (no orange ICICI branding)", () => {
     expect(src).toContain('data-testid="clinic-systems-health-ribbon"');
     expect(src).toContain("xl:grid-cols-4");
