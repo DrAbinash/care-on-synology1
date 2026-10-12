@@ -102,11 +102,16 @@ import {
   type SpineSequencesAvailable,
 } from "@/lib/mriSpineSequences";
 import {
+  SCREENING_BUNDLE_PREFIX,
+  SCREENING_LIMITATION_BUNDLE_ID,
   defaultScreeningRegionState,
   defaultScreeningState,
+  screeningLedgerBundles,
+  screeningRegionBundleId,
   type ScreeningRegionState,
   type ScreeningState,
 } from "@/lib/mriSpineScreening";
+import { SCREENING_SCHEMAS } from "@/lib/mriSpineScreeningSchemas";
 import {
   roleImpliesPerformed,
   type RegionRole,
@@ -770,6 +775,17 @@ export type WorkspaceStore = S & {
    * Non-overridden slots restore replacedBaseline, same as removeObservation.
    */
   removeMacroBundle: (bundleId: string) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
+  /**
+   * The screening panel's whole ledger truth: plan from `screeningLedgerBundles`,
+   * remove what the plan no longer holds, re-apply the changed region and the
+   * once-only limitation row. Lives here rather than in the component so the
+   * withdrawal and once-only rules are testable against the real store.
+   */
+  syncScreeningLedger: (opts: {
+    state: ScreeningState;
+    changed: SpineScreeningRegion;
+    ledgerRegion?: string;
+  }) => void;
   removeObservation: (id: string, opts?: { remapEvidenceTo?: string | null }) => "removed" | "preserved-manual" | "no-op-unproven" | "missing" | "blocked";
   /**
    * Composer / dictation-confirmed commit — always via applyPathologyOverlay (same-slot).
@@ -2520,6 +2536,41 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (anyPreserved && !anyRemoved) return "preserved-manual";
     if (anyRemoved) return "removed";
     return "no-op-unproven";
+  },
+  syncScreeningLedger: (opts: { state: ScreeningState; changed: SpineScreeningRegion; ledgerRegion?: string }) => {
+    const plan = screeningLedgerBundles({
+      state: opts.state,
+      schemas: SCREENING_SCHEMAS,
+      sequences: get().sequencesAvailable,
+      numbering: get().lumbarNumbering,
+      ledgerRegion: opts.ledgerRegion ?? "LS Spine",
+    });
+    const planned = new Map(plan.map((b) => [b.bundleId, b] as const));
+    const live = new Set<string>();
+    get().appliedPathologyPatches.forEach((p) => {
+      const b = p.observation?.bundleId;
+      if (b && !p.stale) live.add(b);
+    });
+    const changedBundleId = screeningRegionBundleId(opts.changed);
+    live.forEach((id) => {
+      if ((id.startsWith(SCREENING_BUNDLE_PREFIX) && !planned.has(id)) || id === changedBundleId) {
+        get().removeMacroBundle(id);
+      }
+    });
+    // Then write the plan. Whether the region is ALREADY live is deliberately not
+    // consulted here: the panel used to answer that from a snapshot taken before its
+    // own removals, so a rebuilt region always looked still-present, the write was
+    // skipped, and the radiologist's click deleted the sentence it was replacing and
+    // wrote nothing. Measured in the workspace: the one-click normal's five dorsal
+    // sentences collapsed to the 56-character limitation alone. Re-applying over a
+    // bundle that is still live is idempotent — same-slot replacement recognises its
+    // own rows — and a row the radiologist hand-edited is protected by that same
+    // engine, which asks before overwriting it rather than silently dropping either
+    // the edit or the click.
+    for (const id of [changedBundleId, SCREENING_LIMITATION_BUNDLE_ID]) {
+      const bundle = planned.get(id);
+      if (bundle) get().applyMacroBundle({ bundleId: bundle.bundleId, observations: bundle.observations });
+    }
   },
   refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => {
     // Six callers. Four are already gated: two handlers in useWorkspaceClinicalUi

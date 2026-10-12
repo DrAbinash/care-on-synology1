@@ -283,58 +283,42 @@ const consumed = (res: ConsumeLineResult[][]) => res.flat().filter((l) => !l.ski
 const dbAvailable = hasDatabaseUrl();
 
 /**
- * The two purchase-invoice tables are in the Drizzle schema and in production
- * code, but NO file in migrations/ or lib/db/drizzle/ creates them — so a
- * database built by the migration path (which is every real deployment, CI's
- * test database included) has no such tables and every
- * /api/purchase-invoices/* request fails with 42P01. That is a separate defect
- * from the one this file is about, and it is reported rather than fixed here:
- * B-13 adds no schema migration. The invoice post loop is, however, the ONLY
- * multi-item transaction in the inventory module, and §5/§7 of the brief
- * require the cross-path deadlock case, so the test creates the tables itself,
- * from the shipped Drizzle column definitions, when they are absent.
+ * B-13 found that no file in migrations/ or lib/db/drizzle/ created the two
+ * purchase-invoice tables, so a database built by the migration path — every real
+ * deployment, CI's test database included — answered every /api/purchase-invoices/*
+ * request with 42P01. It reported that defect and worked around it by creating the
+ * tables in this harness, which is exactly the thing that hides a missing migration:
+ * the suite stayed green while the clinic stayed broken.
+ *
+ * zzzzzzzzzzzzzzzzzzz_schema_parity_columns_never_migrated.sql now delivers them, so
+ * the harness asserts instead of repairing. If that file ever stops working, this
+ * suite fails with the reason in its message.
  */
-async function ensurePurchaseInvoiceTables(): Promise<void> {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS purchase_invoices (
-      id serial PRIMARY KEY,
-      invoice_number text NOT NULL,
-      invoice_date date,
-      vendor_id integer REFERENCES vendors(id) ON DELETE SET NULL,
-      vendor_name_raw text,
-      subtotal numeric(12, 2) NOT NULL DEFAULT '0',
-      gst_amount numeric(12, 2) NOT NULL DEFAULT '0',
-      total_amount numeric(12, 2) NOT NULL DEFAULT '0',
-      status text NOT NULL DEFAULT 'draft',
-      source_image_url text,
-      ocr_confidence text,
-      ocr_confidence_percent integer,
-      notes text,
-      created_by text,
-      posted_at timestamp with time zone,
-      created_at timestamp with time zone NOT NULL DEFAULT now(),
-      updated_at timestamp with time zone NOT NULL DEFAULT now()
-    )`);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS purchase_invoice_line_items (
-      id serial PRIMARY KEY,
-      invoice_id integer NOT NULL REFERENCES purchase_invoices(id) ON DELETE CASCADE,
-      item_id integer REFERENCES inventory_items(id) ON DELETE SET NULL,
-      description_raw text NOT NULL,
-      match_confidence numeric(5, 2),
-      quantity numeric(10, 2) NOT NULL DEFAULT '0',
-      unit_cost numeric(12, 2) NOT NULL DEFAULT '0',
-      line_total numeric(12, 2) NOT NULL DEFAULT '0',
-      lot_number text,
-      expiry_date date,
-      created_at timestamp with time zone NOT NULL DEFAULT now()
-    )`);
+async function assertPurchaseInvoiceTablesExist(): Promise<void> {
+  const found = rowsOf(
+    await db.execute(sql`
+      SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name IN ('purchase_invoices', 'purchase_invoice_line_items')
+    `),
+  );
+  expect(
+    found.length,
+    "purchase_invoices and purchase_invoice_line_items must arrive through migrations/*.sql, "
+      + "not be repaired by this test harness",
+  ).toBe(2);
+}
+
+function rowsOf(res: unknown): Array<Record<string, unknown>> {
+  const withRows = res as { rows?: Array<Record<string, unknown>> };
+  if (Array.isArray(withRows.rows)) return withRows.rows;
+  return Array.isArray(res) ? (res as Array<Record<string, unknown>>) : [];
 }
 
 describe.skipIf(!dbAvailable)("B-13 inventory writers — real Postgres concurrency", () => {
   beforeAll(async () => {
     app = await createTestApp();
-    await ensurePurchaseInvoiceTables();
+    await assertPurchaseInvoiceTablesExist();
     const [user] = await db
       .insert(usersTable)
       .values({
