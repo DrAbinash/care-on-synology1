@@ -16,7 +16,7 @@ has been run against the clinic**, because that is the owner's box and the owner
 
 | Already verified, with evidence | Never performed — only the clinic NAS can answer it |
 | --- | --- |
-| CI green on both required jobs at the merged head (`0e801cf1` → `9d87cfc2`) and at this document's head | §A against **the clinic database**. The audit has only ever run against synthetic ones |
+| CI green on both required jobs at the merged head (`0e801cf1` → `9d87cfc2`), and at `3209eabb` of this document's own branch | §A against **the clinic database**. The audit has only ever run against synthetic ones |
 | Fresh Windows `core.autocrlf=true` checkout: shebangs, fixtures, compose and `.mjs`/`.cjs` all land as LF; **65 passed / 65** across the four affected suites | §B against **the clinic's backup artifacts**, on the clinic's Docker host |
 | The audit's detection proven on three synthetic databases, clean control **0 critical / 0 warnings / 1 informational** | §C's Orthanc/OHIF legs against **the running containers** and the real `care-pacs` image |
 | The audit's read-only guarantee asserted by the suite (29 tests) and broken deliberately by 4/4 mutants | §D's connectivity in both directions, and HOPE's side of the contract |
@@ -365,7 +365,7 @@ and `deploy/synology/care.env` may not be. `hope.env:51`
 (`CARE_REFERRAL_URL=http://172.16.1.139:8888/api/integration/v1`) has the same shape in the
 opposite direction.
 
-### D.4a — the probe ladder, when D.0 says something is failing
+#### D.4a — the probe ladder, when D.0 says something is failing
 
 Seven reads, in dependency order, each answering one question and nothing else. Run 1 first
 because every other line uses its answer; substitute the values it prints rather than a value
@@ -427,7 +427,7 @@ Both directions matter: HOPE's own `CARE_REFERRAL_URL` (`deploy/synology/hope.en
 LAN address too, so probe 6 is the same ladder pointed the other way, and it is the leg that
 breaks *first* in practice because it is the one a browser never exercises.
 
-### D.5 — the inbound legs, with no credential involved. Take the published port from the
+D.5 — the inbound legs, with no credential involved. Take the published port from the
 container rather than assuming `8888`, because `HOST_PORT` lives in `.env` and the clinic's
 address is not a fact this repository owns:
 
