@@ -365,7 +365,69 @@ and `deploy/synology/care.env` may not be. `hope.env:51`
 (`CARE_REFERRAL_URL=http://172.16.1.139:8888/api/integration/v1`) has the same shape in the
 opposite direction.
 
-D.5 — the inbound legs, with no credential involved. Take the published port from the
+### D.4a — the probe ladder, when D.0 says something is failing
+
+Seven reads, in dependency order, each answering one question and nothing else. Run 1 first
+because every other line uses its answer; substitute the values it prints rather than a value
+copied from a tracked env file. `HOST`, `PORT` and `HOPE_CONTAINER` are **placeholders, not
+commands** — paste probe 1's output and step 1's container name into them. Running a line with
+the literal word `HOST` in it is not a network failure; it is a line you have not filled in yet.
+
+```sh
+docker exec care-api sh -c 'u=${INTEGRATION_HOPE_CALLBACK_URL#*://}; echo "${u%%/*}"'
+```
+
+```sh
+docker exec care-api sh -c 'nslookup HOST 127.0.0.11 2>&1 | head -6'
+```
+
+```sh
+docker exec care-api node -e "const n=require('net'),h=process.argv[1],p=+process.argv[2],s=n.connect({host:h,port:p,timeout:4000},()=>{console.log('TCP ok '+h+':'+p);s.removeAllListeners('error');s.destroy()});s.on('error',e=>console.log('TCP fail '+e.code));s.on('timeout',()=>{console.log('TCP timeout');s.destroy()})" HOST PORT
+```
+
+Then the two HTTP legs already written above — the GET from inside `care-api` (§D.4) and the
+same URL from the NAS host (§D.4 control) — and the two directions' last pieces:
+
+```sh
+docker exec HOPE_CONTAINER sh -c 'command -v wget curl node; echo "care_referral_url=$CARE_REFERRAL_URL"'
+```
+
+```sh
+docker exec HOPE_CONTAINER sh -c 'wget -qO- -T 4 "$CARE_REFERRAL_URL/health" 2>&1 | head -3 || echo inbound-leg-failed'
+```
+
+```sh
+docker inspect --format '{{.Name}} -> {{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' care-api care-web HOPE_CONTAINER
+```
+
+Probe 6 is the reverse leg and it is deliberately driven from **inside HOPE's own container,
+using HOPE's own environment**: `CARE_REFERRAL_URL` (`deploy/synology/hope.env:51`) is the value
+that application actually dials, and `127.0.0.1` from inside that container is HOPE, not CARE —
+so any probe that hard-codes a loopback or an assumed port proves nothing about this leg. The
+first line tells you which of `wget`/`curl`/`node` the image has; use whichever it prints. If
+`CARE_REFERRAL_URL` is unset there, read it from the partner row (§D.2) instead and say which
+one you used.
+
+`nslookup` is aimed at `127.0.0.11`, Docker's embedded resolver, so probe 2 answers exactly one
+question: *does this project's DNS know that name?* A literal IPv4 in probe 1 means DNS is not
+the failing class at all — skip 2. Probe 3 uses `node`, the same runtime and resolver the
+dispatcher itself uses, so it cannot disagree with the app about reachability the way a shell
+tool might.
+
+| What you see | Class | What it does **not** mean |
+| --- | --- | --- |
+| probe 2 `SERVFAIL` / `nxdomain` for a name | **1 — network (name resolution)** | The service is down. Two compose projects simply do not share a resolver. |
+| probe 3 `ENOTFOUND` | **1 — network (name)** | As above; the address never became a route. |
+| probe 3 `EHOSTUNREACH` / `ETIMEDOUT`, and the host control answers | **1 — network (routing / the container-side address form)** | HOPE is unhealthy. The fix is the address or the network, not a restart. |
+| probe 3 `ECONNREFUSED` | **2 — service unavailable** | A firewall. Something answered and had nothing listening on that port — check the container is up and the port is published. |
+| probe 4 connects, §D.6 gets 401/403 | **3 — authentication** | A network fault. The packet arrived and the far end read it. |
+| probe 4 answers 200/4xx to the GET, and `integration_delivery_attempts` shows 4xx with a body | **4 — application-level rejection** | Connectivity. **This row is a connectivity pass** — HOPE received the event and declined it for a stated reason. |
+
+Both directions matter: HOPE's own `CARE_REFERRAL_URL` (`deploy/synology/hope.env:51`) is a NAS
+LAN address too, so probe 6 is the same ladder pointed the other way, and it is the leg that
+breaks *first* in practice because it is the one a browser never exercises.
+
+### D.5 — the inbound legs, with no credential involved. Take the published port from the
 container rather than assuming `8888`, because `HOST_PORT` lives in `.env` and the clinic's
 address is not a fact this repository owns:
 
