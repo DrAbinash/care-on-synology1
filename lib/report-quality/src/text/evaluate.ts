@@ -1,15 +1,33 @@
 // text/evaluate.ts — the SINGLE source of truth for the free-text (heuristic)
 // tier. Reproduces the legacy validateReport + computeQualityScore behaviour
-// EXACTLY (same messages, same order, same score) but emits STRUCTURED findings
-// each tagged with a stable rule id from ruleCatalog.ts. The legacy-shaped
-// wrappers in ./legacy.ts derive from this, so there is one generator, not two.
+// (same messages, same order, same score) but emits STRUCTURED findings each
+// tagged with a stable rule id from ruleCatalog.ts. The legacy-shaped wrappers in
+// ./legacy.ts derive from this, so there is one generator, not two.
 //
-// Parity is guarded at runtime by the golden shadow tests in the consumer and
-// by scripts that diff this against the original reportValidator.ts. Any edit
-// here must keep those green.
+// Parity is guarded at runtime by the shadow fixtures in
+// artifacts/diagnostic-erp/src/lib/reportQualityShadow.test.ts — the only guard
+// that exists (there is no script that diffs this file against reportValidator.ts,
+// as an earlier version of this comment claimed). The contradiction rules read
+// their vocabulary from ./clinicalTerms.ts, which the legacy validator imports
+// from the same place, so those rules cannot drift by construction. They still
+// cannot reach the legacy `pathologyMergeContradictionWarnings` block: its seven
+// checks (eight messages) have no rule id in this tier, so the canonical engine
+// under-reports what the workspace shows, and anything measured with it — the
+// golden corpus census included — is measured against the smaller set.
 
 import type { TextReportInput } from "../contract";
 import type { RuleId } from "../ruleCatalog";
+import {
+  assertedAbnormality,
+  assertedContrastMention,
+  assertsStudyNormal,
+  assessmentCategories,
+  outOfScopeSpineContent,
+  studyContrastState,
+  ungroundedNamedDiagnoses,
+  NAMED_LESION_TERMS,
+  SUSPICIOUS_TERMS,
+} from "./clinicalTerms";
 
 export interface TextTierFinding {
   ruleId: RuleId;
@@ -29,18 +47,6 @@ function sentences(text: string): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length > 12);
 }
-
-const PATHOLOGY_WORDS = [
-  "infarct", "hemorrhage", "tumor", "tumour", "lesion", "fracture", "stenosis",
-  "compression", "bulge", "herniation", "collection", "edema", "oedema",
-  "demyelination", "atrophy", "gliosis", "spondylodiscitis", "tuberculosis",
-  "mass effect", "midline shift", "impingement",
-];
-
-const NORMAL_PHRASES = [
-  "no significant abnormality", "normal study", "unremarkable study",
-  "no focal parenchymal lesion",
-];
 
 /**
  * Evaluate the free-text tier. Findings are emitted in the EXACT order the
@@ -79,8 +85,6 @@ export function evaluateTextTier(input: TextReportInput): TextTierResult {
 function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, deduct: number) => void): void {
   const findingsText = report.findings || "";
   const impressionText = (report.impression || []).join("\n");
-  const findingsLower = findingsText.toLowerCase();
-  const impressionLower = impressionText.toLowerCase();
   const W = 5;
 
   // Q101 — duplicate sentences in Findings
@@ -104,10 +108,13 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     impSeen.add(key);
   }
 
-  // Q103 — "normal study" contradiction
-  const saysNormal = NORMAL_PHRASES.some((p) => findingsLower.includes(p) || impressionLower.includes(p));
+  // Q103 — "normal study" contradiction. Both sides are read through the shared
+  // clinical vocabulary: a denial ("no acute haemorrhage") is not an
+  // abnormality, and a scoped negative ("no significant abnormality at other
+  // levels") is not a claim that the study was normal.
+  const saysNormal = assertsStudyNormal(findingsText) || assertsStudyNormal(impressionText);
   if (saysNormal) {
-    const pathologyHit = PATHOLOGY_WORDS.find((w) => findingsLower.includes(w) || impressionLower.includes(w));
+    const pathologyHit = assertedAbnormality(findingsText) ?? assertedAbnormality(impressionText);
     if (pathologyHit) {
       emit("Q103", `Possible contradiction: report contains a "normal study" phrase AND mentions "${pathologyHit}".`, W);
     }
@@ -126,7 +133,7 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
   }
 
   // Q105 — pathology in findings but impression empty
-  const hasPathology = PATHOLOGY_WORDS.some((w) => findingsLower.includes(w));
+  const hasPathology = assertedAbnormality(findingsText) !== null;
   const impressionEmpty = (report.impression || []).every((l) => !l.trim());
   if (hasPathology && impressionEmpty) {
     emit("Q105", "Findings describe pathology but the Impression section is empty.", W);
@@ -191,36 +198,106 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     emit("Q111", "Modality terminology mismatch: ultrasound wording (hyperechoic/acoustic shadowing) found inside a cross-sectional report.", W);
   }
 
-  // Q112 — contrast contradiction
-  const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
-  const isContrastStudy = !isNonContrastStudy &&
-    (studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI"));
-  if (isNonContrastStudy && ["gadolinium", "contrast enhancement", "post-contrast"].some((w) => fullTextLower.includes(w))) {
-    emit("Q112", "Contrast contradiction: a non-contrast study mentions contrast enhancement or gadolinium.", W);
-  }
-  if (isContrastStudy && ["no contrast was administered", "non-contrast study"].some((w) => fullTextLower.includes(w))) {
-    emit("Q112", "Contrast contradiction: a contrast study mentions that no contrast was administered.", W);
+  // Q112 — contrast contradiction. The examination's own contrast state is read
+  // from the study description AND the Technique line, because this clinic's
+  // worklist titles a plain study "MRI CERVICAL SPINE (PLAIN)" and puts the
+  // protocol in Technique. The check used to look only at the description and only
+  // for WITHOUT CONTRAST / NCCT / NON-CONTRAST, so on this clinic's naming neither
+  // branch was ever true and the rule never armed — measured, not assumed.
+  // Enhancement is read with the same denial logic as a fracture: "no abnormal
+  // gadolinium enhancement" on a plain study is the correct sentence, and treating
+  // it as a claim would mark up every normal MRI in the building.
+  const contrastState = studyContrastState(report.studyDescription, report.technique);
+  const clinicalAssertions = `${findingsText} ${impressionText}`;
+  if (contrastState === "plain" && assertedContrastMention(clinicalAssertions)) {
+    emit("Q112", "Contrast contradiction: this study was performed without contrast, but the report describes enhancement.", W);
+  } else if (contrastState === "contrast"
+    && (/\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
+      || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions))) {
+    emit("Q112", "Contrast contradiction: contrast was administered, but the report states that no contrast was given.", W);
   }
 
-  // Q113 / Q114 — findings vs impression contradiction (both directions)
-  const hasNormalFindings = ["no abnormality", "within normal limits", "unremarkable"].some((w) => findingsLower.includes(w));
-  const hasAbnormalImpression =
-    ["acute infarct", "fracture", "hemorrhage", "stenosis", "lesion", "metastasis"].some((w) => impressionLower.includes(w)) ||
-    /\bmass\b/.test(impressionLower);
-  if (hasNormalFindings && hasAbnormalImpression) {
+  // Q113 / Q114 — findings vs impression contradiction (both directions). The
+  // vocabularies are the shared clinical ones, so a spine-and-brain list is no
+  // longer the whole of what CARE can see, both spellings count, and a denial in
+  // either section stops being read as the abnormality it names.
+  const hasNormalFindings = assertsStudyNormal(findingsText);
+  const abnormalImpression = assertedAbnormality(impressionText);
+  if (hasNormalFindings && abnormalImpression) {
     emit("Q113", "Findings/Impression contradiction: Findings show a normal/unremarkable status, but Impression lists an abnormal diagnosis.", W);
   }
-  const hasAbnormalFindings = ["herniation", "fracture", "hemorrhage", "lesion", "infarct", "stenosis"].some((w) => findingsLower.includes(w));
-  const hasNormalImpression = ["no significant abnormality", "normal study", "unremarkable exam"].some((w) => impressionLower.includes(w));
-  if (hasAbnormalFindings && hasNormalImpression) {
+  const abnormalFindings = assertedAbnormality(findingsText);
+  const hasNormalImpression = assertsStudyNormal(impressionText);
+  if (abnormalFindings && hasNormalImpression) {
     emit("Q114", "Findings/Impression contradiction: Findings mention abnormalities, but Impression describes the study as normal/unremarkable.", W);
   }
 
-  // Q115 — repeated word (dictation artifact)
+  // Q116 — the BI-RADS assessment contradicts the Findings it is supposed to
+  // summarise. A category is the mammogram's clinical conclusion, and no other
+  // rule reads it: a 4C downgraded to 2 takes a suspicious mass out of the
+  // cancer pathway, and a 4 asserted over findings that name nothing suspicious
+  // recalls and biopsies a negative study.
+  const categories = assessmentCategories(impressionText);
+  if (categories.length > 0) {
+    const highest = Math.max(...categories);
+    // A study called benign throughout cannot also describe a suspicious lesion.
+    // A category 3 or above needs something in the Findings to be about, even
+    // when the other side of the same report is correctly negative.
+    if (highest <= 2 && assertedAbnormality(findingsText, SUSPICIOUS_TERMS)) {
+      emit("Q116", `BI-RADS contradiction: the study is given category ${highest} but the Findings describe a suspicious lesion.`, W);
+    } else if (highest >= 3 && !assertedAbnormality(findingsText, NAMED_LESION_TERMS)) {
+      emit("Q116", `BI-RADS contradiction: category ${highest} is asserted but the Findings name no lesion to support it.`, W);
+    }
+  }
+
+  // Q117 — a named diagnosis no other section describes. Summary wording is
+  // allowed: "mild chronic small vessel ischaemic disease" over punctate
+  // white-matter lesions is correct radiology, which is why this rule is limited to
+  // entity names (a tumour, an infection, an infarct) and asks only whether the
+  // same entity appears anywhere else in the report. An entity that appears nowhere
+  // else is not a re-description of anything — and a named diagnosis moves
+  // patients: antibiotics, a biopsy, a Whipple, a laparotomy. An inflammatory
+  // diagnosis also counts as described when the organ it names is described,
+  // because "dilated blind-ending tubular structure with periappendiceal stranding"
+  // is how this clinic writes appendicitis; a neoplasm gets no such reading.
+  const ungrounded = ungroundedNamedDiagnoses(
+    impressionText,
+    `${findingsText} ${report.technique ?? ""} ${report.clinicalHistory ?? ""}`,
+  );
+  if (ungrounded.length > 0) {
+    emit(
+      "Q117",
+      `Ungrounded impression: the Impression states ${ungrounded.slice(0, 3).join(", ")}, which no other section of this report describes.`,
+      W,
+    );
+  }
+
+  // Q118 — spine content from outside the examined region. Levels are a spine
+  // report's identity: C5-C6 and L4-L5 are different operations on different nerve
+  // roots, and "the dorsal spine is normal" clears a segment nobody imaged. Neither
+  // is visible to a findings-vs-impression rule, because both sections agree with
+  // each other — the report simply describes an examination that did not happen.
+  const outOfScope = outOfScopeSpineContent(clinicalAssertions, report.studyDescription);
+  if (outOfScope.length > 0) {
+    emit(
+      "Q118",
+      `Anatomical scope: the report describes ${outOfScope.slice(0, 3).join(", ")}, which this examination did not cover.`,
+      W,
+    );
+  }
+
+  // Q115 — repeated word (dictation artifact). Only a true adjacency counts:
+  // "the the liver". "common femoral, femoral and popliteal veins" is the correct
+  // way to enumerate a venous segment, and flagging it meant every routine lower
+  // limb Doppler was marked up — which trains a reporter to click past warnings.
   const words = findingsText.split(/\s+/);
   const seenWords = new Set<string>();
   for (let i = 0; i < words.length - 1; i++) {
-    if (/[.!?]$/.test(words[i])) continue;
+    // A sentence boundary, or any punctuation between the pair, means the repeat
+    // is list wording rather than a dictation slip. Checked on the ORIGINAL
+    // tokens, before punctuation is stripped below.
+    if (/[.!?;:]$/.test(words[i])) continue;
+    if (words[i] !== words[i].replace(/[^A-Za-z]/g, "")) continue;
     const w1 = words[i].toLowerCase().replace(/[^a-z]/g, "");
     const w2 = words[i + 1].toLowerCase().replace(/[^a-z]/g, "");
     if (w1 && w1 === w2 && w1.length > 2 && !seenWords.has(w1)) {

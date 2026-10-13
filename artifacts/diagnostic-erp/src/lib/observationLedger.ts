@@ -27,6 +27,11 @@ import {
 } from "./observationSlot";
 import { coerceObservationAnchor } from "./observationAnchor";
 import {
+  assertedAbnormality,
+  assertsStudyNormal,
+  clinicalContentSignature,
+} from "@workspace/report-quality";
+import {
   contributionsMatch,
   fieldContainsContribution,
   normalizeContributionMatch,
@@ -306,6 +311,7 @@ export function serializeObservationLedger(
   patches: LedgerPatch[],
   fieldProvenance?: NarrativeProvenance,
   careCoverageMarks?: unknown,
+  impressionBasis?: ImpressionBasis | null,
 ): SerializedObservationLedger {
   return {
     kind: OBSERVATION_LEDGER_KIND,
@@ -326,6 +332,7 @@ export function serializeObservationLedger(
     })),
     fieldProvenance: fieldProvenance && Object.keys(fieldProvenance).length > 0 ? fieldProvenance : undefined,
     ...(careCoverageMarks != null ? { careCoverageMarks } : {}),
+    ...(impressionBasis ? { impressionBasis } : {}),
   };
 }
 
@@ -608,19 +615,228 @@ export function collectImpressionContributions(patches: LedgerPatch[]): string[]
   return out;
 }
 
+/**
+ * Why the Impression is considered out of date with the Findings. Named, so the
+ * sign dialog can say which fact moved instead of showing a generic warning, and
+ * so a test can prove a formatting change produced no reason at all.
+ */
+export type ImpressionDependencyReason =
+  | "findings-changed"
+  | "never-reconciled"
+  | "contribution-lost"
+  | "stale-patch"
+  | "impression-contradicts-findings"
+  /**
+   * The radiologist changed which observations take part in the Impression. This is
+   * a decision about the dependency itself, not a text change the predicate can
+   * infer — the excluded sentence is removed cleanly and the included one is
+   * deliberately not written — so the site names it. It moves the basis to
+   * unreconciled like any other arm, so it survives the reload.
+   */
+  | "participation-changed";
+
+/**
+ * The Findings the Impression was written against, as the clinical-content
+ * signature of that moment. Recorded whenever the summary is (re)owned — an
+ * authored write, a refresh, or the radiologist's acknowledgement at sign — and
+ * compared on every re-derivation, including the one after a reload. This is the
+ * dependency link the ledger alone could not express: a hand-typed Findings
+ * sentence has no patch behind it, so before this field existed nothing about it
+ * survived save → close → reopen.
+ */
+export type ImpressionBasis = {
+  /** The clinical content of the Findings the summary was written against. */
+  findingsSignature: string;
+  /** The summary's own words, format-folded — what the radiologist actually read. */
+  impressionFingerprint: string;
+  recordedBy: "impression-write" | "refresh" | "review" | "unreconciled";
+};
+
+export type ImpressionDependencyState = {
+  needsRefresh: boolean;
+  reasons: ImpressionDependencyReason[];
+  findingsSignature: string;
+  impressionFingerprint: string;
+  /** The basis to store: the one compared against, or the new one just recorded. */
+  basis: ImpressionBasis | null;
+};
+
+/**
+ * The Impression as it was reviewed: the same words whatever the punctuation,
+ * spacing or capitalisation around them.
+ *
+ * Deliberately stricter than the Findings signature. A Findings edit only breaks
+ * the dependency if it changes a clinical fact — re-heading or re-flowing prose is
+ * not a new examination — but an acknowledgement binds to the sentence the
+ * radiologist actually read, because "the study is normal" and "no abnormality is
+ * seen, the ventricles are normal" are different claims even when my vocabulary
+ * table cannot tell them apart.
+ */
+export function impressionFingerprint(impressionText: string): string {
+  return normalizeContributionMatch(impressionText ?? "");
+}
+
+/**
+ * The ledger half of the dependency: an observation the radiologist selected whose
+ * own conclusion has left the Impression, or one the narrative no longer matches.
+ * Kept as its own function so {@link impressionNeedsRefreshFromNarrative} stays
+ * exactly the predicate its existing tests pin.
+ */
+export function impressionContributionReasons(
+  impressionText: string,
+  patches: LedgerPatch[],
+  provenance?: FieldProvenanceMap,
+): ImpressionDependencyReason[] {
+  const reasons: ImpressionDependencyReason[] = [];
+  for (const p of patches) {
+    if (p.stale && (p.lastRendered.findings ?? "").trim() && !reasons.includes("stale-patch")) {
+      reasons.push("stale-patch");
+    }
+    const c = (p.lastRendered.impression ?? "").trim();
+    if (!c) continue;
+    if (p.protected || contributionProtected(c, provenance)) continue;
+    if (!contributionPresent(impressionText, c) && !reasons.includes("contribution-lost")) {
+      reasons.push("contribution-lost");
+    }
+  }
+  return reasons;
+}
+
 export function impressionNeedsRefreshFromNarrative(
   impressionText: string,
   patches: LedgerPatch[],
   provenance?: FieldProvenanceMap,
 ): boolean {
-  for (const p of patches) {
-    if (p.stale && (p.lastRendered.findings ?? "").trim()) return true;
-    const c = (p.lastRendered.impression ?? "").trim();
-    if (!c) continue;
-    if (p.protected || contributionProtected(c, provenance)) continue;
-    if (!contributionPresent(impressionText, c)) return true;
+  return impressionContributionReasons(impressionText, patches, provenance).length > 0;
+}
+
+/**
+ * The one predicate for "does this Impression still follow from these Findings?".
+ *
+ * Three independent readings, any of which arms it:
+ *
+ *  1. the Findings' clinical content differs from the signature recorded when the
+ *     summary was owned — a level, side, size, severity or abnormality moved;
+ *  2. the ledger's own contributions are no longer in the Impression;
+ *  3. the Impression calls the study normal while the Findings assert (or hold
+ *     open) an abnormality — the reading itself, which does not care who typed
+ *     either field, so a hand-written summary cannot step around it.
+ *
+ * Halves 1 and 3 are computed from the shared clinical vocabulary in
+ * `@workspace/report-quality`, which is the same table the report-quality rules and
+ * the editor's live badge read. This is not a second engine; it is the existing one
+ * asked on demand rather than only when a badge is drawn.
+ *
+ * One thing silences half 3: the radiologist's own acknowledgement, and only for
+ * the exact pairing acknowledged. A review that did not hold would nag on every
+ * reopen until the click-through reflex set in, which is a worse report than the
+ * one it warns about; a review that held forever would cover a later clinical
+ * change, which is worse still. So it is bound to both sides' content — the next
+ * Findings edit re-arms through half 1, and any rewrite of the Impression re-arms
+ * because the acknowledged pairing no longer exists.
+ */
+export function evaluateImpressionDependency(opts: {
+  findings: string;
+  impression: string;
+  patches: LedgerPatch[];
+  provenance?: FieldProvenanceMap;
+  basis?: ImpressionBasis | null;
+  /**
+   * This write takes ownership of the pairing now: the basis is recorded from the
+   * text in front of it instead of being compared. `"review"` additionally silences
+   * half 3, because the radiologist has read these words against these findings and
+   * says they stand; `"impression-write"` and `"refresh"` do not, since a rewrite —
+   * a tile, a template, a regenerated summary — is a claim about the words, not a
+   * reading of them.
+   */
+  recordedNow?: ImpressionBasis["recordedBy"];
+  /**
+   * The Findings were just written. With no basis to compare against — a report
+   * nobody has summarised yet in this session — that is still a reason to re-read
+   * the Impression, and it is what CARE has always done. It is asked rather than
+   * inferred, so opening a saved report does not flag it for text no one changed.
+   */
+  findingsJustChanged?: boolean;
+}): ImpressionDependencyState {
+  const findings = opts.findings ?? "";
+  const impression = opts.impression ?? "";
+  const findingsSignature = clinicalContentSignature(findings);
+  const fingerprint = impressionFingerprint(impression);
+  const reasons = impressionContributionReasons(impression, opts.patches, opts.provenance);
+  const recorded = (who: ImpressionBasis["recordedBy"]): ImpressionBasis => ({
+    findingsSignature,
+    impressionFingerprint: fingerprint,
+    recordedBy: who,
+  });
+  const basis = opts.recordedNow ? recorded(opts.recordedNow) : opts.basis ?? null;
+
+  /**
+   * "Unreconciled" is a state, not an event: once the Findings have moved past the
+   * summary, an accepted AI sentence, a re-read headline or a reload must not make
+   * the report look reconciled again. Only a write that owns both sides, a refresh
+   * or the radiologist's own review moves it out — and that is the rule CARE's
+   * B-04 acceptance boundary already asserts, now expressible after a reload.
+   */
+  if (!basis) {
+    if (opts.findingsJustChanged) reasons.push("never-reconciled");
+  } else if (basis.recordedBy === "unreconciled") {
+    reasons.push("findings-changed");
+  } else if (basis.findingsSignature !== findingsSignature) {
+    reasons.push("findings-changed");
   }
-  return false;
+  const armedUnreconciled = !basis
+    ? !!opts.findingsJustChanged
+    : basis.recordedBy !== "unreconciled" && basis.findingsSignature !== findingsSignature;
+  const nextBasis: ImpressionBasis | null = opts.recordedNow
+    ? basis
+    : armedUnreconciled
+      ? recorded("unreconciled")
+      : basis;
+
+  const reviewedThisPairing =
+    basis !== null
+    && basis.recordedBy === "review"
+    && basis.findingsSignature === findingsSignature
+    && basis.impressionFingerprint === fingerprint;
+  if (!reviewedThisPairing && assertedAbnormality(findings) && assertsStudyNormal(impression)) {
+    reasons.push("impression-contradicts-findings");
+  }
+
+  return {
+    needsRefresh: reasons.length > 0,
+    reasons,
+    findingsSignature,
+    impressionFingerprint: fingerprint,
+    basis: nextBasis,
+  };
+}
+
+/**
+ * The basis stored with a draft. Accepts the ledger envelope or the whole
+ * `structured_json` column, because callers hold both at different moments; a
+ * draft saved before this field existed simply has none, and gets no retroactive
+ * "findings-changed" flag for text nobody has had the chance to re-review.
+ */
+export function extractImpressionBasis(raw: unknown): ImpressionBasis | null {
+  if (!raw || typeof raw !== "object") return null;
+  let rec = raw as Record<string, unknown>;
+  if (rec.careObservationLedger && typeof rec.careObservationLedger === "object") {
+    rec = rec.careObservationLedger as Record<string, unknown>;
+  }
+  const row = rec.impressionBasis as Record<string, unknown> | undefined;
+  if (!row || typeof row !== "object") return null;
+  if (typeof row.findingsSignature !== "string" || !row.findingsSignature) return null;
+  if (typeof row.impressionFingerprint !== "string") return null;
+  const recordedBy = row.recordedBy;
+  if (
+    recordedBy !== "impression-write" && recordedBy !== "refresh" && recordedBy !== "review"
+    && recordedBy !== "unreconciled"
+  ) return null;
+  return {
+    findingsSignature: row.findingsSignature,
+    impressionFingerprint: row.impressionFingerprint,
+    recordedBy,
+  };
 }
 
 export type CompositionFinalizeGateState = {

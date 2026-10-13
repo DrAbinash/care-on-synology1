@@ -23,66 +23,73 @@ export type UndetectedEntry = {
  *
  * Detection is measured as a delta against the same case's correct report, so a
  * rule that already fires on correct text cannot be credited with catching a
- * defect (see cervical-abnormal.unsupported-normal-finding for what that would
- * have hidden).
+ * defect. That is exactly how the cervical cord-compression contradiction hid
+ * for as long as it did: Q103 and Q114 were already shouting at the CORRECT
+ * report, so breaking it made no new sound. Both entries left this list when the
+ * scoped-negative reading fixed the noise and the delta appeared with it.
+ *
+ * SCOPE OF THIS LIST — what the CANONICAL ENGINE cannot see: `runQualityEngine`
+ * plus the structured, measurement and composer gates. That is the set the server
+ * runs (the finalize quality evaluation, the persisted findings, the AI safety
+ * path), so it is the set the clinic can be held to. It is not identical to what
+ * the workstation prints: the live `reportValidator.ts` still carries seven
+ * checks in `pathologyMergeContradictionWarnings` that have no rule id in the
+ * engine. Measured across all 92 corpus inputs (20 correct reports + 72 defects)
+ * on 2026-10-13: 84 agree message for message and 8 diverge, every divergence a
+ * legacy warning the engine never emits (engine-only = 0) — 6 findings-vs-
+ * impression laterality warnings and 2 spinal level-mismatch warnings. The two
+ * level entries below are therefore "the server cannot see this", not "nobody
+ * can", which is the difference between a wrong-level surgery going unnoticed by
+ * the API and going unnoticed on the screen.
  */
 export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   // ── unsupported contrast ──
+  // Q112 used to be inert on every study this clinic reports: it read the study
+  // description only, and only for "WITHOUT CONTRAST" / "NCCT" / "NON-CONTRAST",
+  // while this clinic titles a plain study "(PLAIN)" and puts the protocol in
+  // Technique. It now reads both fields, and the opposite direction is live —
+  // ct-abdomen-normal.contradiction-no-contrast is measured as rule:Q112. These
+  // four still produce no engine signal for one shared reason: each claim is
+  // written as a denial ("No abnormal gadolinium enhancement is seen"), and the
+  // negation reading that stops "no acute haemorrhage" reading as a haemorrhage
+  // declines it too. The two of them the corpus does catch are caught by the
+  // composer's contrast_status_changed, which matches "gadolinium" and
+  // "post-contrast" with no negation reading at all — so the same sentence is a
+  // hard error on the AI path and invisible on the typed path.
   "brain-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "A plain MRI reports enhancement the patient never received.",
     mechanism:
-      "CONTRAST_GIVEN_RE (reportComposer/validateOutput.ts:1082) matches 'post-contrast', 'contrast-enhanced' and 'gadolinium', but not the phrase 'contrast enhancement'. Q112 (lib/report-quality/src/text/evaluate.ts) arms only when the StudyDescription reads WITHOUT CONTRAST / NCCT / NON-CONTRAST — and this clinic's own naming is '(PLAIN)'.",
+      "The claim is a denial — 'No abnormal contrast enhancement is seen.' — so assertedContrastMention() returns null. Clinically 'no ABNORMAL enhancement' presupposes enhancement was assessable, so contrast was given; whether a denial may ever carry that presupposition is a negation-scope policy decision, not a vocabulary gap.",
   },
   "ct-brain-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "A plain head CT reports enhancement.",
-    mechanism: "The two causes above apply unchanged: '(PLAIN)' is not a Q112 trigger and 'contrast enhancement' is not in CONTRAST_GIVEN_RE.",
+    mechanism:
+      "Same denial shape as brain-normal.unsupported-contrast ('No abnormal contrast enhancement.') on a '(PLAIN)' CT head title, which Q112 now does read.",
   },
   "usg-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "An ultrasound claims an intravenous contrast bolus.",
     mechanism:
-      "Not fully established. This defect is written into Technique, which is the protected field read on both sides of the contrast comparison, and an ultrasound StudyDescription carries no Q112 marker. Measured: no reaction.",
+      "Written into Technique, which Q112 deliberately does not treat as a clinical assertion — a protocol line describes the acquisition. The ultrasound StudyDescription carries no contrast marker either way, so studyContrastState() returns 'unknown' and there is nothing to contradict. Measured: no reaction.",
   },
 
   // ── invented diagnosis: the closed 26-term vocabulary ──
-  "brain-normal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "A lesion nobody described appears in the Impression of a normal study.",
-    mechanism:
-      "The ungrounded-impression check reads a CLOSED list, ABNORMALITY_HINTS (validateOutput.ts:1050-1082, 26 entries). 'meningioma' is not one of them.",
-  },
-  "cervical-abnormal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "An infection nobody described triggers antibiotics and a contrast study.",
-    mechanism: "Same closed list: 'spondylodiscitis' is a PATHOLOGY_WORDS term in the text tier but not an ABNORMALITY_HINTS term, so the composer never sees it.",
-  },
+  // Four of this class left the register when Q117 replaced the composer's closed
+  // ABNORMALITY_HINTS list with the shared named-diagnosis table: a meningioma, a
+  // spondylodiscitis, a peritonitis and an invasive ductal carcinoma in the
+  // Impression now each produce a signal the server records. What is left is the
+  // shape that cannot be named without also naming an ordinary finding.
   "mrcp-normal.invented-diagnosis": {
     class: "inventedDiagnosis",
     harm: "A pancreatic mass nobody saw routes the patient to a Whipple.",
     mechanism: "'mass' is matched by Q113's separate regex but is absent from ABNORMALITY_HINTS.",
   },
-  "ct-appendicitis.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "Spread nobody described converts a keyhole appendicectomy into a laparotomy.",
-    mechanism: "'peritonitis' is not an ABNORMALITY_HINTS entry.",
-  },
   "usg-abnormal.invented-diagnosis": {
     class: "inventedDiagnosis",
     harm: "A duct stone nobody saw changes the pathway to ERCP first.",
     mechanism: "Neither 'stone' nor 'calculus' is an ABNORMALITY_HINTS entry.",
-  },
-  "mammo-normal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "A BI-RADS 4 assignment recalls a woman with a negative study and starts a biopsy.",
-    mechanism:
-      "A BI-RADS category is a management assignment that neither gate reads as a clinical claim; there is no BI-RADS reference anywhere in lib/report-quality or validateOutput.ts. Established by absence.",
-  },
-  "mammo-abnormal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "Histology asserted before any tissue has been taken.",
-    mechanism: "'malignancy' and 'metastasis' are hints; named histological entities ('invasive ductal carcinoma') are not.",
   },
 
   // ── unsupported normal findings ──
@@ -97,21 +104,10 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
     harm: "Neck vessels cleared by a head CT.",
     mechanism: "Same preserving-kind restriction as brain-normal.unsupported-normal-finding.",
   },
-  "cervical-normal.unsupported-normal-finding": {
-    class: "unsupportedNormalFinding",
-    harm: "A segment that was never imaged is reported as normal.",
-    mechanism: "Same preserving-kind restriction.",
-  },
   "doppler-dvt.unsupported-normal-finding": {
     class: "unsupportedNormalFinding",
     harm: "A negative stated about a segment the report itself says was not assessed.",
     mechanism: "Same preserving-kind restriction — and no gate holds the examined-segment list against the Impression.",
-  },
-  "cervical-abnormal.unsupported-normal-finding": {
-    class: "unsupportedNormalFinding",
-    harm: "A compressed cord summarised as a normal study.",
-    mechanism:
-      "Q103 and Q114 already fire on the CORRECT version of this report (see CLEAN_REPORT_NOISE), so they mark no difference between correct and contradicted text. This entry exists because detection is measured as a delta; an absolute 'did the rule fire' check would have wrongly credited the rule.",
   },
 
   // ── unsupported screening claims ──
@@ -138,12 +134,13 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
     class: "level",
     harm: "Wrong-level surgery: the Impression names a different examined disc space.",
     mechanism:
-      "level_change compares output against the supplied scaffold, and Technique legitimately states the imaged range ('C3-C4 to C6-C7'), so every cervical disc space counts as supplied and a swap between two of them is invisible.",
+      "level_change compares output against the supplied scaffold, and Technique legitimately states the imaged range ('C3-C4 to C6-C7'), so every cervical disc space counts as supplied and a swap between two of them is invisible. The workstation does still print a warning here — 'Possible level mismatch: Findings mention C5-C6 but Impression mentions C6-C7' comes from pathologyMergeContradictionWarnings in reportValidator.ts, which has no rule id in the engine, so nothing server-side records it, blocks it or persists it.",
   },
   "lumbar-abnormal.wrong-level": {
     class: "level",
     harm: "Exploring L5-S1 for an L4-L5 lesion leaves the pathology untouched.",
-    mechanism: "Same cause: the examined range in Technique makes every level in it 'supplied'.",
+    mechanism:
+      "Same cause: the examined range in Technique makes every level in it 'supplied'. As with the cervical case the legacy client check catches it (L4-L5 vs L5-S1) and the canonical engine does not — see the divergence count in this file's header.",
   },
   "whole-spine.wrong-level": {
     class: "level",
@@ -151,44 +148,12 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
     mechanism: "Not established. Measured no reaction. Single-vertebra tokens appear to be handled differently from disc-space pairs, which is unconfirmed.",
   },
 
-  // ── findings/impression contradiction: one vocabulary does all the damage ──
-  "cervical-abnormal.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "A compressed cord signed out as normal.",
-    mechanism:
-      "Q114's normal-impression vocabulary is exactly ['no significant abnormality', 'normal study', 'unremarkable exam'] (lib/report-quality/src/text/evaluate.ts). 'Normal MRI of the cervical spine.' matches none of them.",
-  },
-  "mrcp-stone.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "An obstructing stone cleared as an unremarkable MRCP, delaying ERCP in a septic patient.",
-    mechanism: "Q114's abnormal-findings vocabulary is ['herniation','fracture','hemorrhage','lesion','infarct','stenosis'] — spine and brain only.",
-  },
-  "ct-brain-subdural.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "A shifting subdural haematoma reported as a normal CT.",
-    mechanism:
-      "Q114 spells it 'hemorrhage' only, while this clinic writes 'haemorrhage'. The same file's PATHOLOGY_WORDS carries BOTH spellings, so two rules in one engine disagree about the same word.",
-  },
-  "ct-appendicitis.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "Findings that describe appendicitis with an impression that clears the patient.",
-    mechanism: "'appendicitis' is not in Q114's abnormal-findings list.",
-  },
-  "usg-abnormal.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "Symptomatic gallstones reported as a normal study.",
-    mechanism: "Gallstone vocabulary ('gallstones', 'cholelithiasis') is not in Q114's abnormal-findings list.",
-  },
-  "doppler-dvt.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "A proven DVT signed out as normal in a patient being assessed for embolism.",
-    mechanism: "'thrombus', 'thrombosis' and 'DVT' are not in Q114's abnormal-findings list.",
-  },
-  "mammo-abnormal.findings-impression-contradiction": {
-    class: "findingsImpressionContradiction",
-    harm: "A BI-RADS downgrade takes a suspicious mass out of the cancer pathway.",
-    mechanism: "A category change ('4C' to '2') contains no vocabulary either contradiction rule reads.",
-  },
+  // ── findings/impression contradiction ──
+  // This class no longer appears below: the shared clinical vocabulary in
+  // lib/report-quality/src/text/clinicalTerms.ts (negation, both spellings,
+  // study-level versus scoped normal claims) plus Q116 now react to every
+  // contradiction the corpus injects. The entries left with it when they stopped
+  // being gaps — that is what the ratchet in the test is for.
 
   // ── measurements ──
   "whole-spine.invented-measurement": {
@@ -228,10 +193,13 @@ export type CleanSignal = {
  * Everything the gates say about a CLINICALLY CORRECT report, case by case.
  *
  * This is the noise floor: the signals staff see on text that has nothing wrong
- * with it. A validation layer that cries wolf on 'common femoral, femoral and
- * popliteal veins' trains the clinic to click through — which is how a real
- * blocker gets missed. JUSTIFIED means the rule is right (the value really is
- * abnormal); BY DESIGN means documented product behaviour, not a defect.
+ * with it. A validation layer that cries wolf on correct reports trains the
+ * clinic to click through — which is how a real blocker gets missed. The false
+ * positives declared below are therefore as much of this register as the gaps
+ * are, and each one is ratcheted in the same way: when it stops firing the test
+ * says so and the entry has to go.
+ * JUSTIFIED means the rule is right (the value really is abnormal); BY DESIGN
+ * means documented product behaviour, not a defect.
  */
 export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   "mri-brain-normal": [
@@ -244,8 +212,6 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "As above." },
   ],
   "mri-cervical-cord-compression": [
-    { signal: "rule:Q103", kind: "FALSE POSITIVE", why: 'The correct scoped negative — "No significant abnormality at other cervical levels." — is read as a whole-study normal, which then "contradicts" the herniation.' },
-    { signal: "rule:Q114", kind: "FALSE POSITIVE", why: "Same phrase, same cause, from the abnormal-findings side of the same rule pair." },
     { signal: "rule:care.measurement.range.canal-ap", kind: "JUSTIFIED", why: "An 8 mm canal is genuinely below the 10 mm threshold, so the range rule is right about this report." },
   ],
   "mri-lumbar-normal": [
@@ -253,9 +219,6 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   ],
   "mri-lumbar-herniation": [
     { signal: "rule:care.measurement.range.canal-ap", kind: "JUSTIFIED", why: "An 8 mm canal is genuinely below the 10 mm threshold." },
-  ],
-  "mri-whole-spine-screening-normal": [
-    { signal: "rule:Q113", kind: "FALSE POSITIVE", why: 'Q113 tests the Impression for abnormality by substring, so the NEGATED "no focal vertebral lesion" counts as listing an abnormality against "within normal limits" in the Findings.' },
   ],
   "mrcp-normal": [
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "As above." },
@@ -281,9 +244,6 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   ],
   "usg-abdomen-normal": [
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "As above." },
-  ],
-  "doppler-lower-limb-normal": [
-    { signal: "rule:Q115", kind: "FALSE POSITIVE", why: 'Q115 flags a repeated word, and the anatomically correct enumeration "common femoral, femoral and popliteal veins" repeats "femoral". Routine venous Doppler reports can never avoid it.' },
   ],
   "doppler-lower-limb-dvt": [
     { signal: "warn:recommendation_not_clearly_supported", kind: "FALSE POSITIVE", why: 'Support is judged by keyword search of the supplied corpus; "Anticoagulation as per protocol" is supported by the diagnosis, not by a keyword, so a correct report is marked up.' },

@@ -23,7 +23,7 @@
 import type { QualityCategory, Severity, DataTier } from "./contract";
 
 /** Bumped whenever the rule SET changes; per-rule `version` gives finer grain. */
-export const RULE_CATALOG_VERSION = "1.1.0";
+export const RULE_CATALOG_VERSION = "1.3.0";
 
 export interface RuleCatalogEntry {
   /** Stable primary id emitted on findings (e.g. "Q104"). */
@@ -75,6 +75,9 @@ export const RULE_CATALOG = {
   Q113: { id: "Q113", legacyAlias: "Q113", canonicalId: "care.text.consistency.findings-normal-impression-abnormal", ...CORE, title: "Normal findings, abnormal impression", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Findings normal but Impression lists an abnormality." },
   Q114: { id: "Q114", legacyAlias: "Q114", canonicalId: "care.text.consistency.findings-abnormal-impression-normal", ...CORE, title: "Abnormal findings, normal impression", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Findings abnormal but Impression describes a normal study." },
   Q115: { id: "Q115", legacyAlias: "Q115", canonicalId: "care.text.consistency.repeated-word", ...CORE, title: "Repeated word (dictation artifact)", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "A word is accidentally repeated — likely dictation." },
+  Q116: { id: "Q116", legacyAlias: "Q116", canonicalId: "care.text.consistency.birads-vs-findings", ...CORE, title: "BI-RADS assessment contradicts findings", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "The stated BI-RADS category is not supported by the Findings it summarises." },
+  Q117: { id: "Q117", legacyAlias: "Q117", canonicalId: "care.text.consistency.ungrounded-diagnosis", ...CORE, title: "Impression names a diagnosis the report never describes", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "A specific named diagnosis appears in the Impression and in no other section of the report." },
+  Q118: { id: "Q118", legacyAlias: "Q118", canonicalId: "care.text.consistency.anatomical-scope", ...CORE, title: "Report describes a region outside the examination", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Spine levels or regions named in the report that the study title does not cover." },
 } as const satisfies Record<string, RuleCatalogEntry>;
 
 export type RuleId = keyof typeof RULE_CATALOG;

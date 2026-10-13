@@ -69,10 +69,12 @@ function promptResultFields(): string[] {
   return [...decl.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
 }
 
-/** The two fields the dialog consumes itself before enabling Confirm, and which
- *  the hook therefore legitimately ignores. Pinned by the test below, not by
- *  this comment. */
-const DIALOG_INTERNAL = ["impressionReviewedAnyway", "impressionRefreshed"];
+/** The one field the dialog consumes for itself before enabling Confirm, and
+ *  which the hook therefore legitimately ignores. Pinned by the test below, not by
+ *  this comment. `impressionReviewedAnyway` left this list when the review became
+ *  durable: the hook now records it, because an acknowledgement that dies on reload
+ *  is a warning that trains the radiologist to click through it. */
+const DIALOG_INTERNAL = ["impressionRefreshed"];
 
 describe("every value the sign dialog returns is read by the finalize hook", () => {
   it("parses the result type at all (positive control)", () => {
@@ -101,7 +103,7 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(dropped).toEqual([]);
   });
 
-  it("the two ignored fields are provably consumed inside the dialog, not merely declared ignorable", () => {
+  it("the dialog's own gate still consumes the refresh state, and the hook now consumes the review", () => {
     // If this stops matching, DIALOG_INTERNAL has become a place to hide a
     // dropped value rather than a description of one.
     const gate = /compositionFinalizeAllowed\(\{[\s\S]*?\}\)/.exec(DIALOG)?.[0] ?? "";
@@ -110,6 +112,11 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(gate).toMatch(/\bimpressionReviewedAnyway\b/);
     expect(DIALOG).toMatch(/onImpressionReviewedAnyway=\{setImpressionReviewedAnyway\}/);
     expect(DIALOG).toMatch(/refreshImpressionFromLedger\(\)/);
+    // And the review is acted on, not just read: the store records it so a reload
+    // cannot re-nag a report the radiologist already signed off.
+    expect(HOOK).toMatch(
+      /if \(result\.impressionReviewedAnyway\) useWorkspace\.getState\(\)\.markImpressionReviewed\(\);/,
+    );
   });
 });
 
@@ -199,7 +206,48 @@ describe("the dialog no longer pre-ticks or over-promises", () => {
   });
 });
 
+describe("a validation check that did not run is shown, retried, and never a gate", () => {
+  // D-4. The hook used to swallow both service failures — one in an empty
+  // `catch {}`, one as a null gate that hid the dialog's quality block. The
+  // screen for "clean" and the screen for "never looked" were the same screen.
+  it("the hook passes the failures and the retry down instead of dropping them", () => {
+    expect(HOOK).toMatch(/checksIncomplete: checks\.checksIncomplete,/);
+    expect(HOOK).toMatch(/onRetryChecks: runServiceChecks,/);
+    // Both service calls go through runFinalizeCheck, so a rejection becomes a
+    // named failure value. An empty catch anywhere in this file is the regression.
+    expect(HOOK).toMatch(/runFinalizeCheck\("validateDraft"/);
+    expect(HOOK).toMatch(/runFinalizeCheck\("qualityEvaluation"/);
+    expect(HOOK).not.toMatch(/catch \{ \/\* non-fatal/);
+  });
+
+  it("the dialog renders the block from the check state it was given", () => {
+    expect(DIALOG).toMatch(/checksIncomplete\.length > 0 &&/);
+    expect(DIALOG).toContain("formatIncompleteChecks(checksIncomplete)");
+    expect(DIALOG).toContain("role=\"alert\"");
+    expect(DIALOG).toMatch(/input\.onRetryChecks\(\)\.then\(setChecksAfterRetry\)/);
+    // A retry replaces what is rendered, so a check that failed on the way in and
+    // passed on retry cannot keep being reported as missing.
+    expect(DIALOG).toMatch(/checksAfterRetry\?\.checksIncomplete \?\? input\?\.checksIncomplete/);
+  });
+
+  it("nothing about an incomplete check gates Confirm — that policy is not ours to set", () => {
+    const gate = /const canConfirm =\s*\(([\s\S]*?)\);/.exec(DIALOG)?.[1] ?? "";
+    expect(gate).toBeTruthy();
+    expect(gate).not.toContain("checksIncomplete");
+    expect(gate).not.toContain("retryBusy");
+  });
+
+  it("what is recorded at signing is what was on the screen when Sign was pressed", () => {
+    expect(DIALOG).toMatch(/checksIncompleteAtSigning: checksIncomplete\.map\(\(f\) => f\.key\)/);
+    expect(HOOK).toMatch(/result\.checksIncompleteAtSigning \?\? checks\.checksIncomplete\.map\(\(f\) => f\.key\)/);
+    expect(HOOK).toMatch(/signingAuditDetails\.validationChecksIncomplete =/);
+    // And the server persists auditDetails, so this is a record and not a promise.
+    expect(INTERNAL_ROUTE).toMatch(/details: \{ changes, \.\.\.\(typeof b\.auditDetails === "object"/);
+  });
+});
+
 describe("the ack label's promise is actually reachable — criticalRequiresAck implies criticalMarked", () => {
+
   // The ack checkbox now says the tick is "recorded permanently". That is only
   // true if a tick can never be collected for a report that is not critical,
   // because the endpoint refuses those with 409. This is the one assertion in

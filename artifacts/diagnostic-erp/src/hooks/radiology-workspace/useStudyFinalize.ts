@@ -12,6 +12,13 @@ import { api } from "@/lib/fetchApi";
 import { finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
+import {
+  FINALIZE_CHECK_LABELS,
+  failedFinalizeChecks,
+  runFinalizeCheck,
+  type FinalizeCheckOutcome,
+  type FinalizeServiceChecks,
+} from "@/lib/finalizeChecks";
 import { runFinalizeQualityEvaluation } from "@/lib/reportQualityFinalizeApi";
 import { detectCriticalFindings } from "@/lib/criticalResults";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
@@ -28,7 +35,7 @@ import type {
 import { bumpSessionCompleted, type ReadingSessionState } from "@/lib/readingSession";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
-import type { FinalizePromptResult } from "@/hooks/useFinalizeFlow";
+import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinalizeFlow";
 
 export type UseStudyFinalizeOptions = {
   studyId: number | undefined;
@@ -37,7 +44,7 @@ export type UseStudyFinalizeOptions = {
   checklistPercent: number;
   saveDraft: (opts?: { silent?: boolean }) => Promise<number | null>;
   finalizeFlow: {
-    promptFinalize: (args: any) => Promise<FinalizePromptResult>;
+    promptFinalize: (args: FinalizePromptInput) => Promise<FinalizePromptResult>;
   };
   draftBackup: { clear: () => void };
   qc: ReturnType<typeof useQueryClient>;
@@ -196,44 +203,81 @@ const runFinalizeGauntlet = useCallback(async () => {
     modality: workflow.currentRow.modality,
     studyDescription: workflow.currentRow.studyDescription,
   });
-  if (effectiveDraftId) {
-    try {
-      const serverVal = await api.post<{
-        structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
-      }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
-      const errs = serverVal?.structured?.errors ?? [];
-      const warns = serverVal?.structured?.warnings ?? [];
-      const skips = serverVal?.structured?.skipReasons ?? [];
-      for (const e of errs) validationIssues.push(typeof e === "string" ? e : JSON.stringify(e));
-      for (const w of warns) validationIssues.push(w);
-      for (const s of skips) validationIssues.push(s);
-    } catch { /* non-fatal — local validation still applies */ }
-  }
+  // 2b + 3b. The two service checks, each keeping WHETHER it ran.
+  //
+  // Both used to report a failure as an absence: the draft validator swallowed
+  // its rejection in an empty catch, and a failed quality evaluation left
+  // `qualityGate` null, which makes the dialog hide its quality block — the same
+  // silence as a report with nothing wrong with it. A radiologist could not tell
+  // "clean" from "never looked", and the signed record said nothing either way.
+  //
+  // Wrapped as one closure because the dialog's Retry button re-runs exactly what
+  // this gauntlet ran the first time: no second draft save, no second identity
+  // assertion, no re-prompt, and nothing added to what signing requires. These
+  // checks were advisory before this change and are advisory now; whether a failed
+  // check should stop a signature is the owner's policy decision (ARCHITECTURE.md
+  // §8.1), not something a reliability fix gets to make.
+  // Read once, before the checks, for the same reason `live` is: the dialog is
+  // showing this text and this study, so a Retry has to re-evaluate that same
+  // snapshot — not whatever the worklist row or the store has become meanwhile.
+  const checkModality = workflow.currentRow.modality;
+  const checkStudyDescription = workflow.currentRow.studyDescription;
 
-  // 3b. Canonical report-quality evaluation (persisted, drives finalize dialog)
-  let qualityGate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
-  try {
-    qualityGate = await runFinalizeQualityEvaluation({
-      draftId: effectiveDraftId,
-      modality: workflow.currentRow.modality,
-      studyDescription: workflow.currentRow.studyDescription,
-      clinicalHistory: live.clinicalHistoryText,
-      technique: live.techniqueText,
-      findings: live.findingsText,
-      impression: live.impressionText,
-      recommendation: live.recommendationText,
-      checklistPercent: studySetup.checklistPercent,
-      sex: patientSex,
-      age: patientAge,
-    });
-  } catch (err) {
+  const runServiceChecks = async (): Promise<FinalizeServiceChecks> => {
+    const outcomes: FinalizeCheckOutcome<unknown>[] = [];
+    const serverIssues: string[] = [];
+    let gate: Awaited<ReturnType<typeof runFinalizeQualityEvaluation>> | null = null;
+
+    if (effectiveDraftId) {
+      const draftOutcome = await runFinalizeCheck("validateDraft", async () => {
+        const serverVal = await api.post<{
+          structured?: { errors?: unknown[]; warnings?: string[]; skipReasons?: string[] };
+        }>("/api/radiology/report-generator/validate-draft", { draftId: effectiveDraftId });
+        return serverVal?.structured ?? {};
+      });
+      outcomes.push(draftOutcome);
+      if (draftOutcome.state === "completed") {
+        for (const e of draftOutcome.value.errors ?? []) serverIssues.push(typeof e === "string" ? e : JSON.stringify(e));
+        for (const w of draftOutcome.value.warnings ?? []) serverIssues.push(w);
+        for (const s of draftOutcome.value.skipReasons ?? []) serverIssues.push(s);
+      }
+    }
+
+    const qualityOutcome = await runFinalizeCheck("qualityEvaluation", () =>
+      runFinalizeQualityEvaluation({
+        draftId: effectiveDraftId,
+        modality: checkModality,
+        studyDescription: checkStudyDescription,
+        clinicalHistory: live.clinicalHistoryText,
+        technique: live.techniqueText,
+        findings: live.findingsText,
+        impression: live.impressionText,
+        recommendation: live.recommendationText,
+        checklistPercent: studySetup.checklistPercent,
+        sex: patientSex,
+        age: patientAge,
+      }),
+    );
+    outcomes.push(qualityOutcome);
+    if (qualityOutcome.state === "completed") gate = qualityOutcome.value;
+
+    return {
+      validationSummary: [...validationIssues, ...serverIssues].join("; ")
+        + (gate ? formatQualityAdvisoryForDialog(gate) : ""),
+      qualityGate: gate,
+      checksIncomplete: failedFinalizeChecks(outcomes),
+    };
+  };
+
+  const checks = await runServiceChecks();
+  const qualityGate = checks.qualityGate;
+  if (checks.checksIncomplete.length > 0) {
     toast({
-      title: "Quality check skipped",
-      description: err instanceof Error ? err.message : "Could not run report quality evaluation — continuing.",
+      title: `Validation checks incomplete (${checks.checksIncomplete.length})`,
+      description: `${checks.checksIncomplete.map((f) => FINALIZE_CHECK_LABELS[f.key]).join(", ")} did not finish. `
+        + "The sign dialog lists what was not checked and can retry it.",
     });
   }
-
-  const qualityAdvisory = qualityGate ? formatQualityAdvisoryForDialog(qualityGate) : "";
 
   // 4. Critical findings check (auto-detect + manual mark/comms from legacy)
   //
@@ -292,12 +336,16 @@ const runFinalizeGauntlet = useCallback(async () => {
   // 6. Prompt via finalize flow (quality gate + critical ack + signer + composition gate)
   const result = await finalizeFlow.promptFinalize({
     identity: `${workflow.currentRow.patientName} — ${workflow.currentRow.studyDescription}`,
-    validationSummary: (validationIssues.join("; ") + qualityAdvisory) as string,
+    validationSummary: checks.validationSummary,
     warningBlock: safetyIssues.filter(i => i.severity === "warn").map(i => i.message).join("; "),
     safetyBlock: formatFinalizeSafety(safetyIssues),
     unbilledNote: "",
     signatures: signatures,
     qualityGate,
+    // What did not run, and how to run it again. The dialog is the only place
+    // this can be said — by the time the report is signed the moment has passed.
+    checksIncomplete: checks.checksIncomplete,
+    onRetryChecks: runServiceChecks,
     criticalRequiresAck: criticalFindingBlocksFinalize({
       checklistActive: false,
       checklistPercent: 100,
@@ -370,13 +418,22 @@ const runFinalizeGauntlet = useCallback(async () => {
   });
 
   // The sign dialog returns seven values. Three were read here (confirmed,
-  // signatureId, advanceToNext); two are correctly consumed inside the dialog
-  // itself (impressionReviewedAnyway / impressionRefreshed gate canConfirm there
-  // and onRefreshImpression really calls refreshImpressionFromLedger). The last
+  // signatureId, advanceToNext); `impressionRefreshed` is consumed inside the
+  // dialog itself (it gates canConfirm there, and onRefreshImpression really calls
+  // refreshImpressionFromLedger), while `impressionReviewedAnyway` is now read here
+  // as well as there — it is the durability of a review, see below. The last
   // two existed only to travel outward and were dropped, which is what made the
   // dialog's second checkbox a promise nothing kept. internal-radiology.ts
   // spreads auditDetails into the REPORT_STATUS_UPDATED audit row's `details`,
   // so that row is where an attestation with no outbound channel belongs.
+  // A "reviewed anyway" tick is a decision about the Findings→Impression
+  // dependency, so it is recorded as one — after A-01 has proved the open study is
+  // still this study. Without this the acknowledgement lived only in this session
+  // and the same report nagged again after a reload, which is how a warning trains
+  // a radiologist to click through it. It writes no clinical text and it does not
+  // touch authorization: the gate below is the same one, answered by the same
+  // predicate, and any later change to the Findings arms it again.
+  if (result.impressionReviewedAnyway) useWorkspace.getState().markImpressionReviewed();
   const signingAuditDetails: Record<string, unknown> = qualityGate
     ? {
         qualityEvaluationId: qualityGate.textEvaluationId,
@@ -389,6 +446,12 @@ const runFinalizeGauntlet = useCallback(async () => {
     : {};
   if (result.criticalAcknowledged) signingAuditDetails.criticalAcknowledgedAtSigning = true;
   if (result.notifyReferring) signingAuditDetails.referringDoctorNotifyIntent = true;
+  // Recorded on every signature, empty included: "signed with clean checks" and
+  // "signed with nothing checked" have to be distinguishable after the fact, and
+  // the dialog's Retry may have fixed the list between opening and signing — so
+  // the value written is the one the radiologist was shown, not the first attempt.
+  signingAuditDetails.validationChecksIncomplete =
+    result.checksIncompleteAtSigning ?? checks.checksIncomplete.map((f) => f.key);
 
   try {
     const finalizeResult = await finalizeRadiologyReport(

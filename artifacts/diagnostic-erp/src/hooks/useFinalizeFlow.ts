@@ -6,6 +6,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import type { FinalizeQualityGate } from "@/lib/reportQualityFinalize";
+import type { FinalizeCheckFailure, FinalizeServiceChecks } from "@/lib/finalizeChecks";
 
 export type SignatureOption = { id: number; name: string };
 
@@ -21,6 +22,15 @@ export type FinalizePromptInput = {
   criticalSummary?: string;
   /** Canonical report-quality evaluation snapshot (workspace-finalize source). */
   qualityGate?: FinalizeQualityGate | null;
+  /** Service checks that did NOT complete. Absent or empty means all ran. */
+  checksIncomplete?: FinalizeCheckFailure[];
+  /**
+   * Re-runs the service checks and returns a fresh set. The dialog's Retry button
+   * calls this and renders from whatever comes back, so a radiologist can fix a
+   * transient failure without closing the dialog, losing their signer choice and
+   * starting the whole gauntlet again.
+   */
+  onRetryChecks?: () => Promise<FinalizeServiceChecks>;
   compositionImpressionNeedsRefresh?: boolean;
   compositionSiblingWarnings?: Array<{ sentence: string; token: string; hint: string }>;
   compositionOrphanedRecommendations?: Array<{ sentence: string; hint: string }>;
@@ -43,6 +53,13 @@ export type FinalizePromptResult = {
    *  caller correctly does nothing with them. Do not "fix" that. */
   impressionReviewedAnyway?: boolean;
   impressionRefreshed?: boolean;
+  /**
+   * Which checks had still not completed at the moment Sign was pressed — after
+   * any retry, so what is recorded is what the radiologist was shown rather than
+   * what the first attempt happened to return. Consumed by useStudyFinalize's
+   * signing audit details; absent when the dialog carried no check state.
+   */
+  checksIncompleteAtSigning?: string[];
   /** RIS throughput: open the next eligible study after finalize. */
   advanceToNext?: boolean;
 };

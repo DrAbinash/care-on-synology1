@@ -144,12 +144,21 @@ describe("P0 composition safety walkthroughs", { timeout: 20_000 }, () => {
       impressionReviewedAnyway: false,
     })).toBe(false);
 
-    // Path A — refresh
+    // Path A — refresh. It re-bases the dependency: the summary now matches the
+    // Findings the radiologist's own tiles produced, so "the Findings moved" is
+    // answered. What it no longer does is certify the *reading* — and this fixture
+    // is the reason that matters, because the Fazekas tile's canned sentence ends
+    // "No significant abnormality detected." over findings that assert white-matter
+    // lesions. The canonical engine already raises Q103 and Q114 as advisory
+    // warnings on that exact pair today; a gate that went quiet here would simply
+    // disagree with the badge on the same screen. Signing is still allowed after a
+    // refresh, and still allowed by acknowledgement — no new hard stop.
     useWorkspace.getState().refreshImpressionFromLedger();
     const refreshed = useWorkspace.getState().impressionText;
-    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+    expect(useWorkspace.getState().impressionDependencyReasons).not.toContain("findings-changed");
+    expect(useWorkspace.getState().impressionDependencyReasons).toEqual(["impression-contradicts-findings"]);
     expect(compositionFinalizeAllowed({
-      impressionNeedsRefresh: false,
+      impressionNeedsRefresh: useWorkspace.getState().impressionNeedsRefresh,
       impressionRefreshed: true,
       impressionReviewedAnyway: false,
     })).toBe(true);
