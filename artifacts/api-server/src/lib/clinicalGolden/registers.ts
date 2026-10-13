@@ -23,9 +23,24 @@ export type UndetectedEntry = {
  *
  * Detection is measured as a delta against the same case's correct report, so a
  * rule that already fires on correct text cannot be credited with catching a
- * defect — which is how the cervical cord-compression case stayed on this list
- * long after its contradiction rules were written: the rules were shouting at the
- * correct report, so a broken one made no new sound.
+ * defect. That is exactly how the cervical cord-compression contradiction hid
+ * for as long as it did: Q103 and Q114 were already shouting at the CORRECT
+ * report, so breaking it made no new sound. Both entries left this list when the
+ * scoped-negative reading fixed the noise and the delta appeared with it.
+ *
+ * SCOPE OF THIS LIST — what the CANONICAL ENGINE cannot see: `runQualityEngine`
+ * plus the structured, measurement and composer gates. That is the set the server
+ * runs (the finalize quality evaluation, the persisted findings, the AI safety
+ * path), so it is the set the clinic can be held to. It is not identical to what
+ * the workstation prints: the live `reportValidator.ts` still carries seven
+ * checks in `pathologyMergeContradictionWarnings` that have no rule id in the
+ * engine. Measured across all 92 corpus inputs (20 correct reports + 72 defects)
+ * on 2026-10-13: 84 agree message for message and 8 diverge, every divergence a
+ * legacy warning the engine never emits (engine-only = 0) — 6 findings-vs-
+ * impression laterality warnings and 2 spinal level-mismatch warnings. The two
+ * level entries below are therefore "the server cannot see this", not "nobody
+ * can", which is the difference between a wrong-level surgery going unnoticed by
+ * the API and going unnoticed on the screen.
  */
 export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   // ── unsupported contrast ──
@@ -127,12 +142,13 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
     class: "level",
     harm: "Wrong-level surgery: the Impression names a different examined disc space.",
     mechanism:
-      "level_change compares output against the supplied scaffold, and Technique legitimately states the imaged range ('C3-C4 to C6-C7'), so every cervical disc space counts as supplied and a swap between two of them is invisible.",
+      "level_change compares output against the supplied scaffold, and Technique legitimately states the imaged range ('C3-C4 to C6-C7'), so every cervical disc space counts as supplied and a swap between two of them is invisible. The workstation does still print a warning here — 'Possible level mismatch: Findings mention C5-C6 but Impression mentions C6-C7' comes from pathologyMergeContradictionWarnings in reportValidator.ts, which has no rule id in the engine, so nothing server-side records it, blocks it or persists it.",
   },
   "lumbar-abnormal.wrong-level": {
     class: "level",
     harm: "Exploring L5-S1 for an L4-L5 lesion leaves the pathology untouched.",
-    mechanism: "Same cause: the examined range in Technique makes every level in it 'supplied'.",
+    mechanism:
+      "Same cause: the examined range in Technique makes every level in it 'supplied'. As with the cervical case the legacy client check catches it (L4-L5 vs L5-S1) and the canonical engine does not — see the divergence count in this file's header.",
   },
   "whole-spine.wrong-level": {
     class: "level",
