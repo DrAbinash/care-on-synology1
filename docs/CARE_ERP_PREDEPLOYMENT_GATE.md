@@ -261,11 +261,23 @@ docker inspect --format '{{.Name}} -> {{range $k,$v := .NetworkSettings.Networks
 the two projects share a user-defined bridge** — C.3 distinguishes "Orthanc down" from
 "projects not joined", and they have completely different fixes.
 
-Two traps that have burned time on this box: a container **cannot reach the NAS's own LAN IP
-on a Docker-published port** (Synology hairpin/DNAT block — measured), so a failure against
-`172.16.1.139:8042` from inside `care-api` proves nothing about Orthanc; and
-`ORTHANC_CHANGES_POLLER` must be `false` while `care-erp-sync` runs, or two writers race the
-same worklist.
+Three traps on this box, all measured on it rather than assumed (2026-10-13):
+
+- **The hairpin/DNAT block is interface-specific, so "the NAS's LAN IP" is not one property.**
+  `AbinashNAS` answers on three: `eth0 192.168.1.137/24`, `eth1 172.16.1.139/16`,
+  `eth2 192.168.1.47/24`. From inside `care-api`, `GET http://172.16.1.139:8042/system` returned
+  **HTTP 200 in 50–67 ms** while the identical request to `http://192.168.1.137:8042/system`
+  **timed out**. A timeout therefore names an *address*, not Orthanc. Never conclude "Orthanc is
+  down" from one interface, and always take the host-side control before trusting a container-side
+  failure.
+- **The live `ORTHANC_INTERNAL_URL` is not the compose default.** It is `http://172.16.1.139:8042`
+  (`OHIF_URL=http://172.16.1.139:3010`), because `care-orthanc` does **not** resolve from `care-api`
+  — `DNS fail ENOTFOUND`, separate compose project, separate bridge. So C.3's verdict here is
+  "projects not joined", and the clinic papers over it with an interface address. That works today
+  and fails silently the day `eth1` is renumbered; record which of the two you are relying on.
+- `ORTHANC_CHANGES_POLLER` must be `false` while `care-erp-sync` runs, or two writers race the
+  same worklist (it is `false` on this box). `/dicom-web/system` returns **404** and always will —
+  the DICOMweb plugin exposes no `/system`; that 404 is not an outage.
 
 ```sh
 docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' '/dicom-web/studies?limit=1'
@@ -322,6 +334,24 @@ checks the bodies**, because `care-web` answers an unknown path with the SPA's `
 at 200 — a bare successful `curl` is not evidence. There is no port 8080 published on the
 host. If `OHIF_URL` starts with `/`, resolve it against the ERP origin; the clinic's address
 is not a fact this repository owns. There is no `OHIF_PUBLIC_BASE_URL` in compose.
+
+**Do not use `GET /api/health`'s `build.commit` to decide what is deployed.** Measured on this box
+2026-10-13: the endpoint reported `2d51e8d7` while the checkout it was built from was at `46d36612`,
+because the value is baked from `GIT_COMMIT` in `.env` at build time and nobody updates it by hand.
+Three facts do answer the question, and all three are read-only:
+
+```sh
+git -C /volume1/docker/care-erp-github/care-on-synology1 rev-parse --short HEAD && git -C /volume1/docker/care-erp-github/care-on-synology1 status --short | head
+```
+
+```sh
+docker inspect --format '{{.Name}} created={{.Created}} image={{.Config.Image}} imageid={{.Image}}' care-api care-web care-ohif
+```
+
+The first gives the revision the next build will use *and* how many dirty entries sit on top of it
+(this checkout had four, three of them untracked `.env` variants); the second gives the image IDs the
+running processes came from. Compare `created=` with the last `deploy-synology.sh` run: a checkout
+that moved without the containers moving means the clinic is not on that code yet.
 
 ### D. HOPE integration
 
