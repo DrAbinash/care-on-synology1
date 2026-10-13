@@ -2544,7 +2544,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // the flag. What changes is that the clearing is now a derivation — a patch
     // whose own conclusion is missing from the new Impression, or an Impression
     // that calls the study normal over an asserted abnormality, still arms.
-    set(deriveImpressionDependency(get(), { rebase: true }));
+    //
+    // The first half of that sentence only holds when the applied row HAS a
+    // conclusion. A Quick Select row with its Impression participation switched
+    // off, a dictation sentence that carries findings text only, and a structured
+    // row contributing to Findings alone all write ONE side while claiming the
+    // pair — which re-recorded the basis over a summary that never mentioned the
+    // new finding, in the session and on every reload after it. Ownership is now
+    // decided by what the row actually wrote, which is also what a hand-typed
+    // finding does (setField/mergeField never rebase on a findings write).
+    const appliedPatch = nextPatches.find((p) => p.id === stableId);
+    const ownsImpressionSide = Boolean(
+      (appliedPatch?.templates.impression ?? appliedPatch?.lastRendered.impression ?? "").trim(),
+    );
+    set(deriveImpressionDependency(get(), ownsImpressionSide ? { rebase: true } : undefined));
     return "applied";
   },
   applyMacroBundle: (opts) => {

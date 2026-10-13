@@ -442,14 +442,20 @@ describe("impression dependency — session, save, reload, study switching", () 
  * Both were found by reading the store's own rule back to it.
  * `deriveImpressionDependency` is documented as the one derivation "every writer
  * goes through — a keystroke, a Quick Select tile, dictation, a template, an
- * accepted AI ghost, a ledger restore". Three writers did not go through it:
+ * accepted AI ghost, a ledger restore". Four writers did not honour it:
  * `removeObservation`, the `missing-comparison` branch of `insertCopilotText`
  * (the only branch of that action that does not end in `mergeField`), and
- * `applyAiComposerAccepted`. Each produced the same failure, which is the failure
- * this whole branch exists to kill: one answer in the session, a different one for
- * the identical report after a reload. `undoLastPatch` and `applyMergedResult` —
- * the actions that put text BACK — did already re-derive, which is what makes the
- * other three an inconsistency rather than a second defensible design.
+ * `applyAiComposerAccepted` all changed clinical text without re-deriving at all,
+ * and `applyPathologyOverlay` re-derived with a claim wider than its write — it
+ * rebased the basis (re-recording it as though the summary now matched the
+ * findings) even when the row it applied carries no Impression contribution, so a
+ * findings-only tile, dictation sentence or structured row declared an untouched
+ * summary reconciled. Each produced the failure this whole branch exists to kill:
+ * one answer in the session, a different one for the identical report after a
+ * reload — and the overlay one is worse, because it gets the answer wrong in both
+ * places at once. `undoLastPatch` and `applyMergedResult` — the actions that put
+ * text BACK — did already re-derive correctly, which is what makes the others an
+ * inconsistency rather than a second defensible design.
  *
  * The fourth thing measured here is that two candidate defects are not defects:
  * a removal whose Impression sentence is the radiologist's own wording refuses
@@ -623,5 +629,132 @@ describe("AI rewriting re-evaluates the dependency instead of inheriting the old
     expect(live.reasons).toContain("findings-changed");
     expect(live.reasons).toContain("impression-contradicts-findings");
     expect(reopenCurrent()).toEqual(live);
+  });
+});
+
+/**
+ * Dictation was the fifth door, and the probe into it is what found the overlay's
+ * over-broad rebase. A dictated plan reaches the report through
+ * `applyPathologyOverlay` (step 4), which re-derives — but until this commit it
+ * always rebased, so a dictated finding whose row carries no Impression sentence
+ * re-recorded the basis over a summary that never mentioned it, and nothing armed
+ * either in the session or after a reload. The first test below is that case.
+ *
+ * What the probe also found is a different defect, deliberately NOT pinned as
+ * expected behaviour here: a plan carrying only `impressionUpdate` with no
+ * observations returns `"applied"` from `applyVoiceComposerPlan` while its text
+ * never reaches the Impression at all — step 3 writes the *cleaned live* impression
+ * and step 4 has nothing to apply. That is a lost dictated summary, not a
+ * dependency gap, and it belongs in its own fix.
+ */
+describe("dictation re-evaluates the dependency through the observation path", () => {
+  beforeEach(() => resetWorkspace());
+
+  const plan = (over: Record<string, unknown>) =>
+    ({
+      operation: "report_change_plan",
+      observations: [],
+      removeConflictingBaselineConcepts: [],
+      impressionCandidates: [],
+      uncertainties: [],
+      clarificationRequired: null,
+      ...over,
+    }) as never;
+
+  it("a row that writes its finding AND its conclusion clears the flag and keeps it cleared", () => {
+    approvedCordReport();
+    // Something moved the Findings past the summary, so the pairing is unreconciled.
+    useWorkspace.getState().setField("findings", `${CORD_FINDINGS} There is also a C2 fracture.`, {
+      source: "manual",
+    });
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+
+    // A Quick Select row that owns both halves is allowed to re-claim the pairing:
+    // it writes the finding and its conclusion in one action. This is the other arm
+    // of the overlay's decision, and without it the ownership test above could be
+    // satisfied by never rebasing at all — which would nag on every tile.
+    useWorkspace.getState().applyPathologyOverlay({
+      incoming: { findings: "There is also a C2 fracture.", impression: "C2 fracture." },
+      templates: { findings: "There is also a C2 fracture.", impression: "C2 fracture." },
+      ownership: { conflictGroup: "fracture", concept: "fracture", level: "C2" },
+      source: "quick-findings",
+      region: "Cervical Spine",
+      concept: "fracture",
+      level: "C2",
+      findingsText: "There is also a C2 fracture.",
+      impressionText: "C2 fracture.",
+      id: "qs-c2-fracture",
+    });
+    expect(useWorkspace.getState().impressionText).toMatch(/C2 fracture/);
+    const live = answer();
+    expect(live.needsRefresh, "the row wrote the finding and its conclusion together").toBe(false);
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("a dictated finding with no Impression contribution arms the dependency in the session", () => {
+    approvedCordReport();
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({
+          observations: [{
+            concept: "vertebral_lesion",
+            level: "C2",
+            findingsText: "Voice: a C2 fracture is seen.",
+            impressionText: "",
+          }],
+        }),
+        "voice transcript",
+        { force: true },
+      ),
+    ).toBe("applied");
+    expect(useWorkspace.getState().findingsText).toMatch(/C2 fracture/);
+    expect(useWorkspace.getState().impressionText).toBe(OWNED_IMPRESSION);
+
+    const live = answer();
+    expect(
+      live.needsRefresh,
+      "the dictation put a fracture in the Findings and the summary was written before it",
+    ).toBe(true);
+    expect(live.reasons).toContain("findings-changed");
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("removing the only dictated finding re-reads the pairing it just changed", () => {
+    useWorkspace.getState().setField("findings", CORD_FINDINGS, { source: "manual" });
+    useWorkspace.getState().setField("impression", OWNED_IMPRESSION, { source: "quick-select" });
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({
+          observations: [{
+            concept: "disc_contour",
+            level: "C5-C6",
+            laterality: "left",
+            findingsText: "Voice: left C5-C6 disc herniation with cord compression.",
+            impressionText: "Left C5-C6 disc herniation with cord compression.",
+          }],
+        }),
+        "first transcript",
+        { force: true },
+      ),
+    ).toBe("applied");
+    const voiced = useWorkspace.getState().voiceComposerObservations;
+    expect(voiced.length).toBeGreaterThan(0);
+
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({
+          observations: [{ operation: "remove", concept: "disc_contour", targetObservationId: voiced[0]!.id }],
+        }),
+        "second transcript",
+        { force: true },
+      ),
+    ).toBe("applied");
+
+    const live = answer();
+    const reopened = reopenCurrent();
+    expect(
+      live,
+      `dictation took a finding out and the session says ${JSON.stringify(live)} while the same report after a reload says ${JSON.stringify(reopened)}`,
+    ).toEqual(reopened);
   });
 });
