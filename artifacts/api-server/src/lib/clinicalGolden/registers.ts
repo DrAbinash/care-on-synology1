@@ -44,55 +44,52 @@ export type UndetectedEntry = {
  */
 export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   // ── unsupported contrast ──
+  // Q112 used to be inert on every study this clinic reports: it read the study
+  // description only, and only for "WITHOUT CONTRAST" / "NCCT" / "NON-CONTRAST",
+  // while this clinic titles a plain study "(PLAIN)" and puts the protocol in
+  // Technique. It now reads both fields, and the opposite direction is live —
+  // ct-abdomen-normal.contradiction-no-contrast is measured as rule:Q112. These
+  // four still produce no engine signal for one shared reason: each claim is
+  // written as a denial ("No abnormal gadolinium enhancement is seen"), and the
+  // negation reading that stops "no acute haemorrhage" reading as a haemorrhage
+  // declines it too. The two of them the corpus does catch are caught by the
+  // composer's contrast_status_changed, which matches "gadolinium" and
+  // "post-contrast" with no negation reading at all — so the same sentence is a
+  // hard error on the AI path and invisible on the typed path.
   "brain-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "A plain MRI reports enhancement the patient never received.",
     mechanism:
-      "CONTRAST_GIVEN_RE (reportComposer/validateOutput.ts:1082) matches 'post-contrast', 'contrast-enhanced' and 'gadolinium', but not the phrase 'contrast enhancement'. Q112 (lib/report-quality/src/text/evaluate.ts) arms only when the StudyDescription reads WITHOUT CONTRAST / NCCT / NON-CONTRAST — and this clinic's own naming is '(PLAIN)'.",
+      "The claim is a denial — 'No abnormal contrast enhancement is seen.' — so assertedContrastMention() returns null. Clinically 'no ABNORMAL enhancement' presupposes enhancement was assessable, so contrast was given; whether a denial may ever carry that presupposition is a negation-scope policy decision, not a vocabulary gap.",
   },
   "ct-brain-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "A plain head CT reports enhancement.",
-    mechanism: "The two causes above apply unchanged: '(PLAIN)' is not a Q112 trigger and 'contrast enhancement' is not in CONTRAST_GIVEN_RE.",
+    mechanism:
+      "Same denial shape as brain-normal.unsupported-contrast ('No abnormal contrast enhancement.') on a '(PLAIN)' CT head title, which Q112 now does read.",
   },
   "usg-normal.unsupported-contrast": {
     class: "unsupportedContrast",
     harm: "An ultrasound claims an intravenous contrast bolus.",
     mechanism:
-      "Not fully established. This defect is written into Technique, which is the protected field read on both sides of the contrast comparison, and an ultrasound StudyDescription carries no Q112 marker. Measured: no reaction.",
+      "Written into Technique, which Q112 deliberately does not treat as a clinical assertion — a protocol line describes the acquisition. The ultrasound StudyDescription carries no contrast marker either way, so studyContrastState() returns 'unknown' and there is nothing to contradict. Measured: no reaction.",
   },
 
   // ── invented diagnosis: the closed 26-term vocabulary ──
-  "brain-normal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "A lesion nobody described appears in the Impression of a normal study.",
-    mechanism:
-      "The ungrounded-impression check reads a CLOSED list, ABNORMALITY_HINTS (validateOutput.ts:1050-1082, 26 entries). 'meningioma' is not one of them.",
-  },
-  "cervical-abnormal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "An infection nobody described triggers antibiotics and a contrast study.",
-    mechanism: "Same closed list: 'spondylodiscitis' is a PATHOLOGY_WORDS term in the text tier but not an ABNORMALITY_HINTS term, so the composer never sees it.",
-  },
+  // Four of this class left the register when Q117 replaced the composer's closed
+  // ABNORMALITY_HINTS list with the shared named-diagnosis table: a meningioma, a
+  // spondylodiscitis, a peritonitis and an invasive ductal carcinoma in the
+  // Impression now each produce a signal the server records. What is left is the
+  // shape that cannot be named without also naming an ordinary finding.
   "mrcp-normal.invented-diagnosis": {
     class: "inventedDiagnosis",
     harm: "A pancreatic mass nobody saw routes the patient to a Whipple.",
     mechanism: "'mass' is matched by Q113's separate regex but is absent from ABNORMALITY_HINTS.",
   },
-  "ct-appendicitis.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "Spread nobody described converts a keyhole appendicectomy into a laparotomy.",
-    mechanism: "'peritonitis' is not an ABNORMALITY_HINTS entry.",
-  },
   "usg-abnormal.invented-diagnosis": {
     class: "inventedDiagnosis",
     harm: "A duct stone nobody saw changes the pathway to ERCP first.",
     mechanism: "Neither 'stone' nor 'calculus' is an ABNORMALITY_HINTS entry.",
-  },
-  "mammo-abnormal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "Histology asserted before any tissue has been taken.",
-    mechanism: "'malignancy' and 'metastasis' are hints; named histological entities ('invasive ductal carcinoma') are not.",
   },
 
   // ── unsupported normal findings ──
@@ -106,11 +103,6 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
     class: "unsupportedNormalFinding",
     harm: "Neck vessels cleared by a head CT.",
     mechanism: "Same preserving-kind restriction as brain-normal.unsupported-normal-finding.",
-  },
-  "cervical-normal.unsupported-normal-finding": {
-    class: "unsupportedNormalFinding",
-    harm: "A segment that was never imaged is reported as normal.",
-    mechanism: "Same preserving-kind restriction.",
   },
   "doppler-dvt.unsupported-normal-finding": {
     class: "unsupportedNormalFinding",

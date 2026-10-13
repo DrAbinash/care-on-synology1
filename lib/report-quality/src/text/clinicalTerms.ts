@@ -18,6 +18,18 @@
 export type ClinicalTerm = { readonly label: string; readonly pattern: string };
 
 /**
+ * A named diagnosis, plus the words that describe the organ it inflames or
+ * the tissue it arises in. `grounds` exists because an inflammatory diagnosis
+ * is very often written as anatomy: this clinic's own appendicitis report
+ * describes "a dilated blind-ending tubular structure in the right iliac fossa
+ * ... with a calcified appendicolith and periappendiceal fat stranding" and
+ * never spells the word "appendicitis" in Findings. That is a conclusion drawn
+ * from what was examined. Naming an organ the report never mentions at all is
+ * the defect Q117 is for, and nothing else.
+ */
+export type NamedDiagnosis = ClinicalTerm & { readonly grounds?: string };
+
+/**
  * Abnormalities a radiology report can assert, in both British and American
  * spelling, across the systems this clinic reports. Excluded on purpose:
  * wording that describes normal anatomy ("alignment", "densities"), benign-only
@@ -398,4 +410,272 @@ export function clinicalContentSignature(text: string): string {
   for (const word of contentWords(text)) tokens.add(`W:${word}`);
 
   return [...tokens].sort().join("|");
+}
+
+/**
+ * Contrast. One term, so the same denial reading that decides whether "fracture"
+ * is present also decides whether "enhancement" is claimed — "no abnormal
+ * gadolinium enhancement" on a plain study is a correct sentence, and a check that
+ * reads it as a claim of contrast marks up every normal MRI in the clinic.
+ *
+ * Bare "enhancement" is excluded when the word before it is "acoustic": posterior
+ * acoustic enhancement is how ultrasound describes the tissue behind a cyst or
+ * stone, and has nothing to do with contrast. Measured in this corpus — the
+ * gallstone report's own Findings say it.
+ */
+export const CONTRAST_MENTION_TERMS: readonly ClinicalTerm[] = [
+  {
+    label: "contrast administration",
+    pattern: String.raw`\b(?:gadolinium|iodinated contrast|contrast medium|contrast administration|contrast bolus|contrast injection|post[- ]?contrast|contrast[- ]enhanced|contrast enhancement)\b`,
+  },
+  {
+    label: "contrast administration",
+    pattern: String.raw`(?<!acoustic )\b(?:enhancement|enhancing)\b`,
+  },
+];
+
+/**
+ * How this clinic's own worklist names an unenhanced study, in either field.
+ * Up to two words may sit between the denial and "contrast", because protocols
+ * are written "performed without intravenous contrast".
+ */
+const NON_CONTRAST_STUDY =
+  /\b(?:plain|unenhanced|not enhanced|ncct|without\s+(?:[a-z]+\s+){0,2}contrast|no\s+(?:[a-z]+\s+){0,2}contrast|non[- ]contrast)\b/i;
+
+/**
+ * A two-phase study, checked before the denial above: "with and without contrast"
+ * is how a brain or MS protocol is written, and it means contrast WAS given.
+ * Read the other way, every enhanced MRI in the clinic becomes a plain study
+ * whose enhancement is a contradiction.
+ */
+const CONTRAST_BOTH_PHASES =
+  /\bwith and without (?:iv |intravenous |oral )?contrast\b|\bcontrast[- ]enhanced and unenhanced\b|\bpre- and post-contrast\b/i;
+
+/** And how it names an enhanced one. Checked last, so "plain, no contrast" wins. */
+const CONTRAST_STUDY =
+  /\b(?:with contrast|post[- ]?contrast|contrast[- ]enhanced|gadolinium|cect|cemri|enhanced study)\b/i;
+
+export type StudyContrastState = "plain" | "contrast" | "unknown";
+
+/**
+ * What the patient actually received, from the study description and the Technique
+ * line. Q112 used to read the study description alone and only recognised
+ * "WITHOUT CONTRAST"/"NCCT"/"NON-CONTRAST" — so a worklist that writes
+ * "MRI CERVICAL SPINE (PLAIN)" matched neither branch, and a study whose title
+ * says nothing while its protocol says "performed without intravenous contrast"
+ * had no state at all. On this clinic's naming the rule was therefore inert.
+ */
+export function studyContrastState(...fields: (string | null | undefined)[]): StudyContrastState {
+  const text = fields.filter(Boolean).join(" ");
+  if (CONTRAST_BOTH_PHASES.test(text)) return "contrast";
+  if (NON_CONTRAST_STUDY.test(text)) return "plain";
+  if (CONTRAST_STUDY.test(text)) return "contrast";
+  return "unknown";
+}
+
+/**
+ * A contrast claim the text actually makes, or null when every mention of
+ * enhancement is denied. Findings and Impression only: a Technique line that
+ * describes the protocol is not a clinical assertion.
+ */
+export function assertedContrastMention(text: string): string | null {
+  for (const occurrence of clinicalOccurrences(text, CONTRAST_MENTION_TERMS)) {
+    if (occurrence.state !== "denied") return occurrence.label;
+  }
+  return null;
+}
+
+/**
+ * Diagnoses specific enough that a report has to have described them somewhere.
+ * Deliberately narrower than ABNORMAL_TERMS: "ischaemia", "gliosis", "lesion" and
+ * "mass" are how a summary *re-describes* findings, and flagging them is what
+ * would mark up correct reports — "Mild chronic small vessel ischaemic disease"
+ * over punctate white-matter lesions is the everyday example. A named entity —
+ * a tumour, an infection, an infarct — is not a re-description, so naming one
+ * that appears nowhere else is an invention, not a summary.
+ *
+ * The inflammatory entries carry `grounds`: the words that describe the organ
+ * they name, because "-itis" is routinely written as anatomy in Findings and a
+ * diagnosis supported that way is not invented. Neoplasms and infarcts get no
+ * such allowance on purpose — "an irregular mass" does not license "invasive
+ * ductal carcinoma", which is a histological claim no mammogram can make.
+ */
+export const NAMED_DIAGNOSIS_TERMS: readonly NamedDiagnosis[] = [
+  { label: "meningioma", pattern: String.raw`\bmeningiom\w*\b` },
+  { label: "glioma", pattern: String.raw`\b(?:astrocytom\w*|oligodendrom\w*|gliom\w*|ependymom\w*)\b` },
+  { label: "pituitary adenoma", pattern: String.raw`\b(?:pituitar\w+ adenom\w*|prolactinom\w*)\b` },
+  { label: "lymphoma", pattern: String.raw`\b(?:lymphom\w*|leukaem\w*|leukem\w*)\b` },
+  { label: "carcinoma", pattern: String.raw`\b(?:carcinom\w*|sarcom\w*|myelom\w*|melanom\w*|blastom\w*)\b` },
+  { label: "metastasis", pattern: String.raw`\b(?:metasta\w*|secondar(?:y|ies) deposit\w*)\b` },
+  {
+    label: "spinal infection",
+    pattern: String.raw`\b(?:spondylodiscit\w*|discit\w*|osteomyelit\w*|epidural abscess|pott(?:'s)? disease|tubercul\w*)\b`,
+  },
+  { label: "abscess", pattern: String.raw`\b(?:abscess|empyema|empyem\w*)\b` },
+  {
+    label: "biliary inflammation",
+    pattern: String.raw`\b(?:cholecystitis|cholangitis)\b`,
+    grounds: String.raw`\b(?:gall ?bladder|cystic duct|(?:common |intrahepatic |extrahepatic )?bile duct|biliar\w*|cholecyst\w*|cholang\w*)\b`,
+  },
+  {
+    label: "appendicitis",
+    pattern: String.raw`\bappendicitis\b`,
+    grounds: String.raw`\b(?:appendic\w*|vermiform)\b`,
+  },
+  { label: "pancreatitis", pattern: String.raw`\bpancreatitis\b`, grounds: String.raw`\bpancrea\w*\b` },
+  {
+    label: "diverticulitis",
+    pattern: String.raw`\bdiverticulit\w*\b`,
+    grounds: String.raw`\b(?:diverticul\w*|sigmoid|colon|caecum|cecum)\b`,
+  },
+  {
+    label: "peritonitis",
+    pattern: String.raw`\bperitonitis\b`,
+    grounds: String.raw`\b(?:peritone\w*|ascites|free fluid)\b`,
+  },
+  {
+    label: "salpingo-oophoritis",
+    pattern: String.raw`\b(?:salpingitis|salpingo-oophorit\w*|oophoritis)\b`,
+    grounds: String.raw`\b(?:fallopian|salpinx|salping\w*|ovar\w*|adnex\w*|uter\w*)\b`,
+  },
+  {
+    label: "orchitis",
+    pattern: String.raw`\b(?:orchitis|epididymo-orchitis|epididymitis)\b`,
+    grounds: String.raw`\b(?:test(?:is|es|icular)|scrot\w*|epididym\w*|spermatic cord)\b`,
+  },
+  {
+    label: "pyelonephritis",
+    pattern: String.raw`\bpyelonephritis\b`,
+    grounds: String.raw`\b(?:kidney|kidneys|renal\w*|ureter\w*|pelvicalyceal|collecting system)\b`,
+  },
+  { label: "gonorrhoea", pattern: String.raw`\bgonorrhoe\w*\b` },
+  { label: "syphilis", pattern: String.raw`\bsyphil\w*\b` },
+  { label: "aneurysm", pattern: String.raw`\b(?:aneurysm\w*|pseudoaneurysm\w*|arteriovenous (?:malformation|fistula))\b` },
+  { label: "dissection", pattern: String.raw`\b(?:arterial )?dissection\b` },
+  { label: "haemorrhage", pattern: String.raw`\b(?:ha?ematoma|hematoma|subarachnoid haemorrhage|subarachnoid hemorrhage)\b` },
+  { label: "fracture", pattern: String.raw`\b(?:fractur\w*|spondylolysis|spondylolisthesis)\b` },
+  { label: "hydrocephalus", pattern: String.raw`\b(?:hydrocephal\w*|normal pressure hydrocephalus)\b` },
+  { label: "venous thrombosis", pattern: String.raw`\b(?:thrombos\w*|thrombus|thrombi|dvt|embolism|emboli)\b` },
+  { label: "infarction", pattern: String.raw`\b(?:infarct\w*|ischaemic stroke|ischemic stroke|cerebrovascular accident)\b` },
+];
+
+/**
+ * The named diagnoses a block of prose asserts (or holds open), by label. A
+ * diagnosis the Impression states and no other section mentions is a conclusion
+ * with no examination behind it.
+ */
+export function assertedDiagnoses(text: string, terms: readonly ClinicalTerm[] = NAMED_DIAGNOSIS_TERMS): string[] {
+  const out = new Set<string>();
+  for (const occurrence of clinicalOccurrences(text, terms)) {
+    if (occurrence.state !== "denied") out.add(occurrence.label);
+  }
+  return [...out];
+}
+
+/**
+ * The named diagnoses an Impression asserts that nothing else in the report
+ * supports — by name, or through the organ the diagnosis names.
+ *
+ * Denials are read on both sides. "No collection or abscess" in the Findings
+ * supports nothing, and an Impression line "without abscess formation" asserts
+ * nothing, so neither half of a correctly negative report can arm this. What
+ * reaches the radiologist is the diagnosis that has no sentence anywhere else in
+ * the study: the entity that appears only in the conclusion.
+ */
+export function ungroundedNamedDiagnoses(
+  impressionText: string,
+  supportText: string,
+  terms: readonly NamedDiagnosis[] = NAMED_DIAGNOSIS_TERMS,
+): string[] {
+  const support = supportText ?? "";
+  const named = new Set(assertedDiagnoses(support, terms));
+  const out: string[] = [];
+  for (const occurrence of clinicalOccurrences(impressionText, terms)) {
+    if (occurrence.state === "denied") continue;
+    if (named.has(occurrence.label)) continue;
+    const term = terms.find((t) => t.label === occurrence.label);
+    if (!term?.grounds) {
+      out.push(occurrence.label);
+      continue;
+    }
+    const grounds: readonly ClinicalTerm[] = [{ label: term.label, pattern: term.grounds }];
+    if (!assertedDiagnoses(support, grounds).includes(term.label)) out.push(occurrence.label);
+  }
+  return [...new Set(out)];
+}
+
+/** A limited spine study and what it may legitimately name. */
+const SPINE_REGIONS: readonly { label: string; title: RegExp; letters: readonly string[] }[] = [
+  { label: "cervical", title: /CERV/i, letters: ["C"] },
+  { label: "thoracic", title: /DORSAL|THORACIC/i, letters: ["T"] },
+  { label: "lumbosacral", title: /LUMB|SACRAL/i, letters: ["L", "S"] },
+];
+
+/** A study that covers the whole spine may name any level. */
+const WHOLE_SPINE_TITLE = /WHOLE|ENTIRE|COMPLETE|PAN.?SPINE|DORSO.?LUMB|CERVI?.?CO?.?LUMB|PANTOMELARK/i;
+
+const SPINE_TITLE = /\b(?:SPINE|C-?SPINE|L-?SPINE|DORSAL|THORACIC|CERVICAL|LUMBAR|SACRAL)\b/i;
+
+const LEVEL_WORD = /\b([CTLS])\d{1,2}(?:\s*-\s*(?:[CTLS])?\d{1,2})?\b/g;
+
+/**
+ * "T2" is ambiguous in an MRI report: the second thoracic vertebra, or the
+ * T2-weighted sequence. "Intrinsic T2 hyperintensity at the level of compression"
+ * is the standard way to describe a cord lesion, and reading that T2 as a
+ * thoracic level tells a cervical surgeon the report covers segments it never
+ * imaged — a false alarm on the clinic's most common abnormal cervical MRI.
+ *
+ * Only T1 and T2 are ambiguous (no sequence is named C1/L1/S1), and only when a
+ * weighting or signal word follows the token. "T12 compression fracture" and
+ * "T9-T10 disc disease" in a cervical report stay flagged.
+ */
+const SEQUENCE_AMBIGUOUS = /^T[12]$/i;
+const SEQUENCE_CONTEXT =
+  /^\s*[- ]?\s*(?:w\b|wi\b|weight\w*|hyper\w*|hypo\w*|iso\w*|signal\b|intensity\b|flair\b|stir\b|image\w*|sequence\w*)/i;
+
+/**
+ * Spine content that belongs to a region this examination did not cover.
+ *
+ * A cervical MRI that describes "L4-L5 disc extrusion with left S1 root contact"
+ * is not a summary of the study — a surgeon reads it as a reviewed level, and the
+ * two are different operations on different nerve roots. Same for a segment
+ * declared normal ("the dorsal spine is normal") that was never imaged: an
+ * unexamined region cannot be cleared.
+ *
+ * Returns nothing for a non-spine study (no basis to judge), for a whole-spine
+ * protocol (every level is in scope), and for the level letters the title itself
+ * covers. Findings and Impression only — a Technique line legitimately names the
+ * cervicothoracic junction it acquired through. A T1/T2 followed by a weighting
+ * or signal word is read as the sequence, not the vertebra — see
+ * {@link SEQUENCE_CONTEXT}.
+ */
+export function outOfScopeSpineContent(text: string, studyDescription: string | null | undefined): string[] {
+  const title = (studyDescription ?? "").toUpperCase();
+  if (!SPINE_TITLE.test(title) || WHOLE_SPINE_TITLE.test(title)) return [];
+
+  const allowed = new Set<string>();
+  const inScopeLabels = new Set<string>();
+  for (const region of SPINE_REGIONS) {
+    if (region.title.test(title)) {
+      for (const letter of region.letters) allowed.add(letter);
+      inScopeLabels.add(region.label);
+    }
+  }
+  if (allowed.size === 0) return [];
+
+  const offenders = new Set<string>();
+  const prose = text ?? "";
+  for (const match of prose.matchAll(LEVEL_WORD)) {
+    if (allowed.has(match[1].toUpperCase())) continue;
+    if (SEQUENCE_AMBIGUOUS.test(match[0]) && SEQUENCE_CONTEXT.test(prose.slice(match.index + match[0].length))) continue;
+    offenders.add(match[0]);
+  }
+  for (const region of SPINE_REGIONS) {
+    if (inScopeLabels.has(region.label)) continue;
+    const word = region.label === "cervical" ? /\bcervical\b/i
+      : region.label === "thoracic" ? /\b(?:dorsal|thoracic)\s+spine\b/i
+      : /\b(?:lumbar|lumbosacral|sacral)\s+spine\b|\blumbosacral\b/i;
+    if (word.test(prose)) offenders.add(region.label);
+  }
+  return [...offenders].sort();
 }
