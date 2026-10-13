@@ -27,11 +27,12 @@ import { describe, expect, test } from "vitest";
 import {
   documentedReportingScope,
   reportedScopeNote,
+  type ReportedScopeRecord,
 } from "./reportingScope";
 
 const WHOLE = "MRI Whole Spine";
 
-function record(over: Partial<Parameters<typeof documentedReportingScope>[0]["records"][number]> = {}) {
+function record(over: Partial<ReportedScopeRecord> = {}) {
   return {
     fromRegion: "Whole Spine",
     toRegion: "Cervical Spine",
