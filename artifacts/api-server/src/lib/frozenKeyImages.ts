@@ -18,10 +18,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { radiologyReportKeyImagesTable, radiologyReportDraftsTable } from "@workspace/db/schema";
+import {
+  patientReportsTable,
+  radiologyReportKeyImagesTable,
+  radiologyReportDraftsTable,
+  radiologyWorklistTable,
+} from "@workspace/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { ReportKeyImageModel } from "./reportPresentation";
 import { imageIdentityKey, resolveDraftKeyImages } from "./reportImages";
+import { isSignedArtifact } from "./signedArtifactGuard";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const FROZEN_KEY_IMAGE_DIR = path.resolve(PACKAGE_ROOT, "data", "uploads", "radiology-key-images");
@@ -236,11 +242,18 @@ export async function frozenRowsToPresentationModels(
  * A. No includeInReport frozen rows → Orthanc image references (live pixels).
  * B. Frozen rows exist, the draft is still being written → frozen artifacts
  *    first, then any reference they do not already cover.
- * C. Frozen rows exist and the draft is FINAL → frozen artifacts alone.
+ * C. Frozen rows exist and the document is finished → frozen artifacts alone.
  *
  * C is #815's guarantee and stays exactly as it was: a signed report's evidence
  * must not depend on PACS being up, and a live picture must never be
- * substituted for a frozen one that went missing.
+ * substituted for a frozen one that went missing. Two things make a document
+ * "finished": the structured finalize, which stamps its draft `FINAL`, and
+ * `frozenOnly`, which the report-level resolver passes once every report row
+ * being printed is a signed artifact. The second one is needed because the
+ * LEGACY finalize never touches the draft's status at all (see the note in
+ * `structuredFinalizeTransaction`: "Draft status is deliberately untouched —
+ * nothing sets it today (legacy contract)"), so a legacy signed report would
+ * otherwise keep resolving its live leg on every reprint.
  *
  * B is what changed. The blanket "frozen wins, alone" rule deleted work: an
  * image attached through the report image picker vanished from print and PDF
@@ -251,7 +264,10 @@ export async function frozenRowsToPresentationModels(
  * skipped, because that one is deliberately printed from disk, and a missing
  * disk file keeps its explicit placeholder instead of reaching back to Orthanc.
  */
-export async function resolveDraftPrintKeyImagesDetailed(draftId: number): Promise<FrozenPrintResolution> {
+export async function resolveDraftPrintKeyImagesDetailed(
+  draftId: number,
+  opts?: { frozenOnly?: boolean },
+): Promise<FrozenPrintResolution> {
   const [frozen, draft] = await Promise.all([
     listDraftFrozenKeyImages(draftId),
     db
@@ -263,7 +279,7 @@ export async function resolveDraftPrintKeyImagesDetailed(draftId: number): Promi
   const printable = frozen.filter((r) => r.includeInReport);
   if (printable.length > 0) {
     const { images, unavailableCount } = await frozenRowsToPresentationModels(printable);
-    const finalized = draft[0]?.status === "FINAL";
+    const finalized = opts?.frozenOnly === true || draft[0]?.status === "FINAL";
     if (finalized) {
       return { images, source: "frozen", unavailableFrozenCount: unavailableCount, integrityOk: unavailableCount === 0 };
     }
@@ -290,22 +306,80 @@ export async function resolveDraftPrintKeyImages(draftId: number): Promise<Repor
   return result.images;
 }
 
+/**
+ * D-6 — the draft a printed document was written in.
+ *
+ * Primary lookup is `radiology_report_drafts.final_report_id`, which
+ * `structuredFinalizeTransaction` stamps inside the signing transaction. The
+ * LEGACY finalize never stamps it: measured on the synthetic fixture, report 12
+ * was bound to worklist 1, whose draft 88 carries `final_report_id = NULL`, so
+ * `resolveReportPrintKeyImagesDetailed` found no draft, answered
+ * `legacy_orthanc` with zero images, and re-resolved a signed report's pictures
+ * from PACS on every reprint — while the draft preview the radiologist had
+ * approved was reading the frozen artifacts from disk.
+ *
+ * The binding the legacy path DOES write is `radiology_worklist.report_id`, in
+ * the same transaction as the insert. Reading through it recovers the draft with
+ * no schema change, no back-fill, and no write to a signed row — which matters
+ * because `withdraw-signature` does not reset `final_report_id` today, so a
+ * stamp written on the write path would outlive the withdrawal it was supposed
+ * to describe.
+ *
+ * Both sides of the link are required: a queue row that names this report but
+ * belongs to a different patient is a broken binding, not a lead to follow. The
+ * draft is chosen the way the stamped lookup chooses one (lowest id) so the two
+ * paths cannot disagree about which row of a multi-draft worklist is theirs.
+ */
+async function findDraftThroughWorklistBinding(reportIds: number[]): Promise<number | null> {
+  const [row] = await db
+    .select({ draftId: radiologyReportDraftsTable.id })
+    .from(radiologyWorklistTable)
+    .innerJoin(
+      radiologyReportDraftsTable,
+      eq(radiologyReportDraftsTable.worklistId, radiologyWorklistTable.id),
+    )
+    .innerJoin(patientReportsTable, eq(patientReportsTable.id, radiologyWorklistTable.reportId))
+    .where(
+      and(
+        inArray(radiologyWorklistTable.reportId, reportIds),
+        eq(radiologyWorklistTable.patientId, patientReportsTable.patientId),
+      ),
+    )
+    .orderBy(asc(radiologyReportDraftsTable.id))
+    .limit(1);
+  return row?.draftId ?? null;
+}
+
 /** Same as resolveDraftPrintKeyImages but via final report id(s) → draft. */
 export async function resolveReportPrintKeyImagesDetailed(reportIds: number[]): Promise<FrozenPrintResolution> {
   const ids = [...new Set(reportIds.filter((n) => Number.isInteger(n) && n > 0))];
   if (ids.length === 0) {
     return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
   }
-  const [draft] = await db
+  const [stamped] = await db
     .select({ id: radiologyReportDraftsTable.id })
     .from(radiologyReportDraftsTable)
     .where(inArray(radiologyReportDraftsTable.finalReportId, ids))
     .orderBy(asc(radiologyReportDraftsTable.id))
     .limit(1);
-  if (!draft) {
+  const draftId = stamped?.id ?? (await findDraftThroughWorklistBinding(ids));
+  if (!draftId) {
     return { images: [], source: "legacy_orthanc", unavailableFrozenCount: 0, integrityOk: true };
   }
-  return resolveDraftPrintKeyImagesDetailed(draft.id);
+  // Every row in the set must be a signed artifact before the live leg is
+  // suppressed: the print route passes an amendment chain, and if any member of
+  // it is still open the document is being composed, which is exactly the case
+  // B exists for (an attached-but-unfrozen image must not disappear).
+  const rows = await db
+    .select({
+      status: patientReportsTable.status,
+      signedAt: patientReportsTable.signedAt,
+      structuredJson: patientReportsTable.structuredJson,
+    })
+    .from(patientReportsTable)
+    .where(inArray(patientReportsTable.id, ids));
+  const signedDocument = rows.length > 0 && rows.every((r) => isSignedArtifact(r));
+  return resolveDraftPrintKeyImagesDetailed(draftId, { frozenOnly: signedDocument });
 }
 
 export async function resolveReportPrintKeyImages(reportIds: number[]): Promise<ReportKeyImageModel[]> {

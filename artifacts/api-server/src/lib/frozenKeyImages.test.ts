@@ -7,7 +7,13 @@ import path from "node:path";
 import { randomUUID, randomFillSync } from "node:crypto";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { radiologyReportDraftsTable, radiologyReportKeyImagesTable } from "@workspace/db/schema";
+import {
+  patientReportsTable,
+  patientsTable,
+  radiologyReportDraftsTable,
+  radiologyReportKeyImagesTable,
+  radiologyWorklistTable,
+} from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import * as reportImages from "./reportImages";
 import {
@@ -28,6 +34,7 @@ import {
   parseViewportSnapshotJson,
   resolveDraftPrintKeyImagesDetailed,
   resolveKeyImageDiskPath,
+  resolveReportPrintKeyImagesDetailed,
 } from "./frozenKeyImages";
 
 const hasDb = Boolean(process.env.DATABASE_URL?.trim());
@@ -423,5 +430,320 @@ describe.skipIf(!hasDb)("frozenKeyImages DB", () => {
     expect(unavailableCount).toBe(0);
     expect(images).toHaveLength(1);
     expect(images[0].src.startsWith("data:image/jpeg")).toBe(true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// D-6 — which images a SIGNED report prints.
+//
+// `resolveReportPrintKeyImagesDetailed` found a draft only through
+// `radiology_report_drafts.final_report_id`, which is stamped by
+// structuredFinalizeTransaction — behind ff_radiology_structured_final. The
+// legacy finalize the clinic actually runs never stamps it (measured on the
+// synthetic fixture: report 12 ↔ worklist 1 ↔ draft 88 with
+// `final_report_id = NULL`), so the signed document resolved to
+// `legacy_orthanc` with no images at all and re-read its pictures from PACS on
+// every reprint, while the draft preview the radiologist approved had been
+// printing the frozen artifacts from disk.
+//
+// The recovery reads the binding the legacy path DOES write
+// (`radiology_worklist.report_id`) and writes nothing, so a withdrawn signature
+// cannot leave a stale stamp behind — which is why the read side is the fix and
+// `final_report_id` back-filling on create is not.
+// ────────────────────────────────────────────────────────────────────────────
+describe.skipIf(!hasDb)("signed-report key image resolution (D-6)", () => {
+  const marker = `vitest-d6-${randomUUID().slice(0, 8)}`;
+  const LIVE_SENTINEL = "data:image/jpeg;base64,LIVE_PACS_SENTINEL";
+
+  const patientIds: number[] = [];
+  const worklistIds: number[] = [];
+  const reportIds: number[] = [];
+  const draftIds: number[] = [];
+  const imageIds: number[] = [];
+  const files: string[] = [];
+
+  let p1 = 0;
+  let p2 = 0;
+
+  async function patient(tag: string): Promise<number> {
+    const [row] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: `MRN-${marker}-${tag}`,
+        firstName: "Synthetic",
+        lastName: tag,
+        dateOfBirth: "1970-01-01",
+        gender: "F",
+        phone: "0000000000",
+      })
+      .returning();
+    patientIds.push(row.id);
+    return row.id as number;
+  }
+
+  async function signedReport(patientId: number, tag: string, overrides: Record<string, unknown> = {}) {
+    const [row] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-${marker}-${tag}`,
+        type: "radiology",
+        patientId,
+        testId: 1,
+        title: "MRI LS Spine",
+        body: `Synthetic findings ${tag}`,
+        impression: `Synthetic impression ${tag}`,
+        status: "pending_verification",
+        signedAt: new Date(),
+        ...overrides,
+      })
+      .returning();
+    reportIds.push(row.id);
+    return row.id as number;
+  }
+
+  async function worklist(opts: { tag: string; patientId: number; reportId: number | null }) {
+    const [row] = await db
+      .insert(radiologyWorklistTable)
+      .values({
+        patientName: `Synthetic ${opts.tag}`,
+        modality: "MR",
+        studyDescription: "MRI LS Spine",
+        studyInstanceUID: `1.2.826.vitest.d6.${marker}.${opts.tag}`,
+        accessionNumber: `ACC-${marker}-${opts.tag}`,
+        patientId: opts.patientId,
+        status: "REPORT_FINAL",
+        reportId: opts.reportId,
+      })
+      .returning();
+    worklistIds.push(row.id);
+    return row.id as number;
+  }
+
+  /** A draft with one printable frozen artifact whose bytes exist on disk. */
+  async function draftWithFrozenImage(opts: {
+    worklistId: number;
+    patientId: number;
+    caption: string;
+    finalReportId?: number | null;
+    status?: string;
+    /** Omit the file so the artifact reads as lost evidence. */
+    writeFile?: boolean;
+  }) {
+    const name = `${randomUUID()}.jpg`;
+    const abs = path.join(FROZEN_KEY_IMAGE_DIR, name);
+    if (opts.writeFile !== false) {
+      await fs.writeFile(abs, TINY_JPEG);
+      files.push(abs);
+    }
+    const [draft] = await db
+      .insert(radiologyReportDraftsTable)
+      .values({
+        worklistId: opts.worklistId,
+        patientId: opts.patientId,
+        modality: "MR",
+        studyName: "D-6 frozen resolution",
+        rawFindings: "x",
+        impression: "[]",
+        status: opts.status ?? "DRAFT",
+        finalReportId: opts.finalReportId ?? null,
+      })
+      .returning();
+    draftIds.push(draft.id);
+
+    const [img] = await db
+      .insert(radiologyReportKeyImagesTable)
+      .values({
+        draftId: draft.id,
+        imageUrl: `/uploads/radiology-key-images/${name}`,
+        thumbnailUrl: `/uploads/radiology-key-images/${name}`,
+        caption: opts.caption,
+        includeInReport: true,
+        sourceType: "VIEWPORT_CAPTURE",
+        viewer: "frames",
+        sopInstanceUid: `1.2.840.d6.${marker}.${opts.caption.replace(/\s+/g, "")}`,
+      })
+      .returning();
+    imageIds.push(img.id);
+    return { draftId: draft.id as number, imageId: img.id as number };
+  }
+
+  function liveOrthancSpy() {
+    return vi.spyOn(reportImages, "resolveDraftKeyImages").mockResolvedValue([
+      {
+        src: LIVE_SENTINEL,
+        caption: "live pacs",
+        displayOrder: 0,
+        sopInstanceUid: "1.2.840.d6.live",
+        isKeyImage: true,
+        framing: null,
+      },
+    ]);
+  }
+
+  beforeAll(async () => {
+    await fs.mkdir(FROZEN_KEY_IMAGE_DIR, { recursive: true });
+    p1 = await patient("A");
+    p2 = await patient("B");
+  });
+
+  afterAll(async () => {
+    for (const id of imageIds) await db.delete(radiologyReportKeyImagesTable).where(eq(radiologyReportKeyImagesTable.id, id));
+    for (const id of draftIds) await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id));
+    for (const id of reportIds) await db.delete(patientReportsTable).where(eq(patientReportsTable.id, id));
+    for (const id of worklistIds) await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id));
+    for (const id of patientIds) await db.delete(patientsTable).where(eq(patientsTable.id, id));
+    for (const f of files) await fs.unlink(f).catch(() => undefined);
+  });
+
+  it("D6-1 a legacy signed report prints its frozen evidence through the worklist binding", async () => {
+    const reportId = await signedReport(p1, "bound");
+    const wl = await worklist({ tag: "bound", patientId: p1, reportId });
+    const { draftId } = await draftWithFrozenImage({ worklistId: wl, patientId: p1, caption: "Signed frozen" });
+    // The exact shape the legacy finalize leaves behind.
+    const [row] = await db
+      .select({ finalReportId: radiologyReportDraftsTable.finalReportId })
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId));
+    expect(row.finalReportId).toBeNull();
+
+    const spy = liveOrthancSpy();
+    try {
+      const result = await resolveReportPrintKeyImagesDetailed([reportId]);
+      expect(result.source).toBe("frozen");
+      expect(result.integrityOk).toBe(true);
+      expect(result.images.map((i) => i.caption)).toEqual(["Signed frozen"]);
+      expect(result.images[0].src.startsWith("data:image/")).toBe(true);
+      // Case C for a signed document: no live picture joins it, so a reprint
+      // cannot show an image that was not there when the report was signed.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("D6-2 a binding that names another patient's report is refused, not followed", async () => {
+    const reportId = await signedReport(p1, "xpatient");
+    // The queue row points at Patient A's report but belongs to Patient B, and
+    // carries a draft with its own frozen image — a lead that must not be
+    // followed, because printing it would put Patient B's evidence on Patient
+    // A's signed document.
+    const wl = await worklist({ tag: "xpatient", patientId: p2, reportId });
+    await draftWithFrozenImage({ worklistId: wl, patientId: p2, caption: "Wrong patient decoy" });
+
+    const result = await resolveReportPrintKeyImagesDetailed([reportId]);
+    expect(result.source).toBe("legacy_orthanc");
+    expect(result.images).toHaveLength(0);
+  });
+
+  it("D6-3 a report that is not signed yet still prints frozen evidence plus live references", async () => {
+    const reportId = await signedReport(p1, "open", { status: "draft", signedAt: null });
+    const wl = await worklist({ tag: "open", patientId: p1, reportId });
+    await draftWithFrozenImage({ worklistId: wl, patientId: p1, caption: "Draft frozen" });
+
+    const spy = liveOrthancSpy();
+    try {
+      const result = await resolveReportPrintKeyImagesDetailed([reportId]);
+      expect(result.source).toBe("frozen");
+      // #815's other half: an image attached through the picker but not frozen
+      // must keep appearing while the document is still being composed.
+      expect(result.images.map((i) => i.caption).sort()).toEqual(["Draft frozen", "live pacs"]);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("D6-4 the stamped draft wins over the binding when both exist", async () => {
+    const reportId = await signedReport(p1, "stamped");
+    const wl = await worklist({ tag: "stamped", patientId: p1, reportId });
+    // Created FIRST, so it has the LOWER id: if the two lookups were ever
+    // ordered the other way round, this one would win on id order alone and the
+    // test below would pass for the wrong reason.
+    await draftWithFrozenImage({ worklistId: wl, patientId: p1, caption: "Binding decoy" });
+    // The same report id, stamped the way structuredFinalizeTransaction stamps
+    // it. Both lookups now match, so only precedence can decide the answer.
+    await draftWithFrozenImage({
+      worklistId: wl,
+      patientId: p1,
+      caption: "Stamped original",
+      finalReportId: reportId,
+    });
+
+    const spy = liveOrthancSpy();
+    try {
+      const result = await resolveReportPrintKeyImagesDetailed([reportId]);
+      expect(result.images.map((i) => i.caption)).toEqual(["Stamped original"]);
+
+      // And a report with no stamp at all still resolves through the binding,
+      // so the two lookups cannot shadow each other.
+      const unbound = await signedReport(p1, "binding-only");
+      const unboundWl = await worklist({ tag: "binding-only", patientId: p1, reportId: unbound });
+      await draftWithFrozenImage({ worklistId: unboundWl, patientId: p1, caption: "Binding only" });
+      const viaBinding = await resolveReportPrintKeyImagesDetailed([unbound]);
+      expect(viaBinding.images.map((i) => i.caption)).toEqual(["Binding only"]);
+
+      // A draft stamped against a different (here, synthetic) report id is found
+      // by the stamped lookup wherever the queue binding lives.
+      const stamp = 9_800_000 + (reportId % 100_000);
+      await draftWithFrozenImage({
+        worklistId: unboundWl,
+        patientId: p1,
+        caption: "Other stamp",
+        finalReportId: stamp,
+      });
+      const viaStamp = await resolveReportPrintKeyImagesDetailed([stamp]);
+      expect(viaStamp.images.map((i) => i.caption)).toContain("Other stamp");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("D6-6 one open member of a multi-row print keeps the live leg", async () => {
+    // The print route passes an amendment chain (root, resolved, requested). If
+    // any member is still open the document is being composed, so unanimity is
+    // required before the live leg is suppressed — otherwise an attached image
+    // that is not frozen yet would vanish from a reprint of a half-corrected
+    // report, which is the #815 failure case B exists to prevent.
+    const signedId = await signedReport(p1, "chain-signed");
+    const signedWl = await worklist({ tag: "chain-signed", patientId: p1, reportId: signedId });
+    await draftWithFrozenImage({ worklistId: signedWl, patientId: p1, caption: "Chain frozen" });
+
+    const openId = await signedReport(p1, "chain-open", { status: "draft", signedAt: null });
+    const openWl = await worklist({ tag: "chain-open", patientId: p1, reportId: openId });
+    await draftWithFrozenImage({ worklistId: openWl, patientId: p1, caption: "Chain open" });
+
+    const spy = liveOrthancSpy();
+    try {
+      const result = await resolveReportPrintKeyImagesDetailed([signedId, openId]);
+      expect(result.source).toBe("frozen");
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(result.images.map((i) => i.src)).toContain(LIVE_SENTINEL);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("D6-5 a signed report with lost frozen bytes prints the placeholder and never Orthanc", async () => {
+    const reportId = await signedReport(p1, "lost");
+    const wl = await worklist({ tag: "lost", patientId: p1, reportId });
+    await draftWithFrozenImage({
+      worklistId: wl,
+      patientId: p1,
+      caption: "Lost evidence",
+      writeFile: false,
+    });
+
+    const spy = liveOrthancSpy();
+    try {
+      const result = await resolveReportPrintKeyImagesDetailed([reportId]);
+      expect(result.source).toBe("frozen");
+      expect(result.integrityOk).toBe(false);
+      expect(result.unavailableFrozenCount).toBe(1);
+      expect(result.images[0].src).toBe(FROZEN_UNAVAILABLE_PLACEHOLDER_SRC);
+      expect(result.images[0].src).not.toContain(LIVE_SENTINEL);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
