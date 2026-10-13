@@ -113,6 +113,51 @@ function save(): unknown {
   return useWorkspace.getState().serializeObservationLedger();
 }
 
+/** The same report, read the way the store reads it in a live session and the way
+ *  a reopen reads it. The pair has to agree: D-1 was exactly this split, and every
+ *  writer that changes clinical text is supposed to answer through the one
+ *  predicate. Comparing the two answers asks no policy question — it does not say
+ *  which side is armed, only that a report cannot change its mind because it was
+ *  closed and opened again. */
+function answer() {
+  const s = useWorkspace.getState();
+  return {
+    needsRefresh: s.impressionNeedsRefresh,
+    reasons: [...s.impressionDependencyReasons].sort(),
+  };
+}
+
+function reopenCurrent() {
+  const payload = save();
+  const { findingsText, impressionText } = useWorkspace.getState();
+  reopen(payload, findingsText, impressionText);
+  return answer();
+}
+
+/** One Quick Select tile: its own sentence in Findings and its own in Impression,
+ *  which is what makes it removable and what makes the pairing claim it owns. */
+function addFractureTile() {
+  useWorkspace.getState().applyPathologyOverlay({
+    incoming: { findings: "There is also a C2 fracture.", impression: "C2 fracture." },
+    templates: { findings: "There is also a C2 fracture.", impression: "C2 fracture." },
+    ownership: { conflictGroup: "fracture", concept: "fracture", level: "C2" },
+    source: "quick-findings",
+    region: "Cervical Spine",
+    concept: "fracture",
+    level: "C2",
+    findingsText: "There is also a C2 fracture.",
+    id: "qs-c2-fracture",
+  });
+}
+
+/** A fresh, paired report the radiologist has approved: typed findings and the
+ *  summary that follows from them. */
+function approvedCordReport() {
+  useWorkspace.getState().setField("findings", CORD_FINDINGS, { source: "manual" });
+  useWorkspace.getState().setField("impression", OWNED_IMPRESSION, { source: "quick-select" });
+  expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+}
+
 describe("impression dependency — the reading itself", () => {
   beforeEach(() => resetWorkspace());
 
@@ -382,5 +427,201 @@ describe("impression dependency — session, save, reload, study switching", () 
     useWorkspace.getState().setField("findings", `${CORD_FINDINGS} There is also a C2 fracture.`, { source: "manual" });
     useWorkspace.getState().markImpressionReviewed();
     expect(useWorkspace.getState().impressionText).toBe(NORMAL_IMPRESSION);
+  });
+});
+
+/**
+ * THE FIVE TRANSITIONS, ONE QUESTION EACH.
+ *
+ * The brief for this branch asks whether the dependency survives removal, manual
+ * editing, save, reload and AI rewriting. Manual editing, save and reload were
+ * already pinned above. What was missing is the two ways a report moves that no
+ * keystroke produces: something being TAKEN OUT of the Findings, and the model
+ * writing into it.
+ *
+ * Both were found by reading the store's own rule back to it.
+ * `deriveImpressionDependency` is documented as the one derivation "every writer
+ * goes through — a keystroke, a Quick Select tile, dictation, a template, an
+ * accepted AI ghost, a ledger restore". Three writers did not go through it:
+ * `removeObservation`, the `missing-comparison` branch of `insertCopilotText`
+ * (the only branch of that action that does not end in `mergeField`), and
+ * `applyAiComposerAccepted`. Each produced the same failure, which is the failure
+ * this whole branch exists to kill: one answer in the session, a different one for
+ * the identical report after a reload. `undoLastPatch` and `applyMergedResult` —
+ * the actions that put text BACK — did already re-derive, which is what makes the
+ * other three an inconsistency rather than a second defensible design.
+ *
+ * The fourth thing measured here is that two candidate defects are not defects:
+ * a removal whose Impression sentence is the radiologist's own wording refuses
+ * outright (`preserved-manual`) rather than half-applying, and `relateralizePatches`
+ * was probed and gave the same answer live and reopened.
+ */
+describe("removal re-evaluates the dependency, in the session and not just after a reload", () => {
+  beforeEach(() => resetWorkspace());
+
+  it("removing a Quick Select observation gives the live session the same answer a reopen gives", () => {
+    approvedCordReport();
+    addFractureTile();
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+
+    expect(useWorkspace.getState().removeObservation("qs-c2-fracture")).toBe("removed");
+    const live = answer();
+    const reopened = reopenCurrent();
+    expect(
+      live,
+      `the live session said ${JSON.stringify(live)} while the same report after a reload says ${JSON.stringify(reopened)}`,
+    ).toEqual(reopened);
+    // The pair came off together — the tile's Findings sentence and its Impression
+    // sentence — so what is left is self-consistent and nothing is owed a re-read.
+    // That answer used to be arrived at by accident: the session never re-evaluated
+    // at all, which is why the same report said something different after a reload.
+    expect(live.needsRefresh).toBe(false);
+  });
+
+  it("a removal that a radiologist's own summary has outranked is refused, and the contradiction stays armed", () => {
+    approvedCordReport();
+    addFractureTile();
+    // The radiologist replaces the tile's sentence with a summary of their own —
+    // one that calls a compressed cord normal.
+    useWorkspace.getState().setField("impression", NORMAL_IMPRESSION, { source: "manual" });
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+
+    // The store now refuses to remove the observation at all: the sentence it
+    // generated is no longer in the summary, so nothing here is a pair coming off
+    // together. That refusal is what makes the rebase above safe — a removal only
+    // re-pairs the basis when both halves of the pair genuinely leave together.
+    expect(useWorkspace.getState().removeObservation("qs-c2-fracture")).toBe("preserved-manual");
+    const live = answer();
+    expect(
+      live.needsRefresh,
+      "the cord compression is still in the Findings and the summary still says normal",
+    ).toBe(true);
+    expect(live.reasons).toContain("impression-contradicts-findings");
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("removing a finding the radiologist re-worded in their own Impression is refused, not half-applied", () => {
+    useWorkspace.getState().setField("findings", CORD_FINDINGS, { source: "manual" });
+    addFractureTile();
+    // The radiologist does not repeat the tile's sentence — they write their own.
+    useWorkspace.getState().setField("impression", `${OWNED_IMPRESSION} A fracture is noted at C2.`, {
+      source: "manual",
+    });
+
+    expect(useWorkspace.getState().removeObservation("qs-c2-fracture")).toBe("preserved-manual");
+    // The finding stays, because the summary the radiologist wrote still names it.
+    // The two directions a removal could go wrong are both closed here: silently
+    // deleting a sentence the radiologist typed, or leaving an Impression that
+    // asserts a finding its Findings no longer describe.
+    expect(useWorkspace.getState().findingsText).toMatch(/C2 fracture/i);
+    expect(useWorkspace.getState().impressionText).toMatch(/fracture is noted at C2/i);
+    const live = answer();
+    expect(live.needsRefresh).toBe(false);
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("retiring an observation's Impression contribution stays armed across the reload", () => {
+    approvedCordReport();
+    addFractureTile();
+    useWorkspace.getState().setObservationImpressionParticipation("qs-c2-fracture", false);
+    const live = answer();
+    expect(live.needsRefresh).toBe(true);
+    expect(live.reasons).toContain("participation-changed");
+    expect(reopenCurrent().needsRefresh, "an arm that dies on reload is D-1 again").toBe(true);
+  });
+
+  it("a removal that changed nothing leaves the radiologist's own review intact", () => {
+    useWorkspace.getState().setField("findings", CORD_FINDINGS, { source: "manual" });
+    addFractureTile();
+    useWorkspace.getState().setField("impression", NORMAL_IMPRESSION, { source: "manual" });
+    useWorkspace.getState().markImpressionReviewed();
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+    expect(extractImpressionBasis(save())?.recordedBy).toBe("review");
+
+    // A refused removal re-reads the pairing; it does not re-claim it. Rebasing
+    // here would turn the review into an ordinary system write, and the summary
+    // that was reviewed would start nagging again for no action the radiologist
+    // took — and it would disagree with the same report after a reload, which is
+    // the whole shape of the bug this branch exists to remove.
+    expect(useWorkspace.getState().removeObservation("qs-c2-fracture")).toBe("preserved-manual");
+    const live = answer();
+    expect(live.needsRefresh, "nothing about the report changed").toBe(false);
+    expect(extractImpressionBasis(save())?.recordedBy).toBe("review");
+    expect(reopenCurrent()).toEqual(live);
+  });
+});
+
+describe("AI rewriting re-evaluates the dependency instead of inheriting the old answer", () => {
+  beforeEach(() => resetWorkspace());
+
+  it("an accepted AI Findings sentence over an approved Impression arms it", () => {
+    approvedCordReport();
+    useWorkspace.getState().mergeField(
+      "findings",
+      "There is also a C2 fracture.",
+      "ai-draft",
+    );
+    const live = answer();
+    expect(live.needsRefresh, "the model changed the findings; the summary was written over the old ones").toBe(true);
+    expect(live.reasons).toContain("findings-changed");
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("an accepted AI Impression sentence cannot clear an armed dependency", () => {
+    approvedCordReport();
+    useWorkspace.getState().mergeField("findings", "There is also a C2 fracture.", "ai-draft");
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+
+    useWorkspace.getState().mergeField("impression", REVISED_IMPRESSION, "ai-draft");
+    const live = answer();
+    expect(
+      live.needsRefresh,
+      "ai-draft owns neither side: a model's summary proves nothing about the findings behind it",
+    ).toBe(true);
+    expect(reopenCurrent().needsRefresh).toBe(true);
+  });
+
+  it("the rail's prior-comparison insert re-evaluates the findings it just changed", () => {
+    // `insertCopilotText` routes almost every item through mergeField, which
+    // re-derives — except the `missing-comparison` branch, which prepends its own
+    // sentence with a bare set(). Same button, two code paths.
+    useWorkspace.setState({
+      studies: [{ id: "study-1", accessionNumber: "A1" } as never],
+      activeStudyId: "study-1",
+    });
+    approvedCordReport();
+    useWorkspace.getState().insertCopilotText({
+      id: "missing-comparison",
+      kind: "missing",
+      studyId: "study-1",
+      insertText: "Comparison with the prior study of 12 August: there is a new C2 fracture.",
+      insertTarget: "findings",
+      provenance: "ai-draft",
+    } as never);
+
+    expect(useWorkspace.getState().findingsText).toMatch(/C2 fracture/);
+    const live = answer();
+    const reopened = reopenCurrent();
+    expect(
+      live,
+      `the rail changed the Findings and the session still says ${JSON.stringify(live)} while a reload says ${JSON.stringify(reopened)}`,
+    ).toEqual(reopened);
+  });
+
+  it("the Composer's accepted rewrite is re-read, not waved through", () => {
+    approvedCordReport();
+    useWorkspace.getState().applyAiComposerAccepted({
+      findings: `${CORD_FINDINGS} There is also a C2 fracture.`,
+      impression: NORMAL_IMPRESSION,
+      recommendation: "",
+    } as never);
+    const live = answer();
+    expect(
+      live.needsRefresh,
+      "a rewrite that summarises a compressed cord as normal is not presentation",
+    ).toBe(true);
+    expect(live.reasons).toContain("findings-changed");
+    expect(live.reasons).toContain("impression-contradicts-findings");
+    expect(reopenCurrent()).toEqual(live);
   });
 });
