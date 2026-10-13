@@ -83,6 +83,11 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "portal.ts", localPath: "/me/reports", fullPath: "/api/portal/me/reports" },
   { file: "portal.ts", localPath: "/me/appointments", fullPath: "/api/portal/me/appointments" },
   { file: "webauthn.ts", localPath: "/credentials", fullPath: "/api/auth/webauthn/credentials" },
+  // Admin 2FA (PR #979): GET /status answers { enabled } for the caller's own
+  // users row (staff.subjectId), so a shared admin terminal must never be
+  // served a cached answer for whoever logged in there last. The whole
+  // /api/portal/totp/ prefix is network-only in sw.js.
+  { file: "totp.ts", localPath: "/status", fullPath: "/api/portal/totp/status" },
   { file: "radiology.ts", localPath: "/user-findings-preferences", fullPath: "/api/radiology/user-findings-preferences" },
   { file: "radiology.ts", localPath: "/user-report-preferences", fullPath: "/api/radiology/user-report-preferences" },
   { file: "radiologyKnowledge.ts", localPath: "/personal-templates", fullPath: "/api/radiology/knowledge/personal-templates" },

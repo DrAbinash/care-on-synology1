@@ -6189,7 +6189,7 @@ function MyTotpSettings() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const setup = useMutation({
-    mutationFn: () => api.post<{ secret: string; otpauthUri: string }>("/api/portal/totp/setup"),
+    mutationFn: () => api.post<{ secret: string; otpauthUri: string }>("/api/portal/totp/setup", {}),
     onSuccess: (data) => {
       setSetupData(data);
       setVerifyCode("");

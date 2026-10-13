@@ -108,6 +108,12 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // /me/reports, /me/appointments — all match via this one prefix
                                                       // since "/api/portal/me" is itself a prefix of "/api/portal/me/bills" etc. (PHI)
   "/api/auth/webauthn/credentials",                  // caller's own registered passkeys
+  "/api/portal/totp/",                               // the caller's own 2FA state. Today's only GET is
+                                                      // /status, which answers "enabled" for the signed-in
+                                                      // admin; the whole prefix is excluded so a future
+                                                      // totp GET is safe by default, and because a cached
+                                                      // enabled:false on a shared admin terminal would
+                                                      // hide a second factor that is actually on.
   "/api/radiology/user-findings-preferences",        // per-radiologist findings display preferences
   "/api/radiology/user-report-preferences",          // per-radiologist report preferences
   "/api/radiology/knowledge/personal-templates",     // radiologist's own template library
