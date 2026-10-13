@@ -656,6 +656,45 @@ prompt file's duplicated switch arms, the 20 test files this Windows worktree ca
 the two `backupHealth` POSIX-path cases, and `CARE_ERP_OPEN_ISSUES.md` row 13's residual
 "no human has read today's durable PDF" (closed by §C.9).
 
+### Part 2 · Verdicts from the clinic box — read-only pass, 2026-10-13
+
+Every row below is what `AbinashNAS` answered when asked, in SSH as `abinash` with a
+read-only key, through `docker` (no `sudo`: `sudo -n` is refused on this account, which is
+why nothing here could have written). `care-api` `care-web` `care-db` `care-redis` were
+`Up 6 hours (healthy)`, created `2026-10-12T22:22:4xZ`; `care-db-patch-v2` and
+`care-schema-verify` both `Exited (0)` in the same window. No container was started,
+stopped, restarted or rebuilt to produce this table.
+
+| ID | Verdict | Evidence | Risk | Required action | Deployment impact |
+|---|---|---|---|---|---|
+| **CL-1** | **AUTHORIZATION REQUIRED** — pre-flight complete, audit not run | Target confirmed three ways: `current_database()=diagnostic_erp`, `server_version 16.14`, `pg_is_in_recovery()=f`; identity row `care-erp / production / bd62c32b92733266c8b521a171f88232 / 2026-07-08 08:53:46Z`; session default `default_transaction_read_only=off`, which is the value the audit overrides and then verifies. **The disagreement it will have to explain is already visible:** `schema_migrations_log` has 206 rows of which 15 are `kind=drizzle`, while `drizzle.__drizzle_migrations` holds 17 and `schema_deploy_state` 19 | Two Drizzle files are tracked by Drizzle's own table and not by the app's ledger. That is the exact shape of a half-applied migration, and `/api/health/schema` cannot see it — it reports `pass_with_warnings`, `issues=0`, 206 migrations, 462 live tables, 6,857 live columns | Run §A.3 **with `-p care-erp-github`** and read the `N critical, M warnings, K informational` line; keep it with the date | **Blocks every deploy**, including code-only, because the two critical codes describe objects the running app already assumes |
+| **CL-2** | **NOT TESTED** — the artifacts exist and are fresh; restorability is unproven | Newest: `/volume1/backup/care-erp/db/backup_DB_2026-10-13T03-30-57-419Z.sql.enc`, 775,648,192 B, mode 0644. 1,272 `db` artifacts back to 2026-09-13; `notes` records `pg_dump` on 6,752 of 6,813 runs, so schema-complete rather than the data-only fallback. **`public.backup_verification` has 0 rows** | Not one restore has ever been proven on this box. The 30-day history spans the `SESSION_SECRET` rotation of ~2026-10-03 and nothing records which key sealed which file | Run §B.4 on the **newest and the oldest** `db` artifact separately; confirm `BACKUP_PASSPHRASE` is also stored off-box | **Blocks a schema-shipping deploy** (migrations here are forward-only; a restore is the only rollback) |
+| **CL-3** | **PASS on the precondition / FAIL on the proof** | `deploy-synology.sh` still takes no backup (its own steps are `git reset --hard` → `compose down --remove-orphans` → `up -d --build`), but the hourly job produced artifacts at 22:30 and 22:32 on 2026-10-12, the same night the containers were recreated at 22:22 | The safety net exists by accident of a scheduler, not by the deploy path. If CL-2 has not passed, the net is untested | Record `$BD` artifact name + `docker inspect … image=` for `care-api care-web` inside the deploy window, before step 1 | **Yes if CL-2 is not done** |
+| **CL-4** | **PASS, with a named fragility** | `GET http://172.16.1.139:8042/system` from inside `care-api` → **HTTP 200 in 50–67 ms**; `/dicom-web/studies?limit=1` → 200; `/plugins` = explorer.js, dicom-web, orthanc-worklists, postgresql-index; `/statistics` = 2,654 patients / 2,681 studies / 9,973 series / 242,278 instances. `care-orthanc` by name → **DNS fail ENOTFOUND** (separate project, separate bridge). `192.168.1.137:8042` from the same container → **TimeoutError** | PACS reachability depends on `eth1` keeping `172.16.1.139`. Renumber that interface and image attach stops, with no schema or config error anywhere | Decide: join `care-pacs-net` to the ERP project (needs authorization + restart), or keep the address and monitor it. Write the choice into `deploy/synology/care.env`, which currently records `172.16.1.139:7080` while the live value is `192.168.1.137:7080` | **No** for reports. Image attach has a working server leg today |
+| **CL-5** | **FAIL for viewer-side claims** | `care-ohif-enterprise:v1`, `builtAtUtc 2026-10-10T05:14:48Z`, `careViewerVersion 1.2.0-p2-radiologist`, `ohifRef v3.10.0`, `ohifCommit 0b6e9cba…`, no `care-pacs` SHA. All five hand-written `care-*.js` served by that image are byte-identical to `care-pacs origin/main` (`ddef581`) after LF normalization, but the 6.89 MB app bundle contains only the **snapshot** form `window.__CARE_OHIF__={servicesManager:…}` | The D2 displayed-image fixes authored after that build (care-pacs `d9a3eb9`, 2026-10-10 18:12Z) are **not deployed**. Saying "D2 is live" is false; saying "D2 is broken" is equally false — it is dormant | Owner authorizes a `care-ohif` rebuild; re-read the bundle afterwards | **No** for the ERP. **Yes** for any viewer-side claim |
+| **CL-6** | **FAIL — and now live rather than hypothetical** | `integration_outbox` 0 rows, `integration_delivery_attempts` 0 rows, `external_result_links` 0/0/0, partner audit log 1 row. Callback configured: `http://192.168.1.137:7080/api/integration/care-callback`, partner `HOPE` active, `last_used_at 2026-08-14 05:07:48Z`. From inside `care-api` that URL → **TimeoutError after 9,001 ms**, while the NAS host reaches it → **HTTP 302 in 10 ms**. And `ff_hope_care_referrals.enabled = t`, updated **2026-10-12 22:24:28Z** — switched on at the last deploy | The register's own precondition has now been violated in production: the flag is on for an endpoint the application cannot reach. A signed referral report will queue, retry to `max_attempts` 8 and dead-letter, and nothing in the ERP UI says so | **Owner decision, both ways are config changes + a restart:** repoint the callback at the address measured to work (`172.16.1.139:7080`), or set `ff_hope_care_referrals` back to `f` until §D.4–D.8 pass on one authorized case | **Blocks Hope referral traffic.** Not the ERP report path |
+| **CL-7** | **AUTHORIZATION REQUIRED** — unchanged, owner-deferred | The NAS checkout carries untracked `.env.before-rotate-2026-10-03`, `BEFORE-QODER.env`, `before1234.env` and a modified `STARTUP_SCHEMA_VERIFICATION.md`; `HOPE_PARTNER_KEY`, `INTEGRATION_HOPE_SIGNING_SECRET`, `INTERNAL_API_KEY`, `SESSION_SECRET`, `DATABASE_URL` all report `set` (values never printed) | A rotation has already happened once without history remediation, and it is the same event that may make September's backups undecryptable (CL-2) | Owner's rotation window + history remediation, and this time record which key sealed which artifact | **No** — standing exposure, not a deploy gate |
+| **CL-8** | **NOT TESTED** | Nothing NAS-side bears on it; `lib/reportImages.ts:186` still returns `null` for every non-OK response on `main` | A 429, a 500, a timeout and a corrupt object are one event, so staff are told "no image" for four different faults | Typed outcome from `fetchPrintImageBytes` + a `*.request.test.ts` per class, then the four messages read on a screen | **No** |
+| **CL-9** (new) | **FAIL** — exposure, not a fault of this deploy | Published on every interface (`0.0.0.0`): `care-orthanc` **8042 and 5680**, `care-ohif` 3010, `care-web` 8888, `hope_hospital_app` 7080, plus the staging stack's 8091/3012/8043. `care-db` is correctly `127.0.0.1:5400` only, `d2stg-db` `127.0.0.1:5401` | 5680 is `care-pacs/docker-compose.yml:70` `"5680:4242"   # DICOM C-STORE / C-ECHO / MWL C-FIND`, published on `0.0.0.0`: any device on the clinic LAN can call `C-STORE` into the production index unauthenticated. 8042 likewise exposes the whole DICOMweb query API to the LAN | Owner decision on the firewall/publication surface; **not** a documentation item | **No** for this deploy. **Yes** for calling the PACS box production-hardened |
+| **CL-10** (new) | **PASS on isolation / FAIL on provenance** | A whole second stack runs beside production: `d2stg-api` `d2stg-web` `d2stg-db` `d2stg-redis` `d2stg-ohif` `d2stg-orthanc`, `Up 2 days`, on project `care-erp` (`docker-compose.yml` + `docker-compose.staging.yml`) from `/volume1/docker/care-d2-staging/care-erp`, which is **not a git repository**. Its DB is `care_d2_staging_db_data` on `care-erp_default` with **0 patients**; `care-db` does not resolve from `d2stg-api` (ENOTFOUND); both APIs read `db:5432/diagnostic_erp`, which resolves inside their own project only | Patient data is provably not shared — that part is good news. But staging acceptance results cannot be tied to a SHA, and `d2stg-orthanc` runs `orthancteam/orthanc:latest`, an unpinned tag | Either version the staging tree or stop presenting its verdicts as evidence for production | **No** |
+
+**Refuted by this pass** — recorded because each was previously asserted somewhere in these
+documents, and none of them is true of this box:
+
+1. "The clinic has no backups since 2026-08-26." False: ~203 GB under `/volume1/docker/backups`
+   is the abandoned pre-fix default, and the live `BACKUP_HOST_DIR=/volume1/backup/care-erp` has
+   been written hourly through today. The `BACKUP_HOST_DIR` bind did its job.
+2. "A container cannot reach the NAS's own LAN IP on a published port." False as stated: it
+   reaches `172.16.1.139` and times out to `192.168.1.137`. Interface-specific, not a rule.
+3. "`/api/health` names the deployed build." False: it reported `build.commit=2d51e8d7` while the
+   checkout was at `46d36612`, because `GIT_COMMIT` in `.env` is what gets baked.
+4. "The staging stack may be reading the production patient database." False, and now measured:
+   separate project, separate bridge, separate volume, `0` patients, `care-db` unresolvable from it.
+5. "`wget`-based §C/§D probes are runnable." False: `care-api` has no `wget`, no `nc`, no
+   `python3` — `curl` and `node v22.22.3` only. Those probes are rewritten in §C and §D.
+6. The `d2stg-*` staging DB's `db_data`-style volume holds real patient data (believed from an
+   earlier round on a different box). Not here.
+
 ### Gate rule
 
 A deploy is **cleared** when all four are true:
@@ -684,3 +723,15 @@ Anything else is a **WARNING** to be read, not a failure to be talked past. A gr
 **Decision carried into this gate: CONDITIONALLY READY** — no P0 in the code, one P0-shaped
 unknown that only §A can settle, and four NAS-side verifications this repository can ask for
 but cannot answer for the clinic.
+
+**Decision after the read-only pass of 2026-10-13: still CONDITIONALLY READY, and the condition
+has moved.** §A's pre-flight passed on all five points and the audit itself is the only thing
+standing between this box and a cleared database, so CL-1 is one authorized command away from
+closing. What changed is CL-6: the referral flag went on at the 2026-10-12 22:24 deploy, so
+"sends into an endpoint nobody has observed answering" is no longer a warning about a hypothetical
+rollout — it is the current production state, and it is the one item on this page that can hurt a
+patient today. Two rows also gained facts nobody had before: the backups are healthier than this
+page assumed (CL-2, hourly and schema-complete) and the network is looser than it assumed (CL-9).
+
+Nothing in this register was closed by a test run, and a green CI on `main` closes none of it.
+Deploy remains the owner's decision.
