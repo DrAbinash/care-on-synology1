@@ -48,6 +48,20 @@ export {
 } from "./rules/measurements";
 export { normalizeModality, modalityMatches } from "./modality";
 export type { CanonicalModality } from "./modality";
+// The reporting-region vocabulary and the printed scope note. Both printed
+// surfaces need the same answers — the report document is rendered server-side
+// and the workspace PDF client-side — so this lives here, not in either app.
+export {
+  familyFromRegion,
+  isDorsoLumbarRegionName,
+  spineSegmentFromRegion,
+  canonicalContentRegion,
+  coverageOfRegion,
+  coverageUnionOfRegions,
+} from "./reportingRegion";
+export type { ReportingFamily, SpineSegment, SpineCoverageSegment } from "./reportingRegion";
+export { documentedReportingScope, reportedScopeNote } from "./reportingScope";
+export type { DocumentedReportingScope, ReportedScopeRecord } from "./reportingScope";
 export { defaultScorer } from "./score";
 export { textParityScorer } from "./text/scorer";
 // Ported legacy checks (shadow copies). Exported so callers can migrate onto

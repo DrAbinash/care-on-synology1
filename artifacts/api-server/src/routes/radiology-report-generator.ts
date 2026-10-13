@@ -132,7 +132,12 @@ import {
 import {
   buildCareStructuredJsonPatch,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
+  extractCareRegionTransitions,
 } from "../lib/structuredJsonColumn";
+// The printed page and the workspace PDF must state the same documented
+// reporting region, so the rule that decides it lives in the shared package
+// neither app owns (`lib/report-quality/src/reportingScope.ts`).
+import { reportedScopeNote } from "@workspace/report-quality";
 import {
   checkDraftStructuredJsonDrift,
   scanDraftsForStructuredJsonDrift,
@@ -2284,6 +2289,16 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     || worklist?.studyDescription?.trim()
     || `${draft.modality ?? worklist?.modality ?? ""} Study`.trim()
   ).toUpperCase();
+  // The heading above is the booked examination and stays it. When the
+  // radiologist recorded a region transition (ADR-004), the body of this report
+  // documents a different — usually narrower — region, and the reader of the
+  // paper needs to know that was decided, not missed. Derived only from the
+  // stored transition record; null for every report that has never been
+  // re-regioned, which is what keeps those pages byte-identical.
+  const reportingScopeNote = reportedScopeNote({
+    bookedTitle: studyTitle,
+    records: extractCareRegionTransitions(draft.structuredJson),
+  }) ?? undefined;
   const formattedStudyDate = formatReportDate(worklist?.studyDate ?? null);
 
   // Body: findings sections + impression + recommendation from the draft row
@@ -2473,6 +2488,7 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     ],
     bodyHtml,
     keyImages,
+    reportingScopeNote,
     safeguardBannerHtml: frozenIntegrityBanner || undefined,
     stamp: likeFinal
       ? { kind: "pending", label: "" }

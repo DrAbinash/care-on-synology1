@@ -39,52 +39,17 @@ import {
   type ReportingSource,
 } from "./reportingStudyContext";
 import { readStaffSession } from "./staffSession";
+// Coverage is the region vocabulary's own question, and the printed page asks it
+// from the API server too — so it is defined once, in `@workspace/report-quality`
+// (`lib/report-quality/src/reportingRegion.ts`), and re-exported here unchanged.
+import {
+  coverageOfRegion,
+  coverageUnionOfRegions,
+  type SpineCoverageSegment,
+} from "@workspace/report-quality";
 
-export type SpineCoverageSegment = "cervical" | "dorsal" | "lumbar";
-
-/** Everything a reporting region actually acquires. */
-export function coverageOfRegion(region: string | null | undefined): Set<SpineCoverageSegment> | null {
-  const canonical = canonicalContentRegion(region);
-  const segment = spineSegmentFromRegion(canonical || (region ?? ""));
-  switch (segment) {
-    case "cervical":
-      return new Set<SpineCoverageSegment>(["cervical"]);
-    case "dorsal":
-      return new Set<SpineCoverageSegment>(["dorsal"]);
-    case "lumbar":
-      return new Set<SpineCoverageSegment>(["lumbar"]);
-    case "dorsolumbar":
-      return new Set<SpineCoverageSegment>(["dorsal", "lumbar"]);
-    case "whole":
-      return new Set<SpineCoverageSegment>(["cervical", "dorsal", "lumbar"]);
-    // "generic" (the bare "Spine" tab), null (non-spine) and anything unresolved.
-    default:
-      return null;
-  }
-}
-
-/**
- * The union of what a whole region SELECTION acquires.
- *
- * The Study / Region chips are multi-select, and clicking one that is already selected
- * makes it primary rather than removing it (`nextStudyRegions`). Coverage is therefore a
- * property of the list, not of its first entry: Cervical + LS Spine acquires two segments,
- * and re-ordering it must not read as a narrowing that retires anything.
- * Null when nothing in the list is spine — the same "no opinion" answer `coverageOfRegion`
- * gives for a single region.
- */
-export function coverageUnionOfRegions(
-  regions: readonly (string | null | undefined)[],
-): Set<SpineCoverageSegment> | null {
-  let union: Set<SpineCoverageSegment> | null = null;
-  for (const region of regions) {
-    const coverage = coverageOfRegion(region);
-    if (!coverage) continue;
-    if (!union) union = new Set(coverage);
-    else for (const segment of coverage) union.add(segment);
-  }
-  return union;
-}
+export { coverageOfRegion, coverageUnionOfRegions };
+export type { SpineCoverageSegment };
 
 const LEVEL_SEGMENT: Record<string, SpineCoverageSegment> = {
   cervical: "cervical",

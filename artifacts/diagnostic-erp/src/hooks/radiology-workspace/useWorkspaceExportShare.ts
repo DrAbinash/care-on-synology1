@@ -365,6 +365,9 @@ const handleExportPdf = useCallback(async () => {
       showLetterpadHeader,
       measurements,
       doctorsCatalog: doctorsCatalogQ.data ?? [],
+      // Read at export time, like the reporting context above: this is the
+      // transition history of the study being printed, not reactive UI state.
+      regionTransitions: useWorkspace.getState().regionTransitions,
     });
   } catch (err) {
     toast({

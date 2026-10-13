@@ -17,6 +17,7 @@
  */
 
 import { thumbnailRenderedUrl, type ReportImageRef } from "./reportImageRefs";
+import { reportedScopeNote, type ReportedScopeRecord } from "@workspace/report-quality";
 import { generateReportPDF, loadPrintSettings, type PrintClinic, type ReportKeyImage } from "./reportPdfGenerator";
 import type { CareLetterpadChrome } from "./careLetterpadChrome";
 import { dicomWebFetch } from "./browserDicomWeb";
@@ -296,6 +297,14 @@ export interface RadiologyPdfExportInput {
   measurements?: Array<{ label: string; value: string }>;
   /** Settings → Doctors master — signature degree + REF. BY enrichment. */
   doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
+  /**
+   * ADR-004 region-transition history from the open study's store. The note is
+   * computed here, from the same `studyName` this call prints as the title, so
+   * the heading and the sentence under it can never be derived from two
+   * different inputs — and so the PDF says what the server's print document
+   * says, because both call the one shared rule.
+   */
+  regionTransitions?: readonly ReportedScopeRecord[] | null;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -329,6 +338,12 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
+      // Same rule, same booked title: the PDF and the server's print document
+      // cannot end up describing different anatomy for one study.
+      reportingScopeNote: reportedScopeNote({
+        bookedTitle: input.studyName || "Radiology Report",
+        records: input.regionTransitions ?? [],
+      }) ?? undefined,
     },
     {
       ...settings,
