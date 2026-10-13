@@ -131,7 +131,6 @@ describe("pickStructuredTemplateForRegion", () => {
       TEMPLATES,
       "MR",
       "LS Spine",
-      "MRI",
     );
     expect(match?.bodyPart).toBe("SPINE_LS");
     expect(match?.templateName).not.toMatch(/brain/i);
@@ -165,7 +164,6 @@ describe("pickStructuredTemplateForRegion", () => {
       TEMPLATES,
       "MR",
       "Knee",
-      "MRI Brain Plain",
     );
     expect(match).toBeNull();
   });

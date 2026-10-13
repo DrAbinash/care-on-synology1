@@ -172,7 +172,7 @@ describe("reporting content wiring — one resolved context for all consumers", 
     expect(ctx.source).toBe("unresolved");
     expect(ctx.region).toBeNull();
     expect(chocolateBoxSetFor(ctx)).toBeNull();
-    expect(pickStructuredTemplateForRegion(TEMPLATES, ctx.modality, ctx.region, ctx.studyDescription)).toBeNull();
+    expect(pickStructuredTemplateForRegion(TEMPLATES, ctx.modality, ctx.region)).toBeNull();
     expect(pickQuickProtocol(PROTOCOLS, ctx.region)).toBeNull();
     expect(lookupTilesForContext(DEFAULT_QUICK_SELECT_TILES, "findings", "MR", ctx).every((t) => !t.scopeBodyPart)).toBe(true);
     expect(lookupMacrosForContext(DEFAULT_SNIPPET_MACROS, "MR", ctx).every((m) => !m.scopeBodyPart)).toBe(true);
@@ -185,7 +185,7 @@ describe("reporting content wiring — one resolved context for all consumers", 
     expect(ctx.family).toBe("unknown");
     expect(studyRegionToBodyPart("Knee")).toBeNull();
     expect(chocolateBoxSetFor(ctx)).toBeNull();
-    expect(pickStructuredTemplateForRegion(TEMPLATES, "MR", "Knee", "MRI Brain Plain")).toBeNull();
+    expect(pickStructuredTemplateForRegion(TEMPLATES, "MR", "Knee")).toBeNull();
   });
 });
 

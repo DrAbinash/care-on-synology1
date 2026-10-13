@@ -6,6 +6,13 @@
  */
 
 import { templateCatalogModality } from "./radiologyTemplateModality";
+// What one template row is allowed to document is the same question the normal-format
+// resolver asks, so it is answered by the same function rather than a second spelling.
+import {
+  coverageExceeds,
+  formatDocumentedCoverage,
+  type SpineCoverageSegment,
+} from "@workspace/report-quality";
 
 export type StructuredTemplateMatch = {
   bodyPart: string;
@@ -186,24 +193,36 @@ export function pickStructuredTemplate<T extends StructuredTemplateRow>(
  * Prefer the already-resolved study-region chip over re-parsing StudyDescription.
  * When a region is present but does not map to a template bodyPart, return null
  * rather than guessing (the old MRI default was Brain).
+ *
+ * `ceiling` is what the report is still allowed to document — see
+ * `documentedCoverageCeiling`. A Templates-screen row declares its own reach in
+ * `study_type` / its name ("… with Whole Spine Screening" documents the dorsal and
+ * lumbosacral spine from a Cervical row), and a row that declares more than the
+ * ceiling is not the row for this report. Null caps nothing, which is what a study
+ * with no recorded region decision needs: its own booking stays in charge.
  */
 export function pickStructuredTemplateForRegion<T extends StructuredTemplateRow>(
   templates: T[],
   modality: string | null | undefined,
   region: string | null | undefined,
-  _studyDescription?: string | null,
+  ceiling?: Set<SpineCoverageSegment> | null,
 ): T | null {
   const mod = templateCatalogModality(modality);
   const bodyPart = studyRegionToBodyPart(region);
   if (!bodyPart) return null;
   const pool = templates.filter((t) => templateCatalogModality(t.modality) === mod);
   const byBody = pool.filter((t) => t.bodyPart === bodyPart);
-  const preferred = preferRegionDefault(byBody);
-  if (preferred) return preferred;
-  const inferred: StructuredTemplateMatch = { bodyPart, studyType: "PLAIN" };
-  const byName = pool.find((t) => nameHintMatch(t.templateName, inferred));
-  if (byName) return byName;
-  return null;
+  // The row is matched by body part, so its own base coverage is this region; only its
+  // declaration can widen it. `formatDocumentedCoverage` is the same reading the normal
+  // format resolver uses, which is the point: one rule, two ways a report gets its prose.
+  const withinScope = ceiling
+    ? byBody.filter((t) => !coverageExceeds(formatDocumentedCoverage({
+      bodyPart: region,
+      protocolScope: t.studyType,
+      diagnosisTags: [t.templateName],
+    }), ceiling))
+    : byBody;
+  return preferRegionDefault(withinScope) ?? null;
 }
 
 /** True when loaded template anatomy disagrees with resolved study region. */

@@ -2284,6 +2284,10 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     const decision = resolveNormalBootstrapFormat({
       ctx,
       formats: state.reportFormats,
+      // The auto-open must not undo what the radiologist recorded: a report moved
+      // to one segment opens with a format that documents that segment, not with
+      // the booked examination's whole-spine screening template.
+      records: state.regionTransitions,
     });
     if (decision == null) return; // identity / library unresolved yet — may retry
     normalBootstrapDoneRef.current = studyId; // decision made — never again this study

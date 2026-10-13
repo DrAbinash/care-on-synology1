@@ -37,7 +37,7 @@ import {
   type ReportingStudyContext,
 } from "@/lib/reportingStudyContext";
 import { combineStudyRegionTitle } from "@/lib/combineStudyRegions";
-import { planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
+import { documentedCoverageCeiling, planRegionTransition, regionTransitionActor, type RegionTransitionPlan } from "@/lib/regionTransition";
 import { resolvedChocolateBoxSet, type ChocolateBoxSet } from "@/lib/findingsMacros";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import type { InsertSource } from "@/lib/reportFieldMerge";
@@ -276,6 +276,29 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     ],
   );
 
+  /**
+   * What this report is still allowed to document, as a ceiling on automatic selection.
+   *
+   * The Templates-screen row is matched by body part, and a Cervical row can declare it
+   * also screens the dorsal and lumbosacral spine ("… with Whole Spine Screening"). A
+   * report the radiologist has recorded as cervical-only must not be handed that row by
+   * itself: the segments it retired would come back as normal statements, with no decision
+   * behind them. An explicit region choice caps the report at what was chosen — selecting
+   * "Cervical Spine" in the control is a declaration of the cervical spine, not of the
+   * whole spine. This is the same ceiling the normal-format resolver applies (#970's
+   * follow-up), computed from the same record, so the two ways CARE gives a report its
+   * prose cannot disagree.
+   */
+  const regionTransitionRecords = useWorkspace((s) => s.regionTransitions);
+  const coverageCeiling = useMemo(
+    () => documentedCoverageCeiling({
+      source: studyContext.source,
+      regions: studyContext.regions.length ? studyContext.regions : [studyContext.region],
+      records: regionTransitionRecords,
+    }),
+    [studyContext.source, studyContext.regions, studyContext.region, regionTransitionRecords],
+  );
+
   /** Canonical Study Tab id for the primary selected region (Section 1). */
   const selectedStudyTabId = useMemo(() => {
     const name = matchedStudyRegion;
@@ -501,12 +524,12 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     if (!matchedStudyRegion) return;
     if (lastRegionForTemplateRef.current === matchedStudyRegion) return;
     lastRegionForTemplateRef.current = matchedStudyRegion;
-    const match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion);
+    const match = pickStructuredTemplateForRegion(templates, modality, matchedStudyRegion, coverageCeiling);
     if (!match) return;
     autoTemplateForStudyRef.current = studyId;
     templateApplySourceRef.current = "auto";
     setSelectedTemplateId(match.id);
-  }, [studyId, templates, modality, matchedStudyRegion, draftHydrated]);
+  }, [studyId, templates, modality, matchedStudyRegion, coverageCeiling, draftHydrated]);
 
   // Apply template content fill-empty-only on auto; full replace on manual.
   useEffect(() => {
@@ -728,7 +751,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       templates,
       modality,
       matchedStudyRegion,
-      studyDescription,
+      coverageCeiling,
     );
     if (match) {
       selectTemplateManual(match.id);
@@ -736,9 +759,20 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
         title: "Template loaded",
         description: match.templateName,
       });
+      return match;
     }
-    return match;
-  }, [disabled, matchedStudyRegion, templates, modality, studyDescription, selectTemplateManual, onToast]);
+    // A button that silently does nothing is read as a broken button. Saying only that the
+    // report documents less than the template is also saying what to do about it, because a
+    // template the radiologist picks from the list themselves is a decision, not an
+    // automatic claim about anatomy.
+    if (coverageCeiling) {
+      onToast?.({
+        title: "No template applied",
+        description: `This report documents ${matchedStudyRegion}. A template that also documents more than that is not applied by itself — pick it in the Templates list if the wider examination was actually performed.`,
+      });
+    }
+    return null;
+  }, [disabled, matchedStudyRegion, templates, modality, coverageCeiling, selectTemplateManual, onToast]);
 
   /** Reload default protocol + template for current region(s). */
   const reapplyDefaults = useCallback((opts?: { confirm?: boolean }) => {
@@ -758,7 +792,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       else if (i === 0) setActiveProtocol(null);
     });
     const primary = studyRegions[0] ?? matchedStudyRegion;
-    const match = pickStructuredTemplateForRegion(templates, modality, primary, studyDescription);
+    const match = pickStructuredTemplateForRegion(templates, modality, primary, coverageCeiling);
     if (match) selectTemplateManual(match.id);
     onToast?.({
       title: "Study setup applied",
@@ -766,7 +800,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     });
   }, [
     disabled, studyRegions, matchedStudyRegion, quickSelectData, applyProtocol,
-    templates, modality, studyDescription, selectTemplateManual, onToast,
+    templates, modality, coverageCeiling, selectTemplateManual, onToast,
   ]);
 
   /**
@@ -808,7 +842,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
       templates,
       modality,
       studyRegions[0] ?? matchedStudyRegion,
-      studyDescription,
+      coverageCeiling,
     );
     if (!match) return { templateId: null };
     // Selecting a template the way the Templates dropdown does —
@@ -824,7 +858,7 @@ export function useReportingStudySetup(args: UseReportingStudySetupArgs) {
     return { templateId: match.id };
   }, [
     disabled, studyRegions, setters, quickSelectData, applyProtocol,
-    selectedStudyTabId, templates, modality, studyDescription, matchedStudyRegion,
+    selectedStudyTabId, templates, modality, coverageCeiling, matchedStudyRegion,
   ]);
 
   /** Parse findings section cards from the selected structured template. */
