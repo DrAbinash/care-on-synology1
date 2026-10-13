@@ -96,6 +96,49 @@ const FIXTURES: Record<string, QualityInput> = {
     impression: ["Left BI-RADS category 2 — benign. Routine follow-up."],
     recommendation: "Ultrasound correlation.",
   },
+  // Held out for the three checks STEP 3 moved onto the editor path. Each of
+  // these arms a rule the live validator did not have, so the pair below is the
+  // proof that the workstation badge and the server's persisted findings say the
+  // same sentence about the same report — not that one of them stays quiet.
+  "MRI cervical spine, plain, describing dural enhancement": {
+    modality: "MR",
+    studyDescription: "MRI CERVICAL SPINE (PLAIN)",
+    sex: "male",
+    age: "47",
+    technique: "Multiplanar multisequence MRI of the cervical spine performed without contrast.",
+    clinicalHistory: "Neck pain with bilateral hand numbness.",
+    findings:
+      "C5-C6 disc herniation indenting the thecal sac and compressing the cervical cord. " +
+      "Diffuse dural enhancement is present. No fracture.",
+    impression: ["C5-C6 disc herniation with cervical cord compression."],
+    recommendation: "Neurosurgical review.",
+  },
+  "MRI cervical spine reporting lumbar levels": {
+    modality: "MR",
+    studyDescription: "MRI CERVICAL SPINE (PLAIN)",
+    sex: "female",
+    age: "39",
+    technique: "Sagittal T1W, T2W and STIR with axial T2W images at C3-C4 to C6-C7.",
+    clinicalHistory: "Left leg radicular pain.",
+    findings:
+      "L4-L5 disc extrusion with left S1 root contact. The C5-C6 disc is preserved with no cord compression. " +
+      "The dorsal spine is normal.",
+    impression: ["L4-L5 disc extrusion with left S1 root contact."],
+    recommendation: "Clinical correlation.",
+  },
+  "CT abdomen with a diagnosis the Findings never describe": {
+    modality: "CT",
+    studyDescription: "CT ABDOMEN AND PELVIS (WITH CONTRAST)",
+    sex: "male",
+    age: "66",
+    technique: "CT abdomen and pelvis with intravenous contrast, portal venous phase.",
+    clinicalHistory: "Weight loss and incidental haematuria.",
+    findings:
+      "The liver, spleen and pancreas are normal. Both kidneys are unremarkable with no solid lesion. " +
+      "No lymphadenopathy. No free fluid.",
+    impression: ["Normal abdominal examination. Renal cell carcinoma is not excluded."],
+    recommendation: "Urology referral.",
+  },
 };
 
 describe("report-quality shadow parity (legacy vs canonical engine)", () => {
@@ -109,6 +152,32 @@ describe("report-quality shadow parity (legacy vs canonical engine)", () => {
       expect(p.warningsMatch).toBe(true);
     });
   }
+
+  // Parity on a report nobody flags is worth nothing — both paths agreeing to
+  // stay quiet is the easiest agreement there is. These three fixtures exist so
+  // that the checks STEP 3 put on the editor path are proven to arm there, with
+  // the server's own sentence, on the same report.
+  it("arms each STEP 3 check on the workstation path with the engine's wording", () => {
+    const armed: [string, string][] = [
+      [
+        "MRI cervical spine, plain, describing dural enhancement",
+        "Contrast contradiction: this study was performed without contrast, but the report describes enhancement.",
+      ],
+      [
+        "MRI cervical spine reporting lumbar levels",
+        "Anatomical scope: the report describes L4-L5, S1, thoracic, which this examination did not cover.",
+      ],
+      [
+        "CT abdomen with a diagnosis the Findings never describe",
+        "Ungrounded impression: the Impression states carcinoma, which no other section of this report describes.",
+      ],
+    ];
+    for (const [name, message] of armed) {
+      const p = computeParity(FIXTURES[name]);
+      expect(p.legacyWarnings, `${name} — workstation`).toContain(message);
+      expect(p.engineWarnings, `${name} — server`).toContain(message);
+    }
+  });
 
   it("keeps every free-text finding advisory — no blockers from the text tier", () => {
     for (const input of Object.values(FIXTURES)) {

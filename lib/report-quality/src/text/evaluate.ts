@@ -19,8 +19,12 @@ import type { TextReportInput } from "../contract";
 import type { RuleId } from "../ruleCatalog";
 import {
   assertedAbnormality,
+  assertedContrastMention,
   assertsStudyNormal,
   assessmentCategories,
+  outOfScopeSpineContent,
+  studyContrastState,
+  ungroundedNamedDiagnoses,
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
@@ -194,15 +198,23 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     emit("Q111", "Modality terminology mismatch: ultrasound wording (hyperechoic/acoustic shadowing) found inside a cross-sectional report.", W);
   }
 
-  // Q112 — contrast contradiction
-  const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
-  const isContrastStudy = !isNonContrastStudy &&
-    (studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI"));
-  if (isNonContrastStudy && ["gadolinium", "contrast enhancement", "post-contrast"].some((w) => fullTextLower.includes(w))) {
-    emit("Q112", "Contrast contradiction: a non-contrast study mentions contrast enhancement or gadolinium.", W);
-  }
-  if (isContrastStudy && ["no contrast was administered", "non-contrast study"].some((w) => fullTextLower.includes(w))) {
-    emit("Q112", "Contrast contradiction: a contrast study mentions that no contrast was administered.", W);
+  // Q112 — contrast contradiction. The examination's own contrast state is read
+  // from the study description AND the Technique line, because this clinic's
+  // worklist titles a plain study "MRI CERVICAL SPINE (PLAIN)" and puts the
+  // protocol in Technique. The check used to look only at the description and only
+  // for WITHOUT CONTRAST / NCCT / NON-CONTRAST, so on this clinic's naming neither
+  // branch was ever true and the rule never armed — measured, not assumed.
+  // Enhancement is read with the same denial logic as a fracture: "no abnormal
+  // gadolinium enhancement" on a plain study is the correct sentence, and treating
+  // it as a claim would mark up every normal MRI in the building.
+  const contrastState = studyContrastState(report.studyDescription, report.technique);
+  const clinicalAssertions = `${findingsText} ${impressionText}`;
+  if (contrastState === "plain" && assertedContrastMention(clinicalAssertions)) {
+    emit("Q112", "Contrast contradiction: this study was performed without contrast, but the report describes enhancement.", W);
+  } else if (contrastState === "contrast"
+    && (/\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
+      || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions))) {
+    emit("Q112", "Contrast contradiction: contrast was administered, but the report states that no contrast was given.", W);
   }
 
   // Q113 / Q114 — findings vs impression contradiction (both directions). The
@@ -236,6 +248,42 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     } else if (highest >= 3 && !assertedAbnormality(findingsText, NAMED_LESION_TERMS)) {
       emit("Q116", `BI-RADS contradiction: category ${highest} is asserted but the Findings name no lesion to support it.`, W);
     }
+  }
+
+  // Q117 — a named diagnosis no other section describes. Summary wording is
+  // allowed: "mild chronic small vessel ischaemic disease" over punctate
+  // white-matter lesions is correct radiology, which is why this rule is limited to
+  // entity names (a tumour, an infection, an infarct) and asks only whether the
+  // same entity appears anywhere else in the report. An entity that appears nowhere
+  // else is not a re-description of anything — and a named diagnosis moves
+  // patients: antibiotics, a biopsy, a Whipple, a laparotomy. An inflammatory
+  // diagnosis also counts as described when the organ it names is described,
+  // because "dilated blind-ending tubular structure with periappendiceal stranding"
+  // is how this clinic writes appendicitis; a neoplasm gets no such reading.
+  const ungrounded = ungroundedNamedDiagnoses(
+    impressionText,
+    `${findingsText} ${report.technique ?? ""} ${report.clinicalHistory ?? ""}`,
+  );
+  if (ungrounded.length > 0) {
+    emit(
+      "Q117",
+      `Ungrounded impression: the Impression states ${ungrounded.slice(0, 3).join(", ")}, which no other section of this report describes.`,
+      W,
+    );
+  }
+
+  // Q118 — spine content from outside the examined region. Levels are a spine
+  // report's identity: C5-C6 and L4-L5 are different operations on different nerve
+  // roots, and "the dorsal spine is normal" clears a segment nobody imaged. Neither
+  // is visible to a findings-vs-impression rule, because both sections agree with
+  // each other — the report simply describes an examination that did not happen.
+  const outOfScope = outOfScopeSpineContent(clinicalAssertions, report.studyDescription);
+  if (outOfScope.length > 0) {
+    emit(
+      "Q118",
+      `Anatomical scope: the report describes ${outOfScope.slice(0, 3).join(", ")}, which this examination did not cover.`,
+      W,
+    );
   }
 
   // Q115 — repeated word (dictation artifact). Only a true adjacency counts:

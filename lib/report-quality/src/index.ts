@@ -90,12 +90,19 @@ export {
   STUDY_NORMAL_PATTERNS,
   SCOPE_LIMITERS,
   assertedAbnormality,
+  assertedContrastMention,
+  assertedDiagnoses,
   assertsStudyNormal,
   assessmentCategories,
   clinicalOccurrences,
   clinicalContentSignature,
+  outOfScopeSpineContent,
+  studyContrastState,
+  ungroundedNamedDiagnoses,
+  CONTRAST_MENTION_TERMS,
+  NAMED_DIAGNOSIS_TERMS,
 } from "./text/clinicalTerms";
-export type { ClinicalTerm, ClinicalOccurrence } from "./text/clinicalTerms";
+export type { ClinicalTerm, ClinicalOccurrence, NamedDiagnosis, StudyContrastState } from "./text/clinicalTerms";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";

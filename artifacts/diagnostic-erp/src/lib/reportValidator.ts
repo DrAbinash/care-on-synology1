@@ -15,8 +15,12 @@
 
 import {
   assertedAbnormality,
+  assertedContrastMention,
   assertsStudyNormal,
   assessmentCategories,
+  outOfScopeSpineContent,
+  studyContrastState,
+  ungroundedNamedDiagnoses,
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "@workspace/report-quality";
@@ -278,20 +282,24 @@ function medicalConsistencyWarnings(report: ReportForValidation): string[] {
     warnings.push("Modality terminology mismatch: ultrasound wording (hyperechoic/acoustic shadowing) found inside a cross-sectional report.");
   }
 
-  // Contrast contradiction. isNonContrastStudy must be checked FIRST and
-  // isContrastStudy excludes it — "WITHOUT CONTRAST"/"NON-CONTRAST" both
-  // contain the substring "CONTRAST", so a naive independent check made
-  // every routine non-contrast study (the most common study type) match
-  // BOTH conditions at once, firing a false contradiction warning whenever
-  // the technique correctly stated no contrast was given.
-  const isNonContrastStudy = studyDesc.includes("WITHOUT CONTRAST") || studyDesc.includes("NCCT") || studyDesc.includes("NON-CONTRAST");
-  const isContrastStudy = !isNonContrastStudy &&
-    (studyDesc.includes("CONTRAST") || studyDesc.includes("CECT") || studyDesc.includes("CEMRI"));
-  if (isNonContrastStudy && ["gadolinium", "contrast enhancement", "post-contrast"].some((w) => fullTextLower.includes(w))) {
-    warnings.push("Contrast contradiction: a non-contrast study mentions contrast enhancement or gadolinium.");
-  }
-  if (isContrastStudy && ["no contrast was administered", "non-contrast study"].some((w) => fullTextLower.includes(w))) {
-    warnings.push("Contrast contradiction: a contrast study mentions that no contrast was administered.");
+  // Contrast contradiction, read the canonical way. The old version looked only at
+  // the study description and only for "WITHOUT CONTRAST" / "NCCT" /
+  // "NON-CONTRAST", so this clinic's own naming — "MRI CERVICAL SPINE (PLAIN)",
+  // with the protocol in Technique — armed neither branch and the rule never
+  // fired. It also matched "contrast enhancement" as a substring anywhere in the
+  // report, so "no abnormal gadolinium enhancement" — the correct sentence on a
+  // plain study — was read as a claim that contrast had been given. Both halves
+  // now come from the shared vocabulary: the study's contrast state from the
+  // description AND the Technique line, and the enhancement claim read with the
+  // same negation logic that decides whether a described "fracture" is present.
+  const clinicalAssertions = `${textFindings} ${textImpression}`;
+  const contrastState = studyContrastState(report.studyDescription, report.technique);
+  if (contrastState === "plain" && assertedContrastMention(clinicalAssertions)) {
+    warnings.push("Contrast contradiction: this study was performed without contrast, but the report describes enhancement.");
+  } else if (contrastState === "contrast"
+    && (/\b(?:no|not|without)\s+contrast\s+(?:was\s+)?(?:administered|given|injected|used|required)\b/i.test(clinicalAssertions)
+      || /\bnon-?contrast\s+study\b/i.test(clinicalAssertions))) {
+    warnings.push("Contrast contradiction: contrast was administered, but the report states that no contrast was given.");
   }
 
   // Findings vs. Impression contradiction, both directions. Shared vocabulary:
@@ -324,6 +332,30 @@ function medicalConsistencyWarnings(report: ReportForValidation): string[] {
     } else if (highest >= 3 && !assertedAbnormality(textFindings, NAMED_LESION_TERMS)) {
       warnings.push(`BI-RADS contradiction: category ${highest} is asserted but the Findings name no lesion to support it.`);
     }
+  }
+
+  // A named diagnosis the rest of the report never describes. An Impression is
+  // allowed to re-describe — "mild chronic small vessel ischaemic disease" over
+  // punctate white-matter lesions is correct radiology — so only entity names are
+  // asked about, and an inflammatory diagnosis counts as described when the organ
+  // it names is. A diagnosis nobody supplied still reaches the referrer as fact,
+  // and it moves patients: antibiotics, a biopsy, a laparotomy.
+  const ungrounded = ungroundedNamedDiagnoses(
+    textImpression,
+    `${textFindings} ${report.technique ?? ""} ${report.clinicalHistory ?? ""}`,
+  );
+  if (ungrounded.length > 0) {
+    warnings.push(`Ungrounded impression: the Impression states ${ungrounded.slice(0, 3).join(", ")}, which no other section of this report describes.`);
+  }
+
+  // Spine content from outside the examined region. C5-C6 and L4-L5 are different
+  // operations on different nerve roots, and "the dorsal spine is normal" clears a
+  // segment nobody imaged. Neither is visible to a findings-vs-impression rule,
+  // because both halves of the report agree with each other — it simply describes
+  // an examination that did not happen.
+  const outOfScope = outOfScopeSpineContent(clinicalAssertions, report.studyDescription);
+  if (outOfScope.length > 0) {
+    warnings.push(`Anatomical scope: the report describes ${outOfScope.slice(0, 3).join(", ")}, which this examination did not cover.`);
   }
 
   return warnings;
