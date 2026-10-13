@@ -403,6 +403,14 @@ publishes container `5000` to host `7080` on `0.0.0.0`, and no HOPE container na
 `hope_erp_network`, the ERP on `care-erp-github_default`), so an interface address is the only
 form available to this pair until someone joins a bridge.
 
+The address is not an orphan either: `deploy/synology/care.env:16` defines `NETWORK_LAN_HOST`,
+and `:18-19` reserve `NETWORK_LAN_HOST_ALT` / `VITE_NETWORK_LAN_HOST_ALT` for exactly the case this
+box turned out to be — "some clinic VLANs route only to this address", with a second NAS LAN IP
+beside the first. `INTEGRATION_HOPE_CALLBACK_URL` at `care.env:125` is written out in full rather
+than interpolated from it, which is how the live value drifted to the interface that containers
+cannot open a socket to while the template stayed on the one that works. When you change it, change
+the pair together or the two will drift again.
+
 ```sh
 docker exec care-api sh -c 'echo "callback=$INTEGRATION_HOPE_CALLBACK_URL"'
 ```
