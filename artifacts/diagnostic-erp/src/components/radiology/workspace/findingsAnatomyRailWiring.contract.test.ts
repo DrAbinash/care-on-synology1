@@ -23,6 +23,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { groupByAnatomy } from "../../../lib/findingsAnatomyGroups";
+import { tileMatchesAnatomy } from "../FindingsAnatomyChips";
+import { DEFAULT_QUICK_SELECT_TILES, lookupTilesForContext } from "../../../lib/zai-workspace/quick-select-library";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "../../../.."); // artifacts/diagnostic-erp
@@ -153,5 +155,56 @@ describe("a chip label resolves to findings in the strip's own lookup", () => {
     expect(groups.find(([k]) => k === "L4-L5")?.[1]).toHaveLength(2);
     // A chip whose key resolves to nothing is the shape the pane is in today for every chip.
     expect(groups.find(([k]) => k === "L5-S1")).toBeUndefined();
+  });
+});
+
+/**
+ * The other half of the same pathway, measured rather than grepped.
+ *
+ * The chips auto-select their first group on mount (`FindingsAnatomyChips.tsx:42-51`), so a study
+ * with Quick Findings ALWAYS has an active anatomy — and the Quick Select strip applies that
+ * anatomy to its tiles. In a real browser on the synthetic whole-spine study that produced 56
+ * tiles scoped by region, 0 tiles offered, and a header still printing "56 tiles", because
+ * `tileMatchesAnatomy` read a tile with no `anatomicalSection` as a tile about a different
+ * anatomy. Nothing in the product ever sets that field on a tile: not the shipped catalogue
+ * (asserted below against the real one), not the admin editor, and not the content-pack route,
+ * whose `findingToTile` maps every other field but that one.
+ *
+ * So "unknown anatomy" must not mean "excluded". Tiles that do declare a section still narrow —
+ * that is what the chips are for.
+ */
+describe("an active anatomy chip keeps tiles that declare no anatomy", () => {
+  const QUICK_STRIP = resolve(pkgRoot, "src/components/radiology/zai-workspace/quick-select-strip.tsx");
+  const wholeSpine = {
+    region: "Whole Spine",
+    regions: ["Whole Spine"],
+    family: "spine",
+    spineSegment: "whole",
+  } as unknown as Parameters<typeof lookupTilesForContext>[3];
+  const scoped = lookupTilesForContext(DEFAULT_QUICK_SELECT_TILES, "findings", "MR", wholeSpine);
+
+  it("the catalogue the chip is applied to is the one the strip is given", () => {
+    expect(scoped.length, "a whole-spine MR study must have region-scoped findings tiles").toBeGreaterThan(0);
+    // The premise of the tests below, stated as a measurement rather than assumed: not one tile
+    // in the shipped catalogue declares the section the filter asks for.
+    expect(scoped.filter((t) => (t.anatomicalSection ?? "").trim()).length).toBe(0);
+  });
+
+  it("the chip this component auto-selects offers every scoped tile, not none", () => {
+    const offered = scoped.filter((t) => tileMatchesAnatomy(t.anatomicalSection, "L1-L2"));
+    expect(offered.length).toBe(scoped.length);
+  });
+
+  it("a tile that does declare a section still narrows, in both directions", () => {
+    expect(tileMatchesAnatomy("L1-L2", "L1-L2")).toBe(true);
+    expect(tileMatchesAnatomy("L4-L5", "L1-L2")).toBe(false);
+    expect(tileMatchesAnatomy("Screening — Cervical Spine", "L1-L2")).toBe(false);
+    expect(tileMatchesAnatomy("Cervical Spine", null)).toBe(true);
+  });
+
+  it("the strip counts the tiles it offers, not the tiles the region holds", () => {
+    const strip = read(QUICK_STRIP);
+    expect(strip).toContain("{filtered.length} tiles");
+    expect(strip).not.toContain("{scoped.length} tiles");
   });
 });
