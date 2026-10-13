@@ -51,6 +51,15 @@ describe("pacs-worklist detail field selection", () => {
     expect(keys).not.toContain("aiDraftJson");
     expect(PACS_WORKLIST_DETAIL_OMIT).toContain("aiDraftJson");
 
+    // D-5 — a caller that loses the response to POST /api/patient-reports has
+    // to be able to ask the study what it is bound to. `status` alone cannot
+    // answer that: the create binds report_id in its own transaction, so the
+    // half-finalized study still reads REPORT_IN_PROGRESS with a report row
+    // sitting behind it. Without these two keys the detail route describes the
+    // queue but not the binding, and the recovery has nothing to read.
+    expect(keys).toContain("reportId");
+    expect(keys).toContain("deliveryStatus");
+
     const src = readFileSync(join(__dirname, "../routes/radiology.ts"), "utf8");
     expect(src).toMatch(/PACS_WORKLIST_DETAIL_SELECT/);
     expect(src).toMatch(/pacs-worklist\/:id\/ai-draft/);

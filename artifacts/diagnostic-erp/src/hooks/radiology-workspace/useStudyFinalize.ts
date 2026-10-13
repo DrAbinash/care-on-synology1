@@ -442,6 +442,25 @@ const runFinalizeGauntlet = useCallback(async () => {
         variant: "destructive",
         duration: 15000,
       });
+    } else if (finalizeResult.resumedAfterLostResponse) {
+      // D-5 — the report row was written; only its answer was lost. The content
+      // on screen is what the server holds (finalizeRadiologyReport proves that
+      // before resuming, and re-throws otherwise), so this is a completion, not
+      // a rescue to be hidden. Saying just "finalized & signed" would leave the
+      // radiologist believing the four red toasts that preceded it were about a
+      // different attempt.
+      toast({
+        title: finalizeResult.signed
+          ? finalizeResult.alreadySignedOnServer
+            ? "Report was already finalized & signed"
+            : "Report finalized & signed after the connection dropped"
+          : "Report saved but NOT signed",
+        description: finalizeResult.signed
+          ? `Report #${finalizeResult.reportId}. The save did not answer, so the workspace recovered the report the server had already written instead of creating a second one.`
+          : `Report #${finalizeResult.reportId} exists and holds this content, but signing did not happen: ${finalizeResult.signError ?? "sign error"}`,
+        variant: finalizeResult.signed ? undefined : "destructive",
+        duration: finalizeResult.signed ? 8000 : 15000,
+      });
     } else if (finalizeResult.signed) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
     } else if (finalizeResult.reportCreationSkipped) {
