@@ -107,24 +107,65 @@ every critical line; a `RECORDED_BUT_ABSENT` line is the half-applied-migration 
 | # | Check | Pass condition | Result |
 |---|---|---|---|
 | B.1 | Latest completed artifact identified | newest file named, family known (`.sql.gz[.enc]` or `backup_*.sql[.enc]`) | ☐ |
-| B.2 | Its timestamp is inside the retention window | `RETENTION_DAYS` = 14 by default; a weeks-old newest file is a finding about the backup job | ☐ |
+| B.2 | Its timestamp is inside the retention window | `retention_days` is 30 for the `DB`/`config` jobs and 5 for `Nightly` on this box (not the script's 14-day default); a weeks-old newest file is a finding about the backup job | ☐ |
 | B.3 | Production untouched — recorded **before** | `started=` / `restarts=` captured for `care-db care-api care-web` | ☐ |
 | B.4 | Restore ran in isolation | ends `🎉 PASS` | ☐ |
 | B.5 | Schema and critical tables present | restored table count > 0 and `patients` / `bills` / `payments` / `vouchers` / `patient_reports` non-zero | ☐ |
 | B.6 | Cleanup confirmed | `care-db-restore-sandbox` does not exist, temp dir gone | ☐ |
 | B.7 | Production untouched — recorded **after** | identical to B.3 | ☐ |
 
+#### B.0 — where this clinic's backups actually land (read this before B.1)
+
+An earlier draft of this page told you to look in `/volume1/backups/caredeoghar`. That directory
+does not exist on `AbinashNAS` and never did, so B.1 as written would have reported "no backups"
+about a box that has been taking them hourly. The destination is decided by two facts that have to
+be read together, because the job rows store a **container** path:
+
+| Measured 2026-10-13 | Value |
+|---|---|
+| `.env` | `BACKUP_HOST_DIR=/volume1/backup/care-erp` — `backup`, singular, not `backups` |
+| `docker-compose.yml:445` | `- ${BACKUP_HOST_DIR:-/volume1/docker/backups}:/volume1/docker/backups` |
+| host directory holding the live artifacts | `/volume1/backup/care-erp/{db,auto-db,config}` |
+| host directory holding nothing newer than **2026-08-26** | `/volume1/docker/backups/{db,auto-db,config}` — the abandoned pre-fix default, ~203 GB of stale files |
+| newest artifact | `/volume1/backup/care-erp/db/backup_DB_2026-10-13T03-30-57-419Z.sql.enc`, 775,648,192 bytes, mode 0644 root:root |
+| cadence | hourly (~22 runs per job per day), **not** the `0 2 * * *` recorded in `backup_jobs.schedule` |
+| history | `db` 1272 files back to 2026-09-13 · `auto-db` 104 · `config` 636; `retention_days` 30, and 5 for the `Nightly` job |
+| produced by | `backup_job_logs.notes` records `pg_dump` on 6,752 of 6,813 runs — schema-complete, not the data-only fallback |
+| restore ever verified | **no** — `public.backup_verification` contains 0 rows, so `restore_test_status` has never been set |
+
+Read the destination from the checkout instead of assuming it, then list it:
+
 ```sh
-ls -lt /volume1/backups/caredeoghar | head -12
+cd /volume1/docker/care-erp-github/care-on-synology1
 ```
+
+```sh
+BD=$(grep -E '^BACKUP_HOST_DIR=' .env | cut -d= -f2-); echo "destination = $BD"; ls -lt "$BD/db" | head -8
+```
+
+B.1 and B.2 are answered by that listing. Note that the `file_path` written in `backup_job_logs`
+still reads `/volume1/docker/backups/db/…` — the container half of the bind mount. That string is
+correct inside the container and wrong on the host, which is precisely the confusion that made four
+weeks of phantom backups look healthy.
+
+```sh
+ls -lt "$BD/db" | head -12
+```
+
 
 ```sh
 docker inspect --format '{{.Name}} running={{.State.Running}} restarts={{.RestartCount}} started={{.State.StartedAt}}' care-db care-api care-web
 ```
 
 ```sh
-bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar
+bash scripts/verify-backup-restore.sh "$BD/db"
 ```
+
+Pass `$BD/db`, **not** `$BD`. The script takes the newest file it can find, and the `config` job
+writes last in every hour (03:30:57 for `db`, 03:31:04 for `config` on this box), so pointing it at
+the parent verifies a 3.6 MB configuration-only artifact and prints `🎉 PASS` over a backup that
+never contained a patient row. Same trap for `auto-db`: it is a `FULL` snapshot of the same schema,
+so a pass there says nothing about the `DB` jobs the rollback would actually use.
 
 Encrypted artifact only — the passphrase goes through the environment, never onto a command
 line (`ps` and shell history keep it) and never into a file in the deploy directory:
@@ -134,12 +175,24 @@ read -rs PASSPHRASE
 ```
 
 ```sh
-BACKUP_PASSPHRASE="$PASSPHRASE" bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar
+BACKUP_PASSPHRASE="$PASSPHRASE" bash scripts/verify-backup-restore.sh "$BD/db"
 ```
 
 ```sh
 unset PASSPHRASE
 ```
+
+`candidatePassphrases()` tries `BACKUP_PASSPHRASE` then `SESSION_SECRET`, so the passphrase that
+must be supplied is the one **in force when that file was written**. This box rotated
+`SESSION_SECRET` around 2026-10-03: the NAS checkout carries an untracked
+`.env.before-rotate-2026-10-03` beside the live `.env` (along with `BEFORE-QODER.env` and
+`before1234.env`), and the 30-day `db` history runs back to 2026-09-13, straight across that
+boundary. Nothing in the job rows records which of the two keys encrypted a given file, so a
+pre-rotation artifact may only be readable with the superseded secret. Whether `BACKUP_PASSPHRASE` was already set before
+the rotation is not knowable from metadata; B.4 is what settles it. If the newest artifact decrypts
+and a September one does not, the clinic has 30 days of backup names and only a few days of backup.
+Confirm before the deploy, not during an incident, that the passphrase is also stored somewhere that
+survives the NAS.
 
 The script starts `postgres:16-alpine` as container `care-db-restore-sandbox`, database
 `diagnostic_erp_restore_test`, with a random per-run password and **no published host port
@@ -516,8 +569,8 @@ restarts, rebuilds, redeploys or reconfigures.
 | 1 | Identify the production containers actually running | §Conventions | `docker compose ls` · `docker ps --format '{{.Names}} {{.Status}} {{.Image}}'` — expect `care-db care-api care-web care-redis care-db-patch-v2 care-schema-verify` from the ERP project, plus `care-orthanc care-ohif care-erp-sync care-tailscale-ohif` from `care-pacs`, and a Hope container if one exists | **SAFE NOW** |
 | 2 | Verify the target database's identity | §A.1–A.2 | the three redacted pre-flight reads, then the read-only refusal proof | **SAFE NOW** |
 | 3 | Run the migration-ledger audit | §A.3 | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs` | **AUTHORIZATION** — it connects to the clinic DB. It is read-only by construction and proves so in step 2, but it is still the clinic database |
-| 4 | Verify current backup availability | §B.1–B.2 | `ls -lt /volume1/backups/caredeoghar \| head -12` | **SAFE NOW** |
-| 5 | Restore into an isolated temporary database | §B.3–B.7 | `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | **SAFE NOW for production** — no published port, its own container and database, cleanup on every exit path. Say it out loud anyway: it starts a Postgres and reads a real patient dump into a sandbox on this box |
+| 4 | Verify current backup availability | §B.0–B.2 | `BD=$(grep -E '^BACKUP_HOST_DIR=' .env \| cut -d= -f2-); ls -lt "$BD/db" \| head -8` | **SAFE NOW** |
+| 5 | Restore into an isolated temporary database | §B.3–B.7 | `bash scripts/verify-backup-restore.sh "$BD/db"` — the `db` directory, not `$BD` | **SAFE NOW for production** — no published port, its own container and database, cleanup on every exit path. Say it out loud anyway: it starts a Postgres and reads a real patient dump into a sandbox on this box |
 | 6 | Verify Orthanc | §C.1–C.5 | `wget -qO- "$ORTHANC_INTERNAL_URL/system"`, QIDO, then one `/rendered` status | **SAFE NOW** |
 | 7 | Verify OHIF | §C.5–C.7 | `docker inspect`, `build-info.json`, the injected `<script src>` list | **SAFE NOW** |
 | 8 | Verify the HOPE callback path | §D.0–D.5 | read the outbox history, then the GET from inside `care-api`, then the host-side control, then the unsigned inbound POST for 401 | **SAFE NOW** (D.0–D.5 send no clinical event). **D.6 is AUTHORIZATION** — one synthetic or owner-named case, clicked once, counted twice |
