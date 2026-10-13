@@ -88,10 +88,15 @@ is the mechanism `scripts/audit-migration-ledger.mjs` relies on — it connects 
 setting (`:497-508`). The statement is refused, so nothing changes.
 
 ```sh
-docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
+docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
 ```
 
-`--no-deps` starts no database, no API, no migration container. `schema-verify` is chosen
+`-p` is not decoration. Measured 2026-10-13 from this checkout: a bare `docker compose ps` listed
+**no containers** because compose derives the project name `care-on-synology1` from the folder,
+while the live stack belongs to `care-erp-github`. Run without `-p` and the audit exits on a
+connection error that looks like a dead database; "fix" that by removing `--no-deps` and compose
+starts a **second** empty PostgreSQL against the same password, which the audit then reports as
+roughly two hundred missing tables. Both flags are load-bearing. `--no-deps` starts no database, no API, no migration container. `schema-verify` is chosen
 because its image bakes `scripts/` + `scripts/node_modules` (so `pg` resolves) and mounts
 `migrations` and `lib/db/drizzle` **read-only** — the exact pair the audit compares. To keep
 the findings: add `--json=output/ledger-audit-$(date +%F).json`, then move the file out of
@@ -617,7 +622,7 @@ restarts, rebuilds, redeploys or reconfigures.
 |---|---|---|---|---|
 | 1 | Identify the production containers actually running | §Conventions | `docker compose ls` · `docker ps --format '{{.Names}} {{.Status}} {{.Image}}'` — expect `care-db care-api care-web care-redis care-db-patch-v2 care-schema-verify` from the ERP project, plus `care-orthanc care-ohif care-erp-sync care-tailscale-ohif` from `care-pacs`, and a Hope container if one exists | **SAFE NOW** |
 | 2 | Verify the target database's identity | §A.1–A.2 | the three redacted pre-flight reads, then the read-only refusal proof | **SAFE NOW** |
-| 3 | Run the migration-ledger audit | §A.3 | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs` | **AUTHORIZATION** — it connects to the clinic DB. It is read-only by construction and proves so in step 2, but it is still the clinic database |
+| 3 | Run the migration-ledger audit | §A.3 | `docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs` | **AUTHORIZATION** — it connects to the clinic DB. It is read-only by construction and proves so in step 2, but it is still the clinic database |
 | 4 | Verify current backup availability | §B.0–B.2 | `BD=$(grep -E '^BACKUP_HOST_DIR=' .env \| cut -d= -f2-); ls -lt "$BD/db" \| head -8` | **SAFE NOW** |
 | 5 | Restore into an isolated temporary database | §B.3–B.7 | `bash scripts/verify-backup-restore.sh "$BD/db"` — the `db` directory, not `$BD` | **SAFE NOW for production** — no published port, its own container and database, cleanup on every exit path. Say it out loud anyway: it starts a Postgres and reads a real patient dump into a sandbox on this box |
 | 6 | Verify Orthanc | §C.1–C.5 | the §C `node -e` fetch of `/system`, then QIDO, then one `/rendered` status — **not** `wget`, which `care-api` does not have | **SAFE NOW** |
