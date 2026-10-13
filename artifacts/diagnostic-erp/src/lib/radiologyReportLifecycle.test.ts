@@ -2,9 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { finalizeRadiologyReport } from "./radiologyReportLifecycle";
 import { api } from "./fetchApi";
 
-vi.mock("./fetchApi", () => ({
-  api: { get: vi.fn(), post: vi.fn() },
-}));
+// Keep the real HttpError/NetworkError classes: the module under test decides
+// whether a failed create is worth recovering from by testing `instanceof`
+// against them, so a mock that omitted them would make any thrown create error
+// surface as a confusing "export is defined on the mock" failure instead.
+vi.mock("./fetchApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./fetchApi")>();
+  return { ...actual, api: { get: vi.fn(), post: vi.fn() } };
+});
 
 const mockGet = vi.mocked(api.get);
 const mockPost = vi.mocked(api.post);

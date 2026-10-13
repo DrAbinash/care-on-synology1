@@ -30,6 +30,16 @@ export const PACS_WORKLIST_DETAIL_SELECT = {
   studyUidProvenance: radiologyWorklistTable.studyUidProvenance,
   referringDoctor: radiologyWorklistTable.referringDoctor,
   status: radiologyWorklistTable.status,
+  // The report this study is bound to, and where it has got to. `status` alone
+  // cannot tell a signed report from a study whose finalize died after the row
+  // was created and bound but before the status flipped — and that half-state is
+  // what a lost response to POST /api/patient-reports leaves behind. The
+  // workspace reads this row to decide what to offer, so without these two
+  // columns a reopened signed study shows no Print/PDF control, and a caller
+  // retrying an interrupted finalize has no way to learn that its own previous
+  // click already wrote the row.
+  reportId: radiologyWorklistTable.reportId,
+  deliveryStatus: radiologyWorklistTable.deliveryStatus,
   dicomMetadata: radiologyWorklistTable.dicomMetadata,
   createdAt: radiologyWorklistTable.createdAt,
   updatedAt: radiologyWorklistTable.updatedAt,

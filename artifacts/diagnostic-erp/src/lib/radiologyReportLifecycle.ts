@@ -1,4 +1,4 @@
-import { api } from "./fetchApi";
+import { api, HttpError, NetworkError } from "./fetchApi";
 
 /**
  * Ticket M1.1 — the ONE shared draft-save/finalize service for radiology
@@ -113,6 +113,30 @@ export interface FinalizeResult {
    * draft backups, which are the only remaining copy of what was thrown away.
    */
   idempotent?: boolean;
+  /**
+   * D-5 — the create POST did not answer, but the study turned out to be bound
+   * to a report row that already holds exactly the content this call sent, so
+   * the finalize continued from that row instead of failing. POST
+   * /api/patient-reports inserts the row and writes
+   * `radiology_worklist.report_id` in ONE transaction, so a response lost in
+   * transit leaves exactly this state, and the remaining legs (sign, status)
+   * were never sent. Measured on the synthetic fixture: the browser saw four
+   * 502s while the server had committed report 13, after which every autosave
+   * was refused with "This study already has a final report… withdraw it in
+   * Report Hub" — a signature that did not exist and a withdrawal
+   * canWithdrawSignature() declines. The radiologist could not save and could
+   * not submit; only an administrator could get out.
+   */
+  resumedAfterLostResponse?: boolean;
+  /**
+   * D-5 — the bound row already carried a signature, so no sign call was made.
+   * The legacy /sign route refuses an already-signed row with `already_signed`
+   * precisely because re-signing "would overwrite signedByName and signedAt and
+   * destroy the original signing instant"; on the resume path that refusal is
+   * the state we wanted, not a failure, and reporting it as one would tell the
+   * signer a signed report was not signed.
+   */
+  alreadySignedOnServer?: boolean;
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -189,6 +213,103 @@ async function autoSignReport(
 }
 
 /**
+ * D-5 — ask the study what it is actually bound to, after a create that never answered.
+ *
+ * Read-only, and deliberately narrow: the worklist row is the claim and the patient is the proof.
+ * A `reportId` on a worklist whose patient is not this study's patient is a different study's
+ * report, and resuming onto it would sign one patient's document under another's name — so the
+ * lookup refuses rather than guesses, exactly like the server's own identity bind
+ * (`bindRadiologyReportIdentity`, which throws PATIENT_MISMATCH on the same disagreement).
+ */
+async function lookupBoundReport(
+  study: FinalizeStudyContext,
+): Promise<{ reportId: number; report: Record<string, unknown>; worklistStatus: string } | null> {
+  const worklistId = study.worklistId ?? study.studyId;
+  if (!worklistId) return null;
+  try {
+    const wl = await api.get<{ reportId?: number | null; patientId?: number | null; status?: string | null }>(
+      `/api/radiology/pacs-worklist/${worklistId}`,
+    );
+    const reportId = Number(wl?.reportId ?? 0);
+    if (!Number.isInteger(reportId) || reportId <= 0) return null;
+    if (study.patientId && wl?.patientId && Number(wl.patientId) !== Number(study.patientId)) return null;
+    const report = await api.get<Record<string, unknown>>(`/api/patient-reports/${reportId}`);
+    if (Number(report?.id) !== reportId) return null;
+    if (Number(report?.patientId ?? 0) !== Number(study.patientId)) return null;
+    return { reportId, report, worklistStatus: String(wl?.status ?? "") };
+  } catch {
+    // Nothing could be proved, so nothing is assumed: the caller re-throws the
+    // original create failure rather than reporting a finalize that never happened.
+    return null;
+  }
+}
+
+/**
+ * Mirror of the server's `SIGNED_REPORT_STATUSES`
+ * (api-server/src/lib/signedArtifactGuard.ts:23). A local copy because the ERP
+ * cannot import api-server source; exported so
+ * `finalizePartialFailure.recovery.test.ts` can fail if the two lists drift.
+ */
+export const SIGNED_REPORT_STATUSES = ["pending_verification", "verified", "delivered"] as const;
+
+/**
+ * Whether a failed create leaves the outcome UNKNOWN, as opposed to REFUSED.
+ *
+ * `NetworkError` is thrown only when no response was ever received (see
+ * fetchApi.ts:212-218) and `HttpError` only for a status the server actually
+ * answered with. So this takes the two cases in which the transaction may well
+ * have committed — the connection died, or a gateway/proxy answered 5xx on a
+ * request the API itself completed — and refuses the rest. A 4xx is the server
+ * explaining that it did NOT write anything (409 MATCH_GATE_BLOCKED, the
+ * finalize content guard, a dead session); on those paths any bound row belongs
+ * to an earlier finalize, and resuming onto it would report that older
+ * document as this call's success.
+ */
+function isUnansweredWrite(err: unknown): boolean {
+  if (err instanceof NetworkError) return true;
+  return err instanceof HttpError && err.status >= 500;
+}
+
+/**
+ * Prove the bound row is the row this create wrote, before calling the resume a
+ * success. The route stores `title` trimmed and `body`/`impression` verbatim
+ * from this payload (patient-reports.ts insertValues), so agreement on all
+ * three means the response that was lost had already carried this clinical
+ * content to the database. Anything else — including a signed row whose `body`
+ * GET /:id substitutes from its structured render — is not provable, and the
+ * caller re-throws the original error instead.
+ */
+function committedRowMatches(
+  row: Record<string, unknown>,
+  sent: { title: string; body: string; impression: string },
+): boolean {
+  return String(row.title ?? "").trim() === sent.title.trim()
+    && String(row.body ?? "") === sent.body
+    && String(row.impression ?? "") === sent.impression;
+}
+
+/**
+ * Whether a report row already carries a signature the server will not overwrite.
+ *
+ * A client-side mirror of the server's ONE authority, `isSignedArtifact()` in
+ * api-server/src/lib/signedArtifactGuard.ts:50, including all three of its
+ * witnesses and its exact status list — `pending_verification` means "signed,
+ * awaiting counter-signature", and the schema-default `draft` status is what a
+ * D5-signed row keeps, so status alone sees neither. If the two predicates
+ * drift, the client either re-signs a signed report (which the route refuses
+ * with 409 `already_signed`, and `autoSignReport` swallows) or tells the
+ * radiologist a signed report is unsigned.
+ */
+function rowAlreadySigned(report: Record<string, unknown> | null): boolean {
+  if (!report) return false;
+  if (report.signedAt != null) return true;
+  const status = String(report.status ?? "");
+  if (SIGNED_REPORT_STATUSES.includes(status as (typeof SIGNED_REPORT_STATUSES)[number])) return true;
+  const doc = report.structuredJson as { audit?: { signature?: { state?: string } } } | null;
+  return doc?.audit?.signature?.state === "final";
+}
+
+/**
  * Canonical finalize: create the patient-facing report row (when the study
  * is linked to a patient AND a billed test can be resolved), then flip the
  * worklist entry to REPORT_FINAL / READY_TO_SEND referencing that row.
@@ -209,6 +330,8 @@ export async function finalizeRadiologyReport(
   let reportRow: Record<string, unknown> | null = null;
   let reportCreationSkipped: string | null = null;
   let reportIdempotent = false;
+  let resumed = false;
+  let boundWorklistAlreadyFinal = false;
   // The study key drafts were saved under — D5's structured finalize resolves
   // "the draft for this study" by this exact value (see
   // structuredFinalizeTransaction's drafts lookup in patient-reports.ts).
@@ -246,7 +369,8 @@ export async function finalizeRadiologyReport(
         ? "the study's billed test could not be resolved (from-study lookup)"
         : "no billed test is linked to this study";
     } else {
-      const report = await api.post<{ id: number } & Record<string, unknown>>("/api/patient-reports", {
+      let report: { id: number; idempotent?: boolean } & Record<string, unknown>;
+      const createPayload = {
         patientId: study.patientId,
         testId: prefill.testId,
         orderTestId: prefill.orderTestId ?? null,
@@ -276,7 +400,32 @@ export async function finalizeRadiologyReport(
         isCritical: content.isCritical,
         criticalNote: content.isCritical ? content.criticalNote : null,
         createdBy: content.createdBy,
-      });
+      };
+      try {
+        report = await api.post<{ id: number } & Record<string, unknown>>("/api/patient-reports", createPayload);
+      } catch (createError) {
+        // D-5 — a create that never answered is not a create that failed. The
+        // route inserts the row and binds radiology_worklist.report_id in the
+        // same transaction (patient-reports.ts claimWorklistForFinalize →
+        // insert → update), so the write is durable the moment the response is
+        // lost, and every later leg — sign, worklist status — was skipped.
+        // Measured on the synthetic fixture: fetchApi exhausted its retries
+        // against 502s while the server had committed report 13, and the study
+        // then refused every autosave with "This study already has a final
+        // report… withdraw it in Report Hub" — a signature that did not exist,
+        // and a withdrawal the server declines. The radiologist could neither
+        // save nor submit.
+        if (!isUnansweredWrite(createError)) throw createError;
+        const bound = await lookupBoundReport(study);
+        if (!bound || !committedRowMatches(bound.report, createPayload)) throw createError;
+        resumed = true;
+        boundWorklistAlreadyFinal = bound.worklistStatus === "REPORT_FINAL" || bound.worklistStatus === "DELIVERED";
+        // Deliberately NOT marked `idempotent`: the bound row holds exactly the
+        // content this call sent (proven above), so this finalize DID write the
+        // report — unlike the server's own 200 `{ idempotent: true }`, which
+        // hands back an older row and writes nothing.
+        report = { ...bound.report, id: bound.reportId };
+      }
       reportId = report.id;
       reportRow = report;
       // `idempotent: true` means the server handed back the row that was
@@ -299,26 +448,44 @@ export async function finalizeRadiologyReport(
   // signature) and is already a completed, signed document.
   let signed = false;
   let signError: string | null = null;
+  let alreadySignedOnServer = false;
   const alreadySignedByD5 = Boolean(
     reportRow && typeof reportRow.structuredFinal === "object" && reportRow.structuredFinal !== null &&
     (reportRow.structuredFinal as Record<string, unknown>).signed === true,
   );
-  if (reportId && !alreadySignedByD5) {
+  // D-5 — a row that already carries a signature is never signed again. The
+  // legacy route refuses it with `already_signed` precisely because re-signing
+  // "would overwrite signedByName and signedAt and destroy the original signing
+  // instant", and autoSignReport swallows every error it meets: on the resume
+  // path that refusal is the outcome that was asked for, so surfacing it as a
+  // signing failure would tell a radiologist that a signed report was not
+  // signed — and send them off to sign it a second time.
+  const boundRowSigned = rowAlreadySigned(reportRow);
+  if (reportId && !alreadySignedByD5 && !boundRowSigned) {
     const outcome = await autoSignReport(reportId, content.signatureId);
     signed = outcome.signed;
     signError = outcome.signError;
+  } else if (reportId && boundRowSigned) {
+    alreadySignedOnServer = true;
+    signed = true;
   }
 
-  await api.post("/api/internal/radiology/report-status", {
-    worklistId: study.worklistId ?? undefined,
-    accessionNumber: study.accessionNumber,
-    studyInstanceUID: study.studyInstanceUID,
-    status: "REPORT_FINAL",
-    deliveryStatus: "READY_TO_SEND",
-    reportId: reportId ?? undefined,
-    actor: content.actor,
-    ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
-  });
+  // Re-sending the flip for a study the server already reports as final would
+  // write a second REPORT_STATUS_UPDATED audit row describing a transition that
+  // did not happen, so on the resume path it is only sent when the study is
+  // genuinely still open.
+  if (!(resumed && boundWorklistAlreadyFinal)) {
+    await api.post("/api/internal/radiology/report-status", {
+      worklistId: study.worklistId ?? undefined,
+      accessionNumber: study.accessionNumber,
+      studyInstanceUID: study.studyInstanceUID,
+      status: "REPORT_FINAL",
+      deliveryStatus: "READY_TO_SEND",
+      reportId: reportId ?? undefined,
+      actor: content.actor,
+      ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
+    });
+  }
 
   const primaryKey = String(study.worklistId ?? study.studyId ?? "");
   const linkedKey = study.linkedStudyId == null ? "" : String(study.linkedStudyId).trim();
@@ -355,6 +522,8 @@ export async function finalizeRadiologyReport(
     linkedMarkedFinal,
     linkedMarkError,
     idempotent: reportIdempotent,
+    resumedAfterLostResponse: resumed,
+    alreadySignedOnServer,
   };
 }
 

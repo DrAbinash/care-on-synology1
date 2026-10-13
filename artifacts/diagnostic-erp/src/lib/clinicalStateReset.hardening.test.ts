@@ -490,7 +490,13 @@ describe("re-finalize over an existing report — the discarded-edit path must n
     const src = read(FINALIZE_SRC);
     const toastAt = src.indexOf("// 7. Honest toast");
     expect(toastAt).toBeGreaterThan(-1);
-    const block = src.slice(toastAt, toastAt + 2000);
+    // Sliced to the next numbered step, not a fixed character window: the
+    // window silently truncated this block to nothing the first time a branch
+    // was added below the idempotent one, and a guard that reads only the first
+    // 2000 characters cannot see the toast it is supposed to order.
+    const endAt = src.indexOf("// 7b.", toastAt);
+    expect(endAt).toBeGreaterThan(toastAt);
+    const block = src.slice(toastAt, endAt);
     const idemAt = block.indexOf("if (finalizeResult.idempotent) {");
     const successAt = block.indexOf('title: "Report finalized & signed"');
     expect(idemAt).toBeGreaterThan(-1);
