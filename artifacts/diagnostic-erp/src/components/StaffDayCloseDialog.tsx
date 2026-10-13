@@ -19,6 +19,7 @@ import {
   type StaffSlipClinic,
   type StaffSlipClosure,
 } from "@/lib/staffDayCloseSlip";
+import { predictedCloseLabel, windowFromCell } from "@/lib/dayCloseVocabulary";
 
 type MethodTotals = {
   cash: number; upi: number; card: number; cheque: number; other: number;
@@ -148,6 +149,10 @@ export default function StaffDayCloseDialog({
   const [actuals, setActuals] = useState({ cash: "", upi: "", card: "", cheque: "", other: "" });
   const [varianceNote, setVarianceNote] = useState("");
   const [notes, setNotes] = useState("");
+  // Same trap as the staff self-close form: `actuals` is pre-filled from the
+  // expected totals, so a zero variance proves nothing until someone says they
+  // counted. Unchecked records Not Physically Verified; it never blocks the close.
+  const [physicallyCounted, setPhysicallyCounted] = useState(false);
   const [justClosed, setJustClosed] = useState<StaffCloseResult | null>(null);
 
   useEffect(() => {
@@ -182,6 +187,7 @@ export default function StaffDayCloseDialog({
         },
         varianceNote,
         notes,
+        physicallyCounted,
       }),
     onSuccess: (row) => {
       const emailNote = row.emailSent === false
@@ -189,8 +195,14 @@ export default function StaffDayCloseDialog({
         : "";
       toast({
         title: `${row.userName}'s day closed`,
-        description: (nv(row.variance) === 0 ? "Balanced." : `Variance: ${inr(nv(row.variance))}`) + emailNote,
-        variant: row.emailSent === false ? "destructive" : undefined,
+        description: (
+          row.drawerStatus === "not_physically_verified"
+            ? "Not Physically Verified — the cash was not counted."
+            : nv(row.variance) === 0 ? "Balanced." : `Variance: ${inr(nv(row.variance))}`
+        ) + emailNote,
+        variant: row.emailSent === false || row.drawerStatus === "not_physically_verified"
+          ? "destructive"
+          : undefined,
       });
       setJustClosed(row);
       qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
@@ -241,15 +253,27 @@ export default function StaffDayCloseDialog({
             <div className={`p-3 rounded-lg border flex items-start gap-2 ${
               justClosed.drawerStatus === "balanced"
                 ? "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800"
-                : "bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800"
+                : justClosed.drawerStatus === "not_physically_verified"
+                  ? "bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800"
+                  : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800"
             }`}>
               {justClosed.drawerStatus === "balanced"
                 ? <CheckCircle2 size={16} className="text-green-600 shrink-0 mt-0.5" />
-                : <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />}
+                : <AlertTriangle size={16} className={`${justClosed.drawerStatus === "not_physically_verified" ? "text-amber-600" : "text-red-600"} shrink-0 mt-0.5`} />}
               <div>
                 <p className="font-bold">
-                  {justClosed.drawerStatus === "balanced" ? "Balanced" : `Mismatch — variance ${inr(nv(justClosed.variance))}`}
+                  {justClosed.drawerStatus === "balanced"
+                    ? "Balanced"
+                    : justClosed.drawerStatus === "not_physically_verified"
+                      ? "Not Physically Verified"
+                      : `Mismatch — variance ${inr(nv(justClosed.variance))}`}
                 </p>
+                {justClosed.drawerStatus === "not_physically_verified" && (
+                  <p className="text-xs mt-0.5">
+                    The amounts were filled from the system&apos;s own totals, so nothing
+                    here says the cash in this drawer was counted.
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Expected {inr(nv(justClosed.totalExpected))} · Counted {inr(nv(justClosed.totalActual))} ·{" "}
                   New bills by {justClosed.userName} now count toward the next window.
@@ -277,7 +301,7 @@ export default function StaffDayCloseDialog({
             {previewQ.data && (
               <>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div><div className="text-muted-foreground">Window from</div><div className="font-medium">{fmtIst(previewQ.data.coveredFromTs)}</div></div>
+                  <div><div className="text-muted-foreground">Window from</div><div className="font-medium">{windowFromCell(previewQ.data.coveredFromTs, fmtIst)}</div></div>
                   <div><div className="text-muted-foreground">Window to</div><div className="font-medium">{fmtIst(previewQ.data.coveredToTs)}</div></div>
                   <div><div className="text-muted-foreground">Bills made</div><div className="font-bold text-base">{previewQ.data.billsCount}</div></div>
                   <div><div className="text-muted-foreground">Total billed</div><div className="font-bold text-base">{inr(previewQ.data.totalBilled)}</div></div>
@@ -355,6 +379,43 @@ export default function StaffDayCloseDialog({
                     className="mt-1"
                     rows={2}
                   />
+                </div>
+
+                <div className="rounded-md border p-3">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={physicallyCounted}
+                      onChange={(e) => setPhysicallyCounted(e.target.checked)}
+                      className="h-4 w-4 mt-0.5 shrink-0"
+                    />
+                    <span className="text-sm">
+                      <span className="font-medium">I have counted the cash in this drawer</span>
+                      <span className="block text-xs text-muted-foreground mt-0.5">
+                        The amounts above were filled from the system&apos;s own totals.
+                        Unticked, this close records as Not Physically Verified instead
+                        of Balanced — the drawer still closes.
+                      </span>
+                      <span className="block text-xs font-bold mt-1.5">
+                        Will record as:{" "}
+                        <span
+                          className={
+                            variance !== 0
+                              ? "text-red-700"
+                              : physicallyCounted
+                                ? "text-green-700"
+                                : "text-amber-700"
+                          }
+                        >
+                          {predictedCloseLabel({
+                            variance,
+                            physicallyCounted,
+                            denominationsEntered: false,
+                          })}
+                        </span>
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </>
             )}

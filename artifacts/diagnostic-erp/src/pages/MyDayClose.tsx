@@ -24,6 +24,7 @@ import {
   type StaffSlipClinic,
 } from "@/lib/staffDayCloseSlip";
 import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
+import { drawerStatusLabel, predictedCloseLabel, windowFromCell } from "@/lib/dayCloseVocabulary";
 import { PostClosureLoudAlert } from "@/components/PostClosureLoudAlert";
 
 type MethodTotals = {
@@ -160,6 +161,11 @@ export default function MyDayClose() {
   const [actuals, setActuals] = useState({ cash: "", upi: "", card: "", cheque: "", other: "" });
   const [varianceNote, setVarianceNote] = useState("");
   const [notes, setNotes] = useState("");
+  // The actuals above are pre-filled from the system's own expected totals, so
+  // an untouched form submits a perfect variance. This box is the only thing
+  // that says a human actually counted the drawer; unchecked records the close as
+  // Not Physically Verified rather than Balanced. It never blocks the close.
+  const [physicallyCounted, setPhysicallyCounted] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState<MyClose | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
@@ -228,6 +234,7 @@ export default function MyDayClose() {
         varianceNote: [varianceNote, denomMismatch && denomOverrideReason ? `Denom override: ${denomOverrideReason}` : ""].filter(Boolean).join(" | "),
         notes,
         denominations: denomsPayload,
+        physicallyCounted,
       });
     },
     onSuccess: (closure) => {
@@ -238,13 +245,20 @@ export default function MyDayClose() {
           variant: "destructive",
         });
       } else {
-        toast({ title: "Your day is closed", description: "New bills from this point count towards tomorrow." });
+        toast({
+          title: "Your day is closed",
+          description: closure.drawerStatus === "not_physically_verified"
+            ? "Recorded as Not Physically Verified — nobody ticked that the cash was counted. New bills from this point count towards tomorrow."
+            : "New bills from this point count towards tomorrow.",
+          variant: closure.drawerStatus === "not_physically_verified" ? "destructive" : undefined,
+        });
       }
       const slip = { ...closure, userName: closure.userName ?? myName };
       // Close confirm first; defer print + reload so Radix can clear body pointer-events.
       dismissDialogThen(setConfirmOpen, async () => {
         setVarianceNote("");
         setNotes("");
+        setPhysicallyCounted(false);
         setDenomCounts(EMPTY_DENOMS);
         setDenomOverrideReason("");
         qc.invalidateQueries({ queryKey: ["my-day-close-preview"] });
@@ -326,7 +340,7 @@ export default function MyDayClose() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
               <div className="text-muted-foreground text-xs">Since last close</div>
-              <div className="font-medium">{fmtIst(previewQ.data?.coveredFromTs ?? null)}</div>
+              <div className="font-medium">{windowFromCell(previewQ.data?.coveredFromTs, fmtIst)}</div>
             </div>
             <div>
               <div className="text-muted-foreground text-xs">Now (IST)</div>
@@ -575,6 +589,27 @@ export default function MyDayClose() {
             />
           </div>
 
+          <div className="rounded-md border p-3">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={physicallyCounted}
+                onChange={(e) => setPhysicallyCounted(e.target.checked)}
+                className="h-4 w-4 mt-0.5 shrink-0"
+              />
+              <span className="text-sm">
+                <span className="font-medium">I have counted the cash</span>
+                <span className="block text-xs text-muted-foreground mt-0.5">
+                  The amounts above are filled in for you, so they are only a check
+                  against the system once you have counted the drawer. Counting notes
+                  by denomination below also counts as a physical count. Leave this
+                  unchecked and the slip records the drawer as Not Physically Verified
+                  instead of Balanced — the close still happens.
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div className="flex justify-end">
             <Button
               size="lg"
@@ -616,6 +651,7 @@ export default function MyDayClose() {
                   approved: "text-amber-600 bg-amber-50 dark:bg-amber-950/30",
                   closed: "text-emerald-700 bg-emerald-50 dark:bg-emerald-950/30",
                   reopened: "text-orange-600 bg-orange-50 dark:bg-orange-950/30",
+                  not_physically_verified: "text-amber-800 bg-amber-50 dark:bg-amber-950/30",
                 };
                 const sc = statusColors[c.drawerStatus] ?? "text-gray-600";
                 return (
@@ -629,8 +665,8 @@ export default function MyDayClose() {
                       {v === 0 ? "—" : `${v < 0 ? "−" : "+"}${inr(Math.abs(v))}`}
                     </td>
                     <td className="whitespace-nowrap">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold capitalize ${sc}`}>
-                        {c.drawerStatus}
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${sc}`}>
+                        {drawerStatusLabel(c.drawerStatus)}
                       </span>
                     </td>
                     <td className="text-right whitespace-nowrap">
@@ -684,6 +720,22 @@ export default function MyDayClose() {
                 variance === 0 ? "text-green-600" : variance < 0 ? "text-red-600" : "text-amber-600"
               }>
                 {variance === 0 ? "Balanced ✓" : `${variance < 0 ? "−" : "+"}${inr(Math.abs(variance))}`}
+              </strong>
+            </div>
+            <div className="flex justify-between">
+              <span>Records as</span>
+              <strong className={
+                variance !== 0
+                  ? "text-red-600"
+                  : physicallyCounted || anyDenomEntered
+                    ? "text-green-700"
+                    : "text-amber-700"
+              }>
+                {predictedCloseLabel({
+                  variance,
+                  physicallyCounted,
+                  denominationsEntered: anyDenomEntered,
+                })}
               </strong>
             </div>
             {anyDenomEntered && (

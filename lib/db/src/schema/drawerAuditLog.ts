@@ -1,7 +1,7 @@
 import { pgTable, serial, integer, text, numeric, timestamp } from "drizzle-orm/pg-core";
 
 // Immutable audit trail for every drawer-close lifecycle event.
-// action values: close_started | closed | mismatch_detected | mismatch_approved |
+// action values: close_started | closed | closed_unverified | mismatch_detected | mismatch_approved |
 //                drawer_reopened | post_close_override
 export const drawerAuditLogTable = pgTable("drawer_audit_log", {
   id: serial("id").primaryKey(),

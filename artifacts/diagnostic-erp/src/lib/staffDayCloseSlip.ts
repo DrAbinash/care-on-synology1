@@ -3,6 +3,12 @@
  * (matches handwritten clinic slip: bold type, two-column summary + denominations).
  */
 
+import {
+  DRAWER_STATUS_NOT_VERIFIED,
+  FIRST_CLOSE_WINDOW_TEXT,
+  drawerStatusLabel,
+} from "./dayCloseVocabulary";
+
 export type StaffSlipClinic = {
   name?: string;
   logoDataUrl?: string | null;
@@ -201,8 +207,14 @@ export function buildStaffDayCloseSlipHtml(
 
   const closedAt = c.coveredToTs ?? c.closedAt;
   const headerWhen = `${fmtIstDate(closedAt)} ${fmtIstTime(closedAt)}`.trim();
-  const windowFrom = fmtIstDate(c.coveredFromTs);
-  const windowTo = fmtIstTime(closedAt);
+  // A window is one span, printed as one span. The old slip printed the start
+  // DATE and the end TIME — and the end time is the same instant as the header —
+  // so a carry-forward window that began on the 6th and closed on the 7th read on
+  // paper as a reconciliation "of the 7th and the 6th". That is exactly what the
+  // cashier reported from the live clinic on 2026-10-13.
+  const windowLine = c.coveredFromTs
+    ? `${fmtIstDate(c.coveredFromTs)} ${fmtIstTime(c.coveredFromTs)} → ${fmtIstDate(closedAt)} ${fmtIstTime(closedAt)}`
+    : `${FIRST_CLOSE_WINDOW_TEXT} → ${fmtIstDate(closedAt)} ${fmtIstTime(closedAt)}`;
 
   const denoms = c.denominations;
   const denomLines = denoms
@@ -239,8 +251,12 @@ export function buildStaffDayCloseSlipHtml(
     methodLine("OTHER", n(c.expectedOther)),
   ].join("");
 
-  const varianceHtml =
-    variance === 0
+  const varianceHtml = c.drawerStatus === DRAWER_STATUS_NOT_VERIFIED
+    // The paper the cashier signs must not say "Balanced" when nobody counted:
+    // variance zero here only means the form was submitted as the system filled
+    // it, which is the exact condition the clinic mistook for a verified drawer.
+    ? `<div class="note warn">Not Physically Verified — the cash was not counted</div>`
+    : variance === 0
       ? `<div class="note ok">Balanced — no variance</div>`
       : `<div class="note warn">Variance ${variance < 0 ? "short" : "surplus"}: ${esc(inr(Math.abs(variance)))}</div>`;
 
@@ -276,6 +292,7 @@ export function buildStaffDayCloseSlipHtml(
   .brand .sub { font-size: 13px; font-weight: 700; margin-top: 2px; }
   .brand .who { font-size: 14px; font-weight: 800; margin-top: 4px; text-transform: uppercase; }
   .brand .when { font-size: 12px; font-weight: 700; color: #222; }
+  .brand .window { font-size: 11px; font-weight: 700; color: #444; }
   .cols {
     display: flex;
     gap: 10px;
@@ -400,7 +417,8 @@ export function buildStaffDayCloseSlipHtml(
       <h1>${esc(clinicName)}</h1>
       <div class="sub">Staff Reconciliation</div>
       <div class="who">${esc(who)}</div>
-      <div class="when">${esc(headerWhen)}${windowFrom !== fmtIstDate(closedAt) ? ` · from ${esc(windowFrom)} ${esc(windowTo)}` : ""}</div>
+      <div class="when">${esc(headerWhen)}</div>
+      <div class="window">Reconciles ${esc(windowLine)}</div>
     </div>
   </div>
 
@@ -437,7 +455,7 @@ export function buildStaffDayCloseSlipHtml(
     <div>BILLS EDITED/MODIFIED → ${editCount}</div>
     <div>DISCOUNTS GIVEN → Rs. ${esc(inr(discounts))}</div>
     <div class="meta">
-      Closure #${c.id}${c.drawerStatus ? ` · ${esc(c.drawerStatus)}` : ""}
+      Closure #${c.id}${c.drawerStatus ? ` · ${esc(drawerStatusLabel(c.drawerStatus))}` : ""}
       · Printed ${esc(new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }))} IST
     </div>
   </div>

@@ -1,5 +1,6 @@
 import type { StaffPrintActivity } from "./postClosureActivityTypes";
 import { computeStaffSlipFormula } from "./staffSlipFormula";
+import { DRAWER_STATUS_NOT_VERIFIED, drawerStatusLabel } from "./dayCloseVocabulary";
 
 export type StaffDayCloseEmailPayload = {
   clinicName: string;
@@ -111,8 +112,16 @@ export function buildStaffDayCloseEmailHtml(p: StaffDayCloseEmailPayload): strin
       }).join("")
     : "";
 
-  const varianceColor = p.variance === 0 ? "#166534" : "#991b1b";
-  const varianceLabel = p.variance === 0 ? "Balanced" : `${p.variance < 0 ? "Short" : "Surplus"} ${inr(Math.abs(p.variance))}`;
+  // Zero variance is not a verification: the self-close and bulk paths both fill
+  // the actuals from these expected totals, so an un-counted drawer arrives here
+  // with variance 0 and used to mail out as "Balanced".
+  const unverified = p.drawerStatus === DRAWER_STATUS_NOT_VERIFIED;
+  const varianceColor = unverified ? "#92400e" : p.variance === 0 ? "#166534" : "#991b1b";
+  const varianceLabel = unverified
+    ? "Not Physically Verified — the cash was not counted"
+    : p.variance === 0
+      ? "Balanced"
+      : `${p.variance < 0 ? "Short" : "Surplus"} ${inr(Math.abs(p.variance))}`;
 
   return `
 <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#000">
@@ -170,7 +179,7 @@ export function buildStaffDayCloseEmailHtml(p: StaffDayCloseEmailPayload): strin
     DISCOUNTS GIVEN → Rs. ${esc(inr(discounts))}
   </p>
   <p style="margin:16px 0 0;font-size:11px;color:#666;text-align:center">
-    Closure #${p.closureId}${p.drawerStatus ? ` · ${esc(p.drawerStatus)}` : ""} · Care Diagnostics ERP
+    Closure #${p.closureId}${p.drawerStatus ? ` · ${esc(drawerStatusLabel(p.drawerStatus))}` : ""} · Care Diagnostics ERP
   </p>
 </div>`;
 }
