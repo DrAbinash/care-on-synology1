@@ -62,6 +62,15 @@ database stamped for a different app — the same protection in a different plac
 returns a different `app_name`, stop: you are pointed at the wrong database, and the audit
 would be describing a schema nobody deploys to.
 
+Write down the `instance_id` too, not only `app_name`. It is the md5 minted the first time the
+stamping script ever touched that database, so it is the one field that separates the clinic's
+`diagnostic_erp` from a **different** database carrying the same `app_name` — a second project
+stamped `care-erp`, or the staging stack, agrees on `app_name` and is indistinguishable without it.
+What it cannot catch is a restore: a database rebuilt from a production dump copies the row whole,
+`instance_id` included. Measured on `AbinashNAS` 2026-10-13, for comparison:
+`diagnostic_erp | f | 16.14` and `care-erp | production | bd62c32b92733266c8b521a171f88232 |
+2026-07-08 08:53:46.432625+00`.
+
 > Never `printenv DATABASE_URL`, and never echo it into a log or a screenshot: it embeds
 > `DB_PASSWORD`. `docker exec` into `care-db` uses the credentials the container already
 > has. Do not run these against `127.0.0.1:5400` from the host either — `care-db` publishes
@@ -89,9 +98,26 @@ in this repository.
 
 ### A.3 The audit itself
 
+Establish the project name first, because the folder is not it. Measured on `AbinashNAS`
+2026-10-13 from `/volume1/docker/care-erp-github/care-on-synology1`: a bare `docker compose ps`
+listed **no containers**, while `docker compose -p care-erp-github ps` listed `care-api`, `care-db`,
+`care-redis`, `care-web`. The live stack's project is `care-erp-github`; the name compose derives
+from that folder is `care-on-synology1`, which owns nothing.
+
 ```sh
-docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
+docker compose ls
 ```
+
+```sh
+docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
+```
+
+* **Do not run this without `-p`, and do not "fix" a failure by dropping `--no-deps`.** Without
+  `-p` the one-off container joins the empty `care-on-synology1` project, `db:5432` does not resolve
+  there, and the audit exits with a connection error that reads like a broken database. The tempting
+  remedy — `compose run schema-verify` *with* its dependencies — starts a **second** PostgreSQL from
+  the same `DB_PASSWORD` against a fresh empty volume, and the audit then reports roughly two hundred
+  missing tables against a schema that was never the clinic's. Both `-p` and `--no-deps` are load-bearing.
 
 * `--no-deps` starts no database, no API and no migration container. The service is chosen
   because `schema-verify` is built from the `migrate` stage, which **bakes `scripts/` and
@@ -107,14 +133,15 @@ docker compose run --rm --no-deps schema-verify node scripts/audit-migration-led
 To keep the findings as an artefact:
 
 ```sh
-docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs \
+docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs \
   --json=output/ledger-audit-$(date +%F).json
 ```
 
 `output/` is the deploy directory itself (`./:/repo/output:rw`), so the file lands in the
-checkout. It is **untracked**: move it to `/volume1/docker/backups/` or delete it when the
-decision is made. Do not "tidy the checkout" with `git clean` to remove it — that directory
-holds untracked files that exist in no branch, including old credential sets and TLS keys.
+checkout. It is **untracked**: move it out of the working tree — `mkdir -p /volume1/docker/ledger-audits`
+and keep it there with the run date — or delete it once the decision is made. Do not "tidy the
+checkout" with `git clean` to remove it — that directory holds untracked files that exist in no
+branch, including old credential sets and TLS keys.
 
 ### A.4 Reading the answer
 
@@ -275,23 +302,36 @@ and `5680→4242` (DICOM C-STORE/C-ECHO).
 ### C.2 CARE API → Orthanc connectivity (the only path that matters for reports)
 
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/system"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' /system
 ```
+
+`care-api` ships `curl` and `node v22.22.3` and **no `wget`, no `nc`, no `python3`** (measured on
+the clinic box 2026-10-13), so every probe in this section runs through `node`. A `wget` line
+pasted there exits with `not found`, which reads exactly like Orthanc being down.
 
 Expected: a JSON object with `"Version"` (and `ApiVersion`). `ORTHANC_INTERNAL_URL` defaults
 to `http://care-orthanc:8042` (`docker-compose.yml:336`), which resolves **only if the two
 projects share a user-defined network**. If it fails, distinguish the two causes:
 
 ```sh
-# does the name resolve at all from inside the API container?
-docker exec care-api sh -c 'wget -qO- -T 3 http://care-orthanc:8042/system >/dev/null && echo DNS+HTTP ok || echo failed'
+# does the name resolve at all from inside the API container? (Docker's embedded resolver)
+docker exec care-api node -e 'const {Resolver}=require("dns").promises,r=new Resolver({server:"127.0.0.11",tcp:false});r.resolve4(process.argv[1]).then(a=>console.log("DNS ok",a.join(" "))).catch(e=>console.log("DNS fail",e.code||e.message))' care-orthanc
+# is the socket openable, independent of HTTP?
+docker exec care-api node -e "const n=require('net'),h=process.argv[1],a=process.argv[2],p=+a;if(!h||!/^[A-Za-z0-9.:_-]+$/.test(h)||!(Number.isFinite(p)&&p>0&&p<65536)){console.log('NOT FILLED IN: replace HOST and PORT with real values (you passed host='+h+' port='+a+')');process.exit(0)}const s=n.connect({host:h,port:p,timeout:4000},()=>{console.log('TCP ok '+h+':'+p);s.removeAllListeners('error');s.destroy()});s.on('error',e=>console.log('TCP fail '+h+':'+p+' '+e.code));s.on('timeout',()=>{console.log('TCP timeout '+h+':'+p);s.destroy()})" HOST PORT
 # which networks does each side sit on?
 docker inspect --format '{{.Name}} -> {{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' care-api care-orthanc
 ```
 
-Two more facts that have burned time here: a container on this NAS **cannot reach the NAS's
-own LAN IP on a Docker-published port** (Synology hairpin/DNAT block), so `192.168.1.137:8042`
-from inside `care-api` failing proves nothing about Orthanc; and
+Three separate questions, because one line that answers "DNS+HTTP ok or failed" cannot tell you
+which half broke: name resolution, socket, network membership. On the clinic box 2026-10-13 the
+resolver answered `DNS fail ENOTFOUND` for `care-orthanc` (separate compose project) and the
+configured `ORTHANC_INTERNAL_URL` is the interface address `http://172.16.1.139:8042`, which
+answered `HTTP 200` in 50–67 ms.
+
+Two more facts that have burned time here: **the hairpin/DNAT block is per-interface, not a rule
+about "the NAS's LAN IP"** — this box answers on `eth0 192.168.1.137`, `eth1 172.16.1.139` and
+`eth2 192.168.1.47`, and from `care-api` the `eth1` address completes while the `eth0` one times
+out, so a failure against one address says nothing about the other and nothing about Orthanc; and
 `ORTHANC_CHANGES_POLLER` must be `false` when `care-erp-sync` runs, or two writers race on
 the same worklist.
 
@@ -299,7 +339,7 @@ the same worklist.
 
 ```sh
 # QIDO at study level — proves /dicom-web is mounted, not just the REST root
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies?limit=1"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' '/dicom-web/studies?limit=1'
 ```
 
 Expect a JSON array (possibly `[]`). Now the quirk the image picker depends on: Orthanc
@@ -308,8 +348,14 @@ Expect a JSON array (possibly `[]`). Now the quirk the image picker depends on: 
 lookup must be QIDO-filtered instead:
 
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances?00080018=SOP"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+"/dicom-web/studies/"+process.argv[1]+"/series/"+process.argv[2]+"/instances?00080018="+process.argv[3];fetch(u,{headers:{accept:"application/dicom+json"},signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();let n="not-json";try{n=JSON.parse(s).length}catch(e){}console.log("HTTP",r.status,"entries="+n,s.length,"bytes")}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' STUDY SERIES SOP
 ```
+
+Pass the three UIDs as the three trailing arguments; the URL is built inside the container from
+`ORTHANC_INTERNAL_URL`, so nothing has to be exported first. `care-api` has no `wget` (measured
+2026-10-13: `curl` and `node v22.22.3` only), so the `wget -qO-` form of this probe reports
+`not found`, which is not an Orthanc answer. The response body is DICOM metadata for one study, so
+this line prints counts only — never paste the array into a log.
 
 An unmatched filter is a `200` with an **empty array**, never a 404 — that distinction is
 what `scripts/…/mockDicomWeb.ts` mimics, and it is why a regression back to path-style
@@ -348,7 +394,7 @@ The print/PDF leg fetches exactly this path (`artifacts/api-server/src/lib/repor
 
 ```sh
 # status and size only — never pipe image bytes into a log or a terminal
-docker exec care-api sh -c 'wget -S -qO /dev/null "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances/SOP/rendered" 2>&1 | head -8'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+"/dicom-web/studies/"+process.argv[1]+"/series/"+process.argv[2]+"/instances/"+process.argv[3]+"/rendered";fetch(u,{signal:AbortSignal.timeout(15e3)}).then(r=>console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],"len="+(r.headers.get("content-length")||"?"))).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' STUDY SERIES SOP
 ```
 
 Expect `200` and `Content-Type: image/jpeg`. A single-frame object has **no** `frames/` path
