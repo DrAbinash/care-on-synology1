@@ -2,6 +2,7 @@ import nodemailer from "nodemailer";
 import { db } from "@workspace/db";
 import { emailSettingsTable } from "@workspace/db/schema";
 import { buildStaffDayCloseEmailHtml, type StaffDayCloseEmailPayload } from "./lib/staffDayCloseEmail";
+import { drawerStatusLabel } from "./lib/dayCloseVocabulary";
 
 export async function getEmailSettings() {
   const [settings] = await db.select().from(emailSettingsTable).limit(1);
@@ -659,7 +660,7 @@ export async function sendStaffDayCloseEmail(payload: StaffDayCloseEmailPayload)
   }
 
   const html = buildStaffDayCloseEmailHtml(payload);
-  const subject = `[Staff Day Close] ${payload.staffName} — ${payload.closureDate} (${payload.drawerStatus ?? "closed"})`;
+  const subject = `[Staff Day Close] ${payload.staffName} — ${payload.closureDate} (${drawerStatusLabel(payload.drawerStatus)})`;
 
   await transport.sendMail({
     from: `"${s.fromName}" <${s.fromAddress}>`,

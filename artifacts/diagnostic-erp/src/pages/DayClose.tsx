@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import StaffDayCloseDialog, { type StaffWindowBill } from "@/components/StaffDayCloseDialog";
 import { dismissDialogThen, restoreBodyPointerEvents } from "@/lib/dialogDismiss";
+import { drawerStatusLabel } from "@/lib/dayCloseVocabulary";
 import {
   SameDayAfterCloseBadge,
   StaffPostClosureOverviewBanner,
@@ -502,11 +503,20 @@ function downloadReportPdf(c: Closure, clinic: ClinicLite) {
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
-type DrawerStatusKey = "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
+type DrawerStatusKey =
+  | "open"
+  | "balanced"
+  | "not_physically_verified"
+  | "mismatch"
+  | "approved"
+  | "closed"
+  | "reopened";
 
 const STATUS_CONFIG: Record<DrawerStatusKey, { label: string; badge: string }> = {
   open:     { label: "Open",     badge: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" },
   balanced: { label: "Balanced", badge: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" },
+  // Closed, window advanced, but nobody counted the money — amber, never green.
+  not_physically_verified: { label: "Not Physically Verified", badge: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200" },
   mismatch: { label: "Mismatch", badge: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300" },
   approved: { label: "Approved", badge: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300" },
   closed:   { label: "Closed",   badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" },
@@ -514,10 +524,10 @@ const STATUS_CONFIG: Record<DrawerStatusKey, { label: string; badge: string }> =
 };
 
 function DrawerBadge({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status as DrawerStatusKey] ?? STATUS_CONFIG.open;
+  const cfg = STATUS_CONFIG[status as DrawerStatusKey];
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cfg.badge}`}>
-      {cfg.label}
+    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cfg?.badge ?? "bg-gray-100 text-gray-700 dark:bg-gray-900 dark:text-gray-300"}`}>
+      {drawerStatusLabel(status)}
     </span>
   );
 }
@@ -567,6 +577,7 @@ export default function DayClose() {
   const [staffReopenReason, setStaffReopenReason] = useState("");
   const [staffTableExpanded, setStaffTableExpanded] = useState(true);
   const [bulkCloseOpen, setBulkCloseOpen] = useState(false);
+  const [bulkCloseReason, setBulkCloseReason] = useState("");
   const [bulkCloseNotes, setBulkCloseNotes] = useState("");
 
   // Banking day-close summary
@@ -703,13 +714,17 @@ export default function DayClose() {
   };
   const bulkCloseMut = useMutation<BulkCloseResult>({
     mutationFn: () =>
-      api.post<BulkCloseResult>("/api/day-close/staff-close-all", { notes: bulkCloseNotes }),
+      api.post<BulkCloseResult>("/api/day-close/staff-close-all", {
+        reason: bulkCloseReason.trim(),
+        notes: bulkCloseNotes,
+      }),
     onSuccess: (data) => {
       toast({
         title: "Staff drawers closed",
-        description: `${data.closed} closed${data.skipped ? `, ${data.skipped} skipped` : ""}${data.errors ? `, ${data.errors} failed` : ""}.`,
+        description: `${data.closed} closed as Not Physically Verified${data.skipped ? `, ${data.skipped} skipped` : ""}${data.errors ? `, ${data.errors} failed` : ""} — no cash was counted against these drawers.`,
       });
       setBulkCloseOpen(false);
+      setBulkCloseReason("");
       setBulkCloseNotes("");
       qc.invalidateQueries({ queryKey: ["day-close-staff-status"] });
       qc.invalidateQueries({ queryKey: ["day-close-preview"] });
@@ -831,9 +846,11 @@ export default function DayClose() {
                           <tr key={u.userId} className={`border-b last:border-b-0 ${
                             u.drawerStatus === "mismatch"
                               ? "bg-red-50/40 dark:bg-red-950/10"
-                              : u.drawerStatus === "balanced" || u.drawerStatus === "closed"
-                                ? "bg-green-50/30 dark:bg-green-950/10"
-                                : ""
+                              : u.drawerStatus === "not_physically_verified"
+                                ? "bg-amber-50/40 dark:bg-amber-950/10"
+                                : u.drawerStatus === "balanced" || u.drawerStatus === "closed"
+                                  ? "bg-green-50/30 dark:bg-green-950/10"
+                                  : ""
                           }`}>
                             <td className="px-3 py-2 font-medium">
                               <div className="flex items-center gap-1.5">
@@ -1935,7 +1952,12 @@ export default function DayClose() {
             <p>
               This will close <strong>{openStaffCount}</strong> open staff drawer
               {openStaffCount === 1 ? "" : "s"}, setting each person&apos;s counted
-              amounts equal to system expected (balanced).
+              amounts equal to the system&apos;s expected totals.
+            </p>
+            <p className="text-xs rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-2 text-amber-900 dark:text-amber-200">
+              Nobody has counted the cash in these drawers, so each one records as
+              <strong> Not Physically Verified</strong> — not Balanced — and your reason
+              is written on every closure and in the drawer audit trail.
             </p>
             <p className="text-xs text-muted-foreground">
               Use per-row Close when you need to physically count and record a variance.
@@ -1952,11 +1974,21 @@ export default function DayClose() {
                   </span>
                 </div>
               ))}
+            <Label>
+              Reason <span className="text-red-600">*</span>{" "}
+              <span className="text-xs text-muted-foreground">(required — why no drawer was counted)</span>
+            </Label>
+            <Textarea
+              value={bulkCloseReason}
+              onChange={(e) => setBulkCloseReason(e.target.value)}
+              placeholder="e.g. Suraj was off; Vijay holds both drawers and the aggregate was verified at the counter."
+              rows={2}
+            />
             <Label>Notes (optional)</Label>
             <Textarea
               value={bulkCloseNotes}
               onChange={(e) => setBulkCloseNotes(e.target.value)}
-              placeholder="e.g. End-of-day bulk close after cash handover verified."
+              placeholder="Anything further the next shift should know."
               rows={2}
             />
           </div>
@@ -1964,7 +1996,7 @@ export default function DayClose() {
             <Button variant="ghost" onClick={() => setBulkCloseOpen(false)}>Cancel</Button>
             <Button
               className="bg-blue-700 hover:bg-blue-800"
-              disabled={bulkCloseMut.isPending || openStaffCount === 0}
+              disabled={bulkCloseMut.isPending || openStaffCount === 0 || bulkCloseReason.trim().length < 3}
               onClick={() => bulkCloseMut.mutate()}
             >
               {bulkCloseMut.isPending ? "Closing…" : `Confirm Close ${openStaffCount} Staff`}

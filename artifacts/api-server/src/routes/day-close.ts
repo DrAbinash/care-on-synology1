@@ -756,6 +756,42 @@ export function drawerVariances(counts: {
   };
 }
 
+/**
+ * A drawer only earns the word "balanced" when someone says they counted the
+ * money, or has entered note-by-note counts — which are themselves a count.
+ *
+ * The self-close form fills every actual from the system's own expected totals
+ * (`MyDayClose.tsx`: `cash: String(previewQ.data.expected.cash || "")`), so
+ * pressing Close without touching a box submits expected as actual and computes a
+ * variance of exactly zero. Measured on the live clinic on 2026-10-13: twelve
+ * consecutive staff closes across two cashiers all had `variance 0.00`, an empty
+ * `variance_note`, `denominations IS NULL`, and `actual_cash` equal to
+ * `expected_cash` to the paisa. Nothing in the stored row can tell a perfect count
+ * from no count at all, which makes "balanced" an assertion rather than evidence —
+ * and a shortage would read the same way.
+ *
+ * The auto-balance path for admins (`opts.autoBalance`) sets actuals FROM the
+ * expected totals, so its variance is zero by construction and it is never a
+ * verification.
+ */
+export const DRAWER_STATUS_NOT_VERIFIED = "not_physically_verified";
+
+export function staffDrawerStatus(args: {
+  variance: number;
+  physicallyCounted: boolean;
+  denominationsEntered: boolean;
+}): "mismatch" | "balanced" | typeof DRAWER_STATUS_NOT_VERIFIED {
+  if (args.variance !== 0) return "mismatch";
+  if (args.physicallyCounted || args.denominationsEntered) return "balanced";
+  return DRAWER_STATUS_NOT_VERIFIED;
+}
+
+/** The audit verb for a close, so the trail says whether it was verified. */
+export function staffCloseAuditAction(status: string): "mismatch_detected" | "closed" | "closed_unverified" {
+  if (status === "mismatch") return "mismatch_detected";
+  return status === DRAWER_STATUS_NOT_VERIFIED ? "closed_unverified" : "closed";
+}
+
 async function userWindowBoundary(userName: string): Promise<Date | null> {
   const [lastOverall] = await db
     .select({ ts: dayClosuresTable.coveredToTs })
@@ -1378,7 +1414,7 @@ const DenominationSchema = z.object({
   coins: z.coerce.number().min(0).default(0),
 }).optional();
 
-const UserCloseBody = z.object({
+export const UserCloseBody = z.object({
   actuals: z.object({
     cash:   z.coerce.number().min(0).default(0),
     upi:    z.coerce.number().min(0).default(0),
@@ -1389,6 +1425,10 @@ const UserCloseBody = z.object({
   varianceNote: z.string().max(2000).default(""),
   notes:        z.string().max(2000).default(""),
   denominations: DenominationSchema,
+  // Defaults to FALSE on purpose. The form pre-fills the actuals from the
+  // expected totals, so silence here means "nobody asserted a count", and that
+  // must record as unverified rather than inheriting the flattering default.
+  physicallyCounted: z.boolean().default(false),
 });
 
 function calcDenominationTotal(d: { d500:number; d200:number; d100:number; d50:number; d20:number; d10:number; coins:number }): number {
@@ -1466,7 +1506,7 @@ dayCloseRouter.post("/my-close", async (req, res) => {
 
   const parsed = UserCloseBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
-  const { actuals, varianceNote, notes, denominations } = parsed.data;
+  const { actuals, varianceNote, notes, denominations, physicallyCounted } = parsed.data;
 
   const inserted = await db.transaction(async (tx) => {
     // Per-user advisory lock to prevent duplicate concurrent closes.
@@ -1485,8 +1525,11 @@ dayCloseRouter.post("/my-close", async (req, res) => {
 
     const denominationTotal = denominations ? calcDenominationTotal(denominations) : null;
 
-    // Determine drawer status
-    const drawerStatus = variance === 0 ? "balanced" : "mismatch";
+    const drawerStatus = staffDrawerStatus({
+      variance,
+      physicallyCounted,
+      denominationsEntered: denominations != null,
+    });
 
     const istDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
@@ -1529,7 +1572,7 @@ dayCloseRouter.post("/my-close", async (req, res) => {
     // Write audit log entry.
     await tx.insert(drawerAuditLogTable).values({
       userClosureId: row.id,
-      action:        drawerStatus === "mismatch" ? "mismatch_detected" : "closed",
+      action:        staffCloseAuditAction(drawerStatus),
       userId,
       userName,
       userRole,
@@ -1921,6 +1964,8 @@ async function closeStaffDrawerOnBehalf(opts: {
   actuals?: AdminCloseActuals;
   /** When true, set actuals = lock-time expected method totals (balanced close). */
   autoBalance?: boolean;
+  /** An admin asserting they physically counted this drawer's money. */
+  physicallyCounted?: boolean;
   varianceNote: string;
   notes: string;
   denominations?: {
@@ -1942,6 +1987,12 @@ async function closeStaffDrawerOnBehalf(opts: {
     }
 > {
   const { userName, varianceNote, notes, denominations, actor } = opts;
+  // An auto-balanced close writes the system's own expected totals into the actual
+  // fields, so its variance is zero by construction. The bulk path therefore never
+  // gets a `physicallyCounted` to assert — `BulkStaffCloseBody` has no such field,
+  // which `day-close.physicalVerification.test.ts` pins, rather than trusting a
+  // flag here to overrule a claim that cannot reach it.
+  const physicallyCounted = opts.physicallyCounted === true;
 
   return db.transaction(async (tx) => {
     const lockId = BigInt(
@@ -1991,7 +2042,11 @@ async function closeStaffDrawerOnBehalf(opts: {
     const totalActual = actuals.cash + actuals.upi + actuals.card + actuals.cheque + actuals.other;
     const variance = totalActual - totalExpected;
     const denominationTotal = denominations ? calcDenominationTotal(denominations) : null;
-    const drawerStatus = variance === 0 ? "balanced" : "mismatch";
+    const drawerStatus = staffDrawerStatus({
+      variance,
+      physicallyCounted,
+      denominationsEntered: denominations != null,
+    });
 
     const istDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
@@ -2039,7 +2094,7 @@ async function closeStaffDrawerOnBehalf(opts: {
 
     await tx.insert(drawerAuditLogTable).values({
       userClosureId: row.id,
-      action: drawerStatus === "mismatch" ? "mismatch_detected" : "closed",
+      action: staffCloseAuditAction(drawerStatus),
       userId: actor.adminId,
       userName: actor.adminName,
       userRole: actor.adminRole,
@@ -2063,7 +2118,7 @@ async function closeStaffDrawerOnBehalf(opts: {
 dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
   const parsed = AdminStaffCloseBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
-  const { userName, actuals, varianceNote, notes, denominations } = parsed.data;
+  const { userName, actuals, varianceNote, notes, denominations, physicallyCounted } = parsed.data;
 
   const session = (req as StaffAuthRequest).staffSession;
   const actor: AdminCloseActor = {
@@ -2075,6 +2130,7 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
   const inserted = await closeStaffDrawerOnBehalf({
     userName,
     actuals,
+    physicallyCounted,
     varianceNote,
     notes,
     denominations,
@@ -2104,15 +2160,22 @@ dayCloseRouter.post("/staff-close", requireOwnerOrAdmin, async (req, res) => {
 });
 
 // Bulk-close every open (or reopened) staff drawer, auto-balancing actuals to
-// each staff member's live expected method totals. Used when the owner has
-// already verified the aggregate cash and wants to advance all staff windows
-// without clicking Close one by one.
-const BulkStaffCloseBody = z.object({
-  notes: z.string().max(2000).default(""),
+// each staff member's live expected method totals. One click is allowed, but the
+// caller must say why: this path writes the system's own expected totals into the
+// actual fields, so it can never be a verification, and on 2026-10-13 it was used
+// to close a drawer the cashier could not close — producing a row that read
+// "balanced" with nobody having counted the money. The reason is stored on every
+// closure it makes, and each one records as not physically verified.
+export const BulkStaffCloseBody = z.object({
+  reason: z.string().trim().min(3).max(2000),
+  notes:  z.string().max(2000).default(""),
 });
 dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) => {
   const parsed = BulkStaffCloseBody.safeParse(req.body ?? {});
-  if (!parsed.success) { res.status(400).json({ error: "Invalid request body" }); return; }
+  if (!parsed.success) {
+    res.status(400).json({ error: "A reason is required (min 3 characters) — this closes every open staff drawer without counting the cash" });
+    return;
+  }
 
   const session = (req as StaffAuthRequest).staffSession;
   const actor: AdminCloseActor = {
@@ -2171,9 +2234,9 @@ dayCloseRouter.post("/staff-close-all", requireOwnerOrAdmin, async (req, res) =>
       const inserted = await closeStaffDrawerOnBehalf({
         userName,
         autoBalance: true,
-        varianceNote: "",
+        varianceNote: parsed.data.reason,
         notes: [
-          `Bulk closed by ${actor.adminName} (auto-balanced to expected)`,
+          `Auto-balanced by ${actor.adminName} without a physical cash count`,
           parsed.data.notes,
         ].filter(Boolean).join(" — "),
         actor,

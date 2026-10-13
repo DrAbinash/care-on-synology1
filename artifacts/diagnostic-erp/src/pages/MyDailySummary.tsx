@@ -299,7 +299,14 @@ type StaffStatusResult = {
 };
 
 type DrawerStatus = {
-  drawerStatus: "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
+  drawerStatus:
+    | "open"
+    | "balanced"
+    | "not_physically_verified"
+    | "mismatch"
+    | "approved"
+    | "closed"
+    | "reopened";
   userName: string;
   coveredFromTs: string | null;
   coveredToTs: string;
@@ -344,7 +351,14 @@ function fmtIst(iso: string | null) {
 
 // ─── Drawer Status Config ─────────────────────────────────────────────────────
 
-type DrawerStatusKey = "open" | "balanced" | "mismatch" | "approved" | "closed" | "reopened";
+type DrawerStatusKey =
+  | "open"
+  | "balanced"
+  | "not_physically_verified"
+  | "mismatch"
+  | "approved"
+  | "closed"
+  | "reopened";
 
 const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
   label: string;
@@ -400,6 +414,17 @@ const DRAWER_STATUS_CONFIG: Record<DrawerStatusKey, {
     headerBg: "bg-gradient-to-r from-orange-500 to-amber-600",
     badgeBg: "bg-orange-100 dark:bg-orange-900/40",
     badgeText: "text-orange-700 dark:text-orange-300",
+    icon: AlertTriangle,
+  },
+  // The money was never counted, so nothing is verified — but the drawer is
+  // closed and its window has advanced. Amber, not green: the old binary
+  // rendering would have shown this as "Mismatch — variance ₹0.00".
+  not_physically_verified: {
+    label: "Not Physically Verified",
+    border: "border-amber-300 dark:border-amber-700",
+    headerBg: "bg-gradient-to-r from-amber-500 to-yellow-600",
+    badgeBg: "bg-amber-100 dark:bg-amber-900/40",
+    badgeText: "text-amber-800 dark:text-amber-200",
     icon: AlertTriangle,
   },
 };
@@ -1629,6 +1654,9 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   if (status.drawerStatus === "balanced") {
     chips.push({ label: "Drawer Balanced", bg: "bg-green-100 dark:bg-green-900/40", text: "text-green-700 dark:text-green-300", icon: CheckCircle2 });
   }
+  if (status.drawerStatus === "not_physically_verified") {
+    chips.push({ label: "Not Physically Verified", bg: "bg-amber-100 dark:bg-amber-900/40", text: "text-amber-800 dark:text-amber-200", icon: AlertTriangle });
+  }
   if (status.drawerStatus === "mismatch") {
     chips.push({ label: "Cash Mismatch", bg: "bg-red-100 dark:bg-red-900/40", text: "text-red-700 dark:text-red-300", icon: AlertTriangle });
   }
@@ -1638,7 +1666,11 @@ function DrawerChips({ status }: { status: DrawerStatus | undefined }) {
   if (status.digitalVariance !== null && status.digitalVariance !== 0 && status.drawerStatus !== "open") {
     chips.push({ label: "Digital Mismatch", bg: "bg-orange-100 dark:bg-orange-900/40", text: "text-orange-700 dark:text-orange-300", icon: AlertTriangle });
   }
-  if (status.drawerStatus === "closed" || status.drawerStatus === "balanced") {
+  if (
+    status.drawerStatus === "closed"
+    || status.drawerStatus === "balanced"
+    || status.drawerStatus === "not_physically_verified"
+  ) {
     chips.push({ label: "Day Closed", bg: "bg-emerald-100 dark:bg-emerald-900/40", text: "text-emerald-700 dark:text-emerald-300", icon: Lock });
   }
   if (status.drawerStatus === "open") {
