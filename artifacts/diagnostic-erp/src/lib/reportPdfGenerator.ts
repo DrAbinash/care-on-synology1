@@ -186,6 +186,14 @@ export type ReportData = {
    */
   keyImages?: Array<string | ReportKeyImage>;
   reportTitle?: string;
+  /**
+   * The region this report documents, when the radiologist recorded a different
+   * one (ADR-004). Produced by `reportedScopeNote()` in `@workspace/report-quality`
+   * — the same function the server's print document uses, so the paper and the
+   * PDF cannot state different anatomy for one study. Absent unless a transition
+   * was recorded, and the booked title above it is never changed by it.
+   */
+  reportingScopeNote?: string;
   printedBy?: string;
 };
 
@@ -1027,6 +1035,21 @@ export function generateReportPDF(
   doc.setLineWidth(0.45);
   doc.line(titleCenterX - titleW / 2, y + 0.9, titleCenterX + titleW / 2, y + 0.9);
   y += lineH + 3.2;
+
+  // ── DOCUMENTED REPORTING REGION, under the booked heading ──
+  // Printed only when a region transition is on the record; a report nobody has
+  // re-regioned exports exactly the bytes it always did.
+  const scopeNote = (report.reportingScopeNote ?? "").trim();
+  if (scopeNote) {
+    doc.setFont(font, "italic");
+    doc.setFontSize(fs.body - 1);
+    doc.setTextColor(90, 90, 90);
+    const scopeLines = doc.splitTextToSize(scopeNote, textW) as string[];
+    doc.text(scopeLines, titleCenterX, y, { align: "center" });
+    y += scopeLines.length * lineH * 0.7 + 1.2;
+    doc.setFont(font, "normal");
+    doc.setTextColor(0, 0, 0);
+  }
 
   // Reserve a strip above the services bar for name + degree so signature
   // never orphans alone onto page 2 and never overlaps the KEY IMAGES rail.

@@ -109,6 +109,14 @@ export interface ReportDocumentModel {
    *  version-resolution layer (semantics frozen; presentation only hosts them). */
   safeguardBannerHtml?: string;
   safeguardWatermarkHtml?: string;
+  /**
+   * The region this report documents, when it is not the region the booked
+   * heading names. Produced by `reportedScopeNote()` in
+   * `@workspace/report-quality` from the ADR-004 transition record — never from
+   * report prose — and absent for every report that has never been re-regioned,
+   * so those pages render exactly the bytes they rendered before.
+   */
+  reportingScopeNote?: string;
   criticalNote?: string | null;
   isCritical?: boolean;
   impression?: string | null;
@@ -738,6 +746,16 @@ export function renderReportDocument(
       break-inside: avoid; break-after: avoid-page;
     }
     .reportno { float: right; font-family: monospace; color: ${pal.labelColor}; font-size: 10px; }
+    /* The booked heading stays the booked heading; this line states what the
+       report documents when the radiologist recorded a different region. It is
+       part of the page, not a screen affordance, so nothing may hide it on paper. */
+    .reporting-scope-note {
+      color: ${pal.labelColor};
+      font-size: 10.5px;
+      text-align: center;
+      margin: 2px 0 8px;
+      break-inside: avoid; break-after: avoid-page;
+    }
 
     /* ── Patient block slot ── */
     .patient-section {
@@ -1086,6 +1104,7 @@ export function renderReportDocument(
     <span class="reportno">Report #: ${escapeHtml(model.reportNumber)}</span>
     <div class="patient-section">${patientBlockHtml}</div>`}
     <div class="study-title-bar">${escapeHtml(model.studyTitle)}</div>
+    ${model.reportingScopeNote ? `<div class="reporting-scope-note">${escapeHtml(model.reportingScopeNote)}</div>` : ""}
     ${model.safeguardBannerHtml ?? ""}
     ${criticalBanner}
     <div class="content-area${sidePanel ? " has-side-images" : ""}">

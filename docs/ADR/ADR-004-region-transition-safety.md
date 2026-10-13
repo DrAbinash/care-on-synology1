@@ -349,12 +349,54 @@ Reopened in a browser afterwards, the same press says:
 and leaves Findings, Impression, Technique, the ledger and the transition record unchanged.
 
 
+## The printed page says which region it documents (PRIORITY 1)
+
+A whole-spine study narrowed to the cervical spine now prints `MRI WHOLE SPINE` as its
+heading — correct, because that is what was ordered, billed and booked — and one line
+under it saying what the report actually documents:
+
+> Documented reporting region: Cervical Spine (recorded by Dr Abinash Kumar on 13 Oct 2026).
+> Booked examination: MRI WHOLE SPINE.
+
+Four different things can be meant by "the region", and conflating them is what produced
+the contradiction. They are now stated separately, and only the ones the product can
+prove are printed:
+
+| meaning | where it lives | what the page says |
+| --- | --- | --- |
+| original booked examination | `radiology_worklist.study_description` / catalog test name → `studyTitle` | the title bar, unchanged and never renamed |
+| radiologist-selected reporting region | `structured_json.careRegionTransitions[n-1].toRegion`, with `decidedBy` + `at` | the line under the title bar |
+| anatomical coverage documented | the same record (it lists what it retired and what stayed) | the same line, worded about the report |
+| anatomy actually imaged | nothing the ERP can prove — no series-level coverage evidence exists | deliberately not asserted |
+
+The note is derived from the recorded transition and the heading it sits under, and from
+nothing else: no findings, technique or impression text is read, so a report can never be
+re-scoped by prose. It is emitted only when the recorded region and the booked name acquire
+different spine segments, and never outside the spine, so a report nobody has re-regioned
+renders byte-identically.
+
+`documentedReportingScope()` and `reportedScopeNote()` live in
+`lib/report-quality/src/reportingScope.ts`, and the spine-region vocabulary they need
+(`canonicalContentRegion`, `spineSegmentFromRegion`, `familyFromRegion`,
+`isDorsoLumbarRegionName`, `coverageOfRegion`, `coverageUnionOfRegions`) moved beside them
+into `lib/report-quality/src/reportingRegion.ts`. That is not a relocation for tidiness: the
+report document is rendered by the **API server** while the workspace PDF is rendered by the
+**browser**, and both must answer "is this the same region?" identically — two copies of the
+vocabulary is how one study comes to print one region on the paper and another in the PDF.
+`reportingStudyContext.ts` and `regionTransition.ts` re-export the moved names, so none of
+their ~40 importers changed and the functions are literally the same objects.
+
+Not in scope here, on purpose: the **signed** artifact. `patient_reports.title` is frozen at
+signing and the durable radiology report re-renders from a content-hashed structured document
+(`verifyContentSha256`), so putting this line on a signed report is a compatibility decision
+for the durable reporting-context work, not a presentational change to slip into a print PR.
+
 ## Future review
 
-* When the region engine next changes (multi-region exams, companion studies), re-derive the
-  coverage table from `@workspace/measurements` `spineCanal` rather than keeping it here twice;
-  today this module duplicates nothing because the segment names come from
-  `reportingStudyContext`.
+* When the region engine next changes (multi-region exams, companion studies), extend the
+  shared vocabulary in `lib/report-quality/src/reportingRegion.ts` — it is now the only
+  copy, used by the workspace, the print route and the PDF. `@workspace/measurements`
+  `spineCanal` still owns the measurement tables, which are a different question.
 * Revisit rule 3 if the clinic ever wants "retracted" findings to leave the report on
   re-booking; that needs an explicit withdrawal, per #940's bundle semantics, not a transition.
 * Non-spine coverage (organ-to-organ transitions) is the obvious next applicant for this shape.
