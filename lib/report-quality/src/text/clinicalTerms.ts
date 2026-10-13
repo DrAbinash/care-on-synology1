@@ -187,16 +187,54 @@ function windowAfter(sentence: string, termEnd: number): string {
   return stop === -1 ? tail.slice(0, 48) : tail.slice(0, Math.min(stop, 48));
 }
 
-function isDenied(sentence: string, start: number, end: number): boolean {
+/**
+ * What the text does with one mention of a term — denies it, asserts it, or holds
+ * it open. The precedence is the one {@link assertedAbnormality} has always had,
+ * written out as three states instead of a boolean: an unresolved abnormality still
+ * contradicts a normal summary, but it is not the same clinical fact as a stated
+ * one, and the findings signature has to tell those apart or "cannot be excluded"
+ * and "is present" would read as the same report.
+ */
+function occurrenceState(sentence: string, start: number, end: number): ClinicalOccurrence["state"] {
   const scope = governingScope(sentence, start);
   const after = windowAfter(sentence, end);
   // Denial outranks a hedge: "no likely fracture" and "no definite abnormality"
   // are denials, and reading the hedge as the assertion is what marks up a
   // correct normal report. A hedge with NO denial cue is the other case —
   // "haemorrhage cannot be excluded" keeps the abnormality on the record.
-  if (DENIAL_BEFORE.test(scope)) return true;
-  if (UNCERTAINTY.test(scope) || UNCERTAINTY.test(after)) return false;
-  return DENIAL_AFTER.test(after);
+  if (DENIAL_BEFORE.test(scope)) return "denied";
+  if (UNCERTAINTY.test(scope) || UNCERTAINTY.test(after)) return "uncertain";
+  if (DENIAL_AFTER.test(after)) return "denied";
+  return "asserted";
+}
+
+/** One mention of one vocabulary term, and what the text did with it. */
+export type ClinicalOccurrence = {
+  label: string;
+  state: "asserted" | "denied" | "uncertain";
+};
+
+/**
+ * Every vocabulary mention in the text, in sentence order then term order. The
+ * order is load-bearing: {@link assertedAbnormality} reports the first mention the
+ * text does not deny, and the rule messages quote that label.
+ */
+export function clinicalOccurrences(
+  text: string,
+  terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
+): ClinicalOccurrence[] {
+  const out: ClinicalOccurrence[] = [];
+  if (!text) return out;
+  for (const sentence of sentences(text)) {
+    const lower = sentence.toLowerCase();
+    for (const term of terms) {
+      for (const match of lower.matchAll(compiled(term.pattern))) {
+        const at = match.index ?? 0;
+        out.push({ label: term.label, state: occurrenceState(lower, at, at + match[0].length) });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -219,16 +257,12 @@ function compiled(pattern: string): RegExp {
   return re;
 }
 
-export function assertedAbnormality(text: string, terms: readonly ClinicalTerm[] = ABNORMAL_TERMS): string | null {
-  if (!text) return null;
-  for (const sentence of sentences(text)) {
-    const lower = sentence.toLowerCase();
-    for (const term of terms) {
-      for (const match of lower.matchAll(compiled(term.pattern))) {
-        const at = match.index ?? 0;
-        if (!isDenied(lower, at, at + match[0].length)) return term.label;
-      }
-    }
+export function assertedAbnormality(
+  text: string,
+  terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
+): string | null {
+  for (const occurrence of clinicalOccurrences(text, terms)) {
+    if (occurrence.state !== "denied") return occurrence.label;
   }
   return null;
 }
@@ -258,4 +292,110 @@ export function assessmentCategories(text: string): number[] {
     found.push(Number(m[1]));
   }
   return found;
+}
+
+/** Spinal / vascular level, with the second digit's letter filled in so "C5-6"
+ *  and "C5-C6" are one fact. */
+const LEVEL_TOKEN = /\b([ctls])(\d{1,2})(?:\s*-\s*([ctls])?(\d{1,2}))?\b/gi;
+
+const LATERALITY_TOKEN = /\b(left|right|bilateral|contralateral|unilateral)\b/gi;
+
+/** A number with the unit it was written with — the canal diameter, the stone,
+ *  the gestational age. Units are folded to one spelling so "8 mm" and "8mm"
+ *  are one fact. */
+const MEASUREMENT_TOKEN =
+  /\b(\d+(?:[.,]\d+)?)\s*(mm|cm|cc|ml|hu|hounsfield|weeks?|days?|months?|years?)\b/gi;
+
+/**
+ * The qualifiers a radiologist would call a clinical change if one of them were
+ * rewritten in the Findings: severity, acuity and extent. Deliberately a closed
+ * list rather than every adjective — "adjacent" or "prominent" re-arranging is
+ * prose, while "mild" becoming "severe" is a different patient.
+ */
+const SEVERITY_TOKEN =
+  /\b(acute|chronic|subacute|mild|moderate|severe|minimal|marked|massive|complete|partial|focal|diffuse|small|large|significant)\b/gi;
+
+const UNIT_CANON: Record<string, string> = {
+  mm: "mm",
+  cm: "cm",
+  cc: "cc",
+  ml: "ml",
+  hu: "hu",
+  hounsfield: "hu",
+  week: "wk",
+  weeks: "wk",
+  day: "d",
+  days: "d",
+  month: "mo",
+  months: "mo",
+  year: "yr",
+  years: "yr",
+};
+
+/**
+ * The clinical content of a Findings block, as a comparable string.
+ *
+ * This is what the Impression is declared to summarise, so it is the value the
+ * workspace records when the summary is written and compares against when the
+ * report is reopened. Everything presentation-shaped is excluded — headings,
+ * punctuation, capitalisation, sentence order, "the" — and everything
+ * decision-shaped is included: which abnormalities are asserted, denied or held
+ * open, at which level, on which side, at what size and severity. Re-formatting
+ * the Findings therefore leaves the signature alone, while changing C5-C6 to
+ * C6-C7, left to right, 8 mm to 18 mm, or withdrawing a denial does not.
+ */
+/**
+ * Function words, and the cues the negation reading already consumes. Excluded so
+ * that re-flowing a sentence — punctuation, case, articles, is/with — is not
+ * mistaken for a clinical change. Every content word is kept, so a sentence added
+ * or removed always counts as one: a radiologist's free-text note has no term,
+ * level, side or number in it and must still arm the dependency, because prose the
+ * vocabulary cannot classify is exactly the prose that needs re-reading.
+ */
+const SIGNATURE_STOP_WORDS = new Set([
+  "a", "an", "the", "and", "or", "nor", "to", "of", "in", "on", "at", "is", "are", "was", "were",
+  "be", "been", "being", "with", "without", "within", "no", "not", "cannot", "that", "this",
+  "these", "those", "there", "here", "it", "its", "their", "as", "by", "from", "than", "which",
+  "can", "could", "may", "might", "for", "per", "into", "over", "under", "also", "still", "yet",
+]);
+
+/** A line with no lower-case letter in it is a heading, not prose. */
+const HEADING_LINE = /^[^a-z]*$/;
+
+function contentWords(text: string): string[] {
+  const words: string[] = [];
+  for (const line of text.split(/\n+/)) {
+    if (!line.trim() || HEADING_LINE.test(line)) continue;
+    for (const raw of line.toLowerCase().split(/[^a-z0-9]+/)) {
+      if (raw.length < 3 || SIGNATURE_STOP_WORDS.has(raw)) continue;
+      words.push(raw);
+    }
+  }
+  return words;
+}
+
+export function clinicalContentSignature(text: string): string {
+  if (!text) return "";
+  const tokens = new Set<string>();
+
+  for (const occurrence of clinicalOccurrences(text)) {
+    const marker =
+      occurrence.state === "asserted" ? "A" : occurrence.state === "uncertain" ? "U" : "N";
+    tokens.add(`${marker}:${occurrence.label}`);
+  }
+
+  for (const match of text.matchAll(LEVEL_TOKEN)) {
+    const vertebral = match[1].toUpperCase();
+    const level = `${vertebral}${match[2]}`;
+    tokens.add(match[4] ? `L:${level}-${(match[3] ?? vertebral).toUpperCase()}${match[4]}` : `L:${level}`);
+  }
+  for (const match of text.matchAll(LATERALITY_TOKEN)) tokens.add(`S:${match[1].toLowerCase()}`);
+  for (const match of text.matchAll(MEASUREMENT_TOKEN)) {
+    const unit = UNIT_CANON[match[2].toLowerCase()] ?? match[2].toLowerCase();
+    tokens.add(`M:${match[1].replace(",", ".")}${unit}`);
+  }
+  for (const match of text.matchAll(SEVERITY_TOKEN)) tokens.add(`Q:${match[1].toLowerCase()}`);
+  for (const word of contentWords(text)) tokens.add(`W:${word}`);
+
+  return [...tokens].sort().join("|");
 }

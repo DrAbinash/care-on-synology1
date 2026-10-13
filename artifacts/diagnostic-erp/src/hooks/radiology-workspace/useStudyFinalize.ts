@@ -370,13 +370,22 @@ const runFinalizeGauntlet = useCallback(async () => {
   });
 
   // The sign dialog returns seven values. Three were read here (confirmed,
-  // signatureId, advanceToNext); two are correctly consumed inside the dialog
-  // itself (impressionReviewedAnyway / impressionRefreshed gate canConfirm there
-  // and onRefreshImpression really calls refreshImpressionFromLedger). The last
+  // signatureId, advanceToNext); `impressionRefreshed` is consumed inside the
+  // dialog itself (it gates canConfirm there, and onRefreshImpression really calls
+  // refreshImpressionFromLedger), while `impressionReviewedAnyway` is now read here
+  // as well as there — it is the durability of a review, see below. The last
   // two existed only to travel outward and were dropped, which is what made the
   // dialog's second checkbox a promise nothing kept. internal-radiology.ts
   // spreads auditDetails into the REPORT_STATUS_UPDATED audit row's `details`,
   // so that row is where an attestation with no outbound channel belongs.
+  // A "reviewed anyway" tick is a decision about the Findings→Impression
+  // dependency, so it is recorded as one — after A-01 has proved the open study is
+  // still this study. Without this the acknowledgement lived only in this session
+  // and the same report nagged again after a reload, which is how a warning trains
+  // a radiologist to click through it. It writes no clinical text and it does not
+  // touch authorization: the gate below is the same one, answered by the same
+  // predicate, and any later change to the Findings arms it again.
+  if (result.impressionReviewedAnyway) useWorkspace.getState().markImpressionReviewed();
   const signingAuditDetails: Record<string, unknown> = qualityGate
     ? {
         qualityEvaluationId: qualityGate.textEvaluationId,

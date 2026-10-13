@@ -69,10 +69,12 @@ function promptResultFields(): string[] {
   return [...decl.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
 }
 
-/** The two fields the dialog consumes itself before enabling Confirm, and which
- *  the hook therefore legitimately ignores. Pinned by the test below, not by
- *  this comment. */
-const DIALOG_INTERNAL = ["impressionReviewedAnyway", "impressionRefreshed"];
+/** The one field the dialog consumes for itself before enabling Confirm, and
+ *  which the hook therefore legitimately ignores. Pinned by the test below, not by
+ *  this comment. `impressionReviewedAnyway` left this list when the review became
+ *  durable: the hook now records it, because an acknowledgement that dies on reload
+ *  is a warning that trains the radiologist to click through it. */
+const DIALOG_INTERNAL = ["impressionRefreshed"];
 
 describe("every value the sign dialog returns is read by the finalize hook", () => {
   it("parses the result type at all (positive control)", () => {
@@ -101,7 +103,7 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(dropped).toEqual([]);
   });
 
-  it("the two ignored fields are provably consumed inside the dialog, not merely declared ignorable", () => {
+  it("the dialog's own gate still consumes the refresh state, and the hook now consumes the review", () => {
     // If this stops matching, DIALOG_INTERNAL has become a place to hide a
     // dropped value rather than a description of one.
     const gate = /compositionFinalizeAllowed\(\{[\s\S]*?\}\)/.exec(DIALOG)?.[0] ?? "";
@@ -110,6 +112,11 @@ describe("every value the sign dialog returns is read by the finalize hook", () 
     expect(gate).toMatch(/\bimpressionReviewedAnyway\b/);
     expect(DIALOG).toMatch(/onImpressionReviewedAnyway=\{setImpressionReviewedAnyway\}/);
     expect(DIALOG).toMatch(/refreshImpressionFromLedger\(\)/);
+    // And the review is acted on, not just read: the store records it so a reload
+    // cannot re-nag a report the radiologist already signed off.
+    expect(HOOK).toMatch(
+      /if \(result\.impressionReviewedAnyway\) useWorkspace\.getState\(\)\.markImpressionReviewed\(\);/,
+    );
   });
 });
 

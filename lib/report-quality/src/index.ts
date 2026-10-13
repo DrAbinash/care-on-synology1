@@ -92,8 +92,10 @@ export {
   assertedAbnormality,
   assertsStudyNormal,
   assessmentCategories,
+  clinicalOccurrences,
+  clinicalContentSignature,
 } from "./text/clinicalTerms";
-export type { ClinicalTerm } from "./text/clinicalTerms";
+export type { ClinicalTerm, ClinicalOccurrence } from "./text/clinicalTerms";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";
