@@ -391,6 +391,79 @@ signing and the durable radiology report re-renders from a content-hashed struct
 (`verifyContentSha256`), so putting this line on a signed report is a compatibility decision
 for the durable reporting-context work, not a presentational change to slip into a print PR.
 
+## What a report may document also caps which template opens (PRIORITY 2)
+
+The printed line says what a report documents. The same decision has to reach the two
+actions that WRITE the report: which Complete Normal Format the workspace opens a study
+with, and which `structured_report_templates` row it applies by itself.
+
+A whole-spine screening study narrowed to Cervical Spine still opened with the shipped
+Templates row **"MRI Cervical Spine with Whole Spine Screening"**, whose findings contain
+"Whole spine screening sagittals of the **dorsal and lumbosacral** spine show normal
+alignment, marrow signal and cord signal." The transition record had just retired those
+segments, line by line, and the row put them back on the page without anyone deciding
+they should be there. Two root causes, found by measuring the real workspace rather than
+by reading one path:
+
+* `resolveNormalBootstrapFormat()` decides the screening preference from the examination's
+  booked name (folded into the context by `billedStudyContextForNormal`, correctly, so a
+  contrast booking does not open a plain technique), and nothing asked whether the format
+  it was about to choose documents more anatomy than the report still describes.
+* `pickStructuredTemplateForRegion()` matched rows by `body_part`, found none for
+  SPINE_WHOLE, and fell through to a search of row *names* that returned the first MRI row
+  saying "whole spine" — a Cervical or an LS row. One door was capped; the other was
+  wider than the ceiling and still reaching across segments.
+
+Five examinations have to stay apart, and each now resolves on its own evidence:
+
+| the study | what decides it | what opens |
+| --- | --- | --- |
+| dedicated segment ("MRI Cervical Spine") | region only | that segment's own normal |
+| segment with documented screening, nobody re-regioned | booked name declares screening, no record to retire it | the screening row, limitation sentence intact |
+| whole spine | region acquires all three segments | the whole-spine screening normal |
+| limited-sequence screening of one segment | tag says `screening`, not `whole spine` | that segment's screening normal — documents one segment only |
+| narrowed by a **recorded** move | last readable record ∩ current regions | nothing that documents a retired segment |
+
+The ceiling is computed once, in `documentedCoverageCeiling()`, from two declared facts and
+no prose, and both doors ask it the same question:
+
+* **what a format documents** — `formatDocumentedCoverage()` over its body part plus the
+  screening scope its own catalog row declares (`study_type` on a Templates row, the
+  `whole spine` tag on a built-in baseline). A format tagged `screening` for one region
+  still documents one region; only a declared *whole-spine* scope widens it.
+* **what the report may still say** — for an automatic reading of the study, the
+  INTERSECTION of the recorded move and the regions the study resolves to now. Not a
+  union: a reloaded report is read as the booked examination, because the region override
+  is React state and only the record survives the draft, so unioning "Whole Spine" with
+  the recorded "Cervical Spine" gives a whole-spine ceiling that excludes nothing. That
+  was this rule's first version, and the browser showed what it cost — eleven retired
+  screening sentences on the page on study open, before anyone pressed anything.
+* An **explicit** region choice caps the report at exactly what was chosen, and the record
+  is not consulted. Choosing "Whole Spine" is how a study is widened back out — widening
+  retires nothing, so it writes no record, and an older narrower one must not trap the
+  examination the radiologist has just re-declared. Choosing "Cervical Spine" is a
+  declaration of the cervical spine, not of the examination the booking names. The first
+  version answered "no opinion" for every explicit choice and the measured consequence was
+  the second page of this section: after narrowing the report by hand, Generate applied the
+  booked whole-spine screening document over the top of the choice.
+
+If nothing within the ceiling exists, the study gets **no** auto-applied normal or template
+and the message says why. Guessing here means a report that documents a spine segment the
+study's own decision retired.
+
+Two things this deliberately does not do. It edits **no template**: every shipped screening
+row keeps its sentences and its mandatory
+`SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.` discipline for the studies it was
+authored for — the exact limitation string is pinned by `mriDorsoLumbarLibrary.test.ts`, the
+preset's sub-heading structure by `spinePresetFindingsDocument.test.ts`, and `N12` here asserts
+that a screening row's own prose is byte-identical whether or not the ceiling refuses to choose
+it. A row the radiologist selects from the Templates list is their decision and is theirs alone.
+And it does not quietly re-scope a study whose examination
+*declares* screening of segments the region tab does not name — today that declaration
+exists only as the booked name, and a structured coverage column is the durable
+reporting-context work's to propose with a migration, not a change to slip into a
+template-selection PR.
+
 ## Future review
 
 * When the region engine next changes (multi-region exams, companion studies), extend the

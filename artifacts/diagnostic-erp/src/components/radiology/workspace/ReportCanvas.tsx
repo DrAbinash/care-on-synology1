@@ -685,6 +685,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             const decision = resolveNormalBootstrapFormat({
                               ctx: billedStudyContextForNormal(studySetup.studyContext, billed),
                               formats: state.reportFormats,
+                              records: state.regionTransitions,
                             });
                             if (!decision || decision.status !== "apply") {
                               const message = quickNormalOutcomeMessage(decision);

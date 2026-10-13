@@ -44,11 +44,13 @@ import { readStaffSession } from "./staffSession";
 // (`lib/report-quality/src/reportingRegion.ts`), and re-exported here unchanged.
 import {
   coverageOfRegion,
+  coverageOfRegionLabel,
   coverageUnionOfRegions,
+  intersectCoverage,
   type SpineCoverageSegment,
 } from "@workspace/report-quality";
 
-export { coverageOfRegion, coverageUnionOfRegions };
+export { coverageOfRegion, coverageOfRegionLabel, coverageUnionOfRegions };
 export type { SpineCoverageSegment };
 
 const LEVEL_SEGMENT: Record<string, SpineCoverageSegment> = {
@@ -413,15 +415,83 @@ export function conflictingTransitionRecord(input: {
   records: readonly RegionTransitionRecord[] | null | undefined;
 }): RegionTransitionRecord | null {
   if (input.source === "override") return null;
-  const list = input.records ?? [];
-  const last = list.length > 0 ? list[list.length - 1] : null;
-  if (!last || typeof last.toRegion !== "string" || !last.toRegion.trim()) return null;
+  const last = lastRecordedTransition(input.records);
+  if (!last) return null;
   const target = canonicalContentRegion(last.toRegion).toLowerCase();
   const regions = input.regions
     .map((r) => canonicalContentRegion(r).toLowerCase())
     .filter((r) => r.length > 0);
   if (regions.length === 0) return null;
   return regions.includes(target) ? null : last;
+}
+
+/**
+ * The most recent move a radiologist has recorded for this report, or null when there is
+ * nothing to read. `retired` names the sentences that left; `toRegion` names the scope that
+ * was kept, and it is the scope that every later automatic decision has to respect.
+ *
+ * Typed on the one field this reads, so a caller holding a deserialised draft — where the
+ * record arrived over the wire and only `toRegion` was ever needed — can ask the same
+ * question without re-stating the whole envelope.
+ */
+export type RecordedRegionDecision = { toRegion?: string | null };
+
+function lastRecordedTransition<T extends RecordedRegionDecision>(
+  records: readonly T[] | null | undefined,
+): T | null {
+  const list = records ?? [];
+  const last = list.length > 0 ? list[list.length - 1] : null;
+  if (!last || typeof last.toRegion !== "string" || !last.toRegion.trim()) return null;
+  return last;
+}
+
+/**
+ * The spine segments a report may still document on its own.
+ *
+ * Two arms, one idea: what a report documents is decided by a human, never inherited from
+ * a booking or from a template.
+ *
+ * • An explicit region choice (`override`) caps the report at exactly what was chosen.
+ *   ADR-004 already treats choosing the region as the radiologist re-declaring the
+ *   examination, and that is the whole point of the control: it is how a study is widened
+ *   back out after a recorded move. Declaring "Cervical Spine" is not a licence to
+ *   document the dorsal and lumbosacral spine, though, and measuring the first version of
+ *   this rule in the real workspace showed why answering "no opinion" here was wrong —
+ *   after the radiologist had explicitly chosen Cervical Spine, Generate applied
+ *   "MRI Cervical Spine with Whole Spine Screening" from the booked name and put
+ *   "Whole spine screening sagittals of the dorsal and lumbosacral spine show normal
+ *   alignment, marrow signal and cord signal" back on the page, into the ledger with it.
+ *
+ * • An automatic reading (billed / dicom / auto) intersects what the study is currently
+ *   read as covering with the last recorded move, so a record can only ever NARROW. This
+ *   is an intersection, not a union, and that is the whole content of the arm: a reloaded
+ *   report is read as the booked examination, because the override is React state and only
+ *   the record survives the draft, so unioning "Whole Spine" with the recorded "Cervical
+ *   Spine" is a whole-spine ceiling and excludes nothing. Measured the same way — on study
+ *   open, before anyone presses anything, the whole-spine screening document went back into
+ *   a report recorded as cervical, dorsal and lumbosacral sentences and all, while the
+ *   printed page said it documented Cervical Spine.
+ *
+ * Null means this module has no opinion: an automatic reading with no record to read, or a
+ * study that is not the spine at all. That is what keeps the deliberate combined
+ * examination — "MRI Cervical Spine with Whole Spine Screening", nobody re-regioned —
+ * writing the screening limitation it was booked for.
+ *
+ * An empty ceiling is a real answer, not a missing one: the two decisions share no segment,
+ * so nothing may be written automatically until the radiologist says which one stands.
+ */
+export function documentedCoverageCeiling(input: {
+  source: ReportingSource | null | undefined;
+  regions: readonly (string | null | undefined)[];
+  records: readonly RecordedRegionDecision[] | null | undefined;
+}): Set<SpineCoverageSegment> | null {
+  if (input.source === "override") return coverageUnionOfRegions(input.regions);
+  const last = lastRecordedTransition(input.records);
+  if (!last) return null;
+  return intersectCoverage(
+    coverageUnionOfRegions(input.regions),
+    coverageOfRegionLabel(last.toRegion),
+  );
 }
 
 export function regionIdentityConflictsWithTransition(input: {

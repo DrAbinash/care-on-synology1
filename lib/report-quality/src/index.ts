@@ -58,8 +58,18 @@ export {
   canonicalContentRegion,
   coverageOfRegion,
   coverageUnionOfRegions,
+  coverageOfRegionLabel,
+  formatDocumentedCoverage,
+  coverageExceeds,
+  declaresWholeSpineScreening,
+  intersectCoverage,
 } from "./reportingRegion";
-export type { ReportingFamily, SpineSegment, SpineCoverageSegment } from "./reportingRegion";
+export type {
+  ReportingFamily,
+  SpineSegment,
+  SpineCoverageSegment,
+  FormatCoverageDeclaration,
+} from "./reportingRegion";
 export { documentedReportingScope, reportedScopeNote } from "./reportingScope";
 export type { DocumentedReportingScope, ReportedScopeRecord } from "./reportingScope";
 export { defaultScorer } from "./score";

@@ -35,7 +35,7 @@
 import {
   canonicalContentRegion,
   coverageOfRegion,
-  coverageUnionOfRegions,
+  coverageOfRegionLabel,
   type SpineCoverageSegment,
 } from "./reportingRegion";
 
@@ -80,7 +80,7 @@ export function documentedReportingScope(input: {
 
   // A multi-region selection is stored as one label ("Cervical Spine + LS Spine");
   // its coverage is the union of its parts, never of its first word.
-  const documented = coverageUnionOfRegions(toRegion.split("+").map((part) => part.trim()));
+  const documented = coverageOfRegionLabel(toRegion);
   const booked = coverageOfExaminationName(bookedTitle);
   if (!documented || !booked) return null;
   if (sameCoverage(documented, booked)) return null;

@@ -1641,7 +1641,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         reason: "Report formats are still loading. Try again in a moment.",
       };
     }
-    const decision = resolveNormalBootstrapFormat({ ctx, formats: get().reportFormats });
+    const decision = resolveNormalBootstrapFormat({
+      ctx,
+      formats: get().reportFormats,
+      // A recorded region move is part of this study's identity, so the format
+      // chosen here is capped by it — the same provenance Generate already honours.
+      records: get().regionTransitions,
+    });
     if (!decision) {
       return {
         status: "refused",

@@ -128,7 +128,7 @@ describe("normalBootstrap resolver — acceptance matrix", () => {
 
   it("K. ambiguous / out-of-scope identities never guess", () => {
     // Unresolved region → null (retry-able, not a decision).
-    expect(resolve({ ctx: { modality: "MR", region: "", regions: [], protocolName: null, studyDescription: "MRI" }, formats: FORMATS })).toBeNull();
+    expect(resolve({ ctx: { modality: "MR", region: "", regions: [], protocolName: null, studyDescription: "MRI", source: "unresolved" as const }, formats: FORMATS })).toBeNull();
     // US / MG out of bootstrap scope (mammography not used at this clinic).
     const us = resolve({ ctx: ctx({ modality: "US", region: "Abdomen", studyDescription: "USG WHOLE ABDOMEN" }), formats: FORMATS });
     expect(us?.status).toBe("no-match");
