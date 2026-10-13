@@ -125,6 +125,18 @@ COPY --from=api-build /repo/scripts/bootstrap-hope-care-integration.mjs ./script
 COPY --from=api-build /repo/docker/api-entrypoint.sh              ./docker/api-entrypoint.sh
 # Bake version.json into the image so /api/system/version can read it
 COPY --from=api-build /repo/version.json                          ./version.json
+# Self-derived build identity — the only statement about this image that does not
+# depend on .env being fresh. The ARGs above come from .env, and only
+# deploy-synology.sh rewrites .env, so a rebuild started from Docker CLI or DSM
+# Container Manager re-bakes the PREVIOUS deploy's SHA into NEWER code: /health
+# reported 2d51e8d7 (2026-09-16) while ./dist held code merged 2026-10-12. The
+# build clock and a hash of the shipped bytes cannot go stale, so a stamp that
+# disagrees with them is detectable instead of believed. .git is excluded from
+# the build context (.dockerignore), so resolving a SHA here is not possible.
+RUN printf '{"imageBuiltAt":"%s","artifactSha256":"%s","declaredGitCommit":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$(sha256sum ./dist/index.mjs | cut -c1-16)" \
+      "${GIT_COMMIT}" > ./build-info.json
 RUN chmod +x ./docker/api-entrypoint.sh
 
 EXPOSE 8080
