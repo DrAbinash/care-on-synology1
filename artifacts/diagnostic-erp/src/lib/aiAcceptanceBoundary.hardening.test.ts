@@ -632,8 +632,15 @@ describe("contract — the boundary resolves a target, it does not assume one", 
   });
 
   it("an accepted AI draft cannot certify impression freshness", () => {
-    expect(mergeBody).toMatch(/impressionNeedsRefresh:\s*false/);
-    expect(mergeBody).toMatch(/f === "impression"[\s\S]{0,160}source !== "manual"[\s\S]{0,80}source !== "ai-draft"/);
+    // The claim is about the SOURCE, not about a literal. mergeField re-bases the
+    // Findings→Impression dependency only for a source that owns both sides, and
+    // `ai-draft` is excluded by name. A behavioural version of the same rule is
+    // pinned by A4/A4b/P20 in this file and its neighbour; this matcher is here to
+    // keep the exclusion from being quietly widened.
+    expect(mergeBody).toMatch(/const ownsBoth = f === "impression"[\s\S]{0,40}source !== "manual"[\s\S]{0,40}source !== "ai-draft"/);
+    expect(mergeBody).toMatch(/deriveImpressionDependency\(get\(\), ownsBoth \? \{ rebase: true \} : undefined/);
+    // Banned shape: an unconditional clear, and the old per-source literal.
+    expect(mergeBody).not.toMatch(/impressionNeedsRefresh:\s*false/);
     // Positive control: a mergeField that clears on every non-manual source is
     // exactly the shape being banned, and the matcher sees it.
     expect(code('...(f === "impression" && source !== "manual" ? { impressionNeedsRefresh: false } : {})'))

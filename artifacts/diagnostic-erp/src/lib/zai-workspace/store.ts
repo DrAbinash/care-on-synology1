@@ -141,7 +141,10 @@ import {
   type CanonicalObservation,
 } from "@/lib/observationSlot";
 import {
-  impressionNeedsRefreshFromNarrative,
+  evaluateImpressionDependency,
+  extractImpressionBasis,
+  type ImpressionBasis,
+  type ImpressionDependencyReason,
   observationInputFromVoice,
   refreshImpressionFromObservations,
   removeLedgerObservation,
@@ -343,6 +346,8 @@ type PatchSnapshot = {
    * restore nothing rather than forcing the flag to a value they never recorded.
    */
   impressionNeedsRefresh?: boolean;
+  /** The dependency link as it stood. Undo restores it with the prose. */
+  impressionBasis?: ImpressionBasis | null;
   /**
    * ADR-004 — the transition history, optional for the same reason as the four above: a
    * frame captured before this field existed restores nothing rather than forcing the
@@ -372,6 +377,7 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
     startingCanvasBaseline: s.startingCanvasBaseline ?? null,
     appliedPatternMarkers: s.appliedPatternMarkers.map((m) => ({ ...m })),
     impressionNeedsRefresh: s.impressionNeedsRefresh,
+    impressionBasis: s.impressionBasis ?? null,
     regionTransitions: [...s.regionTransitions],
   };
 }
@@ -477,6 +483,47 @@ function toLedgerPatch(p: AppliedPathologyPatch): LedgerPatch {
     source: p.source,
     protected: p.protected ?? false,
     stale: p.stale,
+  };
+}
+
+/**
+ * The one derivation of "does this Impression still follow from these Findings?".
+ *
+ * Every writer goes through here — a keystroke, a Quick Select tile, dictation, a
+ * template, an accepted AI ghost, a ledger restore — so the answer cannot depend
+ * on which of them produced the text, which is exactly how D-1 got its two
+ * predicates. Pass `ownership` when the write covers both sides of the dependency
+ * (findings and their summary together); that records a new basis instead of
+ * comparing against the old one, and is the only way the flag clears other than by
+ * the contradiction disappearing.
+ */
+function deriveImpressionDependency(
+  s: S,
+  ownership?: { rebase: true; recordedBy?: ImpressionBasis["recordedBy"] },
+  opts?: { findingsJustChanged?: boolean; arm?: ImpressionDependencyReason },
+): Pick<S, "impressionNeedsRefresh" | "impressionDependencyReasons" | "impressionBasis"> {
+  const state = evaluateImpressionDependency({
+    findings: s.findingsText,
+    impression: s.impressionText,
+    patches: s.appliedPathologyPatches.map(toLedgerPatch),
+    provenance: s.fieldProvenance.impression,
+    basis: ownership ? null : s.impressionBasis,
+    recordedNow: ownership ? ownership.recordedBy ?? "impression-write" : undefined,
+    findingsJustChanged: opts?.findingsJustChanged ?? false,
+  });
+  // A site can arm the dependency without changing either field's text (a
+  // participation toggle). It still has to travel through the same basis, or the
+  // arm would exist in this session and vanish on reopen — which is D-1.
+  const armed = !!opts?.arm && !ownership;
+  const basis = armed && state.basis?.recordedBy !== "unreconciled"
+    ? { ...state.basis!, findingsSignature: state.findingsSignature, impressionFingerprint: state.impressionFingerprint, recordedBy: "unreconciled" as const }
+    : state.basis;
+  return {
+    impressionNeedsRefresh: state.needsRefresh || !!opts?.arm,
+    impressionDependencyReasons: opts?.arm && !state.reasons.includes(opts.arm)
+      ? [...state.reasons, opts.arm]
+      : state.reasons,
+    impressionBasis: basis,
   };
 }
 
@@ -612,6 +659,10 @@ interface S {
   startingCanvasBaseline: StartingCanvasBaseline | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
   impressionNeedsRefresh: boolean;
+  /** Why it is stale, named — so the sign dialog can say which fact moved. */
+  impressionDependencyReasons: ImpressionDependencyReason[];
+  /** The Findings the current Impression was written against. Persisted with the ledger. */
+  impressionBasis: ImpressionBasis | null;
   /** Live FRAMES/OHIF viewport context — ephemeral; stamped onto new observations only. */
   activeAnchor: ObservationAnchor | null;
   /** Selected ledger observation for key-image attach (Reporting Canvas R2). */
@@ -858,6 +909,13 @@ export type WorkspaceStore = S & {
   setObservationImpressionParticipation: (id: string, include: boolean) => "applied" | "blocked" | "missing";
   refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => void;
   /**
+   * The radiologist has read the Impression against the Findings and says it
+   * stands as written. Records that against the current clinical content, so the
+   * same report does not nag after a reload — and so the next clinical change in
+   * the Findings arms it again. Writes no text.
+   */
+  markImpressionReviewed: () => void;
+  /**
    * §18 (mra/mrv) / §37 (spine): re-sort the Impression by clinical priority. A caller
    * may propose the order it computed (brain vascular protects hand-written lines before
    * proposing); with no proposal the stored priority module re-sorts what is there.
@@ -1026,6 +1084,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
   pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  impressionDependencyReasons: [], impressionBasis: null,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
   structuredViewerMeasurements: emptyViewerMeasurementsState(),
@@ -1132,20 +1191,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       [key]: v,
       fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
     };
-    if (f === "findings") {
-      // Armed on the field, not the source: a new abnormality stales the
-      // Impression whether it arrived from the keyboard, a tile, a template, the
-      // companion panel, dictation or the AI ghost layer, and the radiologist
-      // still has to re-read the Impression before signing. Callers that write
-      // Findings and Impression in one action (report-format apply below, the
-      // template apply and companion auto-populate in useReportingStudySetup)
-      // arm here and clear on the impression write — which is why the clearing
-      // half is keyed on source and this half is not.
-      p.impressionNeedsRefresh = true;
-    }
-    if (f === "impression" && opts?.source && opts.source !== "manual") {
-      p.impressionNeedsRefresh = false;
-    }
     if (f === "impression" && (!opts?.source || opts.source === "manual")) {
       // §37: a hand-written or hand-reordered Impression belongs to the
       // radiologist — automatic priority sorting must never reshuffle it again.
@@ -1174,6 +1219,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           return { ...patch, protected: Boolean(patch.protected || missingFindings || missingImpression || mutated || manual) };
         }),
       });
+    }
+    if (f === "findings" || f === "impression") {
+      // Derived after the marking above, from the text as it now stands, so the
+      // answer a keystroke produces is the answer the same report produces when it
+      // is reopened. `rebase` is the paired write: a source that owns both sides
+      // is claiming the summary now matches the findings, which is why `ai-draft`
+      // is excluded here as it already was in mergeField — a model's sentence
+      // proves nothing about the findings behind it.
+      const ownsBoth =
+        f === "impression" && !!opts?.source && opts.source !== "manual" && opts.source !== "ai-draft";
+      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, { findingsJustChanged: f === "findings" }));
     }
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(v, scopedSnippetMacros(get));
@@ -1212,30 +1268,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       [key]: result.text,
       fieldProvenance: { ...get().fieldProvenance, [f]: result.provenance },
-      // Same gate as setField, and it has to be repeated rather than delegated:
-      // mergeField is an additive sentence insert, so it can never be the second
-      // half of a paired findings+impression write that setField's callers rely
-      // on to clear the flag. Every insert path — dictation, tiles, templates,
-      // the companion panel, the measurement box, an accepted AI ghost — comes
-      // through here, and before this they all left the Impression unflagged
-      // while a hand-typed Findings edit did flag it.
-      ...(f === "findings" ? { impressionNeedsRefresh: true } : {}),
-      // B-04 (narrow) — clearing the flag is a claim that the Impression now
-      // matches the Findings, so only a source that owns BOTH sides may make it.
-      // A Quick Select tile writes the finding and its impression line in one
-      // action; a template or protocol is applied whole; dictation is the
-      // radiologist concluding. An accepted AI proposal owns neither: it changes
-      // the Impression's words, which proves nothing about the findings behind
-      // them, and the model summarised a snapshot that may already have moved.
-      // So `ai-draft` is treated like `manual` here — the flag keeps whatever the
-      // Findings edits decided — which is what Ctrl+I → Accept was always
-      // supposed to leave true when the findings had changed. No new flag, no
-      // auto-regeneration, no reconciliation proof invented, and the sign gate
-      // that reads this is unchanged.
-      ...(f === "impression" && source !== "manual" && source !== "ai-draft"
-        ? { impressionNeedsRefresh: false }
-        : {}),
     });
+    if (f === "findings" || f === "impression") {
+      // B-04 (narrow), kept and moved rather than dropped: clearing the flag is a
+      // claim that the Impression now matches the Findings, so only a source that
+      // owns BOTH sides may make it. A Quick Select tile writes the finding and
+      // its impression line in one action; a template or protocol is applied
+      // whole; dictation is the radiologist concluding. An accepted AI proposal
+      // owns neither — it changes the Impression's words, which proves nothing
+      // about the findings behind them, and the model summarised a snapshot that
+      // may already have moved — so `ai-draft` keeps whatever the Findings edits
+      // decided. Everything else is derived from the text, which is also why the
+      // additive insert here and a hand-typed Findings edit now behave the same:
+      // before this, tiles, templates, dictation, the measurement box and the AI
+      // ghost all left the Impression unflagged while typing did flag it.
+      const ownsBoth = f === "impression" && source !== "manual" && source !== "ai-draft";
+      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, { findingsJustChanged: f === "findings" }));
+    }
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(result.text, scopedSnippetMacros(get));
       if (d) set({ activeMacroPrompt: { macro: d.macro, field: f, startPos: d.startPos } });
@@ -2482,12 +2531,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ownershipReviewWarnings,
       selectedObservationId: stableId,
       ...(routedSectionId ? { activeFindingsSectionId: routedSectionId } : {}),
-      impressionNeedsRefresh: impressionNeedsRefreshFromNarrative(
-        result.narrative.impression,
-        nextPatches.map(toLedgerPatch),
-        result.provenance.impression,
-      ),
     });
+    // A tile, a voice sentence or a structured row writes its finding AND its
+    // conclusion in one action, so it owns both sides: the basis is re-recorded
+    // here rather than compared, exactly as it was when this line simply cleared
+    // the flag. What changes is that the clearing is now a derivation — a patch
+    // whose own conclusion is missing from the new Impression, or an Impression
+    // that calls the study normal over an asserted abnormality, still arms.
+    set(deriveImpressionDependency(get(), { rebase: true }));
     return "applied";
   },
   applyMacroBundle: (opts) => {
@@ -2750,9 +2801,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({
       impressionText: next,
       fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
-      impressionNeedsRefresh: false,
       isDirty: true,
     });
+    // The radiologist pressed "Refresh": the summary was regenerated from the
+    // findings, so this is the paired write and the basis moves with it. Recorded
+    // as a refresh rather than an authored write, because the dependency history
+    // says who decided the summary was current.
+    set(deriveImpressionDependency(get(), { rebase: true, recordedBy: "refresh" }));
+  },
+  markImpressionReviewed: () => {
+    // "I have read it and it stands." The only way to clear a dependency the
+    // radiologist has not rewritten, so it records who decided and against what —
+    // and because the basis is the clinical content, not a timestamp, the same
+    // pairing stays cleared after a reload instead of nagging on reopen.
+    if (refuseSignedMutation(get(), "markImpressionReviewed")) return;
+    set(deriveImpressionDependency(get(), { rebase: true, recordedBy: "review" }));
   },
   orderImpressionByPriority: (proposed) => {
     // A reorder is still a write: it replaces the signed Impression with a
@@ -2881,11 +2944,19 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const warning = staleCount > 0
       ? "Some saved observations no longer match the report text. Narrative was not changed."
       : null;
-    const impressionNeedsRefresh = impressionNeedsRefreshFromNarrative(
-      narrative.impression,
-      reconciled,
-      provenance.impression,
-    );
+    // The dependency link travels with the draft: the Findings the stored
+    // Impression was written against are compared against the stored Findings, so
+    // a report that was armed when it was saved is armed when it is opened. This
+    // is the whole of D-1 — the ledger alone could not see a hand-typed sentence,
+    // so a reload quietly un-armed it.
+    const storedBasis = extractImpressionBasis(raw);
+    const dependency = evaluateImpressionDependency({
+      findings: narrative.findings,
+      impression: narrative.impression,
+      patches: reconciled,
+      provenance: provenance.impression,
+      basis: storedBasis,
+    });
     set({
       appliedPathologyPatches: reconciled.map((p) => ({
         id: p.id,
@@ -2907,7 +2978,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         clinicalHistory: provenance.clinicalHistory ?? get().fieldProvenance.clinicalHistory,
       },
       ledgerHydrationWarning: warning,
-      impressionNeedsRefresh,
+      impressionNeedsRefresh: dependency.needsRefresh,
+      impressionDependencyReasons: dependency.reasons,
+      impressionBasis: storedBasis,
       ...(hydrateCoverageFromLedgerRaw(raw) ? { coverageMarks: hydrateCoverageFromLedgerRaw(raw)! } : {}),
     });
     return {
@@ -2927,6 +3000,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       get().coverageMarks.length > 0
         ? serializeCoverageEnvelope(get().coverageMarks, { scopeKey: scope, byScope })
         : undefined,
+      // The dependency link travels inside the envelope the draft already persists
+      // verbatim, so save → close → reopen restores the same answer without a new
+      // column and without touching the signed document's own hash.
+      get().impressionBasis,
     );
   },
   setActiveAnchor: (anchor) => {
@@ -3226,11 +3303,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       appliedPathologyPatches: nextPatches,
       impressionText: nextImpressionText,
       fieldProvenance: nextProv,
-      // Always surface refresh after participation change (include or exclude).
-      impressionNeedsRefresh: true,
       isDirty: true,
       selectedObservationId: id,
     });
+    // Inclusion changed what the Impression ought to say without changing the
+    // Findings' text, so it is named rather than inferred, and it is not a rebase:
+    // the summary still has to be re-read before it can be signed.
+    set(deriveImpressionDependency(get(), undefined, { arm: "participation-changed" }));
     return "applied";
   },
 
@@ -3397,6 +3476,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ...(snap.impressionNeedsRefresh !== undefined
         ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
         : {}),
+      ...(snap.impressionBasis !== undefined
+        ? { impressionBasis: snap.impressionBasis ?? null }
+        : {}),
       ...(snap.regionTransitions !== undefined
         ? { regionTransitions: snap.regionTransitions }
         : {}),
@@ -3404,6 +3486,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),
       isDirty: true,
     });
+    // Undo puts the prose and its dependency link back together, so the answer is
+    // re-derived from the pair rather than trusting the flag the frame recorded —
+    // the same predicate, whichever direction the text just moved.
+    set(deriveImpressionDependency(get()));
     return true;
   },
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => {
@@ -3701,11 +3787,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         : p
     ));
     const mergeSnapshot = captureClinicalSnapshot(get());
-    const mergedImpressionNeedsRefresh = impressionNeedsRefreshFromNarrative(
-      r.impression,
-      reconciledPatches.map(toLedgerPatch),
-      impressionProv,
-    );
     set({
       techniqueText: r.technique,
       findingsText: r.findings,
@@ -3726,13 +3807,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       reportFormatPickerOpen: false,
       appliedPathologyPatches: reconciledPatches,
       ...withPushedClinicalUndo(get(), mergeSnapshot),
-      impressionNeedsRefresh: mergedImpressionNeedsRefresh,
       appliedFormatReportTitle:
         r.combinedReportTitle
         || (get().lastMergeFormats?.a?.reportTitle ?? "").trim()
         || (get().lastMergeFormats?.b?.reportTitle ?? "").trim()
         || null,
     });
+    // A merged format rewrites all five fields from the template, so it owns both
+    // sides of the dependency and re-bases it — while still being read by the same
+    // predicate, which is the point: a template whose impression calls the study
+    // normal over the findings it just merged arms here exactly as it would after
+    // a reload.
+    set(deriveImpressionDependency(get(), { rebase: true }));
     // Increment usage count
     const ids = get().selectedFormatIds;
     const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
