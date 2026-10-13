@@ -3597,6 +3597,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Step 2: Drop old voice patches from the ledger (keep non-voice patches).
     const kept = get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-"));
 
+    // The observations this plan leaves behind are the only text step 4 can carry.
+    // When there are none, step 4 writes nothing at all, so the cleaned live text
+    // below would be the whole report and the plan's own words would be discarded
+    // with the patch ledger entry that held them.
+    const remaining = result.activeObservations ?? [];
+
     // Step 3: Set the cleaned narrative + non-observation fields from
     // result.narrative. applyPathologyOverlay will merge voice observation
     // text into findings/impression.
@@ -3604,9 +3610,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
       // Use cleaned findings/impression (old voice text stripped) so
-      // applyPathologyOverlay writes new voice text without duplication.
-      findingsText: cleanFindings,
-      impressionText: cleanImpression,
+      // applyPathologyOverlay writes new voice text without duplication. When the
+      // plan leaves no observation behind there is nothing for the overlay to
+      // write, so the plan's own narrative is installed instead — otherwise the
+      // dictation is applied to nothing.
+      findingsText: remaining.length ? cleanFindings : result.narrative.findings,
+      impressionText: remaining.length ? cleanImpression : result.narrative.impression,
       recommendationText: result.narrative.recommendation,
       fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, {
         findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
@@ -3630,7 +3639,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     //   - baseline replacement (baselineReplaces)
     //   - provenance stamping
     // NO double narrative application — the narrative is written ONLY here.
-    for (const obs of (result.activeObservations ?? [])) {
+    for (const obs of remaining) {
       const observation = buildCanonicalObservation(observationInputFromVoice(obs, region));
       // Use a level-inclusive ID so different levels don't collide.
       const voiceId = `voice-${obs.concept ?? "obs"}-${obs.level ?? ""}-${obs.laterality ?? ""}`;
@@ -3648,6 +3657,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         force: opts?.force,
         skipUndoSnapshot: true,
       });
+    }
+    // A dictated summary belongs to no observation, so the loop above can never
+    // carry it: applyChangePlan merges it into its own narrative
+    // (applyChangePlan.ts:238), which this store discards in favour of what the
+    // overlay wrote. Dictating only a conclusion — or a conclusion alongside
+    // findings — therefore returned "applied" while the Impression kept the words
+    // it already had. Merge it through the one door dictation text already uses,
+    // which re-reads the Findings against it in the same step: a summary that owns
+    // the pairing records a new basis, and one that contradicts them arms it.
+    const planSummary = (plan.impressionUpdate ?? plan.impressionCandidates?.[0] ?? "").trim();
+    if (planSummary) {
+      get().mergeField("impression", planSummary, "radiologist-voice");
+    }
+    if (!remaining.length) {
+      // With no observation to apply, step 3 is the only write this plan makes, and
+      // the merge above returns without deriving when it finds the sentence already
+      // installed. So the pairing is answered here: a dictated summary records the
+      // pairing it claims, a plan that only took words out asks for a re-read.
+      // Without this the session and the reloaded report give different answers for
+      // the same text, which is D-1 arriving through the dictation door.
+      set(deriveImpressionDependency(get(), planSummary ? { rebase: true } : undefined));
     }
     // Restore the voice plan's pre-apply snapshot so undo restores the
     // state BEFORE the voice plan was applied.

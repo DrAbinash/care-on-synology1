@@ -640,14 +640,17 @@ describe("AI rewriting re-evaluates the dependency instead of inheriting the old
  * re-recorded the basis over a summary that never mentioned it, and nothing armed
  * either in the session or after a reload. The first test below is that case.
  *
- * What the probe also found is a different defect, deliberately NOT pinned as
- * expected behaviour here: a plan carrying only `impressionUpdate` with no
- * observations returns `"applied"` from `applyVoiceComposerPlan` while its text
- * never reaches the Impression at all — step 3 writes the *cleaned live* impression
- * and step 4 has nothing to apply. That is a lost dictated summary, not a
- * dependency gap, and it belongs in its own fix.
+ * What the probe also found is that the plan can be dropped on the floor. An
+ * impression-only plan (no observations) returns `"applied"` while its text never
+ * reaches the Impression at all: step 3 writes the *cleaned live* impression and step
+ * 4 has no observation to apply, so the radiologist dictates a summary, keeps the one
+ * they had, and is told it worked. `applyChangePlan.ts:141` has that branch,
+ * `composer.ts:65` produces `impressionUpdate` and `contextBuilder.ts:43` prompts the
+ * model for exactly that shape, so it is the live path, not a dead one. Both halves of
+ * that — the sentence arriving, and the pairing being re-read once it does — are pinned
+ * below.
  */
-describe("dictation re-evaluates the dependency through the observation path", () => {
+describe("dictation re-evaluates the dependency, as an observation and as a summary", () => {
   beforeEach(() => resetWorkspace());
 
   const plan = (over: Record<string, unknown>) =>
@@ -749,12 +752,100 @@ describe("dictation re-evaluates the dependency through the observation path", (
         { force: true },
       ),
     ).toBe("applied");
+    // The removal is not just a ledger change: the dictated sentence has to leave the
+    // report with it, or the finding stays in the printed exam while the observation
+    // that owned it is gone — and the next reload reads the sentence as prose the
+    // radiologist wrote by hand, which no later dictation can retire.
+    expect(useWorkspace.getState().findingsText).not.toMatch(/left C5-C6 disc herniation/);
+    expect(useWorkspace.getState().impressionText).not.toMatch(/Left C5-C6 disc herniation/);
 
     const live = answer();
     const reopened = reopenCurrent();
     expect(
+      live.reasons,
+      `the summary was written while the removed finding was still in the exam, so it has to be re-read: ${JSON.stringify(live)}`,
+    ).toContain("findings-changed");
+    expect(
       live,
       `dictation took a finding out and the session says ${JSON.stringify(live)} while the same report after a reload says ${JSON.stringify(reopened)}`,
     ).toEqual(reopened);
+  });
+
+  it("a dictated summary with no observation of its own reaches the Impression", () => {
+    approvedCordReport();
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({ impressionUpdate: NORMAL_IMPRESSION }),
+        "normal MRI of the cervical spine",
+      ),
+    ).toBe("applied");
+    expect(
+      useWorkspace.getState().impressionText,
+      `the plan returned "applied" but the Impression still reads ${JSON.stringify(
+        useWorkspace.getState().impressionText,
+      )}`,
+    ).toMatch(/Normal MRI of the cervical spine/);
+
+    const live = answer();
+    expect(
+      live.reasons,
+      `a dictated normal over a myelopathy has to be re-read: ${JSON.stringify(live)}`,
+    ).toContain("impression-contradicts-findings");
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("a dictated summary that follows the Findings re-pairs them, in the session and after a reload", () => {
+    approvedCordReport();
+    useWorkspace.getState().setField("findings", `${CORD_FINDINGS} There is also a C2 fracture.`, {
+      source: "manual",
+    });
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(true);
+
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({ impressionUpdate: REVISED_IMPRESSION }),
+        "c5 c6 disc herniation with cord compression and a c2 fracture",
+      ),
+    ).toBe("applied");
+    expect(useWorkspace.getState().impressionText).toMatch(/C2 fracture/);
+
+    const live = answer();
+    expect(live, `the dictation wrote the finding and its summary in one action: ${JSON.stringify(live)}`).toEqual({
+      needsRefresh: false,
+      reasons: [],
+    });
+    expect(reopenCurrent()).toEqual(live);
+  });
+
+  it("a dictated summary arrives when it is dictated alongside its findings too", () => {
+    approvedCordReport();
+    expect(
+      useWorkspace.getState().applyVoiceComposerPlan(
+        plan({
+          observations: [{
+            concept: "vertebral_lesion",
+            level: "C2",
+            findingsText: "There is also a C2 fracture.",
+            impressionText: "",
+          }],
+          impressionUpdate: REVISED_IMPRESSION,
+        }),
+        "a c2 fracture; c5 c6 disc herniation with cord compression and the fracture",
+        { force: true },
+      ),
+    ).toBe("applied");
+    expect(
+      useWorkspace.getState().impressionText,
+      `the plan carried both a finding and a summary, and the Impression reads ${JSON.stringify(
+        useWorkspace.getState().impressionText,
+      )}`,
+    ).toMatch(/C2 fracture/);
+
+    const live = answer();
+    expect(live, `the summary covers the fracture the same dictation added: ${JSON.stringify(live)}`).toEqual({
+      needsRefresh: false,
+      reasons: [],
+    });
+    expect(reopenCurrent()).toEqual(live);
   });
 });
