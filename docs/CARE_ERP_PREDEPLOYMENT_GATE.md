@@ -234,9 +234,23 @@ Ask for `.State.Health` on `care-orthanc` and you get an error: the shipped
 docker inspect --format '{{.Name}} status={{.State.Status}} restarts={{.RestartCount}} started={{.State.StartedAt}} image={{.Config.Image}}' care-orthanc
 ```
 
+Every in-container HTTP probe below runs through `node`, not `wget`. Measured on this box
+2026-10-13: `care-api` has **no `wget`, no `nc`, no `python3`** — only `curl` and `node`
+`v22.22.3`. A `wget` line pasted there fails with `wget: not found`, which reads exactly like the
+endpoint being down. This is the canonical form; the path is the only argument, and the URL comes
+from the container's own environment so nothing has to be exported into your shell:
+
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/system"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' /system
 ```
+
+```sh
+docker exec care-api sh -c 'command -v wget curl nc node python3'
+```
+
+Run that second line once before trusting any §C or §D verdict. Ask it of the HOPE container too
+before using the §D inbound-leg lines — that image has not been checked from here, so do not
+assume it matches `care-api`.
 
 ```sh
 docker inspect --format '{{.Name}} -> {{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' care-api care-orthanc
@@ -254,7 +268,7 @@ on a Docker-published port** (Synology hairpin/DNAT block — measured), so a fa
 same worklist.
 
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies?limit=1"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' '/dicom-web/studies?limit=1'
 ```
 
 For a specific instance, Orthanc 1.13 keys path-style lookups by its internal id, so
@@ -286,7 +300,7 @@ serving, version known, `care-pacs` commit not established". An ERP deploy never
 this container — `docker compose up -d --build` in the ERP project does not touch it.
 
 ```sh
-docker exec care-api sh -c 'wget -S -qO /dev/null "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances/SOP/rendered" 2>&1 | head -8'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(15e3)}).then(r=>console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],"len="+(r.headers.get("content-length")||"?"))).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' '/dicom-web/studies/STUDY/series/SERIES/instances/SOP/rendered'
 ```
 
 Status and size only — never pipe image bytes into a terminal or a log. Frames are 1-based
@@ -385,7 +399,7 @@ HOPE's handler, which is not in this repository, so CARE cannot promise that an 
 is a no-op on the far side; a GET cannot create a report and still proves the socket:
 
 ```sh
-docker exec care-api sh -c 'wget -S -qO /dev/null -T 8 "$INTEGRATION_HOPE_CALLBACK_URL" 2>&1 | head -4'
+docker exec care-api node -e 'const u=process.env.INTEGRATION_HOPE_CALLBACK_URL,t=Date.now();fetch(u,{method:"GET",signal:AbortSignal.timeout(8e3)}).then(r=>console.log("HTTP",r.status,(Date.now()-t)+"ms")).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message),(Date.now()-t)+"ms"))'
 ```
 
 Any HTTP status line — 200, 401, 405, 404 — means the endpoint is reachable and answering, and
@@ -431,7 +445,7 @@ docker exec care-api sh -c 'u=${INTEGRATION_HOPE_CALLBACK_URL#*://}; echo "${u%%
 ```
 
 ```sh
-docker exec care-api sh -c 'nslookup HOST 127.0.0.11 2>&1 | head -6'
+docker exec care-api node -e 'const {Resolver}=require("dns").promises,r=new Resolver({server:"127.0.0.11",tcp:false});r.resolve4(process.argv[1]).then(a=>console.log("DNS ok",a.join(" "))).catch(e=>console.log("DNS fail",e.code||e.message))' HOST
 ```
 
 ```sh
@@ -442,11 +456,15 @@ Then the two HTTP legs already written above — the GET from inside `care-api` 
 same URL from the NAS host (§D.4 control) — and the two directions' last pieces:
 
 ```sh
-docker exec HOPE_CONTAINER sh -c 'command -v wget curl node; echo "care_referral_url=$CARE_REFERRAL_URL"'
+docker exec HOPE_CONTAINER sh -c 'command -v wget curl node python3 nc; echo "care_referral_url=$CARE_REFERRAL_URL"'
 ```
 
 ```sh
-docker exec HOPE_CONTAINER sh -c 'wget -qO- -T 4 "$CARE_REFERRAL_URL/health" 2>&1 | head -3 || echo inbound-leg-failed'
+docker exec HOPE_CONTAINER node -e 'const u=process.env.CARE_REFERRAL_URL;if(!u){console.log("CARE_REFERRAL_URL is unset here: read it from the partner row (D.2) and record that you used that one");process.exit(0)}fetch(u+"/health",{signal:AbortSignal.timeout(6e3)}).then(async r=>console.log("HTTP",r.status,(await r.text()).slice(0,120))).catch(e=>console.log("inbound-leg-failed",e.name,e.message||(e.cause&&e.cause.message)))'
+```
+
+```sh
+docker exec HOPE_CONTAINER sh -c 'curl -s -m 6 -o /dev/null -w "HTTP %{http_code} %{time_total}s\n" "$CARE_REFERRAL_URL/health"'
 ```
 
 ```sh
@@ -457,9 +475,10 @@ Probe 6 is the reverse leg and it is deliberately driven from **inside HOPE's ow
 using HOPE's own environment**: `CARE_REFERRAL_URL` (`deploy/synology/hope.env:51`) is the value
 that application actually dials, and `127.0.0.1` from inside that container is HOPE, not CARE —
 so any probe that hard-codes a loopback or an assumed port proves nothing about this leg. The
-first line tells you which of `wget`/`curl`/`node` the image has; use whichever it prints. If
-`CARE_REFERRAL_URL` is unset there, read it from the partner row (§D.2) instead and say which
-one you used.
+first line tells you which of `wget`/`curl`/`node` the image has — `care-api` turned out to have
+only `curl` and `node`, so do not assume HOPE is the same — then run the matching form and say
+which one you used. If `CARE_REFERRAL_URL` is unset there, read it from the partner row (§D.2)
+instead and record which of the two you probed, because they can disagree.
 
 `nslookup` is aimed at `127.0.0.11`, Docker's embedded resolver, so probe 2 answers exactly one
 question: *does this project's DNS know that name?* A literal IPv4 in probe 1 means DNS is not
@@ -571,7 +590,7 @@ restarts, rebuilds, redeploys or reconfigures.
 | 3 | Run the migration-ledger audit | §A.3 | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs` | **AUTHORIZATION** — it connects to the clinic DB. It is read-only by construction and proves so in step 2, but it is still the clinic database |
 | 4 | Verify current backup availability | §B.0–B.2 | `BD=$(grep -E '^BACKUP_HOST_DIR=' .env \| cut -d= -f2-); ls -lt "$BD/db" \| head -8` | **SAFE NOW** |
 | 5 | Restore into an isolated temporary database | §B.3–B.7 | `bash scripts/verify-backup-restore.sh "$BD/db"` — the `db` directory, not `$BD` | **SAFE NOW for production** — no published port, its own container and database, cleanup on every exit path. Say it out loud anyway: it starts a Postgres and reads a real patient dump into a sandbox on this box |
-| 6 | Verify Orthanc | §C.1–C.5 | `wget -qO- "$ORTHANC_INTERNAL_URL/system"`, QIDO, then one `/rendered` status | **SAFE NOW** |
+| 6 | Verify Orthanc | §C.1–C.5 | the §C `node -e` fetch of `/system`, then QIDO, then one `/rendered` status — **not** `wget`, which `care-api` does not have | **SAFE NOW** |
 | 7 | Verify OHIF | §C.5–C.7 | `docker inspect`, `build-info.json`, the injected `<script src>` list | **SAFE NOW** |
 | 8 | Verify the HOPE callback path | §D.0–D.5 | read the outbox history, then the GET from inside `care-api`, then the host-side control, then the unsigned inbound POST for 401 | **SAFE NOW** (D.0–D.5 send no clinical event). **D.6 is AUTHORIZATION** — one synthetic or owner-named case, clicked once, counted twice |
 | 9 | Record the evidence | §Recording rule, §Sign-off | the `N critical / M warnings / K informational` line, the restore's `🎉 PASS`, the artifact name + timestamp, the two unchanged D.8 counts, and the §C.9 human read | **SAFE NOW** |
