@@ -27,6 +27,7 @@ import {
 export type ProfessionalReportRefusalCode =
   | "signed"
   | "confirmation-open"
+  | "region-transition"
   | "library-loading"
   | "identity-unresolved"
   | "no-normal-format"

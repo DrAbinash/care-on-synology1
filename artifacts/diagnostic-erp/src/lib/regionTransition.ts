@@ -33,7 +33,11 @@
  *     never become a second region engine.
  */
 
-import { canonicalContentRegion, spineSegmentFromRegion } from "./reportingStudyContext";
+import {
+  canonicalContentRegion,
+  spineSegmentFromRegion,
+  type ReportingSource,
+} from "./reportingStudyContext";
 import { readStaffSession } from "./staffSession";
 
 export type SpineCoverageSegment = "cervical" | "dorsal" | "lumbar";
@@ -408,4 +412,78 @@ function buildPlan(input: {
       at: at ?? new Date().toISOString(),
     }),
   };
+}
+
+/**
+ * PR E PRIORITY 1 — the reporting identity a write is about to use, checked against the
+ * transitions this report has already recorded.
+ *
+ * A confirmed transition is the radiologist's own decision about which examination this
+ * report describes, and ADR-004 keeps the region control session-scoped on purpose:
+ * `regionOverrides` is React state (`useReportingStudySetup.ts:164`) and the save body
+ * carries no region field (`useDraftPersistence.ts:515` sends only this record), so after
+ * save → close → reopen the control reads the booked region again while the text under it is
+ * the moved report. That is only safe while nothing acts on the reloaded region.
+ *
+ * Something did. Measured through the real store and the shipped format library: a whole-spine
+ * screening exam generates 16 Findings lines, the confirmed transition retires 11 and leaves 6
+ * with no dorsal or lumbar text, and after save → reload one press of Generate against the
+ * reloaded (billed) region writes 10 lines back — every one of them a dorsal or lumbar normal
+ * the radiologist had just retired — because `resolveNormalBootstrapFormat` picks the
+ * examination from the context it is handed and merges that format's sentences into the page.
+ * The report again asserted a normal cervical, dorsal and lumbar spine on an exam the
+ * radiologist narrowed to the cervical spine. The mount-time auto-bootstrap cannot do this
+ * (its `if (existingDraft) return;` guard refuses any study with a saved draft); the press can.
+ *
+ * The rule reads two things and nothing else: the provenance of the region being used, and the
+ * last recorded transition. It is deliberately not a text reader — deciding a region from report
+ * prose is the guessing this module exists to prevent. An explicit region choice (`override`) is
+ * never overridden by history, because that is the radiologist re-declaring the examination in
+ * front of CARE; `billed` / `dicom` / `auto` are all readings CARE made by itself, and an
+ * unresolved identity has no regions to compare so the caller's own refusal handles it.
+ */
+export function conflictingTransitionRecord(input: {
+  source: ReportingSource | null | undefined;
+  regions: readonly (string | null | undefined)[];
+  records: readonly RegionTransitionRecord[] | null | undefined;
+}): RegionTransitionRecord | null {
+  if (input.source === "override") return null;
+  const list = input.records ?? [];
+  const last = list.length > 0 ? list[list.length - 1] : null;
+  if (!last || typeof last.toRegion !== "string" || !last.toRegion.trim()) return null;
+  const target = canonicalContentRegion(last.toRegion).toLowerCase();
+  const regions = input.regions
+    .map((r) => canonicalContentRegion(r).toLowerCase())
+    .filter((r) => r.length > 0);
+  if (regions.length === 0) return null;
+  return regions.includes(target) ? null : last;
+}
+
+export function regionIdentityConflictsWithTransition(input: {
+  source: ReportingSource | null | undefined;
+  regions: readonly (string | null | undefined)[];
+  records: readonly RegionTransitionRecord[] | null | undefined;
+}): boolean {
+  return conflictingTransitionRecord(input) !== null;
+}
+
+/**
+ * The sentence both refusal sites show — the store's, and Start Report's before it has run
+ * the setup half and written this region's Technique. It names both regions and the one
+ * action that resolves the disagreement, because a refusal that does not say what to do next
+ * is a dead end the radiologist reads as a broken button.
+ */
+export function regionIdentityConflictMessage(input: {
+  source: ReportingSource | null | undefined;
+  regions: readonly (string | null | undefined)[];
+  records: readonly RegionTransitionRecord[] | null | undefined;
+}): string | null {
+  const record = conflictingTransitionRecord(input);
+  if (!record) return null;
+  const used = input.regions
+    .map((r) => (r ?? "").trim())
+    .filter((r) => r.length > 0)
+    .join(" + ");
+  return `Nothing generated. This report was moved to ${record.toRegion} and that decision is recorded, `
+    + `but the examination is being read as ${used}. Choose ${record.toRegion} in the Region control, then generate again.`;
 }

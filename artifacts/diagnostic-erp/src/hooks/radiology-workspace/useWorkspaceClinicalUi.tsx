@@ -66,6 +66,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // ─── Existing Care hooks (the wiring contract) ────────────────────────────────
 import { useReportingWorkflow } from "@/hooks/useReportingWorkflow";
 import { readingQueueShouldSearchOrthanc } from "@/lib/pacsWorklistQuery";
+import { regionIdentityConflictMessage } from "@/lib/regionTransition";
 import { useStudyLock } from "@/hooks/useStudyLock";
 import { useFinalizeFlow } from "@/hooks/useFinalizeFlow";
 import { useLocalDraftBackup } from "@/hooks/useLocalDraftBackup";
@@ -1862,13 +1863,24 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
    */
   const handleStartReport = useCallback(() => {
     if (contentLocked) return;
-    studySetup.startReportSetup();
-    const outcome = useWorkspace.getState().generateProfessionalReport(
-      billedStudyContextForNormal(
-        studySetup.studyContext,
-        billedNameFromWorklistRow(workflow.currentRow),
-      ),
+    const ctx = billedStudyContextForNormal(
+      studySetup.studyContext,
+      billedNameFromWorklistRow(workflow.currentRow),
     );
+    // Checked before the setup half, not only inside the generator: `startReportSetup`
+    // writes this region's Technique, so a refusal after it would still have left an
+    // acquisition paragraph for the examination this report no longer describes.
+    const regionConflict = regionIdentityConflictMessage({
+      source: ctx.source,
+      regions: ctx.regions.length ? ctx.regions : [ctx.region],
+      records: useWorkspace.getState().regionTransitions,
+    });
+    if (regionConflict) {
+      toast({ variant: "destructive", title: "Nothing generated", description: regionConflict });
+      return;
+    }
+    studySetup.startReportSetup();
+    const outcome = useWorkspace.getState().generateProfessionalReport(ctx);
     if (outcome.status === "generated") {
       toast({
         title: "Professional report generated",
