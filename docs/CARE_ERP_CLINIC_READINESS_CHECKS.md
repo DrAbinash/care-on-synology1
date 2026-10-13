@@ -89,9 +89,26 @@ in this repository.
 
 ### A.3 The audit itself
 
+Establish the project name first, because the folder is not it. Measured on `AbinashNAS`
+2026-10-13 from `/volume1/docker/care-erp-github/care-on-synology1`: a bare `docker compose ps`
+listed **no containers**, while `docker compose -p care-erp-github ps` listed `care-api`, `care-db`,
+`care-redis`, `care-web`. The live stack's project is `care-erp-github`; the name compose derives
+from that folder is `care-on-synology1`, which owns nothing.
+
 ```sh
-docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
+docker compose ls
 ```
+
+```sh
+docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs
+```
+
+* **Do not run this without `-p`, and do not "fix" a failure by dropping `--no-deps`.** Without
+  `-p` the one-off container joins the empty `care-on-synology1` project, `db:5432` does not resolve
+  there, and the audit exits with a connection error that reads like a broken database. The tempting
+  remedy — `compose run schema-verify` *with* its dependencies — starts a **second** PostgreSQL from
+  the same `DB_PASSWORD` against a fresh empty volume, and the audit then reports roughly two hundred
+  missing tables against a schema that was never the clinic's. Both `-p` and `--no-deps` are load-bearing.
 
 * `--no-deps` starts no database, no API and no migration container. The service is chosen
   because `schema-verify` is built from the `migrate` stage, which **bakes `scripts/` and
@@ -107,14 +124,15 @@ docker compose run --rm --no-deps schema-verify node scripts/audit-migration-led
 To keep the findings as an artefact:
 
 ```sh
-docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs \
+docker compose -p care-erp-github run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs \
   --json=output/ledger-audit-$(date +%F).json
 ```
 
 `output/` is the deploy directory itself (`./:/repo/output:rw`), so the file lands in the
-checkout. It is **untracked**: move it to `/volume1/docker/backups/` or delete it when the
-decision is made. Do not "tidy the checkout" with `git clean` to remove it — that directory
-holds untracked files that exist in no branch, including old credential sets and TLS keys.
+checkout. It is **untracked**: move it out of the working tree — `mkdir -p /volume1/docker/ledger-audits`
+and keep it there with the run date — or delete it once the decision is made. Do not "tidy the
+checkout" with `git clean` to remove it — that directory holds untracked files that exist in no
+branch, including old credential sets and TLS keys.
 
 ### A.4 Reading the answer
 
