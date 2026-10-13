@@ -174,6 +174,11 @@ name below is taken from this repository at `8ca20cf9` — `deploy-synology.sh`,
 section has been executed against the clinic**, because that is a deploy, and a deploy
 is the owner's decision.
 
+Before step 1, run `CARE_ERP_PREDEPLOYMENT_GATE.md` Part 1 — the four areas: database, backup,
+PACS, HOPE — and record its Part 2, which states which outstanding P0/P1 item blocks which
+kind of deploy. Steps 3, 4 and 10 below are the same three procedures; the gate is the
+short form you can tick on the box.
+
 The directory is the one `deploy-synology.sh` documents in its own header:
 
 ```sh

@@ -49,12 +49,10 @@ elsewhere in this system.
 docker exec care-api sh -c 'printenv DATABASE_URL | sed -E "s#://[^@/]*@#://REDACTED@#"'
 
 # 2. What is the live Postgres, and is it in recovery?
-docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-  "select current_database(), pg_is_in_recovery(), setting from pg_settings where name='"'"'server_version'"'"'"'
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select current_database(), pg_is_in_recovery(), setting from pg_settings where name='"'"'server_version'"'"'"'
 
 # 3. Which project does this database think it belongs to?
-docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-  "select app_name, environment, instance_id, created_at from public.system_database_identity"'
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select app_name, environment, instance_id, created_at from public.system_database_identity"'
 ```
 
 Expected for the clinic: `current_database()` = your `DB_NAME` (`diagnostic_erp` by
@@ -76,8 +74,7 @@ The audit connects with `options: "-c default_transaction_read_only=on"`
 setting** (`:497-508`). To see the same guard refuse a write, independent of the audit:
 
 ```sh
-docker exec care-db sh -c 'PGOPTIONS="-c default_transaction_read_only=on" psql \
-  -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "update public.schema_migrations_log set name = name"'
+docker exec care-db sh -c 'PGOPTIONS="-c default_transaction_read_only=on" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "update public.schema_migrations_log set name = name"'
 ```
 
 Expected, verbatim:
@@ -311,8 +308,7 @@ Expect a JSON array (possibly `[]`). Now the quirk the image picker depends on: 
 lookup must be QIDO-filtered instead:
 
 ```sh
-docker exec care-api sh -c \
-  'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances?00080018=SOP"'
+docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances?00080018=SOP"'
 ```
 
 An unmatched filter is a `200` with an **empty array**, never a 404 — that distinction is
