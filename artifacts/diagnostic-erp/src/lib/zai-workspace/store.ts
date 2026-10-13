@@ -527,6 +527,25 @@ function deriveImpressionDependency(
   };
 }
 
+/**
+ * The provenance view the dictation door needs in order to retire ITS OWN earlier
+ * wording. `contributionProtected` counts `radiologist-voice` as protected text
+ * (observationSlot.ts:596) — correct when anything else tries to delete what the
+ * radiologist dictated, useless when the radiologist dictates a correction: passing the
+ * live map made every retire answer `preserved-manual`, so the retracted sentence stayed
+ * in the report while the ledger row that owned it was deleted. Dropping that one source
+ * keeps every other protection intact — a sentence the radiologist has since rewritten by
+ * hand also carries `manual`, and stays exactly where they left it.
+ */
+function voiceRetirableProvenance(map: FieldProvenanceMap | undefined): FieldProvenanceMap {
+  const next: FieldProvenanceMap = {};
+  for (const [key, sources] of Object.entries(map ?? {})) {
+    const rest = (sources ?? []).filter((s) => s !== "radiologist-voice");
+    if (rest.length) next[key] = rest;
+  }
+  return next;
+}
+
 function observationFromPending(
   opts: PendingPathologyPatch,
   reportingRegion: string | null,
@@ -3566,22 +3585,34 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // applyPathologyOverlay handle the narrative merge for each voice
     // observation.
     //
-    // Step 1: Strip old voice-* patches' narrative contributions from the
-    // live findings/impression text. This removes the old voice wording so
-    // applyPathologyOverlay can write the new wording without duplication.
+    // Step 1: Retire the narrative of the voice contributions this plan does NOT carry
+    // forward. Two conditions, both load-bearing:
+    //
+    //  - only wording the plan drops. A surviving observation's own sentence is in
+    //    `carriedForward`, so it is left where it is — strip-then-replay would move every
+    //    retained dictated line to the end of the Findings on each new dictation.
+    //  - provenance with the voice authorship lifted. With the live map, the guard refuses
+    //    the one thing this loop exists to do (see voiceRetirableProvenance).
     const oldVoicePatches = get().appliedPathologyPatches.filter((p) => p.id.startsWith("voice-"));
     let cleanFindings = get().findingsText;
     let cleanImpression = get().impressionText;
     let cleanTechnique = get().techniqueText;
     let cleanRecommendation = get().recommendationText;
     let cleanHistory = get().clinicalHistoryText;
+    const carriedForward = new Set(
+      (result.activeObservations ?? [])
+        .flatMap((o) => [o.findingsText, o.impressionText])
+        .filter((t): t is string => Boolean(t?.trim()))
+        .map((t) => normalizeForDedupe(t.trim())),
+    );
+    const findingsOwnedByVoice = voiceRetirableProvenance(get().fieldProvenance.findings);
+    const impressionOwnedByVoice = voiceRetirableProvenance(get().fieldProvenance.impression);
     for (const vp of oldVoicePatches) {
-      // Strip old voice findings text from narrative
-      if (vp.lastRendered.findings) {
-        cleanFindings = stripContribution(cleanFindings, vp.lastRendered.findings, get().fieldProvenance.findings).text;
+      if (vp.lastRendered.findings && !carriedForward.has(normalizeForDedupe(vp.lastRendered.findings))) {
+        cleanFindings = stripContribution(cleanFindings, vp.lastRendered.findings, findingsOwnedByVoice).text;
       }
-      if (vp.lastRendered.impression) {
-        cleanImpression = stripContribution(cleanImpression, vp.lastRendered.impression, get().fieldProvenance.impression).text;
+      if (vp.lastRendered.impression && !carriedForward.has(normalizeForDedupe(vp.lastRendered.impression))) {
+        cleanImpression = stripContribution(cleanImpression, vp.lastRendered.impression, impressionOwnedByVoice).text;
       }
     }
     // Also strip from result.narrative so the narrative we'll use for
@@ -3597,10 +3628,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Step 2: Drop old voice patches from the ledger (keep non-voice patches).
     const kept = get().appliedPathologyPatches.filter((p) => !p.id.startsWith("voice-"));
 
-    // The observations this plan leaves behind are the only text step 4 can carry.
-    // When there are none, step 4 writes nothing at all, so the cleaned live text
-    // below would be the whole report and the plan's own words would be discarded
-    // with the patch ledger entry that held them.
+    // The observations this plan leaves behind are the text step 4 re-lays. The plan's
+    // own `narrative.findings/impression` is deliberately NOT installed: `applyChangePlan`
+    // retires lines by exact-line match with no provenance check, so installing it would
+    // delete wording the radiologist typed by hand whenever it reads like a dictated
+    // sentence. Retirement happens above, through `stripContribution`, whether or not any
+    // observation survives.
     const remaining = result.activeObservations ?? [];
 
     // Step 3: Set the cleaned narrative + non-observation fields from
@@ -3609,13 +3642,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({
       clinicalHistoryText: result.narrative.clinicalHistory,
       techniqueText: result.narrative.technique,
-      // Use cleaned findings/impression (old voice text stripped) so
-      // applyPathologyOverlay writes new voice text without duplication. When the
-      // plan leaves no observation behind there is nothing for the overlay to
-      // write, so the plan's own narrative is installed instead — otherwise the
-      // dictation is applied to nothing.
-      findingsText: remaining.length ? cleanFindings : result.narrative.findings,
-      impressionText: remaining.length ? cleanImpression : result.narrative.impression,
+      findingsText: cleanFindings,
+      impressionText: cleanImpression,
       recommendationText: result.narrative.recommendation,
       fieldProvenance: stampVoiceAuthoredProvenance(result.provenance, {
         findings: (result.activeObservations ?? []).map((o) => o.findingsText).filter(Boolean).join("\n"),
