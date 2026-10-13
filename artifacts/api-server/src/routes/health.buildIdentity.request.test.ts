@@ -24,7 +24,19 @@ describe.skipIf(!hasDatabaseUrl())("GET /api/health build identity", () => {
   it("returns status ok and build.commit without leaking env secrets", async () => {
     const res = await request(app).get("/api/health").expect(200);
     expect(res.body.status).toBe("ok");
-    expect(res.body.build).toEqual({ commit: "0616667905b5" });
+    // Exactly the three identity fields — nothing else may ride out of /api/health.
+    expect(Object.keys(res.body.build).sort()).toEqual([
+      "artifactSha256",
+      "commit",
+      "imageBuiltAt",
+    ]);
+    expect(res.body.build.commit).toBe("0616667905b5");
+    // Self-derived fields stay null-or-text: a missing build-info.json must not
+    // be dressed up as a value.
+    for (const key of ["artifactSha256", "imageBuiltAt"]) {
+      const value = res.body.build[key];
+      expect(value === null || (typeof value === "string" && value.length > 0)).toBe(true);
+    }
     const raw = JSON.stringify(res.body);
     expect(raw).not.toMatch(/DATABASE_URL|JWT|SECRET|API_KEY|PASSWORD|postgres:\/\//i);
     expect(res.body).not.toHaveProperty("DATABASE_URL");
