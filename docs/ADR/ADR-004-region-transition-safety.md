@@ -384,7 +384,7 @@ report document is rendered by the **API server** while the workspace PDF is ren
 **browser**, and both must answer "is this the same region?" identically — two copies of the
 vocabulary is how one study comes to print one region on the paper and another in the PDF.
 `reportingStudyContext.ts` and `regionTransition.ts` re-export the moved names, so none of
-their ~40 importers changed and the functions are literally the same objects.
+the 92 files that import from them changed, and the functions are literally the same objects.
 
 Not in scope here, on purpose: the **signed** artifact. `patient_reports.title` is frozen at
 signing and the durable radiology report re-renders from a content-hashed structured document
