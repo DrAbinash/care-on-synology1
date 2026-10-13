@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { useForm } from "react-hook-form";
 import {
-  Plus, Trash2, Pencil, User2, Shield, CheckSquare, Square, Mail,
+  Plus, Trash2, Pencil, User2, Shield, ShieldOff, CheckSquare, Square, Mail,
   Users, Download, FileText, BookOpen, ClipboardList, CreditCard,
   FlaskConical, Boxes, ShieldCheck, FileDown, KeyRound, Eye, EyeOff,
   Tag, Building2, Image as ImageIcon, Upload, MessageCircle, Printer,
@@ -5948,6 +5948,7 @@ type SecuritySettings = {
   lanOnlyLogin: boolean;
   lanAllowedIps: string;
   fido2Enabled: boolean;
+  requireAdmin2fa: boolean;
 };
 
 function SecurityTab() {
@@ -5962,12 +5963,14 @@ function SecurityTab() {
   const [lanOnly, setLanOnly] = useState(false);
   const [extraIpsText, setExtraIpsText] = useState("");
   const [fido2Enabled, setFido2Enabled] = useState(false);
+  const [requireAdmin2fa, setRequireAdmin2fa] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (data) {
       setLanOnly(data.lanOnlyLogin ?? false);
       setFido2Enabled(data.fido2Enabled ?? false);
+      setRequireAdmin2fa(data.requireAdmin2fa ?? false);
       let arr: string[] = [];
       try { arr = JSON.parse(data.lanAllowedIps ?? "[]"); } catch { arr = []; }
       setExtraIpsText(arr.join("\n"));
@@ -5990,7 +5993,7 @@ function SecurityTab() {
       .split(/[\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    save.mutate({ lanOnlyLogin: lanOnly, lanAllowedIps: JSON.stringify(ips), fido2Enabled });
+    save.mutate({ lanOnlyLogin: lanOnly, lanAllowedIps: JSON.stringify(ips), fido2Enabled, requireAdmin2fa });
   };
 
   if (isLoading || !data) {
@@ -6113,6 +6116,43 @@ function SecurityTab() {
             </button>
           </div>
 
+          {/* ── TOTP 2FA Settings ───────────────────────────────────────── */}
+          <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+            <div>
+              <h3 className="font-semibold">Two-Factor Authentication (TOTP)</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Require admin accounts to use time-based one-time passwords (Google Authenticator, Authy, etc.) in addition to their PIN.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => { setRequireAdmin2fa(!requireAdmin2fa); setDirty(true); }}
+              className={`w-full text-left flex items-start justify-between gap-3 px-4 py-3 rounded-lg border transition-colors ${
+                requireAdmin2fa
+                  ? "bg-blue-50 border-blue-300 dark:bg-blue-950/30 dark:border-blue-800"
+                  : "bg-muted/30 border-card-border"
+              }`}
+            >
+              <div>
+                <p className="text-sm font-medium">
+                  {requireAdmin2fa ? "2FA is REQUIRED for all admin accounts" : "2FA is OPTIONAL for admin accounts"}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {requireAdmin2fa
+                    ? "All admin and super-admin accounts must enable TOTP 2FA before they can log in."
+                    : "Admin accounts can optionally enable TOTP 2FA for extra security."}
+                </p>
+              </div>
+              <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 shrink-0 ${requireAdmin2fa ? "bg-blue-500" : "bg-muted-foreground/40"}`}>
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${requireAdmin2fa ? "translate-x-5" : "translate-x-1"}`} />
+              </span>
+            </button>
+          </div>
+
+          {/* ── My 2FA (admin only) ──────────────────────────────────────── */}
+          <MyTotpSettings />
+
           {/* ── My Security Keys (admin only) ────────────────────────── */}
           <MySecurityKeys />
         </>
@@ -6124,6 +6164,316 @@ function SecurityTab() {
         </Button>
       </div>
     </div>
+  );
+}
+
+function MyTotpSettings() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const session = readStaffSession();
+  const isAdmin = session?.user.role === "admin" || session?.user.role === "super_admin";
+
+  const { data: status, isLoading } = useQuery<{ enabled: boolean }>({
+    queryKey: ["totp-status"],
+    queryFn: () => api.get("/api/portal/totp/status"),
+    enabled: !!isAdmin,
+  });
+
+  const [setupData, setSetupData] = useState<{ secret: string; otpauthUri: string } | null>(null);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  const [showBackupCodes, setShowBackupCodes] = useState(false);
+  const [disablePin, setDisablePin] = useState("");
+  const [showDisableDialog, setShowDisableDialog] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const setup = useMutation({
+    mutationFn: () => api.post<{ secret: string; otpauthUri: string }>("/api/portal/totp/setup"),
+    onSuccess: (data) => {
+      setSetupData(data);
+      setVerifyCode("");
+      setQrDataUrl(null);
+      QRCode.toDataURL(data.otpauthUri, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 240,
+        color: { dark: "#000000", light: "#ffffff" },
+      })
+        .then((url) => setQrDataUrl(url))
+        .catch(() => {});
+    },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const verify = useMutation({
+    mutationFn: (body: { secret: string; code: string }) =>
+      api.post<{ success: boolean; backupCodes: string[] }>("/api/portal/totp/verify", body),
+    onSuccess: (data) => {
+      setBackupCodes(data.backupCodes);
+      setShowBackupCodes(true);
+      setSetupData(null);
+      setVerifyCode("");
+      setQrDataUrl(null);
+      qc.invalidateQueries({ queryKey: ["totp-status"] });
+      toast({ title: "2FA enabled successfully" });
+    },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const disable = useMutation({
+    mutationFn: (body: { pin: string }) => api.post("/api/portal/totp/disable", body),
+    onSuccess: () => {
+      setShowDisableDialog(false);
+      setDisablePin("");
+      setBackupCodes(null);
+      setShowBackupCodes(false);
+      qc.invalidateQueries({ queryKey: ["totp-status"] });
+      toast({ title: "2FA disabled" });
+    },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const copyToClipboard = (text: string, index?: number) => {
+    navigator.clipboard.writeText(text);
+    if (index !== undefined) {
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    }
+    toast({ title: "Copied to clipboard" });
+  };
+
+  const handleVerify = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!setupData) return;
+    if (!/^\d{6}$/.test(verifyCode)) {
+      toast({ title: "Code must be 6 digits", variant: "destructive" });
+      return;
+    }
+    verify.mutate({ secret: setupData.secret, code: verifyCode });
+  };
+
+  const handleDisable = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!disablePin) {
+      toast({ title: "PIN is required", variant: "destructive" });
+      return;
+    }
+    disable.mutate({ pin: disablePin });
+  };
+
+  if (!isAdmin) return null;
+
+  if (isLoading || !status) {
+    return (
+      <div className="bg-card border border-card-border rounded-xl p-5 text-center text-muted-foreground text-sm">
+        Loading 2FA status…
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="bg-card border border-card-border rounded-xl p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold">My Two-Factor Authentication</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {status.enabled
+              ? "Your account is protected with TOTP two-factor authentication."
+              : "Add an extra layer of security to your account using a time-based one-time password authenticator app."}
+          </p>
+        </div>
+
+        {!status.enabled && !setupData && !showBackupCodes && (
+          <button
+            type="button"
+            onClick={() => setup.mutate()}
+            disabled={setup.isPending}
+            className="w-full text-left flex items-center justify-between gap-3 px-4 py-3 rounded-lg border border-blue-300 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800 transition-colors hover:bg-blue-100 dark:hover:bg-blue-950/50"
+          >
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 rounded-lg bg-blue-500 flex items-center justify-center">
+                <Shield size={16} className="text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Enable 2FA</p>
+                <p className="text-xs text-muted-foreground">
+                  Set up Google Authenticator, Authy, or another TOTP app
+                </p>
+              </div>
+            </div>
+            {setup.isPending ? (
+              <RefreshCcw size={16} className="animate-spin text-blue-500" />
+            ) : (
+              <ArrowRight size={16} className="text-blue-500" />
+            )}
+          </button>
+        )}
+
+        {setupData && (
+          <div className="space-y-4 border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50/50 dark:bg-blue-950/20">
+            <div className="text-center space-y-3">
+              <p className="text-sm font-medium">Scan this QR code with your authenticator app</p>
+              {qrDataUrl ? (
+                <div className="inline-block p-3 bg-white rounded-lg border">
+                  <img src={qrDataUrl} alt="TOTP QR Code" width={240} height={240} />
+                </div>
+              ) : (
+                <div className="inline-block p-3 bg-white rounded-lg border text-muted-foreground text-xs">
+                  Generating QR code…
+                </div>
+              )}
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Or enter this secret manually:</p>
+                <code className="text-xs bg-muted px-2 py-1 rounded font-mono break-all">
+                  {setupData.secret}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(setupData.secret)}
+                  className="ml-2 text-xs text-blue-600 hover:underline"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleVerify} className="space-y-3">
+              <div>
+                <Label htmlFor="totp-code">Enter the 6-digit code from your app</Label>
+                <Input
+                  id="totp-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={verifyCode}
+                  onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, ""))}
+                  placeholder="000000"
+                  className="mt-1 text-center text-lg font-mono tracking-widest"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => { setSetupData(null); setQrDataUrl(null); setVerifyCode(""); }}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={verify.isPending || verifyCode.length !== 6}>
+                  {verify.isPending ? "Verifying…" : "Verify & Enable"}
+                </Button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {status.enabled && !showBackupCodes && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400">
+              <Check size={16} />
+              <span className="font-medium">2FA is enabled on your account</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowDisableDialog(true)}
+              className="w-full text-left flex items-center justify-between gap-3 px-4 py-3 rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-800 transition-colors hover:bg-red-100 dark:hover:bg-red-950/30"
+            >
+              <div className="flex items-center gap-3">
+                <div className="h-8 w-8 rounded-lg bg-red-500 flex items-center justify-center">
+                  <ShieldOff size={16} className="text-white" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-red-700 dark:text-red-400">Disable 2FA</p>
+                  <p className="text-xs text-muted-foreground">
+                    Remove two-factor authentication from your account
+                  </p>
+                </div>
+              </div>
+              <ArrowRight size={16} className="text-red-500" />
+            </button>
+          </div>
+        )}
+
+        {showBackupCodes && backupCodes && (
+          <div className="space-y-3 border border-emerald-200 dark:border-emerald-800 rounded-lg p-4 bg-emerald-50/50 dark:bg-emerald-950/20">
+            <div>
+              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
+                Save these backup codes
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Each code can be used once if you lose access to your authenticator app. Store them in a safe place.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {backupCodes.map((code, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-2 bg-white dark:bg-gray-900 border rounded px-3 py-2 font-mono text-sm"
+                >
+                  <span>{code}</span>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(code, i)}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    {copiedIndex === i ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => copyToClipboard(backupCodes.join("\n"))}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Copy all codes
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowBackupCodes(false); setBackupCodes(null); }}
+              className="block text-xs text-muted-foreground hover:underline"
+            >
+              I've saved these codes
+            </button>
+          </div>
+        )}
+      </div>
+
+      <Dialog open={showDisableDialog} onOpenChange={setShowDisableDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Disable 2FA</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleDisable} className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Enter your PIN to confirm you want to disable two-factor authentication.
+            </p>
+            <div>
+              <Label htmlFor="disable-pin">Your PIN</Label>
+              <Input
+                id="disable-pin"
+                type="password"
+                inputMode="numeric"
+                value={disablePin}
+                onChange={(e) => setDisablePin(e.target.value)}
+                className="mt-1"
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button type="button" variant="outline" onClick={() => setShowDisableDialog(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="destructive" disabled={disable.isPending || !disablePin}>
+                {disable.isPending ? "Disabling…" : "Disable 2FA"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

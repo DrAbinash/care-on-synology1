@@ -105,6 +105,7 @@ import { mobileBillDeskRouter } from "./mobileBillDesk";
 import { patientPortalRouter } from "./patientPortal";
 import { onlineBookingsRouter } from "./online-bookings";
 import { webauthnRouter } from "./webauthn";
+import { totpRouter } from "./totp";
 import { dailySummaryRouter } from "./daily-summary";
 import { advancedDashboardRouter } from "./advanced-dashboard";
 import { reconciliationRouter } from "./reconciliation";
@@ -296,6 +297,7 @@ router.use("/internal/backup", internalBackupRouter);
 router.use("/internal/reporting-studio", internalReportingStudioRouter);
 router.use("/internal", internalRadiologyRouter); // [ZONE: radiology] name is generic, content is 100% radiology (DICOM agent callbacks)
 router.use("/portal", portalRouter);
+router.use("/portal/totp", requireStaffAuth, totpRouter);
 router.use("/display", displayRouter);
 router.use("/settings/queue-display", queueDisplaySettingsRouter);
 // Auth is enforced per-route inside paymentDisplayRouter itself (staff auth
