@@ -333,6 +333,8 @@ clinicSettingsRouter.put("/", async (req, res) => {
     "cancelRequiresRefund",
     // WhatsApp Delivery v2
     "whatsappAutoOfferAfterPrint", "whatsappRememberStationChoice",
+    // TOTP 2FA enforcement
+    "requireAdmin2fa",
   ] as const;
   
   const textFields = [
