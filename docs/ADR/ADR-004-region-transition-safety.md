@@ -454,9 +454,11 @@ study's own decision retired.
 Two things this deliberately does not do. It edits **no template**: every shipped screening
 row keeps its sentences and its mandatory
 `SCREENING STUDIES ARE LIMITED PLANAR & LIMITED SEQUENCE.` discipline for the studies it was
-authored for, which is also why the wording is pinned by `spinePresetFindingsDocument.test.ts`
-rather than changed here, and a row the radiologist selects from the Templates list is their
-decision and is never filtered. And it does not quietly re-scope a study whose examination
+authored for — the exact limitation string is pinned by `mriDorsoLumbarLibrary.test.ts`, the
+preset's sub-heading structure by `spinePresetFindingsDocument.test.ts`, and `N12` here asserts
+that a screening row's own prose is byte-identical whether or not the ceiling refuses to choose
+it. A row the radiologist selects from the Templates list is their decision and is theirs alone.
+And it does not quietly re-scope a study whose examination
 *declares* screening of segments the region tab does not name — today that declaration
 exists only as the booked name, and a structured coverage column is the durable
 reporting-context work's to propose with a migration, not a change to slip into a
