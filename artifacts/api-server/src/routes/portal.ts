@@ -455,6 +455,69 @@ portalRouter.post("/staff-login", staffLoginLimiter, async (req, res) => {
     }
   }
 
+  // ── TOTP 2FA enforcement for admin/super_admin ────────────────────────────
+  // If the user is admin/super_admin, check if TOTP is required (either by
+  // system-wide requireAdmin2fa setting or by the user having it enabled).
+  // If TOTP is required, issue a temp token instead of a real session token.
+  const userRole = normalizeRole(user.role);
+  if (userRole === "admin" || userRole === "super_admin") {
+    const [cfg] = await db
+      .select({ requireAdmin2fa: clinicSettingsTable.requireAdmin2fa })
+      .from(clinicSettingsTable)
+      .limit(1);
+    const requireAdmin2fa = cfg?.requireAdmin2fa ?? false;
+    const userHasTotp = user.totpEnabled === true;
+
+    if (requireAdmin2fa && !userHasTotp) {
+      res.status(403).json({
+        error: "2FA is required for admin accounts. Please enable TOTP 2FA first.",
+        requiresTotpEnrollment: true,
+      });
+      return;
+    }
+
+    if (userHasTotp) {
+      await pruneExpiredSessions();
+      const tempToken = crypto.randomBytes(24).toString("hex");
+      const now = new Date();
+      const ipAddress = resolveClientIp(req);
+      const userAgent = String(req.headers["user-agent"] ?? "").substring(0, 255);
+      await db.insert(portalSessionsTable).values({
+        token: tempToken,
+        scope: "totp_pending",
+        subjectId: user.id,
+        subjectName: user.name,
+        expiresAt: new Date(now.getTime() + 5 * 60 * 1000),
+        ipAddress,
+        userAgent,
+        lastActivityAt: now,
+      });
+
+      void auditFromRequest(req, {
+        userId: user.id,
+        userName: user.name,
+        role: userRole,
+        action: "login_totp_required",
+        module: "system",
+        entityType: "user",
+        entityId: String(user.id),
+      });
+
+      res.json({
+        requiresTotp: true,
+        tempToken,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          username: user.username,
+          role: userRole,
+        },
+      });
+      return;
+    }
+  }
+
   // Effective path permissions for this user. Shared with the WebAuthn
   // login so the two staff-session payloads cannot drift.
   const permissions = await resolveStaffPermissions(user);

@@ -48,6 +48,13 @@ export const usersTable = pgTable("users", {
   // account is locked until lockedUntil.  Super-admins are exempt.
   failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
   lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  // TOTP two-factor authentication (admin/super_admin only). Secret is the
+  // base32-encoded TOTP key, backupCodes is a JSON array of single-use
+  // recovery codes. When totpEnabled is true, login requires a valid TOTP
+  // code after PIN verification.
+  totpSecret: text("totp_secret"),
+  totpEnabled: boolean("totp_enabled").notNull().default(false),
+  totpBackupCodes: jsonb("totp_backup_codes").$type<string[]>(),
   isActive: boolean("is_active").notNull().default(true),
   maxDiscount: numeric("max_discount", { precision: 5, scale: 2 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

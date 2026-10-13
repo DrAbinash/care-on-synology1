@@ -2467,6 +2467,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       ?? "Radiology Report",
   );
 
+  // The booked examination on its own, without the applied format's title
+  // overriding it. A clinic's format names the region the report documents, so
+  // the PDF's heading can be narrower than what was booked — and the sentence
+  // that explains the difference has to be asked for with the booked name.
+  //
+  // This is the billed catalogue name, the same identity the server's print route
+  // builds its heading from (`tests.name` → worklist StudyDescription), and
+  // deliberately not `studySetup.testName`: that composite falls back to the
+  // selected template's name, and a template named for the region being reported
+  // would make booked and documented agree, which the shared rule reads as
+  // "nothing to explain" — the sentence would silently disappear again.
+  const bookedStudyNameForExport =
+    workflow.currentRow?.testName
+    || workflow.currentRow?.billedTestName
+    || workflow.currentRow?.studyDescription
+    || null;
+
   // ─── Canonical report demography (ERP > DICOM > manual override) ─────────
   // `worklistDetailQ` is declared with the study-lock section above, because the
   // lock needs its `status`; `canonicalDemography` below still consumes it.
@@ -2584,6 +2601,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     existingDraft,
     canonicalDemography,
     studyNameForExport,
+    bookedStudyNameForExport,
     clinicalHistoryText,
     techniqueText,
     findingsText,
