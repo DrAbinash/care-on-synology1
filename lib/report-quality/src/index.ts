@@ -80,6 +80,20 @@ export { validateReportText, computeTextQualityScore } from "./text/legacy";
 export type { TextQualityScore } from "./text/legacy";
 export { evaluateTextTier } from "./text/evaluate";
 export type { TextTierFinding, TextTierResult } from "./text/evaluate";
+// The clinical vocabulary and negation reading the contradiction rules share. The
+// live workspace validator imports these too, so "normal study" and
+// "no acute haemorrhage" mean the same thing on both validation paths.
+export {
+  ABNORMAL_TERMS,
+  SUSPICIOUS_TERMS,
+  NAMED_LESION_TERMS,
+  STUDY_NORMAL_PATTERNS,
+  SCOPE_LIMITERS,
+  assertedAbnormality,
+  assertsStudyNormal,
+  assessmentCategories,
+} from "./text/clinicalTerms";
+export type { ClinicalTerm } from "./text/clinicalTerms";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";

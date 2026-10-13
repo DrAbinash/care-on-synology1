@@ -36,6 +36,11 @@ describe("reportValidator — Section 5 contradictions", () => {
       findings: "Acute intraparenchymal hemorrhage in the right basal ganglia.",
       impression: ["Normal MRI brain."],
     });
-    expect(w.some((x) => x.toLowerCase().includes("normal") && x.toLowerCase().includes("pathology"))).toBe(true);
+    // Q114 in the canonical text tier is the single owner of this defect; the
+    // validator's older substring copy of it is gone (it flagged normal head CTs).
+    expect(
+      w.some((x) => x.includes("Findings/Impression contradiction") && x.toLowerCase().includes("normal")),
+    ).toBe(true);
+    expect(w.filter((x) => x.toLowerCase().includes("impression reads normal"))).toHaveLength(0);
   });
 });
