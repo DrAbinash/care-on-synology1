@@ -108,6 +108,12 @@ const NETWORK_ONLY_PREFIXES = [
                                                       // /me/reports, /me/appointments — all match via this one prefix
                                                       // since "/api/portal/me" is itself a prefix of "/api/portal/me/bills" etc. (PHI)
   "/api/auth/webauthn/credentials",                  // caller's own registered passkeys
+  // Staff 2FA. GET /api/portal/totp/status reports whether THIS staff member has
+  // TOTP enabled and is scoped by req.staffSession.subjectId; Cache Storage keys by
+  // URL only, so a cached copy would be served to the next staff member on a shared
+  // workstation — telling nurse B that admin A already has 2FA on. Whole prefix, not
+  // just today's GET, so a future GET under /api/portal/totp/ is safe by default.
+  "/api/portal/totp/",
   "/api/radiology/user-findings-preferences",        // per-radiologist findings display preferences
   "/api/radiology/user-report-preferences",          // per-radiologist report preferences
   "/api/radiology/knowledge/personal-templates",     // radiologist's own template library

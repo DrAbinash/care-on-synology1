@@ -83,6 +83,12 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "portal.ts", localPath: "/me/reports", fullPath: "/api/portal/me/reports" },
   { file: "portal.ts", localPath: "/me/appointments", fullPath: "/api/portal/me/appointments" },
   { file: "webauthn.ts", localPath: "/credentials", fullPath: "/api/auth/webauthn/credentials" },
+  // Staff 2FA state. GET /status answers from req.staffSession.subjectId, so the
+  // response is one person's security posture; a cached copy would be shown to the
+  // next staff member on a shared workstation. Added because the guard's marker scan
+  // found it unregistered the moment the route shipped — the scan is what makes this
+  // list self-enforcing, so the row is the fix, not the scan.
+  { file: "totp.ts", localPath: "/status", fullPath: "/api/portal/totp/status" },
   { file: "radiology.ts", localPath: "/user-findings-preferences", fullPath: "/api/radiology/user-findings-preferences" },
   { file: "radiology.ts", localPath: "/user-report-preferences", fullPath: "/api/radiology/user-report-preferences" },
   { file: "radiologyKnowledge.ts", localPath: "/personal-templates", fullPath: "/api/radiology/knowledge/personal-templates" },
