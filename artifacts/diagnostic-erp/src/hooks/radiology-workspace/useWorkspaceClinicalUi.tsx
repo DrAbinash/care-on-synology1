@@ -1145,6 +1145,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     setIsCritical(false);
     setCriticalNote("");
     setChecklistComm({ phoned: false, annotated: false, dispatched: false });
+    // Radiologist-local demographic corrections belong to the study they were typed
+    // on. They are component state, so the store-side studyTransitionReset() cannot
+    // reach them, and they outrank the ERP row, the DICOM tags and the patient master
+    // in mergeReportDemography — left mounted they print the previous patient's name
+    // and age on this one's header, preview, Word export and PDF.
+    //
+    // Cleared here rather than in openStudy() because this reset is keyed on the ROUTE
+    // study id: a deep link or a browser Back switches the study without ever calling
+    // openStudy(). Same reason A-02 moved activeStudyId into this transition.
+    setDemographyOverrides({});
   }, [setActiveFindingsAnatomy]);
 
   // ─── Draft persistence / hydrate / leave / autosave (Phase 3) ─────────────
