@@ -52,7 +52,7 @@ Part 2.
 
 | # | Check | Pass condition | Result |
 |---|---|---|---|
-| A.1 | The ERP is pointed at the database you think it is | `current_database()` = your `DB_NAME`, `pg_is_in_recovery() = f`, identity row `app_name = care-erp` | ☐ |
+| A.1 | The ERP is pointed at the database you think it is | `current_database()` = your `DB_NAME`, `pg_is_in_recovery() = f`, `server_version` recorded, identity row `app_name = care-erp` **and its `instance_id` written down** | ☐ |
 | A.2 | The session is genuinely read-only | Postgres refuses the write with `ERROR: cannot execute UPDATE in a read-only transaction` | ☐ |
 | A.3 | **Ledger audit — only after explicit authorization** | the command completes and prints its summary | ☐ |
 | A.4 | Record the three counts | the line `N critical, M warnings, K informational` is written down verbatim | ☐ |
@@ -66,12 +66,25 @@ docker exec care-api sh -c 'printenv DATABASE_URL | sed -E "s#://[^@/]*@#://REDA
 ```
 
 ```sh
-docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select current_database(), pg_is_in_recovery()"'
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select current_database(), pg_is_in_recovery(), setting from pg_settings where name='"'"'server_version'"'"'"'
 ```
 
 ```sh
-docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select app_name, environment, created_at from public.system_database_identity"'
+docker exec care-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select app_name, environment, instance_id, created_at from public.system_database_identity"'
 ```
+
+Both forms were checked against the shipped DDL (`docker/db-patch-entrypoint.sh:146-152` creates
+`id, app_name, environment, instance_id, created_at`) and then run verbatim on the clinic database
+2026-10-13: the identity row is `care-erp | production | bd62c32b92733266c8b521a171f88232 |
+2026-07-08 08:53:46.432625+00` and the version read is `diagnostic_erp | f | 16.14`. Take the
+`instance_id` **in writing**, not just `app_name`: it is the md5 minted the first time the stamping
+script ever touched that database, so it is the only field that distinguishes the clinic's
+`diagnostic_erp` from a *different* database that happens to carry the same `app_name` — a second
+project stamped with `care-erp`, or the staging stack, matches on `app_name` and cannot be told
+apart without it. It does not survive a restore: a database rebuilt from a production dump copies
+the row, `instance_id` included, so it identifies the wrong-database mistake, not the
+restored-onto-itself one. `pg_settings.name='server_version'` and `current_setting('server_version')`
+are equivalent; the former also gives `server_version_num` (`160014`) if you need to compare exactly.
 
 `app_name` is stamped by `docker/db-patch-entrypoint.sh:145-166`, which refuses to migrate a
 database stamped for a different app. If A.1 shows a different `app_name`, stop — the audit
@@ -366,7 +379,7 @@ that moved without the containers moving means the clinic is not on that code ye
 | D.1 | Which side is configured | the four names report `set`/`unset`; **no value is printed** | ☐ |
 | D.2 | The HOPE partner row exists and is active | `code=HOPE`, `is_active=t`, `callback_url` matches D.1 | ☐ |
 | D.3 | Traffic is enabled | `ff_hope_care_referrals.enabled = t`, or `HOPE_CARE_INTEGRATION_FORCE=1` | ☐ |
-| D.4 | Outbound reachability, no side effect | any HTTP status line answers from inside `care-api` | ☐ |
+| D.4 | Outbound reachability, no side effect | the TCP layer and the HTTP layer are recorded **separately, per address**, and the same URL is tried from the NAS host as a control | ☐ |
 | D.5 | Inbound reachability + auth refused without a credential | open `health` returns the contract version; an unsigned POST returns **401** | ☐ |
 | D.6 | One authorized test send, from the UI | `200` with `emitted: true, alreadySent: false` | ☐ |
 | D.7 | The expected report status reached HOPE | outbox row `status=sent`, `external_result_links.delivered_at` non-null, `report_status` as intended | ☐ |
@@ -380,6 +393,15 @@ printing it is safe — and it is worth checking, because the tracked template
 `http://172.16.1.139:7080/…` while `deploy/synology/NAS_OVERNIGHT_ENV_PATCH.env:3` records the
 **live** value as `http://192.168.1.137:7080/…`. Two different NAS addresses; one of the two
 documents is stale. **Do not diagnose from a template — read the container.**
+
+On 2026-10-13 the clinic read `192.168.1.137:7080`, and that argument was settled by measurement
+rather than by which file is newer: from inside `care-api`, `172.16.1.139:7080` completes TCP and
+answers **HTTP 401 in 88 ms** while `192.168.1.137:7080` never completes TCP at all (§D.4). The
+tracked template was the working address and the live value was the broken one. `hope_hospital_app`
+publishes container `5000` to host `7080` on `0.0.0.0`, and no HOPE container name resolves from
+`care-api` (`hope_hospital_app`, `hope-erp`, `hope_erp` → ENOTFOUND; it lives on
+`hope_erp_network`, the ERP on `care-erp-github_default`), so an interface address is the only
+form available to this pair until someone joins a bridge.
 
 ```sh
 docker exec care-api sh -c 'echo "callback=$INTEGRATION_HOPE_CALLBACK_URL"'
@@ -440,11 +462,30 @@ docker exec care-api node -e 'const u=process.env.INTEGRATION_HOPE_CALLBACK_URL,
 Any HTTP status line — 200, 401, 405, 404 — means the endpoint is reachable and answering, and
 then the hairpin question is settled for this container pair and no further.
 
-Do **not** assume the NAS's own LAN address is unreachable from every container. What was
-measured on the clinic NAS is one pair, on the staging project: a container calling
-`192.168.1.137:8043` got `fetch failed` while the same URL worked from the LAN and from a
-browser. Whether `care-api → :7080` behaves the same way is a fact about *this* pair, so run the
-two controls and let them agree or disagree:
+Do **not** assume the NAS's own LAN address is unreachable from every container, and do **not**
+infer one port's reachability from another port's. Each address:port pair is a separate fact, so
+measure the pair the dispatcher actually uses. Measured 2026-10-13 on the clinic NAS, from inside
+`care-api` — `8042` was proved separately and is listed only to show the two are not the same
+question:
+
+| Address:port, from inside `care-api` | TCP | HTTP | From the NAS host |
+| --- | --- | --- | --- |
+| `172.16.1.139:7080` (HOPE callback) | **ok** | **401 in 88 ms** | 401 in 2 ms |
+| `192.168.1.137:7080` (the value the app is configured with) | **timeout at 5 s** | TimeoutError at 9,003 ms | 401 in 2 ms |
+| `172.16.1.139:8042` (Orthanc) | ok | 200 in 50–67 ms | — |
+
+Three things follow, and none of them is "HOPE is down". The route is served and answers
+**401 Unauthorized** with real security headers, so HOPE's handler is up, listening, and correctly
+refusing an unsigned request — that is a pass at the application layer. The same URL answers 401 in
+under 3 ms from the NAS host on **both** addresses, so the failure is the container→`eth0` hairpin
+for `192.168.1.137`, not the service. And because `eth1` completes the pair, the fix is one value:
+`INTEGRATION_HOPE_CALLBACK_URL` should name `172.16.1.139`, which is what
+`deploy/synology/care.env:125` already records. Changing it means restarting `care-api`, so it is
+an owner decision, not a step on this page — and note that the 401 says nothing about whether the
+**signature** would be accepted on a real POST; only §D.6–D.8 on one authorized case can say that.
+
+The two controls below are what produced that table, and they are still the pair to run on any
+other box, because the addresses are clinic-specific:
 
 ```sh
 HOPE_URL=$(docker exec care-api printenv INTEGRATION_HOPE_CALLBACK_URL); curl -sS -o /dev/null -w "host→$HOPE_URL %{http_code} in %{time_total}s\n" --max-time 8 "$HOPE_URL"
@@ -672,7 +713,7 @@ stopped, restarted or rebuilt to produce this table.
 | **CL-3** | **PASS on the precondition / FAIL on the proof** | `deploy-synology.sh` still takes no backup (its own steps are `git reset --hard` → `compose down --remove-orphans` → `up -d --build`), but the hourly job produced artifacts at 22:30 and 22:32 on 2026-10-12, the same night the containers were recreated at 22:22 | The safety net exists by accident of a scheduler, not by the deploy path. If CL-2 has not passed, the net is untested | Record `$BD` artifact name + `docker inspect … image=` for `care-api care-web` inside the deploy window, before step 1 | **Yes if CL-2 is not done** |
 | **CL-4** | **PASS, with a named fragility** | `GET http://172.16.1.139:8042/system` from inside `care-api` → **HTTP 200 in 50–67 ms**; `/dicom-web/studies?limit=1` → 200; `/plugins` = explorer.js, dicom-web, orthanc-worklists, postgresql-index; `/statistics` = 2,654 patients / 2,681 studies / 9,973 series / 242,278 instances. `care-orthanc` by name → **DNS fail ENOTFOUND** (separate project, separate bridge). `192.168.1.137:8042` from the same container → **TimeoutError** | PACS reachability depends on `eth1` keeping `172.16.1.139`. Renumber that interface and image attach stops, with no schema or config error anywhere | Decide: join `care-pacs-net` to the ERP project (needs authorization + restart), or keep the address and monitor it. Write the choice into `deploy/synology/care.env`, which currently records `172.16.1.139:7080` while the live value is `192.168.1.137:7080` | **No** for reports. Image attach has a working server leg today |
 | **CL-5** | **FAIL for viewer-side claims** | `care-ohif-enterprise:v1`, `builtAtUtc 2026-10-10T05:14:48Z`, `careViewerVersion 1.2.0-p2-radiologist`, `ohifRef v3.10.0`, `ohifCommit 0b6e9cba…`, no `care-pacs` SHA. All five hand-written `care-*.js` served by that image are byte-identical to `care-pacs origin/main` (`ddef581`) after LF normalization, but the 6.89 MB app bundle contains only the **snapshot** form `window.__CARE_OHIF__={servicesManager:…}` | The D2 displayed-image fixes authored after that build (care-pacs `d9a3eb9`, 2026-10-10 18:12Z) are **not deployed**. Saying "D2 is live" is false; saying "D2 is broken" is equally false — it is dormant | Owner authorizes a `care-ohif` rebuild; re-read the bundle afterwards | **No** for the ERP. **Yes** for any viewer-side claim |
-| **CL-6** | **FAIL — and now live rather than hypothetical** | `integration_outbox` 0 rows, `integration_delivery_attempts` 0 rows, `external_result_links` 0/0/0, partner audit log 1 row. Callback configured: `http://192.168.1.137:7080/api/integration/care-callback`, partner `HOPE` active, `last_used_at 2026-08-14 05:07:48Z`. From inside `care-api` that URL → **TimeoutError after 9,001 ms**, while the NAS host reaches it → **HTTP 302 in 10 ms**. And `ff_hope_care_referrals.enabled = t`, updated **2026-10-12 22:24:28Z** — switched on at the last deploy | The register's own precondition has now been violated in production: the flag is on for an endpoint the application cannot reach. A signed referral report will queue, retry to `max_attempts` 8 and dead-letter, and nothing in the ERP UI says so | **Owner decision, both ways are config changes + a restart:** repoint the callback at the address measured to work (`172.16.1.139:7080`), or set `ff_hope_care_referrals` back to `f` until §D.4–D.8 pass on one authorized case | **Blocks Hope referral traffic.** Not the ERP report path |
+| **CL-6** | **FAIL on configuration — reachability now proved, delivery still never observed** | `integration_outbox` 0 rows, `integration_delivery_attempts` 0 rows, `external_result_links` 0/0/0, partner audit log 1 row, `last_used_at 2026-08-14 05:07:48Z`. Configured callback `http://192.168.1.137:7080/api/integration/care-callback`; from inside `care-api` that address **fails at the TCP layer (timeout at 5 s, TimeoutError at 9,003 ms)**, while `172.16.1.139:7080` completes TCP and returns **HTTP 401 in 88 ms**. The NAS host gets 401 in 2 ms on both. No HOPE name resolves from `care-api` (ENOTFOUND; HOPE is on `hope_erp_network`, the ERP on `care-erp-github_default`), and `hope_hospital_app` maps container `5000` → host `7080`. `ff_hope_care_referrals.enabled = t` at **2026-10-12 22:24:28Z** — switched on at the last deploy | The flag is on for an address the application cannot open a socket to. A signed referral report queues, retries to `max_attempts` 8 and dead-letters with nothing in the ERP UI to say so. The 401 proves HOPE is healthy and refusing an unsigned request — it does **not** prove the HMAC signature would be accepted on a real POST | **Owner decision, both ways are a config change plus a `care-api` restart:** set `INTEGRATION_HOPE_CALLBACK_URL` to the address measured to work (`http://172.16.1.139:7080/api/integration/care-callback`, which is what `care.env:125` already records), or set `ff_hope_care_referrals` back to `f` until §D.6–D.8 pass on one authorized case | **Blocks Hope referral traffic.** Not the ERP report path |
 | **CL-7** | **AUTHORIZATION REQUIRED** — unchanged, owner-deferred | The NAS checkout carries untracked `.env.before-rotate-2026-10-03`, `BEFORE-QODER.env`, `before1234.env` and a modified `STARTUP_SCHEMA_VERIFICATION.md`; `HOPE_PARTNER_KEY`, `INTEGRATION_HOPE_SIGNING_SECRET`, `INTERNAL_API_KEY`, `SESSION_SECRET`, `DATABASE_URL` all report `set` (values never printed) | A rotation has already happened once without history remediation, and it is the same event that may make September's backups undecryptable (CL-2) | Owner's rotation window + history remediation, and this time record which key sealed which artifact | **No** — standing exposure, not a deploy gate |
 | **CL-8** | **NOT TESTED** | Nothing NAS-side bears on it; `lib/reportImages.ts:186` still returns `null` for every non-OK response on `main` | A 429, a 500, a timeout and a corrupt object are one event, so staff are told "no image" for four different faults | Typed outcome from `fetchPrintImageBytes` + a `*.request.test.ts` per class, then the four messages read on a screen | **No** |
 | **CL-9** (new) | **FAIL** — exposure, not a fault of this deploy | Published on every interface (`0.0.0.0`): `care-orthanc` **8042 and 5680**, `care-ohif` 3010, `care-web` 8888, `hope_hospital_app` 7080, plus the staging stack's 8091/3012/8043. `care-db` is correctly `127.0.0.1:5400` only, `d2stg-db` `127.0.0.1:5401` | 5680 is `care-pacs/docker-compose.yml:70` `"5680:4242"   # DICOM C-STORE / C-ECHO / MWL C-FIND`, published on `0.0.0.0`: any device on the clinic LAN can call `C-STORE` into the production index unauthenticated. 8042 likewise exposes the whole DICOMweb query API to the LAN | Owner decision on the firewall/publication surface; **not** a documentation item | **No** for this deploy. **Yes** for calling the PACS box production-hardened |
@@ -694,6 +735,11 @@ documents, and none of them is true of this box:
    `python3` — `curl` and `node v22.22.3` only. Those probes are rewritten in §C and §D.
 6. The `d2stg-*` staging DB's `db_data`-style volume holds real patient data (believed from an
    earlier round on a different box). Not here.
+7. **This page's own first reading of the HOPE control**, which recorded "the NAS host reaches
+   `192.168.1.137:7080` → HTTP 302 in 10 ms". Re-measured against the callback path itself it is
+   **401 in 2 ms**; the 302 belongs to `/`, which redirects to `/site`. A redirect from the root is
+   not evidence about a route, and reading one as the other made an authentication answer look like
+   a page redirect. Measure the exact path the dispatcher posts to.
 
 ### Gate rule
 
@@ -732,6 +778,13 @@ closing. What changed is CL-6: the referral flag went on at the 2026-10-12 22:24
 rollout — it is the current production state, and it is the one item on this page that can hurt a
 patient today. Two rows also gained facts nobody had before: the backups are healthier than this
 page assumed (CL-2, hourly and schema-complete) and the network is looser than it assumed (CL-9).
+
+CL-6 is now the cheapest item on this page to close, because its cause is named rather than
+suspected: HOPE answers `401` in 88 ms at `172.16.1.139:7080` from inside `care-api` and never
+completes a socket to the `192.168.1.137:7080` the app is configured with. One `.env` value plus a
+`care-api` restart — both the owner's call, neither performed here — and the referral leg has a
+reachable endpoint. Whether HOPE *accepts* the signature is still §D.6–D.8, and nothing short of
+one authorized case can say that.
 
 Nothing in this register was closed by a test run, and a green CI on `main` closes none of it.
 Deploy remains the owner's decision.

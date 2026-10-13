@@ -62,6 +62,15 @@ database stamped for a different app — the same protection in a different plac
 returns a different `app_name`, stop: you are pointed at the wrong database, and the audit
 would be describing a schema nobody deploys to.
 
+Write down the `instance_id` too, not only `app_name`. It is the md5 minted the first time the
+stamping script ever touched that database, so it is the one field that separates the clinic's
+`diagnostic_erp` from a **different** database carrying the same `app_name` — a second project
+stamped `care-erp`, or the staging stack, agrees on `app_name` and is indistinguishable without it.
+What it cannot catch is a restore: a database rebuilt from a production dump copies the row whole,
+`instance_id` included. Measured on `AbinashNAS` 2026-10-13, for comparison:
+`diagnostic_erp | f | 16.14` and `care-erp | production | bd62c32b92733266c8b521a171f88232 |
+2026-07-08 08:53:46.432625+00`.
+
 > Never `printenv DATABASE_URL`, and never echo it into a log or a screenshot: it embeds
 > `DB_PASSWORD`. `docker exec` into `care-db` uses the credentials the container already
 > has. Do not run these against `127.0.0.1:5400` from the host either — `care-db` publishes
