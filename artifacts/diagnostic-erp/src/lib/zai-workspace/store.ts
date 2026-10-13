@@ -1538,6 +1538,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
           findingsText: combined,
           fieldProvenance: { ...get().fieldProvenance, findings: nextProv },
         });
+        // This branch is the only one in `insertCopilotText` that does not end in
+        // `mergeField`, and `mergeField` is where the Impression dependency gets
+        // re-read. A comparison line that says "there is a new C2 fracture" changes
+        // what the Findings assert, so it has to change the verdict too — otherwise
+        // the rail arms the report on reload and not on click.
+        set(deriveImpressionDependency(get()));
         setTimeout(() => get().recomputeCopilot(), 0);
       }
     } else if (item.kind === "measurement") {
@@ -3420,6 +3426,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         get().seedSystemNormalImpression();
       }
     }
+    // Taking a finding OUT of the Findings is the same clinical event as typing
+    // over them, so it has to give the same answer. `undoLastPatch` and
+    // `applyMergedResult` re-derive after putting text BACK; until now nothing ran
+    // after taking it OUT, so the session kept the pre-removal verdict while the
+    // same report after a reload reported `findings-changed` — D-1's two answers
+    // from the other side.
+    //
+    // A removal that completed took the observation's Findings sentence and its
+    // Impression sentence out together, so it has re-paired the two sides and
+    // rebases the basis — the same rule `applyPathologyOverlay` follows when it
+    // ADDS such a pair, which is also why a reload agrees. A removal that only
+    // half-applied (`preserved-manual`, `no-op-unproven`) did not touch both
+    // sides, so it is re-read against the existing basis instead: rebasing there
+    // would have the store claim a summary it did not write.
+    //
+    // Rebasing is not silencing. `impression-write` does not clear the semantic
+    // half of the predicate, and a removal whose generated sentence the radiologist
+    // has already replaced is refused outright (`preserved-manual`) rather than
+    // re-paired — both pinned in `findingsImpressionDependency.test.ts`, along with
+    // the brain-vascular bundle's "withdraws the impression line when the linked
+    // finding is removed".
+    set(deriveImpressionDependency(
+      get(),
+      result.outcome === "removed" ? { rebase: true } : undefined,
+    ));
     return result.outcome;
   },
   undoLastPatch: () => {
@@ -3663,6 +3694,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       ...withPushedClinicalUndo(get(), snap),
     });
+    // The Composer rewrites both fields in one action, which looks like a write
+    // that owns the pairing — but it is the model's wording, and CARE's standing
+    // rule for accepted AI prose (`mergeField` with `ai-draft`, and B-04's
+    // acceptance boundary) is that it owns neither side: a sentence proves nothing
+    // about the findings behind it. So this re-reads the dependency instead of
+    // rebasing it, which is also precisely what a reload of the same draft reports.
+    set(deriveImpressionDependency(get()));
     return "applied";
   },
   clearVoiceComposerSession: () => {
