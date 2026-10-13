@@ -8,6 +8,7 @@ import pinoHttp from "pino-http";
 import "./bootstrapLocalAi";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { buildIdentityPayload } from "./lib/buildIdentity";
 import { errorHandler } from "./middleware/errorHandler";
 import { dicomUploadLimiter } from "./middleware/rateLimits";
 import { dicomUploadsRouter } from "./routes/dicom-uploads";
@@ -131,11 +132,21 @@ app.use(
 //   3. Critical columns verified inline
 //   4. Migration count sanity check (≥6 Drizzle + some feature migrations)
 app.get("/health", (_req, res) => {
+  // `commit` is what the build was TOLD — a compose ARG sourced from .env, which
+  // only deploy-synology.sh refreshes. `imageBuiltAt`/`artifact` are what the
+  // image knows about itself, written by the Dockerfile from its own build clock
+  // and a hash of the bytes shipped. When those say "built last week" while the
+  // commit says "six weeks ago", the stamp is stale and the code is not what it
+  // claims — which is exactly how /health reported 2d51e8d7 (2026-09-16) while
+  // dist/ contained code merged 2026-10-12.
+  const identity = buildIdentityPayload();
   res.status(200).json({
     ok:      true,
     version: process.env.ERP_VERSION  || "0.0.0",
     build:   process.env.BUILD_NUMBER || "0",
     commit:  (process.env.GIT_COMMIT  || "unknown").slice(0, 8),
+    imageBuiltAt: identity.imageBuiltAt,
+    artifact:     identity.artifactSha256,
     ts:      new Date().toISOString(),
   });
 });
