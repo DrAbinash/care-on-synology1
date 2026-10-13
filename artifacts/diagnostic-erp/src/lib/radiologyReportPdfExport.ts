@@ -298,13 +298,22 @@ export interface RadiologyPdfExportInput {
   /** Settings → Doctors master — signature degree + REF. BY enrichment. */
   doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
   /**
-   * ADR-004 region-transition history from the open study's store. The note is
-   * computed here, from the same `studyName` this call prints as the title, so
-   * the heading and the sentence under it can never be derived from two
-   * different inputs — and so the PDF says what the server's print document
-   * says, because both call the one shared rule.
+   * ADR-004 region-transition history from the open study's store.
    */
   regionTransitions?: readonly ReportedScopeRecord[] | null;
+  /**
+   * The examination that was BOOKED, in its own right — not the string drawn as
+   * the heading. `studyName` arrives resolved through
+   * `resolvePrintedReportTitle(appliedFormatReportTitle, booked)`, so whenever a
+   * clinic's report format supplies its own title it names the region the report
+   * *documents*, and asking the shared rule for a scope note with that string
+   * makes it answer "nothing to explain" — which is how a study booked
+   * whole-spine and documented cervical exported a PDF with no scope sentence at
+   * all while the printed page carried it. The heading precedence is unchanged;
+   * this feeds only the sentence under it. Callers that omit it keep the
+   * previous behaviour.
+   */
+  bookedStudyName?: string | null;
 }
 
 export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput): Promise<void> {
@@ -338,10 +347,11 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
       measurements: measurements.length > 0 ? measurements : undefined,
       keyImages,
       reportTitle: input.studyName || "Radiology Report",
-      // Same rule, same booked title: the PDF and the server's print document
-      // cannot end up describing different anatomy for one study.
+      // The booked examination the reader was promised, which is not necessarily
+      // the heading above: a clinic's format title names the region this report
+      // documents. One shared rule, same input as the server's print document.
       reportingScopeNote: reportedScopeNote({
-        bookedTitle: input.studyName || "Radiology Report",
+        bookedTitle: input.bookedStudyName?.trim() || input.studyName || "Radiology Report",
         records: input.regionTransitions ?? [],
       }) ?? undefined,
     },
