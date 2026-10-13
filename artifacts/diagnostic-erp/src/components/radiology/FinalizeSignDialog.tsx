@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle } from "lucide-react";
 import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinalizeFlow";
 import { computeUnresolvedBlockers, type CanonicalQualityFinding } from "@/lib/reportQualityFinalize";
+import { FINALIZE_CHECK_LABELS, formatIncompleteChecks, type FinalizeServiceChecks } from "@/lib/finalizeChecks";
 import { CompositionFinalizeGate, compositionFinalizeAllowed } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
@@ -106,6 +107,12 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const [impressionReviewedAnyway, setImpressionReviewedAnyway] = useState(false);
   const [impressionRefreshed, setImpressionRefreshed] = useState(false);
   const [advanceToNext, setAdvanceToNext] = useState(loadAutoAdvanceAfterFinalize);
+  // What the last Retry returned, if a retry has happened. The dialog renders
+  // from this rather than from the input it was opened with, so a check that
+  // failed on the way in and succeeded on retry stops being shown as failed —
+  // and what gets recorded at signing is what is on the screen at that moment.
+  const [checksAfterRetry, setChecksAfterRetry] = useState<FinalizeServiceChecks | null>(null);
+  const [retryBusy, setRetryBusy] = useState(false);
 
   useEffect(() => {
     if (!open || !input) return;
@@ -116,6 +123,8 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     setNotifyReferring(false);
     setImpressionReviewedAnyway(false);
     setImpressionRefreshed(false);
+    setChecksAfterRetry(null);
+    setRetryBusy(false);
     const remembered = loadSessionSignerId();
     if (multi) {
       const match = remembered && signatures.some((s) => s.id === remembered)
@@ -129,7 +138,10 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     }
   }, [open, input, multi, single, signatures]);
 
-  const qualityGate = input?.qualityGate ?? null;
+  const qualityGate = checksAfterRetry?.qualityGate ?? input?.qualityGate ?? null;
+  const checksIncomplete = checksAfterRetry?.checksIncomplete ?? input?.checksIncomplete ?? [];
+  const validationSummary = checksAfterRetry?.validationSummary ?? input?.validationSummary ?? "";
+  const checksAllRanAfterRetry = checksAfterRetry !== null && checksAfterRetry.checksIncomplete.length === 0;
   const unresolvedBlockers = useMemo(
     () => (qualityGate ? computeUnresolvedBlockers(qualityGate.findings, qualityGate.overrides ?? []) : []),
     [qualityGate],
@@ -153,6 +165,15 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
     (!needsSigner || !!signerId || signatures.length === 0) &&
     compositionOk;
 
+  const retryChecks = () => {
+    if (!input.onRetryChecks) return;
+    setRetryBusy(true);
+    // runFinalizeCheck() converts a rejection into a named failure, so this
+    // promise resolves whatever the services do; there is no error branch here
+    // to invent, and the block stays on screen until a check actually completes.
+    input.onRetryChecks().then(setChecksAfterRetry).finally(() => setRetryBusy(false));
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -163,12 +184,52 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
         <pre className="whitespace-pre-wrap text-xs bg-muted/40 rounded-md p-3 border border-border font-sans">
           {input.identity}
           {"\n\n"}
-          {input.validationSummary}
+          {validationSummary}
           {input.warningBlock}
           {input.safetyBlock}
           {input.unbilledNote}
           {"\n"}After finalizing, editing is disabled.
         </pre>
+
+        {/* What did not run, said in its own block in its own colour. The
+            alternative is the summary above reading like a report nothing is
+            wrong with, when the truth is that two services never looked at it.
+            Deliberately not a gate: Confirm stays enabled, because these checks
+            were advisory before this change and are advisory now — whether a
+            failed check should stop a signature is the owner's policy call
+            (ARCHITECTURE.md §8.1), not something a reliability fix gets to make. */}
+        {checksIncomplete.length > 0 && (
+          <div
+            role="alert"
+            className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2"
+          >
+            <p className="text-xs font-semibold text-amber-900 dark:text-amber-100 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Not checked
+            </p>
+            <pre className="whitespace-pre-wrap text-[11px] font-sans text-amber-900 dark:text-amber-100">
+              {formatIncompleteChecks(checksIncomplete)}
+            </pre>
+            {input.onRetryChecks && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="finalize-retry-checks"
+                disabled={retryBusy}
+                onClick={retryChecks}
+              >
+                {retryBusy ? "Retrying checks…" : "Retry checks"}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {checksAllRanAfterRetry && (
+          <p className="text-xs text-emerald-700 dark:text-emerald-300" data-testid="finalize-retry-complete">
+            All validation checks completed on retry.
+          </p>
+        )}
 
         <CompositionFinalizeGate
           gate={{
@@ -306,6 +367,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
                 notifyReferring,
                 impressionReviewedAnyway,
                 impressionRefreshed,
+                checksIncompleteAtSigning: checksIncomplete.map((f) => f.key),
                 advanceToNext,
               });
             }}
