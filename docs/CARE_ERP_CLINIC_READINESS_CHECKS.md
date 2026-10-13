@@ -302,23 +302,36 @@ and `5680→4242` (DICOM C-STORE/C-ECHO).
 ### C.2 CARE API → Orthanc connectivity (the only path that matters for reports)
 
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/system"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' /system
 ```
+
+`care-api` ships `curl` and `node v22.22.3` and **no `wget`, no `nc`, no `python3`** (measured on
+the clinic box 2026-10-13), so every probe in this section runs through `node`. A `wget` line
+pasted there exits with `not found`, which reads exactly like Orthanc being down.
 
 Expected: a JSON object with `"Version"` (and `ApiVersion`). `ORTHANC_INTERNAL_URL` defaults
 to `http://care-orthanc:8042` (`docker-compose.yml:336`), which resolves **only if the two
 projects share a user-defined network**. If it fails, distinguish the two causes:
 
 ```sh
-# does the name resolve at all from inside the API container?
-docker exec care-api sh -c 'wget -qO- -T 3 http://care-orthanc:8042/system >/dev/null && echo DNS+HTTP ok || echo failed'
+# does the name resolve at all from inside the API container? (Docker's embedded resolver)
+docker exec care-api node -e 'const {Resolver}=require("dns").promises,r=new Resolver({server:"127.0.0.11",tcp:false});r.resolve4(process.argv[1]).then(a=>console.log("DNS ok",a.join(" "))).catch(e=>console.log("DNS fail",e.code||e.message))' care-orthanc
+# is the socket openable, independent of HTTP?
+docker exec care-api node -e "const n=require('net'),h=process.argv[1],a=process.argv[2],p=+a;if(!h||!/^[A-Za-z0-9.:_-]+$/.test(h)||!(Number.isFinite(p)&&p>0&&p<65536)){console.log('NOT FILLED IN: replace HOST and PORT with real values (you passed host='+h+' port='+a+')');process.exit(0)}const s=n.connect({host:h,port:p,timeout:4000},()=>{console.log('TCP ok '+h+':'+p);s.removeAllListeners('error');s.destroy()});s.on('error',e=>console.log('TCP fail '+h+':'+p+' '+e.code));s.on('timeout',()=>{console.log('TCP timeout '+h+':'+p);s.destroy()})" HOST PORT
 # which networks does each side sit on?
 docker inspect --format '{{.Name}} -> {{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' care-api care-orthanc
 ```
 
-Two more facts that have burned time here: a container on this NAS **cannot reach the NAS's
-own LAN IP on a Docker-published port** (Synology hairpin/DNAT block), so `192.168.1.137:8042`
-from inside `care-api` failing proves nothing about Orthanc; and
+Three separate questions, because one line that answers "DNS+HTTP ok or failed" cannot tell you
+which half broke: name resolution, socket, network membership. On the clinic box 2026-10-13 the
+resolver answered `DNS fail ENOTFOUND` for `care-orthanc` (separate compose project) and the
+configured `ORTHANC_INTERNAL_URL` is the interface address `http://172.16.1.139:8042`, which
+answered `HTTP 200` in 50–67 ms.
+
+Two more facts that have burned time here: **the hairpin/DNAT block is per-interface, not a rule
+about "the NAS's LAN IP"** — this box answers on `eth0 192.168.1.137`, `eth1 172.16.1.139` and
+`eth2 192.168.1.47`, and from `care-api` the `eth1` address completes while the `eth0` one times
+out, so a failure against one address says nothing about the other and nothing about Orthanc; and
 `ORTHANC_CHANGES_POLLER` must be `false` when `care-erp-sync` runs, or two writers race on
 the same worklist.
 
@@ -326,7 +339,7 @@ the same worklist.
 
 ```sh
 # QIDO at study level — proves /dicom-web is mounted, not just the REST root
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies?limit=1"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+process.argv[1];fetch(u,{signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],s.length,"bytes");console.log(s.slice(0,220))}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' '/dicom-web/studies?limit=1'
 ```
 
 Expect a JSON array (possibly `[]`). Now the quirk the image picker depends on: Orthanc
@@ -335,8 +348,14 @@ Expect a JSON array (possibly `[]`). Now the quirk the image picker depends on: 
 lookup must be QIDO-filtered instead:
 
 ```sh
-docker exec care-api sh -c 'wget -qO- "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances?00080018=SOP"'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+"/dicom-web/studies/"+process.argv[1]+"/series/"+process.argv[2]+"/instances?00080018="+process.argv[3];fetch(u,{headers:{accept:"application/dicom+json"},signal:AbortSignal.timeout(8e3)}).then(async r=>{const s=await r.text();let n="not-json";try{n=JSON.parse(s).length}catch(e){}console.log("HTTP",r.status,"entries="+n,s.length,"bytes")}).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' STUDY SERIES SOP
 ```
+
+Pass the three UIDs as the three trailing arguments; the URL is built inside the container from
+`ORTHANC_INTERNAL_URL`, so nothing has to be exported first. `care-api` has no `wget` (measured
+2026-10-13: `curl` and `node v22.22.3` only), so the `wget -qO-` form of this probe reports
+`not found`, which is not an Orthanc answer. The response body is DICOM metadata for one study, so
+this line prints counts only — never paste the array into a log.
 
 An unmatched filter is a `200` with an **empty array**, never a 404 — that distinction is
 what `scripts/…/mockDicomWeb.ts` mimics, and it is why a regression back to path-style
@@ -375,7 +394,7 @@ The print/PDF leg fetches exactly this path (`artifacts/api-server/src/lib/repor
 
 ```sh
 # status and size only — never pipe image bytes into a log or a terminal
-docker exec care-api sh -c 'wget -S -qO /dev/null "$ORTHANC_INTERNAL_URL/dicom-web/studies/STUDY/series/SERIES/instances/SOP/rendered" 2>&1 | head -8'
+docker exec care-api node -e 'const u=process.env.ORTHANC_INTERNAL_URL+"/dicom-web/studies/"+process.argv[1]+"/series/"+process.argv[2]+"/instances/"+process.argv[3]+"/rendered";fetch(u,{signal:AbortSignal.timeout(15e3)}).then(r=>console.log("HTTP",r.status,(r.headers.get("content-type")||"-").split(";")[0],"len="+(r.headers.get("content-length")||"?"))).catch(e=>console.log("FAIL",e.name,e.message||(e.cause&&e.cause.message)))' STUDY SERIES SOP
 ```
 
 Expect `200` and `Content-Type: image/jpeg`. A single-frame object has **no** `frames/` path

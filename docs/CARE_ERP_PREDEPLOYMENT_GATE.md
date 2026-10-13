@@ -533,7 +533,7 @@ docker exec care-api node -e 'const {Resolver}=require("dns").promises,r=new Res
 ```
 
 ```sh
-docker exec care-api node -e "const n=require('net'),h=process.argv[1],p=+process.argv[2],s=n.connect({host:h,port:p,timeout:4000},()=>{console.log('TCP ok '+h+':'+p);s.removeAllListeners('error');s.destroy()});s.on('error',e=>console.log('TCP fail '+e.code));s.on('timeout',()=>{console.log('TCP timeout');s.destroy()})" HOST PORT
+docker exec care-api node -e "const n=require('net'),h=process.argv[1],a=process.argv[2],p=+a;if(!h||!/^[A-Za-z0-9.:_-]+$/.test(h)||!(Number.isFinite(p)&&p>0&&p<65536)){console.log('NOT FILLED IN: replace HOST and PORT with real values (you passed host='+h+' port='+a+')');process.exit(0)}const s=n.connect({host:h,port:p,timeout:4000},()=>{console.log('TCP ok '+h+':'+p);s.removeAllListeners('error');s.destroy()});s.on('error',e=>console.log('TCP fail '+h+':'+p+' '+e.code));s.on('timeout',()=>{console.log('TCP timeout '+h+':'+p);s.destroy()})" HOST PORT
 ```
 
 Then the two HTTP legs already written above — the GET from inside `care-api` (§D.4) and the
