@@ -749,6 +749,183 @@ documents, and none of them is true of this box:
    not evidence about a route, and reading one as the other made an authentication answer look like
    a page redirect. Measure the exact path the dispatcher posts to.
 
+### Part 2 · Second read-only pass — same day, backups, callback and the audit's last unknown
+
+Everything below was measured on the clinic box with read-only commands. No container was
+restarted, nothing was written to the database, and no backup file was touched.
+
+**CL-1's last unknown is now closed — and it changes the command.** A container named
+`care-schema-verify` **already exists**: it is the service's own one-shot, created 2026-10-12
+22:22:46, `Exited (0)`, labelled `com.docker.compose.oneoff=False`, `service=schema-verify`,
+project `care-erp-github`, and it ran the image's default command
+(`node /repo/scripts/db-schema-verify.cjs --verbose`). `docker compose run --dry-run` is not
+supported here (`interactive run is not supported in dry-run mode`), so the collision behaviour
+could not be proven without executing. It does not need to be: this box runs compose `2.20.1`
+and `docker compose run --help` lists `--name string  Assign a name to the container`, so
+naming the one-off makes the collision impossible by construction.
+
+The command to authorize, and what each part is for:
+
+```
+docker compose -p care-erp-github run --rm --no-deps \
+  --name care-schema-verify-audit schema-verify \
+  node scripts/audit-migration-ledger.mjs
+```
+
+- `-p care-erp-github` is load-bearing — the folder is `care-on-synology1`, and without `-p`
+  compose resolves to the folder name, matches nothing and prints **nothing at all**.
+- `--no-deps` is load-bearing — without it compose starts a **second, empty** PostgreSQL and the
+  audit reports roughly 200 `CRITICAL_TABLE_MISSING` findings about a database that has no
+  patients. Both mistakes produce a confident, worthless result.
+- **No `--json`.** The service bind-mounts the checkout read-write at `/repo/output`, and the
+  audit's only filesystem write is `fs.writeFileSync(jsonOut, …)` guarded by `if (jsonOut)`
+  (`scripts/audit-migration-ledger.mjs:630-636`). Omitting the flag leaves zero writes anywhere.
+- Read-only is enforced twice: the connection is opened with
+  `options: "-c default_transaction_read_only=on"` (`:493`) and the session then **verifies** it
+  with `SHOW default_transaction_read_only` and exits 1 if the setting did not take (`:497-508`).
+  The live server default is `off`, so the second check is what does the work. The queries are
+  SELECT/SHOW only, over `schema_migrations_log`, `drizzle.__drizzle_migrations`,
+  `schema_deploy_state`, `system_database_identity`, `information_schema.*` and `to_regclass` —
+  no clinical table — and the connection string is never printed. Exit code = count of criticals.
+
+Expected result, from the live counts already taken: the audit compares **192** `migrations/*.sql`
+files on `origin/main` against `schema_migrations_log` (**206** rows, 15 of them `kind=drizzle`),
+`drizzle.__drizzle_migrations` (**17**) and `schema_deploy_state` (**19**) over 462 public tables.
+A clean run prints `0 critical`. Anything else names schema objects — never rows or patients —
+and `RECORDED_BUT_ABSENT` is the half-applied case #955 prevents in future and cannot undo.
+**Never rewrite a ledger row to silence a finding.**
+
+**CL-2 gained the failing producer's name.** The second backup family is not a container and not
+a script in a repository: it is **Synology Task Scheduler task id=15**, `15 2 * * * root
+/usr/syno/bin/synoschedtask --run id=15` in `/etc/crontab`, writing
+`/volume1/docker/backups/postgres/care/care_erp_<date>_02-15.dump` as user `abinash`. Its schedule
+matches the filename exactly. The sibling task at 02:45 (`id=16`) writes
+`hope_erp_<date>_02-45.dump` by the same mechanism and **succeeds** (626,673 B, byte-identical
+night after night — which is its own smell: a real hospital dump that never changes size).
+
+The care task is not simply dead — it is **intermittent**, which is why it survived unnoticed:
+
+| night | bytes |
+|---|---|
+| 2026-10-02 / 03 / 04 | 329,689,377 / 335,611,035 / 343,654,187 |
+| 2026-10-05 / 06 | **0** / **0** |
+| 2026-10-07 | 382,922,529 |
+| 2026-10-08 | **0** |
+| 2026-10-09 | 406,343,843 |
+| 2026-10-10 → 10-13 | **0** every night |
+
+A zero-byte file is created and then the dump fails, so the job's exit status looks like a
+completed task. The command it runs is only visible in
+`/usr/syno/etc/esynoscheduler/esynoscheduler.db`, which is `-rwx------ root` — **this pass could
+not read it, and will not guess at it.** To identify it, read the task in DSM → Control Panel →
+Task Scheduler, or as root:
+
+```
+sudo sqlite3 /usr/syno/etc/esynoscheduler/esynoscheduler.db ".tables"
+```
+
+Two more facts about backups, both from the same pass.
+
+**The legacy family proves integrity checking already exists here.**
+`/volume1/docker/ERP-BACKUPS/care/database/intraday/` holds `pg_dump -Fc` dumps **with `.sha256`
+sidecars** (e.g. `care_2026-09-22_23-00-18.dump` + its 128-byte checksum file), produced by
+`erp-backup-runner` on a 09:00/12:00/15:00/17:00/23:00 schedule. That container has been `Exited
+(130)` since 2026-09-22 21:26 with `restart=unless-stopped` and `restartCount=0` — it was
+interrupted, never restarted, and still holds read-write mounts on a named volume and on the
+13 GB `ERP-BACKUPS` directory, plus membership in both the care and hope bridge networks. So the
+clinic's only checksum-verified dump family has produced nothing for three weeks.
+
+**The neighbouring stack's restore test has been failing every week since 2026-08-30, for a
+reason worth copying — and fixing.** `hope_hospital_backup` is `Up`, and its `/backups/verify.log`
+reads, on 2026-08-30, 09-06, 09-13, 09-20, 09-27, 10-04 and 10-11:
+
+```
+[verify] FAIL — there are no backups in /backups to verify.
+```
+
+Its `entrypoint.sh` is the design CARE should have: a sleep loop **inside compose**, deliberately
+chosen over Task Scheduler because, in its own words, "the whole reason there were no backups is
+that the checklist asked somebody to type `pg_dump` by hand"; nightly dump plus a **weekly restore
+test** (`BACKUP_VERIFY_DOW`). It fails for a one-line reason: `verify-restore.sh` globs
+`${BACKUP_DIR}/hope_*.dump.enc` at the top level while `backup.sh` also copies artifacts into
+`${BACKUP_DIR}/monthly/`. The verification has never once looked at a real backup. `find /backups
+-name '*.dump*'` inside that container returns **0**. This is the same class of defect as CARE's
+own newest-file trap, found twice on one box — a restore test that cannot see the files the backup
+job writes reports a confident FAIL forever, or in CARE's case would report PASS about the wrong
+artifact.
+
+**Restore procedure (§B.4) is unchanged, and is the procedure to authorize.** It runs
+`postgres:16-alpine` as `care-db-restore-sandbox` with a random per-run password and **no
+published host port at all**, refuses a data-only dump, restores with `ON_ERROR_STOP=1`, fails on
+an empty `patients`/`bills` restore, and cleans up on every exit path. Run it against the newest
+**and** the oldest `db`-family artifact separately — those are the encrypted
+`backup_DB_*.sql.enc` files under `$BACKUP_HOST_DIR=/volume1/backup/care-erp/db` (newest
+2026-10-13T08-31-01Z, 789,553,120 B; 1,272 artifacts). Pass the passphrase through the
+environment, never a command line, and read the restored counts against what the clinic expects —
+the script deliberately does not compare against the live database, because that comparison is the
+step that catches a backup of the wrong database. `public.backup_verification` still has **0
+rows**: no restore has ever been proven on this box.
+
+**CL-6: nothing has ever been dispatched, and both config sources hold the dead address.**
+`integration_outbox` has **0 rows** and `integration_delivery_attempts` has **0 rows**. There is no
+delivery history to read — the callback leg has never carried an event. `ff_hope_care_referrals` is
+`t` (set 2026-10-12 22:24:28) and `ENABLE_SCHEDULERS` is set in `care-api`, while
+`INTEGRATION_HOPE_SIGNING_SECRET` and `HOPE_PARTNER_KEY` are both non-empty, so the path is armed.
+
+Where the URL comes from is settled by source, not by inference:
+`services/integration/outbox.ts:78-91` resolves the destination as `envUrl ?? dbUrl`, where
+`envUrl` is `process.env.INTEGRATION_HOPE_CALLBACK_URL` and `dbUrl` is
+`integration_partners.callback_url` (`:86`). **Both hold the unreachable address.** Measured live:
+
+| value | source |
+|---|---|
+| `http://192.168.1.137:7080` | `care-api` environment, and `integration_partners` row 1 (`code=HOPE`, `direction=inbound`, `is_active=t`, `last_used_at=2026-08-14`) |
+| TCP timeout | that address, from inside `care-api` — re-measured on this pass |
+| TCP OK, `HTTP 200` in 783 ms on `/`, `401` on the callback path | `172.16.1.139:7080`, from inside `care-api` |
+
+So the instruction "the configured callback endpoint is already correct" does not hold, and the
+change to authorize is one `.env` value plus the matching `integration_partners.callback_url`,
+followed by a `care-api` restart — none of which is performed here.
+
+The safe verification method, and why it cannot be done in production: the outbox has **ten** event
+types and **no ping or test event among them** — every one requires a real referral. Signing is `x-care-signature: sha256=HMAC-SHA256(secret, "timestamp.body")` with no nonce
+(`signBody` at `outbox.ts:70`, header set at `:175`); a 2xx moves the row to `sent`, non-2xx
+retries by `30s × 2^(n-1)` capped at one hour (`:94-97`) to `max_attempts` — which defaults to
+**8** (`lib/db/src/schema/integrationOutbox.ts:34`) — and then `dead`, and **`failed` is never
+written**, so any dashboard that filters on `failed` shows nothing forever. Verification therefore
+has to happen somewhere a synthetic event is allowed:
+
+1. Use the isolated `d2stg-*` stack (project `care-erp`, its own `care_d2_staging_db_data`,
+   **0 patients**, and `care-db` unresolvable from it) as both sender and receiver.
+2. Enqueue one synthetic outbox row there, run `dispatchPendingOutbox()`, and let a throwaway
+   listener **recompute the HMAC over `timestamp.body`** and compare — that proves URL reachability,
+   header shape, signature correctness and the retry path.
+3. No patient record, no clinical callback and no production row is involved. Receiver-side
+   verification itself lives in the HOPE repository
+   (`docs/hope-care-integration/04_HOPE_ADAPTER_REFERENCE.md:96-103`, where the reference receiver
+   reads `x-care-timestamp` and `x-care-signature` and answers `401 bad signature` on mismatch).
+
+**Two credential exposures found by reading file metadata only.** Neither value is reproduced here,
+and neither file was opened.
+
+1. The live `care-db` password **equals the public fallback written in `docker-compose.yml`** —
+   tested by comparison inside the container, which printed only an equality verdict. The blast
+   radius is limited because `care-db` publishes `127.0.0.1:5400` only, so nothing on the LAN can
+   reach it; anything that can read the repository can nevertheless supply the credentials to
+   another Postgres or to a host-side tunnel. Rotation is the owner's call and is not performed.
+2. `/etc/crontab:4` runs `/volume1/docker/care-studio/nightly-backup.sh`, which `cp -f`s the live
+   `.env` to `/volume1/backup/care-studio-data/env.backup` — 878 bytes, modified **2026-10-13
+   02:00**, i.e. it is running. A second copy of the signing secrets therefore exists in a backup
+   directory, outside the deploy directory's permissions and outside any rotation plan.
+
+**Orthanc authentication is recorded as an accepted, deferred decision, and is not re-raised by
+this pass.** `AuthenticationEnabled:false`, anonymous DICOMweb read, `RemoteAccessAllowed:true`,
+`DicomAlwaysAllowStore:true`, CORS `*` with `DELETE` permitted, `8042`/`5680` on `0.0.0.0`, all
+confirmed from the deployed `orthanc.json` earlier the same day. The owner has acknowledged it.
+This page should be updated when it changes, not when it is re-discovered; the one thing that
+would make it materially worse is a routable LAN or a port change, so §C.5's published-port line is
+the check to keep.
+
 ### Gate rule
 
 A deploy is **cleared** when all four are true:

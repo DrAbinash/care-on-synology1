@@ -197,7 +197,9 @@ export function QuickSelectStrip({
                 {study.modality} · {reportingContext.region || scopeBodyPart || "unresolved"}
               </span>
               <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
-                {scoped.length} tiles
+                {/* Offered, not held by the region — this read `scoped` and printed "56 tiles"
+                    above an empty row. */}
+                {filtered.length} tiles
               </span>
             </>
           )}

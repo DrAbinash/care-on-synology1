@@ -69,6 +69,13 @@ export type UseWorkspaceExportShareOptions = {
   existingDraft: { finalReportId?: number | null } | null | undefined;
   canonicalDemography: ReportDemography;
   studyNameForExport: string;
+  /**
+   * The booked examination, independent of the applied report format's title.
+   * Used only for the documented-region sentence: `studyNameForExport` follows
+   * the format, and a format titled for the narrower documented region would
+   * otherwise leave the PDF saying nothing about what was booked.
+   */
+  bookedStudyNameForExport: string | null;
   clinicalHistoryText: string;
   techniqueText: string;
   findingsText: string;
@@ -118,6 +125,7 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
   const {
     studyId, draftId, previewLayoutOverride, saveDraft, ensureDraftOnce, toast, qc,
     workflow, existingDraft, canonicalDemography, studyNameForExport,
+    bookedStudyNameForExport,
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
     useStructured, findingsMap, impressionStyle, headingCase, sectionSpacing,
     showLetterpadHeader, signerLine, findingsProvenance, impressionProvenance,
@@ -356,6 +364,7 @@ const handleExportPdf = useCallback(async () => {
       impression: impressionText.split("\n").filter(Boolean),
       recommendation: recommendationText,
       studyName: studyNameForExport,
+      bookedStudyName: bookedStudyNameForExport,
       headingCase,
       dicomWebBase: BROWSER_DICOMWEB_BASE,
       imageRefs,
