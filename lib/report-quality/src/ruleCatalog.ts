@@ -116,7 +116,11 @@ export const RULE_CATALOG = {
   Q002: { id: "Q002", legacyAlias: "Q002", canonicalId: "care.completeness.section.impression", ...CORE, title: "Impression section empty", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "The Impression section has no content." },
   Q003: { id: "Q003", legacyAlias: "Q003", canonicalId: "care.completeness.section.technique", ...CORE, title: "Technique not documented", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "The Technique section is blank." },
   Q004: { id: "Q004", legacyAlias: "Q004", canonicalId: "care.completeness.section.clinical-history", ...CORE, title: "Clinical history not documented", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "No clinical history recorded." },
-  Q005: { id: "Q005", legacyAlias: "Q005", canonicalId: "care.completeness.section.recommendation", ...CORE, title: "No recommendation given", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "No recommendation/advice recorded." },
+  // Q005 is conditional where Q001-Q004 are not: an empty Recommendation section is
+  // what CARE's anti-filler policy produces on purpose, so only a stated plan makes it
+  // a gap. The predicate lives in ./text/recommendation.ts. Id, canonical id and
+  // advisory classification are unchanged — only what the rule now means.
+  Q005: { id: "Q005", legacyAlias: "Q005", canonicalId: "care.completeness.section.recommendation", ...CORE, title: "Recommendation missing for a stated plan", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "The Impression states a plan but the Recommendation section is empty." },
   Q006: { id: "Q006", legacyAlias: "Q006", canonicalId: "care.completeness.checklist.incomplete", ...CORE, title: "Protocol checklist incomplete", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "The active protocol checklist is not fully addressed." },
   Q007: { id: "Q007", legacyAlias: "Q007", canonicalId: "care.measurement.required.missing", ...CORE, title: "Required measurement missing", category: "measurement", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "A required measurement label is absent from the report text." },
   // ── Free-text consistency (Q1xx) ──

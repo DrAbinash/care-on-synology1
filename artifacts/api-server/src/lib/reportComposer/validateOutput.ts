@@ -9,6 +9,11 @@
  */
 import type { ComposerDraftOutput, ComposerInputSnapshot, ComposeObservation } from "./types";
 import { isPreservingComposeKind } from "./types";
+// The anti-filler advice shape lives in the shared clinical vocabulary, not here: the
+// same predicate decides what Q005 must NOT demand from an empty advice section, so
+// this validator cannot delete a sentence the quality engine is simultaneously asking
+// the radiologist to write back.
+import { isFillerAdvice } from "@workspace/report-quality";
 
 export type ComposeValidationResult = {
   ok: boolean;
@@ -159,8 +164,6 @@ function groundedCorpus(snapshot: ComposerInputSnapshot): string {
 }
 
 const MEASUREMENT_TOKEN_RE = /\b\d+(?:\.\d+)?\s*(?:mm|cm|ml|cc|hu)\b/gi;
-const FILLER_RECOMMENDATION_RE =
-  /^(please\s+)?(clinical\s+correlation(\s+is)?\s+advised\.?|correlate\s+clinically\.?|clinical\s+correlation\.?)$/i;
 
 function extractMeasurementTokens(text: string): Set<string> {
   const out = new Set<string>();
@@ -230,6 +233,41 @@ function detectLateralitySwaps(inputCorpus: string, outputText: string): string[
     }
   }
   return swaps;
+}
+
+/**
+ * A side the ADVICE names that nothing supplied.
+ *
+ * Not {@link detectLateralitySwaps}, for two measured reasons. It is a swap test over
+ * findings+impression+advice concatenated, so a Findings that still says "right"
+ * satisfies `outputTokens.has(a)` and hides a "left" the advice introduced on its own:
+ * a right-sided DVT advised as "Repeat Doppler of the LEFT lower limb in one week"
+ * came back ok=true with no swap and no error, and its only signal was the same
+ * advisory warning the correct advice produced. And a swap test false-fires on prose
+ * that is right — mri-brain-infarct and ct-brain-subdural both already trip it on
+ * their CLEAN text, because a right-sided infarct with left-sided weakness in the
+ * history is the correct contralateral picture, not a swap.
+ *
+ * "Introduced" is the same question {@link detectLevelChanges} already asks of a
+ * spinal level, so the advice is now read the way the rest of this file reads a fact
+ * the AI was not given. Measured on the golden corpus: 0 of 20 correct
+ * recommendations name a side nothing supplied.
+ *
+ * Grounding includes each observation's structured laterality slot, not only its
+ * prose. {@link groundedCorpus} reads concept/findingsText/impressionText/
+ * recommendationText, so a side the radiologist picked from a laterality chip and
+ * never typed would otherwise be reported as invented.
+ */
+function ungroundedSidesInAdvice(
+  snapshot: ComposerInputSnapshot,
+  corpus: string,
+  advice: string,
+): string[] {
+  const supplied = extractLateralityTokens(corpus);
+  for (const o of snapshot.observations ?? []) {
+    for (const t of extractLateralityTokens(o.laterality ?? "")) supplied.add(t);
+  }
+  return [...extractLateralityTokens(advice)].filter((t) => !supplied.has(t));
 }
 
 /**
@@ -1944,15 +1982,26 @@ export function validateComposerOutput(
   }
 
   if (draft.recommendation.trim()) {
-    if (FILLER_RECOMMENDATION_RE.test(draft.recommendation.trim())) {
+    if (isFillerAdvice(draft.recommendation)) {
       draft.recommendation = "";
       warnings.push("filler_recommendation_cleared");
     } else {
-      const support =
-        /follow[\s-]?up|recommend|suggest|further|mri|ct|repeat|correlation/i.test(corpus)
-        || (snapshot.observations ?? []).some((o) => (o.recommendationText ?? "").trim().length > 0);
-      if (!support) {
-        warnings.push("recommendation_not_clearly_supported");
+      // The advice is the one field that tells somebody what to do next, so a side it
+      // names has to be a side the radiologist supplied. This replaces a keyword
+      // search of the supplied corpus (`/follow-up|recommend|suggest|further|mri|ct|
+      // repeat|correlation/`), which was not a check on the recommendation at all:
+      // bare "ct" matches "duct", "intact", "correct" and "expected", so 8 of the 19
+      // correct reports it passed were passed by the study's own modality word. It
+      // fired on 1 of 20 correct reports and caught 1 of 20 absurd ones — the same
+      // case both times — and it was silent on "Recommend CT of the abdomen and
+      // pelvis" appended to a normal MRI brain, where an examination nobody mentioned
+      // produced no signal whatsoever.
+      const inventedSides = ungroundedSidesInAdvice(snapshot, corpus, draft.recommendation);
+      if (inventedSides.length > 0) {
+        errors.push("unsupported_laterality");
+        warnings.push(
+          `AI recommended action on a side nothing supplied: ${inventedSides.join(", ")}`,
+        );
       }
     }
   }

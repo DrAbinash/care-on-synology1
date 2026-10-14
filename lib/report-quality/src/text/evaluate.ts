@@ -9,10 +9,12 @@
 // that exists (there is no script that diffs this file against reportValidator.ts,
 // as an earlier version of this comment claimed). Every rule here that reads
 // clinical prose reads it through ./clinicalTerms.ts, which the legacy validator
-// imports from the same place, and the five Findings↔Impression checks come from
-// ./findingsImpression.ts, which the legacy validator calls rather than copies — so
-// neither the vocabulary nor the contradiction contract can drift between the badge
-// and the persisted findings.
+// imports from the same place, the five Findings↔Impression checks come from
+// ./findingsImpression.ts and the advice dependency behind Q005 comes from
+// ./recommendation.ts — both called by the legacy validator rather than copied, so
+// neither the vocabulary, nor the contradiction contract, nor the reading of an
+// empty Recommendation section can drift between the badge and the persisted
+// findings.
 
 import type { TextReportInput } from "../contract";
 import type { RuleId } from "../ruleCatalog";
@@ -28,6 +30,7 @@ import {
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
 import { findingsImpressionContradictions, lateralityContradictions } from "./findingsImpression";
+import { unmetRecommendationDependency } from "./recommendation";
 
 export interface TextTierFinding {
   ruleId: RuleId;
@@ -64,7 +67,13 @@ export function evaluateTextTier(input: TextReportInput): TextTierResult {
   if ((input.impression || []).every((l) => !l.trim())) emit("Q002", "Impression section is empty.", 25);
   if (!(input.technique || "").trim()) emit("Q003", "Technique not documented.", 10);
   if (!(input.clinicalHistory || "").trim()) emit("Q004", "Clinical history not documented.", 5);
-  if (!(input.recommendation || "").trim()) emit("Q005", "No recommendation/advice given.", 5);
+  // Q005 is a dependency, not a presence check, and it is called rather than written
+  // here: an empty advice section is what CARE's own anti-filler policy produces on
+  // purpose, so the only thing worth reporting is an Impression that states a plan
+  // the advice section then fails to carry. See ./recommendation.ts for the
+  // measurement behind the predicate.
+  const recommendationGap = unmetRecommendationDependency(input.impression, input.recommendation);
+  if (recommendationGap) emit("Q005", recommendationGap, 5);
 
   // ── validateReport warnings (Q101-Q115), each -5, in validateReport order ──
   emitWarnings(input, emit);

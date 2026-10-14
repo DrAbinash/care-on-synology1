@@ -242,7 +242,4 @@ export const CLEAN_REPORT_NOISE: Record<string, CleanSignal[]> = {
   "usg-abdomen-normal": [
     { signal: "warn:filler_recommendation_cleared", kind: "BY DESIGN", why: "As above." },
   ],
-  "doppler-lower-limb-dvt": [
-    { signal: "warn:recommendation_not_clearly_supported", kind: "FALSE POSITIVE", why: 'Support is judged by keyword search of the supplied corpus; "Anticoagulation as per protocol" is supported by the diagnosis, not by a keyword, so a correct report is marked up.' },
-  ],
 };

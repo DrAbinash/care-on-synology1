@@ -9,8 +9,9 @@
  * wholeReportPathology, section5Impression, impressionRecommendationWiring,
  * phase3, phase5). Every check here that reads clinical prose reads it through
  * `@workspace/report-quality`: the vocabulary and negation table from
- * `clinicalTerms`, and the six Findings↔Impression contradictions from
- * `findingsImpression`. Five of those used to be prose regexes of this file's own,
+ * `clinicalTerms`, the six Findings↔Impression contradictions from
+ * `findingsImpression`, and the advice dependency behind Q005 from
+ * `recommendation`. Five of those used to be prose regexes of this file's own,
  * which meant the canonical text tier could not see them at all — the server
  * recorded nothing for a wrong spinal level the badge was printing. The sixth, the
  * laterality check, was the opposite fault: this file and the tier each carried a
@@ -29,6 +30,7 @@ import {
   outOfScopeSpineContent,
   studyContrastState,
   ungroundedNamedDiagnoses,
+  unmetRecommendationDependency,
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "@workspace/report-quality";
@@ -350,7 +352,14 @@ export function computeQualityScore(input: QualityInput): QualityScore {
   if ((input.impression || []).every((l) => !l.trim())) deduct(25, "Impression section is empty.");
   if (!(input.technique || "").trim()) deduct(10, "Technique not documented.");
   if (!(input.clinicalHistory || "").trim()) deduct(5, "Clinical history not documented.");
-  if (!(input.recommendation || "").trim()) deduct(5, "No recommendation/advice given.");
+  // Q005, called rather than written here. An empty Recommendation section is what
+  // CARE's anti-filler policy produces on purpose, so the only gap worth 5 points is
+  // an Impression that states a plan the advice section then fails to carry — and the
+  // canonical text tier has to reach the same verdict on the same report, which is
+  // what sharing the predicate guarantees. See
+  // lib/report-quality/src/text/recommendation.ts for the measurement.
+  const recommendationGap = unmetRecommendationDependency(input.impression, input.recommendation);
+  if (recommendationGap) deduct(5, recommendationGap);
 
   // Consistency warnings from the validator each cost 5 points.
   const warnings = validateReport(input);

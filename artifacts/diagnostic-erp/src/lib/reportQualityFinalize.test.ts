@@ -200,8 +200,9 @@ describe("isClinicalContradictionFinding — a clinical fact, or the report's pr
     expect(isClinicalContradictionFinding(heuristic("Q121"))).toBe(true);
     // Q001: the Findings section is empty. A gap in the prose, not a contradiction.
     expect(isClinicalContradictionFinding(heuristic("Q001"))).toBe(false);
-    // Q005: no recommendation given. §9 forbids forcing one into every report,
-    // so this must never be badged as a clinical contradiction.
+    // Q005: the Impression states a plan the advice section does not carry. §9
+    // forbids forcing a recommendation into every report, so this must never be
+    // badged as a clinical contradiction.
     expect(isClinicalContradictionFinding(heuristic("Q005"))).toBe(false);
   });
 
@@ -416,10 +417,39 @@ describe("C1-D end to end — the three reports the brief names reach signing as
   }
 
   it("a report with only a missing recommendation is NOT called a contradiction", () => {
-    // The control. Q005 ("No recommendation/advice given") fires on this report.
-    // §9: do not force a recommendation into every report — so a gap in the prose
-    // must never be badged in the same colour as a wrong side. Measured: clinical
-    // is empty and the badge reads "1 advisory".
+    // The control. Q005 fires on this report: the Impression asks for an urgent stroke
+    // team review and the advice section that should carry it is empty. §9: do not
+    // force a recommendation into every report — so a gap in the prose must never be
+    // badged in the same colour as a wrong side. Measured: clinical is empty and the
+    // badge reads "1 advisory".
+    //
+    // The report is abnormal on purpose. Q005 used to read `!recommendation.trim()`, so
+    // a normal study whose advice the composer had cleared as filler was indistinguishable
+    // from this one; the rule is now a dependency on a stated plan, and a dependency has
+    // to be shown on a report that actually states one.
+    const gate = gateFromEngine(
+      {
+        findings: "Acute infarct in the right middle cerebral artery territory. No haemorrhage.",
+        impression: ["Acute right MCA territory infarct.", "Urgent stroke team review."],
+        technique: "MRI brain with DWI and ADC sequences.",
+        clinicalHistory: "Left-sided weakness for three hours.",
+        recommendation: "",
+      },
+      "MR",
+      "MRI Brain",
+    );
+    const s = describeFinalizeQualityStatus(gate);
+    expect(s.clinical).toEqual([]);
+    expect(s.kind).not.toBe("contradiction");
+    expect(s.label).toBe("1 advisory");
+    expect(s.advisory.map((f) => f.ruleId)).toEqual(["Q005"]);
+  });
+
+  it("a normal study with no advice is NOT even an advisory", () => {
+    // The other half of the control, and the reason Q005 was redefined. This is one of
+    // the seven correct corpus reports whose advice section CARE's own anti-filler
+    // policy empties on purpose; the old unconditional reading badged it "1 advisory"
+    // and dropped its score 100 → 95 for having followed the policy.
     const gate = gateFromEngine(
       {
         findings: "No acute intracranial abnormality. No haemorrhage or infarct.",
@@ -432,9 +462,8 @@ describe("C1-D end to end — the three reports the brief names reach signing as
       "MRI Brain",
     );
     const s = describeFinalizeQualityStatus(gate);
-    expect(s.clinical).toEqual([]);
-    expect(s.kind).not.toBe("contradiction");
-    expect(s.label).toBe("1 advisory");
-    expect(s.advisory.map((f) => f.ruleId)).toEqual(["Q005"]);
+    expect(s.advisory.map((f) => f.ruleId)).not.toContain("Q005");
+    expect(s.kind).toBe("clear");
+    expect(s.label).toBe("Ready to sign");
   });
 });

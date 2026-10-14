@@ -121,6 +121,12 @@ export {
   sectionsContradict,
 } from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
+// The Impression→Recommendation dependency behind Q005. Called by ./text/evaluate AND
+// by the live workspace validator, so an empty advice section means the same thing on
+// both paths: a gap only where the Impression states a plan that section should carry.
+// `isFillerAdvice` is the anti-filler shape the dependency refuses to demand; the
+// composer validator imports the same predicate for the advice it refuses to keep.
+export { unmetRecommendationDependency, isFillerAdvice } from "./text/recommendation";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry, significanceOfRule } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry, RuleSignificance } from "./ruleCatalog";

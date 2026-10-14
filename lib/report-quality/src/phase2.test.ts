@@ -108,9 +108,69 @@ describe("rule catalog", () => {
 
 describe("evaluateTextTier", () => {
   it("tags an empty report with the completeness rule ids in order", () => {
+    // Q005 is absent, and that is the change. It used to read `!recommendation.trim()`
+    // and so fired here too, on a report with nothing in it — the same unconditional
+    // reading that marked up every normal study CARE's anti-filler policy had emptied
+    // on purpose. An empty report states no plan, so the advice section owes nothing.
+    // Score 30, not 25.
     const r = evaluateTextTier({ findings: "", impression: [] });
-    expect(r.findings.map((f) => f.ruleId)).toEqual(["Q001", "Q002", "Q003", "Q004", "Q005"]);
-    expect(r.score).toBe(25);
+    expect(r.findings.map((f) => f.ruleId)).toEqual(["Q001", "Q002", "Q003", "Q004"]);
+    expect(r.score).toBe(30);
+  });
+
+  it("Q005 is a dependency: a stated plan the advice section fails to carry", () => {
+    const report = {
+      findings: "Acute infarct in the right middle cerebral artery territory. No haemorrhage.",
+      technique: "MRI brain with DWI and ADC sequences.",
+      clinicalHistory: "Left-sided weakness for three hours.",
+      impression: ["Acute right MCA territory infarct.", "Urgent stroke team review."],
+      recommendation: "",
+    };
+    const ids = (r: ReturnType<typeof evaluateTextTier>) => r.findings.map((f) => f.ruleId);
+    const q005 = (r: ReturnType<typeof evaluateTextTier>) =>
+      r.findings.find((f) => f.ruleId === "Q005")?.message;
+
+    const unmet = evaluateTextTier(report);
+    expect(ids(unmet)).toContain("Q005");
+    // The message names the plan, so the radiologist is told what is missing rather
+    // than merely that a section is empty.
+    expect(q005(unmet)).toContain("Urgent stroke team review.");
+    expect(unmet.score).toBe(95);
+
+    // Carried: the dependency is met and Q005 is silent.
+    expect(ids(evaluateTextTier({ ...report, recommendation: "Admit to the stroke unit." }))).not.toContain("Q005");
+  });
+
+  it("Q005 stays silent where no advice is due — the four ways a plan is not a plan", () => {
+    const ids = (impression: string[], recommendation = "") =>
+      evaluateTextTier({
+        findings: "No acute intracranial abnormality. No haemorrhage or infarct.",
+        technique: "MRI brain with DWI and ADC sequences.",
+        clinicalHistory: "Headache.",
+        impression,
+        recommendation,
+      }).findings.map((f) => f.ruleId);
+
+    // 1. A normal study. No advice is the correct answer, and this is the case the
+    //    old unconditional reading marked up 7 times in 20 correct corpus reports.
+    expect(ids(["No acute intracranial abnormality."])).not.toContain("Q005");
+    // 2. A plan the same Impression withdraws — a decision NOT to act. Read through
+    //    the shared denial vocabulary, so the negation is the canonical one.
+    expect(ids(["No follow-up imaging recommended."])).not.toContain("Q005");
+    // 3. A Findings-style negation that merely contains a plan verb. The dependency
+    //    reads the Impression only, precisely because prose like this is a denial.
+    expect(ids(["No restricted diffusion to suggest acute infarction."])).not.toContain("Q005");
+    // 4. The anti-filler boilerplate the composer deletes on sight. Demanding it back
+    //    would put the quality engine in opposition with the composer's own policy.
+    expect(ids(["Clinical correlation is advised."])).not.toContain("Q005");
+    expect(ids(["Clinical correlation advised."])).not.toContain("Q005");
+  });
+
+  it("Q005 still cannot block — the redefined rule keeps its advisory classification", () => {
+    expect(RULE_CATALOG.Q005.defaultSeverity).toBe("warning");
+    expect(RULE_CATALOG.Q005.tier).toBe("heuristic");
+    expect(RULE_CATALOG.Q005.significance).toBe("advisory");
+    expect(significanceOfRule("Q005")).toBe("advisory");
   });
 });
 

@@ -364,7 +364,15 @@ describe("§S 11. Recommendation — no filler", () => {
     expect(v.warnings).toContain("filler_recommendation_cleared");
   });
 
-  it("validator warns on unsupported non-filler recommendation", () => {
+  it("validator refuses a recommendation that names a diagnosis nothing supplied", () => {
+    // Re-pointed from the removed `recommendation_not_clearly_supported` warning,
+    // which was a keyword search of the SUPPLIED CORPUS rather than of the advice:
+    // bare "ct" matched "duct", "intact" and "expected", so 8 of the 19 correct
+    // corpus reports it passed were passed by the study's own modality word, and it
+    // fired on exactly 1 correct report and caught exactly 1 absurd one — the same
+    // case both times. The check below has always owned this draft, reads the
+    // recommendation as part of the report, and refuses it outright rather than
+    // advising about it.
     const snap = snapshot({
       findings: "Fazekas grade 1.",
       impression: "Fazekas grade 1.",
@@ -378,7 +386,88 @@ describe("§S 11. Recommendation — no filler", () => {
       warnings: [],
     };
     const v = validateComposerOutput(snap, draftWithUnsupported);
-    expect(v.warnings).toContain("recommendation_not_clearly_supported");
+    expect(v.errors).toContain("unsupported_abnormality");
+    expect(v.unsupportedMentions).toContain("malignancy");
+    expect(v.ok).toBe(false);
+  });
+
+  it("validator refuses advice that acts on a side nothing supplied", () => {
+    // The advice is the one field that tells somebody what to do next, so an invented
+    // side there is an invented laterality in actionable form. detectLateralitySwaps
+    // cannot see it: it is fed findings+impression+advice together and its condition
+    // requires the input's own side to be ABSENT from the output, which a Findings
+    // that still says "right" defeats. Measured on the golden corpus before this
+    // check — a right-sided DVT advised as "Repeat Doppler of the LEFT lower limb in
+    // one week" returned ok=true, no swap, no error, and its only signal was the same
+    // advisory warning the correct advice produced.
+    const snap = snapshot({
+      findings: "Acute infarct in the right middle cerebral artery territory.",
+      impression: "Acute right middle cerebral artery territory infarct.",
+      recommendation: "",
+    });
+    const advice = (recommendation: string) =>
+      validateComposerOutput(snap, {
+        findings: "Acute infarct in the right middle cerebral artery territory.",
+        impression: "Acute right middle cerebral artery territory infarct.",
+        recommendation,
+        unresolvedQuestions: [],
+        warnings: [],
+      });
+
+    const moved = advice("Repeat MRI of the left hemisphere in one week.");
+    expect(moved.errors).toContain("unsupported_laterality");
+    expect(moved.ok).toBe(false);
+    expect(moved.warnings.join(" ")).toContain("left");
+
+    // The same advice on the side that WAS supplied is not a finding, and a correct
+    // report must not be refused for naming it. 0 of 20 correct corpus
+    // recommendations name a side nothing supplied.
+    expect(advice("Repeat MRI of the right hemisphere in one week.").errors).not.toContain(
+      "unsupported_laterality",
+    );
+    expect(advice("Urgent stroke team review and vascular imaging.").errors).not.toContain(
+      "unsupported_laterality",
+    );
+  });
+
+  it("a side supplied only in an observation's laterality slot still grounds the advice", () => {
+    // The grounding corpus is built from the supplied TEXT — findings, impression,
+    // advice, history, technique, and each observation's narrative fields. An
+    // observation's structured `laterality` slot is not narrative, so without reading
+    // it a side the radiologist picked from a laterality chip and never typed would
+    // look invented. It is not: the chip is the radiologist's own statement of the
+    // side, and refusing advice that follows it would make the composer argue with
+    // the observation ledger.
+    const snap = snapshot({
+      findings: "Acute infarct in the middle cerebral artery territory.",
+      impression: "Acute middle cerebral artery territory infarct.",
+      recommendation: "",
+      observations: [
+        {
+          concept: "infarct",
+          source: "quick-select",
+          findingsText: "Acute infarct in the middle cerebral artery territory.",
+          laterality: "Left",
+        },
+      ],
+    });
+    const drafted = (recommendation: string) =>
+      validateComposerOutput(snap, {
+        findings: "Acute infarct in the middle cerebral artery territory.",
+        impression: "Acute middle cerebral artery territory infarct.",
+        recommendation,
+        unresolvedQuestions: [],
+        warnings: [],
+      });
+
+    expect(drafted("Repeat MRI of the left hemisphere in one week.").errors).not.toContain(
+      "unsupported_laterality",
+    );
+    // The check is still live on this same snapshot: a side no field supplied is
+    // refused, so the pass above is grounding and not a disabled rule.
+    expect(drafted("Repeat MRI of the right hemisphere in one week.").errors).toContain(
+      "unsupported_laterality",
+    );
   });
 });
 

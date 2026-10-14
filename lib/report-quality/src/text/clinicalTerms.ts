@@ -390,6 +390,33 @@ function readState(scope: string, after: string): ClinicalOccurrence["state"] {
   return "asserted";
 }
 
+/**
+ * Whether a sentence WITHDRAWS the statement made by the phrase at [start, end)
+ * rather than making it. Both word orders count, because prose uses both:
+ * "no follow-up imaging recommended" denies from before the phrase, and
+ * "follow-up is not required" denies from after it.
+ *
+ * Exported for the one reading that is not about a clinical term — the
+ * Impression→Recommendation dependency in ./recommendation.ts, which has to tell
+ * "Urgent neurosurgical review" from "No urgent review is recommended". It reuses
+ * this module's denial vocabulary and its scope rules rather than carrying a
+ * second list of the words that mean "no", because two lists of denial words in
+ * one package is two readings of the same sentence.
+ *
+ * The window after the phrase stops at the first comma, exactly as it does for a
+ * clinical term, so a second independent clause is not read as denying the first:
+ * "Urgent review advised, no anticoagulation" still advises the review.
+ */
+export function statementDeniedAt(sentence: string, start: number, end: number): boolean {
+  const after = windowAfter(sentence, end);
+  return DENIAL_BEFORE.test(governingScope(sentence, start)) || DENIAL_BEFORE.test(after) || DENIAL_AFTER.test(after);
+}
+
+/** The sentences of one section, split the way the clinical-term reading splits them. */
+export function sectionSentences(text: string): string[] {
+  return sentences(text);
+}
+
 /** One mention of one vocabulary term, and what the text did with it. */
 export type ClinicalOccurrence = {
   label: string;
