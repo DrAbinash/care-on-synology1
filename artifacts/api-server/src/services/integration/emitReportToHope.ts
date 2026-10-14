@@ -17,6 +17,7 @@ import {
   diagnosticReferralsTable,
   diagnosticReferralItemsTable,
   externalResultLinksTable,
+  integrationOutboxTable,
   patientReportsTable,
   patientReportAmendmentsTable,
   radiologyWorklistTable,
@@ -46,9 +47,44 @@ function carePublicBaseUrl(): string {
     .replace(/\/+$/, "");
 }
 
+export interface HopeDeliveryEvidence {
+  sent: number;
+  failed: number;
+  /** 1 when CARE has stopped retrying this event — the operator's only signal that
+   *  a person has to act, as opposed to "still trying". */
+  dead: number;
+}
+
 export type EmitReportToHopeResult =
-  | { ok: true; emitted: boolean; alreadySent: boolean; referralUuid: string; reportId: number; dispatched?: { sent: number; failed: number } }
+  | { ok: true; emitted: boolean; alreadySent: boolean; referralUuid: string; reportId: number; dispatched?: HopeDeliveryEvidence | null }
   | { ok: false; error: string; code: "NOT_FOUND" | "NOT_SIGNED" | "NO_REFERRAL" | "EMIT_FAILED" };
+
+/**
+ * What CARE's own rows say about ONE report's delivery, after the queue was
+ * flushed.
+ *
+ * `dispatchPendingOutbox()` returns batch counters, and reporting those as this
+ * report's answer was the defect: with one refused payload sitting next to a
+ * healthy one, the radiologist was told "Sent to Hope" about the refused report
+ * because some other report's event landed in the same tick. Delivery may only
+ * be claimed from evidence about this (referral, report) pair — the event this
+ * call queued, and the delivered timestamp the owning worker wrote when HOPE
+ * answered 2xx (outbox.ts:391).
+ */
+async function deliveryEvidenceFor(referralId: number, reportId: number): Promise<HopeDeliveryEvidence> {
+  const [row] = await db
+    .select({
+      status: integrationOutboxTable.status,
+      deliveredAt: externalResultLinksTable.deliveredAt,
+    })
+    .from(externalResultLinksTable)
+    .leftJoin(integrationOutboxTable, eq(integrationOutboxTable.id, externalResultLinksTable.emittedOutboxId))
+    .where(and(eq(externalResultLinksTable.referralId, referralId), eq(externalResultLinksTable.careReportId, reportId)))
+    .limit(1);
+  const landed = row?.status === "sent" || row?.deliveredAt != null;
+  if (landed) return { sent: 1, failed: 0, dead: 0 };
+  return { sent: 0, failed: row ? 1 : 0, dead: row?.status === "dead" ? 1 : 0 };
+}
 
 /**
  * What the delivery transaction actually did. Returned from the callback rather
@@ -223,10 +259,10 @@ export async function emitReportToHope(opts: {
    * an already-linked row can still have an event waiting in front of it.
    */
   const alreadySentResult = async (): Promise<EmitReportToHopeResult> => {
-    let dispatched: { sent: number; failed: number } | undefined;
+    let dispatched: HopeDeliveryEvidence | undefined;
     if (opts.dispatchNow !== false) {
-      const d = await dispatchPendingOutbox({ limit: 20 });
-      dispatched = { sent: d.sent, failed: d.failed };
+      await dispatchPendingOutbox({ limit: 20 });
+      dispatched = await deliveryEvidenceFor(referral.id, rep.id);
     }
     return { ok: true, emitted: false, alreadySent: true, referralUuid: referral.referralUuid, reportId: rep.id, dispatched };
   };
@@ -389,10 +425,10 @@ export async function emitReportToHope(opts: {
     };
   }
 
-  let dispatched: { sent: number; failed: number } | undefined;
+  let dispatched: HopeDeliveryEvidence | undefined;
   if (opts.dispatchNow !== false) {
-    const d = await dispatchPendingOutbox({ limit: 20 });
-    dispatched = { sent: d.sent, failed: d.failed };
+    await dispatchPendingOutbox({ limit: 20 });
+    dispatched = await deliveryEvidenceFor(ref.id, rep.id);
   }
 
   return { ok: true, emitted: true, alreadySent: false, referralUuid: ref.referralUuid, reportId: rep.id, dispatched };
