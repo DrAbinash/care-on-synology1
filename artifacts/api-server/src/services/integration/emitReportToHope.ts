@@ -51,6 +51,14 @@ export type EmitReportToHopeResult =
   | { ok: false; error: string; code: "NOT_FOUND" | "NOT_SIGNED" | "NO_REFERRAL" | "EMIT_FAILED" };
 
 /**
+ * What the delivery transaction actually did. Returned from the callback rather
+ * than written to an outer variable, because TypeScript does not credit writes
+ * made inside a nested function: `outcome === "already"` then compares a value it
+ * still believes is `"emitted"`, and the guard would not compile.
+ */
+type EmitOutcome = "emitted" | "already" | "refused";
+
+/**
  * Which report a Hope delivery names.
  *
  * `patient_reports.study_id` is a SHARED id space: the radiology finalize writers
@@ -263,9 +271,9 @@ export async function emitReportToHope(opts: {
 
   // Three outcomes, and only one of them may tell the operator the report was
   // delivered by this call.
-  let outcome: "emitted" | "already" | "refused" = "emitted";
+  let outcome: EmitOutcome = "emitted";
   try {
-    await db.transaction(async (tx) => {
+    outcome = await db.transaction(async (tx): Promise<EmitOutcome> => {
       // The pre-check above and this insert are not one atomic step. Take the same
       // lock the reconciler takes for this pair (resultsEmitter.ts:129) — a manual
       // send, the post-finalize auto-push and the 5-minute tick all write this row
@@ -278,7 +286,7 @@ export async function emitReportToHope(opts: {
         .from(externalResultLinksTable)
         .where(and(eq(externalResultLinksTable.referralId, referral.id), eq(externalResultLinksTable.careReportId, rep.id)))
         .limit(1);
-      if (raced) { outcome = "already"; return; }
+      if (raced) return "already";
 
       const [link] = await tx.insert(externalResultLinksTable).values({
         referralId: ref.id,
@@ -299,7 +307,7 @@ export async function emitReportToHope(opts: {
       // put this transaction in aborted state, so the COMMIT that follows rolls the
       // whole unit back while the promise still resolves. Nothing was written, so
       // nothing here may be reported as delivered.
-      if (!link) { outcome = "refused"; return; }
+      if (!link) return "refused";
 
       const finalisedEvent = await enqueueOutboxEvent(tx, {
         eventType: amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised",
@@ -357,6 +365,7 @@ export async function emitReportToHope(opts: {
           } catch { /* leave status */ }
         }
       }
+      return "emitted";
     });
   } catch (err) {
     return { ok: false, error: (err as Error)?.message || "Failed to enqueue Hope callback", code: "EMIT_FAILED" };
