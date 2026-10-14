@@ -22,7 +22,7 @@
 // side — nothing is sent to any partner. Runs against its own scratch database and
 // sequentially, because the neighbouring outbox suite asserts shared counters.
 // ============================================================================
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 const DATABASE_URL = process.env.DATABASE_URL;
