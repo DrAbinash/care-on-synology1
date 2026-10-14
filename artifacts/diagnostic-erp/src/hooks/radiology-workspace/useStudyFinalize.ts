@@ -9,6 +9,12 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/fetchApi";
+import {
+  classifyHopeDeliveryError,
+  classifyHopeDeliveryResponse,
+  hopeDeliveryToast,
+  type HopeEmitSuccess,
+} from "@/lib/hopeDeliveryOutcome";
 import { finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
@@ -556,26 +562,32 @@ const runFinalizeGauntlet = useCallback(async () => {
       });
     }
 
-    // 7b. Auto-push to Hope when this study is linked to a Hope referral (best-effort).
-    // Skipped on the idempotent path: the report on screen was not written, so
-    // "Sent to Hope" would describe a document the radiologist was just told
+    // 7b. Auto-push to Hope when this study is linked to a Hope referral.
+    // Skipped on the idempotent path: the report on screen was not written, so a
+    // delivery message would describe a document the radiologist was just told
     // was not saved.
+    //
+    // Delivery is reported separately from signing, and never as a substitute for it.
+    // The push can answer in three different ways that all used to look identical from
+    // here: accepted by Hope, queued for retry, or refused. One `.catch(() => {})`
+    // swallowed all three, so a report that never left CARE read as a signed report on
+    // Hope. The classifier owns that distinction; nothing here re-decides it, and no
+    // outcome touches the signed state — the radiologist never re-signs for an
+    // integration failure.
     if (!finalizeResult.idempotent && finalizeResult.signed && (finalizeResult.reportId || studyId)) {
       void api
-        .post<{ ok?: boolean; alreadySent?: boolean; error?: string }>("/api/internal/radiology/send-report-to-hope", {
+        .post<HopeEmitSuccess>("/api/internal/radiology/send-report-to-hope", {
           reportId: finalizeResult.reportId ?? undefined,
           worklistId: studyId,
         })
-        .then((r) => {
-          if (r?.ok) {
-            toast({
-              title: r.alreadySent ? "Already on Hope" : "Sent to Hope",
-              description: "Report is available on Hope ERP investigations.",
-              duration: 2500,
-            });
-          }
+        .then((res) => {
+          const msg = hopeDeliveryToast(classifyHopeDeliveryResponse(res));
+          if (msg) toast(msg);
         })
-        .catch(() => { /* no Hope referral / integration off — silent */ });
+        .catch((err) => {
+          const msg = hopeDeliveryToast(classifyHopeDeliveryError(err));
+          if (msg) toast(msg);
+        });
     }
 
     // 7c. Record the critical-finding tick the radiologist made IN THE SIGN
