@@ -15,6 +15,7 @@ type Summary = {
   billing: { billsToday: number; revenueToday: number; outstanding: number };
   alerts: { low: number; medium: number; high: number; critical: number; total: number };
   smokeTest: { status: string; at: string | null } | null;
+  reliability?: { deadLetters: number | null; outboxStalledHours: number | null; backupAgeHours: number | null };
   generatedAt: string;
 };
 type Alert = { id: number; alertType: string; severity: string; message: string; scope: string | null; createdAt: string };
@@ -28,6 +29,22 @@ const SEV_CLS: Record<string, string> = {
 const SMOKE_CLS: Record<string, string> = {
   PASS: "text-green-600", WARNING: "text-amber-600", FAIL: "text-red-600",
 };
+
+// A reading that was not taken is displayed as not taken. Falling back to 0 here
+// would be the friendliest possible lie: "0 h" means "the backup is fresh", while
+// the server sent null because no successful backup has ever been recorded.
+const UNMEASURED = "Not measured";
+function ageText(h: number | null | undefined, suffix: string): string {
+  if (h === null || h === undefined || !Number.isFinite(h)) return UNMEASURED;
+  if (h < 1) return `${Math.round(h * 60)} min${suffix}`;
+  return `${h.toFixed(h < 10 ? 1 : 0)} h${suffix}`;
+}
+function ageCls(h: number | null | undefined, warnH: number, critH: number): string {
+  if (h === null || h === undefined || !Number.isFinite(h)) return "text-red-600";
+  if (h >= critH) return "text-red-600";
+  if (h >= warnH) return "text-orange-600";
+  return "text-green-600";
+}
 
 export default function OpsCockpit() {
   const { toast } = useToast();
@@ -115,6 +132,27 @@ export default function OpsCockpit() {
               <div className="text-xs text-muted-foreground">Latest smoke test</div>
               {s?.smokeTest ? <div className={`font-bold ${SMOKE_CLS[s.smokeTest.status] ?? ""}`}>{s.smokeTest.status}</div> : <div className="text-muted-foreground">Never run</div>}
               {s?.smokeTest?.at && <div className="text-xs text-muted-foreground">{new Date(s.smokeTest.at).toLocaleString()}</div>}
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Last recorded backup</div>
+              <div className={`font-bold ${ageCls(s?.reliability?.backupAgeHours, 26, 48)}`}>
+                {ageText(s?.reliability?.backupAgeHours, " ago")}
+              </div>
+              <div className="text-[10px] text-muted-foreground">From <code>backup_logs</code>: the app's own record. It is not a restore proof — <code>ops-backup-inventory</code> is.</div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-xs text-muted-foreground">Dead letters</div>
+                <div className={`font-bold ${s?.reliability?.deadLetters ? "text-red-600" : ""}`}>
+                  {s?.reliability?.deadLetters ?? UNMEASURED}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Unsent event</div>
+                <div className={`font-bold ${ageCls(s?.reliability?.outboxStalledHours, 6, 24)}`}>
+                  {s?.reliability?.outboxStalledHours === 0 ? "none waiting" : ageText(s?.reliability?.outboxStalledHours, " overdue")}
+                </div>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div><div className="text-xs text-muted-foreground">Critical</div><div className="font-bold text-red-600">{s?.alerts.critical ?? 0}</div></div>
