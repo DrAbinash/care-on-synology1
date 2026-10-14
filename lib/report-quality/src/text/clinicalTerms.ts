@@ -35,6 +35,25 @@ export type NamedDiagnosis = ClinicalTerm & { readonly grounds?: string };
  * wording that describes normal anatomy ("alignment", "densities"), benign-only
  * entities ("cyst", kept for the mammography rule's own list) and anything
  * contrast-related (Q112 owns contrast).
+ *
+ * The "both spellings" claim above is what the haemorrhage fix bought, and it was
+ * still untrue of three entries — found by running a British/American pair table
+ * through the vocabulary rather than by reading it. "ischaemia" knew only
+ * `ischaemi*`, so the American "ischemia"/"ischemic" written by SIX of the clinic's
+ * own canned brain formats — eight sections between them, including both Findings
+ * and Impression of the Fazekas 2 and Fazekas 3 templates — was invisible to
+ * Q103/Q113/Q114; "empyema" knew only the American spelling, the mirror image of
+ * the original defect; and "herniation" hard-coded `disc extrusion` while the
+ * `intervertebral disc` entry further down this same table already wrote
+ * `disc|disk`. All three were measured as zero-collateral widenings: over every
+ * correct report in the repository — 58 shipped formats × 5 sections, 20
+ * golden-corpus reports × 5 sections, and the catalogue seed prose — the only new
+ * matches are those eight "ischemic" sections, and nothing stopped matching.
+ *
+ * A spelling gap is the quietest kind: it does not mark up a correct report, so no
+ * radiologist ever complains, and the report that needed reading was written in the
+ * other spelling. It is measured by the pair table in ./clinicalTerms.test.ts,
+ * which fails when the two halves of a pair disagree.
  */
 export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   // brain and cerebrovascular
@@ -44,17 +63,28 @@ export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   { label: "midline shift", pattern: String.raw`\bmidline shift\b` },
   { label: "mass effect", pattern: String.raw`\bmass effect\b` },
   { label: "hydrocephalus", pattern: String.raw`\b(?:hydrocephalus|ventriculomegaly|transependymal)\b` },
-  { label: "ischaemia", pattern: String.raw`\b(?:is|hae)mi(?:c|a)\b|\b(?:is|hae)chaemi\w*` },
+  { label: "ischaemia", pattern: String.raw`\b(?:is|hae)mi(?:c|a)\b|\bisch(?:ae|e)mi\w*` },
   { label: "demyelination", pattern: String.raw`\bdemyelin\w*|\bplaque\b|\bdisc demyelination\b` },
   { label: "oedema", pattern: String.raw`\b(?:oe|e)dema\b` },
   { label: "atrophy", pattern: String.raw`\batrophi\w*|\batroph\w*` },
   { label: "gliosis", pattern: String.raw`\bgliosis\b|\bgliotic\b|\bencephalomalacia\b` },
 
   // spine
-  { label: "herniation", pattern: String.raw`\bherniat\w*|\bdisc extrusion\b|\bsequestrat\w*` },
+  { label: "herniation", pattern: String.raw`\bherniat\w*|\b(?:disc|disk) extrusion\b|\bsequestrat\w*` },
   { label: "protrusion", pattern: String.raw`\bprotrusi\w*` },
   { label: "disc bulge", pattern: String.raw`\bbulge\w*|\bbulgi\w*` },
   { label: "stenosis", pattern: String.raw`\bstenos\w*|\bnarrowing\b` },
+  // Read bare, so it also labels a compression FRACTURE ("wedge compression
+  // collapse"), a mammographic POSITION ("confirmed on spot compression") and a
+  // Doppler TECHNIQUE ("compression ultrasonography") as a cord compression. Seven
+  // sections of correct prose read that way — three of them Technique, which no rule
+  // passes here, one of them genuinely a cord, and three of them the imprecise
+  // label. Left alone on measurement: no correct report in the repository emits a
+  // Q103/Q113/Q114 message at all (0 of 58 formats, 0 of 20 corpus reports), so the
+  // wrong word never reaches a radiologist, and excluding "compression
+  // collapse|deformity" would leave the two fracture formats asserting nothing —
+  // `fracture` needs the word "fracture", which the Findings clause does not
+  // contain. Narrowing this is owed a detection it buys, not a label it prettifies.
   { label: "cord compression", pattern: String.raw`\bcompress(?:ion|ing|ed)\b|\bimpingement\b|\bthecal sac indentation\b` },
   { label: "myelopathy", pattern: String.raw`\b(?:myelopath|myelomalaci)\w*|\bcord oedema\b|\bcord edema\b` },
   { label: "nerve root involvement", pattern: String.raw`\bradiculopath\w*|\b(?:nerve )?root (?:contact|compression|impinge\w*)\b` },
@@ -69,12 +99,51 @@ export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   { label: "tumour", pattern: String.raw`\b(?:tumor|tumour|neoplasm|nodule|nodular|deposit)\w*` },
   { label: "metastasis", pattern: String.raw`\bmetasta\w*|\bcarcinomatosis\b|\bsecondaries\b` },
   { label: "malignancy", pattern: String.raw`\bmalignan\w*|\b(?:carcinoma|lymphoma|sarcoma|myeloma|melanoma)\b` },
-  { label: "collection", pattern: String.raw`\bcollection\w*|\bempyema\b` },
+  { label: "collection", pattern: String.raw`\bcollection\w*|\bempya?ema\b` },
   { label: "fluid", pattern: String.raw`\bfree fluid\b|\bascites\b|\beffusion\w*` },
   { label: "stone", pattern: String.raw`\bstone\w*|\bgallstone\w*|\brenal stone\b|\bcalculus\b|\bcalculi\b|\blithiasis\b|\blith\b|\bappendicolith\w*` },
   { label: "obstruction", pattern: String.raw`\bobstruct\w*|\bocclus\w*|\bvolvulus\b|\bilus\b|\bnon-?compressibl\w*|\bnot compressible\b` },
   { label: "dilatation", pattern: String.raw`\bdilat\w*|\bdistension\b|\bhydroureter\b` },
-  { label: "wall thickening", pattern: String.raw`\bthick(?:en|ening|ness)\b` },
+  // "thickness" is what you MEASURE and "thickened" is what you SEE, and the old
+  // `\bthick(?:en|ening|ness)\b` had them exactly backwards: it matched the
+  // dimension noun and missed the past participle, because `\bthicken\b` demands a
+  // boundary that "-ed" closes. So "Gallbladder is normal in size and wall
+  // thickness" — a NORMAL declaration — asserted a wall thickening, while "the
+  // gallbladder wall is thickened" asserted nothing.
+  //
+  // That reached a radiologist. `observationLedger.ts` arms the Impression
+  // dependency when `assertedAbnormality(findings) !== null &&
+  // assertsStudyNormal(impression)`, and running that predicate over all 58 shipped
+  // formats gave 1 of 58 arming on its own untouched prose — `US Abdomen — Normal`,
+  // with `asserted="wall thickening"`. After this change 0 of 58 do. So every use of
+  // that format asked the radiologist to refresh or override an Impression the
+  // format itself had just written.
+  //
+  // The noun is dropped outright rather than graded, and that is a measurement, not
+  // a preference. Every "thick*" clause in the repository's correct prose — 58
+  // shipped formats × 5 sections plus 20 golden-corpus reports × 5 sections, 16
+  // clauses in all — was printed and read: each true finding used the gerund
+  // ("wall thickening", "cortical thickening", "soft tissue thickening"), and each
+  // bare "thickness" was either a normal declaration ("normal in size and cortical
+  // thickness", "Gallbladder wall thickness is normal", "Normal size and wall
+  // thickness (< 3 mm)") or a measurement ("maximum thickness 12 mm"). Not one used
+  // the noun as the finding. Putting the old pattern back and diffing the two reads
+  // gives 5 correct sections that stop being a wall thickening and 0 that start.
+  // The participle "thickened" appears nowhere in shipped prose, so that half of the
+  // inversion had no instance here — but it is how the finding is ordinarily stated,
+  // and `\bthicken\b` cannot read it because "-ed" closes the boundary.
+  //
+  // A lookahead that kept the noun when a graded word followed it
+  // (`thickness(?=[^.;\n]{0,32}\b(?:increas|gross|marked|significan|abnormal)\w*)`)
+  // was implemented and then removed, because it read two correct normals as
+  // findings: "Gallbladder wall thickness: no significant abnormality." and
+  // "…measures 3 mm, which is not abnormal." both fired. The negation reader cannot
+  // rescue them — DENIAL_BEFORE only sees text before the term, and DENIAL_AFTER
+  // recognises "not seen/excluded/ruled out", not a bare "no" or "not" — so any
+  // adjective allowed after the noun is also allowed after "not". Bare "thick"
+  // stays unmatched for the same reason it always was: it is the acquisition
+  // adjective ("5 mm thick slices", "thick-slab MIP").
+  { label: "wall thickening", pattern: String.raw`\bthicken\w*` },
   { label: "fat stranding", pattern: String.raw`\bstranding\b|\b(?:hyperaemia|hyperemia)\b|\bfat proliferation\b` },
   { label: "inflammation", pattern: String.raw`\b(?:appendicitis|cholecystitis|cholangitis|pancreatitis|diverticulitis|enteritis|colitis|gastritis|peritonitis|pyelonephritis|salpingitis|orchitis|encephalitis|meningitis|cellulitis|nephritis)\b` },
   { label: "perforation", pattern: String.raw`\bperforat\w*|\bpneumoperitoneum\b|\bfree (?:gas|air)\b|\bpneumothorax\b|\bpneumomediastinum\b` },
