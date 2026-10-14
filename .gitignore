@@ -56,6 +56,11 @@ env
 env_my_temp.txt
 env_my_temp*
 *.env.backup
+
+# Per-box operator evidence read by scripts/ops-preflight.mjs. Kept untracked on
+# purpose: deploy-synology.sh runs `git reset --hard origin/main`, which would
+# erase a tracked record of what was actually proven on this machine.
+ops-evidence.json
 *---delete*
 superadmin.key
 
