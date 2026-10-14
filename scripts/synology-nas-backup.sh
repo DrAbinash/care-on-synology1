@@ -115,7 +115,7 @@ TABLES=$(gzip -dc "${PARTIAL}" 2>/dev/null | grep -c "^CREATE TABLE" || true)
 # The .meta sidecar is written after publication (below), once the final file name
 # is known. No secrets in it: it exists so "which database, which server, complete
 # or not, which bytes" is answerable after the fact instead of inferred.
-SHA=$(sha256sum "${PARTIAL}" | cut -d' ' -f1)
+SHA=$(sha256sum < "${PARTIAL}" | cut -d' ' -f1)
 
 # ─── 5. PUBLISH ──────────────────────────────────────────────────────────────
 mv "${PARTIAL}" "${DEST}" || fail "could not publish ${DEST}"
@@ -135,7 +135,7 @@ if [ -n "${BACKUP_PASSPHRASE}" ]; then
     ROUNDTRIP="${DEST}.roundtrip"
     if env BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE}" openssl enc -d -aes-256-cbc -pbkdf2 \
          -pass env:BACKUP_PASSPHRASE -in "${DEST}.enc" -out "${ROUNDTRIP}" \
-       && [ "$(sha256sum "${ROUNDTRIP}" | cut -d' ' -f1)" = "${SHA}" ]; then
+       && [ "$(sha256sum < "${ROUNDTRIP}" | cut -d' ' -f1)" = "${SHA}" ]; then
       rm -f "${ROUNDTRIP}" "${DEST}"
       FINAL="${DEST}.enc"
       log "Encrypted and round-trip verified: ${FINAL}"
@@ -151,6 +151,10 @@ fi
 
 # ─── 6b. THE SIDECAR RECORD ──────────────────────────────────────────────────
 META="${FINAL}.meta"
+# sha256_artifact is over the file the operator will actually find (the .enc when
+# encrypted); sha256_sql_gzipped is over the dump itself. verify-backup-restore.sh
+# checks the first one before it spends ten minutes restoring a copy that was
+# truncated on the way to the share.
 {
   echo "artifact=$(basename "${FINAL}")"
   echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -160,9 +164,10 @@ META="${FINAL}.meta"
   echo "exporter=pg_dump"
   echo "schema_complete=true"
   echo "create_tables=${TABLES}"
-  echo "bytes=${BYTES}"
+  echo "bytes=$(stat -c%s "${FINAL}" 2>/dev/null || stat -f%z "${FINAL}")"
   echo "encrypted=$([ -n "${BACKUP_PASSPHRASE}" ] && echo yes || echo no)"
-  echo "sha256_sql_plaintext=${SHA}"
+  echo "sha256_sql_gzipped=${SHA}"
+  echo "sha256_artifact=$(sha256sum < "${FINAL}" | cut -d' ' -f1)"
 } > "${META}.partial" && mv "${META}.partial" "${META}" || fail "could not write ${META}"
 
 # ─── 7. RETENTION, WITH A FLOOR ──────────────────────────────────────────────

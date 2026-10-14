@@ -54,14 +54,14 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 *   [AI_SAFE_MODIFICATION_RULEBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/10_AI/AI_SAFE_MODIFICATION_RULEBOOK.md) — AI reporting prompt guardrails.
 
 ### 📂 08. Deployment, Backups & Restore
-*   [DEPLOY.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/DEPLOY.md) — General project setup guide.
-*   [ERP_DEPLOYMENT_RUNBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md) — Complete environment keys and production readiness checklist.
-*   [BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md) — Backup configuration and scheduler setup guide.
-*   [synology-nas-backup.sh](file:///c:/Users/Admin/Documents/GitHub/care-on-synology1/scripts/synology-nas-backup.sh) — **the clinic's primary backup**: `pg_dump` out of the `care-db` container on this NAS, verified complete (banner, `CREATE TABLE`, completion marker), published atomically with a `.meta` sidecar, optional AES encryption with a round-trip check, retention with a floor. Works while `care-api` is down.
-*   [synology-backup.sh](file:///c:/Users/Admin/Documents/GitHub/care-on-synology1/scripts/synology-backup.sh) — pulls a dump of the **old cloud (Replit) instance's database**, which is a different database from this clinic's. Retired as the clinic's backup by `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md`; it must never be scheduled *instead of* the on-box dump above, and any document that calls it the "active backup execution script" predates that correction.
-*   [RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md) — Restore instructions.
-*   [synology-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/synology-restore.sh) — Decryption and import restore script.
-*   [verify-backup-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh) — Automated sandbox restore tester.
+*   [DEPLOY.md](11_DEPLOYMENT/DEPLOY.md) — General project setup guide.
+*   [ERP_DEPLOYMENT_RUNBOOK.md](11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md) — Complete environment keys and production readiness checklist.
+*   [BACKUP.md](12_BACKUPS/BACKUP.md) — Backup configuration and scheduler setup guide.
+*   [synology-nas-backup.sh](../../scripts/synology-nas-backup.sh) — **the clinic's primary backup**: `pg_dump` out of the `care-db` container on this NAS, verified complete (banner, `CREATE TABLE`, completion marker), published atomically with a `.meta` sidecar, optional AES encryption with a round-trip check, retention with a floor. Works while `care-api` is down.
+*   [synology-backup.sh](12_BACKUPS/synology-backup.sh) — pulls a dump of the **old cloud (Replit) instance's database**, which is a different database from this clinic's. Retired as the clinic's backup by `CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md`; it must never be scheduled *instead of* the on-box dump above, and any document that calls it the "active backup execution script" predates that correction.
+*   [RESTORE.md](13_RESTORE/RESTORE.md) — Restore instructions.
+*   [synology-restore.sh](13_RESTORE/synology-restore.sh) — Decryption and import restore script.
+*   [verify-backup-restore.sh](13_RESTORE/verify-backup-restore.sh) — **the restore proof**: restores a real artifact into a throwaway container with `ON_ERROR_STOP=1`, refuses a DATA-ONLY dump, checks the sidecar's source database and checksum, and fails when `patients`/`bills` restore empty. This file is a byte-identical copy of `scripts/verify-backup-restore.sh`, which is the one that is edited; `scripts/backupScripts.test.mjs` fails CI if any script in `12_BACKUPS/` or `13_RESTORE/` drifts from its `scripts/` twin.
 
 ### 📂 09. Business Continuity & Disaster Recovery
 *   [DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md) — Single Point of Failure (SPOF) risks and recovery runbooks.

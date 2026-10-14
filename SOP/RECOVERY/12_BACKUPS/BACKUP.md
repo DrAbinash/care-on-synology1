@@ -11,6 +11,12 @@ Patient data is critical. There are two primary backup methods:
 Run these commands directly on the host (Synology NAS via SSH, Windows PowerShell, or VPS) to backup the active database and uploaded files.
 
 ### A. Database Backup (pg_dump)
+
+For anything the clinic relies on, run `scripts/synology-nas-backup.sh` (section
+2) instead of the ad-hoc line below: it is the same `pg_dump`, plus a source
+database check, a completion-marker check, atomic publication and a sidecar. The
+manual form is still useful for a one-off copy you intend to verify immediately.
+
 To backup the PostgreSQL database into a single `.sql.gz` file:
 ```bash
 # Synology / Linux SSH
@@ -31,36 +37,76 @@ tar -czf /volume1/care-diagnostics/backups/storage_backup_$(date +%Y%m%d).tar.gz
 
 ## 2. Automated Daily Backup on Synology NAS
 
-You can automate database backups via the DSM UI:
-1. Open **DSM Control Panel** → **Task Scheduler**.
-2. Click **Create** → **Scheduled Task** → **User-defined script**.
-3. Under the **General** tab:
-   * **Task name**: `Care Diagnostics DB Backup`
-   * **User**: `root`
-4. Under the **Schedule** tab:
-   * Select **Run on the following days: Daily** at `03:00` AM.
-5. Under **Run Config**:
-   * Add the following script command:
-     ```bash
-     mkdir -p /volume1/care-diagnostics/backups
-     docker exec -t care-db pg_dump -U erp -d diagnostic_erp | gzip > /volume1/care-diagnostics/backups/care_db_daily_$(date +%Y%m%d).sql.gz
-     # Purge files older than 30 days
-     find /volume1/care-diagnostics/backups/ -name "care_db_daily_*.sql.gz" -mtime +30 -delete
-     ```
-6. Click **OK** to save the task.
+**Use the maintained script, not an inline pipe.** DSM → Control Panel → Task
+Scheduler → Create → Scheduled Task → User-defined script, `root`, daily at
+`03:00`:
+
+```bash
+BACKUP_PASSPHRASE="$(cat /volume1/scripts/.passphrase)" bash /volume1/care-diagnostics/scripts/synology-nas-backup.sh
+```
+
+`scripts/synology-nas-backup.sh` asks the server which database it is dumping and
+refuses anything else, writes to a `.partial` and publishes with `mv`, requires
+the dump banner **and** the `-- PostgreSQL database dump complete` trailer,
+requires at least one `CREATE TABLE`, refuses a dump below 10 KiB, records a
+`.meta` sidecar (source database, server version, exporter, sha256), encrypts
+only after a round-trip check proves the encrypted copy decrypts back to the same
+bytes, and never prunes below `KEEP_MIN_COPIES`.
+
+The inline form of this section used to be:
+
+```bash
+docker exec -t care-db pg_dump -U erp -d diagnostic_erp | gzip > …/care_db_daily_$(date +%Y%m%d).sql.gz
+find …/backups/ -name "care_db_daily_*.sql.gz" -mtime +30 -delete
+```
+
+Do not schedule it. `gzip -t` on the result is not proof PostgreSQL can restore
+it; a pipe that dies mid-`COPY` still produces a valid gzip; nothing checks which
+database was behind the socket; and the `find … -delete` line runs whether or not
+the dump succeeded, so one bad night can remove every older copy. That is the
+shape of the incident this product actually had: hourly artifacts reported
+success, matched their checksum, and could not rebuild a database.
 
 ---
 
 ## 3. Remote Replit Sync Backup & Optional Encryption (API-Based)
 
-If syncing from Replit, you can use the configured helper script:
+`scripts/synology-backup.sh` downloads a dump from the **old cloud (Replit)
+instance**. Its database is not this clinic's database, and it is not a copy of
+anything on this NAS. It is retired as the clinic's backup (see
+`CARE_RADIOLOGY_IMPLEMENTATION_GUIDE.md`) and must never be scheduled *instead
+of* section 2. Run it only when you deliberately want the cloud instance's data.
+
 ```bash
 bash scripts/synology-backup.sh
 ```
 * **Required env vars**:
-  * `CAREDEOGHAR_API_KEY` (containing your Replit API key).
+  * `CAREDEOGHAR_API_KEY` (the cloud instance's key; passed to curl through a
+    `0600` config file, never on the command line).
   * `BACKUP_PASSPHRASE` (passphrase to encrypt the backup file using AES-256-CBC, optional).
-* **Backup Destination**: `/volume1/backups/caredeoghar`
+* **Backup Destination**: `$BACKUP_DIR`, default `/volume1/backups/caredeoghar`
+
+A 200 response is not a backup: the file must be non-empty, gzip-valid, carry the
+dump banner and completion trailer, and contain `CREATE TABLE`, or the run fails
+and publishes nothing.
 
 When `BACKUP_PASSPHRASE` is set, the backup will be saved as `caredeoghar_YYYYMMDD_HHMMSS.sql.gz.enc` (encrypted via OpenSSL PBKDF2).
+
+---
+
+## 4. Proving a copy restores
+
+A backup that has never been restored is a hypothesis. Run:
+
+```bash
+bash scripts/verify-backup-restore.sh "$BACKUP_DIR"
+```
+
+It restores the real artifact into a throwaway container with no published port,
+with `ON_ERROR_STOP=1`, refuses a DATA-ONLY dump, checks the `.meta` sidecar's
+source database and sha256, and fails if `patients` or `bills` land empty. Exit 0
+is the only evidence that counts. `SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh`
+is a byte-identical copy of that script for the binder, and CI fails if the two
+ever differ — read the `scripts/` one when changing it.
+
 

@@ -117,14 +117,13 @@ This folder is the single source of truth for disaster recovery, infrastructure 
 *   **[ERP_DEPLOYMENT_RUNBOOK.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/11_DEPLOYMENT/ERP_DEPLOYMENT_RUNBOOK.md)**
     *   **Purpose**: Runbook documenting the full pipeline setup, environmental keys, and post-installation validation steps.
     *   **Last Update**: June 2026
-*   **[BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md) / [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/synology-backup.sh)**
-    *   **Purpose**: Backup administration guide and execution script supporting AES-256 backup encryption.
-    *   **Last Update**: June 2026
+*   **[BACKUP.md](12_BACKUPS/BACKUP.md) / [synology-backup.sh](12_BACKUPS/synology-backup.sh)**
+    *   **Purpose**: Backup administration guide, plus the copy of the cloud (Replit) pull script. The clinic's own daily dump is `scripts/synology-nas-backup.sh` — see `BACKUP.md` section 2 for the DSM task that schedules it.
     *   **When to Use**: Configuring daily scheduled backups or testing encryption passphrases.
-*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md) / [synology-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/synology-restore.sh) / [verify-backup-restore.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh)**
-    *   **Purpose**: Restore execution procedures, auto-decryption parameters, and the automated sandbox docker verification runbook.
-    *   **Last Update**: June 2026
-    *   **When to Use**: Database recovery after corruption or automated weekly backup health verification.
+*   **[RESTORE.md](13_RESTORE/RESTORE.md) / [synology-restore.sh](13_RESTORE/synology-restore.sh) / [verify-backup-restore.sh](13_RESTORE/verify-backup-restore.sh)**
+    *   **Purpose**: Restore execution procedures, auto-decryption parameters, and the restore proof that decides whether a backup exists at all.
+    *   **When to Use**: Database recovery after corruption, and every week whether or not anything is wrong.
+    *   **These are copies, not links**: each `.sh` here is byte-identical to its `scripts/` twin so the binder still works with the repository absent. `scripts/` is what you edit; `scripts/backupScripts.test.mjs` fails CI when a copy drifts, and runs the copies to check they behave the same.
 
 ### 14_BUSINESS_CONTINUITY & 15_HANDOVER
 *   **[DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/14_BUSINESS_CONTINUITY/DISASTER_RECOVERY_BUSINESS_CONTINUITY_AUDIT.md)**
