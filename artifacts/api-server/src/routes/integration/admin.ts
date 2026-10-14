@@ -7,7 +7,7 @@
 // ============================================================================
 import { Router } from "express";
 import { z } from "zod";
-import { and, desc, eq, inArray, or, ilike } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, ilike, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   integrationPartnersTable,
@@ -183,11 +183,24 @@ integrationAdminRouter.put("/mappings/:id", async (req, res) => {
 });
 
 // ── Failed integrations (outbox) ─────────────────────────────────────────────
+// Stuck first, oldest first. `ORDER BY created_at DESC` made this list a news
+// feed: with more than 200 matching rows, the event that DEAD-LETTERED weeks ago
+// was not on the page at all — while the retrying ones, which need nobody, filled
+// it. A queue of failures has to surface the failure a person has to act on,
+// measured at 200 pending rows + 1 dead: the dead row was absent (see
+// integrationAdminOutbox.request.test.ts).
 integrationAdminRouter.get("/outbox", async (req, res) => {
   const status = String(req.query.status ?? "");
   const conds: ReturnType<typeof eq>[] = [];
   if (status) conds.push(inArray(integrationOutboxTable.status, status.split(",")) as ReturnType<typeof eq>);
-  const rows = await db.select().from(integrationOutboxTable).where(conds.length ? and(...conds) : undefined).orderBy(desc(integrationOutboxTable.createdAt)).limit(200);
+  const stuckFirst = sql`CASE ${integrationOutboxTable.status}
+      WHEN 'dead' THEN 0
+      WHEN 'sending' THEN 1
+      WHEN 'pending' THEN 2
+      ELSE 3 END`;
+  const rows = await db.select().from(integrationOutboxTable).where(conds.length ? and(...conds) : undefined)
+    .orderBy(stuckFirst, asc(integrationOutboxTable.createdAt), asc(integrationOutboxTable.id))
+    .limit(200);
   res.json({ events: rows });
 });
 
