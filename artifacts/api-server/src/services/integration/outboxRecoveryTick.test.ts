@@ -18,7 +18,7 @@ const suite = hasDb ? describe : describe.skip;
 
 const dispatch = vi.fn();
 
-async function tickAndCapture(res: { claimed: number; sent: number; failed: number; dead: number; recovered: number }): Promise<string[]> {
+async function tickAndCapture(res: { claimed: number; sent: number; failed: number; dead: number; recovered: number; conflicts: number }): Promise<string[]> {
   dispatch.mockResolvedValue(res);
   const log = vi.spyOn(console, "log").mockImplementation(() => {});
   let lines: string[] = [];
@@ -60,17 +60,27 @@ afterEach(() => {
 
 suite("PR-I2 recovery is reported by the dispatcher tick", () => {
   it("logs the tick when the only work was a reclaim (nothing was claimed)", async () => {
-    const lines = await tickAndCapture({ claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 2 });
+    const lines = await tickAndCapture({ claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 2, conflicts: 0 });
     expect(lines.some((l) => l.includes("[integration] outbox dispatch") && l.includes('"recovered":2'))).toBe(true);
   });
 
   it("logs when there is ordinary claimed work", async () => {
-    const lines = await tickAndCapture({ claimed: 3, sent: 3, failed: 0, dead: 0, recovered: 0 });
+    const lines = await tickAndCapture({ claimed: 3, sent: 3, failed: 0, dead: 0, recovered: 0, conflicts: 0 });
     expect(lines.some((l) => l.includes("[integration] outbox dispatch"))).toBe(true);
   });
 
+  it("logs the tick when the only signal is a delivery whose outcome was refused", async () => {
+    // A non-zero `conflicts` means an event changed hands while this worker was
+    // inside HTTP. Nothing else in the summary would mention it: nothing was claimed,
+    // recovered or failed, and the row itself looks perfectly healthy — it is now
+    // another worker's. Without this line the stall is invisible until someone
+    // compares attempt history against outbox state.
+    const lines = await tickAndCapture({ claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 0, conflicts: 2 });
+    expect(lines.some((l) => l.includes("[integration] outbox dispatch") && l.includes('"conflicts":2'))).toBe(true);
+  });
+
   it("stays quiet on an idle tick", async () => {
-    const lines = await tickAndCapture({ claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 0 });
+    const lines = await tickAndCapture({ claimed: 0, sent: 0, failed: 0, dead: 0, recovered: 0, conflicts: 0 });
     expect(lines.some((l) => l.includes("[integration] outbox dispatch"))).toBe(false);
   });
 });
