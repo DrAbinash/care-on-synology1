@@ -58,9 +58,33 @@ export interface ReportClinicHeader {
   logoDataUrl?: string | null;
 }
 
+/**
+ * The stable identity of a demographic field.
+ *
+ * Both fixed-label header blocks below used to find a value by matching the words
+ * a producer happened to type into `label`. `patient-reports.ts` and
+ * `radiology-report-generator.ts` build these arrays by hand, so rewording
+ * "Study Date" to "Examination Date" silently dropped the examination date from
+ * the printed header — no error, no test, a missing fact on a signed document.
+ * A row may now declare which field it is, and the blocks read that first.
+ */
+export type ReportPatientFieldKey =
+  | "patientName"
+  | "ageSex"
+  | "uhid"
+  | "studyDate"
+  | "referringDoctor"
+  | "accessionNumber"
+  | "testName"
+  | "modality"
+  | "reportDate"
+  | "signedAt";
+
 export interface ReportPatientRow {
   label: string;
   value: string;
+  /** Which field this row IS. Absent on rows written before the contract. */
+  key?: ReportPatientFieldKey;
 }
 
 export interface ReportParameterRow {
@@ -306,20 +330,32 @@ export function formatReportDateShort(raw: string | null | undefined): string {
   return `${pad(read.d)}/${pad(read.m)}/${read.y}`;
 }
 
-function rowByLabel(rows: ReportPatientRow[], ...labels: string[]): string {
+/**
+ * Read one demographic field: by its stable key when the row declares one, else
+ * by any of the display labels this block has always accepted.
+ *
+ * The label fallback deliberately skips every keyed row. A row that says it is
+ * `reportDate` is not a candidate for the examination-date slot no matter what
+ * its label reads — which is the whole defect: the signed builder emits one row
+ * labelled "Date" carrying `patient_reports.created_at`, and matching on the word
+ * "date" printed the report-writing day as the day of the scan.
+ */
+function rowByField(rows: ReportPatientRow[], key: ReportPatientFieldKey, ...labels: string[]): string {
+  const keyed = rows.find((r) => r.key === key);
+  if (keyed) return keyed.value?.trim() ?? "";
   const wanted = labels.map((l) => l.toLowerCase());
-  const hit = rows.find((r) => wanted.includes(r.label.toLowerCase()));
+  const hit = rows.find((r) => !r.key && wanted.includes(r.label.toLowerCase()));
   return hit?.value?.trim() ?? "";
 }
 
 function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemplate["palette"]): string {
-  const name = rowByLabel(rows, "patient", "name");
-  const ageSex = rowByLabel(rows, "age / sex", "age/sex", "age", "sex");
-  const uhid = rowByLabel(rows, "uhid", "patient id", "patient id / uhid");
-  const studyDate = rowByLabel(rows, "study date", "date");
-  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by");
-  const accession = rowByLabel(rows, "accession no.", "accession", "accession number");
-  const testName = rowByLabel(rows, "test", "test name");
+  const name = rowByField(rows, "patientName", "patient", "name");
+  const ageSex = rowByField(rows, "ageSex", "age / sex", "age/sex", "age", "sex");
+  const uhid = rowByField(rows, "uhid", "uhid", "patient id", "patient id / uhid");
+  const studyDate = rowByField(rows, "studyDate", "study date", "date");
+  const refDr = rowByField(rows, "referringDoctor", "referring doctor", "ref. doctor", "ref by", "ref. by");
+  const accession = rowByField(rows, "accessionNumber", "accession no.", "accession", "accession number");
+  const testName = rowByField(rows, "testName", "test", "test name");
 
   const lines: string[] = [];
   if (name) lines.push(`<div class="ps-name">${escapeHtml(name)}</div>`);
@@ -339,18 +375,18 @@ function stackedPatientBlockHtml(rows: ReportPatientRow[], pal: PresentationTemp
 
 /** CARE letter-pad demography: NAME | AGE/SEX, REFD. BY | DATE, UHID | ACCESSION. */
 function letterpadPatientBlockHtml(rows: ReportPatientRow[]): string {
-  const name = rowByLabel(rows, "patient", "name");
-  const ageSex = rowByLabel(rows, "age / sex", "age/sex");
-  const refDr = rowByLabel(rows, "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
-  const dateRaw = rowByLabel(rows, "study date", "date");
+  const name = rowByField(rows, "patientName", "patient", "name");
+  const ageSex = rowByField(rows, "ageSex", "age / sex", "age/sex");
+  const refDr = rowByField(rows, "referringDoctor", "referring doctor", "ref. doctor", "ref by", "ref. by", "refd. by");
+  const dateRaw = rowByField(rows, "studyDate", "study date", "date");
   const dateStr = formatReportDateShort(dateRaw) || dateRaw;
   // The two identifiers that tie the sheet back to the study. Both arrive in
   // `rows` already — the block simply never drew them. A row whose value is the
   // route's own "no value" placeholder (an em dash) is absent, not blank: printing
   // "UHID: —" reads as an identifier to whoever receives the report.
   const blank = (v: string) => (/^[-–—.\s]*$/.test(v) ? "" : v);
-  const uhid = blank(rowByLabel(rows, "uhid", "patient id", "patient id / uhid"));
-  const accession = blank(rowByLabel(rows, "accession no.", "accession", "accession number"));
+  const uhid = blank(rowByField(rows, "uhid", "uhid", "patient id", "patient id / uhid"));
+  const accession = blank(rowByField(rows, "accessionNumber", "accession no.", "accession", "accession number"));
   const cell = (label: string, value: string, boldValue = false) =>
     value
       ? `<strong>${escapeHtml(label)}</strong> ${boldValue ? `<strong>${escapeHtml(value)}</strong>` : escapeHtml(value)}`

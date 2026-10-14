@@ -155,6 +155,35 @@ describe("resolveDisplayAge", () => {
   it("drops implausible 126 Yrs", () => {
     expect(resolveDisplayAge({ age: "126 Yrs" }, { dateOfBirth: "1900-01-01" }, "126Y")).toBe("");
   });
+
+  // ── The card and the signed report must state the same age ──────────────────
+  // A date of birth is evaluated on the day of the EXAMINATION, because that is
+  // the day the card is describing and the day the signed report will print.
+  it("evaluates the date of birth on the examination day, not today", () => {
+    // Scanned 10 Jan 2025, reported long afterwards: 45 then, not the clock's age.
+    expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, "20250110")).toBe("45 Yrs");
+    expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, "2025-01-10")).toBe("45 Yrs");
+  });
+  it("keeps today's age when no examination date is recorded", () => {
+    const now = new Date();
+    let years = now.getFullYear() - 1980;
+    if (now.getMonth() < 0 || (now.getMonth() === 0 && now.getDate() < 10)) years--;
+    expect(resolveDisplayAge({ age: "" }, { dateOfBirth: "1980-01-10" }, null, null)).toBe(`${years} Yrs`);
+  });
+  it("refuses a slashed study date rather than guessing which part is the day", () => {
+    // `studyDateToISO` reads digits positionally, so 10/01/2025 would become
+    // 1001-20-25 and the age derived from it would be invented. Behaving exactly
+    // as if no date were recorded is the honest outcome.
+    const master = { dateOfBirth: "1980-01-10" };
+    expect(resolveDisplayAge({ age: "" }, master, null, "10/01/2025")).toBe(
+      resolveDisplayAge({ age: "" }, master, null, null),
+    );
+  });
+  it("returns a stated registration age as recorded, whatever the study date", () => {
+    // `(ageValue, ageUnit)` is an age someone wrote down, not a derivation, so an
+    // examination date has nothing to re-evaluate.
+    expect(resolveDisplayAge({ age: "" }, { ageValue: 60, ageUnit: "years" }, null, "20250110")).toBe("60 Yrs");
+  });
 });
 
 describe("reconcileAccessionVsReferringDoctor", () => {

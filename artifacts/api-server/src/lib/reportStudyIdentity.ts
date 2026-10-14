@@ -40,20 +40,58 @@
  *
  * `resolveWorklistFromStudyRef` (radiologyIdentity.ts:58) does the two-shape
  * lookup; nothing here re-implements it.
+ *
+ * ── From "which accession" to "which study identity" ────────────────────────
+ * The same six rules decide every other study field a report may name, because
+ * the danger is identical: the durable builder used to left-join the LIVE
+ * `patients` row and read no radiology table at all, so a signed report printed
+ * its own `created_at` in the slot a clinician reads as the examination date, no
+ * referring physician at all, and an age recomputed from `Date.now()` on every
+ * reprint. The candidate picker below is therefore shared: one verification, one
+ * priority order, and `resolveReportAccession` keeps the exact verdicts it had.
+ *
+ * Fields are then folded across the verified candidates — worklist first — so a
+ * blank on the row that wins does not hide a value the other row holds. That is
+ * the same gap-filling the Reporting Workspace's own `mergeReportDemography`
+ * does for the preview, which is what makes the preview and the signed artifact
+ * agree. An empty field stays empty: no placeholder, and never a substitution
+ * (no "Self" referrer, no current time as an examination date).
  */
 import {
   isRadiologyReportType,
   loadBilledStudy,
   resolveWorklistFromStudyRef,
 } from "./radiologyIdentity";
+import { db } from "@workspace/db";
+import { patientsTable } from "@workspace/db/schema";
+import { eq } from "drizzle-orm";
+import { formatAgeAtExamination } from "./reportAge";
 
 /** The label `reportPresentation.ts:313` already harvests into `Accession:`. */
 export const ACCESSION_ROW_LABEL = "Accession No.";
 
-export type AccessionCandidate = {
+/**
+ * One radiology row that might be this report's study. Both shapes are accepted:
+ * the worklist row spells the DICOM UID `studyInstanceUID` and stores `studyDate`
+ * as DICOM text, the billed study spells it `studyInstanceUid` and stores a real
+ * `date` column. Optional-and-partial on purpose so either row satisfies it.
+ */
+export type StudyIdentityCandidate = {
   accessionNumber?: string | null;
   patientId?: number | null;
+  studyDate?: string | Date | null;
+  modality?: string | null;
+  studyDescription?: string | null;
+  referringDoctor?: string | null;
+  studyInstanceUid?: string | null;
+  studyInstanceUID?: string | null;
+  /** The study row's own age text, in whatever shape DICOM sent it. */
+  age?: string | null;
+  sex?: string | null;
 };
+
+/** Kept as the name PR #992 exported; it is the same shape, widened. */
+export type AccessionCandidate = StudyIdentityCandidate;
 
 export type AccessionSource = "worklist" | "billed-study";
 
@@ -72,6 +110,43 @@ const positiveId = (n: unknown): number | null => {
 };
 
 const trimmed = (v: unknown): string => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
+
+/**
+ * The patient cross-check, in one place, because every study field a report may
+ * name depends on it. Rules 3 and 4 of the header: a candidate row may speak for
+ * the report only when its own `patient_id` equals the report's (a null on either
+ * side is not a match), and of the survivors the worklist row is tried first
+ * because it is what the finalize path stored.
+ */
+function verifiedCandidates(input: {
+  reportPatientId: number;
+  worklist?: StudyIdentityCandidate | null;
+  billedStudy?: StudyIdentityCandidate | null;
+}): {
+  verified: { source: AccessionSource; row: StudyIdentityCandidate }[];
+  rejected: { source: AccessionSource; why: string }[];
+} {
+  const ordered: { source: AccessionSource; row: StudyIdentityCandidate }[] = [];
+  if (input.worklist) ordered.push({ source: "worklist", row: input.worklist });
+  if (input.billedStudy) ordered.push({ source: "billed-study", row: input.billedStudy });
+
+  const verified: { source: AccessionSource; row: StudyIdentityCandidate }[] = [];
+  const rejected: { source: AccessionSource; why: string }[] = [];
+  for (const candidate of ordered) {
+    const candidatePatientId = positiveId(candidate.row.patientId);
+    if (candidatePatientId === null) {
+      rejected.push({ source: candidate.source, why: "candidate row names no patient" });
+      continue;
+    }
+    if (candidatePatientId !== input.reportPatientId) {
+      // The id-space collision this exists to catch.
+      rejected.push({ source: candidate.source, why: `belongs to patient ${candidatePatientId}, not ${input.reportPatientId}` });
+      continue;
+    }
+    verified.push(candidate);
+  }
+  return { verified, rejected };
+}
 
 /**
  * The decision, with no database in it, so every refusal is testable by name.
@@ -102,25 +177,19 @@ export function resolveReportAccession(input: {
     return { status: "absent", reason: "no-study-reference", rejected };
   }
 
-  const candidates: { source: AccessionSource; row: AccessionCandidate }[] = [];
-  if (input.worklist) candidates.push({ source: "worklist", row: input.worklist });
-  if (input.billedStudy) candidates.push({ source: "billed-study", row: input.billedStudy });
-  if (candidates.length === 0) {
+  if (!input.worklist && !input.billedStudy) {
     return { status: "absent", reason: "no-candidate", rejected };
   }
 
+  const { verified, rejected: unverified } = verifiedCandidates({
+    reportPatientId,
+    worklist: input.worklist,
+    billedStudy: input.billedStudy,
+  });
+  rejected.push(...unverified);
+
   let chosen: { source: AccessionSource; accession: string } | null = null;
-  for (const candidate of candidates) {
-    const candidatePatientId = positiveId(candidate.row.patientId);
-    if (candidatePatientId === null) {
-      rejected.push({ source: candidate.source, why: "candidate row names no patient" });
-      continue;
-    }
-    if (candidatePatientId !== reportPatientId) {
-      // The id-space collision this exists to catch.
-      rejected.push({ source: candidate.source, why: `belongs to patient ${candidatePatientId}, not ${reportPatientId}` });
-      continue;
-    }
+  for (const candidate of verified) {
     const accession = trimmed(candidate.row.accessionNumber);
     if (!accession) {
       rejected.push({ source: candidate.source, why: "patient matches but the row carries no accession" });
@@ -148,26 +217,173 @@ export function accessionPrintRow(
     : null;
 }
 
+// ── The rest of the study identity ──────────────────────────────────────────
+
 /**
- * Load the candidates for one report and decide. Reads only.
+ * Every study-side fact a report may name, resolved once. Empty means "not
+ * recorded" and must stay empty: the caller omits the row rather than printing a
+ * label with nothing after it, and never substitutes another field for it.
+ */
+export type ReportStudyIdentity = {
+  accessionNumber: string;
+  /** `YYYY-MM-DD` when the source could be read as a real day; otherwise the raw text. */
+  studyDate: string;
+  modality: string;
+  studyDescription: string;
+  referringDoctor: string;
+  studyInstanceUid: string;
+  /** The study row's own age text, unconverted — `reportAge.ts` reads it. */
+  documentedAge: string;
+  sex: string;
+};
+
+export type ResolvedReportStudyIdentity =
+  | { status: "resolved"; identity: ReportStudyIdentity; sources: AccessionSource[] }
+  | {
+      status: "absent";
+      reason: "not-radiology" | "no-study-reference" | "no-candidate" | "patient-mismatch" | "no-identity";
+      rejected: { source: AccessionSource; why: string }[];
+    };
+
+const IDENTITY_FIELDS = [
+  "accessionNumber",
+  "studyDate",
+  "modality",
+  "studyDescription",
+  "referringDoctor",
+  "studyInstanceUid",
+  "documentedAge",
+  "sex",
+] as const satisfies readonly (keyof ReportStudyIdentity)[];
+
+/**
+ * A `date` column arrives as a `Date`, a DICOM `study_date` arrives as text
+ * (`20250110`), and a Demography card can hold `10/01/2025`. Normalized to
+ * `YYYY-MM-DD` when the day is unambiguous so a frozen snapshot cannot later be
+ * re-read differently; anything else is passed through for
+ * `reportPresentation.formatReportDateShort` to render or refuse.
+ */
+export function normalizeStudyDate(raw: unknown): string {
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${raw.getFullYear()}-${pad(raw.getMonth() + 1)}-${pad(raw.getDate())}`;
+  }
+  const text = trimmed(raw);
+  if (!text) return "";
+  const dicom = /^(\d{4})(\d{2})(\d{2})$/.exec(text);
+  if (dicom) return `${dicom[1]}-${dicom[2]}-${dicom[3]}`;
+  const slashed = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+  if (slashed) {
+    const pad = (n: string) => n.padStart(2, "0");
+    return `${slashed[3]}-${pad(slashed[2]!)}-${pad(slashed[1]!)}`;
+  }
+  // Slashed and not DD/MM/YYYY: refuse rather than pick an order, matching
+  // `reportPresentation.readStudyDate`. A wrongly ordered day is a wrong age at
+  // examination, which is a fabricated clinical value.
+  if (text.includes("/")) return "";
+  return text;
+}
+
+function candidateField(row: StudyIdentityCandidate, field: keyof ReportStudyIdentity): string {
+  switch (field) {
+    case "studyDate":
+      return normalizeStudyDate(row.studyDate);
+    case "studyInstanceUid":
+      return trimmed(row.studyInstanceUid) || trimmed(row.studyInstanceUID);
+    case "documentedAge":
+      return trimmed(row.age);
+    default:
+      return trimmed(row[field]);
+  }
+}
+
+/**
+ * Fold the verified candidates field by field, worklist first. A field the
+ * winning row leaves blank is taken from the next verified row rather than
+ * dropped — the two rows describe the same study, and the workspace preview
+ * already gap-fills the same way.
+ */
+export function resolveReportStudyIdentity(input: {
+  isRadiology: boolean;
+  studyId: number | null | undefined;
+  reportPatientId: number | null | undefined;
+  worklist?: StudyIdentityCandidate | null;
+  billedStudy?: StudyIdentityCandidate | null;
+}): ResolvedReportStudyIdentity {
+  if (!input.isRadiology) {
+    return { status: "absent", reason: "not-radiology", rejected: [] };
+  }
+  const reportPatientId = positiveId(input.reportPatientId);
+  if (reportPatientId === null) {
+    return {
+      status: "absent",
+      reason: "patient-mismatch",
+      rejected: [{ source: "worklist", why: "report has no patient id to verify against" }],
+    };
+  }
+  if (positiveId(input.studyId) === null) {
+    return { status: "absent", reason: "no-study-reference", rejected: [] };
+  }
+  if (!input.worklist && !input.billedStudy) {
+    return { status: "absent", reason: "no-candidate", rejected: [] };
+  }
+
+  const { verified, rejected } = verifiedCandidates({
+    reportPatientId,
+    worklist: input.worklist,
+    billedStudy: input.billedStudy,
+  });
+
+  const identity: Record<(typeof IDENTITY_FIELDS)[number], string> = { ...EMPTY_STUDY_IDENTITY };
+  const sources = new Set<AccessionSource>();
+  for (const candidate of verified) {
+    for (const field of IDENTITY_FIELDS) {
+      if (identity[field]) continue;
+      const value = candidateField(candidate.row, field);
+      if (!value) continue;
+      identity[field] = value;
+      sources.add(candidate.source);
+    }
+  }
+
+  if (IDENTITY_FIELDS.every((field) => !identity[field])) {
+    // Verified rows that say nothing about the study. Absence, not a blank to fill.
+    return { status: "absent", reason: "no-identity", rejected };
+  }
+  return { status: "resolved", identity: identity as ReportStudyIdentity, sources: [...sources] };
+}
+
+/**
+ * Load the candidates for one report and decide BOTH questions — which accession
+ * and which study identity — from a single pair of reads. Reads only.
  *
  * The worklist row is resolved through `resolveWorklistFromStudyRef`, which
  * already knows that this column holds a worklist id on the finalize path and a
- * billed-study id on older rows; the patient cross-check in
- * `resolveReportAccession` is what makes either shape safe to print.
+ * billed-study id on older rows; the patient cross-check in `verifiedCandidates`
+ * is what makes either shape safe to print.
  */
-export async function loadReportAccessionForReport(report: {
+export type ReportStudyIdentityVerdict = {
+  accession: ResolvedReportAccession;
+  study: ResolvedReportStudyIdentity;
+};
+
+export async function loadReportStudyIdentityForReport(report: {
   type?: string | null;
   studyId?: number | null;
   patientId?: number | null;
-}): Promise<ResolvedReportAccession> {
+}): Promise<ReportStudyIdentityVerdict> {
   // Every radiology writer stores the literal "radiology" (patient-reports.ts:1150,
   // :1807, :3671, internal-reporting-studio.ts:878), so the type column alone is
-  // authoritative here. A row typed otherwise has no accession to name.
+  // authoritative here. A row typed otherwise has no study identity to name.
   const isRadiology = isRadiologyReportType(String(report.type ?? ""));
   const studyRef = positiveId(report.studyId);
   if (!isRadiology || studyRef === null) {
-    return resolveReportAccession({ isRadiology, studyId: studyRef, reportPatientId: report.patientId });
+    const shape = { isRadiology, studyId: studyRef, reportPatientId: report.patientId };
+    return {
+      accession: resolveReportAccession(shape),
+      study: resolveReportStudyIdentity(shape),
+    };
   }
 
   const [worklist, billedStudy] = await Promise.all([
@@ -175,11 +391,192 @@ export async function loadReportAccessionForReport(report: {
     loadBilledStudy(studyRef),
   ]);
 
-  return resolveReportAccession({
-    isRadiology,
-    studyId: studyRef,
-    reportPatientId: report.patientId,
-    worklist,
-    billedStudy,
-  });
+  const shape = { isRadiology, studyId: studyRef, reportPatientId: report.patientId, worklist, billedStudy };
+  return {
+    accession: resolveReportAccession(shape),
+    study: resolveReportStudyIdentity(shape),
+  };
 }
+
+export async function loadReportAccessionForReport(report: {
+  type?: string | null;
+  studyId?: number | null;
+  patientId?: number | null;
+}): Promise<ResolvedReportAccession> {
+  return (await loadReportStudyIdentityForReport(report)).accession;
+}
+
+// ── The identity a signed report renders from ───────────────────────────────
+
+/** Every study field absent. Used instead of `null` so a caller cannot
+ *  accidentally print "undefined" into a header. */
+export const EMPTY_STUDY_IDENTITY: ReportStudyIdentity = {
+  accessionNumber: "",
+  studyDate: "",
+  modality: "",
+  studyDescription: "",
+  referringDoctor: "",
+  studyInstanceUid: "",
+  documentedAge: "",
+  sex: "",
+};
+
+/**
+ * What one report prints for who and when, resolved once and rendered from
+ * everywhere. Patient identity, study identity and report identity are kept
+ * apart: the patient half comes from the registration master (or from the
+ * snapshot taken at signing), the study half only ever from a radiology row that
+ * passed the patient cross-check, and the report half — number, created, signed,
+ * signer — is left on the report row itself, which is already immutable.
+ */
+export type ReportIdentityForRender = {
+  patientName: string;
+  /** The clinic's patient index number. Never a database primary key. */
+  uhid: string;
+  sex: string;
+  /** Display string, already evaluated at the examination date. */
+  ageAtExamination: string;
+  study: ReportStudyIdentity;
+  /** "frozen" once the report was signed with its identity captured. */
+  source: "frozen" | "live";
+};
+
+/**
+ * The identity as captured at the signing event. Stored inside the existing
+ * `radiology_report_presentation_freeze.snapshot` jsonb, so freezing it needs no
+ * migration and inherits that table's guarantees: one row per report, written
+ * once, never updated, never deleted.
+ */
+export type FrozenReportIdentity = Omit<ReportIdentityForRender, "source"> & {
+  /** The instant this was captured — evidence, never printed. */
+  capturedAt: string;
+};
+
+/**
+ * A signed report renders from its frozen identity, whole. Mixing frozen and
+ * live fields field-by-field would produce a document that is partly what was
+ * signed and partly what the master says today, which is worse than either.
+ * Reports signed before identity was captured have no frozen half and fall back
+ * to live resolution — the same documented fallback the template snapshot uses.
+ */
+export function effectiveReportIdentity(
+  frozen: FrozenReportIdentity | null | undefined,
+  live: Omit<ReportIdentityForRender, "source">,
+): ReportIdentityForRender {
+  if (!frozen) return { ...live, source: "live" };
+  return {
+    patientName: frozen.patientName ?? "",
+    uhid: frozen.uhid ?? "",
+    sex: frozen.sex ?? "",
+    ageAtExamination: frozen.ageAtExamination ?? "",
+    study: { ...EMPTY_STUDY_IDENTITY, ...(frozen.study ?? {}) },
+    source: "frozen",
+  };
+}
+
+/** The patient-master columns the identity block reads. */
+export type PatientIdentityFacts = {
+  name: string;
+  /** `patients.patient_id` — the clinic's UHID text. Never the numeric primary key. */
+  uhid: string;
+  sex: string;
+  dateOfBirth: string | null;
+  ageValue: number | null;
+  ageUnit: string | null;
+};
+
+export type ReportIdentityTarget = {
+  type?: string | null;
+  studyId?: number | null;
+  patientId?: number | null;
+};
+
+/**
+ * Resolve the whole identity a report may print, live.
+ *
+ * The age is evaluated against the EXAMINATION date, never the render instant, so
+ * reprinting a 2025 report in 2027 prints the 2025 age. When no examination date
+ * could be verified there is no as-of to evaluate against and the age falls back
+ * to a documented value or to nothing — `reportAge.formatAgeAtExamination` never
+ * reads the clock, and this never hands it one.
+ *
+ * `patient` may be supplied by a caller that already joined the master (the
+ * durable renderer does); otherwise it is read here.
+ */
+export async function loadReportIdentityForRender(
+  report: ReportIdentityTarget,
+  patient?: PatientIdentityFacts | null,
+): Promise<Omit<ReportIdentityForRender, "source">> {
+  const verdict = await loadReportStudyIdentityForReport(report);
+  const study = verdict.study.status === "resolved" ? verdict.study.identity : EMPTY_STUDY_IDENTITY;
+
+  let master = patient ?? null;
+  if (!master) {
+    const patientId = positiveId(report.patientId);
+    if (patientId !== null) {
+      const [row] = await db
+        .select({
+          firstName: patientsTable.firstName,
+          lastName: patientsTable.lastName,
+          uhid: patientsTable.patientId,
+          gender: patientsTable.gender,
+          dateOfBirth: patientsTable.dateOfBirth,
+          ageValue: patientsTable.ageValue,
+          ageUnit: patientsTable.ageUnit,
+        })
+        .from(patientsTable)
+        .where(eq(patientsTable.id, patientId))
+        .limit(1);
+      master = row ? patientFactsFromMaster(row) : null;
+    }
+  }
+
+  return {
+    patientName: master?.name ?? "",
+    uhid: master?.uhid ?? "",
+    sex: master?.sex ?? "",
+    ageAtExamination: formatAgeAtExamination({
+      dateOfBirth: master?.dateOfBirth ?? null,
+      ageValue: master?.ageValue ?? null,
+      ageUnit: master?.ageUnit ?? null,
+      documentedAge: study.documentedAge,
+      asOf: study.studyDate || null,
+    }),
+    study,
+  };
+}
+
+export function patientFactsFromMaster(row: {
+  firstName?: string | null;
+  lastName?: string | null;
+  uhid?: string | null;
+  gender?: string | null;
+  dateOfBirth?: string | null;
+  ageValue?: number | null;
+  ageUnit?: string | null;
+}): PatientIdentityFacts {
+  return {
+    name: [row.firstName, row.lastName].filter(Boolean).join(" ").trim(),
+    uhid: trimmed(row.uhid),
+    sex: trimmed(row.gender),
+    dateOfBirth: row.dateOfBirth ?? null,
+    ageValue: row.ageValue ?? null,
+    ageUnit: row.ageUnit ?? null,
+  };
+}
+
+/**
+ * The identity to capture at the signing event. Same resolution the renderer
+ * uses, so a frozen report prints exactly what it would have printed the moment
+ * it was signed — and keeps printing it after the registration is edited.
+ */
+export async function captureReportIdentity(
+  report: ReportIdentityTarget,
+  patient?: PatientIdentityFacts | null,
+): Promise<FrozenReportIdentity> {
+  const live = await loadReportIdentityForRender(report, patient);
+  return { ...live, capturedAt: new Date().toISOString() };
+}
+
+
+

@@ -2540,10 +2540,17 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
       dicomMeta = row.dicomMetadata as Record<string, unknown>;
     }
+    // The date this card prints, resolved once: the age above is evaluated ON it,
+    // so the card cannot show an examination date and an age computed against a
+    // different day. DICOM StudyDate is the same fallback `mergeReportDemography`
+    // uses for the printed value.
+    const studyDate =
+      detail?.studyDate ?? row?.studyDate ?? (dicomMeta.StudyDate != null ? String(dicomMeta.StudyDate) : null);
     const erpAge = resolveDisplayAge(
       { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
       dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
+      studyDate,
     );
     const merged = mergeReportDemography({
       // The by-id detail read is keyed on the open study, so it is always this
@@ -2560,7 +2567,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         uhid: detail?.uhid ?? row?.uhid,
         accessionNumber: detail?.accessionNumber ?? row?.accessionNumber,
         studyDescription: detail?.studyDescription ?? row?.studyDescription,
-        studyDate: detail?.studyDate ?? row?.studyDate,
+        studyDate,
         referringDoctor: detail?.referringDoctor ?? row?.referringDoctor,
         dateOfBirth: master?.dateOfBirth,
       },

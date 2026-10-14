@@ -14,7 +14,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, desc, sql, ilike, or, isNull, isNotNull, inArray } from "drizzle-orm";
 import {
-  freezeReportPresentation, parseExplicitTemplateParam, resolveTemplateForRender,
+  freezeReportPresentation, getReportPresentationFreeze, parseExplicitTemplateParam, resolveTemplateForRender,
   resolveTemplateRecordForRender,
 } from "../lib/presentationTemplateStore";
 import type { CopyType } from "../lib/presentationTemplateModel";
@@ -29,7 +29,13 @@ import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../m
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
 import { isObstetricUsgStudy } from "../lib/usgModality";
-import { accessionPrintRow, loadReportAccessionForReport } from "../lib/reportStudyIdentity";
+import {
+  ACCESSION_ROW_LABEL,
+  captureReportIdentity,
+  effectiveReportIdentity,
+  loadReportIdentityForRender,
+  patientFactsFromMaster,
+} from "../lib/reportStudyIdentity";
 import { checkPcpndtFormFCompliance, PCPNDT_OVERRIDE_ROLES } from "../lib/pcpndtCompliance";
 import {
   aiReviewStateUnavailableError,
@@ -77,7 +83,7 @@ import {
 } from "../lib/signedArtifactGuard";
 import {
   renderReportDocument,
-  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportSignatureModel,
+  type ReportDocumentModel, type ReportKeyImageModel, type ReportParameterRow, type ReportPatientRow, type ReportSignatureModel,
 } from "../lib/reportPresentation";
 import {
   resolveReportPrintKeyImagesDetailed,
@@ -1911,7 +1917,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
       req.log?.error({ err }, "BEND-1 obligation creation after amendment failed");
     }
 
-    void freezeSignedReportPresentation(outcome.newRow.id);
+    await freezeSignedReportPresentation(outcome.newRow.id);
     res.status(201).json({
       report: outcome.newRow,
       amendment: {
@@ -2201,7 +2207,7 @@ patientReportsRouter.post("/", async (req, res) => {
                 .set({ reportId: outcome.row.id, updatedAt: new Date() })
                 .where(eq(radiologyWorklistTable.id, bound.worklistId));
             }
-            void freezeSignedReportPresentation(outcome.row.id);
+            await freezeSignedReportPresentation(outcome.row.id);
             res.status(201).json({ ...outcome.row, structuredFinal: outcome.diagnostics });
             return;
           }
@@ -2550,7 +2556,7 @@ patientReportsRouter.post("/:id/sign", async (req, res) => {
     status: "pending_verification",
   }).where(eq(patientReportsTable.id, id)).returning();
   if (row) {
-    void freezeSignedReportPresentation(row.id);
+    await freezeSignedReportPresentation(row.id);
     await auditLifecycleEvent(
       "legacy_sign",
       { userId: session?.subjectId, userName: session?.subjectName, role: session?.role },
@@ -3059,14 +3065,29 @@ export async function buildReportArtifact(
 }
 
 // R1.2 Phase 3 — record the presentation template a report was SIGNED
-// under. Best-effort: signing must never fail because of presentation
-// bookkeeping; unique(report_id) makes it idempotent and never-rewriting.
+// under, and the patient/study identity it was signed WITH. Best-effort:
+// signing must never fail because of this bookkeeping; unique(report_id)
+// makes it idempotent and never-rewriting.
 async function freezeSignedReportPresentation(reportId: number): Promise<void> {
   try {
     // Freeze the STANDARD (clinical) identity WITH its full definition, so the
     // finalized report re-renders exactly even if the version row is later lost.
     const record = await resolveTemplateRecordForRender({ copyType: "standard" });
-    await freezeReportPresentation(reportId, record);
+    // The identity half. Without it the renderer falls back to the LIVE
+    // registration master, so correcting a name or a date of birth after signing
+    // silently rewrites a document that is already signed and possibly already
+    // delivered — and re-printing it years later re-derives the age from today.
+    const [report] = await db
+      .select({
+        type: patientReportsTable.type,
+        studyId: patientReportsTable.studyId,
+        patientId: patientReportsTable.patientId,
+      })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportId))
+      .limit(1);
+    const identity = report ? await captureReportIdentity(report) : null;
+    await freezeReportPresentation(reportId, record, identity);
   } catch { /* the freeze-less report falls back to the active selection */ }
 }
 
@@ -3109,6 +3130,8 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       patientCode: patientsTable.patientId,
       patientGender: patientsTable.gender,
       patientDob: patientsTable.dateOfBirth,
+      patientAgeValue: patientsTable.ageValue,
+      patientAgeUnit: patientsTable.ageUnit,
       testName: testsTable.name,
       testCode: testsTable.code,
     })
@@ -3127,19 +3150,35 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
 
   const [clinic] = await db.select().from(clinicSettingsTable).limit(1);
 
-  // The study this report was written for, named only when it can be proved to
-  // be the same study. `patient_reports.study_id` holds a
+  // ── The identity this document names ──────────────────────────────────────
+  // A signed report renders from the identity captured when it was signed, held
+  // in the existing `radiology_report_presentation_freeze` snapshot. Reports
+  // signed before that capture existed have no frozen half and fall back to live
+  // resolution — the same documented fallback the template snapshot uses.
+  //
+  // The live half is NOT a bare join either. `patient_reports.study_id` holds a
   // `radiology_worklist.id` on the finalize path and a `radiology_studies.id` on
-  // older rows, and those two serials collide, so this cannot be a bare join:
-  // the loader resolves both shapes and refuses any row whose `patient_id` is
-  // not this report's patient. When nothing is verified the row is omitted —
-  // an "Accession:" label with nothing after it would itself be a claim.
-  const accessionVerdict = await loadReportAccessionForReport({
-    type: r.type,
-    studyId: r.studyId,
-    patientId: r.patientId,
-  });
-  const accessionRow = accessionPrintRow(accessionVerdict);
+  // older rows, and those two serials collide, so the loader resolves both shapes
+  // and refuses any row whose `patient_id` is not this report's patient. When
+  // nothing is verified the field stays empty and its row is omitted — an
+  // "Accession:" label with nothing after it would itself be a claim, and so
+  // would a study date taken from another patient's scan.
+  const [frozenIdentity, liveIdentity] = await Promise.all([
+    getReportPresentationFreeze(r.id).then((f) => f?.identity ?? null).catch(() => null),
+    loadReportIdentityForRender(
+      { type: r.type, studyId: r.studyId, patientId: r.patientId },
+      patientFactsFromMaster({
+        firstName: row.patientFirstName,
+        lastName: row.patientLastName,
+        uhid: row.patientCode,
+        gender: row.patientGender,
+        dateOfBirth: row.patientDob,
+        ageValue: row.patientAgeValue,
+        ageUnit: row.patientAgeUnit,
+      }),
+    ),
+  ]);
+  const identity = effectiveReportIdentity(frozenIdentity, liveIdentity);
 
   // Load institutional style if radiology report
   let instStyle: any = null;
@@ -3204,13 +3243,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
   const sigPrimary = r.signatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.signatureId)))[0] : null;
   const sigVerifier = r.verifiedBySignatureId ? (await db.select().from(signaturesTable).where(eq(signaturesTable.id, r.verifiedBySignatureId)))[0] : null;
 
-  const patientName = [row.patientFirstName, row.patientLastName].filter(Boolean).join(" ");
-  const ageStr = (() => {
-    if (!row.patientDob) return "";
-    const dob = new Date(row.patientDob);
-    const yrs = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 3600 * 1000));
-    return `${yrs}y`;
-  })();
+  const patientName = identity.patientName;
 
   // R1.1 — parameters, stamp, banners and signatures are now MODELED and the
   // shared presentation layer renders them (one pipeline, no duplicated HTML).
@@ -3286,6 +3319,53 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
     ? await generateReportQrDataUrl(version?.resolvedReportId ?? reportId, r.status)
     : null;
 
+  // The identity block. Every row carries the stable field key the presentation
+  // layer reads, so rewording a label can no longer silently drop a demographic
+  // from the printed header. Rows with nothing to say are omitted rather than
+  // drawn empty: an "Accession:" or "Study Date:" with no value after it tells a
+  // clinician the study has none, which this code is not entitled to claim.
+  //
+  // The examination date and the report date are DIFFERENT fields and are labelled
+  // as such. Radiology used to print `created_at` in the single "Date" row, and
+  // `rowByLabel` reads that row back under "study date" OR "date" — so a report
+  // written two days after the scan named the wrong day. Non-radiology rows keep
+  // their one unkeyed "Date" row exactly as it was: a pathology report has no
+  // examination date to distinguish, and relabelling it would change a layout this
+  // PR has no reason to touch.
+  const study = identity.study;
+  const reportDateRow = {
+    label: "Report Date",
+    value: new Date(r.createdAt).toLocaleDateString("en-IN"),
+    ...(isRadiologyReportType(r.type) ? { key: "reportDate" as const } : {}),
+  };
+  const legacyDateRow = isRadiologyReportType(r.type)
+    ? null
+    : { label: "Date", value: reportDateRow.value };
+  const patientRows: ReportPatientRow[] = [
+    { key: "patientName", label: "Patient", value: patientName },
+    { key: "uhid", label: "Patient ID", value: identity.uhid || "\u2014" },
+    // Placed next to the UHID, the pair the workspace header already prints.
+    ...(study.accessionNumber
+      ? [{ key: "accessionNumber" as const, label: ACCESSION_ROW_LABEL, value: study.accessionNumber }]
+      : []),
+    {
+      key: "ageSex",
+      label: "Age / Sex",
+      value: `${identity.ageAtExamination}${identity.ageAtExamination && identity.sex ? " / " : ""}${identity.sex}`,
+    },
+    ...(study.studyDate
+      ? [{ key: "studyDate" as const, label: "Study Date", value: study.studyDate }]
+      : []),
+    ...(study.referringDoctor
+      ? [{ key: "referringDoctor" as const, label: "Referring Doctor", value: study.referringDoctor }]
+      : []),
+    ...(legacyDateRow ? [legacyDateRow] : [reportDateRow]),
+    { key: "testName", label: "Test", value: row.testName ?? "\u2014" },
+    { label: "Test Code", value: row.testCode ?? "\u2014" },
+    { label: "Type", value: r.type.toUpperCase() },
+    { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
+  ];
+
   const model: ReportDocumentModel = {
     reportNumber: r.reportNumber,
     studyTitle: r.title,
@@ -3300,18 +3380,7 @@ async function renderReportVersionHtml(reportId: number, autoPrint: boolean, use
       website: clinic?.website ?? "",
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
-    patientRows: [
-      { label: "Patient", value: patientName },
-      { label: "Patient ID", value: row.patientCode ?? "\u2014" },
-      // Placed next to the UHID, the pair the workspace header already prints.
-      ...(accessionRow ? [accessionRow] : []),
-      { label: "Age / Sex", value: `${ageStr}${ageStr && row.patientGender ? " / " : ""}${row.patientGender ?? ""}` },
-      { label: "Date", value: new Date(r.createdAt).toLocaleDateString("en-IN") },
-      { label: "Test", value: row.testName ?? "\u2014" },
-      { label: "Test Code", value: row.testCode ?? "\u2014" },
-      { label: "Type", value: r.type.toUpperCase() },
-      { label: "Status", value: r.status.replace(/_/g, " ").toUpperCase() },
-    ],
+    patientRows,
     safeguardBannerHtml: [safeguards.banner, frozenIntegrityExtra].filter(Boolean).join(""),
     safeguardWatermarkHtml: safeguards.watermark,
     isCritical: r.isCritical,
