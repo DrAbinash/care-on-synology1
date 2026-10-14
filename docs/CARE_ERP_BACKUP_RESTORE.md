@@ -4,6 +4,20 @@ _Everything patient/report/billing-related lives in one PostgreSQL database (`di
 
 > **Golden rule:** a backup you have never restored is not a backup. `verify-backup-restore.sh` below is not optional — a backup job reporting "success" does not mean the file is usable. This system ran for months with backups that reported success, matched their checksum, and could not be restored.
 
+> **Before trusting a `pg_dump` as "everything", read `docs/CARE_ERP_BACKUP_COVERAGE.md`.**
+> The sentence above is true of the *database*, and this ERP does not keep everything in
+> the database: invoice attachments, referral documents, frozen key-image pixels and
+> `audit_logs` rows past their retention sit on paths no dump contains. `docker-compose.yml:418-422`
+> says it about the volume this document's own backup does not take — "DB backup alone is
+> NOT sufficient for frozen key-image evidence". The matrix lists every dataset, where it
+> physically lives, and whether anything protects it.
+
+> **To see what is actually in the backup destination right now** (every artifact, what its
+> `.meta` sidecar claims, which checksums were recomputed, and which restores were ever
+> proved): `pnpm ops:backup-inventory`, or `node scripts/ops-backup-inventory.mjs
+> --verify-checksums`. It reads the directory and reaches no verdict; it takes no backup
+> and restores nothing.
+
 ---
 
 ## The short version

@@ -176,12 +176,12 @@ export const REQUIRED_CHECK_IDS = [
   "backup.orthanc_images",
 ];
 
-const DEFAULT_BACKUP_ROOTS = [
+export const DEFAULT_BACKUP_ROOTS = [
   "/volume1/backup/care-erp/db",
   "/volume1/backups/caredeoghar",
 ];
 
-const ARTIFACT_GLOBS = [
+export const ARTIFACT_GLOBS = [
   /^caredeoghar_.*\.sql\.gz(\.enc)?$/,
   /^backup_.*\.sql(\.enc)?$/,
   /^care_db_daily_.*\.sql\.gz$/,
@@ -246,8 +246,50 @@ function loadEnvFileSafe(ctx, file) {
   }
 }
 
-function isArtifact(name) {
+export function isArtifact(name) {
   return ARTIFACT_GLOBS.some((re) => re.test(name)) && !name.endsWith(".partial") && !name.endsWith(".meta");
+}
+
+/**
+ * A `.meta` sidecar is `key=value` per line, and the last occurrence wins — which
+ * is what `scripts/verify-backup-restore.sh`'s `meta_get` does too. Two readers of
+ * one format must agree on a duplicated key or one tool calls broken what the other
+ * passes.
+ */
+export function parseSidecar(text) {
+  return Object.fromEntries(
+    String(text).split(/\r?\n/).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+  );
+}
+
+/**
+ * What an artifact's own manifest has to say for the artifact to be trustworthy.
+ * One implementation, used by the deployment gate and by
+ * `scripts/ops-backup-inventory.mjs`, so the two can never disagree about what "a
+ * valid backup" means. A field that is merely absent is reported: an absent checksum
+ * is not a passing checksum.
+ */
+export function auditSidecar(meta, { actualBytes = null, expectedDatabase = null } = {}) {
+  const bad = [];
+  if (!meta.source_database) bad.push("no source_database recorded");
+  else if (expectedDatabase && meta.source_database !== expectedDatabase) {
+    bad.push(`source_database=${meta.source_database} but this host is ${expectedDatabase}`);
+  }
+  if (meta.schema_complete && meta.schema_complete !== "true") bad.push(`schema_complete=${meta.schema_complete}`);
+  if (meta.exporter && meta.exporter !== "pg_dump" && !/remote/.test(meta.exporter)) bad.push(`exporter=${meta.exporter}`);
+  if (meta.create_tables && Number(meta.create_tables) < 1) bad.push(`create_tables=${meta.create_tables}`);
+  if (meta.bytes && actualBytes !== null && Number(meta.bytes) !== actualBytes) {
+    bad.push(`bytes=${meta.bytes} but file is ${actualBytes}`);
+  }
+  if (meta.sha256_artifact && !/^[0-9a-f]{64}$/.test(meta.sha256_artifact)) bad.push("sha256_artifact is malformed");
+  if (!meta.sha256_artifact) bad.push("sha256_artifact is not recorded, so the artifact cannot be verified");
+  if (!meta.created_utc) bad.push("created_utc is not recorded, so freshness rests on the file mtime alone");
+  return bad;
+}
+
+/** Where the operator said the backups are, or where the NAS jobs write them. */
+export function backupRoots(env) {
+  return (env.BACKUP_DIR ? [env.BACKUP_DIR] : DEFAULT_BACKUP_ROOTS).filter(Boolean);
 }
 
 /** Find the newest artifact under the configured destination(s). */
@@ -296,7 +338,7 @@ export function readEvidence(ctx) {
 
 const MAX_EVIDENCE_AGE_DAYS = 90;
 
-function evidenceAgeOk(stamp, now) {
+export function evidenceAgeOk(stamp, now) {
   if (!stamp) return { ok: false, reason: "no timestamp" };
   const t = Date.parse(stamp);
   if (Number.isNaN(t)) return { ok: false, reason: `unreadable timestamp '${String(stamp).slice(0, 20)}'` };
@@ -516,7 +558,7 @@ function checkExternalLinks(ctx) {
 
 /** A9 + A10 + sidecar metadata. */
 function checkBackups(ctx) {
-  const roots = (ctx.env.BACKUP_DIR ? [ctx.env.BACKUP_DIR] : DEFAULT_BACKUP_ROOTS).filter(Boolean);
+  const roots = backupRoots(ctx.env);
   const scan = scanBackups(ctx, roots);
   const maxAgeH = Number(ctx.env.PREFLIGHT_MAX_BACKUP_AGE_HOURS || ctx.env.BACKUP_DEADMAN_MAX_AGE_HOURS || 26);
 
@@ -559,17 +601,8 @@ function checkBackups(ctx) {
       remediation: "Sidecars are written by synology-nas-backup.sh since #1004. Take a fresh backup, then verify it restores.",
     }];
   }
-  const meta = Object.fromEntries(metaText.split(/\r?\n/).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
-  const bad = [];
-  if (!meta.source_database) bad.push("no source_database recorded");
-  else if (meta.source_database !== expectedDbName(ctx)) {
-    bad.push(`source_database=${meta.source_database} but this host is ${expectedDbName(ctx)}`);
-  }
-  if (meta.schema_complete && meta.schema_complete !== "true") bad.push(`schema_complete=${meta.schema_complete}`);
-  if (meta.exporter && meta.exporter !== "pg_dump" && !/remote/.test(meta.exporter)) bad.push(`exporter=${meta.exporter}`);
-  if (meta.create_tables && Number(meta.create_tables) < 1) bad.push(`create_tables=${meta.create_tables}`);
-  if (meta.bytes && Number(meta.bytes) !== newest.bytes) bad.push(`bytes=${meta.bytes} but file is ${newest.bytes}`);
-  if (meta.sha256_artifact && !/^[0-9a-f]{64}$/.test(meta.sha256_artifact)) bad.push("sha256_artifact is malformed");
+  const meta = parseSidecar(metaText);
+  const bad = auditSidecar(meta, { actualBytes: newest.bytes, expectedDatabase: expectedDbName(ctx) });
 
   const metadata = {
     id: "backup.metadata",
