@@ -2540,20 +2540,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
       dicomMeta = row.dicomMetadata as Record<string, unknown>;
     }
-    // The date this card prints, resolved once: the age above is evaluated ON it,
-    // so the card cannot show an examination date and an age computed against a
-    // different day. DICOM StudyDate is the same fallback `mergeReportDemography`
-    // uses for the printed value. The queue row is loosely typed, so its date is
-    // taken only when it actually is one.
-    const rowStudyDate =
-      typeof row?.studyDate === "string" && row.studyDate.trim() ? row.studyDate.trim() : null;
-    const studyDate =
-      detail?.studyDate ?? rowStudyDate ?? (dicomMeta.StudyDate != null ? String(dicomMeta.StudyDate) : null);
+    // The day the age below is evaluated on: the same two sources, in the same
+    // order, as the `studyDate` this card prints. Without it the card aged the
+    // patient from today's clock, so reopening a study scanned last year printed
+    // an age a year older than the examination it was describing.
+    const examinationDate = String(detail?.studyDate ?? row?.studyDate ?? "").trim() || null;
     const erpAge = resolveDisplayAge(
       { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
       dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
-      studyDate,
+      examinationDate,
     );
     const merged = mergeReportDemography({
       // The by-id detail read is keyed on the open study, so it is always this
@@ -2570,7 +2566,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         uhid: detail?.uhid ?? row?.uhid,
         accessionNumber: detail?.accessionNumber ?? row?.accessionNumber,
         studyDescription: detail?.studyDescription ?? row?.studyDescription,
-        studyDate,
+        studyDate: detail?.studyDate ?? row?.studyDate,
         referringDoctor: detail?.referringDoctor ?? row?.referringDoctor,
         dateOfBirth: master?.dateOfBirth,
       },
