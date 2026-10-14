@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 # =============================================================================
-# synology-nas-backup.sh — Docker-native DB backup for the CARE ERP on Synology
+# synology-nas-backup.sh — the clinic's PRIMARY database backup
 # =============================================================================
 # Dumps the live PostgreSQL database straight out of the `care-db` container with
 # pg_dump (the same --clean --if-exists logical dump the app's backup endpoint
-# uses), gzips it, optionally encrypts it (AES-256-CBC), verifies it is a
-# non-empty valid gzip, and prunes old copies. Unlike the API-pull method it does
-# NOT need care-api to be up — so it still works during an incident.
+# uses), gzips it, verifies the artifact is a COMPLETE schema-bearing dump of the
+# database you asked for, writes a sidecar .meta record, then optionally encrypts
+# (AES-256-CBC/PBKDF2) and prunes old copies. It does NOT need care-api to be up,
+# so it still works during an incident.
+#
+# This is the backup the clinic should rely on. scripts/synology-backup.sh pulls
+# a DIFFERENT database from the old cloud (Replit) deployment and must never be
+# scheduled as this box's local CARE backup.
 #
 # SETUP on the Synology NAS (do once):
 #   1. Copy this file to /volume1/scripts/care-backup.sh
 #   2. chmod +x /volume1/scripts/care-backup.sh
 #   3. Edit CONTAINER / DB_USER / DB_NAME below if yours differ (defaults match
-#      docker-compose.yml). Optionally set BACKUP_PASSPHRASE to encrypt.
+#      docker-compose.yml). Set BACKUP_PASSPHRASE in the task's environment —
+#      never on a command line, and never in a tracked file.
 #   4. DSM → Control Panel → Task Scheduler → Create → Scheduled Task →
 #      User-defined script, run daily at 03:00:
-#        bash /volume1/scripts/care-backup.sh
+#        BACKUP_PASSPHRASE="$(cat /volume1/scripts/.passphrase)" bash /volume1/scripts/care-backup.sh
 #
-# RESTORE: see docs/CARE_ERP_BACKUP_RESTORE.md.
+# RESTORE: see docs/CARE_ERP_BACKUP_RESTORE.md, then prove any copy restores with
+# scripts/verify-backup-restore.sh before you need it.
 # =============================================================================
 set -euo pipefail
 
@@ -25,51 +32,161 @@ set -euo pipefail
 CONTAINER="${CARE_DB_CONTAINER:-care-db}"
 DB_USER="${DB_USER:-erp}"
 DB_NAME="${DB_NAME:-diagnostic_erp}"
-BACKUP_DIR="${BACKUP_DIR:-/volume1/backups/caredeoghar}"
+BACKUP_DIR="${BACKUP_DIR:-/volume1/backup/care-erp/db}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
-BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"   # set to encrypt; keep this secret safe — it is required to restore
+# Never delete down to nothing: this many verified copies always survive a prune.
+KEEP_MIN_COPIES="${KEEP_MIN_COPIES:-2}"
+MIN_BYTES="${MIN_BYTES:-10240}"
+BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE:-}"   # required to restore an encrypted copy — keep it safe
 
 TS=$(date +%Y%m%d_%H%M%S)
 LOG="${BACKUP_DIR}/backup.log"
 DEST="${BACKUP_DIR}/caredeoghar_${TS}.sql.gz"
+PARTIAL="${DEST}.partial"
 
 log(){ echo "[$(date +%Y-%m-%dT%H:%M:%S)] $*" | tee -a "${LOG}"; }
+# Cleanup on failure removes the partial and any rejected encrypted copy — never a
+# published ${DEST}: after the artifact has been verified and moved into place, a
+# later step failing must not destroy the one good copy this run produced.
+fail(){ log "ERROR: $*"; rm -f "${PARTIAL}" "${PARTIAL}.tmp" "${DEST}.enc" "${DEST}.meta.partial" "${FINAL:-}.roundtrip" "${DEST}.roundtrip"; exit 1; }
 
-mkdir -p "${BACKUP_DIR}"
+mkdir -p "${BACKUP_DIR}" || fail "cannot create ${BACKUP_DIR}"
+[ -d "${BACKUP_DIR}" ] || fail "${BACKUP_DIR} is not a directory"
+[ -w "${BACKUP_DIR}" ] || fail "${BACKUP_DIR} is not writable"
+
+for bin in docker gzip; do
+  command -v "$bin" >/dev/null 2>&1 || fail "required command '$bin' is not on PATH"
+done
+if [ -n "${BACKUP_PASSPHRASE}" ] && ! command -v openssl >/dev/null 2>&1; then
+  fail "BACKUP_PASSPHRASE is set but openssl is not on PATH — refusing to dump an unencrypted copy of a patient database and call it encrypted"
+fi
+
 log "Starting backup of ${DB_NAME} from container ${CONTAINER}"
 
-# ─── DUMP + GZIP (fails loudly; PIPESTATUS catches a mid-stream pg_dump error) ─
+# ─── 1. PROVE WHICH DATABASE IS BEHIND THAT SOCKET ───────────────────────────
+# A dump is only as good as its source. This box has run a second stack beside
+# production, and `db_data` on that project is a real patient-shaped database
+# with a different history: identical file names, wrong clinic. Ask the server
+# itself, and refuse if the answer is not the database configured above.
+ACTUAL_DB=$(docker exec "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -Atc "select current_database()" 2>/dev/null || echo "")
+[ "${ACTUAL_DB}" = "${DB_NAME}" ] || fail "source database is '${ACTUAL_DB:-no answer}', expected '${DB_NAME}' — refusing to back up the wrong database"
+
+SOURCE_VERSION=$(docker exec "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -Atc "show server_version" 2>/dev/null || echo "unknown")
+
+# ─── 2. DUMP INTO A PARTIAL FILE ─────────────────────────────────────────────
+# Published only after every check below passes, so a crashed or truncated run can
+# never leave something named like a backup in the restore operator's way.
 if ! docker exec "${CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" \
-       --no-owner --no-privileges --clean --if-exists 2>>"${LOG}" | gzip > "${DEST}"; then
-  log "ERROR: pg_dump/gzip pipeline failed"; rm -f "${DEST}"; exit 1
+       --no-owner --no-privileges --clean --if-exists 2>>"${LOG}" | gzip > "${PARTIAL}"; then
+  fail "pg_dump/gzip pipeline failed"
 fi
 if [ "${PIPESTATUS[0]:-1}" -ne 0 ]; then
-  log "ERROR: pg_dump exited non-zero — discarding truncated dump"; rm -f "${DEST}"; exit 1
+  fail "pg_dump exited non-zero — discarding truncated dump"
 fi
 
-# ─── VERIFY the gzip is valid and non-trivial ────────────────────────────────
-if ! gzip -t "${DEST}" 2>/dev/null; then
-  log "ERROR: backup is not a valid gzip"; rm -f "${DEST}"; exit 1
-fi
-BYTES=$(stat -c%s "${DEST}" 2>/dev/null || stat -f%z "${DEST}")
-if [ "${BYTES}" -lt 10240 ]; then
-  log "ERROR: backup suspiciously small (${BYTES} bytes) — discarding"; rm -f "${DEST}"; exit 1
-fi
-log "Backup OK: ${DEST} ($(du -h "${DEST}" | cut -f1))"
+# ─── 3. VERIFY THE ARTIFACT, NOT JUST THE COMPRESSION ────────────────────────
+# `gzip -t` proves the bytes decompress. It does not prove PostgreSQL can restore
+# them, and it passes happily on a dump that died in the middle of a COPY.
+[ -s "${PARTIAL}" ] || fail "artifact is empty — nothing was dumped"
 
-# ─── OPTIONAL ENCRYPTION (AES-256-CBC, PBKDF2) ───────────────────────────────
+if ! gzip -t "${PARTIAL}" 2>/dev/null; then
+  fail "artifact is not a valid gzip"
+fi
+
+BYTES=$(stat -c%s "${PARTIAL}" 2>/dev/null || stat -f%z "${PARTIAL}")
+[ "${BYTES}" -ge "${MIN_BYTES}" ] || fail "artifact is ${BYTES} bytes, below the ${MIN_BYTES} floor — too small to be this clinic's database"
+
+# A plain-format pg_dump opens with its own banner and closes with a completion
+# marker. Both must be present, and the marker must be the LAST thing in the file:
+# that is what distinguishes a finished dump from one the pipe lost halfway.
+HEADER=$(gzip -dc "${PARTIAL}" 2>/dev/null | head -20 | grep -c "^-- PostgreSQL database dump$" || true)
+[ "${HEADER}" -ge 1 ] || fail "no pg_dump banner in the artifact — this is not a database dump"
+
+TAIL=$(gzip -dc "${PARTIAL}" 2>/dev/null | tail -5 | grep -c "^-- PostgreSQL database dump complete$" || true)
+[ "${TAIL}" -ge 1 ] || fail "dump is TRUNCATED — no 'database dump complete' marker. Refusing to publish an incomplete backup"
+
+# Schema-complete or data-only: the in-app fallback emits TRUNCATE + INSERT only,
+# which restores into an existing schema and rebuilds nothing. Catching that here
+# beats discovering it during a restore, months after the good copies were pruned.
+TABLES=$(gzip -dc "${PARTIAL}" 2>/dev/null | grep -c "^CREATE TABLE" || true)
+[ "${TABLES}" -ge 1 ] || fail "dump contains no CREATE TABLE — it is DATA ONLY and cannot rebuild the database (pg_dump missing in the container?)"
+
+# ─── 4. FINGERPRINT WHAT WAS BACKED UP ───────────────────────────────────────
+# The .meta sidecar is written after publication (below), once the final file name
+# is known. No secrets in it: it exists so "which database, which server, complete
+# or not, which bytes" is answerable after the fact instead of inferred.
+SHA=$(sha256sum "${PARTIAL}" | cut -d' ' -f1)
+
+# ─── 5. PUBLISH ──────────────────────────────────────────────────────────────
+mv "${PARTIAL}" "${DEST}" || fail "could not publish ${DEST}"
+log "Backup OK: ${DEST} (${BYTES} bytes, ${TABLES} CREATE TABLE, sha256 ${SHA})"
+
+# ─── 6. OPTIONAL ENCRYPTION (AES-256-CBC, PBKDF2) ────────────────────────────
+# The passphrase reaches openssl through its environment, never as an argument:
+# `ps -ef` on this box, a shell history entry, or a support screenshot of a
+# command line must not be enough to decrypt the clinic's patient database.
+FINAL="${DEST}"
 if [ -n "${BACKUP_PASSPHRASE}" ]; then
-  if openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}" -in "${DEST}" -out "${DEST}.enc"; then
-    rm -f "${DEST}"; DEST="${DEST}.enc"
-    log "Encrypted: ${DEST} ($(du -h "${DEST}" | cut -f1))"
+  if env BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE}" openssl enc -aes-256-cbc -salt -pbkdf2 \
+       -pass env:BACKUP_PASSPHRASE -in "${DEST}" -out "${DEST}.enc"; then
+    # Prove the encrypted copy round-trips to the same bytes BEFORE deleting the
+    # plaintext. An encryption that "succeeded" while writing garbage used to
+    # destroy the only readable copy on this line.
+    ROUNDTRIP="${DEST}.roundtrip"
+    if env BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE}" openssl enc -d -aes-256-cbc -pbkdf2 \
+         -pass env:BACKUP_PASSPHRASE -in "${DEST}.enc" -out "${ROUNDTRIP}" \
+       && [ "$(sha256sum "${ROUNDTRIP}" | cut -d' ' -f1)" = "${SHA}" ]; then
+      rm -f "${ROUNDTRIP}" "${DEST}"
+      FINAL="${DEST}.enc"
+      log "Encrypted and round-trip verified: ${FINAL}"
+    else
+      rm -f "${ROUNDTRIP}"
+      fail "encrypted copy does not decrypt back to the original — keeping the plaintext ${DEST} and refusing to delete it"
+    fi
   else
-    log "ERROR: encryption failed"; exit 1
+    rm -f "${DEST}.enc"
+    fail "encryption failed — keeping the plaintext ${DEST} rather than reporting a lost backup"
   fi
 fi
 
-# ─── RETENTION ───────────────────────────────────────────────────────────────
-PURGED=$(find "${BACKUP_DIR}" \( -name 'caredeoghar_*.sql.gz' -o -name 'caredeoghar_*.sql.gz.enc' \) \
-           -mtime +"${RETENTION_DAYS}" -delete -print | wc -l | tr -d ' ')
-[ "${PURGED}" -gt 0 ] && log "Purged ${PURGED} backup(s) older than ${RETENTION_DAYS} days"
+# ─── 6b. THE SIDECAR RECORD ──────────────────────────────────────────────────
+META="${FINAL}.meta"
+{
+  echo "artifact=$(basename "${FINAL}")"
+  echo "created_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "source_container=${CONTAINER}"
+  echo "source_database=${ACTUAL_DB}"
+  echo "server_version=${SOURCE_VERSION}"
+  echo "exporter=pg_dump"
+  echo "schema_complete=true"
+  echo "create_tables=${TABLES}"
+  echo "bytes=${BYTES}"
+  echo "encrypted=$([ -n "${BACKUP_PASSPHRASE}" ] && echo yes || echo no)"
+  echo "sha256_sql_plaintext=${SHA}"
+} > "${META}.partial" && mv "${META}.partial" "${META}" || fail "could not write ${META}"
 
-log "Backup complete: ${DEST}"
+# ─── 7. RETENTION, WITH A FLOOR ──────────────────────────────────────────────
+# Prune only this script's own artifacts, only after a verified publication, and
+# never below KEEP_MIN_COPIES whatever their age: a misconfigured RETENTION_DAYS,
+# a clock that jumped, or a month of failed runs must not leave nothing to restore.
+CANDIDATES=$(find "${BACKUP_DIR}" -maxdepth 1 -type f \
+  \( -name 'caredeoghar_*.sql.gz' -o -name 'caredeoghar_*.sql.gz.enc' \) \
+  -mtime +"${RETENTION_DAYS}" -printf '%T@ %p\n' 2>/dev/null | sort -rn)
+REMAINING=$(find "${BACKUP_DIR}" -maxdepth 1 -type f \
+  \( -name 'caredeoghar_*.sql.gz' -o -name 'caredeoghar_*.sql.gz.enc' \) | wc -l | tr -d ' ')
+PURGED=0
+if [ -n "${CANDIDATES}" ]; then
+  while read -r _ path; do
+    [ -z "${path}" ] && continue
+    if [ "${REMAINING}" -le "${KEEP_MIN_COPIES}" ]; then
+      log "Retention stopped at ${KEEP_MIN_COPIES} copies (${REMAINING} present) — not deleting the last known-good backups"
+      break
+    fi
+    rm -f "${path}" "${path}.meta"
+    PURGED=$((PURGED + 1))
+    REMAINING=$((REMAINING - 1))
+  done <<< "${CANDIDATES}"
+fi
+[ "${PURGED}" -gt 0 ] && log "Purged ${PURGED} backup(s) older than ${RETENTION_DAYS} days (floor ${KEEP_MIN_COPIES})"
+
+log "Backup complete: ${FINAL}"

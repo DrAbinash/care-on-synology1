@@ -77,8 +77,10 @@ docker exec care-db pg_restore --list /tmp/pre_quickdoctor_deploy.dump | head -2
 - [ ] Backup copied off the NAS to secondary storage per existing backup
       policy (same as the nightly job).
 
-This is in addition to, not a replacement for, the existing nightly
-`scripts/synology-backup.sh` job — keep that schedule running as-is.
+This is in addition to, not a replacement for, the nightly on-box dump
+`scripts/synology-nas-backup.sh` — keep that schedule running. (This line used to point at
+`scripts/synology-backup.sh`, which pulls the old cloud instance's database, not this
+clinic's; it is retired as the clinic's backup — see `SOP/RECOVERY/MASTER_RECOVERY_INDEX.md`.)
 
 ---
 

@@ -14,7 +14,11 @@
 
 ### A. Daily Scheduled Backups
 1.  Daily database backups are executed automatically via the **Synology Task Scheduler** at `03:00` AM IST.
-2.  The script [synology-backup.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/synology-backup.sh) runs as root.
+2.  The script that must run at 03:00 is **`scripts/synology-nas-backup.sh`** — it dumps
+    this NAS's own `care-db` container, so it protects the clinic's actual data and works
+    even when `care-api` is down. `scripts/synology-backup.sh` (the older helper referenced
+    below) pulls a **different** database — the old cloud/Replit instance — and is retired as
+    this clinic's backup; see `SOP/RECOVERY/MASTER_RECOVERY_INDEX.md`.
 3.  If the environment variable `BACKUP_PASSPHRASE` is defined on the NAS, the script automatically encrypts the SQL file using OpenSSL:
     ```bash
     openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}"
