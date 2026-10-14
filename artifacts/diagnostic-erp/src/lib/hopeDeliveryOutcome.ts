@@ -159,7 +159,7 @@ export function classifyHopeDeliveryError(err: unknown): HopeDeliveryOutcome {
   }
 
   // The server never answered, so THIS call enqueued nothing. That is still recoverable
-  // rather than lost, by existing machinery: `reconcileResults` (resultsEmitter.ts:33-57)
+  // rather than lost, by existing machinery: `reconcileResults` (resultsEmitter.ts:45-83)
   // takes referrals with a `care_order_id`, finds reports whose `patient_reports.order_id`
   // equals it, and skips only rows that already have an `external_result_links` row — so a
   // report never enqueued is re-emitted on the next 5-minute tick. That covers exactly the

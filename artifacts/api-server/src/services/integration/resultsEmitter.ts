@@ -7,8 +7,11 @@
 //   • advances the referral item + header toward REPORTED/DELIVERED.
 // Running it on a timer (or manually) means result-return survives whichever
 // code path finalised the report, and re-running never double-emits.
+// The scan window is work-driven (eligible reports with no link yet, oldest
+// referral first) so a growing reconciled history cannot starve new results —
+// see reconcileFairProgress.db.test.ts.
 // ============================================================================
-import { and, eq, inArray, notInArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, notInArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   diagnosticReferralsTable,
@@ -28,18 +31,39 @@ function carePublicBaseUrl(): string {
     .replace(/\/+$/, "");
 }
 
-export async function reconcileResults(opts: { limit?: number } = {}): Promise<{ scanned: number; emitted: number; critical: number }> {
+export async function reconcileResults(opts: { limit?: number } = {}): Promise<{ scanned: number; emitted: number; critical: number; failed: number }> {
   const limit = opts.limit ?? 50;
+
+  // Work, not history, defines the window. A reconciled referral stays inside the
+  // old predicate — its header lands on REPORTED, which is not one of the three
+  // excluded statuses, and nothing in the codebase writes DELIVERED — so once the
+  // history grew past `limit` a pass spent its whole budget re-reading rows whose
+  // reports were already linked and never reached the un-linked rows behind them.
+  // That is starvation, not slowness: the rows it skipped could never be delivered.
+  // Ordered, so "which `limit` rows" is a fact a test can pin rather than whatever
+  // the heap scan happened to yield first.
   const refs = await db
     .select()
     .from(diagnosticReferralsTable)
     .where(and(
       isNotNull(diagnosticReferralsTable.careOrderId),
       notInArray(diagnosticReferralsTable.status, ["CANCELLED", "EXPIRED", "DELIVERED"]),
+      // Mirrors the per-report filter below: a referral counts only if one of its
+      // eligible reports has no external_result_links row yet.
+      sql`EXISTS (
+            SELECT 1 FROM "patient_reports" "pr"
+             WHERE "pr"."order_id" = ${diagnosticReferralsTable.careOrderId}
+               AND "pr"."status" IN ('pending_verification', 'verified', 'delivered')
+               AND NOT EXISTS (
+                    SELECT 1 FROM "external_result_links" "erl"
+                     WHERE "erl"."referral_id" = ${diagnosticReferralsTable.id}
+                       AND "erl"."care_report_id" = "pr"."id")
+          )`,
     ))
+    .orderBy(diagnosticReferralsTable.id)
     .limit(limit);
 
-  let emitted = 0, critical = 0;
+  let emitted = 0, critical = 0, failed = 0;
   for (const ref of refs) {
     if (!ref.careOrderId) continue;
     const reports = await db
@@ -53,6 +77,8 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
     for (const it of items) if (it.careOrderTestId) itemByOrderTest.set(it.careOrderTestId, it.id);
 
     for (const rep of reports) {
+      // Cheap pre-filter only — the authoritative check runs inside the transaction,
+      // where it is atomic against the insert.
       const [linked] = await db.select({ id: externalResultLinksTable.id }).from(externalResultLinksTable).where(and(eq(externalResultLinksTable.referralId, ref.id), eq(externalResultLinksTable.careReportId, rep.id))).limit(1);
       if (linked) continue;
 
@@ -85,7 +111,29 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
       const pdfUrl = reportToken && base ? `${base}/api/p/r/${encodeURIComponent(reportToken)}/pdf` : null;
       const reportPageUrl = reportToken && base ? `${base}/p/r/${encodeURIComponent(reportToken)}` : null;
 
+      // A report that cannot be emitted must not abandon the referrals queued
+      // behind it in the same pass — that is a second, independent way to stop
+      // making progress. The link, the events and the audit rows are one
+      // transaction, so a collision (e.g. a concurrent pass winning the outbox
+      // idempotency key) rolls the whole unit back, the report stays un-linked,
+      // and the next tick retries it.
+      let emittedThisReport = true;
       await db.transaction(async (tx) => {
+        // Pre-check above, insert here: not one atomic step. The only unique index
+        // on the table is (referral_item_id, care_report_id), and PostgreSQL treats
+        // NULLs as distinct, so a referral with no item row is not covered by it —
+        // two passes racing on the same report both commit a link, and the loser
+        // still finds the winner's outbox row by idempotency key, so nothing else
+        // stops it either. One lock per (referral, report) pair, held to COMMIT,
+        // makes this check and the insert below a single decision.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reconcile-result:${ref.id}:${rep.id}`}, 0))`);
+        const [raced] = await tx
+          .select({ id: externalResultLinksTable.id })
+          .from(externalResultLinksTable)
+          .where(and(eq(externalResultLinksTable.referralId, ref.id), eq(externalResultLinksTable.careReportId, rep.id)))
+          .limit(1);
+        if (raced) { emittedThisReport = false; return; }
+
         const [link] = await tx.insert(externalResultLinksTable).values({
           referralId: ref.id,
           referralItemId,
@@ -101,7 +149,11 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
           finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
           reportRef: rep.reportNumber,
         }).returning({ id: externalResultLinksTable.id }).catch(() => [undefined as unknown as { id: number }]);
-        if (!link) return;
+        // The insert was refused — for an item-linked referral this is the
+        // (referral_item_id, care_report_id) unique index saying someone else
+        // already wrote this result. The unit wrote nothing, so it counts as work
+        // deferred to the next pass, never as work done.
+        if (!link) { emittedThisReport = false; failed++; return; }
 
         const finalisedEvent = await enqueueOutboxEvent(tx, {
           eventType: amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised",
@@ -152,7 +204,12 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
             ...(amendment ? { supersedesReportNumber: originalReportNumber, amendmentSequence: amendment.sequenceNumber } : {}),
           },
         });
+      }).catch((err) => {
+        emittedThisReport = false;
+        failed++;
+        console.warn(`[integration] report ${rep.id} not emitted for referral ${ref.referralUuid}:`, (err as Error)?.message);
       });
+      if (!emittedThisReport) continue;
 
       // Care-attributed WhatsApp only (Care Meta / Care books — never Hope Hospital or Medicals).
       if (ref.patientPhone && !amendment) {
@@ -195,5 +252,5 @@ export async function reconcileResults(opts: { limit?: number } = {}): Promise<{
     }
   }
 
-  return { scanned: refs.length, emitted, critical };
+  return { scanned: refs.length, emitted, critical, failed };
 }
