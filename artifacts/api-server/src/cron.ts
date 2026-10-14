@@ -1228,19 +1228,34 @@ function scheduleWhatsappReminders() {
 function scheduleWhatsAppOutboxDispatch() {
   cron.schedule("*/2 * * * *", async () => {
     try {
-      const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
-      // Peak: drain slowly so bill-created WhatsApps still leave, without a
-      // 20-row HTTP burst competing with desk saves every 2 minutes.
-      const limit = isClinicPeakHours() ? 5 : 20;
-      const result = await dispatchPendingWaOutbox({ limit, workerId: "in-process-cron" });
-      if (result.claimed > 0) {
-        console.log(`[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed} dead=${result.dead} suppressed=${result.suppressed}`);
-      }
+      await runWhatsAppOutboxDispatchTick();
     } catch (err) {
       console.error("[cron] WhatsApp outbox dispatch failed:", err);
     }
   });
   console.log("[cron] WhatsApp outbox dispatch scheduler started (fallback, every 2 minutes)");
+}
+
+/** The every-2-minutes drain itself, callable without the cron timer (the same
+ *  shape as every other schedule in this file, and what lets the reclaim
+ *  visibility below be tested against the real code path). */
+export async function runWhatsAppOutboxDispatchTick() {
+  const { dispatchPendingWaOutbox } = await import("./services/whatsapp/WhatsAppOutbox");
+  // Peak: drain slowly so bill-created WhatsApps still leave, without a
+  // 20-row HTTP burst competing with desk saves every 2 minutes.
+  const limit = isClinicPeakHours() ? 5 : 20;
+  const result = await dispatchPendingWaOutbox({ limit, workerId: "in-process-cron" });
+  // A tick that only recovers abandoned claims claims nothing (the reclaimed
+  // row goes back to `queued` with a backoff, so it is not due yet), so
+  // gating on `claimed` alone would leave the one event a clinic most needs
+  // to see — a message nobody was sending — absent from the log.
+  if (result.claimed > 0 || result.recovered > 0 || result.conflicts > 0) {
+    console.log(
+      `[cron] WhatsApp outbox dispatch: claimed=${result.claimed} sent=${result.sent} failed=${result.failed}`
+      + ` dead=${result.dead} suppressed=${result.suppressed} recovered=${result.recovered} conflicts=${result.conflicts}`,
+    );
+  }
+  return result;
 }
 
 // Manual triggers used by the internal-cron endpoints (and callable in tests).
