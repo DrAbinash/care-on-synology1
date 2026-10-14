@@ -127,6 +127,20 @@ export type { SectionContradiction } from "./text/findingsImpression";
 // `isFillerAdvice` is the anti-filler shape the dependency refuses to demand; the
 // composer validator imports the same predicate for the advice it refuses to keep.
 export { unmetRecommendationDependency, isFillerAdvice } from "./text/recommendation";
+// The un-filled placeholder vocabulary behind Q106. Called by ./text/evaluate AND by
+// the live workspace validator, so the badge and the finalize dialog name the same
+// blank with the same sentence. Exported whole rather than as a bare predicate
+// because the dialect list is the part that has to stay honest: each entry cites the
+// shipped content that emits it, and a spelling no producer writes is only a way to
+// mark up a correct report.
+export {
+  PLACEHOLDER_DIALECTS,
+  unfilledPlaceholders,
+  firstUnfilledPlaceholder,
+  hasUnfilledPlaceholder,
+  reportPlaceholderWarning,
+} from "./text/placeholders";
+export type { PlaceholderKind, PlaceholderDialect, PlaceholderHit, ReportProseFields } from "./text/placeholders";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry, significanceOfRule } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry, RuleSignificance } from "./ruleCatalog";

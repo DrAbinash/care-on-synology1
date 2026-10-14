@@ -129,7 +129,15 @@ export const RULE_CATALOG = {
   Q103: { id: "Q103", legacyAlias: "Q103", canonicalId: "care.text.consistency.normal-vs-pathology", ...CORE, title: "Normal phrase with pathology", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "A 'normal study' phrase co-occurs with a pathology term." },
   Q104: { id: "Q104", legacyAlias: "Q104", canonicalId: "care.text.laterality.impression-vs-findings", ...CORE, title: "Impression laterality not in findings", category: "laterality", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "A side named in the Impression is absent from the Findings." },
   Q105: { id: "Q105", legacyAlias: "Q105", canonicalId: "care.completeness.pathology-without-impression", ...CORE, title: "Pathology without impression", category: "completeness", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "Findings describe pathology but the Impression is empty." },
-  Q106: { id: "Q106", legacyAlias: "Q106", canonicalId: "care.text.consistency.unfilled-placeholder", ...CORE, title: "Unfilled measurement placeholder", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "An un-filled {value} placeholder remains in the text." },
+  // Q106 read one literal — `includes("{value}")` — while CARE's shipped content
+  // writes its blanks four ways: the five `fillTemplate` tokens, a `___` run (14
+  // Quick Select tiles, 16 Report Format lines), a `[bracketed slot]`, and a bare
+  // `X` before a unit. A report CARE built from its own tiles printed "Mass effect
+  // with midline shift of ___ mm." and scored 95/100. Id, canonical id and advisory
+  // classification are unchanged — only what the rule now means, and the vocabulary
+  // lives in ./text/placeholders.ts, which `reportValidator.ts` calls for the same
+  // sentence rather than writing its own copy.
+  Q106: { id: "Q106", legacyAlias: "Q106", canonicalId: "care.text.consistency.unfilled-placeholder", ...CORE, title: "Unfilled placeholder", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "A slot the report still has to fill — a template token, a ___ blank, a [bracketed slot] or a bare X before a unit — remains in the text." },
   Q107: { id: "Q107", legacyAlias: "Q107", canonicalId: "care.text.laterality.vs-study-description", ...CORE, title: "Laterality vs study description", category: "laterality", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "Report laterality contradicts the study description." },
   Q108: { id: "Q108", legacyAlias: "Q108", canonicalId: "care.text.consistency.protrusion-direction", ...CORE, title: "Protrusion direction ambiguous", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "advisory", description: "Both anterior and posterior protrusions mentioned." },
   Q109: { id: "Q109", legacyAlias: "Q109", canonicalId: "care.text.consistency.gender-anatomy", ...CORE, title: "Gender/anatomy contradiction", category: "consistency", tier: "heuristic", defaultSeverity: "warning", significance: "high", description: "Report mentions anatomy inconsistent with patient sex." },
