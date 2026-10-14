@@ -351,20 +351,74 @@ export type RowDispatchOutcome =
   | { kind: "suppressed" }
   | { kind: "sent"; messageId?: string }
   | { kind: "retry_scheduled"; error: string }
-  | { kind: "dead_letter"; error: string };
+  | { kind: "dead_letter"; error: string }
+  | { kind: "invalid_recipient"; error: string }
+  /** The row belonged to this worker when the attempt started, and no longer does
+   *  by the time the provider answered: another worker recovered it after this
+   *  one's lease expired. Whatever this call learned is not the current truth, so
+   *  it writes nothing and is counted as a conflict rather than a delivery. */
+  | { kind: "lost_ownership" };
+
+/**
+ * How long a claimed row may sit in `processing` before another worker is
+ * allowed to take it back. The same policy the CARE→HOPE outbox adopted in #995
+ * (integration/outbox.ts:113-133): three times the provider timeout, floored at
+ * 90 seconds, so a slow-but-alive worker is never reclaimed under it. A provider
+ * call that hangs past its own 15 s timeout still needs room for the abort to
+ * surface and the write-back to run.
+ */
+export function waStaleLeaseMs(timeoutMs: number): number {
+  return Math.max(3 * (timeoutMs || 15_000), 90_000);
+}
+
+interface RowOwnership { workerId: string; leasedAt: Date }
+
+/**
+ * The only write-back this dispatcher is allowed to make on a claimed row: it
+ * restates the row AND proves it still holds the lease in one statement.
+ * `UPDATE ... WHERE id = ? AND locked_by = ? AND locked_at = ? RETURNING id`.
+ *
+ * Without the two lease predicates, a worker whose lease expired writes over
+ * the state of the worker that legitimately took the row over — including a
+ * `sent` with its own provider message id, which would hide the fact that two
+ * sends may have happened. Mirrors `finalizeOwnedTransition` in
+ * integration/outbox.ts:193-214. Returns false when the row moved on without us.
+ */
+async function writeOwnedRow(
+  row: { id: number },
+  owner: RowOwnership,
+  patch: Partial<typeof waOutboxTable.$inferInsert>,
+): Promise<boolean> {
+  const [updated] = await db.update(waOutboxTable)
+    .set(patch)
+    .where(and(
+      eq(waOutboxTable.id, row.id),
+      eq(waOutboxTable.lockedBy, owner.workerId),
+      eq(waOutboxTable.lockedAt, owner.leasedAt),
+    ))
+    .returning({ id: waOutboxTable.id });
+  return !!updated;
+}
 
 /**
  * Attempt delivery of a single ALREADY-CLAIMED outbox row (status must be
  * "processing" — the caller is responsible for the atomic claim, via either
  * dispatchPendingWaOutbox's FOR UPDATE SKIP LOCKED batch claim or
- * claimOutboxRowForImmediateSend's single-row compare-and-swap. Always
- * clears lockedAt/lockedBy on the way out, whatever the outcome, so a row
- * never gets stuck "locked" by a worker that has finished with it.
+ * claimOutboxRowForImmediateSend's single-row compare-and-swap). Every outcome
+ * writes back only while this worker still owns the row, and always clears
+ * lockedAt/lockedBy on the way out, so a row never stays "locked" by a worker
+ * that has finished with it.
  * Shared by both the batch dispatcher and sendWhatsAppNow's inline
  * best-effort attempt, so there is exactly one place that talks to Meta.
  */
-async function dispatchOneOutboxRow(row: typeof waOutboxTable.$inferSelect, s: typeof whatsappSettingsTable.$inferSelect, timeoutMs: number): Promise<RowDispatchOutcome> {
+async function dispatchOneOutboxRow(
+  row: typeof waOutboxTable.$inferSelect,
+  s: typeof whatsappSettingsTable.$inferSelect,
+  timeoutMs: number,
+  owner: RowOwnership,
+): Promise<RowDispatchOutcome> {
   const attemptNo = row.attemptCount + 1;
+  const released: Partial<typeof waOutboxTable.$inferInsert> = { lockedAt: null, lockedBy: null };
 
   // A row claimed while already marked suppressed (shadow mode / not on
   // allowlist) never reaches Meta — the point of shadow mode is that
@@ -375,17 +429,32 @@ async function dispatchOneOutboxRow(row: typeof waOutboxTable.$inferSelect, s: t
   // retried after shadow mode is turned off WILL send for real, which is
   // the correct behavior for a manual retry action.
   if (row.suppressedReason) {
-    await db.update(waOutboxTable).set({ status: "suppressed", lockedAt: null, lockedBy: null }).where(eq(waOutboxTable.id, row.id));
-    return { kind: "suppressed" };
+    const held = await writeOwnedRow(row, owner, { status: "suppressed", ...released });
+    return held ? { kind: "suppressed" } : { kind: "lost_ownership" };
+  }
+
+  // Nothing else in this path can catch it: a recipient with no digits in it can
+  // never be delivered, and POSTing it anyway spends an attempt and can still
+  // come back 2xx-shaped from a gateway, which would stamp a message nobody
+  // received as sent. Terminal, not retryable.
+  if (!normalizePhone(row.recipientPhone, s.defaultCountryCode)) {
+    await recordAttempt(row.id, attemptNo, false, null, "invalid_recipient", "Recipient phone has no digits");
+    await writeOwnedRow(row, owner, {
+      status: "dead_letter", attemptCount: attemptNo, lastErrorCode: "invalid_recipient",
+      lastErrorMessage: "Recipient phone number is missing or unusable",
+      deadLetteredAt: new Date(), ...released,
+    });
+    return { kind: "invalid_recipient", error: "Recipient phone number is missing or unusable" };
   }
 
   const cfg = await resolveDispatchNumber(row.phoneNumberId, s);
   if (!cfg) {
     await recordAttempt(row.id, attemptNo, false, null, "not_configured", "No WhatsApp number credentials configured");
-    await db.update(waOutboxTable).set({
+    const held = await writeOwnedRow(row, owner, {
       status: "queued", attemptCount: attemptNo, lastErrorMessage: "WhatsApp not configured",
-      nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo, s.retryDelayBaseSeconds)), lockedAt: null, lockedBy: null,
-    }).where(eq(waOutboxTable.id, row.id));
+      nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo, s.retryDelayBaseSeconds)), ...released,
+    });
+    if (!held) return { kind: "lost_ownership" };
     return { kind: "retry_scheduled", error: "WhatsApp not configured" };
   }
 
@@ -395,8 +464,8 @@ async function dispatchOneOutboxRow(row: typeof waOutboxTable.$inferSelect, s: t
   } catch {
     // Malformed payload can never succeed on retry — dead-letter immediately.
     await recordAttempt(row.id, attemptNo, false, null, "invalid_payload", null);
-    await db.update(waOutboxTable).set({ status: "dead_letter", attemptCount: attemptNo, lastErrorMessage: "Malformed payload_json", deadLetteredAt: new Date(), lockedAt: null, lockedBy: null }).where(eq(waOutboxTable.id, row.id));
-    return { kind: "dead_letter", error: "Malformed payload" };
+    const held = await writeOwnedRow(row, owner, { status: "dead_letter", attemptCount: attemptNo, lastErrorMessage: "Malformed payload_json", deadLetteredAt: new Date(), ...released });
+    return held ? { kind: "dead_letter", error: "Malformed payload" } : { kind: "lost_ownership" };
   }
 
   const url = `https://graph.facebook.com/${cfg.graphApiVersion}/${encodeURIComponent(cfg.phoneNumberId)}/messages`;
@@ -418,7 +487,8 @@ async function dispatchOneOutboxRow(row: typeof waOutboxTable.$inferSelect, s: t
     if (resp.ok) {
       const providerMessageId = data.messages?.[0]?.id;
       await recordAttempt(row.id, attemptNo, true, resp.status, null, JSON.stringify({ messageId: providerMessageId }));
-      await db.update(waOutboxTable).set({ status: "sent", attemptCount: attemptNo, sentAt: new Date(), providerMessageId, lastErrorMessage: null, lockedAt: null, lockedBy: null }).where(eq(waOutboxTable.id, row.id));
+      const held = await writeOwnedRow(row, owner, { status: "sent", attemptCount: attemptNo, sentAt: new Date(), providerMessageId, lastErrorMessage: null, ...released });
+      if (!held) return { kind: "lost_ownership" };
       if (row.phoneNumberId) void db.update(whatsappNumbersTable).set({ lastOutboundAt: new Date(), connectionStatus: "ok" }).where(eq(whatsappNumbersTable.phoneNumberId, row.phoneNumberId)).catch(() => {});
       return { kind: "sent", messageId: providerMessageId };
     }
@@ -428,35 +498,53 @@ async function dispatchOneOutboxRow(row: typeof waOutboxTable.$inferSelect, s: t
     const retryable = isRetryableStatus(resp.status);
     const isDead = shouldDeadLetter(retryable, attemptNo, row.maxAttempts);
     await recordAttempt(row.id, attemptNo, false, resp.status, errCode, errMsg);
-    await db.update(waOutboxTable).set({
+    const held = await writeOwnedRow(row, owner, {
       status: isDead ? "dead_letter" : "queued", attemptCount: attemptNo,
       lastErrorCode: errCode, lastErrorMessage: errMsg,
       nextAttemptAt: retryable ? new Date(Date.now() + backoffMs(attemptNo, s.retryDelayBaseSeconds)) : row.nextAttemptAt,
       deadLetteredAt: isDead ? new Date() : null,
-      lockedAt: null, lockedBy: null,
-    }).where(eq(waOutboxTable.id, row.id));
+      ...released,
+    });
+    if (!held) return { kind: "lost_ownership" };
     return isDead ? { kind: "dead_letter", error: errMsg } : { kind: "retry_scheduled", error: errMsg };
   } catch (err) {
     const msg = (err as Error)?.name === "AbortError" ? "timeout" : ((err as Error)?.message ?? "send_error").slice(0, 300);
     const isDead = shouldDeadLetter(true, attemptNo, row.maxAttempts);
     await recordAttempt(row.id, attemptNo, false, null, "network_error", msg);
-    await db.update(waOutboxTable).set({
+    const held = await writeOwnedRow(row, owner, {
       status: isDead ? "dead_letter" : "queued", attemptCount: attemptNo, lastErrorMessage: msg,
       nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo, s.retryDelayBaseSeconds)),
-      deadLetteredAt: isDead ? new Date() : null, lockedAt: null, lockedBy: null,
-    }).where(eq(waOutboxTable.id, row.id));
+      deadLetteredAt: isDead ? new Date() : null, ...released,
+    });
+    if (!held) return { kind: "lost_ownership" };
     return isDead ? { kind: "dead_letter", error: msg } : { kind: "retry_scheduled", error: msg };
   } finally {
     clearTimeout(timer);
   }
 }
 
-export interface DispatchSummary { claimed: number; sent: number; failed: number; dead: number; suppressed: number }
+export interface DispatchSummary {
+  claimed: number; sent: number; failed: number; dead: number; suppressed: number;
+  /** Rows a dead worker had claimed but never reported, put back in play. */
+  recovered: number;
+  /** Attempts whose result was discarded because another worker owns the row now. */
+  conflicts: number;
+}
 
 /**
  * Claim up to `limit` queued/suppressed rows and attempt delivery.
  * Concurrency-safe via FOR UPDATE SKIP LOCKED, so multiple worker processes
  * (or a manual + scheduled run overlapping) never double-send the same row.
+ *
+ * Two things it also has to do, because a queue that only ever moves forward
+ * loses work silently:
+ *  * recover rows a crashed worker left in `processing` — they are invisible to
+ *    the claim filter below, so without this they are never sent, never
+ *    dead-lettered and never counted (same defect #995 fixed for the HOPE
+ *    outbox, same fix shape);
+ *  * write back only while still owning the lease, so the recovery above cannot
+ *    let a zombie write over the worker that actually delivered the message
+ *    (#996's fencing, for the same reason).
  */
 export async function dispatchPendingWaOutbox(opts: { limit?: number; workerId?: string; timeoutMs?: number } = {}): Promise<DispatchSummary> {
   const limit = opts.limit ?? 20;
@@ -464,17 +552,66 @@ export async function dispatchPendingWaOutbox(opts: { limit?: number; workerId?:
   const timeoutMs = opts.timeoutMs ?? 15_000;
 
   const s = await getSettingsRow();
-  const summary: DispatchSummary = { claimed: 0, sent: 0, failed: 0, dead: 0, suppressed: 0 };
+  const summary: DispatchSummary = { claimed: 0, sent: 0, failed: 0, dead: 0, suppressed: 0, recovered: 0, conflicts: 0 };
   if (!s) return summary;
 
+  const leaseMs = waStaleLeaseMs(timeoutMs);
+  const leasedAt = new Date();
+
   const claimedIds = await db.transaction(async (tx) => {
-    const res = await tx.execute(
-      sql`SELECT id FROM wa_outbox WHERE status IN ('queued', 'suppressed') AND next_attempt_at <= NOW() ORDER BY priority ASC, next_attempt_at ASC LIMIT ${limit} FOR UPDATE SKIP LOCKED`,
+    // ── 1. Recover abandoned claims ──────────────────────────────────────────
+    // A row in `processing` whose lease expired was claimed by a worker that is
+    // gone: it either never reached Meta or reached it and died before writing
+    // the answer down. The send state is genuinely UNKNOWN in the second case, so
+    // the row goes back to `queued` with the attempt charged and the reason
+    // recorded, and a later pass re-sends it. Delivery stays at-least-once — a
+    // recovered message may reach the patient twice, and the attempt row below is
+    // what makes that visible instead of deniable.
+    const staleRes = await tx.execute(
+      sql`SELECT id, attempt_count, max_attempts FROM wa_outbox
+           WHERE status = 'processing' AND locked_at IS NOT NULL
+             AND locked_at < NOW() - (${leaseMs} || ' milliseconds')::interval
+           ORDER BY locked_at ASC
+           LIMIT ${limit}
+           FOR UPDATE SKIP LOCKED`,
     );
-    const rows = ((res as unknown as { rows?: Array<{ id: number }> }).rows ?? (res as unknown as Array<{ id: number }>)) as Array<{ id: number }>;
-    const ids = rows.map((r) => Number(r.id));
+    const staleRows = readRows<{ id: number; attempt_count: number; max_attempts: number }>(staleRes);
+    for (const stale of staleRows) {
+      const attemptNo = stale.attempt_count + 1;
+      const exhausted = shouldDeadLetter(true, attemptNo, stale.max_attempts);
+      await tx.insert(waDeliveryAttemptsTable).values({
+        outboxId: stale.id, attemptNo, respondedAt: new Date(), httpStatus: null,
+        providerErrorCode: "delivery_abandoned", success: false,
+        responseSanitized: "Recovered: the worker that claimed this row never reported an outcome",
+      });
+      await tx.update(waOutboxTable).set({
+        status: exhausted ? "dead_letter" : "queued",
+        attemptCount: attemptNo,
+        lastErrorCode: "delivery_abandoned",
+        lastErrorMessage: "A worker claimed this message and never reported an outcome; the send state is unknown",
+        nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo, s.retryDelayBaseSeconds)),
+        deadLetteredAt: exhausted ? new Date() : null,
+        lockedAt: null, lockedBy: null,
+      }).where(eq(waOutboxTable.id, stale.id));
+      summary.recovered++;
+    }
+
+    // ── 2. Claim sendable work ───────────────────────────────────────────────
+    // `suppressed` rows stay in the claim set on purpose (that is how flipping
+    // shadow mode off releases a queued message without re-enqueuing it), but they
+    // must never outrank a message that can go out now: they were stamped with an
+    // older next_attempt_at and keep it, so with the peak batch of 5
+    // (cron.ts:1234) five of them occupy every slot on every tick forever and the
+    // clinic's reminders stop sending while the dashboard still looks healthy.
+    const res = await tx.execute(
+      sql`SELECT id FROM wa_outbox
+           WHERE status IN ('queued', 'suppressed') AND next_attempt_at <= NOW()
+           ORDER BY (status = 'suppressed') ASC, priority ASC, next_attempt_at ASC
+           LIMIT ${limit} FOR UPDATE SKIP LOCKED`,
+    );
+    const ids = readRows<{ id: number }>(res).map((r) => Number(r.id));
     if (ids.length) {
-      await tx.update(waOutboxTable).set({ status: "processing", lockedAt: new Date(), lockedBy: workerId, processingStartedAt: new Date() }).where(inArray(waOutboxTable.id, ids));
+      await tx.update(waOutboxTable).set({ status: "processing", lockedAt: leasedAt, lockedBy: workerId, processingStartedAt: new Date() }).where(inArray(waOutboxTable.id, ids));
     }
     return ids;
   });
@@ -484,14 +621,32 @@ export async function dispatchPendingWaOutbox(opts: { limit?: number; workerId?:
   const rows = await db.select().from(waOutboxTable).where(inArray(waOutboxTable.id, claimedIds));
 
   for (const row of rows) {
-    const outcome = await dispatchOneOutboxRow(row, s, timeoutMs);
+    let outcome: RowDispatchOutcome;
+    try {
+      outcome = await dispatchOneOutboxRow(row, s, timeoutMs, { workerId, leasedAt: row.lockedAt ?? leasedAt });
+    } catch (err) {
+      // One row's bookkeeping failure (a rejected write-back, a provider payload
+      // that broke something) must not end the tick: the rows already claimed
+      // behind it would then be abandoned in `processing`, which is the very
+      // failure this function exists to recover from.
+      summary.failed++;
+      console.warn(`[whatsapp-outbox] row ${row.id} threw during dispatch and was left for recovery:`, (err as Error)?.message);
+      continue;
+    }
     if (outcome.kind === "suppressed") summary.suppressed++;
     else if (outcome.kind === "sent") summary.sent++;
     else if (outcome.kind === "retry_scheduled") summary.failed++;
+    else if (outcome.kind === "lost_ownership") summary.conflicts++;
     else summary.dead++;
   }
 
   return summary;
+}
+
+/** `tx.execute(sql`…`)` hands back either a pg result or a bare row array. */
+function readRows<T>(res: unknown): T[] {
+  const r = res as unknown as { rows?: T[] } | T[];
+  return (Array.isArray(r) ? r : (r?.rows ?? [])) as T[];
 }
 
 /**
@@ -547,26 +702,47 @@ export async function sendWhatsAppNow(input: EnqueueWhatsAppMessageInput): Promi
   const claimed = await claimOutboxRowForImmediateSend(enqueued.outboxId, workerId);
   if (!claimed) return { ok: true, outboxId: enqueued.outboxId }; // dispatcher (or quiet-hours defer) owns it now
 
-  const outcome = await dispatchOneOutboxRow(claimed, s, 15_000);
+  const outcome = await dispatchOneOutboxRow(claimed, s, 15_000, { workerId, leasedAt: claimed.lockedAt ?? new Date() });
   if (outcome.kind === "sent") return { ok: true, outboxId: enqueued.outboxId, messageId: outcome.messageId };
   if (outcome.kind === "suppressed") return { ok: true, skipped: true, outboxId: enqueued.outboxId };
-  // retry_scheduled / dead_letter: the row is already queued for the
-  // background dispatcher (or permanently dead-lettered) — surface the
+  if (outcome.kind === "lost_ownership") {
+    // Another worker took this row over while we were talking to Meta. Its
+    // outcome is the one on the row, so report acceptance without claiming this
+    // call delivered anything — same answer as losing the claim up front.
+    return { ok: true, outboxId: enqueued.outboxId };
+  }
+  // retry_scheduled / dead_letter / invalid_recipient: the row is already queued
+  // for the background dispatcher (or permanently dead-lettered) — surface the
   // error to the caller so it can log/alert exactly as it did before this
   // refactor, while the outbox row itself is the durable source of truth.
   return { ok: false, error: outcome.error, outboxId: enqueued.outboxId };
 }
 
-/** Manual retry of a dead/failed row (admin action). Resets attempt count so
- *  a permanently-misconfigured template that was fixed gets a fresh budget,
- *  not zero remaining attempts. */
+/**
+ * Statuses a human may legitimately re-queue. Anything else is either already
+ * delivered (so a retry is a second message to the same patient about the same
+ * thing), or currently owned by a worker (so a retry steals the lease and resets
+ * the attempt budget of a send that is in flight).
+ */
+export const RETRYABLE_WA_STATUSES: ReadonlySet<string> = new Set(["dead_letter", "failed", "suppressed"]);
+
+/** Manual retry of a dead/failed/suppressed row (admin action). Resets attempt
+ *  count so a permanently-misconfigured template that was fixed gets a fresh
+ *  budget, not zero remaining attempts. A row that already reached the patient
+ *  is refused: re-sending it is a patient-visible duplicate, not a repair. */
 export async function retryWaOutboxMessage(id: number): Promise<{ ok: boolean; error?: string }> {
   const [row] = await db.select({ status: waOutboxTable.status }).from(waOutboxTable).where(eq(waOutboxTable.id, id)).limit(1);
   if (!row) return { ok: false, error: "Not found" };
-  await db.update(waOutboxTable).set({
+  if (!RETRYABLE_WA_STATUSES.has(row.status)) {
+    return { ok: false, error: `This message is '${row.status}' and is not retryable — retry only moves a message that never reached the patient` };
+  }
+  // Re-check the status in the write itself: the row could have been claimed
+  // between the read and this UPDATE.
+  const [moved] = await db.update(waOutboxTable).set({
     status: "queued", attemptCount: 0, nextAttemptAt: new Date(), lockedAt: null, lockedBy: null,
     lastErrorCode: null, lastErrorMessage: null, deadLetteredAt: null,
-  }).where(eq(waOutboxTable.id, id));
+  }).where(and(eq(waOutboxTable.id, id), inArray(waOutboxTable.status, [...RETRYABLE_WA_STATUSES]))).returning({ id: waOutboxTable.id });
+  if (!moved) return { ok: false, error: `The message changed state before the retry could be applied` };
   return { ok: true };
 }
 
