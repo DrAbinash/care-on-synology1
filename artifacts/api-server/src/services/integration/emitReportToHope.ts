@@ -5,10 +5,13 @@
 //   • Post-finalize auto-push when the study is linked to a Hope referral
 //
 // Relies on the same envelope shape as resultsEmitter.reconcileResults so Hope
-// landReport() accepts it unchanged. Idempotent on outbox idempotency_key and
-// external_result_links uniqueness.
+// landReport() accepts it unchanged. Idempotent on the outbox idempotency_key,
+// and on one result link per (referral, report) — which the database alone cannot
+// guarantee: external_result_links has no unique index covering that pair (its
+// only dedup index is (referral_item_id, care_report_id), and NULLs are distinct),
+// so the pair is serialized with the same advisory lock the reconciler takes.
 // ============================================================================
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   diagnosticReferralsTable,
@@ -205,19 +208,27 @@ export async function emitReportToHope(opts: {
     };
   }
 
-  const [linked] = await db
-    .select({ id: externalResultLinksTable.id })
-    .from(externalResultLinksTable)
-    .where(and(eq(externalResultLinksTable.referralId, ref.id), eq(externalResultLinksTable.careReportId, rep.id)))
-    .limit(1);
-  if (linked) {
+  const referral = ref;
+  /**
+   * This (referral, report) is already recorded as sent. Reported as already sent,
+   * and the queue is still flushed, because the operator asked for delivery now and
+   * an already-linked row can still have an event waiting in front of it.
+   */
+  const alreadySentResult = async (): Promise<EmitReportToHopeResult> => {
     let dispatched: { sent: number; failed: number } | undefined;
     if (opts.dispatchNow !== false) {
       const d = await dispatchPendingOutbox({ limit: 20 });
       dispatched = { sent: d.sent, failed: d.failed };
     }
-    return { ok: true, emitted: false, alreadySent: true, referralUuid: ref.referralUuid, reportId: rep.id, dispatched };
-  }
+    return { ok: true, emitted: false, alreadySent: true, referralUuid: referral.referralUuid, reportId: rep.id, dispatched };
+  };
+
+  const [linked] = await db
+    .select({ id: externalResultLinksTable.id })
+    .from(externalResultLinksTable)
+    .where(and(eq(externalResultLinksTable.referralId, ref.id), eq(externalResultLinksTable.careReportId, rep.id)))
+    .limit(1);
+  if (linked) return alreadySentResult();
 
   const items = await db.select().from(diagnosticReferralItemsTable).where(eq(diagnosticReferralItemsTable.referralId, ref.id));
   const itemByOrderTest = new Map<number, number>();
@@ -250,8 +261,25 @@ export async function emitReportToHope(opts: {
   const pdfUrl = reportToken && base ? `${base}/api/p/r/${encodeURIComponent(reportToken)}/pdf` : null;
   const reportPageUrl = reportToken && base ? `${base}/p/r/${encodeURIComponent(reportToken)}` : null;
 
+  // Three outcomes, and only one of them may tell the operator the report was
+  // delivered by this call.
+  let outcome: "emitted" | "already" | "refused" = "emitted";
   try {
     await db.transaction(async (tx) => {
+      // The pre-check above and this insert are not one atomic step. Take the same
+      // lock the reconciler takes for this pair (resultsEmitter.ts:129) — a manual
+      // send, the post-finalize auto-push and the 5-minute tick all write this row
+      // shape — and re-check inside it. No unique index can be relied on here:
+      // external_result_links_report_uidx is (referral_item_id, care_report_id) and
+      // PostgreSQL treats NULLs as distinct, so an item-less referral is uncovered.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`reconcile-result:${referral.id}:${rep.id}`}, 0))`);
+      const [raced] = await tx
+        .select({ id: externalResultLinksTable.id })
+        .from(externalResultLinksTable)
+        .where(and(eq(externalResultLinksTable.referralId, referral.id), eq(externalResultLinksTable.careReportId, rep.id)))
+        .limit(1);
+      if (raced) { outcome = "already"; return; }
+
       const [link] = await tx.insert(externalResultLinksTable).values({
         referralId: ref.id,
         referralItemId,
@@ -267,7 +295,11 @@ export async function emitReportToHope(opts: {
         finalisingDoctor: rep.verifiedByName ?? rep.signedByName ?? null,
         reportRef: rep.reportNumber,
       }).returning({ id: externalResultLinksTable.id }).catch(() => [undefined as unknown as { id: number }]);
-      if (!link) return;
+      // The insert was refused. The error is swallowed, but PostgreSQL has already
+      // put this transaction in aborted state, so the COMMIT that follows rolls the
+      // whole unit back while the promise still resolves. Nothing was written, so
+      // nothing here may be reported as delivered.
+      if (!link) { outcome = "refused"; return; }
 
       const finalisedEvent = await enqueueOutboxEvent(tx, {
         eventType: amendment ? "diagnostic_report.amended" : "diagnostic_report.finalised",
@@ -328,6 +360,24 @@ export async function emitReportToHope(opts: {
     });
   } catch (err) {
     return { ok: false, error: (err as Error)?.message || "Failed to enqueue Hope callback", code: "EMIT_FAILED" };
+  }
+
+  if (outcome === "already") return alreadySentResult();
+  if (outcome === "refused") {
+    // Settled outside the rolled-back transaction, because the only link this call
+    // ever had is gone with it: "already sent" is true when someone else's
+    // committed link exists, and a plain failure when it does not.
+    const [nowLinked] = await db
+      .select({ id: externalResultLinksTable.id })
+      .from(externalResultLinksTable)
+      .where(and(eq(externalResultLinksTable.referralId, referral.id), eq(externalResultLinksTable.careReportId, rep.id)))
+      .limit(1);
+    if (nowLinked) return alreadySentResult();
+    return {
+      ok: false,
+      error: "Could not record the Hope delivery. The report itself is unchanged — send it again.",
+      code: "EMIT_FAILED",
+    };
   }
 
   let dispatched: { sent: number; failed: number } | undefined;
