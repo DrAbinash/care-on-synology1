@@ -4,12 +4,27 @@ _Run this on the Synology NAS, on the clinic LAN, to establish the known-good de
 
 **Fastest path:** most checks are covered by one command —
 ```sh
-pnpm operations:verify-deployment          # human-readable
-pnpm operations:verify-deployment --json    # for Admin dashboard / archiving
+node scripts/deploy-health.mjs --host-port 8888 --docker-prefix sudo   # containers + the three endpoints
+node scripts/ops-preflight.mjs                                          # 22 readiness answers, read-only
 ```
-Run it first, then use the per-check rows below to confirm criteria and to cover the checks the verifier can't automate (USG demo isolation, PCPNDT, signed-report immutability, kill switch).
+`deploy-health.mjs` is Node-builtins-only, so it runs with the NAS's own `/usr/local/bin/node`.
+The fuller subsystem verifier needs `pg`, which is installed inside the image rather than on the
+Synology host, and `pnpm`/`npx` are not on PATH there — so run it in the container that already
+has both (`docker-compose.yml:164`, service `schema-verify`, target `migrate`):
+```sh
+docker compose run --rm --no-deps schema-verify node scripts/verify-deployment.mjs --json
+```
+Run the health gate first, then use the per-check rows below to confirm criteria and to cover the
+checks the verifier can't automate (USG demo isolation, PCPNDT, signed-report immutability, kill
+switch).
 
 Conventions: `psql` shortcut → `docker exec care-db psql -U erp -d diagnostic_erp -tAc "<SQL>"`. Record PASS / WARNING / FAIL per row.
+
+**Ports:** the ERP is published as `${HOST_PORT:-8888}:80`. **Nothing publishes 8080 on the host** —
+8080 exists only inside `care-api`, whose own healthcheck calls it — so a host-side probe of
+`localhost:8080` can never pass, and a command that did it used to time out and be reported as
+success (`CARE_ERP_DEPLOYMENT_RUNBOOK.md` §3 and §10). Probe the published port, and check the
+response **body**: an unknown path on `care-web` answers the SPA's `index.html` with HTTP **200**.
 
 ---
 
@@ -17,7 +32,7 @@ Conventions: `psql` shortcut → `docker exec care-db psql -U erp -d diagnostic_
 |---|---|---|---|---|---|
 | 1 | **PostgreSQL** | `docker exec care-db pg_isready -U erp -d diagnostic_erp` | `... accepting connections` | — | any other output / container not `healthy` |
 | 2 | **All migrations** | `psql "SELECT value FROM schema_deploy_state WHERE key='total_migrations';"` and `docker logs care-db-patch-v2 \| tail -20` | patch log ends `✓ All migrations complete — API may start`; `care-db-patch-v2` exited 0 | log shows a benign "already exists" only | log shows `✗ Feature migration FAILED` or exit ≠ 0 |
-| 3 | **Schema verification** | `psql "SELECT value FROM schema_deploy_state WHERE key IN ('db_patch_ok','schema_verify_status');"` + `curl -fsS http://localhost:8080/api/health/schema` | `db_patch_ok=true`, `schema_verify_status=sql_pass`/`full_pass`, and `/api/health/schema` → **200** | `schema_verify_status=full_fail` (drift) but `/api/health/schema` still 200 | `/api/health/schema` → 503, or `db_patch_ok≠true` |
+| 3 | **Schema verification** | `psql "SELECT value FROM schema_deploy_state WHERE key IN ('db_patch_ok','schema_verify_status');"` + `curl -fsS "http://localhost:${HOST_PORT:-8888}/api/health/schema"` | `db_patch_ok=true`, `schema_verify_status=sql_pass`/`full_pass`, and the schema probe returns `"ok":true` **on the published port** | `schema_verify_status=full_fail` (drift) but the probe still answers — `SCHEMA_VERIFY_STRICT` defaults to `false`, so drift is reported, not blocked | no `"ok":true`, → 503, or `db_patch_ok≠true` |
 | 4 | **Orthanc** | `curl -fsS $ORTHANC_URL/system` (e.g. `http://172.16.1.139:8042/system`) | 200 with `"Version"` | reachable but non-2xx, OR unreachable **and** PACS not in use today | configured + required for today's work but unreachable/401 |
 | 5 | **OHIF** | open `http://<ohif-host>:3010` in a browser on the LAN | viewer loads | slow / partial but usable, or not configured | blank/error and viewing is needed |
 | 6 | **Ollama endpoint** | `curl -fsS http://172.16.1.140:11434/api/tags` | 200 with a `models` array | reachable but empty, or AI intentionally off | unreachable while AI reporting is expected |
@@ -28,7 +43,7 @@ Conventions: `psql` shortcut → `docker exec care-db psql -U erp -d diagnostic_
 | 11 | **n8n** | `curl -fsS $N8N_URL/healthz` | `{"status":"ok"}` / 200 | unreachable but no automations depend on it | required automations down |
 | 12 | **PACS return** | `psql "SELECT count(*) FROM dicom_sr_export_queue WHERE export_status IN ('failed','error');"` | `0` (finalized reports safe regardless) | a few failures — retry from Admin after fixing PACS | many failures + PACS destination misconfigured |
 | 13 | **Study locks** | `psql "SELECT count(*) FROM radiology_study_locks WHERE COALESCE(last_activity_at,lock_time) < now() - interval '2 hours';"` | `0` | 1–3 stale locks (clear from Admin once confirmed idle) | many stale locks blocking reporting |
-| 14 | **Backup status** | `psql "SELECT max(created_at) FROM backup_logs WHERE status IN ('success','completed');"` (or `backup_jobs.last_run_at`) | a success within **26h** | 26–48h old | none, or > 48h, or last status = failed |
+| 14 | **Backup status** | `psql "SELECT max(created_at) FROM backup_logs WHERE status IN ('success','completed');"` (or `backup_jobs.last_run_at`), **then** `BACKUP_DIR=<the dump destination> node scripts/ops-backup-inventory.mjs --verify-checksums` | a success within **26h** *and* the inventory's newest row is `OK` with a manifest naming this database, a recomputed checksum that matches, and — for the row you intend to trust — a recorded restore proof | 26–48h old, or the newest artifact is `UNVERIFIED` (no `.meta`: pre-#1004 dumps prove nothing about which database they are), or `checksum=recorded` only because `--verify-checksums` was not passed | none, or > 48h, or last status = failed, or the inventory says **NO artifact has a proven restore** and the box is being relied on for recovery |
 | 15 | **USG demo isolation** | open `/radiology/usg-demo`; then `psql "SELECT max(created_at) FROM patient_reports;"` **before and after** clicking every card | banner "DEMO — synthetic data only"; `patient_reports` max timestamp **unchanged**; no new worklist/Form-F rows; Reset works | — | any new patient/report/worklist/Form-F row appears, or a network write is observed in devtools |
 | 16 | **PCPNDT fail-closed** | attempt to finalize an obstetric USG with an incomplete Form F (on a test study) | finalize **refused** — 409 `pcpndt_compliance_required`; no report signed | — | finalize succeeds without a valid Form F, OR fetal sex is recorded/returned anywhere |
 | 17 | **Signed-report immutability** | pick a finalized report id N: `psql "SELECT md5(body\|\|status\|\|coalesce(signed_at::text,'')) FROM patient_reports WHERE id=N;"` — record, then attempt an edit via the UI, re-run | edit of a signed report is blocked; hash **unchanged** | an amendment creates a NEW versioned row (original hash unchanged) | the original signed row's hash changes |
@@ -46,4 +61,4 @@ Conventions: `psql` shortcut → `docker exec care-db psql -U erp -d diagnostic_
 - **NO-GO** if any of rows 1, 2, 3, 15, 16, 17 is FAIL — do not open to clinical use; see `CARE_ERP_TROUBLESHOOTING.md` / `CARE_ERP_RECOVERY_GUIDE.md`.
 
 ## The `schema_deploy_state` signal (row 3 context)
-`schema_deploy_state` is written as the **final** step of a successful migration by `care-db-patch-v2` (and, after the latest fix, by the manual `care-migrate` path too). Because `care-db-patch-v2` runs under `set -e` and only writes `db_patch_ok=true` at the very end, a failed migration exits non-zero (so `care-api` never starts) with the stamp **absent** — its absence is therefore a *signal of an incomplete migration, never a way to hide one*. If `pnpm operations:verify-deployment` reports "core tables present but schema_deploy_state absent", the DB was migrated by a non-standard path; re-run `docker compose up -d --build` to stamp it. `/api/health/schema` independently returns 503 until it is present.
+`schema_deploy_state` is written as the **final** step of a successful migration by `care-db-patch-v2` (and, after the latest fix, by the manual `care-migrate` path too). Because `care-db-patch-v2` runs under `set -e` and only writes `db_patch_ok=true` at the very end, a failed migration exits non-zero (so `care-api` never starts) with the stamp **absent** — its absence is therefore a *signal of an incomplete migration, never a way to hide one*. If `verify-deployment.mjs` reports "core tables present but schema_deploy_state absent", the DB was migrated by a non-standard path; re-run `docker compose up -d --build` to stamp it. `/api/health/schema` independently returns 503 until it is present.
