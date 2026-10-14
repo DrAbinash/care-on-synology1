@@ -36,6 +36,13 @@ jobs:
         run: node scripts/check-migration-order.cjs
       - name: Architecture grounding (docs match code)
         run: node scripts/grounding-check.cjs
+      - name: Committed secrets (shrink-only ratchet)
+        # Two live Hope ↔ Care credentials sat in tracked templates while this
+        # repository was public. The remaining findings are the owner's rotation
+        # decision, so they are recorded per file and any increase — or any
+        # un-recorded file — fails the build. Shrinking must be re-recorded, so the
+        # baseline can never sit above reality and hide the next finding.
+        run: node scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json
       - name: Workspace typecheck
         # api-server tsc occasionally OOMs on the default ~2GB heap on ubuntu-latest.
         env:
