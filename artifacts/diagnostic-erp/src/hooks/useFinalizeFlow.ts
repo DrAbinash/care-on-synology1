@@ -6,7 +6,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import type { FinalizeQualityGate } from "@/lib/reportQualityFinalize";
-import type { FinalizeCheckFailure, FinalizeServiceChecks } from "@/lib/finalizeChecks";
+import type { FinalizeCheckNotRun, FinalizeServiceChecks } from "@/lib/finalizeChecks";
 
 export type SignatureOption = { id: number; name: string };
 
@@ -22,8 +22,8 @@ export type FinalizePromptInput = {
   criticalSummary?: string;
   /** Canonical report-quality evaluation snapshot (workspace-finalize source). */
   qualityGate?: FinalizeQualityGate | null;
-  /** Service checks that did NOT complete. Absent or empty means all ran. */
-  checksIncomplete?: FinalizeCheckFailure[];
+  /** Service checks that did not look at this report. Absent or empty means all ran. */
+  checksIncomplete?: FinalizeCheckNotRun[];
   /**
    * Re-runs the service checks and returns a fresh set. The dialog's Retry button
    * calls this and renders from whatever comes back, so a radiologist can fix a

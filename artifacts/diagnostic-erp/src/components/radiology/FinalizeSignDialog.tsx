@@ -17,12 +17,37 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle } from "lucide-react";
 import type { FinalizePromptInput, FinalizePromptResult } from "@/hooks/useFinalizeFlow";
-import { computeUnresolvedBlockers, type CanonicalQualityFinding } from "@/lib/reportQualityFinalize";
-import { FINALIZE_CHECK_LABELS, formatIncompleteChecks, type FinalizeServiceChecks } from "@/lib/finalizeChecks";
+import {
+  describeFinalizeQualityStatus,
+  type CanonicalQualityFinding,
+  type FinalizeQualityStatus,
+} from "@/lib/reportQualityFinalize";
+import {
+  formatIncompleteChecks,
+  hasRetryableCheck,
+  type FinalizeServiceChecks,
+} from "@/lib/finalizeChecks";
 import { CompositionFinalizeGate, compositionFinalizeAllowed } from "@/components/radiology/zai-workspace/finalize-dialog";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 
 const SESSION_SIGNER_KEY = "radiology_finalize_signer_id";
+
+/**
+ * One badge for the whole quality gate, coloured by what it found. Before this the
+ * dialog rendered a hard-coded green "Ready to sign" beside a grey
+ * `{warningCount} advisory` — and since every rule in the catalogue is
+ * severity "warning" by settled policy, the green badge had no input that could
+ * ever change it and the grey one counted a laterality contradiction as an
+ * advisory. Both numbers now come from describeFinalizeQualityStatus, which also
+ * produces the three lists rendered below it, so the badge cannot describe a
+ * report the lists do not show.
+ */
+const QUALITY_BADGE_CLASS: Record<FinalizeQualityStatus["tone"], string> = {
+  positive: "bg-emerald-600",
+  neutral: "",
+  caution: "bg-amber-500 text-amber-950",
+  alert: "bg-red-600",
+};
 
 /** RIS throughput pref — auto-open the next eligible study after finalize. */
 const AUTO_ADVANCE_KEY = "care_auto_advance_after_finalize";
@@ -142,13 +167,13 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
   const checksIncomplete = checksAfterRetry?.checksIncomplete ?? input?.checksIncomplete ?? [];
   const validationSummary = checksAfterRetry?.validationSummary ?? input?.validationSummary ?? "";
   const checksAllRanAfterRetry = checksAfterRetry !== null && checksAfterRetry.checksIncomplete.length === 0;
-  const unresolvedBlockers = useMemo(
-    () => (qualityGate ? computeUnresolvedBlockers(qualityGate.findings, qualityGate.overrides ?? []) : []),
-    [qualityGate],
-  );
-  const advisoryWarnings = useMemo(
-    () =>
-      qualityGate?.advisoryFindings.filter((f) => f.severity === "warning" || f.severity === "blocker") ?? [],
+  /** Retry is only offered when it can change the answer. A check that had
+   *  nothing to read (no saved draft to validate) has nothing to read on the
+   *  second attempt either, so a button that re-runs it would be naming a remedy
+   *  that does not work — the block says so instead. */
+  const retryCanHelp = input?.onRetryChecks != null && hasRetryableCheck(checksIncomplete);
+  const qualityStatus = useMemo(
+    () => (qualityGate ? describeFinalizeQualityStatus(qualityGate) : null),
     [qualityGate],
   );
 
@@ -210,7 +235,7 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
             <pre className="whitespace-pre-wrap text-[11px] font-sans text-amber-900 dark:text-amber-100">
               {formatIncompleteChecks(checksIncomplete)}
             </pre>
-            {input.onRetryChecks && (
+            {retryCanHelp && (
               <Button
                 type="button"
                 size="sm"
@@ -247,40 +272,69 @@ export default function FinalizeSignDialog({ open, input, onResolve, onCancel }:
           }}
         />
 
-        {qualityGate && (
+        {qualityGate && qualityStatus && (
           <div className="space-y-3 rounded-md border border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/20 p-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">Report quality</span>
               <Badge variant="outline">Score {qualityGate.score}/100</Badge>
-              <Badge className="bg-emerald-600">Ready to sign</Badge>
-              {qualityGate.warningCount > 0 && (
-                <Badge variant="secondary">{qualityGate.warningCount} advisory</Badge>
-              )}
+              <Badge
+                variant={qualityStatus.tone === "neutral" ? "secondary" : "default"}
+                className={QUALITY_BADGE_CLASS[qualityStatus.tone]}
+                data-testid="finalize-quality-status"
+              >
+                {qualityStatus.label}
+              </Badge>
             </div>
 
-            {unresolvedBlockers.length > 0 && (
+            {qualityStatus.unresolved.length > 0 && (
               <div className="space-y-2">
                 <p className="text-xs font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1">
                   <AlertTriangle className="h-3.5 w-3.5" />
                   Review before signing (does not block)
                 </p>
-                {unresolvedBlockers.map((f) => (
+                {qualityStatus.unresolved.map((f) => (
                   <FindingRow key={`block-${f.ruleId}-${f.evaluationId}`} finding={f} tone="blocker" />
                 ))}
               </div>
             )}
 
-            {advisoryWarnings.length > 0 && (
+            {/* Amber, and named as a contradiction. These are the findings saying
+                two parts of THIS report disagree about a clinical fact — the side,
+                the level, or whether a finding is still there. Signing stays
+                unblocked (that policy is the owner's: ARCHITECTURE.md §8.1), but a
+                contradiction is no longer filed under the same count as a repeated
+                word. Not sliced: nothing the radiologist has to decide on may sit
+                behind a "+N more". */}
+            {qualityStatus.clinical.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                  Advisories (review before signing — do not block finalize)
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-200 flex items-center gap-1">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Clinical contradictions in this report (review before signing — does not block)
                 </p>
-                {advisoryWarnings.slice(0, 8).map((f) => (
-                  <FindingRow key={`adv-${f.ruleId}-${f.message}`} finding={f} tone="warning" />
+                {qualityStatus.clinical.map((f) => (
+                  <FindingRow
+                    key={`clin-${f.ruleId}-${f.evaluationId}-${f.message}`}
+                    finding={f}
+                    tone="warning"
+                  />
                 ))}
-                {advisoryWarnings.length > 8 && (
+              </div>
+            )}
+
+            {/* Grey, not amber: prose and completeness gaps were competing for the
+                same colour as the contradictions above, which is how a wrong level
+                became invisible in a wall of style notes. */}
+            {qualityStatus.advisory.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Advisories — wording and completeness (do not block finalize)
+                </p>
+                {qualityStatus.advisory.slice(0, 8).map((f) => (
+                  <FindingRow key={`adv-${f.ruleId}-${f.message}`} finding={f} tone="info" />
+                ))}
+                {qualityStatus.advisory.length > 8 && (
                   <p className="text-[11px] text-muted-foreground">
-                    +{advisoryWarnings.length - 8} more advisory finding(s)
+                    +{qualityStatus.advisory.length - 8} more advisory finding(s)
                   </p>
                 )}
               </div>

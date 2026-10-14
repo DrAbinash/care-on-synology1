@@ -122,8 +122,8 @@ export {
 } from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
-export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
-export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";
+export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry, significanceOfRule } from "./ruleCatalog";
+export type { RuleId, RuleCatalogEntry, RuleSignificance } from "./ruleCatalog";
 // Canonical DTO — the one shape the API exposes and the DB persists.
 export { toQualityReportDTO } from "./dto";
 export type {

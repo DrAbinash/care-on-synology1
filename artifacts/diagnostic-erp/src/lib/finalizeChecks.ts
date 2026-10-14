@@ -27,9 +27,20 @@ export const FINALIZE_CHECK_LABELS: Record<FinalizeCheckKey, string> = {
 
 export type FinalizeCheckOutcome<T> =
   | { state: "completed"; value: T }
-  | { state: "failed"; key: FinalizeCheckKey; reason: string };
+  | { state: "failed"; key: FinalizeCheckKey; reason: string }
+  /**
+   * The check was never attempted, because the thing it reads is absent. Distinct
+   * from "failed": a failure can be retried, and a skip cannot — retrying re-runs
+   * the same closure over the same absent precondition. Offering Retry for a skip
+   * would be naming a remedy that does not work.
+   */
+  | { state: "skipped"; key: FinalizeCheckKey; reason: string };
 
-export type FinalizeCheckFailure = Extract<FinalizeCheckOutcome<unknown>, { state: "failed" }>;
+/** A check that did not look at this report — it threw, or it had nothing to read. */
+export type FinalizeCheckNotRun = Extract<
+  FinalizeCheckOutcome<unknown>,
+  { state: "failed" | "skipped" }
+>;
 
 /**
  * What the sign dialog is built from: the findings the checks produced, the gate
@@ -40,7 +51,7 @@ export type FinalizeCheckFailure = Extract<FinalizeCheckOutcome<unknown>, { stat
 export type FinalizeServiceChecks = {
   validationSummary: string;
   qualityGate: FinalizeQualityGate | null;
-  checksIncomplete: FinalizeCheckFailure[];
+  checksIncomplete: FinalizeCheckNotRun[];
 };
 
 /** Runs one check and keeps the outcome, failure included. Never throws. */
@@ -55,12 +66,31 @@ export async function runFinalizeCheck<T>(
   }
 }
 
+/** Records a check that was not attempted, so its absence is a value and not a silence. */
+export function skippedFinalizeCheck(key: FinalizeCheckKey, reason: string): FinalizeCheckNotRun {
+  return { state: "skipped", key, reason };
+}
+
 export function valueOr<T>(outcome: FinalizeCheckOutcome<T>, fallback: T): T {
   return outcome.state === "completed" ? outcome.value : fallback;
 }
 
-export function failedFinalizeChecks(outcomes: readonly FinalizeCheckOutcome<unknown>[]): FinalizeCheckFailure[] {
-  return outcomes.filter((o): o is FinalizeCheckFailure => o.state === "failed");
+/**
+ * Every check that did not look at this report, whatever the reason.
+ *
+ * There is deliberately no narrower "which ones failed" query exported here. The
+ * previous one was `failedFinalizeChecks`, and its name was the trap: a caller
+ * that asks only for failures gets an empty list for a check that was never
+ * attempted, which is precisely the silence this module exists to remove. Ask
+ * what did not run, then ask `hasRetryableCheck` whether anything can be re-run.
+ */
+export function incompleteFinalizeChecks(outcomes: readonly FinalizeCheckOutcome<unknown>[]): FinalizeCheckNotRun[] {
+  return outcomes.filter((o): o is FinalizeCheckNotRun => o.state !== "completed");
+}
+
+/** Whether Retry can help. Only a check that was attempted and threw can be re-attempted. */
+export function hasRetryableCheck(outcomes: readonly FinalizeCheckNotRun[]): boolean {
+  return outcomes.some((o) => o.state === "failed");
 }
 
 /**
@@ -68,15 +98,27 @@ export function failedFinalizeChecks(outcomes: readonly FinalizeCheckOutcome<unk
  * completed, so the dialog can render nothing rather than a false reassurance.
  */
 export function formatIncompleteChecks(outcomes: readonly FinalizeCheckOutcome<unknown>[]): string {
-  const failed = failedFinalizeChecks(outcomes);
-  if (failed.length === 0) return "";
-  const lines = [
-    `Checks that did not complete (${failed.length}):`,
-    ...failed.map((f) => `  • ${FINALIZE_CHECK_LABELS[f.key]} — ${f.reason}`),
-    "Nothing below was produced by these checks, so their absence is not a pass.",
-    "Signing is unchanged: use Retry checks to run them again, or continue knowing",
-    "this report was signed without them.",
-  ];
+  const notRun = incompleteFinalizeChecks(outcomes);
+  if (notRun.length === 0) return "";
+  const failed = notRun.filter((o) => o.state === "failed");
+  const skipped = notRun.filter((o) => o.state === "skipped");
+  const lines: string[] = [];
+  if (failed.length > 0) {
+    lines.push(`Checks that did not complete (${failed.length}):`);
+    lines.push(...failed.map((f) => `  • ${FINALIZE_CHECK_LABELS[f.key]} — ${f.reason}`));
+  }
+  if (skipped.length > 0) {
+    lines.push(`Checks that could not run on this report (${skipped.length}):`);
+    lines.push(...skipped.map((f) => `  • ${FINALIZE_CHECK_LABELS[f.key]} — ${f.reason}`));
+  }
+  lines.push("Nothing below was produced by these checks, so their absence is not a pass.");
+  if (failed.length > 0) {
+    lines.push("Signing is unchanged: use Retry checks to run them again, or continue knowing");
+    lines.push("this report was signed without them.");
+  } else {
+    lines.push("Signing is unchanged, and Retry will not change it: a check that had nothing");
+    lines.push("to read still has nothing to read.");
+  }
   return `\n${lines.join("\n")}\n`;
 }
 
