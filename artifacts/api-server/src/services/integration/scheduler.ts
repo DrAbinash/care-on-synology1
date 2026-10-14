@@ -36,7 +36,11 @@ export async function tickOutbox(): Promise<void> {
   if (!(await integrationEnabled())) return;
   try {
     const r = await dispatchPendingOutbox({ limit: 50 });
-    if (r.claimed) console.log("[integration] outbox dispatch", r);
+    // `recovered` is the crash-recovery signal: a non-zero value means an event was
+    // left 'sending' by a worker that died mid-delivery. It should be rare and it
+    // should never be silent — this tick is the only thing that makes an abandoned
+    // HOPE delivery move again without an admin pressing Retry.
+    if (r.claimed || r.recovered) console.log("[integration] outbox dispatch", r);
   } catch (e) {
     console.error("[integration] outbox dispatch failed:", (e as Error)?.message);
   }
