@@ -94,14 +94,21 @@ if command -v node >/dev/null 2>&1 && [ -f version.json ]; then
   " && ok "Stamped git metadata into version.json for image bake"
 fi
 
-# ── Step 2b: Ensure .env (Hope↔Care keys included) ───────────────────────────
-# Operator should not have to invent secrets. If .env is missing, seed it from
-# the Synology template. If it exists but lacks Hope keys, append them so a
-# redeploy of an older .env still wires referrals automatically.
+# ── Step 2b: Ensure .env (wiring only — never credentials) ───────────────────
+# If .env is missing, seed it from the Synology template; if it exists but lacks
+# the non-secret Hope wiring lines, append those.
+#
+# This script used to append the Hope ↔ Care credentials too, on the reasoning
+# that "the operator should not have to invent secrets". Those secrets were
+# committed in this (public) repository, so that convenience installed a
+# credential anyone could read off GitHub: an attacker holding it can POST
+# signed callbacks into HOPE's patient record and call CARE's inbound
+# integration API as partner HOPE. A credential is now only ever supplied by the
+# operator; step 2c fails the deploy if the host is armed for Hope without it.
 if [ ! -f .env ]; then
   if [ -f deploy/synology/care.env ]; then
     cp deploy/synology/care.env .env
-    ok "Created .env from deploy/synology/care.env (Hope integration included)"
+    ok "Created .env from deploy/synology/care.env (Hope wiring included, credentials left empty)"
   else
     fail ".env missing and deploy/synology/care.env not found"
   fi
@@ -114,11 +121,15 @@ else
       info "Appended missing ${key} to .env"
     fi
   }
+  # Non-secret wiring only. The two credentials this script used to append here
+  # (HOPE_PARTNER_KEY, INTEGRATION_HOPE_SIGNING_SECRET) are NO LONGER written:
+  # their values were committed while this repository was public, so installing
+  # one automatically meant deploying a credential anyone could read. Step 2c
+  # now fails the deploy if an armed host is missing either, and
+  # docs/hope-care-integration/06_CREDENTIAL_ROTATION.md is the procedure.
   ensure_env_key "INTEGRATION_HOPE_CALLBACK_URL" "http://172.16.1.139:7080/api/integration/care-callback"
-  ensure_env_key "INTEGRATION_HOPE_SIGNING_SECRET" "7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f"
   ensure_env_key "HOPE_CARE_INTEGRATION_FORCE" "1"
-  ensure_env_key "HOPE_PARTNER_KEY" "intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7"
-  ok ".env present (Hope integration keys ensured)"
+  ok ".env present (Hope wiring ensured; credentials are never written by this script)"
 fi
 
 # Upsert build identity into .env so `docker compose` / Container Manager
@@ -149,7 +160,7 @@ ok "Wrote build metadata into .env for compose / Container Manager"
 # ── Step 2c: Reject weak machine-to-machine secrets ───────────────────────────
 info "Checking guarded secrets in .env..."
 if command -v node >/dev/null 2>&1 && [ -f scripts/check-env-secrets.mjs ]; then
-  node scripts/check-env-secrets.mjs --file .env || fail "Weak INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET in .env — run: bash scripts/rotate-internal-api-key.sh"
+  node scripts/check-env-secrets.mjs --file .env || fail "Weak, missing or repository-published secret in .env (INTERNAL_API_KEY / CRON_SECRET / WHATSAPP_AUTOMATION_SECRET / HOPE_PARTNER_KEY / INTEGRATION_HOPE_SIGNING_SECRET) — see docs/hope-care-integration/06_CREDENTIAL_ROTATION.md"
   ok "Guarded secrets acceptable"
 else
   warn "Skipping secret-strength check (node or scripts/check-env-secrets.mjs missing)"

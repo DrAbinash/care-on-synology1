@@ -29,7 +29,9 @@ interface HopCall {
 }
 
 let calls: HopCall[] = [];
-let failMode: "none" | "timeout" | "http500" = "none";
+/** `http422` is HOPE's I11-D refusal: a permanent non-success it answers for an event
+ *  type or envelope version it cannot interpret. */
+let failMode: "none" | "timeout" | "http500" | "http422" = "none";
 /** Per-test seam: runs inside the fake HOPE endpoint, so the test can observe or
  *  disturb outbox state at the exact moment a delivery is in flight. */
 let onCall: ((eventId: string | null) => Promise<void>) | null = null;
@@ -46,6 +48,15 @@ const fetchStub = vi.fn(async (input: unknown, init?: { method?: string; headers
   if (failMode === "timeout") return Promise.reject(new Error("aborted"));
   if (failMode === "http500") {
     return { status: 500, ok: false, text: async () => "hope exploded" } as unknown as Response;
+  }
+  if (failMode === "http422") {
+    // HOPE's compatibility refusal, verbatim in shape: permanent-by-status, with the
+    // reason the sender cannot mistake for a delivery.
+    return {
+      status: 422,
+      ok: false,
+      text: async () => '{"ok":false,"error":"unsupported_event_type"}',
+    } as unknown as Response;
   }
   return { status: 200, ok: true, text: async () => '{"ok":true}' } as unknown as Response;
 });
@@ -162,7 +173,8 @@ async function attachFilmArtifact(name: string, outboxId: number) {
 
 async function readFilm(artifactId: number) {
   const r = await pool.query(
-    `SELECT hope_delivery_status, hope_sent_at FROM electronic_film_artifacts WHERE id = $1`,
+    `SELECT hope_delivery_status, hope_sent_at, error_message, ingest_status
+       FROM electronic_film_artifacts WHERE id = $1`,
     [artifactId],
   );
   return r.rows[0] ?? null;
@@ -966,5 +978,199 @@ suite("PR-I2 outbox abandoned-delivery recovery (real PostgreSQL)", () => {
     // Nothing was failed or dead-lettered for a row this dispatch no longer holds.
     expect(r.failed).toBe(0);
     expect(r.dead).toBe(0);
+  });
+});
+
+// ============================================================================
+// PR-I11D — the sender's half of the CARE→HOPE event compatibility contract.
+//
+// HOPE used to answer `200 {ok:true}` for every event type, including the ones it has
+// no handler for, and this side read any 2xx as delivered: `integration_outbox.status`
+// became `sent`, `external_result_links.delivered_at` was stamped, and for an
+// electronic film `markFilmHopeSent()` set `hope_delivery_status = SENT` on a document
+// HOPE had thrown away. Two years of "delivered" with nothing behind it.
+//
+// HOPE now refuses an event it cannot interpret with 422 `unsupported_event_type`.
+// These tests pin what this side does with that refusal: it must not be recorded as a
+// delivery, it must not stop the retries by accident, it must exhaust its bounded
+// budget into a dead letter a human can see, and the film must stop reading as
+// "pending forever" once its event is actually dead — while staying re-sendable,
+// because a refusal is not a permanent verdict on the artifact.
+// ============================================================================
+suite("PR-I11D HOPE event compatibility — sender side (real PostgreSQL)", () => {
+  /** A film event carrying the artifact whose delivery state the outcome writes. */
+  async function filmEvent(name: string, opts: { attempts?: number } = {}) {
+    const id = await insertOutbox({
+      name,
+      eventType: "diagnostic_electronic_film.available",
+      payload: { careFilmArtifactId: 0, referralUuid: `${MARKER}-referral` },
+      attempts: opts.attempts ?? 0,
+      maxAttempts: 8,
+    });
+    const artifactId = await attachFilmArtifact(name, id);
+    await pool.query(
+      `UPDATE integration_outbox SET payload = jsonb_set(payload,'{careFilmArtifactId}',$2::jsonb) WHERE id = $1`,
+      [id, String(artifactId)],
+    );
+    await pool.query(
+      `UPDATE electronic_film_artifacts SET ingest_status = 'HOPE_PENDING', hope_delivery_status = 'PENDING' WHERE id = $1`,
+      [artifactId],
+    );
+    return { id, artifactId };
+  }
+
+  it("Test 31 — HOPE's refusal of an unsupported event type is not recorded as a delivery", async () => {
+    const { artifactId } = await filmEvent("i11d-refused");
+    failMode = "http422";
+
+    const r = await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const row = await readOutbox("i11d-refused");
+
+    // The event stays in the queue with the refusal on it. Recording `sent` here is
+    // what turned HOPE's "I do not understand this" into a delivery receipt.
+    expect(row.status).toBe("pending");
+    expect(row.sent_at).toBeNull();
+    expect(row.attempts).toBe(1);
+    expect(row.last_error).toBe("http_422");
+    expect(r.sent).toBe(0);
+
+    // And the film's own row — the one the radiology panel reads — is not SENT.
+    const film = await readFilm(artifactId);
+    expect(film.hope_delivery_status).not.toBe("SENT");
+    expect(film.hope_sent_at).toBeNull();
+  });
+
+  it("Test 32 — a refused film event dead-letters on budget and says so on the artifact", async () => {
+    const { artifactId } = await filmEvent("i11d-dead", { attempts: 7 });
+    failMode = "http422";
+
+    const r = await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const row = await readOutbox("i11d-dead");
+    expect(row.status).toBe("dead");
+    expect(row.last_error).toBe("http_422");
+    expect(r.dead).toBe(1);
+
+    // `hope_delivery_status` was PENDING since the enqueue and nothing else ever
+    // writes it, so without this the film reads "waiting" forever while the event it
+    // was waiting on is dead. ElectronicFilmPanel renders FAILED as its warning badge
+    // and worklist marker, which is what makes an undelivered film visible.
+    const film = await readFilm(artifactId);
+    expect(film.hope_delivery_status).toBe("FAILED");
+    expect(String(film.error_message)).toContain("http_422");
+    // Ingest state is untouched: the artifact itself stored fine, and HOPE's refusal
+    // is a delivery outcome, not a reason to hide the film from the pipeline.
+    expect(film.ingest_status).toBe("HOPE_PENDING");
+  });
+
+  it("Test 33 — a refusal that is still being retried does not condemn the film", async () => {
+    // Only the terminal transition may write FAILED. Marking every non-2xx as failure
+    // would report a film as undeliverable while CARE is still trying, and would fight
+    // the retry policy #995-#997 exist to implement.
+    const { artifactId } = await filmEvent("i11d-retrying", { attempts: 2 });
+    failMode = "http422";
+
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const row = await readOutbox("i11d-retrying");
+    expect(row.status).toBe("pending");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
+
+    // Bounded: eight attempts on one immutable event id, then it stops. A permanent
+    // refusal cannot become a retry storm.
+    failMode = "none";
+    await pool.query(
+      `UPDATE integration_outbox SET attempts = 7, next_attempt_at = NOW() - interval '1 second' WHERE event_id = $1`,
+      [eventIdFor("i11d-retrying")],
+    );
+    failMode = "http422";
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    expect((await readOutbox("i11d-retrying")).status).toBe("dead");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("FAILED");
+  });
+
+  it("Test 34 — an event refused by an older HOPE still delivers after the upgrade", async () => {
+    // The recovery the contract promises: HOPE gains the handler, the dead letter is
+    // retried, and the same event id lands. Nothing in the refusal may make the film
+    // un-sendable, or the compatibility fix would itself be a data-loss event.
+    const { id, artifactId } = await filmEvent("i11d-upgrade", { attempts: 7 });
+    failMode = "http422";
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    expect((await readOutbox("i11d-upgrade")).status).toBe("dead");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("FAILED");
+
+    // The operator retries it from the Hope connection screen, and this time HOPE
+    // recognises the event.
+    failMode = "none";
+    await outbox.retryOutboxEvent(id);
+    await pool.query(
+      `UPDATE integration_outbox SET next_attempt_at = NOW() - interval '1 second' WHERE id = $1`,
+      [id],
+    );
+    const r = await freshDispatch(outbox, { workerId: "w2", limit: 50 });
+    const row = await readOutbox("i11d-upgrade");
+
+    expect(row.status).toBe("sent");
+    expect(r.sent).toBeGreaterThanOrEqual(1);
+    const film = await readFilm(artifactId);
+    expect(film.hope_delivery_status).toBe("SENT");
+    expect(film.hope_sent_at).not.toBeNull();
+  });
+
+  it("Test 35 — a network failure that exhausts the budget marks the film failed too", async () => {
+    // The dead-letter transition is one state, whatever produced it: a film whose event
+    // is dead has not reached HOPE, whether HOPE refused it or never answered.
+    const { artifactId } = await filmEvent("i11d-timeout", { attempts: 7 });
+    failMode = "timeout";
+
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const row = await readOutbox("i11d-timeout");
+    expect(row.status).toBe("dead");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("FAILED");
+  });
+
+  it("Test 36 — a stale worker's refusal cannot mark the film failed either", async () => {
+    // Ownership fencing covers this write too. A is mid-POST, its lease lapses, B takes
+    // the row over; A then receives 422 and would declare the film undeliverable while B
+    // is still working on it — and a film B successfully delivers would keep A's FAILED
+    // stamp as the last word. The artifact state belongs to whoever holds the event.
+    const { artifactId } = await filmEvent("i11d-stale", { attempts: 7 });
+    failMode = "http422";
+    onCall = async (ev) => { if (ev) await handOverTo(ev, "worker-B"); };
+
+    const r = await freshDispatch(outbox, { workerId: "worker-A", limit: 50 });
+    const row = await readOutbox("i11d-stale");
+
+    expect(row.status).toBe("sending");
+    expect(row.locked_by).toBe("worker-B");
+    expect(row.last_error).toBeNull();
+    expect(r.dead).toBe(0);
+    expect(r.conflicts).toBe(1);
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
+  });
+
+  it("Test 37 — a dead report event does not condemn a film that shares its payload field", async () => {
+    // The artifact id is read out of the event payload, so the type guard is the only
+    // thing that keeps a report's delivery outcome off a film's record. The field is not
+    // reserved by the schema — `payload` is jsonb and `careFilmArtifactId` in a report
+    // body is one refactor away from happening — and a film silently marked FAILED by an
+    // unrelated report's dead letter is a film nobody will go back and re-send.
+    const id = await insertOutbox({
+      name: "i11d-crosstalk",
+      eventType: "diagnostic_report.finalised",
+      payload: { referralUuid: `${MARKER}-referral`, reportNumber: "R-X", careFilmArtifactId: 0 },
+      attempts: 7,
+      maxAttempts: 8,
+    });
+    const artifactId = await attachFilmArtifact("i11d-crosstalk", id);
+    await pool.query(
+      `UPDATE integration_outbox SET payload = jsonb_set(payload,'{careFilmArtifactId}',$2::jsonb) WHERE id = $1`,
+      [id, String(artifactId)],
+    );
+    await pool.query(`UPDATE electronic_film_artifacts SET hope_delivery_status = 'PENDING' WHERE id = $1`, [artifactId]);
+    failMode = "http422";
+
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+
+    expect((await readOutbox("i11d-crosstalk")).status).toBe("dead");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
   });
 });

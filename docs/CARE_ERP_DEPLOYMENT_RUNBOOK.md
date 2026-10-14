@@ -231,3 +231,23 @@ in this repo yet — `CARE_ERP_BACKUP_RESTORE.md` only warns that changing
 `SESSION_SECRET` makes older encrypted backups unreadable unless the previous value
 is kept for the rotation window.
 
+**Update 2026-10-15 (PR-I11A), and the paragraph above is now partly superseded.**
+The Hope pair described in it is gone from every tracked file:
+`HOPE_PARTNER_KEY` / `INTEGRATION_HOPE_SIGNING_SECRET` (with HOPE's
+`CARE_PARTNER_KEY` / `CARE_CALLBACK_SECRET` copies) are blank in the templates,
+`deploy-synology.sh` no longer appends them, neither bootstrap can fall back to a
+committed default, the step-2c gate fails an armed host that is missing one or still
+holds a published value, and CI runs
+`node scripts/check-no-committed-secrets.mjs --baseline scripts/committed-secrets-baseline.json`
+so nothing new can be added. Because this repository is public, those two values must
+be treated as disclosed: **there is now a written procedure**,
+`docs/hope-care-integration/06_CREDENTIAL_ROTATION.md`, and
+`node scripts/integration-credential-posture.mjs` answers "which host still holds a
+published value, and do the two sides agree?" without printing one.
+Everything else in the list above is **unchanged and still live** — `JWT_SECRET`,
+`SESSION_SECRET`, `BACKUP_PASSPHRASE`, `CRON_SECRET`, `SUPER_ADMIN_USB_KEY`,
+`INTERNAL_API_KEY`, `OCR_WORKER_TOKEN` and `hope.env`'s own session key are recorded
+in the baseline as the owner's rotation decision, each with its own blast radius
+(`BACKUP_PASSPHRASE` seals the encrypted backups the warning above refers to; the
+session keys sign every staff login).
+
