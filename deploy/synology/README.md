@@ -27,24 +27,34 @@ Container Manager reads a file named **`.env`** in the project root for
 5. Paste into the project root and **rename** the copy to `.env`  
    (File Station → right‑click → Rename)
 
-If `.env` already exists and referrals work, leave it. To refresh Hope keys only,
-open `.env` in Text Editor and ensure these lines exist (values from the
-templates — already matched):
+If `.env` already exists and referrals work, leave it. To set the Hope keys,
+open `.env` in Text Editor and put these lines in it — **the templates ship the
+two keys empty on purpose, so the values are yours to generate**:
+
+```sh
+openssl rand -hex 32                 # → INTEGRATION_HOPE_SIGNING_SECRET (Care) = CARE_CALLBACK_SECRET (Hope)
+echo "intgk_$(openssl rand -hex 32)" # → HOPE_PARTNER_KEY (Care) = CARE_PARTNER_KEY (Hope)
+```
+
+Both sides of each pair must hold the same value, and neither value is ever
+committed back into `deploy/synology/*.env`. The coordinated procedure, including
+what to do if only one side has been updated, is
+`docs/hope-care-integration/06_CREDENTIAL_ROTATION.md` in the Care repository.
 
 **Care `.env` must include:**
 ```
 INTEGRATION_HOPE_CALLBACK_URL=http://172.16.1.139:7080/api/integration/care-callback
-INTEGRATION_HOPE_SIGNING_SECRET=7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f
+INTEGRATION_HOPE_SIGNING_SECRET=
 HOPE_CARE_INTEGRATION_FORCE=1
-HOPE_PARTNER_KEY=intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7
+HOPE_PARTNER_KEY=
 ```
 
 **Hope `.env` must include:**
 ```
 ENABLE_CARE_INTEGRATION=1
 CARE_REFERRAL_URL=http://172.16.1.139:8888/api/integration/v1
-CARE_PARTNER_KEY=intgk_8ffb1b9c5b982148cfbe89448064cc4986b172bea48fe73b0f622f4a192da7e7
-CARE_CALLBACK_SECRET=7ab91cf3b7a45c4a3b4a6a90aa63ed2be921abc77bbd007f0de60093ba895f0f
+CARE_PARTNER_KEY=
+CARE_CALLBACK_SECRET=
 CARE_BOOKING_URL=https://caredeoghar.com/book
 NOTIFY_PROVIDER=care
 ```

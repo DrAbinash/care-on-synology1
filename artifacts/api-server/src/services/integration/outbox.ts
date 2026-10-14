@@ -408,7 +408,10 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
           continue;
         }
         failed++;
-        if (isDead) dead++;
+        if (isDead) {
+          dead++;
+          await markFilmHopeUndelivered(row, `http_${status}`);
+        }
       }
     } catch (err) {
       const msg = (err as Error)?.name === "AbortError" ? "timeout" : ((err as Error)?.message ?? "delivery_error").slice(0, 300);
@@ -423,11 +426,44 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
         continue;
       }
       failed++;
-      if (isDead) dead++;
+      if (isDead) {
+        dead++;
+        await markFilmHopeUndelivered(row, msg);
+      }
     }
   }
 
   return { claimed: claimedIds.length, sent, failed, dead, recovered, conflicts };
+}
+
+/**
+ * A film whose event is dead has not reached HOPE, and its own row has to say so.
+ *
+ * `hope_delivery_status` is written to `PENDING` at enqueue and, until now, only ever
+ * written again by a 2xx — so every terminal failure left the artifact waiting forever
+ * on an outbox row that had already given up. `ElectronicFilmPanel` renders `FAILED` as
+ * its warning badge and worklist marker, which is what turns an undelivered film into
+ * something a human can see.
+ *
+ * This is deliberately only the terminal transition. A refusal that is still inside its
+ * retry budget must leave the film pending, or the bounded-retry policy #995-#997
+ * implement would be contradicted by its own bookkeeping. And `ingest_status` stays
+ * untouched: HOPE's refusal is a delivery outcome, not a reason to hide a stored film
+ * from the pipeline — `enqueueElectronicFilmToHope` still accepts `HOPE_PENDING`, so a
+ * dead letter an operator retries can still become a delivery.
+ *
+ * Only ever called behind the ownership fence, for the same reason the 2xx leg is.
+ */
+async function markFilmHopeUndelivered(
+  row: { eventType: string; payload: unknown },
+  reason: string,
+): Promise<void> {
+  if (row.eventType !== "diagnostic_electronic_film.available") return;
+  const artifactId = (row.payload as { careFilmArtifactId?: number } | null)?.careFilmArtifactId;
+  if (!artifactId) return;
+  const { markFilmHopeFailed } = await import("../electronicFilm/hopeEmitter.js");
+  await markFilmHopeFailed(artifactId, `Hope did not accept this film: ${reason}`)
+    .catch((e) => console.error(`[integration] film artifact ${artifactId} failure marking failed:`, (e as Error)?.message));
 }
 
 async function recordAttempt(outboxId: number, attemptNo: number, status: "success" | "failure", httpStatus: number | null, responseBody: string | null, error: string | null, durationMs: number): Promise<void> {
