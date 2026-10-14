@@ -31,16 +31,21 @@ export type UndetectedEntry = {
  * SCOPE OF THIS LIST — what the CANONICAL ENGINE cannot see: `runQualityEngine`
  * plus the structured, measurement and composer gates. That is the set the server
  * runs (the finalize quality evaluation, the persisted findings, the AI safety
- * path), so it is the set the clinic can be held to. It is not identical to what
- * the workstation prints: the live `reportValidator.ts` still carries seven
- * checks in `pathologyMergeContradictionWarnings` that have no rule id in the
- * engine. Measured across all 92 corpus inputs (20 correct reports + 72 defects)
- * on 2026-10-13: 84 agree message for message and 8 diverge, every divergence a
- * legacy warning the engine never emits (engine-only = 0) — 6 findings-vs-
- * impression laterality warnings and 2 spinal level-mismatch warnings. The two
- * level entries below are therefore "the server cannot see this", not "nobody
- * can", which is the difference between a wrong-level surgery going unnoticed by
- * the API and going unnoticed on the screen.
+ * path), so it is the set the clinic can be held to.
+ *
+ * It was not always the set the workstation printed. Until 2026-10-14 the live
+ * `reportValidator.ts` carried five Findings-vs-Impression checks as prose regexes
+ * in a function of its own, with no rule id, so a warning a radiologist could see
+ * on screen was never recorded, never persisted and never counted here. Measured
+ * across all 92 corpus inputs (20 correct reports + 72 defects), 84 agreed
+ * message for message and 8 diverged, every divergence a warning only the
+ * workstation emitted — 6 findings-vs-impression laterality and 2 spinal level.
+ * Those checks now live in lib/report-quality/src/text/findingsImpression.ts as
+ * Q119-Q123, called by both paths rather than copied into either, and the same
+ * measurement reads 92 agree / 0 diverge / 0 score mismatches. An entry below is
+ * therefore "nobody can see this", not "the API cannot see it while the screen
+ * can" — which was the difference between a wrong-level surgery going unnoticed
+ * and going unnoticed only by the record of it.
  */
 export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   // ── unsupported contrast ──
@@ -79,17 +84,16 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   // Four of this class left the register when Q117 replaced the composer's closed
   // ABNORMALITY_HINTS list with the shared named-diagnosis table: a meningioma, a
   // spondylodiscitis, a peritonitis and an invasive ductal carcinoma in the
-  // Impression now each produce a signal the server records. What is left is the
-  // shape that cannot be named without also naming an ordinary finding.
+  // Impression now each produce a signal the server records. A fifth left when
+  // Q119 read the two sections against each other instead of against a vocabulary:
+  // an invented "Common bile duct stone with obstructive dilatation" contradicts
+  // the same report's "common bile duct … without dilatation", and seeing that
+  // needs no term list at all. What is left is the shape that cannot be named
+  // without also naming an ordinary finding.
   "mrcp-normal.invented-diagnosis": {
     class: "inventedDiagnosis",
     harm: "A pancreatic mass nobody saw routes the patient to a Whipple.",
     mechanism: "'mass' is matched by Q113's separate regex but is absent from ABNORMALITY_HINTS.",
-  },
-  "usg-abnormal.invented-diagnosis": {
-    class: "inventedDiagnosis",
-    harm: "A duct stone nobody saw changes the pathway to ERCP first.",
-    mechanism: "Neither 'stone' nor 'calculus' is an ABNORMALITY_HINTS entry.",
   },
 
   // ── unsupported normal findings ──
@@ -130,22 +134,15 @@ export const UNDETECTED_DEFECTS: Record<string, UndetectedEntry> = {
   },
 
   // ── wrong level ──
-  "cervical-abnormal.wrong-level": {
-    class: "level",
-    harm: "Wrong-level surgery: the Impression names a different examined disc space.",
-    mechanism:
-      "level_change compares output against the supplied scaffold, and Technique legitimately states the imaged range ('C3-C4 to C6-C7'), so every cervical disc space counts as supplied and a swap between two of them is invisible. The workstation does still print a warning here — 'Possible level mismatch: Findings mention C5-C6 but Impression mentions C6-C7' comes from pathologyMergeContradictionWarnings in reportValidator.ts, which has no rule id in the engine, so nothing server-side records it, blocks it or persists it.",
-  },
-  "lumbar-abnormal.wrong-level": {
-    class: "level",
-    harm: "Exploring L5-S1 for an L4-L5 lesion leaves the pathology untouched.",
-    mechanism:
-      "Same cause: the examined range in Technique makes every level in it 'supplied'. As with the cervical case the legacy client check catches it (L4-L5 vs L5-S1) and the canonical engine does not — see the divergence count in this file's header.",
-  },
+  // Two of the three left this register when Q120 paired the levels by finding
+  // rather than reading one level from each section: a cervical C5-C6 herniation
+  // summarised as C6-C7, and a lumbar L4-L5 extrusion summarised as L5-S1, are now
+  // both recorded by the server and printed by the workstation in the same words.
   "whole-spine.wrong-level": {
     class: "level",
     harm: "The conus level is the tethering question; moving it changes the neurosurgical decision.",
-    mechanism: "Not established. Measured no reaction. Single-vertebra tokens appear to be handled differently from disc-space pairs, which is unconfirmed.",
+    mechanism:
+      "The defect moves a level INSIDE the Findings ('the conus at the L1 level' becomes L4) and the Impression names no level at all — it says 'no focal vertebral lesion or cord abnormality on this limited screening study'. Q120 is a Findings-vs-Impression comparison and needs a level on both sides for one finding, so there is nothing for it to pair. What would see this is a check that the conus sits at a plausible level in the first place, which is a clinical-knowledge rule rather than a consistency one.",
   },
 
   // ── findings/impression contradiction ──

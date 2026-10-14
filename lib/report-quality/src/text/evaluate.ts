@@ -7,13 +7,12 @@
 // Parity is guarded at runtime by the shadow fixtures in
 // artifacts/diagnostic-erp/src/lib/reportQualityShadow.test.ts — the only guard
 // that exists (there is no script that diffs this file against reportValidator.ts,
-// as an earlier version of this comment claimed). The contradiction rules read
-// their vocabulary from ./clinicalTerms.ts, which the legacy validator imports
-// from the same place, so those rules cannot drift by construction. They still
-// cannot reach the legacy `pathologyMergeContradictionWarnings` block: its seven
-// checks (eight messages) have no rule id in this tier, so the canonical engine
-// under-reports what the workspace shows, and anything measured with it — the
-// golden corpus census included — is measured against the smaller set.
+// as an earlier version of this comment claimed). Every rule here that reads
+// clinical prose reads it through ./clinicalTerms.ts, which the legacy validator
+// imports from the same place, and the five Findings↔Impression checks come from
+// ./findingsImpression.ts, which the legacy validator calls rather than copies — so
+// neither the vocabulary nor the contradiction contract can drift between the badge
+// and the persisted findings.
 
 import type { TextReportInput } from "../contract";
 import type { RuleId } from "../ruleCatalog";
@@ -28,6 +27,7 @@ import {
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
+import { findingsImpressionContradictions } from "./findingsImpression";
 
 export interface TextTierFinding {
   ruleId: RuleId;
@@ -51,7 +51,7 @@ function sentences(text: string): string[] {
 /**
  * Evaluate the free-text tier. Findings are emitted in the EXACT order the
  * legacy computeQualityScore produced its `issues` array:
- *   completeness (Q001-Q005) → validateReport warnings (Q101-Q115) →
+ *   completeness (Q001-Q005) → validateReport warnings (Q101-Q123) →
  *   checklist (Q006) → missing measurements (Q007).
  */
 export function evaluateTextTier(input: TextReportInput): TextTierResult {
@@ -137,6 +137,15 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
   const impressionEmpty = (report.impression || []).every((l) => !l.trim());
   if (hasPathology && impressionEmpty) {
     emit("Q105", "Findings describe pathology but the Impression section is empty.", W);
+  }
+
+  // Q119-Q123 — the Findings↔Impression contract. One module, called from here and
+  // from the live workspace validator, so the badge and the persisted findings say
+  // the same sentence about the same report. Placed where the validator has always
+  // run these checks: after the completeness of the Impression is settled, before
+  // its text is inspected for placeholders.
+  for (const contradiction of findingsImpressionContradictions(findingsText, impressionText)) {
+    emit(contradiction.ruleId, contradiction.message, W);
   }
 
   // Q106 — unfilled placeholder

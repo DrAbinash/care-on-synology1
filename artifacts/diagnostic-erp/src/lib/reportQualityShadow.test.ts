@@ -139,6 +139,44 @@ const FIXTURES: Record<string, QualityInput> = {
     impression: ["Normal abdominal examination. Renal cell carcinoma is not excluded."],
     recommendation: "Urology referral.",
   },
+  // The three shapes the product owner named for the Findings↔Impression
+  // dependency. They are fixtures rather than unit cases because the claim being
+  // made is about the PAIR: the sentence the badge prints and the finding the
+  // server persists have to be the same sentence, on a report that is not in the
+  // golden corpus and was not tuned against.
+  "MRI lumbar spine, Findings deny what the Impression reports": {
+    modality: "MR",
+    studyDescription: "MRI LUMBAR SPINE (PLAIN)",
+    sex: "female",
+    age: "52",
+    technique: "Multiplanar multisequence MRI of the lumbar spine performed without contrast.",
+    clinicalHistory: "Low back pain.",
+    findings: "Degenerative changes are noted. No significant spinal canal stenosis.",
+    impression: ["Severe spinal canal stenosis at L4-L5."],
+    recommendation: "Neurosurgical review.",
+  },
+  "MRI lumbar spine, the level moved between the sections": {
+    modality: "MR",
+    studyDescription: "MRI LUMBAR SPINE (PLAIN)",
+    sex: "male",
+    age: "44",
+    technique: "Sagittal T1W, T2W and STIR with axial T2W images at L3-L4 to L5-S1.",
+    clinicalHistory: "Right leg radicular pain.",
+    findings: "Disc bulge at L4-L5 with a preserved disc height. The conus is normal in position.",
+    impression: ["Disc bulge at L5-S1."],
+    recommendation: "Clinical correlation.",
+  },
+  "MRI lumbar spine, the grade moved between the sections": {
+    modality: "MR",
+    studyDescription: "MRI LUMBAR SPINE (PLAIN)",
+    sex: "female",
+    age: "61",
+    technique: "Multiplanar multisequence MRI of the lumbar spine performed without contrast.",
+    clinicalHistory: "Neurogenic claudication.",
+    findings: "Mild central canal stenosis at L3-L4. The visualised cord is normal in signal.",
+    impression: ["Severe central canal stenosis at L3-L4."],
+    recommendation: "Neurosurgical review.",
+  },
 };
 
 describe("report-quality shadow parity (legacy vs canonical engine)", () => {
@@ -173,6 +211,34 @@ describe("report-quality shadow parity (legacy vs canonical engine)", () => {
       ],
     ];
     for (const [name, message] of armed) {
+      const p = computeParity(FIXTURES[name]);
+      expect(p.legacyWarnings, `${name} — workstation`).toContain(message);
+      expect(p.engineWarnings, `${name} — server`).toContain(message);
+    }
+  });
+
+  // The five Findings↔Impression checks are called by both paths rather than
+  // copied, so what is being proven here is not that each path has a rule but that
+  // they have the SAME one: identical wording, on reports that are not in the
+  // golden corpus. Before the shared contract these were prose regexes of the live
+  // validator with no rule id, so the badge printed a level mismatch the signed
+  // record never contained.
+  it("arms each named Findings↔Impression shape on both paths with one wording", () => {
+    const named: [string, string][] = [
+      [
+        "MRI lumbar spine, Findings deny what the Impression reports",
+        'Findings/Impression contradiction: the Findings deny "stenosis" but the Impression reports it.',
+      ],
+      [
+        "MRI lumbar spine, the level moved between the sections",
+        'Possible level mismatch: the Findings place "disc bulge" at L4-L5 but the Impression places it at L5-S1.',
+      ],
+      [
+        "MRI lumbar spine, the grade moved between the sections",
+        'Possible severity mismatch: the Findings grade "stenosis" as mild but the Impression grades it as severe.',
+      ],
+    ];
+    for (const [name, message] of named) {
       const p = computeParity(FIXTURES[name]);
       expect(p.legacyWarnings, `${name} — workstation`).toContain(message);
       expect(p.engineWarnings, `${name} — server`).toContain(message);

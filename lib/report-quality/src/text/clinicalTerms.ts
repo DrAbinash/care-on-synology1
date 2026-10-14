@@ -121,6 +121,103 @@ export const NAMED_LESION_TERMS: readonly ClinicalTerm[] = [
 ] as const;
 
 /**
+ * The anatomy that PLACES a finding, as canonical site names.
+ *
+ * {@link ABNORMAL_TERMS} says what was found; this says where. Both are needed
+ * because one label spans several organs, and reading a label with no site
+ * attached reports contradictions that are not there. The measured case is MRCP:
+ * Findings "the gallbladder contains multiple stones" beside Impression "no common
+ * bile duct stone" is one correct report — gallstones with a clear duct is the
+ * commonest MRCP result there is — but both mentions carry the label "stone", so
+ * the pair read as a denial contradicting an assertion.
+ *
+ * Sites fold to a canonical name, so "biliary", "CBD" and "bile duct" are one
+ * place rather than three wordings of it. The list is deliberately incomplete and
+ * errs towards saying nothing: a sentence naming no site here yields an empty set,
+ * and an empty set never separates two mentions, so unrecognised anatomy leaves a
+ * rule exactly as strict as it was before this list existed. Growing it can only
+ * reduce false positives — it cannot create one.
+ *
+ * Ambiguous wordings are excluded rather than guessed at. Bare "sinus" is left out
+ * because it is a paranasal sinus in the head, a renal sinus in the abdomen and a
+ * dural venous sinus in a thrombosis report; bare "cord", "medulla" and "lobe" are
+ * left out for the same reason.
+ */
+export const ANATOMICAL_SITE_TERMS: readonly ClinicalTerm[] = [
+  // head and neck
+  { label: "brain", pattern: String.raw`\b(?:brain\w*|cerebr\w*|cerebell\w*|hemispher\w*|brainstem|pons|midbrain|medulla oblongata|thalam\w*|basal gangli\w*|corona radiata|centrum semiovale|internal capsule|white matter|grey matter|gray matter)\b` },
+  { label: "extra-axial space", pattern: String.raw`\b(?:subdural|extradural|epidural|subarachnoid|extra-?axial|mening\w*|falx|tentorium)\b` },
+  { label: "ventricular system", pattern: String.raw`\b(?:ventricl\w*|cistern\w*|choroid plexus)\b` },
+  { label: "orbit", pattern: String.raw`\b(?:orbit\w*|globe|retrobulbar|extraocular|optic nerve)\b` },
+  { label: "paranasal sinuses", pattern: String.raw`\b(?:paranasal|maxillary|ethmoid\w*|sphenoid|mastoid\w*|middle ear|petrous|temporal bone|nasal)\b` },
+  { label: "sella", pattern: String.raw`\b(?:sella|pituitary|hypophys\w*)\b` },
+  { label: "neck", pattern: String.raw`\b(?:neck|thyroid|parotid|submandibular|pharyn\w*|laryn\w*|tonsil\w*)\b` },
+
+  // spine
+  { label: "spinal canal", pattern: String.raw`\b(?:spinal canal|central canal|spinal stenosis|thecal sac|dural sac|spinal cord|medulla spinalis)\b` },
+  { label: "neural foramen", pattern: String.raw`\b(?:foram\w*|neuroforam\w*|nerve root|root sleeve|exiting root)\b` },
+  { label: "intervertebral disc", pattern: String.raw`\b(?:disc|disk|disc\w*|intervertebral|annulus|nucleus pulposus)\b` },
+  { label: "vertebra", pattern: String.raw`\b(?:vertebral body|vertebrae|vertebra|endplate\w*|pedicle\w*|lamina\w*|spinous process|transverse process|facet\w*|pars interarticularis|sacrum|sacral|coccyx)\b` },
+  { label: "paraspinal soft tissue", pattern: String.raw`\b(?:paraspinal|paravertebral|prevertebral|retropharyngeal|posterior elements)\b` },
+
+  // chest
+  { label: "lung", pattern: String.raw`\b(?:lung\w*|pulmonary (?!arter|vein)\w*|upper lobe|middle lobe|lower lobe|lobar|lingula|bronch\w*|air ?space\w*|alveol\w*)\b` },
+  { label: "pleura", pattern: String.raw`\b(?:pleura|pleural|costophrenic)\b` },
+  { label: "mediastinum", pattern: String.raw`\b(?:mediastin\w*|hilum|hilar|carina)\b` },
+  { label: "heart", pattern: String.raw`\b(?:heart|cardiac|pericard\w*|myocard\w*|(?:left|right) ventricle|ventricular septum|atrium|atria|coronary)\b` },
+  { label: "aorta", pattern: String.raw`\b(?:aorta|aortic)\b` },
+  { label: "chest wall", pattern: String.raw`\b(?:chest wall|ribs?|clavicle|scapula|sternum|costal|thoracic cage)\b` },
+  { label: "diaphragm", pattern: String.raw`\b(?:diaphragm\w*|subdiaphragmatic|subphrenic)\b` },
+
+  // abdomen and pelvis
+  { label: "liver", pattern: String.raw`\b(?:liver|hepatic|hepat\w*)\b` },
+  { label: "gallbladder", pattern: String.raw`\b(?:gall ?bladder\w*|cholecyst\w*)\b` },
+  { label: "bile duct", pattern: String.raw`\b(?:bile duct\w*|biliary|cbd|hepatic duct\w*|cystic duct|ampulla\w*|periampullary|cholangio\w*)\b` },
+  { label: "pancreas", pattern: String.raw`\b(?:pancrea\w*|wirsung)\b` },
+  { label: "spleen", pattern: String.raw`\b(?:spleen|splenic)\b` },
+  { label: "kidney", pattern: String.raw`\b(?:kidney\w*|renal|nephro\w*)\b` },
+  { label: "ureter", pattern: String.raw`\b(?:ureter\w*|pelvicalyceal|pelviureter\w*|vesicoureter\w*)\b` },
+  { label: "bladder", pattern: String.raw`\b(?:urinary bladder|bladder|urethra\w*|prostate|prostatic)\b` },
+  { label: "pelvic organs", pattern: String.raw`\b(?:uter\w*|endometri\w*|ovar\w*|adnex\w*|vagina\w*|cervix uteri)\b` },
+  { label: "adrenal", pattern: String.raw`\b(?:adrenal|suprarenal)\b` },
+  { label: "bowel", pattern: String.raw`\b(?:bowel|intestinal|colon\w*|caecum|cecum|appendi\w*|rectum|rectal|rectosigmoid|sigmoid\w*|duoden\w*|jejun\w*|ileum|ileal|ileo\w*|stomach|gastric|oesophag\w*|esophag\w*)\b` },
+  { label: "peritoneum", pattern: String.raw`\b(?:peritone\w*|mesenter\w*|omentum\w*|retroperitone\w*|pouch of douglas)\b` },
+  { label: "abdominal wall", pattern: String.raw`\b(?:abdominal wall|flank|groin|inguinal|umbilic\w*)\b` },
+  { label: "lymph nodes", pattern: String.raw`\b(?:lymph node\w*|nodal|lymphatic)\b` },
+
+  // breast
+  { label: "breast", pattern: String.raw`\b(?:breast\w*|mamm\w*|retroareolar|areola\w*|nipple\w*|quadrant)\b` },
+  { label: "axilla", pattern: String.raw`\b(?:axilla|axillary)\b` },
+
+  // vascular, limb and soft tissue
+  { label: "deep veins", pattern: String.raw`\b(?:deep vein\w*|deep venous|common femoral|femoral vein\w*|popliteal vein\w*|iliac vein\w*|tibial vein\w*|peroneal vein\w*|gastrocnemius|soleal|dvt)\b` },
+  { label: "superficial veins", pattern: String.raw`\b(?:sapheno\w*|superficial vein\w*|varicose|varix|varices|gsv|ssv)\b` },
+  { label: "arteries", pattern: String.raw`\b(?:arter\w*|carotid\w*)\b` },
+  { label: "bones and joints", pattern: String.raw`\b(?:joint\w*|articular|synovi\w*|tendon\w*|ligament\w*|bursa\w*|menisc\w*|cartilage|marrow|bones?|skeletal)\b` },
+  { label: "soft tissue", pattern: String.raw`\b(?:soft tissue\w*|subcutaneous|muscle\w*|muscular|fascia\w*|myo\w*)\b` },
+] as const;
+
+/**
+ * The canonical sites a stretch of text names, in list order.
+ *
+ * Read from the whole sentence rather than from the span a negation governed: the
+ * organ usually comes before the verb, so "the gallbladder contains multiple
+ * stones" has already left "gallbladder" behind by the time the negation reading
+ * starts. That is why sites sit beside levels and sides, which are read the same
+ * way, rather than beside acuity and magnitude.
+ */
+export function anatomicalSites(text: string): string[] {
+  const lower = (text ?? "").toLowerCase();
+  const out: string[] = [];
+  for (const term of ANATOMICAL_SITE_TERMS) {
+    // matchAll clones the memoised pattern; a bare .test() on a /g/ RegExp would
+    // leave lastIndex set and silently shorten the next caller's scan.
+    if (!lower.matchAll(compiled(term.pattern)).next().done) out.push(term.label);
+  }
+  return out;
+}
+
+/**
  * Statements that the study as a whole was normal. A sentence carrying one of
  * {@link SCOPE_LIMITERS} is not one: "No significant abnormality at other
  * cervical levels." is the correct way to pair a focal herniation with clear
@@ -207,9 +304,7 @@ function windowAfter(sentence: string, termEnd: number): string {
  * one, and the findings signature has to tell those apart or "cannot be excluded"
  * and "is present" would read as the same report.
  */
-function occurrenceState(sentence: string, start: number, end: number): ClinicalOccurrence["state"] {
-  const scope = governingScope(sentence, start);
-  const after = windowAfter(sentence, end);
+function readState(scope: string, after: string): ClinicalOccurrence["state"] {
   // Denial outranks a hedge: "no likely fracture" and "no definite abnormality"
   // are denials, and reading the hedge as the assertion is what marks up a
   // correct normal report. A hedge with NO denial cue is the other case —
@@ -227,26 +322,81 @@ export type ClinicalOccurrence = {
 };
 
 /**
- * Every vocabulary mention in the text, in sentence order then term order. The
- * order is load-bearing: {@link assertedAbnormality} reports the first mention the
- * text does not deny, and the rule messages quote that label.
+ * One mention, plus the qualifiers and anatomy that scope it.
+ *
+ * The state on its own cannot say whether two mentions of one word contradict
+ * each other. "No acute infarct" in the Findings beside "chronic infarct" in the
+ * Impression is one correct report, and so is "no nerve root compression at
+ * L3-L4" beside "thecal sac indentation at L4-L5" — in each the two halves are
+ * about different facts, not disagreeing about one. Acuity and magnitude are read
+ * from the span the negation reading governed, i.e. the words that scope *this*
+ * mention; levels, sides and sites come from the whole sentence, because the level
+ * an abnormality sits at and the organ it belongs to are usually named outside the
+ * span a negation still governs.
+ */
+export type ClinicalOccurrenceDetail = ClinicalOccurrence & {
+  readonly acuity: readonly string[];
+  readonly magnitude: readonly string[];
+  readonly levels: readonly string[];
+  readonly sides: readonly string[];
+  readonly sites: readonly string[];
+};
+
+/**
+ * Every vocabulary mention in the text, in sentence order then term order, with
+ * the qualifiers that scope each one. The order is load-bearing:
+ * {@link assertedAbnormality} reports the first mention the text does not deny,
+ * and the rule messages quote that label.
+ */
+export function clinicalOccurrenceDetails(
+  text: string,
+  terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
+): ClinicalOccurrenceDetail[] {
+  const out: ClinicalOccurrenceDetail[] = [];
+  if (!text) return out;
+  for (const sentence of sentences(text)) {
+    const lower = sentence.toLowerCase();
+    // Per sentence, not per term: ~50 patterns share one reading of the anatomy.
+    const levels = [...new Set(spinalLevels(sentence).map((l) => l.canonical))];
+    const sides = [...new Set([...lower.matchAll(LATERALITY_TOKEN)].map((m) => m[1].toLowerCase()))];
+    const sites = anatomicalSites(sentence);
+    for (const term of terms) {
+      for (const match of lower.matchAll(compiled(term.pattern))) {
+        const at = match.index ?? 0;
+        const end = at + match[0].length;
+        const scope = governingScope(lower, at);
+        const after = windowAfter(lower, end);
+        const span = `${scope}${match[0]}${after}`;
+        out.push({
+          label: term.label,
+          state: readState(scope, after),
+          acuity: uniqueWords(span, ACUITY_TOKEN),
+          magnitude: uniqueWords(span, MAGNITUDE_TOKEN),
+          levels,
+          sides,
+          sites,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The same reading with the scope qualifiers dropped. Kept as its own export
+ * because most callers only ask what the text did with a term, and the answer has
+ * to be the one reading above — a second pass over the prose would be a second
+ * opinion about what "no acute haemorrhage" means.
  */
 export function clinicalOccurrences(
   text: string,
   terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
 ): ClinicalOccurrence[] {
-  const out: ClinicalOccurrence[] = [];
-  if (!text) return out;
-  for (const sentence of sentences(text)) {
-    const lower = sentence.toLowerCase();
-    for (const term of terms) {
-      for (const match of lower.matchAll(compiled(term.pattern))) {
-        const at = match.index ?? 0;
-        out.push({ label: term.label, state: occurrenceState(lower, at, at + match[0].length) });
-      }
-    }
-  }
-  return out;
+  return clinicalOccurrenceDetails(text, terms);
+}
+
+function uniqueWords(text: string, token: RegExp): string[] {
+  return [...new Set([...text.matchAll(token)].map((m) => m[1].toLowerCase()))];
 }
 
 /**
@@ -326,6 +476,27 @@ const MEASUREMENT_TOKEN =
  */
 const SEVERITY_TOKEN =
   /\b(acute|chronic|subacute|mild|moderate|severe|minimal|marked|massive|complete|partial|focal|diffuse|small|large|significant)\b/gi;
+
+/**
+ * Acuity, read on its own. "No acute infarct" beside "chronic infarct" is one
+ * correct report rather than a contradiction, and the same is true of a subacute
+ * collection described once as acute and once as chronic — so a denial and an
+ * assertion of one word are about different facts when the two name different
+ * times. Deliberately not the whole of {@link SEVERITY_TOKEN}: "no significant
+ * stenosis" beside "severe stenosis" is a contradiction about the same fact, and
+ * folding magnitude in here would excuse exactly the report that needs reading.
+ */
+const ACUITY_TOKEN = /\b(acute|chronic|subacute)\b/gi;
+
+/**
+ * The graded magnitude words, as a closed three-step scale. A Findings that grades
+ * a finding "mild" and an Impression that grades the same finding "severe" are not
+ * two spellings of one fact — the grade is what decides whether anybody operates.
+ * "minimal" and "marked" are left out on purpose: they are not on this scale, and
+ * a Findings that says "minimal" beside an Impression that says "mild" is prose,
+ * not a disagreement.
+ */
+const MAGNITUDE_TOKEN = /\b(mild|moderate|severe)\b/gi;
 
 const UNIT_CANON: Record<string, string> = {
   mm: "mm",
@@ -616,7 +787,7 @@ const WHOLE_SPINE_TITLE = /WHOLE|ENTIRE|COMPLETE|PAN.?SPINE|DORSO.?LUMB|CERVI?.?
 
 const SPINE_TITLE = /\b(?:SPINE|C-?SPINE|L-?SPINE|DORSAL|THORACIC|CERVICAL|LUMBAR|SACRAL)\b/i;
 
-const LEVEL_WORD = /\b([CTLS])\d{1,2}(?:\s*-\s*(?:[CTLS])?\d{1,2})?\b/g;
+const LEVEL_WORD = /\b([CTLS])(\d{1,2})(?:\s*-\s*(?:([CTLS]))?(\d{1,2}))?\b/g;
 
 /**
  * "T2" is ambiguous in an MRI report: the second thoracic vertebra, or the
@@ -632,6 +803,39 @@ const LEVEL_WORD = /\b([CTLS])\d{1,2}(?:\s*-\s*(?:[CTLS])?\d{1,2})?\b/g;
 const SEQUENCE_AMBIGUOUS = /^T[12]$/i;
 const SEQUENCE_CONTEXT =
   /^\s*[- ]?\s*(?:w\b|wi\b|weight\w*|hyper\w*|hypo\w*|iso\w*|signal\b|intensity\b|flair\b|stir\b|image\w*|sequence\w*)/i;
+
+/** One level the prose names: as written, its region, and its canonical form. */
+export type SpinalLevel = {
+  /** Exactly what was written — "C5-6", "L4–L5". */
+  readonly raw: string;
+  /** The region letter, upper-case. */
+  readonly region: string;
+  /** One spelling of one fact: "C5-6" and "C5-C6" both read as "C5-C6". */
+  readonly canonical: string;
+};
+
+/**
+ * Every spinal level the prose names, with the sequence reading above applied.
+ * Shared by the anatomical-scope rule and the Findings↔Impression level rule
+ * because they are asking the same question of the same sentence — a level one of
+ * them reads as a vertebra and the other as a pulse sequence is a disagreement
+ * about the report, not about the rule.
+ */
+export function spinalLevels(text: string): SpinalLevel[] {
+  const prose = text ?? "";
+  const out: SpinalLevel[] = [];
+  for (const match of prose.matchAll(LEVEL_WORD)) {
+    const at = match.index ?? 0;
+    if (SEQUENCE_AMBIGUOUS.test(match[0]) && SEQUENCE_CONTEXT.test(prose.slice(at + match[0].length))) continue;
+    const region = match[1].toUpperCase();
+    out.push({
+      raw: match[0],
+      region,
+      canonical: match[4] ? `${region}${match[2]}-${(match[3] ?? region).toUpperCase()}${match[4]}` : `${region}${match[2]}`,
+    });
+  }
+  return out;
+}
 
 /**
  * Spine content that belongs to a region this examination did not cover.
@@ -664,12 +868,11 @@ export function outOfScopeSpineContent(text: string, studyDescription: string | 
   if (allowed.size === 0) return [];
 
   const offenders = new Set<string>();
-  const prose = text ?? "";
-  for (const match of prose.matchAll(LEVEL_WORD)) {
-    if (allowed.has(match[1].toUpperCase())) continue;
-    if (SEQUENCE_AMBIGUOUS.test(match[0]) && SEQUENCE_CONTEXT.test(prose.slice(match.index + match[0].length))) continue;
-    offenders.add(match[0]);
+  for (const level of spinalLevels(text ?? "")) {
+    if (allowed.has(level.region)) continue;
+    offenders.add(level.raw);
   }
+  const prose = text ?? "";
   for (const region of SPINE_REGIONS) {
     if (inScopeLabels.has(region.label)) continue;
     const word = region.label === "cervical" ? /\bcervical\b/i

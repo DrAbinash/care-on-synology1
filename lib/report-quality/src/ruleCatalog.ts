@@ -23,7 +23,7 @@
 import type { QualityCategory, Severity, DataTier } from "./contract";
 
 /** Bumped whenever the rule SET changes; per-rule `version` gives finer grain. */
-export const RULE_CATALOG_VERSION = "1.3.0";
+export const RULE_CATALOG_VERSION = "1.4.0";
 
 export interface RuleCatalogEntry {
   /** Stable primary id emitted on findings (e.g. "Q104"). */
@@ -78,6 +78,17 @@ export const RULE_CATALOG = {
   Q116: { id: "Q116", legacyAlias: "Q116", canonicalId: "care.text.consistency.birads-vs-findings", ...CORE, title: "BI-RADS assessment contradicts findings", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "The stated BI-RADS category is not supported by the Findings it summarises." },
   Q117: { id: "Q117", legacyAlias: "Q117", canonicalId: "care.text.consistency.ungrounded-diagnosis", ...CORE, title: "Impression names a diagnosis the report never describes", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "A specific named diagnosis appears in the Impression and in no other section of the report." },
   Q118: { id: "Q118", legacyAlias: "Q118", canonicalId: "care.text.consistency.anatomical-scope", ...CORE, title: "Report describes a region outside the examination", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Spine levels or regions named in the report that the study title does not cover." },
+  // ── Findings↔Impression (Q119-Q123) ──
+  // One contract, two consumers: ./text/findingsImpression.ts is called by both
+  // this tier and the live workspace validator, so these five ids are what the
+  // server records for the checks the badge has always printed. Q120 and Q121
+  // existed only as unnumbered warnings before, which meant nothing server-side
+  // persisted them, and Q119 did not exist at all.
+  Q119: { id: "Q119", legacyAlias: "Q119", canonicalId: "care.text.consistency.section-state", ...CORE, title: "One section withdraws a finding the other still reports", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "The Findings and the Impression disagree about whether a named finding is present, denied or held open." },
+  Q120: { id: "Q120", legacyAlias: "Q120", canonicalId: "care.text.consistency.spinal-level", ...CORE, title: "Findings and Impression name different spinal levels", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Both sections describe the same spinal anatomy but share no level." },
+  Q121: { id: "Q121", legacyAlias: "Q121", canonicalId: "care.text.consistency.severity-grade", ...CORE, title: "Findings and Impression grade the same finding differently", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "One section grades a finding mild, the other moderate or severe, with no grade in common." },
+  Q122: { id: "Q122", legacyAlias: "Q122", canonicalId: "care.text.consistency.basal-ganglia", ...CORE, title: "Basal ganglia described as normal and as a haemorrhage", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "The same structure is cleared and bled into within one report." },
+  Q123: { id: "Q123", legacyAlias: "Q123", canonicalId: "care.text.consistency.diffusion-infarct", ...CORE, title: "Diffusion reported negative alongside an acute infarct", category: "consistency", tier: "heuristic", defaultSeverity: "warning", description: "Restricted diffusion is denied in a report that concludes an acute infarct, the finding that sequence exists to show." },
 } as const satisfies Record<string, RuleCatalogEntry>;
 
 export type RuleId = keyof typeof RULE_CATALOG;

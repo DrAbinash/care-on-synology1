@@ -95,14 +95,28 @@ export {
   assertsStudyNormal,
   assessmentCategories,
   clinicalOccurrences,
+  clinicalOccurrenceDetails,
   clinicalContentSignature,
   outOfScopeSpineContent,
+  spinalLevels,
   studyContrastState,
   ungroundedNamedDiagnoses,
   CONTRAST_MENTION_TERMS,
   NAMED_DIAGNOSIS_TERMS,
 } from "./text/clinicalTerms";
-export type { ClinicalTerm, ClinicalOccurrence, NamedDiagnosis, StudyContrastState } from "./text/clinicalTerms";
+export type {
+  ClinicalTerm,
+  ClinicalOccurrence,
+  ClinicalOccurrenceDetail,
+  NamedDiagnosis,
+  SpinalLevel,
+  StudyContrastState,
+} from "./text/clinicalTerms";
+// The Findings↔Impression contradiction contract. Called by ./text/evaluate AND by
+// the live workspace validator, so the badge on the screen and the findings the
+// server persists are one reading rather than two that happen to agree today.
+export { findingsImpressionContradictions, sectionsContradict } from "./text/findingsImpression";
+export type { SectionContradiction } from "./text/findingsImpression";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
 export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";
