@@ -7,19 +7,30 @@
  * catch, the other left the quality block unrendered, which is the same silence
  * as a report with no findings. These tests pin the difference between "the check
  * ran and found nothing" and "the check did not run".
+ *
+ * There is a THIRD state, and it is the one the first fix missed. The draft
+ * validator was guarded by `if (effectiveDraftId)`, so a finalize with no saved
+ * draft never attempted it, pushed no outcome, and reported nothing — the amber
+ * "Not checked" block stayed hidden and the report looked fully validated. A skip
+ * is not a failure, and the difference is not cosmetic: a failure can be retried,
+ * and a skip cannot, so a block that offers Retry for a skip is naming a remedy
+ * that does not work.
  */
 import { describe, expect, it } from "vitest";
 import {
   FINALIZE_CHECK_LABELS,
-  failedFinalizeChecks,
   formatIncompleteChecks,
+  hasRetryableCheck,
+  incompleteFinalizeChecks,
   runFinalizeCheck,
+  skippedFinalizeCheck,
   valueOr,
 } from "./finalizeChecks";
 
 const ran = { state: "completed", value: null } as const;
 const timedOut = { state: "failed", key: "qualityEvaluation", reason: "timeout of 5000ms exceeded" } as const;
 const serverError = { state: "failed", key: "validateDraft", reason: "HTTP 500" } as const;
+const noDraft = skippedFinalizeCheck("validateDraft", "this report has no saved draft for the server to validate");
 
 /** Words a reader must never see where a check silently did not run. */
 const NEVER_IN_AN_INCOMPLETE_BLOCK = ["no issues found", "all checks passed", "ready to sign", "checks passed"];
@@ -58,11 +69,19 @@ describe("runFinalizeCheck", () => {
       runFinalizeCheck("validateDraft", () => Promise.reject(new Error("offline"))),
     ).resolves.toMatchObject({ state: "failed" });
   });
+
+  it("cannot produce a skip — a skip is a decision the caller makes before running anything", async () => {
+    // runFinalizeCheck is given a closure, so it always attempts it. The only way
+    // to reach "skipped" is skippedFinalizeCheck(), which is why the caller's
+    // no-draft branch has to say so explicitly rather than not calling at all.
+    const outcome = await runFinalizeCheck("validateDraft", async () => null);
+    expect(outcome.state).toBe("completed");
+  });
 });
 
-describe("failedFinalizeChecks / formatIncompleteChecks", () => {
+describe("incompleteFinalizeChecks / formatIncompleteChecks", () => {
   it("a check that ran is never listed as incomplete", () => {
-    expect(failedFinalizeChecks([ran, ran])).toEqual([]);
+    expect(incompleteFinalizeChecks([ran, ran])).toEqual([]);
     expect(formatIncompleteChecks([ran, ran])).toBe("");
   });
 
@@ -85,5 +104,55 @@ describe("failedFinalizeChecks / formatIncompleteChecks", () => {
 
   it("does not claim signing is blocked — that policy belongs to the owner", () => {
     expect(formatIncompleteChecks([timedOut]).toLowerCase()).toContain("signing is unchanged");
+  });
+});
+
+describe("a check that was never attempted is reported, and does not offer a retry that cannot work", () => {
+  it("counts as incomplete, which is the whole point of recording it", () => {
+    expect(noDraft).toEqual({
+      state: "skipped",
+      key: "validateDraft",
+      reason: "this report has no saved draft for the server to validate",
+    });
+    expect(incompleteFinalizeChecks([ran, noDraft])).toEqual([noDraft]);
+    expect(formatIncompleteChecks([ran, noDraft])).not.toBe("");
+  });
+
+  it("is not a failure — the two states stay distinguishable all the way to the reader", () => {
+    const block = formatIncompleteChecks([noDraft]).toLowerCase();
+    expect(block).toContain("could not run on this report");
+    expect(block).not.toContain("did not complete");
+    // And it names the check by the same label a failure would, so a radiologist
+    // reading the signed record can tell which validator never looked.
+    expect(block).toContain(FINALIZE_CHECK_LABELS.validateDraft.toLowerCase());
+    for (const forbidden of NEVER_IN_AN_INCOMPLETE_BLOCK) expect(block).not.toContain(forbidden);
+  });
+
+  it("says the retry will not help, instead of pointing at a button that re-runs nothing", () => {
+    const block = formatIncompleteChecks([noDraft]);
+    // The trap: "Retry will not change it" also contains the word "retry", so the
+    // assertion above that a failure block offers a retry would pass here too. The
+    // distinguishing text is the offer itself.
+    expect(block).not.toContain("use Retry checks");
+    expect(block).toContain("Retry will not change it");
+    expect(block.toLowerCase()).toContain("signing is unchanged");
+    expect(hasRetryableCheck([noDraft])).toBe(false);
+  });
+
+  it("still offers the retry when at least one check was attempted and threw", () => {
+    expect(hasRetryableCheck([timedOut])).toBe(true);
+    expect(hasRetryableCheck([timedOut, noDraft])).toBe(true);
+    expect(hasRetryableCheck([])).toBe(false);
+    expect(formatIncompleteChecks([timedOut])).toContain("use Retry checks");
+  });
+
+  it("keeps the two groups apart when both happen, and still counts both", () => {
+    const block = formatIncompleteChecks([timedOut, noDraft]);
+    expect(block).toContain("Checks that did not complete (1):");
+    expect(block).toContain("Report quality evaluation");
+    expect(block).toContain("Checks that could not run on this report (1):");
+    expect(block).toContain("Server draft validation");
+    expect(block).toContain("use Retry checks");
+    expect(incompleteFinalizeChecks([timedOut, noDraft])).toHaveLength(2);
   });
 });

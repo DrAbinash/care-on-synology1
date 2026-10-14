@@ -95,17 +95,41 @@ export {
   assertsStudyNormal,
   assessmentCategories,
   clinicalOccurrences,
+  clinicalOccurrenceDetails,
   clinicalContentSignature,
   outOfScopeSpineContent,
+  spinalLevels,
   studyContrastState,
   ungroundedNamedDiagnoses,
   CONTRAST_MENTION_TERMS,
   NAMED_DIAGNOSIS_TERMS,
 } from "./text/clinicalTerms";
-export type { ClinicalTerm, ClinicalOccurrence, NamedDiagnosis, StudyContrastState } from "./text/clinicalTerms";
+export type {
+  ClinicalTerm,
+  ClinicalOccurrence,
+  ClinicalOccurrenceDetail,
+  NamedDiagnosis,
+  SpinalLevel,
+  StudyContrastState,
+} from "./text/clinicalTerms";
+// The Findings↔Impression contradiction contract. Called by ./text/evaluate AND by
+// the live workspace validator, so the badge on the screen and the findings the
+// server persists are one reading rather than two that happen to agree today.
+export {
+  findingsImpressionContradictions,
+  lateralityContradictions,
+  sectionsContradict,
+} from "./text/findingsImpression";
+export type { SectionContradiction } from "./text/findingsImpression";
+// The Impression→Recommendation dependency behind Q005. Called by ./text/evaluate AND
+// by the live workspace validator, so an empty advice section means the same thing on
+// both paths: a gap only where the Impression states a plan that section should carry.
+// `isFillerAdvice` is the anti-filler shape the dependency refuses to demand; the
+// composer validator imports the same predicate for the advice it refuses to keep.
+export { unmetRecommendationDependency, isFillerAdvice } from "./text/recommendation";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
-export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
-export type { RuleId, RuleCatalogEntry } from "./ruleCatalog";
+export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry, significanceOfRule } from "./ruleCatalog";
+export type { RuleId, RuleCatalogEntry, RuleSignificance } from "./ruleCatalog";
 // Canonical DTO — the one shape the API exposes and the DB persists.
 export { toQualityReportDTO } from "./dto";
 export type {

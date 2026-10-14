@@ -137,6 +137,18 @@ export const DOPPLER_LOWER_LIMB_CASES: GoldenCase[] = [
         expect: { ruleIds: ["Q104"], composerVectors: ["lateralitySwaps"] },
       },
       {
+        // The defect the section-to-section rules cannot reach, because nothing moves
+        // between two sections: the Findings and the Impression still say right, and
+        // only the one line somebody acts on says left. A swap detector read across
+        // all three sees "right" still present and reports nothing — measured, this
+        // mutation returned ok=true with no swap, no error and no new signal at all.
+        id: "doppler-dvt.wrong-side-in-advice",
+        class: "laterality",
+        harm: "The repeat scan is booked for the healthy limb and the thrombosed one is never re-examined.",
+        edit: { field: "recommendation", find: "Anticoagulation as per protocol and clinical review.", replace: "Anticoagulation as per protocol. Repeat Doppler of the left lower limb in one week." },
+        expect: { composerErrors: ["unsupported_laterality"] },
+      },
+      {
         id: "doppler-dvt.unsupported-normal-finding",
         class: "unsupportedNormalFinding",
         harm: "A negative stated about an unassessed segment — the exact sentence that stops a repeat scan.",

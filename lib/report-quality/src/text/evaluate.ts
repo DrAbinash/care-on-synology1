@@ -7,13 +7,14 @@
 // Parity is guarded at runtime by the shadow fixtures in
 // artifacts/diagnostic-erp/src/lib/reportQualityShadow.test.ts — the only guard
 // that exists (there is no script that diffs this file against reportValidator.ts,
-// as an earlier version of this comment claimed). The contradiction rules read
-// their vocabulary from ./clinicalTerms.ts, which the legacy validator imports
-// from the same place, so those rules cannot drift by construction. They still
-// cannot reach the legacy `pathologyMergeContradictionWarnings` block: its seven
-// checks (eight messages) have no rule id in this tier, so the canonical engine
-// under-reports what the workspace shows, and anything measured with it — the
-// golden corpus census included — is measured against the smaller set.
+// as an earlier version of this comment claimed). Every rule here that reads
+// clinical prose reads it through ./clinicalTerms.ts, which the legacy validator
+// imports from the same place, the five Findings↔Impression checks come from
+// ./findingsImpression.ts and the advice dependency behind Q005 comes from
+// ./recommendation.ts — both called by the legacy validator rather than copied, so
+// neither the vocabulary, nor the contradiction contract, nor the reading of an
+// empty Recommendation section can drift between the badge and the persisted
+// findings.
 
 import type { TextReportInput } from "../contract";
 import type { RuleId } from "../ruleCatalog";
@@ -28,6 +29,8 @@ import {
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
+import { findingsImpressionContradictions, lateralityContradictions } from "./findingsImpression";
+import { unmetRecommendationDependency } from "./recommendation";
 
 export interface TextTierFinding {
   ruleId: RuleId;
@@ -51,7 +54,7 @@ function sentences(text: string): string[] {
 /**
  * Evaluate the free-text tier. Findings are emitted in the EXACT order the
  * legacy computeQualityScore produced its `issues` array:
- *   completeness (Q001-Q005) → validateReport warnings (Q101-Q115) →
+ *   completeness (Q001-Q005) → validateReport warnings (Q101-Q123) →
  *   checklist (Q006) → missing measurements (Q007).
  */
 export function evaluateTextTier(input: TextReportInput): TextTierResult {
@@ -64,7 +67,13 @@ export function evaluateTextTier(input: TextReportInput): TextTierResult {
   if ((input.impression || []).every((l) => !l.trim())) emit("Q002", "Impression section is empty.", 25);
   if (!(input.technique || "").trim()) emit("Q003", "Technique not documented.", 10);
   if (!(input.clinicalHistory || "").trim()) emit("Q004", "Clinical history not documented.", 5);
-  if (!(input.recommendation || "").trim()) emit("Q005", "No recommendation/advice given.", 5);
+  // Q005 is a dependency, not a presence check, and it is called rather than written
+  // here: an empty advice section is what CARE's own anti-filler policy produces on
+  // purpose, so the only thing worth reporting is an Impression that states a plan
+  // the advice section then fails to carry. See ./recommendation.ts for the
+  // measurement behind the predicate.
+  const recommendationGap = unmetRecommendationDependency(input.impression, input.recommendation);
+  if (recommendationGap) emit("Q005", recommendationGap, 5);
 
   // ── validateReport warnings (Q101-Q115), each -5, in validateReport order ──
   emitWarnings(input, emit);
@@ -120,16 +129,12 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     }
   }
 
-  // Q104 — laterality: impression side not in findings
-  const findingsLeft = /\bleft\b/i.test(findingsText);
-  const findingsRight = /\bright\b/i.test(findingsText);
-  const impLeft = /\bleft\b/i.test(impressionText);
-  const impRight = /\bright\b/i.test(impressionText);
-  if (impLeft && !findingsLeft && findingsRight) {
-    emit("Q104", 'Laterality check: Impression says "left" but Findings only mention "right".', W);
-  }
-  if (impRight && !findingsRight && findingsLeft) {
-    emit("Q104", 'Laterality check: Impression says "right" but Findings only mention "left".', W);
+  // Q104 — laterality: impression side not in findings. Called rather than
+  // written here: the live workspace validator carried a byte-identical copy of
+  // these four regexes, and the Impression dependency now reads the union of both
+  // through `sectionsContradict`, so a copy left behind is a copy that can drift.
+  for (const contradiction of lateralityContradictions(findingsText, impressionText)) {
+    emit(contradiction.ruleId, contradiction.message, W);
   }
 
   // Q105 — pathology in findings but impression empty
@@ -137,6 +142,15 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
   const impressionEmpty = (report.impression || []).every((l) => !l.trim());
   if (hasPathology && impressionEmpty) {
     emit("Q105", "Findings describe pathology but the Impression section is empty.", W);
+  }
+
+  // Q119-Q123 — the Findings↔Impression contract. One module, called from here and
+  // from the live workspace validator, so the badge and the persisted findings say
+  // the same sentence about the same report. Placed where the validator has always
+  // run these checks: after the completeness of the Impression is settled, before
+  // its text is inspected for placeholders.
+  for (const contradiction of findingsImpressionContradictions(findingsText, impressionText)) {
+    emit(contradiction.ruleId, contradiction.message, W);
   }
 
   // Q106 — unfilled placeholder

@@ -20,8 +20,9 @@ import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
   FINALIZE_CHECK_LABELS,
-  failedFinalizeChecks,
+  incompleteFinalizeChecks,
   runFinalizeCheck,
+  skippedFinalizeCheck,
   type FinalizeCheckOutcome,
   type FinalizeServiceChecks,
 } from "@/lib/finalizeChecks";
@@ -247,6 +248,14 @@ const runFinalizeGauntlet = useCallback(async () => {
         for (const w of draftOutcome.value.warnings ?? []) serverIssues.push(w);
         for (const s of draftOutcome.value.skipReasons ?? []) serverIssues.push(s);
       }
+    } else {
+      // A finalize with no saved draft to validate. Nothing was pushed here before,
+      // so `checksIncomplete` stayed empty and the sign dialog's "Not checked"
+      // block never rendered: the screen for "validation unavailable" was the same
+      // screen as "validation passed". Recorded as a SKIP rather than a failure
+      // because Retry re-runs this closure over the same still-absent draft —
+      // naming it a failure would offer a remedy that cannot work.
+      outcomes.push(skippedFinalizeCheck("validateDraft", "this report has no saved draft for the server to validate"));
     }
 
     const qualityOutcome = await runFinalizeCheck("qualityEvaluation", () =>
@@ -271,7 +280,7 @@ const runFinalizeGauntlet = useCallback(async () => {
       validationSummary: [...validationIssues, ...serverIssues].join("; ")
         + (gate ? formatQualityAdvisoryForDialog(gate) : ""),
       qualityGate: gate,
-      checksIncomplete: failedFinalizeChecks(outcomes),
+      checksIncomplete: incompleteFinalizeChecks(outcomes),
     };
   };
 
@@ -280,8 +289,11 @@ const runFinalizeGauntlet = useCallback(async () => {
   if (checks.checksIncomplete.length > 0) {
     toast({
       title: `Validation checks incomplete (${checks.checksIncomplete.length})`,
-      description: `${checks.checksIncomplete.map((f) => FINALIZE_CHECK_LABELS[f.key]).join(", ")} did not finish. `
-        + "The sign dialog lists what was not checked and can retry it.",
+      // "did not finish" would be a lie for the skipped check: it was never
+      // attempted, so it never finished. Whether Retry can help is answered in the
+      // dialog, which is the only place that knows which of the two it was.
+      description: `${checks.checksIncomplete.map((f) => FINALIZE_CHECK_LABELS[f.key]).join(", ")} did not run on this report. `
+        + "The sign dialog lists what was not checked and why.",
     });
   }
 

@@ -35,6 +35,25 @@ export type NamedDiagnosis = ClinicalTerm & { readonly grounds?: string };
  * wording that describes normal anatomy ("alignment", "densities"), benign-only
  * entities ("cyst", kept for the mammography rule's own list) and anything
  * contrast-related (Q112 owns contrast).
+ *
+ * The "both spellings" claim above is what the haemorrhage fix bought, and it was
+ * still untrue of three entries — found by running a British/American pair table
+ * through the vocabulary rather than by reading it. "ischaemia" knew only
+ * `ischaemi*`, so the American "ischemia"/"ischemic" written by SIX of the clinic's
+ * own canned brain formats — eight sections between them, including both Findings
+ * and Impression of the Fazekas 2 and Fazekas 3 templates — was invisible to
+ * Q103/Q113/Q114; "empyema" knew only the American spelling, the mirror image of
+ * the original defect; and "herniation" hard-coded `disc extrusion` while the
+ * `intervertebral disc` entry further down this same table already wrote
+ * `disc|disk`. All three were measured as zero-collateral widenings: over every
+ * correct report in the repository — 58 shipped formats × 5 sections, 20
+ * golden-corpus reports × 5 sections, and the catalogue seed prose — the only new
+ * matches are those eight "ischemic" sections, and nothing stopped matching.
+ *
+ * A spelling gap is the quietest kind: it does not mark up a correct report, so no
+ * radiologist ever complains, and the report that needed reading was written in the
+ * other spelling. It is measured by the pair table in ./clinicalTerms.test.ts,
+ * which fails when the two halves of a pair disagree.
  */
 export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   // brain and cerebrovascular
@@ -44,17 +63,28 @@ export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   { label: "midline shift", pattern: String.raw`\bmidline shift\b` },
   { label: "mass effect", pattern: String.raw`\bmass effect\b` },
   { label: "hydrocephalus", pattern: String.raw`\b(?:hydrocephalus|ventriculomegaly|transependymal)\b` },
-  { label: "ischaemia", pattern: String.raw`\b(?:is|hae)mi(?:c|a)\b|\b(?:is|hae)chaemi\w*` },
+  { label: "ischaemia", pattern: String.raw`\b(?:is|hae)mi(?:c|a)\b|\bisch(?:ae|e)mi\w*` },
   { label: "demyelination", pattern: String.raw`\bdemyelin\w*|\bplaque\b|\bdisc demyelination\b` },
   { label: "oedema", pattern: String.raw`\b(?:oe|e)dema\b` },
   { label: "atrophy", pattern: String.raw`\batrophi\w*|\batroph\w*` },
   { label: "gliosis", pattern: String.raw`\bgliosis\b|\bgliotic\b|\bencephalomalacia\b` },
 
   // spine
-  { label: "herniation", pattern: String.raw`\bherniat\w*|\bdisc extrusion\b|\bsequestrat\w*` },
+  { label: "herniation", pattern: String.raw`\bherniat\w*|\b(?:disc|disk) extrusion\b|\bsequestrat\w*` },
   { label: "protrusion", pattern: String.raw`\bprotrusi\w*` },
   { label: "disc bulge", pattern: String.raw`\bbulge\w*|\bbulgi\w*` },
   { label: "stenosis", pattern: String.raw`\bstenos\w*|\bnarrowing\b` },
+  // Read bare, so it also labels a compression FRACTURE ("wedge compression
+  // collapse"), a mammographic POSITION ("confirmed on spot compression") and a
+  // Doppler TECHNIQUE ("compression ultrasonography") as a cord compression. Seven
+  // sections of correct prose read that way — three of them Technique, which no rule
+  // passes here, one of them genuinely a cord, and three of them the imprecise
+  // label. Left alone on measurement: no correct report in the repository emits a
+  // Q103/Q113/Q114 message at all (0 of 58 formats, 0 of 20 corpus reports), so the
+  // wrong word never reaches a radiologist, and excluding "compression
+  // collapse|deformity" would leave the two fracture formats asserting nothing —
+  // `fracture` needs the word "fracture", which the Findings clause does not
+  // contain. Narrowing this is owed a detection it buys, not a label it prettifies.
   { label: "cord compression", pattern: String.raw`\bcompress(?:ion|ing|ed)\b|\bimpingement\b|\bthecal sac indentation\b` },
   { label: "myelopathy", pattern: String.raw`\b(?:myelopath|myelomalaci)\w*|\bcord oedema\b|\bcord edema\b` },
   { label: "nerve root involvement", pattern: String.raw`\bradiculopath\w*|\b(?:nerve )?root (?:contact|compression|impinge\w*)\b` },
@@ -69,12 +99,51 @@ export const ABNORMAL_TERMS: readonly ClinicalTerm[] = [
   { label: "tumour", pattern: String.raw`\b(?:tumor|tumour|neoplasm|nodule|nodular|deposit)\w*` },
   { label: "metastasis", pattern: String.raw`\bmetasta\w*|\bcarcinomatosis\b|\bsecondaries\b` },
   { label: "malignancy", pattern: String.raw`\bmalignan\w*|\b(?:carcinoma|lymphoma|sarcoma|myeloma|melanoma)\b` },
-  { label: "collection", pattern: String.raw`\bcollection\w*|\bempyema\b` },
+  { label: "collection", pattern: String.raw`\bcollection\w*|\bempya?ema\b` },
   { label: "fluid", pattern: String.raw`\bfree fluid\b|\bascites\b|\beffusion\w*` },
   { label: "stone", pattern: String.raw`\bstone\w*|\bgallstone\w*|\brenal stone\b|\bcalculus\b|\bcalculi\b|\blithiasis\b|\blith\b|\bappendicolith\w*` },
   { label: "obstruction", pattern: String.raw`\bobstruct\w*|\bocclus\w*|\bvolvulus\b|\bilus\b|\bnon-?compressibl\w*|\bnot compressible\b` },
   { label: "dilatation", pattern: String.raw`\bdilat\w*|\bdistension\b|\bhydroureter\b` },
-  { label: "wall thickening", pattern: String.raw`\bthick(?:en|ening|ness)\b` },
+  // "thickness" is what you MEASURE and "thickened" is what you SEE, and the old
+  // `\bthick(?:en|ening|ness)\b` had them exactly backwards: it matched the
+  // dimension noun and missed the past participle, because `\bthicken\b` demands a
+  // boundary that "-ed" closes. So "Gallbladder is normal in size and wall
+  // thickness" — a NORMAL declaration — asserted a wall thickening, while "the
+  // gallbladder wall is thickened" asserted nothing.
+  //
+  // That reached a radiologist. `observationLedger.ts` arms the Impression
+  // dependency when `assertedAbnormality(findings) !== null &&
+  // assertsStudyNormal(impression)`, and running that predicate over all 58 shipped
+  // formats gave 1 of 58 arming on its own untouched prose — `US Abdomen — Normal`,
+  // with `asserted="wall thickening"`. After this change 0 of 58 do. So every use of
+  // that format asked the radiologist to refresh or override an Impression the
+  // format itself had just written.
+  //
+  // The noun is dropped outright rather than graded, and that is a measurement, not
+  // a preference. Every "thick*" clause in the repository's correct prose — 58
+  // shipped formats × 5 sections plus 20 golden-corpus reports × 5 sections, 16
+  // clauses in all — was printed and read: each true finding used the gerund
+  // ("wall thickening", "cortical thickening", "soft tissue thickening"), and each
+  // bare "thickness" was either a normal declaration ("normal in size and cortical
+  // thickness", "Gallbladder wall thickness is normal", "Normal size and wall
+  // thickness (< 3 mm)") or a measurement ("maximum thickness 12 mm"). Not one used
+  // the noun as the finding. Putting the old pattern back and diffing the two reads
+  // gives 5 correct sections that stop being a wall thickening and 0 that start.
+  // The participle "thickened" appears nowhere in shipped prose, so that half of the
+  // inversion had no instance here — but it is how the finding is ordinarily stated,
+  // and `\bthicken\b` cannot read it because "-ed" closes the boundary.
+  //
+  // A lookahead that kept the noun when a graded word followed it
+  // (`thickness(?=[^.;\n]{0,32}\b(?:increas|gross|marked|significan|abnormal)\w*)`)
+  // was implemented and then removed, because it read two correct normals as
+  // findings: "Gallbladder wall thickness: no significant abnormality." and
+  // "…measures 3 mm, which is not abnormal." both fired. The negation reader cannot
+  // rescue them — DENIAL_BEFORE only sees text before the term, and DENIAL_AFTER
+  // recognises "not seen/excluded/ruled out", not a bare "no" or "not" — so any
+  // adjective allowed after the noun is also allowed after "not". Bare "thick"
+  // stays unmatched for the same reason it always was: it is the acquisition
+  // adjective ("5 mm thick slices", "thick-slab MIP").
+  { label: "wall thickening", pattern: String.raw`\bthicken\w*` },
   { label: "fat stranding", pattern: String.raw`\bstranding\b|\b(?:hyperaemia|hyperemia)\b|\bfat proliferation\b` },
   { label: "inflammation", pattern: String.raw`\b(?:appendicitis|cholecystitis|cholangitis|pancreatitis|diverticulitis|enteritis|colitis|gastritis|peritonitis|pyelonephritis|salpingitis|orchitis|encephalitis|meningitis|cellulitis|nephritis)\b` },
   { label: "perforation", pattern: String.raw`\bperforat\w*|\bpneumoperitoneum\b|\bfree (?:gas|air)\b|\bpneumothorax\b|\bpneumomediastinum\b` },
@@ -119,6 +188,109 @@ export const SUSPICIOUS_TERMS: readonly ClinicalTerm[] = [
 export const NAMED_LESION_TERMS: readonly ClinicalTerm[] = [
   { label: "lesion", pattern: String.raw`\blesion\w*|\bmass(?:es)?\b(?![a-z])|\bnodule\w*|\bcyst\w*|\bcalcification\w*|\bthickening\b` },
 ] as const;
+
+/**
+ * The anatomy that PLACES a finding, as canonical site names.
+ *
+ * {@link ABNORMAL_TERMS} says what was found; this says where. Both are needed
+ * because one label spans several organs, and reading a label with no site
+ * attached reports contradictions that are not there. The measured case is MRCP:
+ * Findings "the gallbladder contains multiple stones" beside Impression "no common
+ * bile duct stone" is one correct report — gallstones with a clear duct is the
+ * commonest MRCP result there is — but both mentions carry the label "stone", so
+ * the pair read as a denial contradicting an assertion.
+ *
+ * Sites fold to a canonical name, so "biliary", "CBD" and "bile duct" are one
+ * place rather than three wordings of it. The list is deliberately incomplete and
+ * errs towards saying nothing: a sentence naming no site here yields an empty set,
+ * and an empty set never separates two mentions, so unrecognised anatomy leaves a
+ * rule exactly as strict as it was before this list existed. Growing it can only
+ * reduce false positives — it cannot create one.
+ *
+ * Ambiguous wordings are excluded rather than guessed at. Bare "sinus" is left out
+ * because it is a paranasal sinus in the head, a renal sinus in the abdomen and a
+ * dural venous sinus in a thrombosis report; bare "cord", "medulla" and "lobe" are
+ * left out for the same reason.
+ */
+export const ANATOMICAL_SITE_TERMS: readonly ClinicalTerm[] = [
+  // head and neck
+  { label: "brain", pattern: String.raw`\b(?:brain\w*|cerebr\w*|cerebell\w*|hemispher\w*|brainstem|pons|midbrain|medulla oblongata|thalam\w*|basal gangli\w*|corona radiata|centrum semiovale|internal capsule|white matter|grey matter|gray matter)\b` },
+  // Deliberately inside "brain" as well as beside it. Two mentions that both name
+  // the basal ganglia share "brain" already, so this label cannot make a pair look
+  // like different anatomy — it can only say which of the brain's structures a
+  // mention is about, which is what Q122 needs to tell a bleed in the basal ganglia
+  // from a subdural one in the same report.
+  { label: "basal ganglia", pattern: String.raw`\bbasal gangli\w*\b` },
+  { label: "extra-axial space", pattern: String.raw`\b(?:subdural|extradural|epidural|subarachnoid|extra-?axial|mening\w*|falx|tentorium)\b` },
+  { label: "ventricular system", pattern: String.raw`\b(?:ventricl\w*|cistern\w*|choroid plexus)\b` },
+  { label: "orbit", pattern: String.raw`\b(?:orbit\w*|globe|retrobulbar|extraocular|optic nerve)\b` },
+  { label: "paranasal sinuses", pattern: String.raw`\b(?:paranasal|maxillary|ethmoid\w*|sphenoid|mastoid\w*|middle ear|petrous|temporal bone|nasal)\b` },
+  { label: "sella", pattern: String.raw`\b(?:sella|pituitary|hypophys\w*)\b` },
+  { label: "neck", pattern: String.raw`\b(?:neck|thyroid|parotid|submandibular|pharyn\w*|laryn\w*|tonsil\w*)\b` },
+
+  // spine
+  { label: "spinal canal", pattern: String.raw`\b(?:spinal canal|central canal|spinal stenosis|thecal sac|dural sac|spinal cord|medulla spinalis)\b` },
+  { label: "neural foramen", pattern: String.raw`\b(?:foram\w*|neuroforam\w*|nerve root|root sleeve|exiting root)\b` },
+  { label: "intervertebral disc", pattern: String.raw`\b(?:disc|disk|disc\w*|intervertebral|annulus|nucleus pulposus)\b` },
+  { label: "vertebra", pattern: String.raw`\b(?:vertebral body|vertebrae|vertebra|endplate\w*|pedicle\w*|lamina\w*|spinous process|transverse process|facet\w*|pars interarticularis|sacrum|sacral|coccyx)\b` },
+  { label: "paraspinal soft tissue", pattern: String.raw`\b(?:paraspinal|paravertebral|prevertebral|retropharyngeal|posterior elements)\b` },
+
+  // chest
+  { label: "lung", pattern: String.raw`\b(?:lung\w*|pulmonary (?!arter|vein)\w*|upper lobe|middle lobe|lower lobe|lobar|lingula|bronch\w*|air ?space\w*|alveol\w*)\b` },
+  { label: "pleura", pattern: String.raw`\b(?:pleura|pleural|costophrenic)\b` },
+  { label: "mediastinum", pattern: String.raw`\b(?:mediastin\w*|hilum|hilar|carina)\b` },
+  { label: "heart", pattern: String.raw`\b(?:heart|cardiac|pericard\w*|myocard\w*|(?:left|right) ventricle|ventricular septum|atrium|atria|coronary)\b` },
+  { label: "aorta", pattern: String.raw`\b(?:aorta|aortic)\b` },
+  { label: "chest wall", pattern: String.raw`\b(?:chest wall|ribs?|clavicle|scapula|sternum|costal|thoracic cage)\b` },
+  { label: "diaphragm", pattern: String.raw`\b(?:diaphragm\w*|subdiaphragmatic|subphrenic)\b` },
+
+  // abdomen and pelvis
+  { label: "liver", pattern: String.raw`\b(?:liver|hepatic|hepat\w*)\b` },
+  { label: "gallbladder", pattern: String.raw`\b(?:gall ?bladder\w*|cholecyst\w*)\b` },
+  { label: "bile duct", pattern: String.raw`\b(?:bile duct\w*|biliary|cbd|hepatic duct\w*|cystic duct|ampulla\w*|periampullary|cholangio\w*)\b` },
+  { label: "pancreas", pattern: String.raw`\b(?:pancrea\w*|wirsung)\b` },
+  { label: "spleen", pattern: String.raw`\b(?:spleen|splenic)\b` },
+  { label: "kidney", pattern: String.raw`\b(?:kidney\w*|renal|nephro\w*)\b` },
+  { label: "ureter", pattern: String.raw`\b(?:ureter\w*|pelvicalyceal|pelviureter\w*|vesicoureter\w*)\b` },
+  { label: "bladder", pattern: String.raw`\b(?:urinary bladder|bladder|urethra\w*|prostate|prostatic)\b` },
+  { label: "pelvic organs", pattern: String.raw`\b(?:uter\w*|endometri\w*|ovar\w*|adnex\w*|vagina\w*|cervix uteri)\b` },
+  { label: "adrenal", pattern: String.raw`\b(?:adrenal|suprarenal)\b` },
+  { label: "bowel", pattern: String.raw`\b(?:bowel|intestinal|colon\w*|caecum|cecum|appendi\w*|rectum|rectal|rectosigmoid|sigmoid\w*|duoden\w*|jejun\w*|ileum|ileal|ileo\w*|stomach|gastric|oesophag\w*|esophag\w*)\b` },
+  { label: "peritoneum", pattern: String.raw`\b(?:peritone\w*|mesenter\w*|omentum\w*|retroperitone\w*|pouch of douglas)\b` },
+  { label: "abdominal wall", pattern: String.raw`\b(?:abdominal wall|flank|groin|inguinal|umbilic\w*)\b` },
+  { label: "lymph nodes", pattern: String.raw`\b(?:lymph node\w*|nodal|lymphatic)\b` },
+
+  // breast
+  { label: "breast", pattern: String.raw`\b(?:breast\w*|mamm\w*|retroareolar|areola\w*|nipple\w*|quadrant)\b` },
+  { label: "axilla", pattern: String.raw`\b(?:axilla|axillary)\b` },
+
+  // vascular, limb and soft tissue
+  { label: "deep veins", pattern: String.raw`\b(?:deep vein\w*|deep venous|common femoral|femoral vein\w*|popliteal vein\w*|iliac vein\w*|tibial vein\w*|peroneal vein\w*|gastrocnemius|soleal|dvt)\b` },
+  { label: "superficial veins", pattern: String.raw`\b(?:sapheno\w*|superficial vein\w*|varicose|varix|varices|gsv|ssv)\b` },
+  { label: "arteries", pattern: String.raw`\b(?:arter\w*|carotid\w*)\b` },
+  { label: "bones and joints", pattern: String.raw`\b(?:joint\w*|articular|synovi\w*|tendon\w*|ligament\w*|bursa\w*|menisc\w*|cartilage|marrow|bones?|skeletal)\b` },
+  { label: "soft tissue", pattern: String.raw`\b(?:soft tissue\w*|subcutaneous|muscle\w*|muscular|fascia\w*|myo\w*)\b` },
+] as const;
+
+/**
+ * The canonical sites a stretch of text names, in list order.
+ *
+ * Read from the whole sentence rather than from the span a negation governed: the
+ * organ usually comes before the verb, so "the gallbladder contains multiple
+ * stones" has already left "gallbladder" behind by the time the negation reading
+ * starts. That is why sites sit beside levels and sides, which are read the same
+ * way, rather than beside acuity and magnitude.
+ */
+export function anatomicalSites(text: string): string[] {
+  const lower = (text ?? "").toLowerCase();
+  const out: string[] = [];
+  for (const term of ANATOMICAL_SITE_TERMS) {
+    // matchAll clones the memoised pattern; a bare .test() on a /g/ RegExp would
+    // leave lastIndex set and silently shorten the next caller's scan.
+    if (!lower.matchAll(compiled(term.pattern)).next().done) out.push(term.label);
+  }
+  return out;
+}
 
 /**
  * Statements that the study as a whole was normal. A sentence carrying one of
@@ -207,9 +379,7 @@ function windowAfter(sentence: string, termEnd: number): string {
  * one, and the findings signature has to tell those apart or "cannot be excluded"
  * and "is present" would read as the same report.
  */
-function occurrenceState(sentence: string, start: number, end: number): ClinicalOccurrence["state"] {
-  const scope = governingScope(sentence, start);
-  const after = windowAfter(sentence, end);
+function readState(scope: string, after: string): ClinicalOccurrence["state"] {
   // Denial outranks a hedge: "no likely fracture" and "no definite abnormality"
   // are denials, and reading the hedge as the assertion is what marks up a
   // correct normal report. A hedge with NO denial cue is the other case —
@@ -220,6 +390,33 @@ function occurrenceState(sentence: string, start: number, end: number): Clinical
   return "asserted";
 }
 
+/**
+ * Whether a sentence WITHDRAWS the statement made by the phrase at [start, end)
+ * rather than making it. Both word orders count, because prose uses both:
+ * "no follow-up imaging recommended" denies from before the phrase, and
+ * "follow-up is not required" denies from after it.
+ *
+ * Exported for the one reading that is not about a clinical term — the
+ * Impression→Recommendation dependency in ./recommendation.ts, which has to tell
+ * "Urgent neurosurgical review" from "No urgent review is recommended". It reuses
+ * this module's denial vocabulary and its scope rules rather than carrying a
+ * second list of the words that mean "no", because two lists of denial words in
+ * one package is two readings of the same sentence.
+ *
+ * The window after the phrase stops at the first comma, exactly as it does for a
+ * clinical term, so a second independent clause is not read as denying the first:
+ * "Urgent review advised, no anticoagulation" still advises the review.
+ */
+export function statementDeniedAt(sentence: string, start: number, end: number): boolean {
+  const after = windowAfter(sentence, end);
+  return DENIAL_BEFORE.test(governingScope(sentence, start)) || DENIAL_BEFORE.test(after) || DENIAL_AFTER.test(after);
+}
+
+/** The sentences of one section, split the way the clinical-term reading splits them. */
+export function sectionSentences(text: string): string[] {
+  return sentences(text);
+}
+
 /** One mention of one vocabulary term, and what the text did with it. */
 export type ClinicalOccurrence = {
   label: string;
@@ -227,26 +424,84 @@ export type ClinicalOccurrence = {
 };
 
 /**
- * Every vocabulary mention in the text, in sentence order then term order. The
- * order is load-bearing: {@link assertedAbnormality} reports the first mention the
- * text does not deny, and the rule messages quote that label.
+ * One mention, plus the qualifiers and anatomy that scope it.
+ *
+ * The state on its own cannot say whether two mentions of one word contradict
+ * each other. "No acute infarct" in the Findings beside "chronic infarct" in the
+ * Impression is one correct report, and so is "no nerve root compression at
+ * L3-L4" beside "thecal sac indentation at L4-L5" — in each the two halves are
+ * about different facts, not disagreeing about one. Acuity, magnitude and the
+ * entity qualifiers are read from the span the negation reading governed, i.e. the
+ * words that scope *this* mention; levels, sides and sites come from the whole
+ * sentence, because the level an abnormality sits at and the organ it belongs to
+ * are usually named outside the span a negation still governs.
+ */
+export type ClinicalOccurrenceDetail = ClinicalOccurrence & {
+  readonly acuity: readonly string[];
+  readonly magnitude: readonly string[];
+  readonly qualifiers: readonly string[];
+  readonly levels: readonly string[];
+  readonly sides: readonly string[];
+  readonly sites: readonly string[];
+};
+
+/**
+ * Every vocabulary mention in the text, in sentence order then term order, with
+ * the qualifiers that scope each one. The order is load-bearing:
+ * {@link assertedAbnormality} reports the first mention the text does not deny,
+ * and the rule messages quote that label.
+ */
+export function clinicalOccurrenceDetails(
+  text: string,
+  terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
+): ClinicalOccurrenceDetail[] {
+  const out: ClinicalOccurrenceDetail[] = [];
+  if (!text) return out;
+  for (const sentence of sentences(text)) {
+    const lower = sentence.toLowerCase();
+    // Per sentence, not per term: ~50 patterns share one reading of the anatomy.
+    const levels = [...new Set(spinalLevels(sentence).map((l) => l.canonical))];
+    const sides = [...new Set([...lower.matchAll(LATERALITY_TOKEN)].map((m) => m[1].toLowerCase()))];
+    const sites = anatomicalSites(sentence);
+    for (const term of terms) {
+      for (const match of lower.matchAll(compiled(term.pattern))) {
+        const at = match.index ?? 0;
+        const end = at + match[0].length;
+        const scope = governingScope(lower, at);
+        const after = windowAfter(lower, end);
+        const span = `${scope}${match[0]}${after}`;
+        const state = readState(scope, after);
+        out.push({
+          label: term.label,
+          state,
+          acuity: uniqueWords(span, ACUITY_TOKEN),
+          magnitude: uniqueWords(span, MAGNITUDE_TOKEN),
+          qualifiers: state === "denied" && UNCERTAINTY.test(scope) ? [] : uniqueWords(span, ENTITY_QUALIFIER),
+          levels,
+          sides,
+          sites,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The same reading with the scope qualifiers dropped. Kept as its own export
+ * because most callers only ask what the text did with a term, and the answer has
+ * to be the one reading above — a second pass over the prose would be a second
+ * opinion about what "no acute haemorrhage" means.
  */
 export function clinicalOccurrences(
   text: string,
   terms: readonly ClinicalTerm[] = ABNORMAL_TERMS,
 ): ClinicalOccurrence[] {
-  const out: ClinicalOccurrence[] = [];
-  if (!text) return out;
-  for (const sentence of sentences(text)) {
-    const lower = sentence.toLowerCase();
-    for (const term of terms) {
-      for (const match of lower.matchAll(compiled(term.pattern))) {
-        const at = match.index ?? 0;
-        out.push({ label: term.label, state: occurrenceState(lower, at, at + match[0].length) });
-      }
-    }
-  }
-  return out;
+  return clinicalOccurrenceDetails(text, terms);
+}
+
+function uniqueWords(text: string, token: RegExp): string[] {
+  return [...new Set([...text.matchAll(token)].map((m) => m[1].toLowerCase()))];
 }
 
 /**
@@ -326,6 +581,57 @@ const MEASUREMENT_TOKEN =
  */
 const SEVERITY_TOKEN =
   /\b(acute|chronic|subacute|mild|moderate|severe|minimal|marked|massive|complete|partial|focal|diffuse|small|large|significant)\b/gi;
+
+/**
+ * Acuity, read on its own. "No acute infarct" beside "chronic infarct" is one
+ * correct report rather than a contradiction, and the same is true of a subacute
+ * collection described once as acute and once as chronic — so a denial and an
+ * assertion of one word are about different facts when the two name different
+ * times. Deliberately not the whole of {@link SEVERITY_TOKEN}: "no significant
+ * stenosis" beside "severe stenosis" is a contradiction about the same fact, and
+ * folding magnitude in here would excuse exactly the report that needs reading.
+ */
+const ACUITY_TOKEN = /\b(acute|chronic|subacute)\b/gi;
+
+/**
+ * The graded magnitude words, as a closed three-step scale. A Findings that grades
+ * a finding "mild" and an Impression that grades the same finding "severe" are not
+ * two spellings of one fact — the grade is what decides whether anybody operates.
+ * "minimal" and "marked" are left out on purpose: they are not on this scale, and
+ * a Findings that says "minimal" beside an Impression that says "mild" is prose,
+ * not a disagreement.
+ */
+const MAGNITUDE_TOKEN = /\b(mild|moderate|severe)\b/gi;
+
+/**
+ * Words that pick out a SUBSET of a finding rather than grading it: "no suspicious
+ * mass", "no new satellite lesion", "no additional fracture". A denial carrying one
+ * is not a denial of the finding — the mammogram that says "No suspicious masses or
+ * calcifications" and then describes two stable fibroadenomas with coarse
+ * calcifications is the correct BI-RADS 2 report, and it is the subset that was
+ * cleared, not the masses.
+ *
+ * The graded words of {@link MAGNITUDE_TOKEN} are left out on purpose, and the
+ * distinction is the whole of it. "Significant" says how much of one finding there
+ * is, so "no significant spinal canal stenosis" beside "severe spinal canal
+ * stenosis at L4-L5" is still one fact described twice and must still be reported;
+ * "suspicious" says which members of a set, so clearing the set of them leaves the
+ * members standing.
+ *
+ * A DENIAL whose scope also hedges — "no lesion suspicious for metastasis", "no
+ * mass concerning for malignancy" — carries none of these words, and
+ * {@link clinicalOccurrenceDetails} drops them for exactly that case. "Suspicious
+ * for X" is one of the {@link UNCERTAINTY} constructions, so it names the diagnosis
+ * being excluded rather than a subset of the findings: what the sentence cleared was
+ * metastasis, not some of the lesions. Reading it as a subset silenced a real defect
+ * — the whole-spine report whose Findings exclude metastasis and whose Impression
+ * then reports "T8 metastatic deposit with pathological fracture", which changes a
+ * screening study into a staging one. The narrowing is gated on `state === "denied"`
+ * so an UNCERTAIN mention keeps its words: "no suspicious mass" beside "mass
+ * suspicious for malignancy" is still two sections disagreeing about one finding.
+ */
+const ENTITY_QUALIFIER =
+  /\b(suspicious|satellite|additional|further|separate|other|extra|new|fresh)\b/gi;
 
 const UNIT_CANON: Record<string, string> = {
   mm: "mm",
@@ -616,7 +922,7 @@ const WHOLE_SPINE_TITLE = /WHOLE|ENTIRE|COMPLETE|PAN.?SPINE|DORSO.?LUMB|CERVI?.?
 
 const SPINE_TITLE = /\b(?:SPINE|C-?SPINE|L-?SPINE|DORSAL|THORACIC|CERVICAL|LUMBAR|SACRAL)\b/i;
 
-const LEVEL_WORD = /\b([CTLS])\d{1,2}(?:\s*-\s*(?:[CTLS])?\d{1,2})?\b/g;
+const LEVEL_WORD = /\b([CTLS])(\d{1,2})(?:\s*-\s*(?:([CTLS]))?(\d{1,2}))?\b/g;
 
 /**
  * "T2" is ambiguous in an MRI report: the second thoracic vertebra, or the
@@ -632,6 +938,39 @@ const LEVEL_WORD = /\b([CTLS])\d{1,2}(?:\s*-\s*(?:[CTLS])?\d{1,2})?\b/g;
 const SEQUENCE_AMBIGUOUS = /^T[12]$/i;
 const SEQUENCE_CONTEXT =
   /^\s*[- ]?\s*(?:w\b|wi\b|weight\w*|hyper\w*|hypo\w*|iso\w*|signal\b|intensity\b|flair\b|stir\b|image\w*|sequence\w*)/i;
+
+/** One level the prose names: as written, its region, and its canonical form. */
+export type SpinalLevel = {
+  /** Exactly what was written — "C5-6", "L4–L5". */
+  readonly raw: string;
+  /** The region letter, upper-case. */
+  readonly region: string;
+  /** One spelling of one fact: "C5-6" and "C5-C6" both read as "C5-C6". */
+  readonly canonical: string;
+};
+
+/**
+ * Every spinal level the prose names, with the sequence reading above applied.
+ * Shared by the anatomical-scope rule and the Findings↔Impression level rule
+ * because they are asking the same question of the same sentence — a level one of
+ * them reads as a vertebra and the other as a pulse sequence is a disagreement
+ * about the report, not about the rule.
+ */
+export function spinalLevels(text: string): SpinalLevel[] {
+  const prose = text ?? "";
+  const out: SpinalLevel[] = [];
+  for (const match of prose.matchAll(LEVEL_WORD)) {
+    const at = match.index ?? 0;
+    if (SEQUENCE_AMBIGUOUS.test(match[0]) && SEQUENCE_CONTEXT.test(prose.slice(at + match[0].length))) continue;
+    const region = match[1].toUpperCase();
+    out.push({
+      raw: match[0],
+      region,
+      canonical: match[4] ? `${region}${match[2]}-${(match[3] ?? region).toUpperCase()}${match[4]}` : `${region}${match[2]}`,
+    });
+  }
+  return out;
+}
 
 /**
  * Spine content that belongs to a region this examination did not cover.
@@ -664,12 +1003,11 @@ export function outOfScopeSpineContent(text: string, studyDescription: string | 
   if (allowed.size === 0) return [];
 
   const offenders = new Set<string>();
-  const prose = text ?? "";
-  for (const match of prose.matchAll(LEVEL_WORD)) {
-    if (allowed.has(match[1].toUpperCase())) continue;
-    if (SEQUENCE_AMBIGUOUS.test(match[0]) && SEQUENCE_CONTEXT.test(prose.slice(match.index + match[0].length))) continue;
-    offenders.add(match[0]);
+  for (const level of spinalLevels(text ?? "")) {
+    if (allowed.has(level.region)) continue;
+    offenders.add(level.raw);
   }
+  const prose = text ?? "";
   for (const region of SPINE_REGIONS) {
     if (inScopeLabels.has(region.label)) continue;
     const word = region.label === "cervical" ? /\bcervical\b/i

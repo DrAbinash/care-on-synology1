@@ -7,10 +7,17 @@
  *
  * Pure, unit-tested through its consumers (reportQualityShadow, smartReporting,
  * wholeReportPathology, section5Impression, impressionRecommendationWiring,
- * phase3, phase5). The contradiction rules import their vocabulary and negation
- * reading from `@workspace/report-quality`, so the canonical text tier and this
- * live path cannot disagree about what "normal study" or "no acute haemorrhage"
- * mean; the checks still written inline here are the ones that can drift.
+ * phase3, phase5). Every check here that reads clinical prose reads it through
+ * `@workspace/report-quality`: the vocabulary and negation table from
+ * `clinicalTerms`, the six Findings↔Impression contradictions from
+ * `findingsImpression`, and the advice dependency behind Q005 from
+ * `recommendation`. Five of those used to be prose regexes of this file's own,
+ * which meant the canonical text tier could not see them at all — the server
+ * recorded nothing for a wrong spinal level the badge was printing. The sixth, the
+ * laterality check, was the opposite fault: this file and the tier each carried a
+ * byte-identical copy, agreed only by a parity test rather than by sharing the
+ * code. Both faults are the same defect — a reading that can drift is a reading
+ * that will. The checks still written inline below are the ones that still can.
  */
 
 import {
@@ -18,9 +25,12 @@ import {
   assertedContrastMention,
   assertsStudyNormal,
   assessmentCategories,
+  findingsImpressionContradictions,
+  lateralityContradictions,
   outOfScopeSpineContent,
   studyContrastState,
   ungroundedNamedDiagnoses,
+  unmetRecommendationDependency,
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "@workspace/report-quality";
@@ -87,16 +97,12 @@ export function validateReport(report: ReportForValidation): string[] {
     }
   }
 
-  // 4. Laterality consistency: a side named in Impression must appear in Findings
-  const findingsLeft = /\bleft\b/i.test(findings);
-  const findingsRight = /\bright\b/i.test(findings);
-  const impLeft = /\bleft\b/i.test(impressionText);
-  const impRight = /\bright\b/i.test(impressionText);
-  if (impLeft && !findingsLeft && findingsRight) {
-    warnings.push('Laterality check: Impression says "left" but Findings only mention "right".');
-  }
-  if (impRight && !findingsRight && findingsLeft) {
-    warnings.push('Laterality check: Impression says "right" but Findings only mention "left".');
+  // 4. Laterality consistency: a side named in Impression must appear in Findings.
+  //    Called rather than copied — the canonical text tier used to carry its own
+  //    byte-identical version of these four regexes, which is how the Impression
+  //    dependency came to ask two modules whether the same two sections agreed.
+  for (const c of lateralityContradictions(findings, impressionText)) {
+    warnings.push(c.message);
   }
 
   // 5. Pathology in Findings but Impression empty
@@ -106,8 +112,13 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push("Findings describe pathology but the Impression section is empty.");
   }
 
-  // 6b. Pathology merge contradictions (same validator — not a new AI service)
-  warnings.push(...pathologyMergeContradictionWarnings(findings, impressionText));
+  // 6b. Findings↔Impression contradictions. The same contract the canonical text
+  //     tier evaluates, called rather than copied: these five checks used to live
+  //     here as prose regexes with no rule id, so the server never recorded them and
+  //     the golden-corpus census measured a smaller set than the radiologist saw.
+  for (const c of findingsImpressionContradictions(findings, impressionText)) {
+    warnings.push(c.message);
+  }
 
   // 6. Un-filled measurement placeholders left in the text
   if (findings.includes("{value}") || impressionText.includes("{value}")) {
@@ -116,84 +127,6 @@ export function validateReport(report: ReportForValidation): string[] {
 
   warnings.push(...medicalConsistencyWarnings(report));
   warnings.push(...repeatedWordWarnings(findings));
-
-  return warnings;
-}
-
-function extractSeverity(text: string): string | null {
-  const m = text.match(/\b(mild|moderate|severe)\b/i);
-  return m ? m[1]!.toLowerCase() : null;
-}
-
-function extractSpinalLevel(text: string): string | null {
-  const m = text.match(/\b([LCST]\d{1,2}[-–][LCST]\d{1,2})\b/i);
-  return m ? m[1]!.toUpperCase().replace("–", "-") : null;
-}
-
-function sharesAnatomyContext(a: string, b: string): boolean {
-  const terms = ["stenosis", "disc", "herniation", "bulge", "protrusion", "canal", "foraminal"];
-  const al = a.toLowerCase();
-  const bl = b.toLowerCase();
-  return terms.some((t) => al.includes(t) && bl.includes(t));
-}
-
-function pathologyMergeContradictionWarnings(findings: string, impression: string): string[] {
-  const warnings: string[] = [];
-  const hay = `${findings}\n${impression}`;
-
-  const basalNormal =
-    /basal ganglia[^\n.]{0,80}\b(normal|unremarkable)/i.test(hay)
-    || /\b(normal|unremarkable)\b[^\n.]{0,80}basal ganglia/i.test(hay);
-  const basalBleed = /basal ganglia[^\n.]{0,100}\b(ha?emorrhage|hematoma)\b/i.test(hay)
-    || /\b(ha?emorrhage|hematoma)\b[^\n.]{0,100}basal ganglia/i.test(hay);
-  if (basalNormal && basalBleed) {
-    warnings.push("Possible contradiction: basal ganglia described as normal and as hemorrhage after merge.");
-  }
-
-  const noRestricted = /\bno restricted diffusion\b/i.test(hay)
-    || /\bno evidence of restricted diffusion\b/i.test(hay);
-  if (noRestricted && /\bacute (?:[a-z]+\s+){0,3}infarct\b/i.test(hay)) {
-    warnings.push("Possible contradiction: \"no restricted diffusion\" coexists with acute infarct wording.");
-  }
-
-  const noIchFindings = /\bno (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(findings)
-    || /\bno evidence of (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(findings);
-  const ichImpression = /\b(ha?emorrhage|hematoma|ich)\b/i.test(impression)
-    && !/\bno (?:acute )?(?:intracranial )?(?:ha?emorrhage|ich)\b/i.test(impression);
-  if (noIchFindings && ichImpression) {
-    warnings.push("Possible contradiction: Findings deny intracranial hemorrhage but Impression mentions hemorrhage.");
-  }
-
-  // The "Impression reads normal but Findings describe pathology" check used to
-  // live here as a substring search over PATHOLOGY_WORDS, so "No fracture on the
-  // bone windows" counted as a fracture and a normal head CT was flagged as a
-  // contradiction. Q114 in the canonical text tier owns this defect now: it reads
-  // the same shared vocabulary, denies negated terms, and its condition is a
-  // strict superset of this one — so keeping a second copy here would only add a
-  // duplicate line to the finalize dialog and a second five-point deduction.
-
-  const fSev = extractSeverity(findings);
-  const iSev = extractSeverity(impression);
-  if (fSev && iSev && fSev !== iSev && sharesAnatomyContext(findings, impression)) {
-    warnings.push(`Possible severity mismatch: Findings say "${fSev}" but Impression says "${iSev}".`);
-  }
-
-  const fLevel = extractSpinalLevel(findings);
-  const iLevel = extractSpinalLevel(impression);
-  if (fLevel && iLevel && fLevel !== iLevel && sharesAnatomyContext(findings, impression)) {
-    warnings.push(`Possible level mismatch: Findings mention ${fLevel} but Impression mentions ${iLevel}.`);
-  }
-
-  const fLeft = /\bleft\b/i.test(findings);
-  const fRight = /\bright\b/i.test(findings);
-  const iLeft = /\bleft\b/i.test(impression);
-  const iRight = /\bright\b/i.test(impression);
-  if (fLeft && !fRight && iRight && !iLeft) {
-    warnings.push('Laterality check: Findings say "left" but Impression says "right".');
-  }
-  if (fRight && !fLeft && iLeft && !iRight) {
-    warnings.push('Laterality check: Findings say "right" but Impression says "left".');
-  }
 
   return warnings;
 }
@@ -419,7 +352,14 @@ export function computeQualityScore(input: QualityInput): QualityScore {
   if ((input.impression || []).every((l) => !l.trim())) deduct(25, "Impression section is empty.");
   if (!(input.technique || "").trim()) deduct(10, "Technique not documented.");
   if (!(input.clinicalHistory || "").trim()) deduct(5, "Clinical history not documented.");
-  if (!(input.recommendation || "").trim()) deduct(5, "No recommendation/advice given.");
+  // Q005, called rather than written here. An empty Recommendation section is what
+  // CARE's anti-filler policy produces on purpose, so the only gap worth 5 points is
+  // an Impression that states a plan the advice section then fails to carry — and the
+  // canonical text tier has to reach the same verdict on the same report, which is
+  // what sharing the predicate guarantees. See
+  // lib/report-quality/src/text/recommendation.ts for the measurement.
+  const recommendationGap = unmetRecommendationDependency(input.impression, input.recommendation);
+  if (recommendationGap) deduct(5, recommendationGap);
 
   // Consistency warnings from the validator each cost 5 points.
   const warnings = validateReport(input);
