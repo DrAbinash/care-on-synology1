@@ -147,6 +147,14 @@ afterAll(async () => {
 
 const suite = hasDb ? describe : describe.skip;
 
+// `dispatchPendingOutbox` claims by database state, not by test ownership, so in a
+// full-suite run it can also pick up a pending event another test file left behind.
+// Two consequences are handled explicitly: `claimed`/`sent` are only ever asserted
+// with `>=` or beside a marker-row read that carries the actual claim, and any
+// assertion about "how many times was this delivered" filters `calls` by marker.
+// Verified: no other test file in this repository inserts a `sending` outbox row, so
+// the reclaim counts (`recovered`, `dead`) stay exact.
+
 suite("PR-I2 outbox abandoned-delivery recovery (real PostgreSQL)", () => {
   it("Test 1 — a pending event is claimed, delivered once, and becomes sent", async () => {
     const id = await insertOutbox({ name: "t1" });
@@ -391,10 +399,12 @@ suite("PR-I2 outbox abandoned-delivery recovery (real PostgreSQL)", () => {
 
     const r = await freshDispatch(outbox, { workerId: "us", limit: 50 });
 
-    // We delivered the one row we still owned and stopped.
-    expect(calls).toHaveLength(1);
-    expect(r.claimed).toBe(3);
-    expect(r.sent).toBe(1);
+    // We delivered the one row we still owned and stopped. Marker-filtered because a
+    // concurrent test file's pending event could ride along in the same batch.
+    const mine = calls.filter((c) => c.eventId?.startsWith(`${MARKER}:`));
+    expect(mine).toHaveLength(1);
+    expect(r.claimed).toBeGreaterThanOrEqual(3);
+    expect(r.sent).toBeGreaterThanOrEqual(1);
     expect(r.failed).toBe(0);
     expect(r.recovered).toBe(0);
 
