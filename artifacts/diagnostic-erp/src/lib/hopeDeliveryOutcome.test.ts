@@ -77,6 +77,42 @@ describe("classifyHopeDeliveryResponse — the nine delivery outcomes", () => {
     expect(o.title).not.toBe("Sent to Hope");
   });
 
+  it("a dead-lettered report is told apart from one that is still being retried", () => {
+    // `dead` is the only state in which nobody is coming to help: the retries are
+    // gone, so the message has to say so and name what a person can do next.
+    const o = classifyHopeDeliveryResponse(
+      success({ dispatched: { sent: 0, failed: 1, dead: 1 } }),
+    );
+    expect(o.kind).toBe("failed");
+    expect(o.destructive).toBe(true);
+    expect(o.title).toMatch(/stopped/i);
+    expect(o.description, "must not promise an automatic retry that will never happen")
+      .not.toMatch(/will be retried automatically/i);
+    expect(o.description).toMatch(/Sync errors/i);
+    expect(o.description).toMatch(/signed and stays in CARE/i);
+  });
+
+  it("a dead letter outranks a sent flag if a response ever contradicts itself", () => {
+    const o = classifyHopeDeliveryResponse(
+      success({ alreadySent: true, dispatched: { sent: 1, failed: 0, dead: 1 } }),
+    );
+    expect(o.kind).not.toBe("delivered");
+    expect(o.title).not.toBe("Already on Hope");
+  });
+
+  it("the recovery the dead-letter message names is the screen that offers Retry", () => {
+    // The instruction is only true if the operator can follow it. The label lives in
+    // IntegrationAdmin.tsx; if that section is renamed, this fails and the toast gets
+    // fixed rather than sending the radiologist looking for a menu that is not there.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const page = readFileSync(resolve(here, "../pages/IntegrationAdmin.tsx"), "utf8");
+    const o = classifyHopeDeliveryResponse(success({ dispatched: { sent: 0, failed: 1, dead: 1 } }));
+    const named = /“([^”]+)”/.exec(o.description ?? "")?.[1];
+    expect(named, `the dead-letter toast names no screen: ${o.description}`).toBeTruthy();
+    expect(page).toContain(named as string);
+    expect(page).toMatch(/retry\.mutate/);
+  });
+
   it("an unknown refusal code still surfaces, and is not silently benign", () => {
     const o = classifyHopeDeliveryResponse(refusal({ ok: false, code: "SIGNING_SECRET_ROTATED" }));
     expect(o.kind).toBe("failed");
@@ -161,6 +197,7 @@ describe("hopeDeliveryToast — an outcome must reach the screen or be deliberat
     ["NOT_SIGNED", refusal({ ok: false, code: "NOT_SIGNED", error: "Finalize and sign first" })],
     ["unknown code", refusal({ ok: false, code: "WHATEVER" })],
     ["dispatch failed", success({ dispatched: { sent: 0, failed: 2 } })],
+    ["dispatch dead", success({ dispatched: { sent: 0, failed: 1, dead: 1 } })],
     ["dispatch sent", success({ dispatched: { sent: 1, failed: 0 } })],
     ["no dispatch evidence", success({})],
   ];

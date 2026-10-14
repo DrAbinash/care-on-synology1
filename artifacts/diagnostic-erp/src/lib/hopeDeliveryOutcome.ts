@@ -38,7 +38,9 @@ export interface HopeEmitSuccess {
   emitted?: boolean;
   alreadySent?: boolean;
   reportId?: number;
-  dispatched?: { sent: number; failed: number } | null;
+  /** THIS report's own delivery evidence — never a batch counter. `dead` is the
+   *  state in which CARE has stopped retrying, which only a person can clear. */
+  dispatched?: { sent: number; failed: number; dead?: number } | null;
 }
 
 export interface HopeEmitRefusal {
@@ -121,6 +123,17 @@ export function classifyHopeDeliveryResponse(res: unknown): HopeDeliveryOutcome 
 
   const ok = (res ?? {}) as HopeEmitSuccess;
   const dispatched = ok.dispatched ?? null;
+
+  // Checked before `sent`: by construction the two cannot both be set, but a
+  // response that claimed both must never resolve to "delivered".
+  if (dispatched && (dispatched.dead ?? 0) > 0) {
+    return {
+      kind: "failed",
+      title: "Signed, but Hope stopped receiving it",
+      description: "CARE exhausted its retries for this report — it will not go out on its own. The report is signed and stays in CARE. Retry it from “Sync errors” on the Hope connection screen once the cause is fixed.",
+      destructive: true,
+    };
+  }
 
   if (dispatched && dispatched.sent > 0) {
     return {
