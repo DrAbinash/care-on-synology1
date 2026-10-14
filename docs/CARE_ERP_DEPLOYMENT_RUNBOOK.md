@@ -258,7 +258,8 @@ Twelve steps, in order, for the Synology box. Every command, path, port and serv
 name below is taken from this repository at `8ca20cf9` — `deploy-synology.sh`,
 `docker-compose.yml` and the `scripts/` directory — not from memory. **Nothing in this
 section has been executed against the clinic**, because that is a deploy, and a deploy
-is the owner's decision.
+is the owner's decision. The print-and-tick form of these steps, with the open-items
+register, is `docs/operations/CARE_PRODUCTION_READINESS_CHECKLIST.md`.
 
 Before step 1, run `CARE_ERP_PREDEPLOYMENT_GATE.md` Part 1 — the four areas: database, backup,
 PACS, HOPE — and record its Part 2, which states which outstanding P0/P1 item blocks which
