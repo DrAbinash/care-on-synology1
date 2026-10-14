@@ -1,18 +1,37 @@
 #!/usr/bin/env node
 /**
- * check-env-secrets.mjs — fail fast when .env ships weak machine-to-machine keys.
+ * check-env-secrets.mjs — fail fast when a deployment ships a weak or burned key.
  *
- * Used by deploy-synology.sh before `docker compose up`. Never prints secret values.
+ * Used by deploy-synology.sh before `docker compose up`. Never prints secret values:
+ * a finding names the variable and, at most, its length.
  *
  *   node scripts/check-env-secrets.mjs
  *   node scripts/check-env-secrets.mjs --file .env
  *   node scripts/check-env-secrets.mjs --warn-only
+ *
+ * Two classes of finding:
+ *   • weak — a placeholder, too short, too few distinct characters, sequential.
+ *   • published — byte-for-byte a credential this repository has committed. The
+ *     Hope ↔ Care pair was in `deploy/synology/*.env`, `.env.example`, the README
+ *     and `deploy-synology.sh` while the repo was PUBLIC, so any live host still
+ *     presenting either digest is authenticating with a value anyone can read off
+ *     GitHub. Comparing digests (never values) is what lets the gate say that
+ *     without becoming a second copy of the leak.
+ *
+ * Missing credentials only matter when the host is actually wired for Hope, so a
+ * clinic that never enabled the integration is not blocked by this gate.
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const MIN_SECRET_LENGTH = 16;
+// An issued partner key is `intgk_` + 64 hex and the HMAC secret is 64 hex, so a
+// live value shorter than this is a truncated copy, not a credential.
+const MIN_INTEGRATION_SECRET_LENGTH = 32;
+
 const KNOWN_WEAK = new Set([
   "1234", "12345", "123456", "1234567", "12345678", "123456789", "1234567890",
   "changeme", "change-me", "change_me",
@@ -31,18 +50,24 @@ const KNOWN_WEAK = new Set([
   "your-secure-internal-api-key-here",
 ]);
 
-function parseArgs() {
-  const args = process.argv.slice(2);
-  let file = ".env";
-  let warnOnly = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--file" && args[i + 1]) file = args[++i];
-    else if (args[i] === "--warn-only") warnOnly = true;
-  }
-  return { file: resolve(file), warnOnly };
-}
+/**
+ * sha256 of every credential value this repository has ever committed, with the
+ * aliases that carry the same secret on each side of the integration. These are
+ * digests, not secrets: revealing one grants nothing, and keeping only the digest
+ * is what stops this file from re-publishing the value it is guarding against.
+ */
+export const PUBLISHED_CREDENTIALS = [
+  {
+    digest: "5dce9552501ceca7142bc329aa21596c7b826f96143d9b1fe2bf2a44928d3305",
+    label: "the HOPE↔CARE partner key (committed as HOPE_PARTNER_KEY / CARE_PARTNER_KEY)",
+  },
+  {
+    digest: "2c2c65bbe5fd7e5218ca068ab164699e787d389a646eb17afa4e4db7e712b598",
+    label: "the HOPE↔CARE callback signing secret (committed as INTEGRATION_HOPE_SIGNING_SECRET / CARE_CALLBACK_SECRET)",
+  },
+];
 
-function loadEnvFile(path) {
+export function loadEnvFile(path) {
   if (!existsSync(path)) return {};
   const out = {};
   for (const line of readFileSync(path, "utf8").split("\n")) {
@@ -60,11 +85,12 @@ function loadEnvFile(path) {
   return out;
 }
 
-function checkSecretStrength(raw) {
+/** null when acceptable, otherwise the reason — a placeholder, short, or sequential. */
+export function checkSecretStrength(raw, minLength = MIN_SECRET_LENGTH) {
   const secret = (raw ?? "").trim();
   if (secret.length === 0) return { reason: "not set" };
   if (KNOWN_WEAK.has(secret.toLowerCase())) return { reason: "a well-known placeholder value" };
-  if (secret.length < MIN_SECRET_LENGTH) return { reason: `only ${secret.length} characters (minimum ${MIN_SECRET_LENGTH})` };
+  if (secret.length < minLength) return { reason: `only ${secret.length} characters (minimum ${minLength})` };
   if (new Set(secret).size < 5) return { reason: `only ${new Set(secret).size} distinct characters` };
   if (/^(?:0123456789)+\d*$/.test(secret) || /^(?:abcdefghij)+[a-z]*$/i.test(secret)) {
     return { reason: "a sequential pattern" };
@@ -72,7 +98,34 @@ function checkSecretStrength(raw) {
   return null;
 }
 
-const GUARDED = [
+/** sha256 hex of a value, or null for unset. Value never leaves this function. */
+export function credentialDigest(raw) {
+  const secret = (raw ?? "").trim();
+  if (!secret) return null;
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+export function findPublishedMatch(raw, published = PUBLISHED_CREDENTIALS) {
+  const digest = credentialDigest(raw);
+  if (!digest) return null;
+  return published.find((p) => p.digest === digest) ?? null;
+}
+
+/**
+ * True when this deployment is wired to talk to Hope, in which case its two
+ * credentials are load-bearing rather than optional.
+ */
+export function isHopeIntegrationArmed(env) {
+  const force = (env["HOPE_CARE_INTEGRATION_FORCE"] || "").trim().toLowerCase();
+  if (force === "1" || force === "true") return true;
+  if ((env["INTEGRATION_HOPE_CALLBACK_URL"] || "").trim()) return true;
+  if ((env["HOPE_PARTNER_KEY"] || "").trim()) return true;
+  if ((env["INTEGRATION_HOPE_SIGNING_SECRET"] || "").trim()) return true;
+  return false;
+}
+
+// Guarded regardless of arming: a weak value is a weak value.
+export const GUARDED = [
   {
     name: "INTERNAL_API_KEY",
     note:
@@ -82,9 +135,31 @@ const GUARDED = [
   { name: "WHATSAPP_AUTOMATION_SECRET", note: "Used by n8n WhatsApp automation triggers." },
 ];
 
-function main() {
-  const { file, warnOnly } = parseArgs();
-  const env = loadEnvFile(file);
+// The Hope ↔ Care pair. Both sides of each must hold the same value, so rotating
+// one alone breaks the channel: CARE's .env and HOPE's .env are both in scope.
+export const INTEGRATION_GUARDED = [
+  {
+    name: "HOPE_PARTNER_KEY",
+    minLength: MIN_INTEGRATION_SECRET_LENGTH,
+    note:
+      "HOPE sends it as `Authorization: Bearer …` (its own copy is CARE_PARTNER_KEY). CARE stores only its "
+      + "sha256 in integration_partners.key_hash, and bootstrapHopeCareIntegration() writes THAT value on "
+      + "every API start — so rotate by setting the new key in BOTH .env files and restarting, not with "
+      + "POST /api/integration/admin/partners/:id/rotate-key (the next boot would overwrite it).",
+  },
+  {
+    name: "INTEGRATION_HOPE_SIGNING_SECRET",
+    minLength: MIN_INTEGRATION_SECRET_LENGTH,
+    note:
+      "HMAC for CARE→HOPE callbacks; HOPE's copy is CARE_CALLBACK_SECRET. Outbox delivery stays "
+      + "`pending` with delivery_not_configured while it is missing — events queue, none are sent.",
+  },
+];
+
+/**
+ * The whole audit, as data. Never returns a value, only names, lengths and reasons.
+ */
+export function auditEnvSecrets(env, { published = PUBLISHED_CREDENTIALS } = {}) {
   const problems = [];
 
   for (const { name, note } of GUARDED) {
@@ -93,25 +168,78 @@ function main() {
     problems.push({ name, reason: weakness.reason, note });
   }
 
+  const armed = isHopeIntegrationArmed(env);
+  for (const { name, minLength, note } of INTEGRATION_GUARDED) {
+    const hit = findPublishedMatch(env[name], published);
+    if (hit) {
+      problems.push({
+        name,
+        reason: "byte-for-byte a credential this repository published while it was public",
+        note: `Treat it as disclosed and rotate it — ${hit.label}. ${note}`,
+        exposed: true,
+      });
+      continue;
+    }
+    const weakness = checkSecretStrength(env[name], minLength);
+    if (!weakness) continue;
+    if (weakness.reason === "not set") {
+      // Only a host that never mentions Hope may leave these unset: nothing can
+      // authenticate as HOPE and nothing signs, so the channel is simply dark.
+      if (!armed) continue;
+      problems.push({
+        name,
+        reason: "not set while the Hope integration is armed",
+        note: `${note} Set it in the deployment .env, or unset HOPE_CARE_INTEGRATION_FORCE and `
+          + `INTEGRATION_HOPE_CALLBACK_URL if this host must not talk to Hope.`,
+      });
+      continue;
+    }
+    problems.push({ name, reason: weakness.reason, note });
+  }
+
+  return { problems, armed };
+}
+
+function parseArgs(argv) {
+  let file = ".env";
+  let warnOnly = false;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--file" && argv[i + 1]) file = argv[++i];
+    else if (argv[i] === "--warn-only") warnOnly = true;
+  }
+  return { file: resolve(file), warnOnly };
+}
+
+function main() {
+  const { file, warnOnly } = parseArgs(process.argv.slice(2));
+  const env = loadEnvFile(file);
+  const { problems, armed } = auditEnvSecrets(env);
+
   if (problems.length === 0) {
-    console.log(`✓ ${file}: guarded secrets look acceptable (values not shown).`);
+    console.log(
+      `✓ ${file}: guarded secrets look acceptable (values not shown)` +
+      (armed ? "; Hope integration armed." : "; Hope integration not armed."),
+    );
     process.exit(0);
   }
 
   const header = warnOnly ? "WARNING" : "ERROR";
-  console.error(`${header}: weak machine-to-machine secret(s) in ${file}:`);
+  console.error(`${header}: machine-to-machine secret problem(s) in ${file}:`);
   for (const p of problems) {
     console.error(`  • ${p.name} is ${p.reason}. ${p.note}`);
   }
-  if (!warnOnly) {
-    console.error("");
-    console.error("Generate a strong key:");
-    console.error("  bash scripts/rotate-internal-api-key.sh");
-    console.error("Or manually:");
-    console.error("  openssl rand -base64 32");
-    process.exit(1);
-  }
+  console.error("");
+  console.error("Generate a strong key and put it in the deployment .env (never in a tracked file):");
+  console.error("  openssl rand -hex 32");
+  console.error("For the Hope pair, set the same new value on BOTH sides and restart, then follow");
+  console.error("  docs/hope-care-integration/06_CREDENTIAL_ROTATION.md.");
+  console.error("To deploy anyway without this gate (one run, prints warnings only):");
+  console.error("  node scripts/check-env-secrets.mjs --file .env --warn-only");
+  if (!warnOnly) process.exit(1);
   process.exit(0);
 }
 
-main();
+const invokedDirectly =
+  !!process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (invokedDirectly) main();
