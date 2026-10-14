@@ -2,7 +2,7 @@
 //
 // One reading, two consumers. The canonical text tier (./evaluate.ts) and the live
 // workspace validator (artifacts/diagnostic-erp/src/lib/reportValidator.ts) both
-// call this and nothing else for these five checks, so the badge on the screen and
+// call this and nothing else for these six checks, so the badge on the screen and
 // the findings the server persists cannot disagree about the same report.
 //
 // They did. Measured across all 92 golden-corpus inputs (20 correct reports + 72
@@ -13,12 +13,21 @@
 // wrong-level surgery that the radiologist is told about on screen and that the
 // signed record does not contain is the shape this file exists to remove.
 //
+// The six laterality warnings were the other half of the same problem, and the
+// half that looked solved: both callers carried a byte-identical copy of the same
+// four regexes and a parity test asserted that the two copies agreed. Q104 is
+// lifted in below, so the sixth check is shared rather than synchronised.
+// {@link sectionsContradict} reads the union of both exports, which is what the
+// Impression dependency asks: not "which rule fired" but "do these two sections
+// agree".
+//
 // What is here is deliberately narrow. A Findings section and an Impression are two
 // statements about one patient, so the questions worth asking are the ones a
 // radiologist would ask on reading them back: does one section withdraw a finding
 // the other still stands behind, do they name different levels or different grades
-// for the same thing, and do two sentences about the basal ganglia or about
-// diffusion cancel each other out. Nothing else in this file guesses at prose style.
+// for the same thing, does the Impression name a side the Findings never do, and do
+// two sentences about the basal ganglia or about diffusion cancel each other out.
+// Nothing else in this file guesses at prose style.
 //
 // Every rule is advisory. None of them can stop a signature on its own — see
 // artifacts/diagnostic-erp/src/lib/reportQualityFinalize.ts, where blocking policy
@@ -354,6 +363,49 @@ function mutuallyExclusiveStatements(
 }
 
 /**
+ * Q104 — the Impression names a side the Findings never do.
+ *
+ * The oldest of these checks and the only one that was already on both paths: the
+ * canonical tier and the live validator each carried a byte-identical copy of the
+ * same four regexes, agreed by a parity test rather than by sharing the code. It
+ * lives here now for the same reason the other five do — a check that can drift is
+ * a check that will, and the drift is invisible until the two paths are diffed.
+ *
+ * Kept as its own export rather than folded into
+ * {@link findingsImpressionContradictions} because both callers emit it at a
+ * specific point in a specific order: the text tier's findings are ordered to match
+ * the legacy scorer's `issues` array exactly, and Q104 sits before Q105 while the
+ * five below sit after it. {@link sectionsContradict} reads the union.
+ *
+ * Deliberately as narrow as it has always been. A report that names both sides
+ * ("right hemispheric infarct with left-sided weakness") is the correct
+ * contralateral picture and must not be marked up, so this fires only when each
+ * section names exactly one side and they differ.
+ */
+export function lateralityContradictions(findings: string, impression: string): SectionContradiction[] {
+  const found = findings ?? "";
+  const said = impression ?? "";
+  const findingsLeft = /\bleft\b/i.test(found);
+  const findingsRight = /\bright\b/i.test(found);
+  const impLeft = /\bleft\b/i.test(said);
+  const impRight = /\bright\b/i.test(said);
+  const out: SectionContradiction[] = [];
+  if (impLeft && !findingsLeft && findingsRight) {
+    out.push({
+      ruleId: "Q104",
+      message: 'Laterality check: Impression says "left" but Findings only mention "right".',
+    });
+  }
+  if (impRight && !findingsRight && findingsLeft) {
+    out.push({
+      ruleId: "Q104",
+      message: 'Laterality check: Impression says "right" but Findings only mention "left".',
+    });
+  }
+  return out;
+}
+
+/**
  * Every contradiction between a report's Findings and its Impression, in one order
  * on both paths that call it. Findings first because that is the section the
  * Impression is declared to summarise, and a withdrawn finding is a larger claim
@@ -382,7 +434,15 @@ export function findingsImpressionContradictions(findings: string, impression: s
  * Whether the two sections contradict each other at all — the fact the Impression
  * dependency needs, which is not the warning text. A contradiction is a reason to
  * re-read the summary; the messages are how the workspace says so.
+ *
+ * The union of both exports above, because a caller that asked only one of them
+ * would be asking a narrower question than "do these two sections agree": a
+ * Findings that says right and an Impression that says left is exactly the summary
+ * that does not follow from the examination, and it is Q104 that sees it.
  */
 export function sectionsContradict(findings: string, impression: string): boolean {
-  return findingsImpressionContradictions(findings, impression).length > 0;
+  return (
+    lateralityContradictions(findings, impression).length > 0
+    || findingsImpressionContradictions(findings, impression).length > 0
+  );
 }

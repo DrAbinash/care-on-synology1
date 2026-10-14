@@ -27,7 +27,7 @@ import {
   NAMED_LESION_TERMS,
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
-import { findingsImpressionContradictions } from "./findingsImpression";
+import { findingsImpressionContradictions, lateralityContradictions } from "./findingsImpression";
 
 export interface TextTierFinding {
   ruleId: RuleId;
@@ -120,16 +120,12 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     }
   }
 
-  // Q104 — laterality: impression side not in findings
-  const findingsLeft = /\bleft\b/i.test(findingsText);
-  const findingsRight = /\bright\b/i.test(findingsText);
-  const impLeft = /\bleft\b/i.test(impressionText);
-  const impRight = /\bright\b/i.test(impressionText);
-  if (impLeft && !findingsLeft && findingsRight) {
-    emit("Q104", 'Laterality check: Impression says "left" but Findings only mention "right".', W);
-  }
-  if (impRight && !findingsRight && findingsLeft) {
-    emit("Q104", 'Laterality check: Impression says "right" but Findings only mention "left".', W);
+  // Q104 — laterality: impression side not in findings. Called rather than
+  // written here: the live workspace validator carried a byte-identical copy of
+  // these four regexes, and the Impression dependency now reads the union of both
+  // through `sectionsContradict`, so a copy left behind is a copy that can drift.
+  for (const contradiction of lateralityContradictions(findingsText, impressionText)) {
+    emit(contradiction.ruleId, contradiction.message, W);
   }
 
   // Q105 — pathology in findings but impression empty

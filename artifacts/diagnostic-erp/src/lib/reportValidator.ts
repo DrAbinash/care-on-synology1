@@ -9,12 +9,14 @@
  * wholeReportPathology, section5Impression, impressionRecommendationWiring,
  * phase3, phase5). Every check here that reads clinical prose reads it through
  * `@workspace/report-quality`: the vocabulary and negation table from
- * `clinicalTerms`, and the five Findings↔Impression contradictions from
- * `findingsImpression`. Those five used to be prose regexes of this file's own,
+ * `clinicalTerms`, and the six Findings↔Impression contradictions from
+ * `findingsImpression`. Five of those used to be prose regexes of this file's own,
  * which meant the canonical text tier could not see them at all — the server
- * recorded nothing for a wrong spinal level the badge was printing, and the same
- * laterality fact was pushed twice under two different wordings. The checks still
- * written inline below are the ones that can drift.
+ * recorded nothing for a wrong spinal level the badge was printing. The sixth, the
+ * laterality check, was the opposite fault: this file and the tier each carried a
+ * byte-identical copy, agreed only by a parity test rather than by sharing the
+ * code. Both faults are the same defect — a reading that can drift is a reading
+ * that will. The checks still written inline below are the ones that still can.
  */
 
 import {
@@ -23,6 +25,7 @@ import {
   assertsStudyNormal,
   assessmentCategories,
   findingsImpressionContradictions,
+  lateralityContradictions,
   outOfScopeSpineContent,
   studyContrastState,
   ungroundedNamedDiagnoses,
@@ -92,16 +95,12 @@ export function validateReport(report: ReportForValidation): string[] {
     }
   }
 
-  // 4. Laterality consistency: a side named in Impression must appear in Findings
-  const findingsLeft = /\bleft\b/i.test(findings);
-  const findingsRight = /\bright\b/i.test(findings);
-  const impLeft = /\bleft\b/i.test(impressionText);
-  const impRight = /\bright\b/i.test(impressionText);
-  if (impLeft && !findingsLeft && findingsRight) {
-    warnings.push('Laterality check: Impression says "left" but Findings only mention "right".');
-  }
-  if (impRight && !findingsRight && findingsLeft) {
-    warnings.push('Laterality check: Impression says "right" but Findings only mention "left".');
+  // 4. Laterality consistency: a side named in Impression must appear in Findings.
+  //    Called rather than copied — the canonical text tier used to carry its own
+  //    byte-identical version of these four regexes, which is how the Impression
+  //    dependency came to ask two modules whether the same two sections agreed.
+  for (const c of lateralityContradictions(findings, impressionText)) {
+    warnings.push(c.message);
   }
 
   // 5. Pathology in Findings but Impression empty

@@ -261,13 +261,16 @@ describe("quiet on the clinic's own correct templates", () => {
    * and every one was marked up as self-contradictory before the rules were taught
    * to read a denial. Measured across all 58 `DEFAULT_REPORT_FORMATS`: 11 formats
    * were marked up, none of them wrong. The golden corpus could not have shown it —
-   * all 20 of its correct reports were already quiet and no seeded defect depends
-   * on Q119's subset wording, on Q122 or on Q123 — so the templates are the census
-   * that found it, and the ratchet over them lives in
+   * all 20 of its correct reports were already quiet, and its detection count reads
+   * 57 of 72 both before and after these narrowings — so the templates are the
+   * census that found it, and the ratchet over them lives in
    * artifacts/diagnostic-erp/src/lib/reportFormatClinicalConsistency.test.ts.
    *
-   * Each case is paired below with the shape that must still fire, because a rule
-   * that has been taught to read a negation can also be taught to read nothing.
+   * The corpus is not insensitive to them, though, and the subset reading proved it:
+   * read without the hedge gate below it cost the Impression dependency
+   * `whole-spine-lesion.invented-diagnosis`, dropping 24 armed defects to 23. That
+   * is why each narrowing here is paired with the shape that must still fire — a
+   * rule that has been taught to read a negation can also be taught to read nothing.
    */
   it("Q123 — a normal brain format denies restricted diffusion and denies an acute infarct in the same breath", () => {
     expect(

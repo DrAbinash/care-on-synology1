@@ -30,6 +30,7 @@ import {
   assertedAbnormality,
   assertsStudyNormal,
   clinicalContentSignature,
+  sectionsContradict,
 } from "@workspace/report-quality";
 import {
   contributionsMatch,
@@ -718,14 +719,19 @@ export function impressionNeedsRefreshFromNarrative(
  *  1. the Findings' clinical content differs from the signature recorded when the
  *     summary was owned — a level, side, size, severity or abnormality moved;
  *  2. the ledger's own contributions are no longer in the Impression;
- *  3. the Impression calls the study normal while the Findings assert (or hold
- *     open) an abnormality — the reading itself, which does not care who typed
- *     either field, so a hand-written summary cannot step around it.
+ *  3. the Impression does not follow from the Findings — it calls the study normal
+ *     while the Findings assert (or hold open) an abnormality, or it moves the side,
+ *     the spinal level or the severity grade of a fact the Findings state. This is
+ *     the reading itself, which does not care who typed either field, so a
+ *     hand-written summary cannot step around it.
  *
  * Halves 1 and 3 are computed from the shared clinical vocabulary in
  * `@workspace/report-quality`, which is the same table the report-quality rules and
  * the editor's live badge read. This is not a second engine; it is the existing one
- * asked on demand rather than only when a badge is drawn.
+ * asked on demand rather than only when a badge is drawn. Half 3 asks the same six
+ * Findings↔Impression questions the badge prints, so a contradiction the radiologist
+ * can see is a contradiction that arms the dependency — and the two cannot disagree,
+ * because they are the same function.
  *
  * One thing silences half 3: the radiologist's own acknowledgement, and only for
  * the exact pairing acknowledged. A review that did not hold would nag on every
@@ -798,7 +804,15 @@ export function evaluateImpressionDependency(opts: {
     && basis.recordedBy === "review"
     && basis.findingsSignature === findingsSignature
     && basis.impressionFingerprint === fingerprint;
-  if (!reviewedThisPairing && assertedAbnormality(findings) && assertsStudyNormal(impression)) {
+  // Half 3 asks one question — do these two sections disagree? — and reads it twice,
+  // because the two readings are not the same question and neither subsumes the
+  // other. The study-normal arm compares a whole-section claim against a single
+  // abnormality anywhere; the shared contract compares fact against fact, so it also
+  // sees a summary that moved the side, the level or the grade without claiming the
+  // study was normal at all. Dropping either would leave a contradiction the
+  // dependency cannot see.
+  const saysNormalStudy = assertedAbnormality(findings) !== null && assertsStudyNormal(impression);
+  if (!reviewedThisPairing && (saysNormalStudy || sectionsContradict(findings, impression))) {
     reasons.push("impression-contradicts-findings");
   }
 

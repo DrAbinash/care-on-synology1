@@ -115,7 +115,11 @@ export type {
 // The Findings↔Impression contradiction contract. Called by ./text/evaluate AND by
 // the live workspace validator, so the badge on the screen and the findings the
 // server persists are one reading rather than two that happen to agree today.
-export { findingsImpressionContradictions, sectionsContradict } from "./text/findingsImpression";
+export {
+  findingsImpressionContradictions,
+  lateralityContradictions,
+  sectionsContradict,
+} from "./text/findingsImpression";
 export type { SectionContradiction } from "./text/findingsImpression";
 // Rule catalog — the single source of rule identity (stable ids + metadata).
 export { RULE_CATALOG, RULE_CATALOG_VERSION, getRuleEntry, findRuleEntry } from "./ruleCatalog";
