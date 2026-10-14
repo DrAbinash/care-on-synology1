@@ -12,6 +12,13 @@
 // than the sender pretending to know. Reclaiming an abandoned 'sending' event
 // re-enters that same path and inherits exactly that guarantee — it adds no new
 // duplicate window, because the timeout-retry path already re-sends.
+//
+// At-least-once applies to the HTTP request. It does NOT apply to the event's state:
+// every write-back is fenced on `status='sending' AND locked_by=<this dispatch> AND
+// locked_at=<the stamp this dispatch wrote>`, so only the worker that currently owns
+// an event decides whether it is sent, retried or dead-lettered. Two independent
+// deliveries of one event_id are survivable by HOPE; a `dead` written over a report
+// HOPE already received, or a `pending` written over one, is not.
 // ============================================================================
 import { createHmac, randomUUID } from "node:crypto";
 import { sql, and, eq, inArray } from "drizzle-orm";
@@ -142,11 +149,14 @@ async function postWithTimeout(url: string, body: string, headers: Record<string
  * set. Rows that left the batch (sent, failed back to pending, dead-lettered, or
  * reclaimed by someone else) do not match and are absent from the result, so callers
  * get a fresh lease and an ownership check for the price of one statement.
+ *
+ * `stamp` is written, not read: the caller keeps it and hands it to
+ * `finalizeOwnedTransition` as the fencing token for the row it is about to deliver.
  */
-async function heartbeatOwnedLeases(claimedIds: number[], workerId: string): Promise<Set<number>> {
+async function heartbeatOwnedLeases(claimedIds: number[], workerId: string, stamp: Date): Promise<Set<number>> {
   const held = await db
     .update(integrationOutboxTable)
-    .set({ lockedAt: new Date() })
+    .set({ lockedAt: stamp })
     .where(and(
       inArray(integrationOutboxTable.id, claimedIds),
       eq(integrationOutboxTable.status, "sending"),
@@ -157,10 +167,60 @@ async function heartbeatOwnedLeases(claimedIds: number[], workerId: string): Pro
 }
 
 /**
- * Claim up to `limit` pending events and attempt delivery. Concurrency-safe via
- * FOR UPDATE SKIP LOCKED. Returns a small summary for logging/tests.
+ * Apply a delivery outcome to an event only if this dispatch still owns it, and
+ * report whether it was applied.
+ *
+ * PR #995's guard sits BEFORE the POST and so cannot cover the write-back: in the
+ * window between "I still hold this row" and "here is what HOPE answered" the lease
+ * can lapse and the recovery reclaim the event, another worker can deliver it, or an
+ * administrator can retry it. An unconditional `UPDATE … WHERE id = ?` then let the
+ * stale worker decide the state of an event it no longer owned — measured on the
+ * merged code: its 200 wrote `sent` over a live owner, its 500 pushed a held event
+ * back to `pending`, its timeout dead-lettered a row another worker was holding, and
+ * a late failure moved an event HOPE had already received from `sent` back to
+ * `pending`. On a clinical integration the last two are the dangerous ones: a report
+ * HOPE has gets re-queued for a second delivery, or is marked permanently dead.
+ *
+ * The predicate is the heartbeat's own, plus the `locked_at` this dispatch wrote —
+ * that stamp is the fencing token. `locked_by` alone is not sufficient: a caller that
+ * supplies its own `workerId` (the admin trigger, a re-entrant tick, a test) can have
+ * a row taken over by a different dispatch carrying the same name, and only the
+ * token separates them. Tested directly (Test 21).
+ *
+ * PostgreSQL returns no error for an UPDATE that matched nothing, so the decision is
+ * read from `RETURNING`, never inferred from the call succeeding.
  */
-export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: string; timeoutMs?: number; staleLeaseMs?: number } = {}): Promise<{ claimed: number; sent: number; failed: number; dead: number; recovered: number }> {
+async function finalizeOwnedTransition(
+  rowId: number,
+  workerId: string,
+  leaseToken: Date,
+  patch: Partial<typeof integrationOutboxTable.$inferInsert>,
+): Promise<boolean> {
+  const adopted = await db
+    .update(integrationOutboxTable)
+    .set(patch)
+    .where(and(
+      eq(integrationOutboxTable.id, rowId),
+      eq(integrationOutboxTable.status, "sending"),
+      eq(integrationOutboxTable.lockedBy, workerId),
+      eq(integrationOutboxTable.lockedAt, leaseToken),
+    ))
+    .returning({ id: integrationOutboxTable.id });
+  if (adopted.length === 0) {
+    console.warn(`[integration] outbox event ${rowId} changed hands during delivery — outcome not applied, owner preserved`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Claim up to `limit` pending events and attempt delivery. Concurrency-safe via
+ * FOR UPDATE SKIP LOCKED, and ownership-safe on the way out: a result is only ever
+ * written to an event this dispatch still holds. Returns a small summary for
+ * logging/tests; `conflicts` counts deliveries whose outcome was refused because the
+ * event changed hands mid-flight, which should be rare and is never silent.
+ */
+export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: string; timeoutMs?: number; staleLeaseMs?: number } = {}): Promise<{ claimed: number; sent: number; failed: number; dead: number; recovered: number; conflicts: number }> {
   const limit = opts.limit ?? 20;
   // Unique per dispatch, not per process: `cron.schedule` does not await a tick, so
   // two overlapping batches share a PID, and a lease-keyed reclaim can hand a row to
@@ -242,25 +302,51 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
     await recordAttempt(a.id, a.attemptNo, "failure", null, null, "delivery_abandoned", 0);
   }
 
-  let sent = 0, failed = 0, dead = recoveredDead;
-  if (claimedIds.length === 0) return { claimed: 0, sent, failed, dead, recovered };
+  let sent = 0, failed = 0, dead = recoveredDead, conflicts = 0;
+  if (claimedIds.length === 0) return { claimed: 0, sent, failed, dead, recovered, conflicts };
 
   const rows = await db.select().from(integrationOutboxTable).where(inArray(integrationOutboxTable.id, claimedIds));
 
   for (const row of rows) {
     const attemptNo = row.attempts + 1;
     const startedAt = Date.now();
+
+    // Heartbeat this dispatch's whole held batch, and take that one statement as the
+    // ownership proof for the row about to be worked on. Two things depend on it:
+    //
+    //   • the still-queued rows stay inside their lease for as long as this worker is
+    //     making progress, so nothing reclaims work that is merely slow;
+    //   • if this row is no longer in the returned set, it is no longer ours — it was
+    //     reclaimed after our lease lapsed — so we must neither POST it nor write an
+    //     outcome to it. Delivering anyway is the duplicate clinical report this
+    //     guard exists to prevent, and it would be a duplicate we caused.
+    //
+    // It runs before the configuration check as well, because that branch writes
+    // state too: a row handed over while this dispatch was working through its batch
+    // must not be pushed back to `pending` by a worker that no longer holds it.
+    const leaseToken = new Date();
+    const held = await heartbeatOwnedLeases(claimedIds, workerId, leaseToken);
+    if (!held.has(row.id)) {
+      console.warn(`[integration] outbox event ${row.id} (${row.eventType}) was reclaimed by another worker before delivery — skipped`);
+      continue;
+    }
+
     const { cfg } = await deliveryConfigFor(row.partnerId);
 
     if (!cfg.url || !cfg.secret) {
       // Not configured yet — back off and retry later (do NOT dead-letter a
-      // config gap; it clears itself once the partner is provisioned).
-      failed++;
-      await recordAttempt(row.id, attemptNo, "failure", null, null, "delivery_not_configured", Date.now() - startedAt);
-      await db.update(integrationOutboxTable).set({
+      // config gap; it clears itself once the partner is provisioned). No request was
+      // made, so nothing is recorded in the attempt history if the write is refused.
+      const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
         status: "pending", attempts: attemptNo, lastError: "delivery_not_configured",
         nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo)), lockedAt: null, lockedBy: null,
-      }).where(eq(integrationOutboxTable.id, row.id));
+      });
+      if (adopted) {
+        failed++;
+        await recordAttempt(row.id, attemptNo, "failure", null, null, "delivery_not_configured", Date.now() - startedAt);
+      } else {
+        conflicts++;
+      }
       continue;
     }
 
@@ -284,29 +370,24 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
       "x-care-signature": `sha256=${signBody(cfg.secret, body, timestamp)}`,
     };
 
-    // Heartbeat this dispatch's whole held batch, and take that one statement as the
-    // ownership proof for the row about to be sent. Two things depend on it:
-    //
-    //   • the still-queued rows stay inside their lease for as long as this worker is
-    //     making progress, so nothing reclaims work that is merely slow;
-    //   • if this row is no longer in the returned set, it is no longer ours — it was
-    //     reclaimed after our lease lapsed — so we must NOT POST it. Delivering
-    //     anyway is exactly the duplicate clinical report this guard exists to
-    //     prevent, and it would be a duplicate we caused rather than one we inherited.
-    const held = await heartbeatOwnedLeases(claimedIds, workerId);
-    if (!held.has(row.id)) {
-      console.warn(`[integration] outbox event ${row.id} (${row.eventType}) was reclaimed by another worker before delivery — skipped`);
-      continue;
-    }
-
     try {
       const { status, text } = await postWithTimeout(cfg.url, body, headers, timeoutMs);
       const durationMs = Date.now() - startedAt;
       if (status >= 200 && status < 300) {
+        const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
+          status: "sent", attempts: attemptNo, sentAt: new Date(), lastError: null, lockedAt: null, lockedBy: null,
+        });
+        // An attempt really was made and HOPE really answered 2xx, so it is recorded
+        // either way — erasing it would destroy the evidence of a possible second
+        // delivery. It is annotated so it can never be read as the event's state: the
+        // row itself was left to the worker that currently owns it.
+        await recordAttempt(row.id, attemptNo, "success", status, text, adopted ? null : "state_not_applied_owner_changed", durationMs);
+        if (!adopted) {
+          conflicts++;
+          continue;
+        }
         sent++;
-        await recordAttempt(row.id, attemptNo, "success", status, text, null, durationMs);
-        await db.update(integrationOutboxTable).set({ status: "sent", attempts: attemptNo, sentAt: new Date(), lastError: null, lockedAt: null, lockedBy: null }).where(eq(integrationOutboxTable.id, row.id));
-        // Mark any result link delivered.
+        // Only the worker that adopted the transition may say HOPE has the report.
         await db.update(externalResultLinksTable).set({ deliveredAt: new Date() }).where(eq(externalResultLinksTable.emittedOutboxId, row.id)).catch(() => {});
         if (row.eventType === "diagnostic_electronic_film.available") {
           const payload = row.payload as { careFilmArtifactId?: number };
@@ -316,29 +397,37 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
           }
         }
       } else {
-        failed++;
         const isDead = attemptNo >= row.maxAttempts;
-        if (isDead) dead++;
-        await recordAttempt(row.id, attemptNo, "failure", status, text, `http_${status}`, durationMs);
-        await db.update(integrationOutboxTable).set({
+        const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
           status: isDead ? "dead" : "pending", attempts: attemptNo, lastError: `http_${status}`,
           nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo)), lockedAt: null, lockedBy: null,
-        }).where(eq(integrationOutboxTable.id, row.id));
+        });
+        await recordAttempt(row.id, attemptNo, "failure", status, text, adopted ? `http_${status}` : `http_${status}; state_not_applied_owner_changed`, durationMs);
+        if (!adopted) {
+          conflicts++;
+          continue;
+        }
+        failed++;
+        if (isDead) dead++;
       }
     } catch (err) {
-      failed++;
       const msg = (err as Error)?.name === "AbortError" ? "timeout" : ((err as Error)?.message ?? "delivery_error").slice(0, 300);
       const isDead = attemptNo >= row.maxAttempts;
-      if (isDead) dead++;
-      await recordAttempt(row.id, attemptNo, "failure", null, null, msg, Date.now() - startedAt);
-      await db.update(integrationOutboxTable).set({
+      const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
         status: isDead ? "dead" : "pending", attempts: attemptNo, lastError: msg,
         nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo)), lockedAt: null, lockedBy: null,
-      }).where(eq(integrationOutboxTable.id, row.id));
+      });
+      await recordAttempt(row.id, attemptNo, "failure", null, null, adopted ? msg : `${msg}; state_not_applied_owner_changed`, Date.now() - startedAt);
+      if (!adopted) {
+        conflicts++;
+        continue;
+      }
+      failed++;
+      if (isDead) dead++;
     }
   }
 
-  return { claimed: claimedIds.length, sent, failed, dead, recovered };
+  return { claimed: claimedIds.length, sent, failed, dead, recovered, conflicts };
 }
 
 async function recordAttempt(outboxId: number, attemptNo: number, status: "success" | "failure", httpStatus: number | null, responseBody: string | null, error: string | null, durationMs: number): Promise<void> {
