@@ -1126,4 +1126,51 @@ suite("PR-I11D HOPE event compatibility — sender side (real PostgreSQL)", () =
     expect(row.status).toBe("dead");
     expect((await readFilm(artifactId)).hope_delivery_status).toBe("FAILED");
   });
+
+  it("Test 36 — a stale worker's refusal cannot mark the film failed either", async () => {
+    // Ownership fencing covers this write too. A is mid-POST, its lease lapses, B takes
+    // the row over; A then receives 422 and would declare the film undeliverable while B
+    // is still working on it — and a film B successfully delivers would keep A's FAILED
+    // stamp as the last word. The artifact state belongs to whoever holds the event.
+    const { artifactId } = await filmEvent("i11d-stale", { attempts: 7 });
+    failMode = "http422";
+    onCall = async (ev) => { if (ev) await handOverTo(ev, "worker-B"); };
+
+    const r = await freshDispatch(outbox, { workerId: "worker-A", limit: 50 });
+    const row = await readOutbox("i11d-stale");
+
+    expect(row.status).toBe("sending");
+    expect(row.locked_by).toBe("worker-B");
+    expect(row.last_error).toBeNull();
+    expect(r.dead).toBe(0);
+    expect(r.conflicts).toBe(1);
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
+  });
+
+  it("Test 37 — a dead report event does not condemn a film that shares its payload field", async () => {
+    // The artifact id is read out of the event payload, so the type guard is the only
+    // thing that keeps a report's delivery outcome off a film's record. The field is not
+    // reserved by the schema — `payload` is jsonb and `careFilmArtifactId` in a report
+    // body is one refactor away from happening — and a film silently marked FAILED by an
+    // unrelated report's dead letter is a film nobody will go back and re-send.
+    const id = await insertOutbox({
+      name: "i11d-crosstalk",
+      eventType: "diagnostic_report.finalised",
+      payload: { referralUuid: `${MARKER}-referral`, reportNumber: "R-X", careFilmArtifactId: 0 },
+      attempts: 7,
+      maxAttempts: 8,
+    });
+    const artifactId = await attachFilmArtifact("i11d-crosstalk", id);
+    await pool.query(
+      `UPDATE integration_outbox SET payload = jsonb_set(payload,'{careFilmArtifactId}',$2::jsonb) WHERE id = $1`,
+      [id, String(artifactId)],
+    );
+    await pool.query(`UPDATE electronic_film_artifacts SET hope_delivery_status = 'PENDING' WHERE id = $1`, [artifactId]);
+    failMode = "http422";
+
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+
+    expect((await readOutbox("i11d-crosstalk")).status).toBe("dead");
+    expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
+  });
 });
