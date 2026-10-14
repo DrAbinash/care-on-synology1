@@ -51,7 +51,7 @@ const standing = (list: readonly ClinicalOccurrenceDetail[]) => list.filter((d) 
 const withdrawn = (list: readonly ClinicalOccurrenceDetail[]) => list.filter((d) => d.state === "denied");
 
 /** The per-mention qualifiers two sets of mentions can be compared on. */
-type QualifierField = "acuity" | "magnitude" | "levels" | "sides" | "sites";
+type QualifierField = "acuity" | "magnitude" | "levels" | "sides" | "sites" | "qualifiers";
 
 function union(field: QualifierField, list: readonly ClinicalOccurrenceDetail[]): Set<string> {
   return new Set(list.flatMap((d) => [...d[field]]));
@@ -81,6 +81,36 @@ function differentFact(a: readonly ClinicalOccurrenceDetail[], b: readonly Clini
 }
 
 /**
+ * Whether the denial is of a SUBSET of the finding rather than of the finding.
+ *
+ * {@link differentFact} cannot see this one, because it insists the separating
+ * qualifier appears on both sides — and a subset word by definition appears on one.
+ * "No suspicious masses or calcifications" beside two stable fibroadenomas with
+ * coarse calcifications is the correct BI-RADS 2 mammogram, and "No new satellite
+ * lesions" beside the enhancing lesion the Impression concludes on is the correct
+ * glioma follow-up: in each the section cleared a subset and left the members
+ * standing, so there is nothing for the other section to contradict.
+ *
+ * Every denied mention has to be subset-qualified, not one of them: a Findings that
+ * says both "no lesions" and "no new lesions" has denied the finding outright in
+ * the first sentence, and the second does not retract that.
+ *
+ * Known limit, left as the cheaper error. A disjunctive list — "no new or
+ * additional lesions" beside an Impression that asserts a new one — reads as a
+ * subset and stays quiet, because the prose does not mark whether the qualifiers
+ * are conjoined or alternatives. Reporting it would need a reading of "or" that
+ * this module does not have, and an advisory rule that marks up the clinic's own
+ * benign mammography templates is a rule the badge gets clicked through.
+ */
+function deniesASubset(
+  denied: readonly ClinicalOccurrenceDetail[],
+  standing: readonly ClinicalOccurrenceDetail[],
+): boolean {
+  const said = union("qualifiers", standing);
+  return denied.every((d) => d.qualifiers.some((q) => !said.has(q)));
+}
+
+/**
  * Q119 — one section withdraws a finding the other still reports.
  *
  * This is the defect the whole-study rules cannot reach. Q103, Q113 and Q114 all
@@ -95,6 +125,12 @@ function differentFact(a: readonly ClinicalOccurrenceDetail[], b: readonly Clini
  * hand-written Impression that quietly drops a finding the Findings still assert is
  * the same defect as an AI summary that does it, which is the point of asking here
  * rather than in whichever editor produced the text.
+ *
+ * A denial only contradicts an assertion when it denies the same fact, so two
+ * readings sit between the pair and the message: {@link differentFact} for a denial
+ * qualified by an acuity, a level, a side or an organ the assertion does not share,
+ * and {@link deniesASubset} for a denial that clears a subset — "no suspicious
+ * masses" beside the benign masses the same report describes.
  */
 function stateContradictions(inFindings: LabelMap, inImpression: LabelMap): SectionContradiction[] {
   const out: SectionContradiction[] = [];
@@ -105,12 +141,14 @@ function stateContradictions(inFindings: LabelMap, inImpression: LabelMap): Sect
     const deniedInImpression = withdrawn(said);
     if (deniedInFindings.length && !standing(found).length && standing(said).length) {
       if (differentFact(deniedInFindings, standing(said))) continue;
+      if (deniesASubset(deniedInFindings, standing(said))) continue;
       out.push({
         ruleId: "Q119",
         message: `Findings/Impression contradiction: the Findings deny "${label}" but the Impression reports it.`,
       });
     } else if (deniedInImpression.length && !standing(said).length && standing(found).length) {
       if (differentFact(deniedInImpression, standing(found))) continue;
+      if (deniesASubset(deniedInImpression, standing(found))) continue;
       out.push({
         ruleId: "Q119",
         message: `Findings/Impression contradiction: the Impression denies "${label}" but the Findings report it.`,
@@ -167,7 +205,8 @@ function levelContradictions(inFindings: LabelMap, inImpression: LabelMap): Sect
   for (const [label, found] of inFindings) {
     const said = inImpression.get(label);
     if (!said) continue;
-    report(comparableLevels(standing(found)), comparableLevels(standing(said)), label);
+    const [at, movedTo] = comparableLevels(standing(found), standing(said));
+    report(at, movedTo, label);
   }
 
   // Then by anatomical site, for the finding that changed name between the two
@@ -179,10 +218,8 @@ function levelContradictions(inFindings: LabelMap, inImpression: LabelMap): Sect
   // that measures T8 in the Findings and states the conus at L1 in the Impression is
   // correct.
   for (const site of sitesNamed(inFindings)) {
-    const found = standingAtSite(inFindings, site);
-    const said = standingAtSite(inImpression, site);
-    const at = comparableLevels(found).filter((level) => level.includes("-"));
-    const movedTo = comparableLevels(said).filter((level) => level.includes("-"));
+    const at = motionSegments(standingAtSite(inFindings, site));
+    const movedTo = motionSegments(standingAtSite(inImpression, site));
     if (!at.length || !movedTo.length) continue;
     report(at, movedTo, site);
   }
@@ -203,19 +240,39 @@ function standingAtSite(inSection: LabelMap, site: string): ClinicalOccurrenceDe
   return out;
 }
 
+/** The motion segments a set of mentions names, ignoring single vertebrae. */
+function motionSegments(list: readonly ClinicalOccurrenceDetail[]): string[] {
+  return [...union("levels", list)].filter((level) => level.includes("-"));
+}
+
 /**
  * The levels two sets of mentions can be compared on — motion segments where
  * either section names one, single vertebrae only where neither does.
+ *
+ * Read as a pair, because the unit is a property of the pair and not of either
+ * section. Choosing per section is what marked up two of the clinic's own canned
+ * formats as wrong-level when both were right: a cervical Findings that says "from
+ * C4 through C6" names two vertebrae, and the Impression that concludes "C4-C5 and
+ * C5-C6 cord signal change" names two disc spaces; a lumbar Findings at L5-S1 and
+ * an Impression spelling the same junction "L5 over S1" are one level counted two
+ * ways. Neither has moved anything. Where either side names a motion segment the
+ * other is read as naming none, and the caller says nothing.
  *
  * A wrong-level decision is about a disc space, and a single-vertebra token is
  * usually a nerve root rather than a level. "Extrusion at L4-L5 … contact of the
  * traversing left L5 nerve root" names L4-L5 and L5 in one breath, so comparing
  * singles finds L5 agreeing with L5 while the extrusion itself has moved to L5-S1.
  */
-function comparableLevels(list: readonly ClinicalOccurrenceDetail[]): string[] {
-  const all = [...union("levels", list)];
-  const segments = all.filter((level) => level.includes("-"));
-  return segments.length ? segments : all;
+function comparableLevels(
+  inFindings: readonly ClinicalOccurrenceDetail[],
+  inImpression: readonly ClinicalOccurrenceDetail[],
+): [string[], string[]] {
+  const at = [...union("levels", inFindings)];
+  const movedTo = [...union("levels", inImpression)];
+  const atSegments = motionSegments(inFindings);
+  const movedSegments = motionSegments(inImpression);
+  if (atSegments.length || movedSegments.length) return [atSegments, movedSegments];
+  return [at, movedTo];
 }
 
 /**
@@ -251,16 +308,29 @@ function severityContradictions(inFindings: LabelMap, inImpression: LabelMap): S
  * basal ganglia cleared in one sentence and bled into in the next, and a diffusion
  * sequence reported negative in the same report that concludes an acute infarct,
  * which is the sequence that would have shown it.
+ *
+ * The abnormal half of each pair is read from the shared occurrence table rather
+ * than from a regex over the concatenation, because a regex over both sections
+ * cannot tell a statement from its own denial. Seven of the clinic's canned brain
+ * formats say "No acute infarct" and "No restricted diffusion on DWI/ADC" in the
+ * same Findings — the correct normal report — and `/\bacute … infarct\b/` matches
+ * inside the denial, so all seven were marked up as contradicting themselves. The
+ * normal half stays a regex: "appear normal in signal" is not a vocabulary term.
  */
-function mutuallyExclusiveStatements(findings: string, impression: string): SectionContradiction[] {
+function mutuallyExclusiveStatements(
+  findings: string,
+  impression: string,
+  details: readonly ClinicalOccurrenceDetail[],
+): SectionContradiction[] {
   const out: SectionContradiction[] = [];
   const hay = `${findings}\n${impression}`;
 
   const basalNormal =
     /basal ganglia[^\n.]{0,80}\b(normal|unremarkable)/i.test(hay)
     || /\b(normal|unremarkable)\b[^\n.]{0,80}basal ganglia/i.test(hay);
-  const basalBleed = /basal ganglia[^\n.]{0,100}\b(ha?emorrhage|hematoma)\b/i.test(hay)
-    || /\b(ha?emorrhage|hematoma)\b[^\n.]{0,100}basal ganglia/i.test(hay);
+  const basalBleed = details.some(
+    (d) => d.label === "haemorrhage" && d.state !== "denied" && d.sites.includes("basal ganglia"),
+  );
   if (basalNormal && basalBleed) {
     out.push({
       ruleId: "Q122",
@@ -270,7 +340,10 @@ function mutuallyExclusiveStatements(findings: string, impression: string): Sect
 
   const noRestricted = /\bno restricted diffusion\b/i.test(hay)
     || /\bno evidence of restricted diffusion\b/i.test(hay);
-  if (noRestricted && /\bacute (?:[a-z]+\s+){0,3}infarct\b/i.test(hay)) {
+  const acuteInfarct = details.some(
+    (d) => d.label === "infarct" && d.state !== "denied" && d.acuity.includes("acute"),
+  );
+  if (noRestricted && acuteInfarct) {
     out.push({
       ruleId: "Q123",
       message: "Possible contradiction: the report denies restricted diffusion and also describes an acute infarct.",
@@ -293,13 +366,15 @@ function mutuallyExclusiveStatements(findings: string, impression: string): Sect
 export function findingsImpressionContradictions(findings: string, impression: string): SectionContradiction[] {
   const found = findings ?? "";
   const said = impression ?? "";
-  const inFindings = byLabel(clinicalOccurrenceDetails(found));
-  const inImpression = byLabel(clinicalOccurrenceDetails(said));
+  const foundDetails = clinicalOccurrenceDetails(found);
+  const saidDetails = clinicalOccurrenceDetails(said);
+  const inFindings = byLabel(foundDetails);
+  const inImpression = byLabel(saidDetails);
   return [
     ...stateContradictions(inFindings, inImpression),
     ...levelContradictions(inFindings, inImpression),
     ...severityContradictions(inFindings, inImpression),
-    ...mutuallyExclusiveStatements(found, said),
+    ...mutuallyExclusiveStatements(found, said, [...foundDetails, ...saidDetails]),
   ];
 }
 

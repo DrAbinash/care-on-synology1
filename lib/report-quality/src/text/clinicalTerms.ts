@@ -146,6 +146,12 @@ export const NAMED_LESION_TERMS: readonly ClinicalTerm[] = [
 export const ANATOMICAL_SITE_TERMS: readonly ClinicalTerm[] = [
   // head and neck
   { label: "brain", pattern: String.raw`\b(?:brain\w*|cerebr\w*|cerebell\w*|hemispher\w*|brainstem|pons|midbrain|medulla oblongata|thalam\w*|basal gangli\w*|corona radiata|centrum semiovale|internal capsule|white matter|grey matter|gray matter)\b` },
+  // Deliberately inside "brain" as well as beside it. Two mentions that both name
+  // the basal ganglia share "brain" already, so this label cannot make a pair look
+  // like different anatomy — it can only say which of the brain's structures a
+  // mention is about, which is what Q122 needs to tell a bleed in the basal ganglia
+  // from a subdural one in the same report.
+  { label: "basal ganglia", pattern: String.raw`\bbasal gangli\w*\b` },
   { label: "extra-axial space", pattern: String.raw`\b(?:subdural|extradural|epidural|subarachnoid|extra-?axial|mening\w*|falx|tentorium)\b` },
   { label: "ventricular system", pattern: String.raw`\b(?:ventricl\w*|cistern\w*|choroid plexus)\b` },
   { label: "orbit", pattern: String.raw`\b(?:orbit\w*|globe|retrobulbar|extraocular|optic nerve)\b` },
@@ -328,15 +334,16 @@ export type ClinicalOccurrence = {
  * each other. "No acute infarct" in the Findings beside "chronic infarct" in the
  * Impression is one correct report, and so is "no nerve root compression at
  * L3-L4" beside "thecal sac indentation at L4-L5" — in each the two halves are
- * about different facts, not disagreeing about one. Acuity and magnitude are read
- * from the span the negation reading governed, i.e. the words that scope *this*
- * mention; levels, sides and sites come from the whole sentence, because the level
- * an abnormality sits at and the organ it belongs to are usually named outside the
- * span a negation still governs.
+ * about different facts, not disagreeing about one. Acuity, magnitude and the
+ * entity qualifiers are read from the span the negation reading governed, i.e. the
+ * words that scope *this* mention; levels, sides and sites come from the whole
+ * sentence, because the level an abnormality sits at and the organ it belongs to
+ * are usually named outside the span a negation still governs.
  */
 export type ClinicalOccurrenceDetail = ClinicalOccurrence & {
   readonly acuity: readonly string[];
   readonly magnitude: readonly string[];
+  readonly qualifiers: readonly string[];
   readonly levels: readonly string[];
   readonly sides: readonly string[];
   readonly sites: readonly string[];
@@ -367,11 +374,13 @@ export function clinicalOccurrenceDetails(
         const scope = governingScope(lower, at);
         const after = windowAfter(lower, end);
         const span = `${scope}${match[0]}${after}`;
+        const state = readState(scope, after);
         out.push({
           label: term.label,
-          state: readState(scope, after),
+          state,
           acuity: uniqueWords(span, ACUITY_TOKEN),
           magnitude: uniqueWords(span, MAGNITUDE_TOKEN),
+          qualifiers: state === "denied" && UNCERTAINTY.test(scope) ? [] : uniqueWords(span, ENTITY_QUALIFIER),
           levels,
           sides,
           sites,
@@ -497,6 +506,36 @@ const ACUITY_TOKEN = /\b(acute|chronic|subacute)\b/gi;
  * not a disagreement.
  */
 const MAGNITUDE_TOKEN = /\b(mild|moderate|severe)\b/gi;
+
+/**
+ * Words that pick out a SUBSET of a finding rather than grading it: "no suspicious
+ * mass", "no new satellite lesion", "no additional fracture". A denial carrying one
+ * is not a denial of the finding — the mammogram that says "No suspicious masses or
+ * calcifications" and then describes two stable fibroadenomas with coarse
+ * calcifications is the correct BI-RADS 2 report, and it is the subset that was
+ * cleared, not the masses.
+ *
+ * The graded words of {@link MAGNITUDE_TOKEN} are left out on purpose, and the
+ * distinction is the whole of it. "Significant" says how much of one finding there
+ * is, so "no significant spinal canal stenosis" beside "severe spinal canal
+ * stenosis at L4-L5" is still one fact described twice and must still be reported;
+ * "suspicious" says which members of a set, so clearing the set of them leaves the
+ * members standing.
+ *
+ * A DENIAL whose scope also hedges — "no lesion suspicious for metastasis", "no
+ * mass concerning for malignancy" — carries none of these words, and
+ * {@link clinicalOccurrenceDetails} drops them for exactly that case. "Suspicious
+ * for X" is one of the {@link UNCERTAINTY} constructions, so it names the diagnosis
+ * being excluded rather than a subset of the findings: what the sentence cleared was
+ * metastasis, not some of the lesions. Reading it as a subset silenced a real defect
+ * — the whole-spine report whose Findings exclude metastasis and whose Impression
+ * then reports "T8 metastatic deposit with pathological fracture", which changes a
+ * screening study into a staging one. The narrowing is gated on `state === "denied"`
+ * so an UNCERTAIN mention keeps its words: "no suspicious mass" beside "mass
+ * suspicious for malignancy" is still two sections disagreeing about one finding.
+ */
+const ENTITY_QUALIFIER =
+  /\b(suspicious|satellite|additional|further|separate|other|extra|new|fresh)\b/gi;
 
 const UNIT_CANON: Record<string, string> = {
   mm: "mm",

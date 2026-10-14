@@ -147,6 +147,29 @@ describe("Q119 — one section withdraws what the other still reports", () => {
       "Q119",
     );
   });
+
+  it("a hedged denial names the diagnosis it excludes, so it is not a subset denial", () => {
+    // The corpus' whole-spine screening report. "No lesion suspicious for
+    // metastasis" clears metastasis itself, not some of the lesions, so an
+    // Impression that then reports a metastatic deposit withdraws what the
+    // Findings stand behind — the benign haemangioma reissued as a deposit, which
+    // is the defect that changes the whole treatment plan. Read as a subset denial
+    // instead, this pair went quiet and the corpus lost one of its detections.
+    const findings =
+      "A T8 vertebral body lesion showing vertical striation, in keeping with an atypical haemangioma. " +
+      "Mild lumbar disc bulges at L4-L5. No cord signal abnormality within the screened segments. " +
+      "No additional focal vertebral lesion suspicious for metastasis on these screening sequences.";
+    expect(ruleIds(findings, "T8 metastatic deposit with pathological fracture.")).toContain("Q119");
+    // The corpus' own correct Impression hedges the same way, and a denial is not
+    // contradicted by another denial — the narrowing cannot mark up the clean report.
+    expect(
+      messages(
+        findings,
+        "T8 vertebral body lesion with features of an atypical haemangioma; " +
+          "no other lesion suspicious for metastasis on this limited screening study.",
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("Q120 — the two sections place a finding at different levels", () => {
@@ -217,6 +240,117 @@ describe("Q122 / Q123 — two sentences that cancel each other out", () => {
     // together are, which is why this rule lives in the shared contract.
     expect(messages("The basal ganglia appear normal in signal.", "")).toEqual([]);
     expect(messages("", "Acute haemorrhage in the left basal ganglia.")).toEqual([]);
+  });
+
+  it("a bleed held open still cancels the normal, because it is still on the record", () => {
+    // The narrowing below reads the abnormal half through the negation table. It
+    // has to stop at denial and not go on to uncertainty, or "cannot exclude"
+    // would become a way to clear the basal ganglia by hedging about them.
+    expect(
+      ruleIds(
+        "The basal ganglia appear normal in signal.",
+        "Haemorrhage into the left basal ganglia cannot be excluded.",
+      ),
+    ).toContain("Q122");
+  });
+});
+
+describe("quiet on the clinic's own correct templates", () => {
+  /**
+   * Every one of these is prose the workstation ships as a canned report format,
+   * and every one was marked up as self-contradictory before the rules were taught
+   * to read a denial. Measured across all 58 `DEFAULT_REPORT_FORMATS`: 11 formats
+   * were marked up, none of them wrong. The golden corpus could not have shown it —
+   * all 20 of its correct reports were already quiet and no seeded defect depends
+   * on Q119's subset wording, on Q122 or on Q123 — so the templates are the census
+   * that found it, and the ratchet over them lives in
+   * artifacts/diagnostic-erp/src/lib/reportFormatClinicalConsistency.test.ts.
+   *
+   * Each case is paired below with the shape that must still fire, because a rule
+   * that has been taught to read a negation can also be taught to read nothing.
+   */
+  it("Q123 — a normal brain format denies restricted diffusion and denies an acute infarct in the same breath", () => {
+    expect(
+      messages(
+        "Brain parenchyma shows normal signal intensity. No acute infarct, hemorrhage, or mass lesion. " +
+          "No restricted diffusion on DWI/ADC. Basal ganglia are normal in signal intensity.",
+        "Normal MRI brain. No acute intracranial abnormality.",
+      ),
+    ).toEqual([]);
+    // Still fires on the report it exists for, and on the hedge that is not a denial.
+    expect(
+      ruleIds("No restricted diffusion on DWI/ADC.", "Acute infarct in the right MCA territory."),
+    ).toContain("Q123");
+    expect(
+      ruleIds("No restricted diffusion on DWI/ADC.", "An acute infarct cannot be excluded."),
+    ).toContain("Q123");
+    // A chronic infarct beside negative diffusion is correct — DWI is negative in
+    // chronic stroke — and was already quiet before this narrowing.
+    expect(messages("No restricted diffusion on DWI/ADC.", "Chronic lacunar infarct.")).toEqual([]);
+  });
+
+  it("Q122 — a normal brain format denies a basal ganglia bleed and calls the basal ganglia normal", () => {
+    expect(messages("No haemorrhage in the basal ganglia, which appear normal in signal.", "")).toEqual([]);
+    expect(
+      messages(
+        "No haemorrhage in the basal ganglia, which appear normal in signal.",
+        "No acute intracranial abnormality.",
+      ),
+    ).toEqual([]);
+  });
+
+  it("Q119 — a BI-RADS 2 mammogram clears the suspicious subset and describes the benign masses", () => {
+    expect(
+      messages(
+        "Two well-circumscribed oval masses with coarse calcifications in the left breast, " +
+          "benign features consistent with fibroadenomas.",
+        "Stable fibroadenomas in the left breast. No suspicious masses or calcifications.",
+      ),
+    ).toEqual([]);
+    // The subset word only excuses the denial when the assertion does not carry it
+    // too. Both sections saying "suspicious" is one fact described twice.
+    expect(
+      ONE("No suspicious mass in the left breast.", "Suspicious mass in the left breast."),
+    ).toBe('Findings/Impression contradiction: the Findings deny "mass" but the Impression reports it.');
+  });
+
+  it("Q119 — a glioma follow-up denies new satellite lesions and concludes on the enhancing one", () => {
+    expect(
+      messages(
+        "Heterogeneously enhancing area at the post-resection cavity. No new satellite lesions.",
+        "Heterogeneously enhancing lesion in the right frontal operculum with surrounding oedema.",
+      ),
+    ).toEqual([]);
+    // A degree word is not a subset word: "no significant stenosis" is a denial of
+    // the stenosis itself, which is the shape the owner named as Ex2.
+    expect(
+      ruleIds("No significant spinal canal stenosis.", "Severe spinal canal stenosis at L4-L5."),
+    ).toContain("Q119");
+  });
+
+  it("Q120 — one section counting vertebrae and the other counting disc spaces is not a move", () => {
+    // "from C4 through C6" names two vertebrae; the Impression names the two
+    // junctions between them. Nothing has moved.
+    expect(
+      messages(
+        "T2W hyperintense signal in the cord from C4 through C6 vertebral levels, suggestive of myelopathic change.",
+        "Cervical cord compression at C4-C5 and C5-C6 with T2 signal change — consistent with compressive myelopathy.",
+      ),
+    ).toEqual([]);
+    // The same junction spelled two ways: "L5 over S1" is L5-S1.
+    expect(
+      messages(
+        "Diffuse disc bulge at L5-S1 indenting the thecal sac.",
+        "Grade I anterolisthesis of L5 over S1 with diffuse disc bulge causing thecal sac indentation.",
+      ),
+    ).toEqual([]);
+    // Comparing like with like is the whole of it, not a general silence about
+    // levels: two segments that differ still fire, and so do two single vertebrae
+    // named by the same finding.
+    expect(ruleIds("Disc bulge at L4-L5.", "Disc bulge at L5-S1.")).toContain("Q120");
+    expect(ONE("Vertebral body lesion at T8.", "Vertebral body lesion at L1.")).toBe(
+      'Possible level mismatch: the Findings place "lesion" at T8 but the Impression places it at L1.',
+    );
   });
 });
 
