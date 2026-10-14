@@ -2543,9 +2543,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     // The date this card prints, resolved once: the age above is evaluated ON it,
     // so the card cannot show an examination date and an age computed against a
     // different day. DICOM StudyDate is the same fallback `mergeReportDemography`
-    // uses for the printed value.
+    // uses for the printed value. The queue row is loosely typed, so its date is
+    // taken only when it actually is one.
+    const rowStudyDate =
+      typeof row?.studyDate === "string" && row.studyDate.trim() ? row.studyDate.trim() : null;
     const studyDate =
-      detail?.studyDate ?? row?.studyDate ?? (dicomMeta.StudyDate != null ? String(dicomMeta.StudyDate) : null);
+      detail?.studyDate ?? rowStudyDate ?? (dicomMeta.StudyDate != null ? String(dicomMeta.StudyDate) : null);
     const erpAge = resolveDisplayAge(
       { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
