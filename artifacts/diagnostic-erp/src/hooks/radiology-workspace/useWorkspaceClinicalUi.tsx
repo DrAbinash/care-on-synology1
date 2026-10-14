@@ -2540,10 +2540,16 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     } else if (row?.dicomMetadata && typeof row.dicomMetadata === "object") {
       dicomMeta = row.dicomMetadata as Record<string, unknown>;
     }
+    // The day the age below is evaluated on: the same two sources, in the same
+    // order, as the `studyDate` this card prints. Without it the card aged the
+    // patient from today's clock, so reopening a study scanned last year printed
+    // an age a year older than the examination it was describing.
+    const examinationDate = String(detail?.studyDate ?? row?.studyDate ?? "").trim() || null;
     const erpAge = resolveDisplayAge(
       { age: row?.age ?? worklistDetailQ.data?.age, patientAge: row?.patientAge },
       master,
       dicomMeta.PatientAge != null ? String(dicomMeta.PatientAge) : null,
+      examinationDate,
     );
     const merged = mergeReportDemography({
       // The by-id detail read is keyed on the open study, so it is always this

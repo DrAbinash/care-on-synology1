@@ -63,6 +63,8 @@ import {
   escapeHtml, renderReportDocument, formatReportDate, formatReportDateShort,
   type ReportDocumentModel, type ReportKeyImageModel,
 } from "../lib/reportPresentation";
+import { formatAgeAtExamination, formatDocumentedStudyAge } from "../lib/reportAge";
+import { normalizeStudyDate } from "../lib/reportStudyIdentity";
 import {
   collapseSpacedOutLetters,
   enrichReferringDoctorWithDegree,
@@ -2230,27 +2232,26 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   let catalogTestName: string | null = null;
   let patientUhid: string | null = null;
   let patientAgeDisplay: string | null = null;
+  // The preview and the signed artifact must print the SAME age, so both resolve
+  // it through `reportAge.formatAgeAtExamination` — the age AT THE EXAMINATION,
+  // never at the render instant. Reading `new Date()` here meant a draft
+  // previewed in December and signed in January carried two different ages for
+  // one examination, and a reprint of a 2025 study silently aged the patient.
+  const examinationDateIso = normalizeStudyDate(worklist?.studyDate ?? null);
   const formatMasterAge = (p: {
     ageValue?: number | null;
     ageUnit?: string | null;
     dateOfBirth?: string | null;
-  } | null | undefined): string => {
-    if (!p) return "";
-    if (p.ageValue != null && p.ageValue > 0 && p.ageUnit) {
-      if (p.ageUnit === "years" && p.ageValue <= 120) return `${p.ageValue} Yrs`;
-      if (p.ageUnit === "months") return `${p.ageValue} Mo`;
-      if (p.ageUnit === "days") return `${p.ageValue} D`;
-    }
-    const dob = String(p.dateOfBirth ?? "").trim();
-    if (!dob || dob.startsWith("1900-01-01")) return "";
-    const d = new Date(dob);
-    if (Number.isNaN(d.getTime())) return "";
-    const now = new Date();
-    let y = now.getFullYear() - d.getFullYear();
-    const m = now.getMonth() - d.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) y--;
-    return y > 0 && y <= 120 ? `${y} Yrs` : "";
-  };
+  } | null | undefined): string =>
+    p
+      ? formatAgeAtExamination({
+          dateOfBirth: p.dateOfBirth ?? null,
+          ageValue: p.ageValue ?? null,
+          ageUnit: p.ageUnit ?? null,
+          documentedAge: worklist?.age ?? null,
+          asOf: examinationDateIso || null,
+        })
+      : "";
   if (worklist?.studyId) {
     const [linked] = await db
       .select({
@@ -2473,18 +2474,22 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
       logoDataUrl: clinic?.logoDataUrl ?? null,
     },
     patientRows: [
-      { label: "Patient", value: worklist?.patientName ?? "" },
+      { key: "patientName", label: "Patient", value: worklist?.patientName ?? "" },
       {
+        key: "ageSex",
         label: "Age / Sex",
-        // Prefer patient-master age over raw worklist.age (often blank → "F" only).
-        value: [patientAgeDisplay || worklist?.age, worklist?.sex].filter(Boolean).join(" / "),
+        // `formatMasterAge` already ends on the worklist's own age text; the
+        // second term only covers a worklist row with no patient link at all,
+        // and routes through the same plausibility refusal so an implausible
+        // raw value cannot slip back onto the page.
+        value: [patientAgeDisplay || formatDocumentedStudyAge(worklist?.age) || "", worklist?.sex].filter(Boolean).join(" / "),
       },
-      { label: "UHID", value: patientUhid ?? "" },
-      { label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
-      { label: "Referring Doctor", value: referringWithDegree },
-      { label: "Accession No.", value: ids.accessionNumber },
-      { label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
-      { label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
+      { key: "uhid", label: "UHID", value: patientUhid ?? "" },
+      { key: "studyDate", label: "Study Date", value: formatReportDateShort(worklist?.studyDate ?? null) || formattedStudyDate },
+      { key: "referringDoctor", label: "Referring Doctor", value: referringWithDegree },
+      { key: "accessionNumber", label: "Accession No.", value: ids.accessionNumber },
+      { key: "testName", label: "Test", value: catalogTestName ?? draft.studyName ?? "" },
+      { key: "modality", label: "Modality", value: draft.modality ?? worklist?.modality ?? "" },
     ],
     bodyHtml,
     keyImages,

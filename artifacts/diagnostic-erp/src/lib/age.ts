@@ -14,11 +14,34 @@ export function isPlausibleAgeYears(years: number): boolean {
   return Number.isFinite(years) && years > 0 && years <= MAX_PLAUSIBLE_YEARS;
 }
 
-function yearsFromDob(dateOfBirth: string): number | null {
+/**
+ * Read a date as LOCAL midnight when it is a bare `YYYY-MM-DD`.
+ * `new Date("2025-01-10")` is UTC midnight, which in any negative-offset zone is
+ * still the 9th — so a patient whose birthday is the 10th prints a year younger
+ * on the eve of it. The server twin (`api-server/src/lib/reportAge.ts`) reads it
+ * the same way; the two must not disagree on the day the age turns.
+ */
+function toLocalDay(value: string | Date): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const s = String(value).trim();
+  if (!s) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (iso) {
+    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function yearsFromDob(dateOfBirth: string, asOf?: string | Date | null): number | null {
   if (isSentinelDob(dateOfBirth)) return null;
-  const dob = new Date(dateOfBirth);
-  if (isNaN(dob.getTime())) return null;
-  const now = new Date();
+  const dob = toLocalDay(dateOfBirth);
+  if (!dob) return null;
+  // Defaults to today, which is what a registration screen wants. A report about
+  // a past examination passes that examination's date instead, so the age shown
+  // is the age the patient was when they were scanned.
+  const now = (asOf == null ? new Date() : toLocalDay(asOf)) ?? new Date();
   let y = now.getFullYear() - dob.getFullYear();
   const m = now.getMonth() - dob.getMonth();
   if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) y--;
@@ -59,7 +82,16 @@ export function computeDateOfBirth(value: number, unit: AgeUnit): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function formatAgeForPrint(patient: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null }): string {
+/**
+ * @param asOf evaluate the date of birth at this day instead of today. Pass the
+ * examination date when the string will describe a past study; leave it out for a
+ * live registration screen. `(ageValue, ageUnit)` is already a stated age and is
+ * returned as recorded either way.
+ */
+export function formatAgeForPrint(
+  patient: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null },
+  asOf?: string | Date | null,
+): string {
   const { dateOfBirth, ageValue, ageUnit } = patient;
 
   // Only commit to the (ageValue, ageUnit) path when it will produce a real
@@ -74,7 +106,7 @@ export function formatAgeForPrint(patient: { dateOfBirth?: string | null; ageVal
   }
 
   if (!dateOfBirth) return "";
-  const y = yearsFromDob(dateOfBirth);
+  const y = yearsFromDob(dateOfBirth, asOf);
   return y != null ? `${y} Yrs` : "";
 }
 

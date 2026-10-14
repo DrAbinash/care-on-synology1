@@ -28,6 +28,8 @@ import {
   type CopyType, type ResolvedTemplate, type TemplateDefinition,
   type TemplateExportEnvelope, type TemplateValidationIssue, type TemplateVersionRecord,
 } from "./presentationTemplateModel";
+// Type-only: this store holds the snapshot, `reportStudyIdentity` owns its shape.
+import type { FrozenReportIdentity } from "./reportStudyIdentity";
 import { PRESENTATION_TEMPLATE_SEEDS, seedByKey } from "./presentationTemplateSeeds";
 import { TEMPLATE_EXPORT_SCHEMA_VERSION } from "./presentationTemplateModel";
 
@@ -389,17 +391,31 @@ interface FreezeSnapshot {
    *  changing in a future deploy). This is the reproducibility backstop the
    *  schema promises. */
   definition: TemplateDefinition;
+  /**
+   * The patient and study identity the report was signed with. Optional because
+   * rows written before identity was captured carry only a template — those
+   * reports fall back to live resolution, the same documented fallback as a
+   * missing version row. Stored here rather than in a new table because this row
+   * already IS the report's signed-identity snapshot: one per report, written
+   * once, never updated, never deleted, and jsonb, so no migration.
+   */
+  identity?: FrozenReportIdentity | null;
 }
 
-/** Record the template a report was signed under, WITH a full-definition
- *  snapshot. Best-effort and idempotent (unique on report_id; a second sign
- *  event never rewrites the first). */
-export async function freezeReportPresentation(reportId: number, record: TemplateVersionRecord): Promise<void> {
+/** Record the template — and now the identity — a report was signed under.
+ *  Best-effort and idempotent (unique on report_id; a second sign event never
+ *  rewrites the first). */
+export async function freezeReportPresentation(
+  reportId: number,
+  record: TemplateVersionRecord,
+  identity?: FrozenReportIdentity | null,
+): Promise<void> {
   const snapshot: FreezeSnapshot = {
     displayName: record.displayName,
     description: record.description ?? null,
     copyType: record.copyType,
     definition: record.definition,
+    ...(identity ? { identity } : {}),
   };
   await db.insert(radiologyReportPresentationFreezeTable).values({
     reportId,
@@ -413,6 +429,8 @@ export interface FrozenIdentity {
   templateKey: string;
   templateVersion: number;
   snapshot: FreezeSnapshot | null;
+  /** The signed patient/study identity, or null for a pre-identity freeze row. */
+  identity: FrozenReportIdentity | null;
 }
 
 export async function getReportPresentationFreeze(reportId: number): Promise<FrozenIdentity | null> {
@@ -427,8 +445,10 @@ export async function getReportPresentationFreeze(reportId: number): Promise<Fro
     snapshot: snap && snap.definition
       ? { displayName: snap.displayName ?? row.templateKey, description: snap.description ?? null, copyType: snap.copyType ?? "standard", definition: snap.definition }
       : null,
+    identity: snap?.identity ?? null,
   };
 }
+
 
 /** Reconstruct a template record from a frozen snapshot (the reproducibility
  *  fallback when the version row is gone). */

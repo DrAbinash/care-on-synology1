@@ -47,45 +47,85 @@ export type EmitReportToHopeResult =
   | { ok: true; emitted: boolean; alreadySent: boolean; referralUuid: string; reportId: number; dispatched?: { sent: number; failed: number } }
   | { ok: false; error: string; code: "NOT_FOUND" | "NOT_SIGNED" | "NO_REFERRAL" | "EMIT_FAILED" };
 
+/**
+ * Which report a Hope delivery names.
+ *
+ * `patient_reports.study_id` is a SHARED id space: the radiology finalize writers
+ * store `radiology_worklist.id` in it, while older rows and other readers treat
+ * it as `radiology_studies.id`, and the two serials overlap. Selecting
+ * `ORDER BY id DESC` over that column with no patient check therefore hands Hope
+ * whichever report happens to have the highest id — measured on a synthetic
+ * fixture as another patient's signed report, which Hope then files under the
+ * wrong referral. That is a cross-patient disclosure leaving the building.
+ *
+ * A candidate may speak for this worklist row only when its own `patient_id`
+ * equals the worklist's. Null on either side is NOT a failure: `patient_id` is
+ * nullable on the worklist ("null if unmatched"), and an identifier that was
+ * never recorded must not block a delivery. Only a VERIFIED mismatch refuses,
+ * and the caller names that refusal rather than reporting "not found".
+ */
 async function resolveReportId(opts: {
   reportId?: number | null;
   worklistId?: number | null;
-}): Promise<number | null> {
+}): Promise<{ reportId: number | null; refusal: string | null }> {
+  const none = { reportId: null, refusal: null };
   if (opts.reportId != null && Number.isFinite(opts.reportId) && opts.reportId > 0) {
-    return Math.trunc(opts.reportId);
+    return { reportId: Math.trunc(opts.reportId), refusal: null };
   }
-  if (opts.worklistId != null && Number.isFinite(opts.worklistId) && opts.worklistId > 0) {
-    const [wl] = await db
-      .select({ reportId: radiologyWorklistTable.reportId, studyId: radiologyWorklistTable.studyId })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.id, Math.trunc(opts.worklistId)))
+  if (opts.worklistId == null || !Number.isFinite(opts.worklistId) || opts.worklistId <= 0) return none;
+
+  const worklistId = Math.trunc(opts.worklistId);
+  const [wl] = await db
+    .select({
+      reportId: radiologyWorklistTable.reportId,
+      studyId: radiologyWorklistTable.studyId,
+      patientId: radiologyWorklistTable.patientId,
+    })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.id, worklistId))
+    .limit(1);
+  if (!wl) return none;
+
+  let crossPatient = 0;
+  const samePatient = (candidatePatientId: number | null): boolean => {
+    if (wl.patientId == null || candidatePatientId == null) return true;
+    if (candidatePatientId === wl.patientId) return true;
+    crossPatient += 1;
+    return false;
+  };
+
+  if (wl.reportId) {
+    const [pointed] = await db
+      .select({ id: patientReportsTable.id, patientId: patientReportsTable.patientId })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, wl.reportId))
       .limit(1);
-    if (wl?.reportId) return wl.reportId;
-    const worklistId = Math.trunc(opts.worklistId);
-    const [byWorklistId] = await db
-      .select({ id: patientReportsTable.id })
+    if (pointed && samePatient(pointed.patientId)) return { reportId: pointed.id, refusal: null };
+  }
+
+  // Both spellings of `study_id`, in the order the previous implementation
+  // tried them: this worklist row's own id first, then the billed study it links.
+  for (const studyId of [worklistId, wl.studyId]) {
+    if (studyId == null) continue;
+    const rows = await db
+      .select({ id: patientReportsTable.id, patientId: patientReportsTable.patientId })
       .from(patientReportsTable)
       .where(and(
-        eq(patientReportsTable.studyId, worklistId),
+        eq(patientReportsTable.studyId, studyId),
         inArray(patientReportsTable.status, ["pending_verification", "verified", "delivered"]),
       ))
-      .orderBy(desc(patientReportsTable.id))
-      .limit(1);
-    if (byWorklistId) return byWorklistId.id;
-    if (wl?.studyId) {
-      const [rep] = await db
-        .select({ id: patientReportsTable.id })
-        .from(patientReportsTable)
-        .where(and(
-          eq(patientReportsTable.studyId, wl.studyId),
-          inArray(patientReportsTable.status, ["pending_verification", "verified", "delivered"]),
-        ))
-        .orderBy(desc(patientReportsTable.id))
-        .limit(1);
-      if (rep) return rep.id;
-    }
+      .orderBy(desc(patientReportsTable.id));
+    const hit = rows.find((r) => samePatient(r.patientId));
+    if (hit) return { reportId: hit.id, refusal: null };
   }
-  return null;
+
+  if (crossPatient > 0) {
+    return {
+      reportId: null,
+      refusal: `Refusing to send to Hope: the ${crossPatient === 1 ? "only report" : `${crossPatient} reports`} linked to this study ${crossPatient === 1 ? "belongs" : "belong"} to a different patient than worklist ${worklistId} (patient ${wl.patientId}). Resolve the study-to-report link before delivering.`,
+    };
+  }
+  return none;
 }
 
 /**
@@ -97,9 +137,10 @@ export async function emitReportToHope(opts: {
   worklistId?: number | null;
   dispatchNow?: boolean;
 }): Promise<EmitReportToHopeResult> {
-  const reportId = await resolveReportId(opts);
+  const resolved = await resolveReportId(opts);
+  const reportId = resolved.reportId;
   if (reportId == null) {
-    return { ok: false, error: "Report not found for this study", code: "NOT_FOUND" };
+    return { ok: false, error: resolved.refusal ?? "Report not found for this study", code: "NOT_FOUND" };
   }
 
   const [loaded] = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)).limit(1);

@@ -13,6 +13,7 @@
  */
 
 import { formatAgeForPrint, isPlausibleAgeYears, isSentinelDob } from "./age";
+import { studyDateToISO } from "./dateRangePresets";
 import { sanitizeDicomSex } from "@workspace/pathology";
 
 export interface ReportDemography {
@@ -549,18 +550,37 @@ export function resolveDisplayAge(
   erp: { age?: unknown; patientAge?: unknown } | null | undefined,
   patientMaster: { dateOfBirth?: string | null; ageValue?: number | null; ageUnit?: string | null } | null | undefined,
   dicomAge?: string | null,
+  studyDate?: string | null,
 ): string {
   // Patient master (registration) wins when present — worklist/DICOM ages are
   // often stale or wrong (e.g. modality age tag), which showed as incorrect
   // AGE/SEX in the reporting demography block.
   if (patientMaster) {
-    const fromMaster = formatAgeForPrint({
-      ...patientMaster,
-      dateOfBirth: isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth,
-    });
+    const fromMaster = formatAgeForPrint(
+      {
+        ...patientMaster,
+        dateOfBirth: isSentinelDob(patientMaster.dateOfBirth) ? "" : patientMaster.dateOfBirth,
+      },
+      // The card describes an EXAMINATION, so a date of birth is evaluated on the
+      // day of that examination. Without this the card aged a backlog study to
+      // today while the signed report — which resolves the same field through
+      // `api-server/src/lib/reportAge.ts` — printed the examination age, and the
+      // two surfaces of one report disagreed about how old the patient was.
+      // A slashed study date is refused rather than guessed: `studyDateToISO`
+      // reads digits positionally and would turn 10/01/2025 into 1001-20-25, and
+      // an age derived from a wrong day is a fabricated clinical value. Falling
+      // back to no `asOf` keeps the behaviour this card has always had.
+      examinationAsOf(studyDate),
+    );
     if (fromMaster) return fromMaster;
   }
   const fromErp = firstNonEmptyAge(erp?.age, erp?.patientAge);
   if (fromErp) return fromErp;
   return dicomAgeToDisplay(dicomAge);
+}
+
+function examinationAsOf(studyDate: string | null | undefined): string | null {
+  const raw = String(studyDate ?? "").trim();
+  if (!raw || raw.includes("/")) return null;
+  return studyDateToISO(raw);
 }
