@@ -73,18 +73,57 @@ Your `destination_path` should appear on the left of one of those lines.
 bash scripts/verify-backup-restore.sh /path/to/backup/dir-or-file
 ```
 
-This decrypts (trying `BACKUP_PASSPHRASE` then `SESSION_SECRET`, matching what the app itself tries), decompresses if needed, refuses anything that isn't schema-complete, and restores into a **throwaway** container — never your real database — then checks patients/bills actually landed. It prints `🎉 PASS` or tells you exactly what's wrong.
+With no argument it searches `$BACKUP_DIR` first and then the two known roots
+(`/volume1/backup/care-erp/db`, `/volume1/backups/caredeoghar`), so the scheduled
+job's own destination needs no repeating. Point it at a **directory of a specific
+job** when several jobs share a parent: it takes the newest file by modification
+time, and the `config` job writes last every hour.
 
-If your artifact is encrypted, pass the passphrase:
+It decrypts (trying `BACKUP_PASSPHRASE` then `SESSION_SECRET`, matching what the
+app itself tries), decompresses only if the bytes really are gzip, refuses anything
+that isn't schema-complete, restores into a **throwaway** container with no
+published port and `ON_ERROR_STOP=1`, then checks patients/bills actually landed.
+It prints `🎉 PASS` or tells you exactly what's wrong.
+
+If the artifact has a `.meta` sidecar (written by `scripts/synology-nas-backup.sh`
+since this change), two more facts are checked before any restore starts:
+
+* `source_database` must equal `DB_NAME` (default `diagnostic_erp`) — so a copy of
+  the wrong database, with a plausible file name, is refused rather than restored
+  in front of staff. Override deliberately with `DB_NAME=… bash $0 …`.
+* `sha256_artifact` must match the bytes on disk — a truncated or hand-edited copy
+  fails here instead of halfway through a restore.
+
+Artifacts without a sidecar (older copies, the in-app scheduler's own files) still
+get the full restore proof; the script just says plainly that the source database
+is not confirmed.
+
+If your artifact is encrypted, do not type the passphrase into the command line —
+it would sit in this box's shell history forever:
 
 ```bash
-SESSION_SECRET=YOUR_OLD_SESSION_SECRET_VALUE \
-  bash scripts/verify-backup-restore.sh /path/to/backup
+read -rs BACKUP_PASSPHRASE && export BACKUP_PASSPHRASE
+bash scripts/verify-backup-restore.sh /path/to/backup
+unset BACKUP_PASSPHRASE
 ```
 
-(replace `YOUR_OLD_SESSION_SECRET_VALUE` with whatever `SESSION_SECRET` was set to when this file was written)
+(`SESSION_SECRET=<value from when the file was written>` works the same way if the
+scheduler encrypted it instead.)
 
 A large backup (hundreds of MB, hundreds of tables) can legitimately take a few minutes to restore — you'll see `... still restoring (30s elapsed)` rather than silence. That's normal, not stuck.
+
+### The binder copy, and which file to edit
+
+`SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh` is a **byte-identical copy** of
+`scripts/verify-backup-restore.sh`, not a wrapper: the recovery folder has to work
+when nothing else does. `scripts/` is the one you edit. Until this was written down
+the two were different programs and the copy in the binder was the older one — the
+one that restored nothing, printed `Patients: 0  Bills: 0`, and then said
+`🎉 BACKUP VERIFICATION SUCCESSFUL! Backup file integrity is 100% valid.` with
+exit status 0. `scripts/backupScripts.test.mjs` now runs every script in
+`12_BACKUPS/` and `13_RESTORE/` and fails CI if it differs from, or behaves
+differently to, its `scripts/` twin.
+
 
 ---
 
@@ -93,8 +132,10 @@ A large backup (hundreds of MB, hundreds of tables) can legitimately take a few 
 ### Into a fresh test database (safe — always do this first)
 
 ```bash
-# 1. If encrypted, decrypt on the host first:
-openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$BACKUP_PASSPHRASE" \
+# 1. If encrypted, decrypt on the host first. The passphrase goes in through the
+#    environment — `-pass "pass:$SECRET"` would put it in `ps -ef` for the whole
+#    restore, and in this box's shell history forever.
+openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE \
   -in backup.sql.gz.enc -out backup.sql.gz
 # If that errors with "bad decrypt", the file used the OLD SESSION_SECRET
 # instead — try that value in place of $BACKUP_PASSPHRASE above.

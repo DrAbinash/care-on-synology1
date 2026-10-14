@@ -46,7 +46,12 @@ On the standby NAS shell, in `/volume1/docker/care-erp`:
 
 ```sh
 # 1. Make sure you have the latest good backup (synced nightly). Decrypt if encrypted:
-#    openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$BACKUP_PASSPHRASE" -in latest.sql.gz.enc -out latest.sql.gz
+#    export BACKUP_PASSPHRASE   # never on the command line: it would sit in
+#    # ps -ef and in this shell's history for good
+#    openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE \
+#      -in latest.sql.gz.enc -out latest.sql.gz
+#    # or just: bash scripts/synology-restore.sh latest.sql.gz.enc — it does
+#    # the decrypt, the gzip sniff and the schema check in the right order
 
 # 2. Start ONLY the database first (so we restore into it before the app serves traffic)
 docker compose up -d db

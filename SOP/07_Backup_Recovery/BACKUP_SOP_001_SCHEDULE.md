@@ -21,32 +21,32 @@
     this clinic's backup; see `SOP/RECOVERY/MASTER_RECOVERY_INDEX.md`.
 3.  If the environment variable `BACKUP_PASSPHRASE` is defined on the NAS, the script automatically encrypts the SQL file using OpenSSL:
     ```bash
-    openssl enc -aes-256-cbc -salt -pbkdf2 -pass "pass:${BACKUP_PASSPHRASE}"
+    openssl enc -aes-256-cbc -salt -pbkdf2 -pass env:BACKUP_PASSPHRASE
     ```
 4.  Confirm backup file `caredeoghar_YYYYMMDD_HHMMSS.sql.gz.enc` is created in `/volume1/backups/caredeoghar/`.
 
 ### B. Weekly Sandbox Restore Verification
-1.  Every Sunday at `04:00` AM, the IT support team or automated cron must execute the backup verification script:
+1.  Every Sunday at `04:00` AM, the IT support team or automated cron must execute the backup verification script, pointed at the directory the job writes:
     ```bash
-    bash /volume1/care-diagnostics/scripts/verify-backup-restore.sh
+    bash /volume1/care-diagnostics/scripts/verify-backup-restore.sh /volume1/backup/care-erp/db
     ```
 2.  This script:
-    *   Finds the newest `.sql.gz` or `.sql.gz.enc` file.
-    *   Spins up a temporary PostgreSQL Docker container on port `5499`.
-    *   Imports and restores the database (auto-decrypting if necessary).
-    *   Queries patient, bill, and voucher counts to verify database integrity.
-    *   Automatically tears down and removes the sandbox container.
-3.  Verify the script prints:
-    ```
-    🎉 BACKUP VERIFICATION SUCCESSFUL! Backup file integrity is 100% valid.
-    ```
+    *   Searches `$BACKUP_DIR`, then the two known roots, and takes the newest artifact of either naming family.
+    *   Reads the artifact's `.meta` sidecar and **refuses** it if it records a different `source_database` than `DB_NAME`, or if the bytes on disk do not match the recorded `sha256_artifact`.
+    *   Decrypts through OpenSSL's environment (never a command-line argument), and decompresses only if the magic bytes say gzip.
+    *   Refuses a DATA-ONLY dump before starting any container.
+    *   Starts a throwaway PostgreSQL container with **no published port** and restores into it with `ON_ERROR_STOP=1`.
+    *   Fails if no tables landed, or if `patients` or `bills` came back empty.
+    *   Removes the sandbox on every exit path, including Ctrl+C.
+3.  The acceptance criterion is the **exit status**, plus a printed `🎉 PASS` and non-zero row counts. Anything that says "100% valid" is a pre-fix copy of this script and must not be trusted: that wording was printed over a restore of zero rows.
+4.  Record the run. A verification nobody wrote down is a verification that did not happen — date it in this folder, together with the artifact name and the counts printed.
 
 ---
 
 ## 3. Reference to Recovery Specifications
 For detailed scripts and configuration parameters, refer directly to:
-*   **[BACKUP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/12_BACKUPS/BACKUP.md)**
-*   **[RESTORE.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/13_RESTORE/RESTORE.md)**
+*   **[BACKUP.md](../RECOVERY/12_BACKUPS/BACKUP.md)**
+*   **[RESTORE.md](../RECOVERY/13_RESTORE/RESTORE.md)**
 
 ---
 

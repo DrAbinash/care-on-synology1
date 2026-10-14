@@ -87,7 +87,7 @@ TAIL=$(gzip -dc "${PARTIAL}" 2>/dev/null | tail -5 | grep -c "^-- PostgreSQL dat
 TABLES=$(gzip -dc "${PARTIAL}" 2>/dev/null | grep -c "^CREATE TABLE" || true)
 [ "${TABLES}" -ge 1 ] || fail "dump contains no CREATE TABLE — it is DATA ONLY and cannot rebuild a database"
 
-SHA=$(sha256sum "${PARTIAL}" | cut -d' ' -f1)
+SHA=$(sha256sum < "${PARTIAL}" | cut -d' ' -f1)
 mv "${PARTIAL}" "${DEST}" || fail "could not publish ${DEST}"
 log "Backup saved: ${DEST} (${BYTES} bytes, ${TABLES} CREATE TABLE, sha256 ${SHA})"
 
@@ -99,7 +99,7 @@ if [ -n "${BACKUP_PASSPHRASE}" ]; then
     ROUNDTRIP="${DEST}.roundtrip"
     if env BACKUP_PASSPHRASE="${BACKUP_PASSPHRASE}" openssl enc -d -aes-256-cbc -pbkdf2 \
          -pass env:BACKUP_PASSPHRASE -in "${DEST}.enc" -out "${ROUNDTRIP}" \
-       && [ "$(sha256sum "${ROUNDTRIP}" | cut -d' ' -f1)" = "${SHA}" ]; then
+       && [ "$(sha256sum < "${ROUNDTRIP}" | cut -d' ' -f1)" = "${SHA}" ]; then
       rm -f "${ROUNDTRIP}" "${DEST}"
       FINAL="${DEST}.enc"
       log "Encrypted and round-trip verified: ${FINAL}"
@@ -119,9 +119,10 @@ fi
   echo "exporter=remote /api/internal/backup/download"
   echo "schema_complete=true"
   echo "create_tables=${TABLES}"
-  echo "bytes=${BYTES}"
+  echo "bytes=$(stat -c%s "${FINAL}" 2>/dev/null || stat -f%z "${FINAL}")"
   echo "encrypted=$([ -n "${BACKUP_PASSPHRASE}" ] && echo yes || echo no)"
-  echo "sha256_sql_plaintext=${SHA}"
+  echo "sha256_sql_gzipped=${SHA}"
+  echo "sha256_artifact=$(sha256sum < "${FINAL}" | cut -d' ' -f1)"
 } > "${FINAL}.meta.partial" && mv "${FINAL}.meta.partial" "${FINAL}.meta" || fail "could not write the .meta sidecar"
 
 # ─── RETENTION, WITH A FLOOR ─────────────────────────────────────────────────
