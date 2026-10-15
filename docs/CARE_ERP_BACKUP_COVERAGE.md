@@ -147,13 +147,49 @@ Two different things wear the same name; they have different coverage.
 |---|---|
 | Dataset | Referral and prescription scans, patient documents, invoice/receipt images, expense attachments, queue-display and site assets |
 | Storage location | `/app/data/uploads/**` on named volume `uploads_data` (`docker-compose.yml:423,649`). Writers: `routes/uploads.ts:19,116` (modules `reports`, `patient_documents`, `billing`, `site_assets`), `lib/expenseAttachments.ts:21-22`, `routes/scans.ts:25,116-126`, `routes/scan-sessions.ts:14,40`, `routes/radiology-report-attachments.ts:65`, `routes/website.ts:578,630`, `routes/queueDisplaySettings.ts:578,605`; served back by `app.ts:348` |
-| Current backup method | **None that is automatic.** The only code that can capture it is `exportFilesZip()` (`routes/backupReplication.ts:418-454`) over `lib/backupHealth.ts:34-43`, reachable **only** from admin HTTP routes (`:713-722`, `:837`, `:875`), never from the scheduler — and its output goes to `TEMP_BACKUP_DIR = /tmp/care-diagnostics-backups` (`:24`), which is in the container's ephemeral layer and is deleted after 24 h (`:25,64-78`) |
-| Frequency | Never, unless a person pressed the button in the last 24 hours |
-| Retention | No automated deletion of uploaded bytes; `routes/uploads.ts:211-213` is a **soft** delete (record only, bytes remain) |
-| Integrity check | None — there is no artifact to check |
-| Restore evidence | **None possible.** `scripts/synology-restore.sh:53,118` restores into `psql`; no tool in this repository can restore this volume because no tool ever wrote it |
-| Status | **NOT COVERED** |
+| Current backup method | **Nothing scheduled.** `scripts/synology-uploads-archive.sh` now writes this volume with a manifest and a sidecar, in the same envelope as the database dump — but no DSM task, cron entry or scheduler in this repository runs it, so until someone installs it the coverage is a script in a git tree. The only code that used to be able to capture it is `exportFilesZip()` (`routes/backupReplication.ts:418-454`) over `lib/backupHealth.ts:34-43`, reachable **only** from admin HTTP routes (`:713-722`, `:837`, `:875`), never from the scheduler — and its output goes to `TEMP_BACKUP_DIR = /tmp/care-diagnostics-backups` (`:24`), which is in the container's ephemeral layer and is deleted after 24 h (`:25,64-78`) |
+| Frequency | Never, unless a person ran the script. `pnpm ops:uploads-backup` does not exist and no schedule names it |
+| Retention | No automated deletion of uploaded bytes; `routes/uploads.ts:211-213` is a **soft** delete (record only, bytes remain). The archive's own retention is OFF unless `KEEP_DAYS` is a positive integer **and** `DELETE_OLD=1` |
+| Integrity check | Per-file SHA-256 in `MANIFEST.sha256` stored **inside** the archive, hashed into the `.meta` sidecar (`manifest_sha256`, `manifest_files`, `manifest_bytes`, `manifest_empty_dirs`); the artifact's own digest is `sha256_artifact`. `scripts/verify-uploads-restore.mjs` recomputes all of it rather than trusting what was recorded |
+| Restore evidence | **None yet.** `scripts/verify-uploads-restore.mjs` extracts into a throwaway directory it made itself and re-hashes every file, and reports four states separately — ARCHIVE FOUND, STRUCTURALLY VALID, ENCRYPTION VERIFIED, RESTORE VERIFIED. An operator has to run it; nothing runs it for them, and a `verified` state is only ever produced by a run that actually decrypted and re-hashed the bytes |
+| Status | **NOT COVERED ON THE CLINIC BOX** — a writer and a prover exist in code; no artifact of this class has ever been written by the clinic |
 | How it is lost | Loss of `…_uploads_data` under `/volume1/@docker/volumes/`, `down -v`, or `volume prune`. Silent: the ERP keeps working, the documents are just gone |
+
+## 3a. What "the uploads are backed up" has to mean before it may be said
+
+The database matrix learned this the hard way, and the document volumes are being held to
+the same standard from the first day. Four separate facts, and none of them is the next:
+
+| State | What it proves | Who says it |
+|---|---|---|
+| **ARCHIVE FOUND** | the bytes are on disk and match the digest in their own sidecar | `verify-uploads-restore.mjs`, recomputing the hash |
+| **STRUCTURALLY VALID** | it is a gzip tarball whose members a restore can represent — no traversal path, no absolute or drive-qualified name, no symlink, hard-link, device or FIFO member, no repeated path, and a manifest inside it | the same run, before anything is extracted |
+| **ENCRYPTION VERIFIED** | THIS run decrypted it with the passphrase it was given. A sidecar that says `encrypted=yes` proves nothing about restorability | the same run |
+| **RESTORE VERIFIED** | every file was re-hashed against the manifest carried inside the archive, and nothing the manifest does not account for appeared | the same run |
+
+A state is written as `verified` only when the process produced the evidence for it. A
+digest recorded by the backup job is reported as recorded, never as verified. The verb the
+clinic used before this existed — "the backup is fine" — was reading the first state and
+answering the fourth.
+
+Read-only, in the order an operator would use it:
+
+```sh
+# 1. write an archive of the volume (this is the only step that touches the volume, and it
+#    only reads it):
+sh scripts/synology-uploads-archive.sh --class uploads \
+     --src /volume1/@docker/volumes/care-erp-github_uploads_data/_data \
+     --dest /volume1/backup/care-erp/uploads
+# 2. prove it restores, into a directory the tool makes and deletes:
+BACKUP_PASSPHRASE="$(cat /volume1/scripts/.pass)" \
+  node scripts/verify-uploads-restore.mjs /volume1/backup/care-erp/uploads/backup_uploads_<ts>.tar.gz.enc
+# 3. ask what the backup roots hold, class by class:
+node scripts/ops-backup-inventory.mjs
+```
+
+Step 2 is a drill, not the restore. Putting documents back on the clinic box is a
+`tar -xpf` into the volume's host path with the API stopped, which is an owner-approved
+incident action and is deliberately not something this tool can do to a live volume.
 
 ## 4. Frozen key images — the highest-value gap
 
@@ -288,7 +324,7 @@ implemented by this document; they are the P1 register for §18P.
 | # | Gap | Smallest safe step | Owner decision needed |
 |---|---|---|---|
 | 1 | `audit_logs` >730 d deleted into a non-persisted path (§9) | Point the archive at a mounted location (a `data_archive` volume or the existing `uploads_data`), or stop deleting. Two read-only checks first: `docker exec care-api ls -la /app/data/archives/audit-logs` and `select min(created_at), count(*) from audit_logs` | Yes — this changes what the ERP retains and is a records-policy decision, not a bug fix |
-| 2 | Frozen key images and all uploads have no backup at all (§3, §4) | Add the volume to an existing mechanism: a `docker run --rm --volumes-from care-api -v "$BACKUP_DIR":/backup tar czf /backup/uploads_<ts>.tar.gz /app/data/uploads` step in `synology-nas-backup.sh`, with its own sidecar and its own freshness check. Never a `cp` out of the running container's `/app` | Yes for the retention window; the mechanism is not controversial |
+| 2 | Frozen key images and all uploads have no backup *running* at all (§3, §4) | The writer and the prover are in the tree (`synology-uploads-archive.sh`, `verify-uploads-restore.mjs`) and read the volume from its host path — no Docker socket, no `--volumes-from`, no container dependency. What is left is one DSM Task Scheduler entry pointing at them, and one drill recorded. `radiology-key-images` lives inside `uploads_data`, so the same job covers §4 with no extra code | Yes — installing a schedule and choosing its retention window are the owner's, per I12 §10 |
 | 3 | The live `.env` is unbacked, and losing `BACKUP_PASSPHRASE` makes old encrypted dumps unreadable (§6) | A protected copy of `.env` outside the volume set (DSM shared folder with restricted ACL, or the DS225+), created *before* the next rotation. Rotate `BACKUP_PASSPHRASE` only with both old and new retained for the decrypt window | Yes — rotation is the owner's, per I11-A |
 | 4 | A scheduled `FULL` job is not a full backup | `cron.ts:654` routes `DB`, `FULL` and `CONFIG` to the same DB-only branch (`:690`); `exportFilesZip` is never imported by `cron.ts`. Either make `FULL` mean files too, or rename it so nobody relies on it. Until then, no row in this matrix may claim files coverage from a `FULL` job | No — but it is a behaviour change to a job the clinic may be counting on, so it needs a decision on which meaning is intended |
 | 5 | Manual exports land in `/tmp` and self-delete in 24 h (§10) | Write them under `BACKUP_DIR` and give them a sidecar, or say plainly in the admin UI that a manual export is temporary | No |

@@ -521,6 +521,50 @@ numbers this section is asking for.
 
 
 
+## 12c. The document volumes: what the database dump does not carry
+
+Step 3 of §12 backs up PostgreSQL, and a dump restores rows. The uploaded referral letters,
+bill photographs, expense attachments, scan sessions and site assets live on the named
+volume `uploads_data`, outside every table, and the rendered PDF of a signed report can
+point at them. Nothing scheduled has ever written that volume: measured read-only on the
+clinic box on 2026-10-16 it holds 83 MB with no artifact naming it in any backup root
+(`docs/CARE_ERP_BACKUP_COVERAGE.md` §3).
+
+`scripts/synology-uploads-archive.sh` writes it in the same envelope the database job uses
+— `.partial`, verify, publish, optional AES-256-CBC/PBKDF2 with a round-trip proof, then a
+`.meta` sidecar — and `scripts/verify-uploads-restore.mjs` proves the artifact restores into
+a throwaway directory it made and deleted.
+
+```sh
+# on the NAS, from the deploy checkout, reading the volume's host path:
+sh scripts/synology-uploads-archive.sh --class uploads \
+     --src /volume1/@docker/volumes/care-erp-github_uploads_data/_data \
+     --dest /volume1/backup/care-erp/uploads
+BACKUP_PASSPHRASE="$(cat /volume1/scripts/.pass)" \
+  node scripts/verify-uploads-restore.mjs /volume1/backup/care-erp/uploads/<the artifact>.tar.gz.enc
+```
+
+**Read the verifier's answer as four states, not one.** `ARCHIVE FOUND` means the bytes
+match their own recorded digest. `STRUCTURALLY VALID` means no member path walks outside the
+restore directory, no member is absolute, drive-qualified or UNC, and no symlink, hard-link,
+device or FIFO entry is present — checked before anything is extracted, and a refusal
+extracts nothing at all, not "everything except the bad one". `ENCRYPTION VERIFIED` means
+*this run* decrypted it; a sidecar that says `encrypted=yes` is a claim, not evidence.
+`RESTORE VERIFIED` means every file was re-hashed against the `MANIFEST.sha256` carried
+inside the archive. An older tool answered the first as if it were the fourth, and
+`backup_verification` on the live database still has zero rows.
+
+Two things this deliberately does not do. It is not installed: no DSM Task Scheduler entry
+runs it, so until one exists the clinic has a script and not a backup — installing a
+schedule on this box is the owner's call (§12 step ordering applies). And it never deletes:
+retention is off unless `KEEP_DAYS` is a positive integer **and** `DELETE_OLD=1`, because
+this clinic has lost documents to a tidy-up before. When it is armed its scope is the label —
+only `backup_<label>_*.tar.gz` and its `.enc` form are candidates — which is why `--label` is
+validated as a plain file-name fragment: it decides what gets deleted, and a `*` in it would
+retire the other volume's archives in the same directory. Its output prints counts and hash
+prefixes only — a file name on this volume is the patient-identifying part, and `--names`
+prints exactly one, with that warning on the same line.
+
 ## 13. Secrets in tracked files — reported, not corrected here
 
 `git ls-files` shows two tracked env templates that carry live values, not
