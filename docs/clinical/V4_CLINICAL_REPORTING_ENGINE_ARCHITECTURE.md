@@ -188,6 +188,31 @@ one unplace plus N updates. Two people editing one examination serialise on
 `SELECT … FROM clinical_examinations WHERE id = … FOR UPDATE`, which is why the placement table
 cannot itself own the lock.
 
+### 2b. Two architecture questions answered by storing the case, not by arguing about it
+
+Both were executed against a database built by these migrations, inside a transaction that was
+rolled back. Neither proves that a report is *composed* correctly — that is Stage D — only that the
+model can hold the case at all.
+
+* **The owner's Fazekas case is representable.** Two tiles (Fazekas grade I white-matter change;
+  senile cerebral atrophy), each bound to its own concept and each placed in its own anatomical
+  position in one examination; one `clinical_combination_rules` row targeting `impression` with
+  `suppress_members = TRUE` and `requires_only_members = FALSE`; two required members; and a
+  conditional recommendation carrying `emit_policy`. It publishes: the gate raised no refusal, and
+  the manifest recorded both tiles at their stored versions (2 of 2 rows resolving through the FK).
+  So "two observations, one consolidated Impression, no duplicate, no unnecessary recommendation"
+  needs no schema change — what it still needs is the composer that reads these rows, which is
+  deliberately not in this stage.
+* **Nothing in this schema can reverse a direction.** `laterality` exists as a column on exactly one
+  table (`clinical_normal_slots`, where it is part of the slot identity), there are no generated
+  columns, and the only four triggers in the family are the three append-only guards and the
+  publication gate; neither gate function mentions laterality at all. A midline-shift direction is
+  therefore not a field anything here derives from a side. The honest consequence is the other way
+  round too: the direction survives a re-composition only because the merge layer keeps prose intact
+  — `artifacts/diagnostic-erp/src/lib/reportFieldMerge.ts` no longer folds a sentence onto a similar
+  one — not because the schema guarantees it. Which fields are directional stays an owner
+  decision, recorded in §"Decisions that are the owner's".
+
 ---
 
 ## 3. Ownership: what Stage C will build on
