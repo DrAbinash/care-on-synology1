@@ -355,4 +355,35 @@ describe("deploy-synology.sh cannot regress to the check that could never pass",
   it("refuses to claim success when node itself is missing", () => {
     expect(code).toMatch(/fail "node is required to verify the deployment/);
   });
+
+  it("asks the running API which commit it is, and fails the deploy when it is another one", () => {
+    const at = code.indexOf("scripts/verify-deployed-identity.mjs");
+    expect(at, "the deploy must verify build identity, not only liveness").toBeGreaterThan(-1);
+    // After the health gate (nothing to ask while it is down) and before the banner.
+    expect(code.indexOf("scripts/deploy-health.mjs")).toBeLessThan(at);
+    expect(at).toBeLessThan(code.indexOf("DEPLOYMENT COMPLETE"));
+    expect(code.slice(at, at + 400)).toMatch(/--expected "\$GIT_COMMIT" --base-url "http:\/\/localhost:\$\{HOST_PORT\}"/);
+    expect(code.slice(at, at + 1400)).toMatch(/fail "Deployment NOT verified: the containers are running a different commit/);
+  });
+
+  it("never folds an unverified identity into the success banner", () => {
+    // Exit 2 is UNKNOWN, and UNKNOWN must not read as a pass in the operator's
+    // one-line summary: the flag stays false and the banner says NOT VERIFIED.
+    const init = code.indexOf("IDENTITY_VERIFIED=false");
+    const set = code.indexOf("IDENTITY_VERIFIED=true");
+    expect(init).toBeGreaterThan(-1);
+    expect(set).toBeGreaterThan(init);
+    const banner = code.indexOf("DEPLOYMENT COMPLETE");
+    expect(code.slice(banner)).toMatch(/if \[ "\$IDENTITY_VERIFIED" = "true" \]; then/);
+    expect(code.slice(banner)).toMatch(/Running commit: NOT VERIFIED/);
+  });
+
+  it("records the rollback target before anything is replaced", () => {
+    const at = code.indexOf("--record-rollback --auto");
+    expect(at, "the image IDs a rollback needs are gone after `compose down`").toBeGreaterThan(-1);
+    expect(at).toBeLessThan(code.indexOf("docker compose down"));
+    // A box with no containers running (first install) must not lose its deploy,
+    // but it must not be told nothing either.
+    expect(code.slice(at, at + 900)).toMatch(/warn "No pre-deploy rollback record was written/);
+  });
 });
