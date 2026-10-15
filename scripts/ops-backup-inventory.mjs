@@ -46,7 +46,21 @@
  * DICOM IS OUT OF SCOPE BY OWNER DECISION
  *   I12 §2 excludes Orthanc/DICOM image backup from ERP disaster recovery. This
  *   inventory watches the ERP dump destination and nothing else; it does not
- *   report images, skip them, or imply they are protected.
+ *   report images, skip them, or imply they are protected. Re-confirmed by the
+ *   owner on 2026-10-16, along with the Orthanc REST access configuration. Both
+ *   appear below as `not applicable` rows with the decision cited — a declined
+ *   class is visible, an omitted one would be re-litigated by whoever reads this
+ *   next — and they are never counted as missing coverage.
+ *
+ * DATA CLASSES, NOT JUST FILES
+ *   A list of artifacts answers "what is in here". It cannot answer "what is
+ *   missing", because a class with no artifact contributes no row. That gap is not
+ *   theoretical: the ERP dump destination holds 1,280 database dumps, every
+ *   inventory of them has printed clean, and the 83 MB of uploaded patient
+ *   documents on the `uploads_data` volume (measured inside `care-api` on
+ *   2026-10-16) has never been named by a backup job at all. So each class in
+ *   DATA_CLASSES is answered even when the answer is zero — covered, NOT COVERED,
+ *   unknown (nothing readable), or not applicable (owner decision).
  *
  * USAGE
  *   node scripts/ops-backup-inventory.mjs                 # operator-readable
@@ -166,6 +180,67 @@ export function classify(ctx, roots) {
     subdirs,
     orphanSidecars: sidecars.filter((s) => !artifactNames.has(s.name.slice(0, -".meta".length))),
     sidecarFor: (name) => byName.get(name) ?? null,
+  };
+}
+
+export const IN_SCOPE = "in_scope";
+/** Orthanc/DICOM image backup and its REST access configuration are owner-accepted
+ *  (I12 §2, re-confirmed 2026-10-16). Listed, cited, and never counted as a gap. */
+export const EXCLUDED = "excluded_by_owner_decision";
+
+/**
+ * A file list answers "what is in here"; it cannot answer "what is missing", because
+ * a class with no artifact contributes no row. That is not theoretical here: the live
+ * destination holds 1,280 database dumps, every inventory of them has printed clean,
+ * and the 83 MB of uploaded patient documents on the `uploads_data` volume (measured
+ * inside `care-api` on 2026-10-16) has never been named by a backup job at all. So
+ * every class below gets an answer, including `0`.
+ *
+ * Patterns are matched against the raw file name, never the published one, because
+ * `reportName` masks anything outside the job's naming convention and a masked name
+ * would turn a real backup into a reported absence.
+ */
+export const DATA_CLASSES = [
+  { id: "database", label: "ERP PostgreSQL dumps", scope: IN_SCOPE, pattern: /(^|[_-])(db|database|dump|caredeoghar|sql)([_.-]|$)/i, why: "the rows behind the Bill Desk, Ledger, Accounting and Registration" },
+  { id: "uploads", label: "uploaded patient documents", scope: IN_SCOPE, pattern: /upload|attachment|scanned/i, why: "the `uploads_data` Docker volume (reports, expense bills, scanned referrals, site assets); no script in this repository has ever written an archive of it, so nothing here can restore it" },
+  { id: "object_storage", label: "object-storage mirror", scope: IN_SCOPE, pattern: /object[-_.]?storage|gcs|s3/i, why: "the `object_storage` volume, measured 0 bytes on the box and with no writer in `artifacts/api-server/src` — it may be vestigial, which is a question for the owner, not a pass" },
+  { id: "config", label: "application configuration", scope: IN_SCOPE, pattern: /config|env/i, why: "compose file, .env shape and the DSM-side wiring" },
+  { id: "dicom_images", label: "DICOM images", scope: EXCLUDED, pattern: /dicom|orthanc|pacs|image/i, why: "out of ERP disaster-recovery scope by explicit owner decision (I12 §2, re-confirmed 2026-10-16) — not a gap, not a recommendation, and not counted as covered by anything here" },
+];
+
+/**
+ * One answer per class. `0` for an in-scope class is a finding, not a blank row.
+ *
+ * The verdict is deliberately about *these roots*. The live destination is
+ * `/volume1/backup/care-erp/db`, and the same job writes `../config`, so a bare
+ * "NOT COVERED" about configuration would be a false alarm on a box that does back
+ * it up — and a tool that cries wolf is the one that gets ignored. What the reader
+ * gets instead is the searched scope on the section header, and the repository-level
+ * fact in the `why`: for uploads, no script here has ever written such an artifact,
+ * which is true whatever the roots contain.
+ */
+export function classCoverage(files, roots) {
+  const names = (files ?? []).map((f) => {
+    const s = String(typeof f === "string" ? f : (f && f.name) || "");
+    return s.slice(Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\")) + 1);
+  }).filter(Boolean);
+  const rows = DATA_CLASSES.map((c) => {
+    const hits = c.scope === EXCLUDED ? [] : names.filter((n) => c.pattern.test(n));
+    return {
+      id: c.id,
+      label: c.label,
+      scope: c.scope,
+      files: hits.length,
+      examples: hits.slice(0, 3).map(reportName),
+      why: c.why,
+    };
+  });
+  return {
+    rows,
+    searchedRoots: (roots ?? []).map((r) => r.root),
+    coveredNote: rows.some((r) => r.scope === IN_SCOPE && r.files === 0)
+      ? "a class above has no artifact in the root(s) searched — point BACKUP_DIR at each destination to ask about all of them"
+      : "every in-scope class has at least one artifact in the root(s) searched",
   };
 }
 
@@ -412,6 +487,9 @@ export async function inspect(ctx, roots, opts = {}) {
     orphanSidecars: inv.orphanSidecars.map((s) => reportName(s.name)),
     subdirectories: inv.subdirs,
     unwatched: inv.other.map((f) => reportName(f.name)),
+    // Matched on the real names before any masking, so an archive the job named
+    // oddly cannot be masked out of existence and reported as unbacked.
+    classes: classCoverage([...inv.artifacts, ...inv.partials, ...inv.other].map((f) => f.name), inv.roots),
     days,
     coverage,
     restoreEvidence,
@@ -517,6 +595,29 @@ export function render(inv) {
       lines.push("  A gap means no artifact for that date, so nothing from it is recoverable. A directory full of one day's retries looks healthy by count and is not.");
     } else lines.push("  no missing day inside that span");
     if (inv.coverage.missingToday) lines.push("  nothing dated today — the daily job has not produced anything yet");
+  }
+  if (inv.classes) {
+    const searched = inv.roots.some((r) => r.readable);
+    lines.push("data classes:");
+    for (const c of inv.classes.rows) {
+      const verdict = c.scope === EXCLUDED ? "not applicable"
+        : !searched ? "unknown"
+        : c.files > 0 ? "covered"
+        : "not covered here";
+      const detail = c.scope === EXCLUDED ? c.why
+        : !searched ? "no backup root could be read, so nothing is known about this class"
+        : c.files > 0 ? `${c.files} file(s): ${c.examples.join(", ")}${c.files > c.examples.length ? " …" : ""}`
+        : `${c.label} — ${c.why}`;
+      lines.push(`  ${verdict.padEnd(17)}${c.id.padEnd(16)}${detail}`);
+    }
+    const missing = inv.classes.rows.filter((c) => c.scope === IN_SCOPE && searched && c.files === 0).map((c) => c.id);
+    if (missing.length) {
+      lines.push(`  ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} in scope, and ${missing.length === 1 ? "is" : "are"} not covered here.`);
+      lines.push("  A missing class cannot be restored by any tool in this repository, because nothing ever wrote it:");
+      lines.push("  the database dump restores rows, not the files the uploads volume holds. Name the destination, or");
+      lines.push("  say plainly that the class is accepted as unrecoverable — do not let a green artifact table imply both.");
+    }
+    if (searched) lines.push(`  ${inv.classes.coveredNote}`);
   }
   lines.push(`restore evidence: ${inv.restoreEvidence.recorded ? `recorded for ${inv.restoreEvidence.recorded.artifact}` : "none recorded"}; backup_verification: ${inv.restoreEvidence.databaseRows === null ? inv.restoreEvidence.note : `${inv.restoreEvidence.databaseRows} row(s)`} (${inv.evidenceFile})`);
   // Only say it when there is something to say it about. With no readable
