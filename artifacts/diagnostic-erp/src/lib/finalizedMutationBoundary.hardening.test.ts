@@ -24,9 +24,12 @@
  * and comments, because loosening the line pattern instead counts destructuring
  * READS as writes (`recomputeCopilot`, `applySelectedFormats`).
  *
- * Of the 29, twenty-two refuse through the shared predicate, three keep a named
+ * Of the 30, twenty-three refuse through the shared predicate, three keep a named
  * one-off `isFinalized` check under an allowlist that has to state why, and four
- * are the reset/hydration paths a legitimate reopen depends on. That split used to
+ * are the reset/hydration paths a legitimate reopen depends on. The thirtieth is
+ * `redoLastPatch`; Undo and it are counted through the shared `clinicalRestorePatch`
+ * call rather than a field name in their own bodies, which is the spelling a census
+ * that reads only the literal list would have dropped them both from. That split used to
  * read "of the 25, eighteen … four … three" while the lists beside it already held
  * 19 and 3 — a prose count nobody re-measured when an entry moved between lists.
  * All four numbers are now asserted, so the sentence cannot outlive the scanner.
@@ -479,6 +482,21 @@ const GUARD_CASES: Array<{
     refusal: false,
   },
   {
+    // The forward branch of the same history. The arm steps one back WHILE UNSIGNED, which is what
+    // puts a frame on the redo stack; after signing there is a frame and no legitimate way forward,
+    // so `false` with the report byte-identical is the only correct answer. The positive control runs
+    // the same arm unsigned and the same call must really write — otherwise this case would pass on
+    // an empty stack for the wrong reason.
+    action: "redoLastPatch",
+    arm: () => {
+      useWorkspace.getState().undoLastPatch();
+      expect(useWorkspace.getState().patchRedoStack.length,
+        "a redo frame must exist for this case to mean anything").toBeGreaterThan(0);
+    },
+    call: () => useWorkspace.getState().redoLastPatch(),
+    refusal: false,
+  },
+  {
     action: "applyVoiceComposerPlan",
     arm: () => {},
     call: () => useWorkspace.getState().applyVoiceComposerPlan(
@@ -872,6 +890,17 @@ describe("the boundary cannot regress silently", () => {
       const owner = [...methods].reverse().find((mm) => mm.start <= p.line && p.line < mm.end);
       if (owner) writers.set(owner.name, owner);
     }
+    // A method that restores clinical state through the SHARED snapshot patch is a clinical writer
+    // even though no field name appears in its own body. Counting only the spelled-out form is how a
+    // refactor silently drops a guarded mutator out of this census: Undo and Redo both write the five
+    // texts, the provenance map and the ledger, and they do it through one definition so the two
+    // directions cannot drift. The census has to follow the write, not the spelling.
+    for (const mm of methods) {
+      if (writers.has(mm.name)) continue;
+      if (lines.slice(mm.start, mm.end).join("\n").includes("clinicalRestorePatch(")) {
+        writers.set(mm.name, mm);
+      }
+    }
     return [...writers.values()];
   }
 
@@ -999,6 +1028,7 @@ describe("the boundary cannot regress silently", () => {
       "confirmOverwriteAndApply", "cancelOverwrite",
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
+      "redoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
       "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
       "generateProfessionalReport",
@@ -1007,8 +1037,8 @@ describe("the boundary cannot regress silently", () => {
     // and prose drifted: the comment read "of the 25, eighteen … four … three"
     // while these very lists held nineteen and three. A count a reviewer has to
     // recompute by hand is a count that goes stale silently.
-    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(29);
-    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(22);
+    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(30);
+    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(23);
     expect(Object.keys(LEGACY_IF_GUARD).length, "header comment: this many keep a one-off isFinalized check").toBe(3);
     expect(Object.keys(EXEMPT).length, "header comment: this many are reset/hydration paths").toBe(4);
     for (const name of guardedByPredicate) {
