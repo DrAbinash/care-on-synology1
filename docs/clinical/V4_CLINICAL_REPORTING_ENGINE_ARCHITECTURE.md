@@ -367,3 +367,118 @@ schema — the CHECK pins its shape (64 lowercase hex), not its computation.
 **Does not:** read from any of it, change any report, touch billing, registration, cashier,
 accounting, PACS/DICOM, Orthanc or any hospital integration; deploy; or merge. The workspace behaves
 exactly as it did, because no code path reaches these tables.
+
+## 8. Stage B hardening — four contracts, and what the third pass found
+
+The second review of this stage asked four questions rather than requesting four features: can a
+publication be restored, is a selection state expressible, does a combination rule reach one field,
+and what exactly is refused at publication. Each became a contract, and each contract is executable
+or it says so.
+
+**The publication snapshot** (`lib/db/src/cataloguePublicationSnapshot.ts`, gate check 14).
+A publication used to be a hash plus a list of tile versions, which answers "what wording was live"
+and nothing else. It now freezes one canonical JSONB document in **ten domains** — examination,
+sections, normalSlots, tiles, placements, parameters, normalReplacements, relationships,
+combinationRules (members nested inside their rule) and recommendationRules — carrying every column
+of every row it claims to restore, except `created_at` and `updated_at`, deliberately: a content
+hash that moves with the clock is not a content hash. Attribution columns (`created_by`,
+`updated_by`) are frozen, because who wrote a sentence is clinical fact. Deterministic serialisation
+is executable rather than described: keys sorted at every depth, entries ordered by
+`(ordinal NULLS LAST, ordinal, identity)`, timestamps as ISO-8601 UTC, integer-shaped strings
+normalised so a `node-postgres` publication and a Drizzle publication hash identically while a
+NUMERIC clinical threshold stays exactly as the clinic entered it. Every array entry carries an
+`identity`, and check 14 compares the document against the live rows **in both directions**, with
+duplicated identities refused separately because a set comparison cannot see them. Restorability is
+proved by deleting the catalogue and rebuilding it from the frozen document alone: the recomputed
+hash matches. Two limits are stated rather than hidden: the canonical vocabulary the domains point
+at by id (`finding_definitions`, `parameter_groups`, `parameter_options`) is not frozen — that is
+what `snapshot_version` exists to carry an eleventh domain for — and check 14 certifies
+**membership, not content**: measured, a document with true identities and one fabricated sentence
+publishes, because only the publisher's serializer can produce the canonical bytes and pgcrypto,
+though available on the box, is not installed. `publicationColumnsFor()` is the guard that holds
+(hash the exact document you store), and a test pins both halves of that so nobody reads the gate
+as content authentication.
+
+**The selection-state contract** (`clinicalSelectionContract.db.test.ts`). Seven states, and the
+file says which of them a schema can already see: A selected, C mutually exclusive, D compatible,
+E parent-child and F normal-suppression are Stage B facts; B explicitly-deselected and G radiologist
+override are study-level and the catalogue must not gain a column for either. The nine
+order-dependent tile pairs PR #1014 measured on `main` are mapped onto declared resolutions; eight
+are normal-versus-abnormal suppression through an edge, and the ninth — glioma recurrence against
+cerebral edema — is declared `coexists` because printing both is the conservative mechanism, with
+its clinical wording marked **awaiting radiologist review**. Four facts are proved against the
+database: an unresolved pair is unpublishable in either direction of unresolved; "these two
+deliberately coexist" is a row, so the absence of a row can no longer be read as a decision, which
+is exactly how the nine pairs survived; a normal is retired only by an edge, so a deselection has
+exactly one restore set; and resolution and print order live in different columns — changing one
+leaves the other byte-identical, measured on the frozen domains. The honest limit is written down
+too: two tiles in different conflict groups with nothing between them are undeclared, not declared
+compatible, and no finite row set enumerates every pair, so the default (print both, evict neither)
+is a Stage C obligation, stated as a skipped test.
+
+**The field-scoped combination contract** (`clinicalCombinationContract.db.test.ts`). The brief's
+sentence — do not suppress Findings because the corresponding Impressions were combined — is a
+shape, not a policy: a rule has exactly one `target_field`, `suppress_members` is a boolean, and
+there is no value that means "combine the Impression and delete the anatomical Findings". Proved
+constructively: the same two tiles at the same precedence number in two different fields publish
+without colliding, because a claim is a claim within a field. Precedence is per
+`(examination, field)`, positive, claimed once, released by deprecation; an overlap cannot be dodged
+by making the shared member optional, because check 3 then refuses the hollow rule. **Confirmed
+defect:** checks 1 and 9 already refuse a published tile or section with no position, but nothing
+refused a live combination rule with `ordinal IS NULL` — the frozen document stated that two
+observations consolidate and stayed silent on where, so the restoring composer invented a tiebreak
+and the invention became the configuration. Gate check 16 refuses it, using the same
+`status <> 'deprecated'` predicate as the unique index and check 12 so the three cannot disagree
+about who is in force.
+
+**The publication-validation contract** (`clinicalPublicationValidation.db.test.ts`) draws the
+three-layer line the brief asks for: draft validation keeps a half-finished catalogue editable,
+publication validation is where incompleteness stops being legal, and runtime selection validation
+belongs to one study and must never block a publication. Each of the ten §4 items names the layer
+where its last line of defence sits — nine to the gate, and duplicate logical normal slots to the
+unique index, where the state cannot be stored at all, so the gate has no arm and needs none. Worked
+in the same breath: a required `option` parameter with nothing to choose from is a publication fact,
+a required `numeric` parameter nobody has answered yet is a runtime fact. Measurement found that
+gate checks 2, 8, 9, 10, 11 and 15 had **never been executed against a real publication** — check 8,
+the arm standing between a radiologist's sign-off and a patient reading a sentence nobody approved,
+was asserted only in a comment. All five of its wording kinds are now refused and repaired one at a
+time, and the `emits_heading` boundary is proved from both sides so a grouping row that reaches no
+page cannot block a publication.
+
+**Two defects the adversarial pass produced, not theorised.** On a database rebuilt from zero
+through the real pipeline (15 drizzle + 193 feature migrations): retiring a tile that is placed in
+an examination breaks no foreign key, and the examination then *published a document that had quietly
+lost an observation* — the publisher's read drops the tile and its placement together, so neither
+side disagreed about having lost it (check 17 refuses it, and a `deprecated` tile is deliberately
+out of that arm because it still has wording history needs). And an `excludes` pair between this
+examination's tile and **another examination's** tile was storable, declared both directions so check
+6 was satisfied, and published — freezing the other examination's tile key into this publication and
+making this report's resolution depend on a tile nobody can select here (check 18 refuses it; a
+concept end stays allowed, because the concept list is canonical and examination-wide by design).
+
+**The clinical acceptance specification** (`clinicalAcceptanceSpec.ts`) is data, so its completeness
+is testable: the twenty cases exactly as §5 names them, all seven selection states exercised, every
+report field exercised, and a case→contract and contract→case mapping checked in both directions with
+a per-contract census. No case quotes a sentence — an expectation is a structural property (which
+observations survive, in which field, retired by which edge, unchanged by click order) — and the four
+cases whose outcome really is a clinical claim are marked awaiting review, which no code can sign
+off. `CaseStatus` has exactly one member while there is no composer, so a case claiming it passed is
+a compile error.
+
+**Verification.** 126 tests pass with 32 skipped on a freshly migrated database; `tsc -p lib/db` is
+clean; `check-migration-order` is clean; the api-server append-only census is unchanged (53 tests)
+because no new history table or trigger was added. Fourteen mutations were attempted this round and
+all were killed — three on check 16, four on checks 17–18, five on the acceptance spec's guards and
+two on test-harness helpers. Three of them initially survived, and every one of those was a weak
+test rather than a strong constraint: a deprecation assertion that left the rule at an ordinal so it
+asserted nothing, a mutant that narrowed an arm while claiming to broaden it, and an anchor that
+matched nothing because the harness converted `\n` to `\r\n` twice. The mutation drivers are review
+artefacts in `tmp/`, not repository content; what stays in the repo is the behaviour they forced and
+the tests that refuse to pass without it.
+
+**Left open for the owner, unchanged from before:** whether an undeclared cross-group pair should
+print both or ask; the clinical wording of the recurrence-versus-edema pair, the consolidated
+Fazekas-and-atrophy line, which normals a hemorrhage retires, and the absent-cholecystitis negative;
+whether a `deprecated` tile keeps its placement at publication; and whether the Recommendations field
+is owned by `target_field='recommendation'` combination rules, by `clinical_recommendation_rules`, or
+by an explicit precedence between the two.
