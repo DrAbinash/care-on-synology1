@@ -134,6 +134,7 @@ import {
   contributionPresent,
   contributionProtected,
   findSameSlotSiblings,
+  liveContributionKeys,
   mergeObservationInPlace,
   observationsMutuallyExclusive,
   ownershipFromObservation,
@@ -3461,6 +3462,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         canonicalImpression,
         claimsFindings: claimsDeclaredBy(claimFor(patch.lastRendered.findings), canonicalFindings),
         claimsImpression: claimsDeclaredBy(claimFor(patch.lastRendered.impression), canonicalImpression),
+        // Removal is proved sentence by sentence, so the same identity fence the click path
+        // uses has to guard the removal path too: a sentence another live box also wrote is
+        // that box's statement, and clicking this one off must not take it away.
+        heldElsewhere: liveContributionKeys(survivingPatches),
       },
     );
     let nextMs = get().structuredViewerMeasurements;

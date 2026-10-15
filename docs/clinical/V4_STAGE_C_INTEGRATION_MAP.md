@@ -270,3 +270,80 @@ regional buckets, the ledger claim dropping its level, and the guard firing wher
 pointed at the scratch cluster; without it `applyChangePlan.safety.test.ts` cannot import
 `@workspace/ai-providers` and errors at collection, which is environmental, not a verdict). No TypeScript
 compiler is installed in this worktree, so the type-level check is CI's `pnpm typecheck`, not a local run.
+
+## 10. Phase 4 closed — one box writes three fields, and removal is proved sentence by sentence
+
+Phase 4 asks the deselection question the earlier phases left open: one Quick Select box can write a sentence
+into Findings, a line into Impression and advice into Recommendation, and clicking it off has to take **its**
+words out of each field it wrote and only its words. `clinicalSelection/fieldScopedComposition.test.ts` drives
+that through the real door — the shipped "MRI LS Spine — Standard Normal" applied by id, then shipped tiles
+clicked onto it — because the defect only appears once a real baseline has retired part of a tile's sentence.
+
+**C — the deselection that could not remove anything.** `stripContribution` proved a row owned its contribution
+as one block (`contributionPresent(fieldText, c)`). A box that carries a normal clause stops matching as a block
+the moment another box retires it: the herniation box writes the finding *and* "No significant central canal
+stenosis.", the stenosis box falsifies that clause, so after both clicks the recorded contribution is no longer
+on the page as a single string. Removal reported `no-op-unproven` — and the store deleted the ledger row anyway.
+The finding stayed printed with nothing on the ledger owning it, and a second click returned `missing`: a claim
+that could no longer be withdrawn by any means the strip offered. Removal now proves ownership sentence by
+sentence (`contributionChunks`), deletes each chunk that is actually on the page, keeps the whole-block path for
+the case where the block is there, and returns `removed` only when text really left the field. All four fields
+pass through the same code.
+
+**D — the removal path had no identity fence.** Phase 5 fenced the *click*; nothing fenced the *deselect*. Once
+removal is per sentence, a chunk list can contain a sentence a second live row also wrote, and the row being
+deleted has no authority over it. `removeLedgerObservation` takes `heldElsewhere`, and `removeObservation`
+passes the same oracle the click path uses — `liveContributionKeys(survivingPatches)` — with the whole-block arm
+gated on it too. Three other call sites deliberately pass nothing (the contradicting-baseline sweep, the
+system-normal yield, the withdrawn normal impression): each removes text the engine wrote, where the survivor set
+is precisely the reason it must go.
+
+**Where the fence stops, and why it is allowed to.** `liveContributionKeys` reads `lastRendered.findings` and
+`.impression`, so Recommendation is not fenced — and does not need to be, because
+`alignRecommendationToObservations` rebuilds advice from the surviving observations. The suite pins the shipped
+case rather than asserting it in the abstract: herniation and spondylolisthesis both declare "Surgical referral
+if neurological deficits develop.", and removing one keeps that line while the other is live and drops the box
+that was removed having said anything of its own.
+
+**Measured before being tested: how does one sentence come from two live rows?** Census over the shipped library
+— 127 tiles, 97 non-normal, grouped by modality and body part, **1,148 distinct concept/conflict-group pairs**,
+each compared with **every `{side}` × `{severity}` expansion** (the shipped library uses only those two
+placeholders) — found **0** pairs sharing a Findings statement and **0** sharing an Impression statement. The
+same census over `recommendationSentence` (21 tiles carry one) finds **31** pairs sharing an advice line, which
+is the domain the aligner owns. So the Findings/Impression fence is *not* reachable from two library boxes today.
+It is reachable from a box the radiologist wrote: `quickSelectTileFromForm` saves `custom: true` tiles with no
+`concept`, so a custom box declares no relationship and coexists with the library box that says the same thing.
+The two store-level tests are built on exactly that pair — a custom copy of a shipped sentence, not an invented
+finding — which is why they are phrased that way and why the census is quoted in the file.
+
+**Residual E — the Impression line order is still the order of the mouse.** With all three lumbar boxes on the
+shipped normal document, the six click orders produce **one** set of Impression statements and **two**
+sequences: herniation leads in HSP/HPS/PHS, stenosis leads in SHP/SPH/PSH. Findings splits the same way. The
+composer is not at fault: `orderImpressionLines` sorts by `(rank, index)` and documents "stable for equal
+ranks", while both statements classify as `UNCLASSIFIED_RANK` (50) and spondylolisthesis gets 8 — so the tie is
+decided by insertion order, which is the click order. Deciding which of a disc herniation and a moderate canal
+stenosis *leads* a lumbar Impression is a clinical ruling, and the clinic's own library already disagrees with
+the shipped table on the neighbouring case
+(`docs/clinical-libraries/mri-lumbar-clinical-content-library.md:204` puts spondylolisthesis above severe
+foraminal stenosis with exiting-root compression, where `IMPRESSION_PRIORITY` ranks stenosis 5 and
+spondylolisthesis 8). Guessing a second row of ranks would silently re-sequence every lumbar report, so this is
+an **owner decision, left open**. A tripwire test states the rank gap and fails the moment the table is
+extended, so the day a ruling is made the change is visible instead of silent.
+
+**Found by widening the sweep, and fixed in its own commit: this branch's own undo/redo gate.** See §11.
+
+**Evidence.** 14 tests in `fieldScopedComposition.test.ts`: the removal outcome and the exact claim set in all
+six orders, the Impression line and its Findings sentence leaving together, the shared advice line surviving, a
+manual sentence through every composition and removal, the custom-copy pair in both removal orders, four
+`stripContribution` units, and the residual tripwire. Mutation battery `tmp/phase4-mutants.py`: **5 mutants, 5
+killed, 0 survivors, 0 harness faults** — block-only proof restored (the shipped defect), fence never
+consulted, fence blocking everything, whole-block arm ignoring the fence, store no longer supplying the fence.
+Each mutant is verified on disk byte-for-byte before its suite runs, and every anchor is single-line because
+this tree is checked out CRLF — the first battery's M1 was a harness fault (a two-line anchor matched nothing),
+which is why "anchor not unique" is reported separately from "survived". Control: **122 passed**. Final sweep
+`tmp/phase4-final-paths.txt`: **120 files, 2,658 tests, 1 failure** — `aiQueryContract.test.ts`, a
+Windows-only defect in that test's own path handling (`join()` yields backslash paths, so
+`f.replace(ERP_SRC + "/", "")` never strips the prefix and the exclusion comparing to
+`lib/aiReportingClient.ts` cannot match). It names the *allowed* typed client as the offender; the underlying
+contract holds, measured independently: exactly one file calls `/api/ai-reporting/query`, and it is
+`aiReportingClient.ts:17`.

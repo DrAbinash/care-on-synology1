@@ -113,23 +113,44 @@ export function stripContribution(
   fieldText: string,
   contribution: string | undefined,
   provenance: FieldProvenanceMap | undefined,
+  heldElsewhere?: ReadonlySet<string>,
 ): { text: string; outcome: RemoveContributionOutcome } {
   const c = (contribution ?? "").trim();
   if (!c) return { text: fieldText, outcome: "removed" };
   const located = locateContributionInField(fieldText, c);
-  if (!located && !contributionPresent(fieldText, c)) {
+  const chunks = contributionChunks(located ?? c);
+  /**
+   * Proof is per sentence, not per block. A box can write two sentences and leave the page
+   * holding one of them: "Disc herniation L4-L5" states its finding AND "No significant
+   * central canal stenosis.", and when the canal-stenosis box is clicked the second sentence
+   * is retired as contradicted — so the herniation row's contribution no longer matches the
+   * field as a block. The old gate proved only the block, found nothing, and answered
+   * `no-op-unproven` while the caller went ahead and deleted the row: the finding stayed
+   * printed, backed by no observation, and could never be removed again because the thing
+   * that would remove it was gone. Measured on shipped tiles at this branch.
+   */
+  if (!located && !contributionPresent(fieldText, c)
+    && !chunks.some((chunk) => contributionPresent(fieldText, chunk))) {
     return { text: fieldText, outcome: "no-op-unproven" };
   }
-  const chunks = contributionChunks(located ?? c);
   if (chunks.some((chunk) => contributionProtected(chunk, provenance)) || contributionProtected(c, provenance) || contributionProtected(located ?? c, provenance)) {
     return { text: fieldText, outcome: "preserved-manual" };
   }
   let next = fieldText;
   const target = located ?? c;
-  if (next.includes(target)) {
+  const held = (chunk: string): boolean => Boolean(heldElsewhere?.has(normalizeForDedupe(chunk)));
+  // The block goes off as a block only when every sentence in it belongs to this
+  // contribution. If one of them is a sentence another live observation also wrote, the
+  // block removal would take that observation's statement with it, so this falls through
+  // to the per-sentence path, which skips the held one.
+  if (!chunks.some(held) && next.includes(target)) {
     next = removeBlock(next, target);
   } else {
     for (const chunk of chunks) {
+      // A sentence another live observation also wrote is that observation's statement, not
+      // this row's leftover. Clicking one box off must not take away words a box that is
+      // still selected is standing behind.
+      if (held(chunk)) continue;
       const hit = locateContributionInField(next, chunk);
       next = hit ? removeBlock(next, hit) : next;
     }
@@ -171,6 +192,12 @@ export type LedgerRestoreOptions = {
    */
   claimsFindings?: readonly string[];
   claimsImpression?: readonly string[];
+  /**
+   * Sentences another live observation also wrote, keyed the way the ledger keys everything
+   * (`liveContributionKeys`). Removal works sentence by sentence, so without it one box could
+   * take away a statement a box that is still selected is standing behind.
+   */
+  heldElsewhere?: ReadonlySet<string>;
 };
 
 function restoreInto(
@@ -202,13 +229,15 @@ export function removeLedgerObservation(
   if (patch.protected) {
     return { narrative, provenance, outcome: "preserved-manual", preservedManual: true };
   }
-  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings);
-  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression);
-  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique);
+  const heldElsewhere = opts?.heldElsewhere;
+  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings, heldElsewhere);
+  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression, heldElsewhere);
+  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique, heldElsewhere);
   const recommendation = stripContribution(
     narrative.recommendation,
     patch.lastRendered.recommendation,
     provenance.recommendation,
+    heldElsewhere,
   );
 
   const hadContribution = Boolean(
