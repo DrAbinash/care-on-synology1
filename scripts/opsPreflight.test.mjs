@@ -50,6 +50,9 @@ import {
 const GOOD_SECRET = "synthetic-strong-value-never-a-real-one-32ch";
 const SENTINEL = "SENTINEL-SECRET-DO-NOT-PRINT-9b2c1d";
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
+// seedTree stamps the artifact this many hours before NOW unless a case asks for a
+// different age. See the note in seedTree for why the stamp is never the wall clock.
+const DEFAULT_ARTIFACT_AGE_HOURS = 6;
 const HEAD_SHA = "a".repeat(40);
 const DATABASE_URL = "postgresql://erp@127.0.0.1:59999/diagnostic_erp";
 
@@ -192,10 +195,14 @@ function seedTree(knobs = {}) {
   } else {
     writeFileSync(`${artifactPath}.meta`, [...(knobs.sidecarLines ?? SIDECAR_LINES), `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
   }
-  if (knobs.ageHours !== undefined) {
-    const when = new Date(NOW - knobs.ageHours * 3_600_000);
-    utimesSync(artifactPath, when, when);
-  }
+  // The mtime is pinned to the frozen NOW rather than left at the wall clock, and
+  // always pinned — not only when a test asks for an age. `makeCtx().now()` is a
+  // fixed instant, so an artifact stamped "when the test ran" ages backwards once
+  // the real clock passes that instant, and any case that orders two artifacts by
+  // mtime flips on its own. T6c did exactly that: green in CI before 11:00 UTC on
+  // 2026-10-15, red after it, with no code change between the two runs.
+  const when = new Date(NOW - (knobs.ageHours ?? DEFAULT_ARTIFACT_AGE_HOURS) * 3_600_000);
+  utimesSync(artifactPath, when, when);
   const evidence = knobs.evidence === undefined ? HEALTHY_EVIDENCE : knobs.evidence;
   if (evidence === null) rmSync(path.join(root, EVIDENCE_FILE), { force: true });
   else write(EVIDENCE_FILE, JSON.stringify(evidence, null, 2));
