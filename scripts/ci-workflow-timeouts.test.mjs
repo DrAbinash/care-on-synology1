@@ -18,7 +18,11 @@ const aptHelper = readFileSync(path.join(root, "scripts/ci-apt-install.sh"), "ut
 
 describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)", () => {
   it("every job caps wall time so a hung step cannot sit for the 6h default", () => {
-    for (const job of ["static", "test"]) {
+    // `identity` is in this list because PR #1015 added it: a job that runs a
+    // real `docker build` is precisely the kind of step that hangs on a registry,
+    // and a cap guard that hardcodes the two older jobs silently exempts whatever
+    // comes after them.
+    for (const job of ["static", "identity", "test"]) {
       const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith(`${job}:`));
       expect(block, `job ${job} missing`).toBeTruthy();
       expect(block).toMatch(/timeout-minutes:\s*[1-9][0-9]*/);

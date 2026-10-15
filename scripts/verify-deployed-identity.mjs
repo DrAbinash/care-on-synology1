@@ -61,7 +61,7 @@ export function verdictFor({ expected, running }) {
     return {
       status: UNKNOWN,
       detail: `commit ${reported.slice(0, 12)} is declared, not resolved (identitySource=${running.identitySource ?? "absent"}), so it proves nothing about these bytes`,
-      remediation: "Check that .dockerignore still lets .git/HEAD and .git/refs into the build context: node scripts/build-identity.mjs --git-dir .git --print",
+      remediation: "Check that .dockerignore still lets .git/HEAD and .git/refs into the build context: node scripts/build-identity.mjs --git-dir .git --print proves the host, and node scripts/docker-build-identity.mjs --tier context proves the image by building one",
     };
   }
   if (!expected) {

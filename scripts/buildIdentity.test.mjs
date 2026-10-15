@@ -285,10 +285,13 @@ describe("the Dockerfile actually uses this resolver", () => {
 });
 
 describe("the build context lets the refs through", () => {
-  // No docker on the dev box, so this is pinned as a contract rather than proved by
-  // a build. What makes that safe is the fallback: if the refs never arrive, the
-  // identity degrades to build-arg-declared, and verify-deployed-identity.mjs answers
-  // UNKNOWN instead of calling a hand-me-down stamp verified.
+  // These four lines are the contract; `scripts/docker-build-identity.mjs` is the
+  // proof. It cannot run here (no Docker on this box), so it runs as the
+  // `identity` CI job, where a real `docker build` over this `.dockerignore`
+  // resolves a real commit and then has it taken away again in arm C. What makes
+  // the grep safe is the fallback underneath it: if the refs never arrive the
+  // identity degrades to build-arg-declared, and verify-deployed-identity.mjs
+  // answers UNKNOWN instead of calling a hand-me-down stamp verified.
   const ignore = readFileSync(path.join(HERE, "..", ".dockerignore"), "utf8").split(/\r?\n/).map((l) => l.trim());
   const lines = ignore.filter((l) => l && !l.startsWith("#"));
 

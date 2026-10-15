@@ -355,11 +355,58 @@ things Container Manager cannot do. Everything here runs against the **existing*
 | 8 | Prove what is actually running | `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` · `node scripts/verify-deployed-identity.mjs --expected <sha from step 3>` | the identity check exits **1**: the containers are a different commit than the deploy intended. Exit **2** means the image cannot name its own commit, so nothing is proven — re-run step 5 and rebuild |
 | 9 | Clinical smoke + record | §12 steps 11 and 12's `echo "<sha>" > .git-deployed` | the report differs from the same report before the deploy |
 
+Step 5 asks the **host** what commit it is on, which is not the same question as what the
+**image** will claim — the difference is one file, `.dockerignore`, and whether the image
+can still resolve a SHA after the ignore rules are applied to it. That is proved by
+building, not by reading, and `node scripts/docker-build-identity.mjs` (§12b) is what does
+it: it builds a disposable image from this repository as the context, so the same ignore
+rules the api image gets are the ones under test, and then asks the real resolver the same
+question four ways.
+
 Rollback from Container Manager is the same §11 procedure with the same constraint: the
 images are built, not pulled, so retagging the IDs recorded in step 4 is the only way back
 without a rebuild, and migrations are forward-only. `docker compose down -v`,
 `docker volume prune`, and deleting the project to "start again" are not rollback — they
 delete the patient database and the upload volumes with it.
+
+
+## 12b. Proving the build-identity claim with a real build
+
+Step 5 above asks the **host** what commit it is on. That is not the same question as
+"what will the **image** say", and the difference is one file: `.dockerignore`. The image
+can only resolve a commit if `.git/HEAD` and `.git/refs` survive into the build context,
+and whether they do is a property of a Docker version's ignore-file semantics, not of the
+text of the file. So it is checked by building:
+
+| Command | What it proves | Cost |
+|---|---|---|
+| `node scripts/docker-build-identity.mjs --tier context` | a real `docker build` over this repository's context, in which the production `scripts/build-identity.mjs` resolves this checkout's SHA — and then loses it when the refs or HEAD are hidden | one `node:22-bookworm-slim` pull plus a context copy; seconds |
+| `node scripts/docker-build-identity.mjs --tier real` | the **production Dockerfile's** `api-build` stage does the same with a deliberately false `GIT_COMMIT`, and the recorded `artifactSha256` matches the bytes copied out of the built image | a full in-image `pnpm install` + build of this monorepo; minutes |
+| CI job **Build identity (disposable docker build)** | the context tier on every PR and every push to `main`; the real tier when the workflow is run by hand | — |
+
+Exit codes, and only the first is evidence:
+
+* **0 PASS** — every arm held. This is the only state to quote.
+* **1 FAIL** — a build reported a commit it was not built from, or the identity survived
+  with the metadata hidden, which means it never came from the metadata.
+* **2 UNVERIFIED** — it ran, but an arm could not be exercised (no refs in the checkout,
+  or HEAD detached). Not a pass. On CI this is almost always the checkout step: a
+  detached HEAD resolves the SHA from `HEAD` alone, so hiding `.git/refs` changes nothing
+  and arm C would be theatre.
+* **3 UNAVAILABLE** — no Docker on this machine. The claim is **unproven here**, which is
+  why it is not run on the Windows development box.
+
+Two cautions before running it on the NAS:
+
+* It builds **disposable** images tagged `care-build-identity-probe:*` and removes the
+  container and the image afterwards. It starts nothing, touches no volume, and is not a
+  deploy — but `--tier real` does write a full monorepo image to disk. Check
+  `docker system df` first; the clinic's disk headroom is the reason the nightly dumps are
+  the thing that must stay small, not this.
+* It must be run from a **real clone**. In a linked `git worktree`, `.git` is a one-line
+  pointer file, so no HEAD or refs can enter any context, and the harness answers
+  UNVERIFIED rather than reporting a pass about a tree that cannot carry an identity.
+  `/volume1/docker/care-erp-github/care-on-synology1` is a normal clone and is fine.
 
 
 ## 13. Secrets in tracked files — reported, not corrected here

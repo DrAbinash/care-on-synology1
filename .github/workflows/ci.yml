@@ -9,6 +9,10 @@ on:
   push:
     branches: [feature/website-login-redirection, main, master]
   pull_request:
+  # The expensive proof. `identity-image` below builds the production
+  # `--target api-build` — a full in-image pnpm install of this monorepo — so it
+  # is not a per-PR check; a maintainer asks for it by name, before a deploy.
+  workflow_dispatch: {}
 
 # Cancel superseded runs on the same ref to save minutes.
 concurrency:
@@ -48,6 +52,55 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm typecheck
+
+  # ── A real build, because `.dockerignore` cannot be checked by reading it ────
+  identity:
+    name: Build identity (disposable docker build)
+    runs-on: ubuntu-latest
+    # UNMEASURED so far: the development box has no Docker, so no run of
+    # scripts/docker-build-identity.mjs has ever produced a verdict anywhere. The
+    # caps below are sized for the context tier (one slim base image, `COPY . .`,
+    # four short node runs) plus the dispatched tier (a full in-image pnpm install
+    # and esbuild of api-server). The job prints each tier's verdict, so the first
+    # real run is the measurement this comment is asking for.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Give the checkout the shape the NAS deploy checkout has
+        # actions/checkout leaves HEAD detached at a SHA. `readGitHead()` then
+        # resolves the commit from HEAD alone, and hiding `.git/refs` changes
+        # nothing — arm C would report a pass it had not earned. `/volume1/docker/
+        # care-erp-github/care-on-synology1` is an ordinary clone: HEAD is
+        # `ref: refs/heads/main` and the branch lives in a loose ref file, which is
+        # exactly the pair `.dockerignore`'s negations have to deliver. So CI asks
+        # for that layout before it asks for a verdict.
+        run: |
+          git checkout -B build-identity-probe "$(git rev-parse HEAD)"
+          head -n 1 .git/HEAD
+          find .git/refs -type f | sed 's/^/loose ref: /'
+      - name: Prove the build context carries the identity (Docker, for real)
+        # Exit 0 is PASS. 1 FAIL, 2 UNVERIFIED (an arm the environment could not
+        # exercise), 3 UNAVAILABLE (no Docker) — none of those are green, and none
+        # of them are `|| true`: a proof that cannot fail is not a proof.
+        timeout-minutes: 10
+        run: node scripts/docker-build-identity.mjs --tier context --json=tmp/build-identity-context.json
+      - name: Prove the production Dockerfile itself resolves its commit
+        # The expensive half, and the only half that hashes the bytes the image
+        # actually ships. On demand rather than per PR, because it costs an entire
+        # dependency install of this monorepo inside the image.
+        if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 25
+        run: node scripts/docker-build-identity.mjs --tier real --json=tmp/build-identity-real.json
+      - name: Upload the evidence
+        # The graded JSON is the artefact a reviewer needs: it carries the Docker
+        # version, the checkout SHA, the false stamp that was fed in, and every
+        # arm's identity file. Without it the job says "passed" and nothing more.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-identity-proof
+          path: tmp/build-identity-*.json
+          if-no-files-found: warn
 
   # ── Full test suite + clean-boot proof against a real Postgres ──────────────
   test:
