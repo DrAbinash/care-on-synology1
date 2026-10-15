@@ -38,6 +38,8 @@ import {
   DRIFT_EXEMPT,
   checkConfigDrift,
   configCopies,
+  censusTableCount,
+  CENSUS_LINE_RE,
   makeContext,
   auditSidecar,
   credentialShaped,
@@ -124,6 +126,10 @@ const HEALTHY_EVIDENCE = {
     artifact: "caredeoghar_20261014_030000.sql.gz",
     verified_at: new Date(NOW - 6 * 3_600_000).toISOString(),
     passed: true,
+    // The gate only calls a restore proof complete when the artifact's sidecar
+    // bracketed it at dump time. The control box is one where that is true; the
+    // cases where it is not are below, and they answer UNKNOWN.
+    censusAttested: true,
     tables: 439,
     patients: 8123,
   },
@@ -140,6 +146,37 @@ const HEALTHY_EVIDENCE = {
   },
 };
 
+/**
+ * The census block `scripts/synology-nas-backup.sh` takes around its own dump and
+ * writes into the `.meta` sidecar: one line per core table, per edge.
+ *
+ * The healthy fixture has to carry these lines because `restore.evidence` derives
+ * its attestation from them and from nothing else — anyone can type
+ * `"censusAttested": true` into the evidence file, so the gate reads the file the
+ * 03:00 job produced instead. A fixture without them is a fixture for a box whose
+ * backup job predates the census, and the control has to reach PASS.
+ *
+ * The table list is read out of the backup job rather than copied, so the fixture
+ * cannot quietly census a table the job no longer does. The four numbers are
+ * computed, not remembered: the ids are taken to run 1..n, so min=1, max=n,
+ * sum=n(n+1)/2, and the after-edge is three rows longer because the clinic keeps
+ * writing while a dump runs.
+ */
+const BACKUP_SH = readFileSync(new URL("./synology-nas-backup.sh", import.meta.url), "utf8");
+const CENSUS_TABLES = (BACKUP_SH.match(/^CENSUS_TABLES_DEFAULT="([^"]+)"/m) ?? [])[1]?.trim().split(/\s+/) ?? [];
+
+const censusEdge = (n) => `${n}|1|${n}|${(n * (n + 1)) / 2}`;
+
+function censusSidecarLines(baseRows = 40) {
+  const lines = [];
+  CENSUS_TABLES.forEach((t, i) => {
+    lines.push(`census_before.${t}=${censusEdge(baseRows + i)}`);
+    lines.push(`census_after.${t}=${censusEdge(baseRows + i + 3)}`);
+  });
+  lines.push(`census_tables=${CENSUS_TABLES.join(" ")}`);
+  return lines;
+}
+
 const SIDECAR_LINES = [
   "artifact=caredeoghar_20261014_030000.sql.gz",
   "created_utc=2026-10-14T03:00:00Z",
@@ -151,6 +188,7 @@ const SIDECAR_LINES = [
   "create_tables=439",
   "encrypted=no",
   `sha256_artifact=${"0".repeat(64)}`,
+  ...censusSidecarLines(),
 ];
 
 let root;
@@ -665,6 +703,147 @@ describe("T9–T12 — platform, integration and metadata", () => {
     // Sections the operator has not recorded stay absent, not blanked.
     const data = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
     expect(data.hope_receiver).toBeUndefined();
+  });
+
+  test("T12c1 the census line the gate counts is the line the backup job writes", () => {
+    // A census has three definitions in this system: the shell that writes it, the
+    // TypeScript verifier that grades it, and this gate that derives the deploy
+    // PASS from it. Two of those three drift here. Each `${var}` is planted with a
+    // DIFFERENT number, so a job that emits the fields in a different order than
+    // psql returned them changes the parsed census instead of sliding through a
+    // shape-only regex.
+    const template = (BACKUP_SH.match(/AS census_table[\s\S]*?FROM "@T@"/) ?? [""])[0];
+    expect([...template.matchAll(/AS (\w+)/g)].map((m) => m[1]))
+      .toEqual(["census_table", "row_count", "id_min", "id_max", "id_sum"]);
+    const read = (BACKUP_SH.match(/while IFS='\|' read -r (\w+) (\w+) (\w+) (\w+) (\w+)/) ?? []).slice(1);
+    expect(read).toEqual(["t", "r", "mn", "mx", "s"]);
+    const digits = { r: "41", mn: "7", mx: "9301", s: "41288350" };
+    const emit = BACKUP_SH.match(/^\s*echo "census_\$\{which\}\.\$\{t\}=([^"]+)"/m);
+    expect(emit, "the backup job must write a census_<edge>.<table> line").toBeTruthy();
+    const line = `census_before.audit_logs=` + emit[1].replace(/\$\{(\w+)\}/g, (_, v) => digits[v] ?? `<<${v}>>`);
+    expect(line).toBe("census_before.audit_logs=41|7|9301|41288350");
+    expect(line.match(CENSUS_LINE_RE)?.slice(1)).toEqual(["audit_logs", "41", "7", "9301", "41288350"]);
+    // And the fixture this file builds is the same shape, not a private dialect.
+    for (const l of censusSidecarLines()) if (l.startsWith("census_before.")) expect(l).toMatch(CENSUS_LINE_RE);
+  });
+
+  test("T12c2 the census tables the fixture censes are the tables the job censes", () => {
+    // Nothing here is allowed to invent its own table list, or this file would keep
+    // passing against a job that quietly stopped bracketing half the record.
+    expect(CENSUS_TABLES).toEqual(expect.arrayContaining(["patient_reports", "audit_logs", "radiology_worklist"]));
+    expect(CENSUS_TABLES.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(CENSUS_TABLES).size).toBe(CENSUS_TABLES.length);
+  });
+
+  test("T12c3 the attestation counts dump-time edges, and only those", () => {
+    seedTree({});
+    const ctx = makeCtx();
+    const ART = "caredeoghar_20261014_030000.sql.gz";
+    expect(censusTableCount(ctx, ART)).toBe(CENSUS_TABLES.length);
+    // An `after` with no `before` is a half bracket and proves nothing.
+    const half = censusSidecarLines().filter((l) => !l.startsWith("census_before."));
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), ...half] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // A census the job could not take is reported, not counted.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "census_error=psql exited 1"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // A census line whose numbers are not numbers is not a measurement.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "census_before.audit_logs=N/A|?|?|?"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // And a line that only MENTIONS a census is not one either: the sidecar is a
+    // key=value file, and a note field that quotes the format must not be read as
+    // the measurement it describes.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "note=census_before.audit_logs=1|2|3|4"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // No sidecar at all, and no artifact named at all.
+    seedTree({ withSidecar: false });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    expect(censusTableCount(makeCtx(), "   ")).toBe(0);
+    expect(censusTableCount(makeCtx(), null)).toBe(0);
+    // A path, not a bare name: the sidecar lives next to the artifact.
+    seedTree({});
+    expect(censusTableCount(makeCtx(), path.join(backupDir, ART))).toBe(CENSUS_TABLES.length);
+  });
+
+  test("T12c4 an operator cannot type the strongest claim in the evidence file", () => {
+    // The whole point of deriving the census from the sidecar: a recorder that
+    // accepted `--census-attested`, or a reader that believed a hand-edited flag,
+    // would make PASS the easiest field in the file to produce.
+    const censusFree = SIDECAR_LINES.filter((l) => !l.startsWith("census"));
+    seedTree({ evidence: null, sidecarLines: censusFree });
+    const chunks = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (c) => { chunks.push(String(c)); return true; };
+    let code;
+    try {
+      code = main(["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--census-attested", "true", "--no-rerun"],
+        { ctx: makeCtx(), writeFile: (f, t) => writeFileSync(f, t, "utf8") });
+    } finally { process.stdout.write = realWrite; }
+    expect(code).toBe(0);
+    const data = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
+    expect(data.restore_verification.censusAttested).toBe(false);
+    expect(chunks.join("")).toMatch(/NOTE:.*no backup-time census/);
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/no dump-time census/);
+    expect(by["restore.evidence"].remediation).toMatch(/census-bearing/);
+    // The recovery the refusal names is the one this repo has: the script exists,
+    // and the flag it is told to use is the flag the binary accepts.
+    expect(existsSync(new URL("./verify-backup-restore.sh", import.meta.url))).toBe(true);
+    expect(by["restore.evidence"].remediation).toContain("--record-restore");
+    // And with the census present, the same command records the attestation on its
+    // own and says nothing about it.
+    seedTree({ evidence: null });
+    const said = [];
+    process.stdout.write = (c) => { said.push(String(c)); return true; };
+    try {
+      main(["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--no-rerun"],
+        { ctx: makeCtx(), writeFile: (f, t) => writeFileSync(f, t, "utf8") });
+    } finally { process.stdout.write = realWrite; }
+    expect(JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8")).restore_verification.censusAttested).toBe(true);
+    expect(said.join("")).not.toMatch(/NOTE/);
+  });
+
+  test("T12c5 the reader re-reads the artifact and does not inherit the file's claim", () => {
+    const censusFree = SIDECAR_LINES.filter((l) => !l.startsWith("census"));
+    // A forged attestation: the JSON says the census exists, the artifact's sidecar
+    // says it does not. The artifact is the evidence, so it wins.
+    seedTree({ sidecarLines: censusFree });
+    let by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/although the evidence file claims one/);
+    // The other direction, which is the one that must not cost a clinic a deploy:
+    // a proof recorded before this field existed, against an artifact that does
+    // carry a census. The completeness argument is in the sidecar right now, so the
+    // gate reads it and PASSes without being told.
+    seedTree({ evidence: { ...HEALTHY_EVIDENCE, restore_verification: { ...HEALTHY_EVIDENCE.restore_verification, censusAttested: undefined } } });
+    by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(PASS);
+  });
+
+  test("T12c6 the in-app route holds the same bar as the operator's record", () => {
+    // Two routes to PASS with two evidence bars is how a gate teaches people to
+    // route around the harder one.
+    const db = (stdout) => build({}, { restore_verification: { stdout } }).by["restore.evidence"];
+    expect(db("pass|2026-10-15 02:00:00+00|true\n").status).toBe(PASS);
+    const absent = db("pass|2026-10-15 02:00:00+00|absent\n");
+    expect(absent.status).toBe(UNKNOWN);
+    expect(absent.detail).toMatch(/not recorded by the version that produced this proof/);
+    expect(absent.remediation).toMatch(/census-bearing scripts\/synology-nas-backup\.sh/);
+    const odd = db("pass|2026-10-15 02:00:00+00|maybe\n");
+    expect(odd.status).toBe(UNKNOWN);
+    expect(odd.detail).toMatch(/reported as "maybe"/);
+    // A census cannot rescue a failed restore.
+    expect(db("fail|2026-10-15 02:00:00+00|true\n").status).toBe(FAIL);
+  });
+
+  test("T12c7 a census claim in the verifier's own row is not read as a boolean", () => {
+    // `detail->>'censusAttested'` is JSON text: `true`, `false`, or absent. A check
+    // written as a string comparison against anything else lands on UNKNOWN, which
+    // is the honest answer; the day it lands on PASS is the day the gate is lying.
+    const { by } = build({}, { restore_verification: { stdout: "pass|2026-10-15 02:00:00+00|false\n" } });
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/reported as "false"/);
   });
 
   test("T12i a recorder refuses to invent the one field that makes the proof mean something", () => {

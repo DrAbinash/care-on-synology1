@@ -208,19 +208,46 @@ export function reportName(name) {
 const MANIFEST_FIELDS = [
   "artifact", "created_utc", "source_container", "source_database", "server_version",
   "exporter", "schema_complete", "create_tables", "encrypted", "bytes",
-  "sha256_sql_gzipped", "sha256_artifact",
+  "sha256_sql_gzipped", "sha256_artifact", "census_tables", "census_error",
 ];
 const SECRET_KEY = /(passphrase|password|secret|token|apikey|api_key|credential|connection|uri|url|key)$/i;
+
+/**
+ * The backup-time census: `census_before.<table>` / `census_after.<table>`, each a
+ * bracketed `rows|min|max|idsum`. Keyed per table, so they cannot be listed in a
+ * fixed allowlist — instead the key AND the value are both shape-checked, and only
+ * an all-digits payload survives. A sidecar is machine-written today; a key shaped
+ * like a census line but holding a token must not become the one field that turns
+ * an inventory dump into a credential dump.
+ */
+const CENSUS_KEY = /^census_(before|after)\.([a-z_][a-z0-9_]*)$/;
+const CENSUS_VALUE = /^\d+\|\d+\|\d+\|\d+$/;
 
 export function sanitizeManifest(meta) {
   const out = {};
   let hidden = 0;
   for (const [k, v] of Object.entries(meta ?? {})) {
+    const census = CENSUS_KEY.exec(k);
+    if (census) {
+      if (CENSUS_VALUE.test(String(v))) out[k] = String(v);
+      else hidden++;
+      continue;
+    }
     if (!MANIFEST_FIELDS.includes(k)) { hidden++; continue; }
     out[k] = SECRET_KEY.test(k) || credentialShaped(v) ? "[redacted]" : v;
   }
   if (hidden) out.redacted_fields = hidden;
   return out;
+}
+
+/**
+ * How many tables this artifact carries backup-time evidence for — the pre-dump
+ * half only, because a bracket with one edge missing is not a bracket and the
+ * verifier refuses it too.
+ */
+export function censusCoverage(manifest) {
+  if (!manifest) return 0;
+  return Object.keys(manifest).filter((k) => CENSUS_KEY.test(k) && k.startsWith("census_before.")).length;
 }
 
 /**
@@ -258,6 +285,7 @@ export async function inspect(ctx, roots, opts = {}) {
       day: mtimeIso.slice(0, 10),
       daySource: "mtime",
       manifest: null,
+      census: 0,
       problems: [],
       checksum: "absent",
       recordedSha: null,
@@ -284,6 +312,7 @@ export async function inspect(ctx, roots, opts = {}) {
         // the report, but it must still be checked where it matters (`sha256_artifact`
         // format, `bytes` against the real file, `source_database` against this host).
         row.manifest = sanitizeManifest(meta);
+        row.census = censusCoverage(row.manifest);
         row.recordedSha = meta.sha256_artifact ?? null;
         row.checksum = meta.sha256_artifact ? "recorded" : "absent";
         row.problems.push(...auditSidecar(meta, { actualBytes: a.bytes, expectedDatabase }));
@@ -357,6 +386,9 @@ export async function inspect(ctx, roots, opts = {}) {
   const coverage = days.length ? coverageGaps(days, now) : null;
 
   const counts = rows.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
+  // Reported beside the status counts because it is the number that says how much
+  // of this fleet can answer "complete?", as opposed to "restorable?".
+  const censusBearing = rows.filter((r) => r.census > 0).length;
   const recorded = rowOrNull(recordedRestore);
   const restoreEvidence = {
     // The recorded name came from an operator typing `--artifact`, not from the job, so it
@@ -375,6 +407,7 @@ export async function inspect(ctx, roots, opts = {}) {
     maxAgeHours: maxAgeH,
     artifacts: rows,
     counts,
+    censusBearing,
     interrupted: inv.partials.map((p) => ({ artifact: reportName(p.name), bytes: p.bytes, mtimeIso: new Date(p.mtimeMs).toISOString() })),
     orphanSidecars: inv.orphanSidecars.map((s) => reportName(s.name)),
     subdirectories: inv.subdirs,
@@ -420,8 +453,8 @@ export function render(inv) {
       ? "No restorable artifact in the directory. A directory that exists and holds nothing is the finding."
       : "No backup directory could be read from here. That is UNKNOWN about the backups, not evidence that there are none — run this on the NAS, or set BACKUP_DIR.");
   } else {
-    const head = ["artifact", "size", "age", "source_database", "tables", "manifest", "checksum", "restored", "status"];
-    const w = [40, 9, 7, 17, 7, 10, 9, 12, 10];
+    const head = ["artifact", "size", "age", "source_database", "tables", "manifest", "census", "checksum", "restored", "status"];
+    const w = [40, 9, 7, 17, 7, 10, 7, 9, 12, 10];
     lines.push(head.map((h, i) => h.padEnd(w[i])).join(" "));
     for (const r of inv.artifacts) {
       lines.push([
@@ -431,6 +464,11 @@ export function render(inv) {
         (r.manifest?.source_database ?? "-"),
         (r.manifest?.create_tables ?? "-"),
         r.manifest ? "yes" : "NO",
+        // How many tables this artifact can prove it held at dump time. A column of
+        // `no` is the honest picture of a backup fleet that cannot answer the
+        // completeness question, and it is the number that rises nightly once the
+        // census-bearing job is the one running.
+        r.census ? `${r.census}t` : "no",
         r.checksum,
         r.restored,
         r.status,
@@ -442,7 +480,12 @@ export function render(inv) {
   const c = inv.counts;
   lines.push(`counts: ${Object.entries(c).map(([k, v]) => `${k} ${v}`).join(", ") || "no artifacts"}`
     + ` · interrupted .partial: ${inv.interrupted.length}`
-    + ` · orphan .meta: ${inv.orphanSidecars.length}`);
+    + ` · orphan .meta: ${inv.orphanSidecars.length}`
+    + ` · census-bearing: ${inv.censusBearing}/${inv.artifacts.length}`);
+  if (inv.artifacts.length && inv.censusBearing === 0) {
+    lines.push("  NONE of these artifacts carries a backup-time census, so no restore of any of them can prove it held");
+    lines.push("  what the database had when the dump was taken — only that it restored. See synology-nas-backup.sh.");
+  }
   if (inv.interrupted.length) {
     lines.push("  A .partial left behind means a job died mid-write. It is not a backup and must never be restored from.");
     for (const p of inv.interrupted) lines.push(`    ${p.artifact} (${(p.bytes / 1024 / 1024).toFixed(1)}M, ${p.mtimeIso})`);

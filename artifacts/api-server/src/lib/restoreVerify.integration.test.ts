@@ -8,7 +8,7 @@ import { existsSync, rmSync, writeFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Pool } from "pg";
-import { runRestoreVerification, dbUrlParts } from "./restoreVerification";
+import { runRestoreVerification, dbUrlParts, censusSql, RESTORE_CORE_TABLES, type CensusSample } from "./restoreVerification";
 
 const hasDb = !!process.env.DATABASE_URL;
 
@@ -163,6 +163,119 @@ describe.skipIf(!hasDb || !dumpTools)("row_count_sanity against a real PostgreSQ
     } finally {
       await pool.query("DELETE FROM audit_logs WHERE module = $1 OR id = $2", [MARKER, gapId]);
       await pool.query("SELECT setval('audit_logs_id_seq', (SELECT COALESCE(max(id), 1) FROM audit_logs))");
+      rmSync(dumpFile, { force: true });
+      await pool.end();
+    }
+  }, 300_000);
+});
+
+/**
+ * The same two artifacts, judged against what the database said it held when the
+ * dump was taken rather than against what it happens to hold now. `censusSql()` is
+ * executed here rather than mocked, so the query the backup job actually runs is
+ * the query these numbers came from.
+ */
+describe.skipIf(!hasDb || !dumpTools)("backup_census_match against a real PostgreSQL", () => {
+  async function censusNow(pool: Pool) {
+    const r = await pool.query(censusSql(RESTORE_CORE_TABLES as unknown as string[]));
+    return r.rows.map((row: any) => ({
+      table: String(row.census_table),
+      sample: {
+        rows: Number(row.row_count),
+        minId: Number(row.id_min),
+        maxId: Number(row.id_max),
+        idSum: Number(row.id_sum),
+      },
+    }));
+  }
+
+  function writeSidecar(dumpFile: string, samples: Array<{ table: string; sample: CensusSample }>, alter?: (t: string, s: CensusSample) => CensusSample) {
+    const lines = samples.flatMap(({ table, sample }) => {
+      const s = alter ? alter(table, sample) : sample;
+      return [`census_before.${table}=${s.rows}|${s.minId}|${s.maxId}|${s.idSum}`, `census_after.${table}=${s.rows}|${s.minId}|${s.maxId}|${s.idSum}`];
+    });
+    writeFileSync(`${dumpFile}.meta`, ["artifact=test.sql", "exporter=pg_dump", ...lines].join("\n") + "\n");
+  }
+
+  it("verifies completeness against the numbers taken at dump time", async () => {
+    const pool = await probePool();
+    const dumpFile = join(tmpdir(), `census_ok_${Date.now()}.sql`);
+    try {
+      await seedRows(pool, 3);
+      const samples = await censusNow(pool);
+      takeDump(dumpFile);
+      writeSidecar(dumpFile, samples);
+
+      const r = await runRestoreVerification({ backupPath: dumpFile, ranBy: MARKER });
+      const step = r.steps.find((s) => s.name === "backup_census_match");
+      expect(step, "backup_census_match must run").toBeTruthy();
+      expect(step!.ok, step!.detail).toBe(true);
+      expect(step!.evidence).toBe("verified");
+      expect(r.censusAttested).toBe(true);
+      expect(r.unverified).not.toContain("backup_census_match");
+    } finally {
+      await pool.query("DELETE FROM audit_logs WHERE module = $1", [MARKER]);
+      rmSync(dumpFile, { force: true });
+      rmSync(`${dumpFile}.meta`, { force: true });
+      await pool.end();
+    }
+  }, 300_000);
+
+  it("catches a different row set that has the same count, the same min and the same max", async () => {
+    // This is the case the high-water bound cannot see and the reason the census
+    // exists: `row_count_sanity` compares a count against a count-below-a-bound, so
+    // an artifact holding the right NUMBER of rows with the wrong ids satisfies it.
+    // The bracket on the id sum does not, and says so in the numbers.
+    const pool = await probePool();
+    const dumpFile = join(tmpdir(), `census_swap_${Date.now()}.sql`);
+    try {
+      await seedRows(pool, 3);
+      const samples = await censusNow(pool);
+      takeDump(dumpFile);
+      writeSidecar(dumpFile, samples, (table, s) =>
+        table === "audit_logs" ? { ...s, idSum: s.idSum + 7 } : s,
+      );
+
+      const r = await runRestoreVerification({ backupPath: dumpFile, ranBy: MARKER });
+      const bound = r.steps.find((s) => s.name === "row_count_sanity");
+      const census = r.steps.find((s) => s.name === "backup_census_match");
+      expect(bound!.ok, `the cardinality bound alone must still be satisfied: ${bound!.detail}`).toBe(true);
+      expect(census!.ok, "a doctored row set must not pass").toBe(false);
+      expect(census!.detail).toMatch(/audit_logs: .*id sum \d+ outside the bracket/);
+      expect(r.ok).toBe(false);
+    } finally {
+      await pool.query("DELETE FROM audit_logs WHERE module = $1", [MARKER]);
+      rmSync(dumpFile, { force: true });
+      rmSync(`${dumpFile}.meta`, { force: true });
+      await pool.end();
+    }
+  }, 300_000);
+
+  it("reports unverified, and still passes, for an artifact written before the census existed", async () => {
+    // Every backup the clinic holds today. Failing them would be a lie about the
+    // restore, and passing them as evidence would be a lie about completeness, so
+    // the answer is a third state the gate can show.
+    const pool = await probePool();
+    const dumpFile = join(tmpdir(), `census_absent_${Date.now()}.sql`);
+    try {
+      await seedRows(pool, 2);
+      takeDump(dumpFile);
+      const r = await runRestoreVerification({ backupPath: dumpFile, ranBy: MARKER });
+      const step = r.steps.find((s) => s.name === "backup_census_match");
+      expect(step, "backup_census_match must run").toBeTruthy();
+      expect(step!.ok).toBe(true);
+      expect(step!.evidence).toBe("unverified");
+      expect(step!.detail).toContain("no backup-time census");
+      // Name the culprit if the rest of the restore is not healthy. This assertion
+      // is about the census, and when it fails on an `audit_chain_verifies` fork it
+      // is the scratch database that was polluted by an earlier interrupted run, not
+      // the code — which is exactly what a bare `expected false to be true` hid.
+      expect(r.steps.filter((s) => !s.ok).map((s) => `${s.name}: ${s.detail}`)).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.censusAttested).toBe(false);
+      expect(r.unverified).toContain("backup_census_match");
+    } finally {
+      await pool.query("DELETE FROM audit_logs WHERE module = $1", [MARKER]);
       rmSync(dumpFile, { force: true });
       await pool.end();
     }

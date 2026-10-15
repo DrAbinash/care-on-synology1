@@ -36,11 +36,28 @@ export interface RestoreVerificationStep {
   name: string;
   ok: boolean;
   detail: string;
+  /**
+   * Present only on a step that could not be exercised. `ok: true` on such a step
+   * means "nothing failed", NOT "this was proved" — the distinction is what keeps
+   * an artifact written before the backup-time census existed from being credited
+   * as a census-bearing one. Anything other than "verified" is reported onward as
+   * unverified and the preflight gate answers UNKNOWN, never PASS.
+   */
+  evidence?: "verified" | "unverified";
 }
 
 export interface RestoreVerificationResult {
   ok: boolean;
   steps: RestoreVerificationStep[];
+  /** Steps that ran but could not be exercised. Never quoted as proof. */
+  unverified: string[];
+  /**
+   * True only when every core table's completeness was bracketed by the census the
+   * backup job took. The preflight gate turns this into PASS versus UNKNOWN: an
+   * older proof that restored perfectly still cannot say what the database held at
+   * the moment the dump was taken.
+   */
+  censusAttested: boolean;
   throwawayDb: string | null;
   ranAt: string;
   durationMs: number;
@@ -165,6 +182,143 @@ export async function evaluateRowCountSanity(
 }
 
 /**
+ * What one table looked like at one instant: how many rows, the oldest and newest
+ * sequence id, and the sum of those ids. Four numbers, one scan.
+ */
+export type CensusSample = { rows: number; minId: number; maxId: number; idSum: number };
+
+/**
+ * The census the backup job takes. `before` and `after` bracket the `pg_dump`, and
+ * the dump's contents are a consistent snapshot somewhere inside that bracket — so
+ * the artifact is required to sit between them, and neither number has to be
+ * re-derived from the live database months later.
+ *
+ * Why this exists beside `evaluateRowCountSanity`: a high-water mark is a property
+ * of the database as it is NOW. If a migration rebuilds a table and its ids restart
+ * at 1, if history is deleted, or if the artifact being restored is from a different
+ * database that happens to have a plausible top id, the bound is still computable
+ * and still satisfied while meaning nothing. A census recorded at dump time cannot
+ * drift, and it sees row loss the cardinality comparison cannot.
+ */
+export type BackupCensus = {
+  tables: Record<string, { before: CensusSample; after: CensusSample | null }>;
+  /** Set when the job could not take the census, so the absence has a reason. */
+  error: string | null;
+  present: boolean;
+};
+
+/**
+ * The single query the backup job runs. Exported so the shell script and the
+ * verifier can be pinned to mean the same thing by "census" — two definitions of a
+ * proof is how a check quietly stops being one.
+ *
+ * `sum()` over a bigint returns numeric in PostgreSQL, so the id sum cannot overflow
+ * the way a hand-rolled int8 accumulator would.
+ */
+export function censusSql(tables: readonly string[], marker = "id"): string {
+  return tables
+    .map((t) => {
+      const q = quoteRestoreIdentifier(t);
+      const m = quoteRestoreIdentifier(marker);
+      return `SELECT '${t}' AS census_table, count(*)::bigint AS row_count, coalesce(min(${m}), 0)::bigint AS id_min, coalesce(max(${m}), 0)::bigint AS id_max, coalesce(sum(${m}), 0)::numeric AS id_sum FROM ${q}`;
+    })
+    .join(" UNION ALL ");
+}
+
+const CENSUS_LINE = /^census_(before|after)\.([a-z_][a-z0-9_]*)=(\d+)\|(\d+)\|(\d+)\|(\d+)$/;
+
+/**
+ * Parse the `.meta` sidecar's census block. Anything malformed is dropped rather
+ * than guessed at, and a half-present bracket (an `after` that never arrived) stays
+ * a half-present bracket, because the bracket is the whole argument.
+ */
+export function parseBackupCensus(metaText: string | null | undefined): BackupCensus {
+  const out: BackupCensus = { tables: {}, error: null, present: false };
+  if (!metaText) return out;
+  for (const raw of metaText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("census_error=")) {
+      out.error = line.slice("census_error=".length).trim() || "reported without a reason";
+      continue;
+    }
+    const m = CENSUS_LINE.exec(line);
+    if (!m) continue;
+    const [, which, table, rows, minId, maxId, idSum] = m;
+    const sample: CensusSample = { rows: Number(rows), minId: Number(minId), maxId: Number(maxId), idSum: Number(idSum) };
+    const entry = out.tables[table] ?? { before: sample, after: null };
+    if (which === "before") entry.before = sample;
+    else entry.after = sample;
+    out.tables[table] = entry;
+    out.present = true;
+  }
+  return out;
+}
+
+export type CensusReaders = { restored(table: string): Promise<CensusSample> };
+
+/**
+ * Did the artifact contain the rows the database had when the dump was taken?
+ *
+ * Three answers, not two. A mismatch is FAIL and blocks. A table the census never
+ * covered leaves the step `unverified` rather than failing the restore: the artifact
+ * may predate this evidence, and a healthy clinic box must not go red for a reason
+ * nobody can fix without a time machine. `unverified` is reported as such, so
+ * nothing may call it proved.
+ */
+export async function evaluateBackupCensus(
+  tables: readonly string[],
+  census: BackupCensus,
+  readers: CensusReaders,
+): Promise<RestoreVerificationStep> {
+  if (!census.present) {
+    return {
+      name: "backup_census_match",
+      ok: true,
+      evidence: "unverified",
+      detail: `no backup-time census in this artifact's .meta${census.error ? ` (the job reported: ${census.error})` : ""} — completeness is judged by the high-water bound alone, which cannot see history deleted after the dump`,
+    };
+  }
+  const problems: string[] = [];
+  const matched: string[] = [];
+  const skipped: string[] = [];
+  for (const table of tables) {
+    const c = census.tables[table];
+    if (!c) {
+      skipped.push(table);
+      continue;
+    }
+    const now = await readers.restored(table);
+    const hi = c.after ?? c.before;
+    const faults: string[] = [];
+    if (now.rows < c.before.rows) faults.push(`holds ${now.rows} of the ${c.before.rows} rows the database had when the dump started`);
+    if (now.rows > hi.rows) faults.push(`holds ${now.rows} rows, more than the ${hi.rows} present when the dump finished — this artifact is not from that moment`);
+    if (now.minId !== c.before.minId) faults.push(`oldest id ${now.minId} where the census recorded ${c.before.minId}: history moved`);
+    if (now.maxId < c.before.maxId || now.maxId > hi.maxId) faults.push(`newest id ${now.maxId} outside the bracket ${c.before.maxId}..${hi.maxId}`);
+    if (now.idSum < c.before.idSum || now.idSum > hi.idSum) faults.push(`id sum ${now.idSum} outside the bracket ${c.before.idSum}..${hi.idSum}`);
+    if (faults.length) problems.push(`${table}: ${faults.join("; ")}`);
+    else matched.push(`${table} ${now.rows.toLocaleString("en-US")}`);
+  }
+  const evidence = problems.length === 0 && skipped.length === 0 && matched.length > 0 ? "verified" : "unverified";
+  return {
+    name: "backup_census_match",
+    ok: problems.length === 0,
+    evidence,
+    detail: problems.length
+      ? problems.join("; ").slice(0, 500)
+      : `${matched.length}/${tables.length} table(s) bracketed by the census taken at dump time${skipped.length ? `; NOT CENSUSED: ${skipped.join(", ")}` : ""} — ${matched.join(", ")}`,
+  };
+}
+
+/**
+ * True only when every table the restore is judged on carried backup-time evidence.
+ * Persisted so the preflight gate can tell a census-bearing proof from an older
+ * green tick that cannot say what the database looked like when it was taken.
+ */
+export function censusAttested(census: BackupCensus, tables: readonly string[]): boolean {
+  return tables.every((t) => Boolean(census.tables[t]?.before));
+}
+
+/**
  * True when SQL looks schema-complete (contains CREATE TABLE).
  * DATA-ONLY fallback dumps emit TRUNCATE + INSERT only — they restore into an
  * empty throwaway DB with zero tables, which previously surfaced only as the
@@ -253,6 +407,11 @@ export async function runRestoreVerification(
   let sqlPath: string | null = null;
   let throwawayCreated = false;
   let restoredPool: Pool | null = null;
+  // Set once the sidecar has been read. `finish()` lives outside the try block, so
+  // the census verdict has to be a variable rather than the step itself — and the
+  // default is the pessimistic one, because a run that died before reaching the
+  // census must not be recorded as a census-bearing proof.
+  let censusEvidence: "verified" | "unverified" = "unverified";
 
   const step = (name: string, ok: boolean, detail: string) => {
     steps.push({ name, ok, detail: detail.slice(0, 500) });
@@ -420,6 +579,31 @@ export async function runRestoreVerification(
     });
     if (!step(countStep.name, countStep.ok, countStep.detail)) return finish(false);
 
+    // Backup-time census: what the database said it held while the dump was being
+    // taken, read from the sidecar that travelled with the artifact. This is the
+    // half of "complete" that the bound above cannot supply, because the bound is
+    // computed from the live database at verification time.
+    const metaPath = backupPath ? `${backupPath}.meta` : null;
+    const metaText = metaPath ? await fs.readFile(metaPath, "utf8").catch(() => null) : null;
+    const census = parseBackupCensus(metaText);
+    if (metaText === null) {
+      census.error = census.error ?? (metaPath ? `no ${path.basename(metaPath)} beside the artifact` : "no artifact path to look for a sidecar next to");
+    }
+    const censusStep = await evaluateBackupCensus(RESTORE_CORE_TABLES, census, {
+      async restored(table) {
+        const q = quoteRestoreIdentifier(table);
+        const m = quoteRestoreIdentifier(RESTORE_ROW_COUNT_MARKERS[table] ?? "id");
+        const r = await pool.query(
+          `SELECT count(*)::bigint AS c, coalesce(min(${m}), 0)::bigint AS lo, coalesce(max(${m}), 0)::bigint AS hi, coalesce(sum(${m}), 0)::numeric AS s FROM ${q}`,
+        );
+        const row = r.rows[0] ?? {};
+        return { rows: Number(row.c ?? 0), minId: Number(row.lo ?? 0), maxId: Number(row.hi ?? 0), idSum: Number(row.s ?? 0) };
+      },
+    });
+    steps.push(censusStep);
+    censusEvidence = censusStep.evidence ?? "unverified";
+    if (!censusStep.ok) return finish(false);
+
     // Signed structured reports: jsonb round-trip + content hash verify.
     const signed = await restoredPool.query(
       "SELECT id, structured_json FROM patient_reports WHERE structured_json IS NOT NULL AND type = 'radiology' ORDER BY id",
@@ -474,6 +658,8 @@ export async function runRestoreVerification(
     const result: RestoreVerificationResult = {
       ok: ok && steps.every((s) => s.ok),
       steps,
+      unverified: steps.filter((s) => s.evidence === "unverified").map((s) => s.name),
+      censusAttested: censusEvidence === "verified",
       throwawayDb: throwawayCreated ? throwawayDb : null,
       ranAt: new Date().toISOString(),
       durationMs: Date.now() - startedAt,
@@ -482,7 +668,15 @@ export async function runRestoreVerification(
       checkName: "restore_verification",
       status: result.ok ? "pass" : "fail",
       ranBy: opts.ranBy ?? "system",
-      detail: { steps: result.steps, throwawayDb: result.throwawayDb, durationMs: result.durationMs },
+      detail: {
+        steps: result.steps,
+        throwawayDb: result.throwawayDb,
+        durationMs: result.durationMs,
+        // The gate reads this. A proof recorded before the backup job carried a
+        // census is a real pass over the data it could see, and it must not be
+        // quoted as evidence of completeness it never measured.
+        censusAttested: result.censusAttested,
+      },
     }).catch(() => undefined);
     return result;
   }

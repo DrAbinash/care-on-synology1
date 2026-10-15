@@ -16,7 +16,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { isArtifact, makeContext } from "./ops-preflight.mjs";
-import { classify, artifactDay, coverageGaps, inspect, isPlausibleDay, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
+import { classify, artifactDay, censusCoverage, coverageGaps, inspect, isPlausibleDay, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const DB = "diagnostic_erp";
@@ -57,6 +57,7 @@ function artifact(offsetDays, over = {}) {
       `encrypted=${over.encrypted ?? "no"}`,
       `sha256_artifact=${over.sha ?? "0".repeat(64)}`,
       `bytes=${over.bytes ?? bytes.length}`,
+      ...(over.sidecarLines ?? []),
       "",
     ];
     write(path.join("backups", `${d.name}.meta`), lines.join("\n"));
@@ -396,6 +397,105 @@ describe("restore evidence, per artifact", () => {
     const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
     expect(inv.restoreEvidence.evidenceError).toMatch(/unparseable/);
     expect(inv.artifacts.length).toBe(1);
+  });
+});
+
+describe("the backup-time census: what an artifact can prove about its own moment", () => {
+  const TABLES = ["patient_reports", "radiology_worklist", "audit_logs"];
+  const edges = (which, tables = TABLES) =>
+    tables.map((t, i) => `census_${which}.${t}=${20 + i}|1|${900 + i}|${43210 + i}`);
+  const censed = (over = {}) =>
+    artifact(0, { sidecarLines: [...edges("before"), ...edges("after"), `census_tables=${TABLES.join(" ")}`, ...(over.extra ?? [])] });
+
+  test("a census-bearing artifact says how many tables it can prove", async () => {
+    censed();
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts[0].census).toBe(TABLES.length);
+    expect(inv.censusBearing).toBe(1);
+    const text = render(inv);
+    expect(text).toMatch(/census-bearing: 1\/1/);
+    expect(text).not.toMatch(/NONE of these artifacts/);
+    // The column prints the table count, not a yes/no: three tables censed out of
+    // the seven the job is meant to bracket is a different finding from all seven.
+    expect(text).toMatch(/3t/);
+  });
+
+  test("an inventory of artifacts that cannot answer completeness says so out loud", async () => {
+    artifact(0);
+    artifact(1);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts.map((r) => r.census)).toEqual([0, 0]);
+    expect(inv.censusBearing).toBe(0);
+    const text = render(inv);
+    expect(text).toMatch(/census-bearing: 0\/2/);
+    expect(text).toMatch(/NONE of these artifacts carries a backup-time census/);
+    expect(text).toMatch(/synology-nas-backup\.sh/);
+    // The census is not a status: a pre-census backup is still a valid backup. Two
+    // numbers on one line, restorable and complete, and neither borrows the other.
+    expect(inv.artifacts.every((r) => r.status === "OK")).toBe(true);
+  });
+
+  test("one edge of the bracket is not a bracket", async () => {
+    // The job refuses to write a half census for exactly this reason: with only the
+    // post-dump edge, the verifier would demand the artifact hold a row count taken
+    // after the dump finished, and a perfect backup of a busy clinic would fail.
+    artifact(0, { sidecarLines: edges("after") });
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts[0].census).toBe(0);
+    expect(render(inv)).toMatch(/NONE of these artifacts/);
+  });
+
+  test("a census line that is not a measurement is neither counted nor printed", async () => {
+    // The sidecar is machine-written today. The day it is edited by hand, a key
+    // shaped like a census line is the one field the inventory cannot put on a fixed
+    // allowlist — the table names are open-ended — so the VALUE is gated too.
+    const bad = [
+      "census_before.bill_items=postgres://erp:SENTINEL@10.0.0.5:5432/diagnostic_erp",
+      "census_before.patient_lab_tests=NaN|1|2|3",
+      "census_before.patients=10|5|",
+      "census_before.patient_scans=10|5|9|3.75",
+    ];
+    artifact(0, { sidecarLines: [...bad, ...edges("before"), ...edges("after")] });
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts[0].census).toBe(TABLES.length);
+    const text = render(inv) + JSON.stringify(inv);
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toMatch(/postgres:\/\/|postgresql:\/\//i);
+    // One count per rejected line, so the report shows that four census fields were
+    // dropped rather than quietly printing a three-table coverage number.
+    expect(JSON.stringify(inv)).toMatch(/"redacted_fields":4/);
+  });
+
+  test("census_tables and census_error are manifest fields the report may carry", () => {
+    // Both are job-written text, so they pass through the allowlist; `census_error`
+    // is the only way a reader can tell "no census" from "census attempted and failed".
+    const m = sanitizeManifest({
+      artifact: "caredeoghar_20261015_030000.sql.gz",
+      census_tables: "audit_logs patient_reports",
+      census_error: "no pre-dump census could be taken",
+    });
+    expect(m.census_tables).toBe("audit_logs patient_reports");
+    expect(m.census_error).toBe("no pre-dump census could be taken");
+    expect(censusCoverage(m)).toBe(0);
+  });
+
+  test("censusCoverage counts tables, not lines", () => {
+    expect(censusCoverage(null)).toBe(0);
+    expect(censusCoverage({})).toBe(0);
+    expect(censusCoverage({
+      "census_before.audit_logs": "1|1|1|1", "census_after.audit_logs": "2|1|2|3",
+      "census_before.patient_reports": "1|1|1|1",
+    })).toBe(2);
+  });
+
+  test("a census the verifier will refuse is not reported as evidence", async () => {
+    // `census_tables=` naming two tables while only one has edges: the inventory's
+    // number comes from the edges it can actually read, so a boastful summary line
+    // cannot inflate the count.
+    artifact(0, { sidecarLines: [...edges("before", ["patient_reports"]), ...edges("after", ["patient_reports"]), "census_tables=audit_logs patient_reports radiology_worklist"] });
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts[0].census).toBe(1);
+    expect(inv.censusBearing).toBe(1);
   });
 });
 

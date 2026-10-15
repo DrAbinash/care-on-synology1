@@ -103,13 +103,22 @@ published port and `ON_ERROR_STOP=1`, then checks patients/bills actually landed
 It prints `🎉 PASS` or tells you exactly what's wrong.
 
 If the artifact has a `.meta` sidecar (written by `scripts/synology-nas-backup.sh`
-since this change), two more facts are checked before any restore starts:
+since this change), what the job recorded is checked before any restore starts:
 
 * `source_database` must equal `DB_NAME` (default `diagnostic_erp`) — so a copy of
   the wrong database, with a plausible file name, is refused rather than restored
   in front of staff. Override deliberately with `DB_NAME=… bash $0 …`.
 * `sha256_artifact` must match the bytes on disk — a truncated or hand-edited copy
   fails here instead of halfway through a restore.
+* the **backup-time census** is named: `census: 7 table(s) bracketed at dump time
+  (…)`, or `census: none`. That bracket — row count, lowest id, highest id and the
+  sum of ids for each core table, taken immediately before the dump and immediately
+  after it — is what the in-app verifier's `backup_census_match` step grades the
+  restored copy against, and it is the only completeness argument that does not
+  assume ids are dense, that history is never deleted, or that nobody rebuilt a
+  sequence after 03:00. `verify-backup-restore.sh` reports which kind of artifact it
+  is holding so you know before the restore; the grading, and the `UNKNOWN` the
+  deploy gate holds a census-free proof at, happen in `restoreVerification.ts`.
 
 Artifacts without a sidecar (older copies, the in-app scheduler's own files) still
 get the full restore proof; the script just says plainly that the source database
