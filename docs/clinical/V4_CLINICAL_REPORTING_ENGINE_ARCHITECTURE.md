@@ -325,8 +325,8 @@ scopes as `draft`, and proves the constraints behave as declared on a real datab
 second revision of this stage (the independent review, §2a above) added the same-examination
 composite keys, the runtime slot identity, sparse ordinals, the append-only triggers, the
 publication manifest and the publication gate — the ten defect families reproduced as failures
-first, and every guard then verified by deleting it: 36 executed mutations (29 DDL mutations
-replayed against copies of the migrated database, 7 text mutations of the migration file) each
+first, and every guard then verified by deleting it: 36 executed mutations (28 DDL mutations
+replayed against copies of the migrated database, 8 text mutations of the migration file) each
 turned a suite red, 36/36. The two mutants that first survived were not weak constraints but weak
 tests — an existence check that proved a phrase appeared somewhere in the file rather than in the
 table it belongs to, and a two-column NOT NULL probe that passed because the other column fired —
