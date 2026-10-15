@@ -1099,6 +1099,24 @@ BEGIN
   --     member of a rule that is not in the document is meaningless, and the flattened set
   --     comparison below still sees every one of them.
   --
+  --     WHAT THIS ARM DOES NOT CERTIFY, stated because a reviewer who assumes it does will be
+  --     wrong in a dangerous direction: check 14 compares MEMBERSHIP — which identities appear in
+  --     each domain — and not column values. A document that carries the right identities with
+  --     fabricated wording passes. Measured: a publication whose tiles entry said "A sentence
+  --     nobody approved." was accepted while the live row still said something else, and its
+  --     content_hash matched the fabricated document because the hash is self-consistent by
+  --     construction. The reason is not oversight. Only the publisher's serializer produces the
+  --     canonical bytes (sorted keys at every depth, integer-shaped strings normalised, entries
+  --     ordered by (ordinal, identity)), so a SQL reimplementation would be a second source of
+  --     truth for the hash and would refuse every legitimate publication the first time the two
+  --     disagreed; and pgcrypto, while AVAILABLE on the box, is NOT installed (installed_version
+  --     NULL), and CREATE EXTENSION is a privileged act a migration cannot assume. The real guards
+  --     are therefore on the publisher side — publicationColumnsFor() hashes precisely the document
+  --     it stores, so no caller can store a document and a hash that disagree — and
+  --     hashOfStoredSnapshot() is the drift detector for a stored publication. What this arm does
+  --     guarantee is the thing a rollback needs: every row the document claims to freeze exists,
+  --     is live, is scoped to this examination, and appears exactly once.
+  --
   --     Scope of each domain is stated in the FROM clause, and lib/db/src/
   --     cataloguePublicationSnapshot.ts is the only other place those ten predicates exist.
   --     The two are proved to agree by a test that publishes a real builder-produced
@@ -1339,6 +1357,58 @@ BEGIN
    LIMIT 1;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §3: no composition order for an unplaced rule)', problem;
+  END IF;
+
+  -- 17. A live placement must name a tile that still exists. Measured on a fresh database built
+  --     through the real migration pipeline (15 drizzle + 193 feature migrations): retiring a
+  --     tile that is placed in an examination is a legal draft act, the examination then published
+  --     without complaint, and the frozen document quietly lost the observation — the publisher's
+  --     own read drops the retired tile, so the placement vanished from `tiles` and `placements`
+  --     with nothing to say so. That is the silent-loss class check 14 was written to end, arriving
+  --     from the other side: not a document that disagrees with the rows, but rows that agree with
+  --     each other about having lost something.
+  --     The remedy the message names is the real one: un-retire the tile, or retire the placement.
+  --     `status = 'deprecated'` is NOT in this arm on purpose: a deprecated tile is still a tile
+  --     with wording that history may need, and checks 1 and 8 already treat it as out of force.
+  SELECT 'tile ' || k.key || ' is placed in this examination but has been retired'
+    INTO problem
+    FROM clinical_tile_examinations p
+    JOIN clinical_tiles k ON k.id = p.tile_id
+   WHERE p.examination_id = exam AND p.deleted_at IS NULL AND k.deleted_at IS NOT NULL
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a publication may not silently lose a placed observation)', problem;
+  END IF;
+
+  -- 18. A relationship must stay inside the examination that offers it. Measured: an 'excludes'
+  --     pair between this examination's tile and another examination's tile was storable, declared
+  --     in both directions so check 6 was satisfied, and published — freezing the OTHER
+  --     examination's tile key into this publication, and making this report's resolution depend
+  --     on a tile the radiologist can never select here. Checks 4 and 5 already require the same
+  --     scoping for replacement edges and combination members; relationships were the remaining
+  --     edge type, and they are the one that decides what gets evicted.
+  --     A concept end is allowed: finding_definitions is the canonical vocabulary, deliberately
+  --     not frozen here, and it is examination-wide by design.
+  SELECT 'relationship from tile ' || a.key || ' points at ' || b.key
+         || ', ' || CASE WHEN b.deleted_at IS NOT NULL
+                         THEN 'a tile that has been retired'
+                         ELSE 'a tile this examination does not offer' END
+    INTO problem
+    FROM clinical_tile_relationships r
+    JOIN clinical_tiles a ON a.id = r.tile_id
+    JOIN clinical_tiles b ON b.id = r.related_tile_id
+   WHERE r.deleted_at IS NULL AND r.related_tile_id IS NOT NULL
+     AND EXISTS (
+       SELECT 1 FROM clinical_tile_examinations p
+        WHERE p.tile_id = r.tile_id AND p.examination_id = exam AND p.deleted_at IS NULL
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM clinical_tile_examinations q
+        WHERE q.tile_id = r.related_tile_id AND q.examination_id = exam AND q.deleted_at IS NULL
+     )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: a resolution between tiles one of which this examination cannot offer)', problem;
   END IF;
 
   RETURN NEW;

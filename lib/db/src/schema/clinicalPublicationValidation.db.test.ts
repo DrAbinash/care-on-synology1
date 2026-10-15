@@ -24,8 +24,10 @@
  * refusal at all.
  *
  * ARMS EXECUTED ONLY HERE: 2, 8 (all five wording kinds plus the emits_heading boundary), 9, 10,
- * 11, 15. Checks 1, 3, 4, 5, 6, 7, 12, 13, 14, 16 already have executable coverage in
- * clinicalCatalogue.db.test.ts, clinicalSelectionContract.db.test.ts and
+ * 11, 15, 17, 18 — the last two found by the adversarial pass, which rebuilt a database from zero
+ * through the real migration pipeline and asked what a catalogue could publish while losing or
+ * reaching outside itself. Checks 1, 3, 4, 5, 6, 7, 12, 13, 14, 16 already have executable coverage
+ * in clinicalCatalogue.db.test.ts, clinicalSelectionContract.db.test.ts and
  * clinicalCombinationContract.db.test.ts; this file's static test is what makes that claim
  * checkable rather than remembered.
  */
@@ -47,8 +49,8 @@ const PUBLICATION_REFUSALS = [
   {
     item: "invalid anatomical relationships",
     layer: "publication",
-    enforcedBy: "gate check 2 (a section parented to a retired or foreign section)",
-    draftAllows: "re-parenting and re-ordering, including a temporarily wrong parent",
+    enforcedBy: "gate checks 2, 17 and 18 (a section parented to a retired section, a placement whose tile is retired, a relationship reaching outside the examination)",
+    draftAllows: "re-parenting and re-ordering, retiring a tile, and a temporarily wrong parent",
     runtime: "nothing — anatomy is catalogue state, not study state",
   },
   {
@@ -503,6 +505,191 @@ describe.skipIf(!dbUrl)("a publication is refused for exactly the reason stated,
     }
   });
 
+  it("refuses to publish a placement whose tile has been retired, by either remedy the refusal allows", async () => {
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "lost");
+      expect(await publish("pub.lost.ok", f.examId), "the untouched catalogue publishes").toBeNull();
+
+      // Retiring a tile that is placed here breaks no foreign key: the placement row survives, the
+      // tile row survives (soft-deleted), and the publisher's own read drops BOTH — so before check
+      // 17 the examination published a document that had quietly lost an observation, with nothing
+      // in either side disagreeing about having lost it. Measured on a database rebuilt from zero
+      // through the real migration pipeline.
+      expect(await attempt(
+        `UPDATE clinical_tiles SET deleted_at = NOW() WHERE id = $1`, [f.tileId],
+      ), "retiring the tile is a legal draft act").toBeNull();
+      const lost = await publish("pub.lost.gone", f.examId);
+      expect(lost?.code, "but the publication may not silently lose a placed observation").toBe("P0001");
+      expect(lost?.message).toMatch(/tile lost.tile is placed in this examination but has been retired/);
+
+      // Remedy one: un-retire the tile.
+      expect(await attempt(
+        `UPDATE clinical_tiles SET deleted_at = NULL WHERE id = $1`, [f.tileId],
+      )).toBeNull();
+      expect(await publish("pub.lost.back", f.examId), "bringing the tile back is one remedy").toBeNull();
+
+      // Remedy two: retire the placement instead, which is the editorial choice when the
+      // observation really has left the examination. Proved on a second fixture so the first
+      // remedy's state cannot be quietly carrying this assertion.
+      const second = await seedValid(client, "lost2");
+      await client.query(`UPDATE clinical_tiles SET deleted_at = NOW() WHERE id = $1`, [second.tileId]);
+      expect(await attempt(
+        `UPDATE clinical_tile_examinations SET deleted_at = NOW() WHERE tile_id = $1 AND examination_id = $2`,
+        [second.tileId, second.examId],
+      ), "retiring the placement is a plain update").toBeNull();
+      expect(await publish("pub.lost.unplaced", second.examId), "and the examination publishes without it").toBeNull();
+
+      // The boundary the arm deliberately does not cross: a deprecated tile is still a tile with
+      // wording a history may need, and checks 1 and 8 already treat it as out of force. Refusing
+      // it here would make an examination impossible to republish after an ordinary retirement.
+      const dep = await seedValid(client, "dep");
+      expect(await attempt(
+        `UPDATE clinical_tiles SET status = 'deprecated' WHERE key = 'dep.tile'`,
+      ), "deprecating a placed tile is legal").toBeNull();
+      expect(await publish("pub.dep.ok", dep.examId), "and a deprecated placed tile still publishes").toBeNull();
+      const frozen = await client.query<{ n: number }>(
+        `SELECT jsonb_array_length(catalogue_snapshot -> 'tiles') AS n
+           FROM clinical_publications WHERE publication_key = 'pub.dep.ok'`,
+      );
+      expect(frozen.rows[0]!.n, "its wording stays frozen, because history needs it").toBe(1);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("refuses a resolution that reaches outside the examination, and allows the one it is scoped to", async () => {
+    await client.query("BEGIN");
+    try {
+      const here = await seedValid(client, "x18");
+      const there = await seedValid(client, "y18");
+      const thereTile = (await client.query<{ id: number }>(
+        `SELECT id FROM clinical_tiles WHERE key = 'y18.tile'`,
+      )).rows[0]!.id;
+      expect(await publish("pub.x18.base", here.examId), "both examinations publish alone").toBeNull();
+
+      // Both directions are declared so check 6 is satisfied: the only objection left has to be
+      // scope, which is what makes this a test of check 18 and not of the symmetric-pair arm.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'excludes')`, [here.tileId, thereTile],
+      ), "storing a cross-examination pair is legal in draft").toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'excludes')`, [thereTile, here.tileId],
+      )).toBeNull();
+      const foreign = await publish("pub.x18.foreign", here.examId);
+      expect(foreign?.code, "a resolution with a tile this examination cannot offer is refused").toBe("P0001");
+      expect(foreign?.message).toMatch(/points at y18.tile, a tile this examination does not offer/);
+
+      // Remedy one: offer the tile here. Both ends are then this examination's own business.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES ($1, $2, $3, 2)`, [thereTile, here.examId, here.sectionId],
+      )).toBeNull();
+      expect(await publish("pub.x18.offered", here.examId), "a pair between two offered tiles publishes").toBeNull();
+
+      // Remedy two on a fresh fixture: erase the pair. The examination then states nothing about
+      // it, and an unstated relationship between two tiles is the ordinary draft state that
+      // publication merely forbids to become permanent.
+      const solo = await seedValid(client, "z18");
+      const otherExam = await seedValid(client, "w18");
+      const wTile = (await client.query<{ id: number }>(
+        `SELECT id FROM clinical_tiles WHERE key = 'w18.tile'`,
+      )).rows[0]!.id;
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'excludes'), ($2, $1, 'excludes')`, [solo.tileId, wTile],
+      ), "the pair is storable in draft both ways").toBeNull();
+      expect((await publish("pub.z18.foreign", solo.examId))?.code, "and is refused at publication").toBe("P0001");
+      expect(await attempt(
+        `DELETE FROM clinical_tile_relationships
+          WHERE tile_id = $1 AND related_tile_id = $2`, [solo.tileId, wTile],
+      ), "erasing this examination's own direction is a plain delete").toBeNull();
+      expect(await publish("pub.z18.eraser", solo.examId), "and then it publishes: the row it owned is gone").toBeNull();
+
+      // The other branch: the far end is retired. It cannot be placed here (check 17 would speak
+      // first), so the relationship names a tile that no longer exists anywhere in scope.
+      const dead = await seedValid(client, "dead");
+      const deadTile = Number((await client.query(
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text, impression_text, review_state, status)
+         VALUES ('dead.gone', (SELECT concept_id FROM clinical_tiles WHERE key = 'dead.tile'),
+                 'Retired', 'A finding.', 'An impression.', 'approved', 'active') RETURNING id`,
+      )).rows[0]!.id);
+      expect(await attempt(`UPDATE clinical_tiles SET deleted_at = NOW() WHERE id = $1`, [deadTile])).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'requires')`, [dead.tileId, deadTile],
+      )).toBeNull();
+      const retiredEnd = await publish("pub.dead.end", dead.examId);
+      expect(retiredEnd?.code, "a relationship to a retired tile is refused").toBe("P0001");
+      expect(retiredEnd?.message).toMatch(/points at dead.gone, a tile that has been retired/);
+
+      // And a CONCEPT end is allowed: finding_definitions is the canonical vocabulary, is
+      // examination-wide by design, and scoping it per examination would create the second source
+      // of truth §6 forbids. The retired-tile row is removed first, or the refusal above would
+      // still be the one this publication hears.
+      expect(await attempt(
+        `DELETE FROM clinical_tile_relationships WHERE related_tile_id = $1`, [deadTile],
+      )).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_concept_id, relation_kind)
+         VALUES ($1, $2, 'requires')`,
+        [dead.tileId, (await client.query<{ concept_id: number }>(
+          `SELECT concept_id FROM clinical_tiles WHERE id = $1`, [dead.tileId],
+        )).rows[0]!.concept_id],
+      )).toBeNull();
+      expect(await publish("pub.dead.concept", dead.examId), "a tile-to-concept requirement publishes").toBeNull();
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("certifies which rows a document freezes, not what those rows say — and says why", async () => {
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "forge");
+      const doc = buildCatalogueSnapshot(await loadCatalogueRows((s, v) => client.query(s, v), f.examId));
+      expect(await publish("pub.forge.honest", f.examId), "the honest document publishes").toBeNull();
+
+      // Same identities, one fabricated sentence: this PASSES, and pinning that is the point. The
+      // gate compares membership — which identities appear in each domain — because only the
+      // publisher's serializer can produce the canonical bytes, and a SQL reimplementation would be
+      // a second source of truth for the hash. A reviewer who read check 14 as content
+      // authentication would trust a publication nobody certified.
+      const forged = JSON.parse(JSON.stringify(doc)) as typeof doc;
+      (forged.tiles[0] as Record<string, unknown>).findings_text = "A sentence nobody approved.";
+      const res = await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+         VALUES ($1, $2, repeat('d', 64), $3, $4::jsonb)`,
+        [f.examId, "pub.forge.lie", 1, JSON.stringify(forged)],
+      );
+      expect(res, "the measured limit: true identities and a false sentence pass the gate").toBeNull();
+      const stored = await client.query<{ s: { tiles: { findings_text: string }[] } }>(
+        `SELECT catalogue_snapshot AS s FROM clinical_publications WHERE publication_key = 'pub.forge.lie'`,
+      );
+      const live = await client.query<{ findings_text: string }>(
+        `SELECT findings_text FROM clinical_tiles WHERE id = $1`, [f.tileId],
+      );
+      expect(stored.rows[0]!.s.tiles[0].findings_text, "the publication holds the fabricated wording").toBe(
+        "A sentence nobody approved.",
+      );
+      expect(live.rows[0]!.findings_text, "while the live row holds the real one").toBe("A fixture finding sentence.");
+
+      // What the arm DOES guarantee, stated in the same breath so the limit is not mistaken for an
+      // absence of checking: a document that drops one live row is refused.
+      const missing = JSON.parse(JSON.stringify(doc)) as typeof doc;
+      missing.tiles = missing.tiles.slice(1);
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+         VALUES ($1, $2, repeat('d', 64), $3, $4::jsonb)`,
+        [f.examId, "pub.forge.missing", 1, JSON.stringify(missing)],
+      ))?.code, "a document missing one live row is refused").toBe("P0001");
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
   it("never has to check for a duplicate baseline, because one cannot be stored", async () => {
     await client.query("BEGIN");
     try {
@@ -572,3 +759,4 @@ describe.skipIf(!dbUrl)("a publication is refused for exactly the reason stated,
     });
   });
 });
+
