@@ -86,7 +86,7 @@ and that every cited path exists.
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:116` :: `rawKey.slice(0, 14)` :: derive — persists 14 characters of the live key as `key_prefix`
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:145` :: `keyHash` :: stamp-db — the overwrite that defeats a UI rotation
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:131` :: `keyHash` :: stamp-db — same, on the insert branch
-- `artifacts/api-server/src/index.ts:2974` :: `bootstrapHopeCareIntegration()` :: hook — runs on **every** API start
+- `artifacts/api-server/src/index.ts:2982` :: `bootstrapHopeCareIntegration()` :: hook — runs on **every** API start
 - `docker/api-entrypoint.sh:19` :: `bootstrap-hope-care-integration.mjs` :: hook — a second, pre-listen copy of the same stamp
 - `scripts/bootstrap-hope-care-integration.mjs:88` :: `HOPE_PARTNER_KEY` :: gate — the CLI form of the same rule
 - `docker-compose.yml:319` :: `HOPE_PARTNER_KEY` :: forward — without this line the container never sees the value
@@ -158,7 +158,7 @@ env anyway (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:147` :
 **Inbound partner key — DB is authoritative per request, but env re-stamps the DB on every
 container start.** `artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:104`
 reads only the DB hash, so `POST …/rotate-key` *does* take effect immediately — and is then
-silently reverted at the next boot, because `artifacts/api-server/src/index.ts:2974` runs
+silently reverted at the next boot, because `artifacts/api-server/src/index.ts:2982` runs
 `bootstrapHopeCareIntegration()` on every API start and
 `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:145` writes `keyHash` derived
 from `HOPE_PARTNER_KEY`. The same stamp runs a second time pre-listen from
@@ -256,7 +256,7 @@ directions in either order, so the tie-breaker is which restart the clinic feels
 
 ### Step 8 — Restart `care-api`  *(OWNER-APPROVAL REQUIRED — interrupts the live Bill Desk)*
 - **Pre-check:** clinic staff warned; no `sending` rows (Step 2); `ENABLE_SCHEDULERS` set on exactly one process so a second dispatcher does not start (`artifacts/api-server/src/services/integration/scheduler.ts:82`); the schema containers are healthy.
-- **Action:** restart the `care-api` container. This is the only clinic-visible action in this runbook. `docker/api-entrypoint.sh:19` and `artifacts/api-server/src/index.ts:2974` then re-stamp `integration_partners.key_hash` and `callback_url` from the new environment before the server takes traffic.
+- **Action:** restart the `care-api` container. This is the only clinic-visible action in this runbook. `docker/api-entrypoint.sh:19` and `artifacts/api-server/src/index.ts:2982` then re-stamp `integration_partners.key_hash` and `callback_url` from the new environment before the server takes traffic.
 - **Post-check:** the startup log contains `Hope↔Care integration bootstrapped` and not `bootstrap failed`; the row's `key_prefix` shows the new 14 characters via `GET /api/integration/admin/partners` (`artifacts/api-server/src/routes/integration/admin.ts:56` :: `keyPrefix`) — never by selecting the table.
 - **Abort criterion:** the API logs `HOPE_PARTNER_KEY is not set` (`artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:62`), or `partnerAction` is absent, or the process crash-loops. Then the DB still holds the OLD hash while HOPE sends the NEW key: inbound is broken and must be rolled back immediately.
 - **Rollback:** restore CARE's `.env` from the Step 5 copy and restart `care-api` once more (a second clinic-visible interruption — which is exactly why Step 4 exists); roll HOPE back too if Step 7 already ran.
