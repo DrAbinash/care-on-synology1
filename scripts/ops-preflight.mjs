@@ -263,6 +263,21 @@ export function parseSidecar(text) {
 }
 
 /**
+ * A field value shaped like a credential. Both readers of a sidecar use this: the
+ * inventory to redact a manifest field, and here to stop a *diagnostic message* from
+ * quoting the value it just rejected. Redacting one and not the other is how a tool
+ * that claims to hide secrets ends up printing them.
+ */
+export function credentialShaped(value) {
+  return /postgres(ql)?:\/\/|\bios-iam\b|BEGIN (RSA|OPENSSH) PRIVATE KEY|\bintgk_[A-Za-z0-9]/i.test(String(value ?? ""));
+}
+
+/** A value as it may be printed. */
+export function showValue(value) {
+  return credentialShaped(value) ? "[redacted]" : String(value ?? "");
+}
+
+/**
  * What an artifact's own manifest has to say for the artifact to be trustworthy.
  * One implementation, used by the deployment gate and by
  * `scripts/ops-backup-inventory.mjs`, so the two can never disagree about what "a
@@ -273,13 +288,13 @@ export function auditSidecar(meta, { actualBytes = null, expectedDatabase = null
   const bad = [];
   if (!meta.source_database) bad.push("no source_database recorded");
   else if (expectedDatabase && meta.source_database !== expectedDatabase) {
-    bad.push(`source_database=${meta.source_database} but this host is ${expectedDatabase}`);
+    bad.push(`source_database=${showValue(meta.source_database)} but this host is ${expectedDatabase}`);
   }
-  if (meta.schema_complete && meta.schema_complete !== "true") bad.push(`schema_complete=${meta.schema_complete}`);
-  if (meta.exporter && meta.exporter !== "pg_dump" && !/remote/.test(meta.exporter)) bad.push(`exporter=${meta.exporter}`);
-  if (meta.create_tables && Number(meta.create_tables) < 1) bad.push(`create_tables=${meta.create_tables}`);
+  if (meta.schema_complete && meta.schema_complete !== "true") bad.push(`schema_complete=${showValue(meta.schema_complete)}`);
+  if (meta.exporter && meta.exporter !== "pg_dump" && !/remote/.test(meta.exporter)) bad.push(`exporter=${showValue(meta.exporter)}`);
+  if (meta.create_tables && Number(meta.create_tables) < 1) bad.push(`create_tables=${showValue(meta.create_tables)}`);
   if (meta.bytes && actualBytes !== null && Number(meta.bytes) !== actualBytes) {
-    bad.push(`bytes=${meta.bytes} but file is ${actualBytes}`);
+    bad.push(`bytes=${showValue(meta.bytes)} but file is ${actualBytes}`);
   }
   if (meta.sha256_artifact && !/^[0-9a-f]{64}$/.test(meta.sha256_artifact)) bad.push("sha256_artifact is malformed");
   if (!meta.sha256_artifact) bad.push("sha256_artifact is not recorded, so the artifact cannot be verified");

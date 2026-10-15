@@ -39,6 +39,8 @@ import {
   checkConfigDrift,
   configCopies,
   makeContext,
+  auditSidecar,
+  credentialShaped,
   hopeEventContractHolds,
   main,
   renderText,
@@ -850,5 +852,34 @@ describe("T14–T16 — verdict contract and output hygiene", () => {  test("T14
     expect(report.blocking.join(" ")).toMatch(/duplicate/);
     expect(report.checks.every((c) => [PASS, FAIL, UNKNOWN, NOT_APPLICABLE].includes(c.status))).toBe(true);
     expect(report.checks.every((c) => typeof c.id === "string" && typeof c.detail === "string")).toBe(true);
+  });
+});
+
+describe("auditSidecar prints the value it rejects, unless that value is a credential", () => {
+  test("an ordinary wrong value is quoted so the operator can see it", () => {
+    const bad = auditSidecar({ source_database: "db_data", created_utc: "x", sha256_artifact: "0".repeat(64) }, { expectedDatabase: "diagnostic_erp" });
+    expect(bad.join(" ")).toMatch(/source_database=db_data but this host is diagnostic_erp/);
+  });
+
+  test("a credential-shaped value is redacted in the message, not just in the manifest", () => {
+    // A hand-edited sidecar for a remote dump often puts the connection string in
+    // `source_database`. `sanitizeManifest` hides it there; the same value is interpolated into
+    // the problem line by `auditSidecar`, which the gate and the inventory both print. One
+    // predicate has to cover both, or the tool redacts the field and prints the password.
+    const meta = {
+      source_database: `postgresql://erp:${SENTINEL}@127.0.0.1:5432/diagnostic_erp`,
+      exporter: `intgk_${SENTINEL}`,
+      created_utc: "x",
+      sha256_artifact: "0".repeat(64),
+    };
+    const bad = auditSidecar(meta, { expectedDatabase: "diagnostic_erp" });
+    const text = bad.join(" ");
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toMatch(/postgres(ql)?:\/\//i);
+    expect(text).toMatch(/source_database=\[redacted\]/);
+    expect(text).toMatch(/exporter=\[redacted\]/);
+    // The predicate itself, so a shape added here is added for both readers at once.
+    expect(credentialShaped("-----BEGIN RSA PRIVATE KEY-----")).toBe(true);
+    expect(credentialShaped("diagnostic_erp")).toBe(false);
   });
 });

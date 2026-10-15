@@ -32,6 +32,17 @@
  *     restored    a restore of THIS artifact is recorded (evidence file, or the
  *                 backup_verification table when a database is reachable)
  *
+ * WHAT IT PRINTS
+ *   This output is pasted into tickets and handovers, so it is treated as a publishable
+ *   document. Manifest fields leave through `sanitizeManifest`: the audited allowlist only,
+ *   with any value shaped like a credential redacted — and a value redacted in the manifest
+ *   is redacted in the problem lines too, because quoting the bad value is how a tool ends
+ *   up printing it. Names leave through `reportName`: the names the backup job writes
+ *   (`caredeoghar_*`, `backup_*`, `care_db_daily_*`) are printed in full, because the
+ *   operator has to ask for one by name, and anything else is reported by kind, because a
+ *   hand-typed name in a backup directory can carry a patient identifier. Auditing always
+ *   uses the real bytes and the real name — masking happens only at the point of printing.
+ *
  * DICOM IS OUT OF SCOPE BY OWNER DECISION
  *   I12 §2 excludes Orthanc/DICOM image backup from ERP disaster recovery. This
  *   inventory watches the ERP dump destination and nothing else; it does not
@@ -58,11 +69,13 @@ import {
   EVIDENCE_FILE,
   auditSidecar,
   backupRoots,
+  credentialShaped,
   evidenceAgeOk,
   isArtifact,
   makeContext,
   parseSidecar,
   readEvidence,
+  showValue,
 } from "./ops-preflight.mjs";
 
 const DAY_MS = 86_400_000;
@@ -129,6 +142,49 @@ export function sha256Of(file) {
 }
 
 /**
+ * A file whose name does not follow the dump convention is reported by its kind, not by
+ * its name. Job-generated names are printed in full because the operator has to pick one
+ * to restore — and they are exactly the names `isArtifact` accepts, which the output
+ * contract test pins, because a job pattern missing here would hide a real backup.
+ * A name someone typed by hand can carry a patient identifier, and this report gets
+ * pasted into tickets.
+ */
+const CONVENTION_NAME = /^(caredeoghar|backup|care_db_daily)[._-]/i;
+export function reportName(name) {
+  const base = String(name ?? "").split(/[\\/]/).pop();
+  if (CONVENTION_NAME.test(base)) return base;
+  const dot = base.indexOf(".");
+  return `<unrecognised-name${dot > 0 ? base.slice(dot) : ""}>`;
+}
+
+/**
+ * The keys a `.meta` sidecar is allowed to contribute to the output. A manifest is
+ * machine-written by the backup job, and an operator who once added `passphrase=` or a
+ * connection string to it would otherwise have every `--json` run reprint it — this tool
+ * is routinely pasted into tickets and handovers. Anything outside the allowlist is
+ * replaced by a count, so the row still says "this sidecar has extra fields" without
+ * saying what they hold. Values are shape-checked too, because a legitimate key can
+ * carry a credential in it.
+ */
+const MANIFEST_FIELDS = [
+  "artifact", "created_utc", "source_container", "source_database", "server_version",
+  "exporter", "schema_complete", "create_tables", "encrypted", "bytes",
+  "sha256_sql_gzipped", "sha256_artifact",
+];
+const SECRET_KEY = /(passphrase|password|secret|token|apikey|api_key|credential|connection|uri|url|key)$/i;
+
+export function sanitizeManifest(meta) {
+  const out = {};
+  let hidden = 0;
+  for (const [k, v] of Object.entries(meta ?? {})) {
+    if (!MANIFEST_FIELDS.includes(k)) { hidden++; continue; }
+    out[k] = SECRET_KEY.test(k) || credentialShaped(v) ? "[redacted]" : v;
+  }
+  if (hidden) out.redacted_fields = hidden;
+  return out;
+}
+
+/**
  * One row per artifact. `status` is the worst state that applies, because an
  * inventory that prints "looks fine" next to a file whose sidecar names the wrong
  * database is the exact failure this round exists to remove.
@@ -184,7 +240,10 @@ export async function inspect(ctx, roots, opts = {}) {
         row.status = "UNVERIFIED";
       } else {
         const meta = parseSidecar(text);
-        row.manifest = meta;
+        // Audited raw, emitted sanitized: a credential in the sidecar must not survive into
+        // the report, but it must still be checked where it matters (`sha256_artifact`
+        // format, `bytes` against the real file, `source_database` against this host).
+        row.manifest = sanitizeManifest(meta);
         row.recordedSha = meta.sha256_artifact ?? null;
         row.checksum = meta.sha256_artifact ? "recorded" : "absent";
         row.problems.push(...auditSidecar(meta, { actualBytes: a.bytes, expectedDatabase }));
@@ -233,7 +292,7 @@ export async function inspect(ctx, roots, opts = {}) {
         row.checksum = "verified";
       } else {
         row.checksum = "MISMATCH";
-        row.problems.push(`sha256 mismatch: sidecar says ${row.recordedSha}, the bytes are ${row.verifiedSha}`);
+        row.problems.push(`sha256 mismatch: sidecar says ${showValue(row.recordedSha)}, the bytes are ${row.verifiedSha}`);
         row.status = "INVALID";
       }
     }
@@ -247,8 +306,11 @@ export async function inspect(ctx, roots, opts = {}) {
   const coverage = days.length ? coverageGaps(days, now) : null;
 
   const counts = rows.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
+  const recorded = rowOrNull(recordedRestore);
   const restoreEvidence = {
-    recorded: rowOrNull(recordedRestore),
+    // The recorded name came from an operator typing `--artifact`, not from the job, so it
+    // goes through the same mask as everything else that leaves this tool.
+    recorded: recorded ? { ...recorded, artifact: reportName(recorded.artifact) } : null,
     databaseRows: dbRows === null ? null : dbRows.length,
     note: opts.restoreRowsNote ?? (dbRows === null ? "not read (no DATABASE_URL)" : "backup_verification read"),
     evidenceError: evidence.error ?? null,
@@ -262,10 +324,10 @@ export async function inspect(ctx, roots, opts = {}) {
     maxAgeHours: maxAgeH,
     artifacts: rows,
     counts,
-    interrupted: inv.partials.map((p) => ({ artifact: p.name, bytes: p.bytes, mtimeIso: new Date(p.mtimeMs).toISOString() })),
-    orphanSidecars: inv.orphanSidecars.map((s) => s.name),
+    interrupted: inv.partials.map((p) => ({ artifact: reportName(p.name), bytes: p.bytes, mtimeIso: new Date(p.mtimeMs).toISOString() })),
+    orphanSidecars: inv.orphanSidecars.map((s) => reportName(s.name)),
     subdirectories: inv.subdirs,
-    unwatched: inv.other.map((f) => f.name),
+    unwatched: inv.other.map((f) => reportName(f.name)),
     days,
     coverage,
     restoreEvidence,
