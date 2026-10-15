@@ -10,8 +10,9 @@
  * phase3, phase5). Every check here that reads clinical prose reads it through
  * `@workspace/report-quality`: the vocabulary and negation table from
  * `clinicalTerms`, the six Findings↔Impression contradictions from
- * `findingsImpression`, and the advice dependency behind Q005 from
- * `recommendation`. Five of those used to be prose regexes of this file's own,
+ * `findingsImpression`, the advice dependency behind Q005 from
+ * `recommendation`, and the un-filled placeholder vocabulary behind Q106 from
+ * `placeholders`. Five of those used to be prose regexes of this file's own,
  * which meant the canonical text tier could not see them at all — the server
  * recorded nothing for a wrong spinal level the badge was printing. The sixth, the
  * laterality check, was the opposite fault: this file and the tier each carried a
@@ -28,6 +29,7 @@ import {
   findingsImpressionContradictions,
   lateralityContradictions,
   outOfScopeSpineContent,
+  reportPlaceholderWarning,
   studyContrastState,
   ungroundedNamedDiagnoses,
   unmetRecommendationDependency,
@@ -120,10 +122,14 @@ export function validateReport(report: ReportForValidation): string[] {
     warnings.push(c.message);
   }
 
-  // 6. Un-filled measurement placeholders left in the text
-  if (findings.includes("{value}") || impressionText.includes("{value}")) {
-    warnings.push("An un-filled measurement placeholder {value} is still present in the report.");
-  }
+  // 6. Un-filled placeholders left in the text. Called rather than written here:
+  //    this file and the canonical text tier each carried the same
+  //    `includes("{value}")` literal, which is how Q106 came to see one of the four
+  //    blank spellings CARE's own catalogue emits (`___`, `[slot]` and a bare `X`
+  //    before a unit were invisible to both), and a report printing "midline shift
+  //    of ___ mm" scored 95/100. One vocabulary, one wording, both readers.
+  const placeholderWarning = reportPlaceholderWarning(report);
+  if (placeholderWarning) warnings.push(placeholderWarning);
 
   warnings.push(...medicalConsistencyWarnings(report));
   warnings.push(...repeatedWordWarnings(findings));

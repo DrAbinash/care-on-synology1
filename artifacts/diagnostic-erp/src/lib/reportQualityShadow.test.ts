@@ -177,6 +177,38 @@ const FIXTURES: Record<string, QualityInput> = {
     impression: ["Severe central canal stenosis at L3-L4."],
     recommendation: "Neurosurgical review.",
   },
+  // The blank spellings CARE's own catalogue emits. Q106 used to test one literal
+  // — `includes("{value}")` — while the shipped Quick Select tiles write `___`, so
+  // a report the workspace built from its own "Basal ganglia hemorrhage" tile
+  // carried an unmeasured midline shift and scored 95/100 with one advisory about
+  // a missing clinical history. Both readers now call the one vocabulary in
+  // `@workspace/report-quality`; these two fixtures are the proof that they still
+  // say the same sentence about it, and that the sentence names the section the
+  // blank is actually in.
+  "MRI brain built from tiles with the measurement left blank": {
+    modality: "MR",
+    studyDescription: "MRI BRAIN PLAIN",
+    sex: "male",
+    age: "58",
+    technique: "Multiplanar multisequence MRI of the brain was performed.",
+    clinicalHistory: "Sudden onset left-sided weakness since 3 hours.",
+    findings:
+      "Acute intraparenchymal hemorrhage in the right basal ganglia with intraventricular extension. " +
+      "Mass effect with midline shift of ___ mm.",
+    impression: ["Acute right basal ganglia hemorrhage."],
+    recommendation: "Repeat imaging in ___ weeks.",
+  },
+  "MRI lumbar spine whose only blank is in the Technique": {
+    modality: "MR",
+    studyDescription: "MRI LUMBAR SPINE (PLAIN)",
+    sex: "male",
+    age: "49",
+    technique: "MRI of the lumbar spine on a [field strength] scanner, slice thickness ___ mm.",
+    clinicalHistory: "Low back pain radiating to the left leg.",
+    findings: "Disc desiccation at L4-L5 with a diffuse disc bulge. No significant canal stenosis.",
+    impression: ["Degenerative disc disease at L4-L5."],
+    recommendation: "Physiotherapy and clinical correlation.",
+  },
 };
 
 describe("report-quality shadow parity (legacy vs canonical engine)", () => {
@@ -245,8 +277,37 @@ describe("report-quality shadow parity (legacy vs canonical engine)", () => {
     }
   });
 
-  it("keeps every free-text finding advisory — no blockers from the text tier", () => {
-    for (const input of Object.values(FIXTURES)) {
+  // Q106 is the rule whose two copies were the SAME literal, so parity between
+  // them proved nothing: both said `{value}` and both were blind to `___`,
+  // `[slot]` and a bare `X`. Sharing the vocabulary is what makes the pair worth
+  // testing, and the wording is asserted rather than merely compared because a
+  // message that names no section tells a reporter nothing about where to look.
+  it("names the un-filled placeholder and its section identically on both paths", () => {
+    const named: [string, string][] = [
+      [
+        "MRI brain built from tiles with the measurement left blank",
+        'An un-filled placeholder "___" is still present in the report (Findings).',
+      ],
+      [
+        "MRI lumbar spine whose only blank is in the Technique",
+        'An un-filled placeholder "[field strength]" is still present in the report (Technique).',
+      ],
+    ];
+    for (const [name, message] of named) {
+      const p = computeParity(FIXTURES[name]!);
+      expect(p.legacyWarnings, `${name} — workstation`).toContain(message);
+      expect(p.engineWarnings, `${name} — server`).toContain(message);
+      // One deduction for the whole report, however many blanks it holds: the
+      // brain fixture has two, and four separate advisories would let one
+      // unfilled tile outweigh a laterality contradiction in the score.
+      expect(
+        p.engineIssues.filter((m) => m === message).length,
+        `${name} — emitted once`,
+      ).toBe(1);
+    }
+  });
+
+  it("keeps every free-text finding advisory — no blockers from the text tier", () => {    for (const input of Object.values(FIXTURES)) {
       const report = runQualityEngine(buildQualityContext(input), { scorer: textParityScorer });
       expect(report.blockingCount).toBe(0);
       expect(report.findings.every((f) => f.severity === "warning")).toBe(true);
