@@ -523,6 +523,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     togglePaletteFavourite,
     triggerAiImpression,
     undoLastAbnormalEnabled,
+    undoStepEnabled,
+    redoStepEnabled,
+    handleUndoStep,
+    handleRedoStep,
     undoStartReport,
     useStructured,
     verifyActionRef,
@@ -2105,6 +2109,10 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     hasOfflineCopy={Boolean(draftBackup.peek() || draftBackup.restoreAvailable)}
                     canUndoLastAbnormal={undoLastAbnormalEnabled}
                     onUndoLastAbnormal={handleUndoLastAbnormal}
+                    canUndoStep={undoStepEnabled}
+                    canRedoStep={redoStepEnabled}
+                    onUndoStep={handleUndoStep}
+                    onRedoStep={handleRedoStep}
                     onSave={() => { void saveDraft(); }}
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}

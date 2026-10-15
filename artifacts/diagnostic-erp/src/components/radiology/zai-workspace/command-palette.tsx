@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
 import { Command as Cmdk } from "cmdk";
-import { Search, ChevronRight, AlertTriangle, Brain, Mic, Save, Printer, Plus } from "lucide-react";
+import { Search, ChevronRight, AlertTriangle, Brain, Mic, Save, Printer, Plus, Undo2, Redo2 } from "lucide-react";
 import { lookupMacrosForContext } from "@/lib/zai-workspace/snippet-macros-library";
 
 interface CommandItem {
@@ -115,7 +115,11 @@ export function CommandPalette({
         window.dispatchEvent(new CustomEvent("zai-toggle-voice-listen"));
       },
     },
-    { id: "undo-patch", label: "Undo last Quick Select/Macro merge", detail: "Restore pre-merge report snapshot", icon: Save, group: "Actions", action: () => ws.undoLastPatch(), shortcut: "⌃⇧Z" },
+    // The palette is the only place these keystrokes are written down for the radiologist to read, and
+    // it claimed ⌃⇧Z for undo — which is now redo. Two entries, each naming its own combination, so the
+    // help cannot disagree with the keyboard again.
+    { id: "undo-patch", label: "Undo last clinical change", detail: "Restore the report text, observations and selection from before the last change", icon: Undo2, group: "Actions", action: () => ws.undoLastPatch(), shortcut: "⌃Z" },
+    { id: "redo-patch", label: "Redo last undone clinical change", detail: "Replay the change you just undid; a new clinical edit clears this history", icon: Redo2, group: "Actions", action: () => ws.redoLastPatch(), shortcut: "⌃⇧Z / ⌃Y" },
     { id: "save-fmt", label: "Save as format", icon: Save, group: "Actions", action: () => ws.openSaveAsFormatDialog() },
     ...macros.slice(0, 6).map((m) => ({
       id: `m-${m.id}`,

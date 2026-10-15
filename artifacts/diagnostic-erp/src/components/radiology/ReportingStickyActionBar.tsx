@@ -2,7 +2,7 @@
  * Compact sticky report action row — Save status · Undo Last Abnormal ·
  * Finalize · Next. Reuses parent handlers; no duplicate save/finalize engines.
  */
-import { Undo2, ChevronRight, Save } from "lucide-react";
+import { Undo2, Redo2, ChevronRight, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -20,6 +20,16 @@ type Props = {
   hasOfflineCopy: boolean;
   canUndoLastAbnormal: boolean;
   onUndoLastAbnormal: () => void;
+  /**
+   * The two directions of clinical history. Separate from `canUndoLastAbnormal` on purpose: that gate
+   * asks whether the last thing worth stepping over is an abnormality, while these ask whether the
+   * store has a frame for THIS study that it is allowed to restore. A radiologist who applied a format
+   * and wants it back has a frame and no abnormal, so only these light up.
+   */
+  canUndoStep: boolean;
+  canRedoStep: boolean;
+  onUndoStep: () => void;
+  onRedoStep: () => void;
   onSave: () => void;
   onFinalize: () => void;
   onNextStudy?: () => void;
@@ -74,6 +84,10 @@ export function ReportingStickyActionBar({
   hasOfflineCopy,
   canUndoLastAbnormal,
   onUndoLastAbnormal,
+  canUndoStep,
+  canRedoStep,
+  onUndoStep,
+  onRedoStep,
   onSave,
   onFinalize,
   onNextStudy,
@@ -112,6 +126,37 @@ export function ReportingStickyActionBar({
       >
         <Save className="h-3 w-3" />
         <span className="hidden sm:inline">Save</span>
+      </Button>
+      {/* Icon-only so the pair reads as one control group and does not compete with the labelled
+          actions beside it. `aria-label` carries the name a screen reader needs, because there is no
+          visible text to read; `title` carries the keystroke, which is the part a radiologist can act
+          on. Disabled rather than hidden, so the affordance does not appear and vanish as the report
+          is edited — and a signed report shows BOTH dimmed, which is the safety statement. */}
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="h-7 w-7 p-0"
+        disabled={!canUndoStep}
+        onClick={onUndoStep}
+        aria-label="Undo last clinical change"
+        title="Undo the last clinical change — findings, impression, observations and selection together. (Ctrl/⌘+Z, outside the text editors)"
+        data-testid="sticky-undo-step"
+      >
+        <Undo2 className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="h-7 w-7 p-0"
+        disabled={!canRedoStep}
+        onClick={onRedoStep}
+        aria-label="Redo last undone clinical change"
+        title="Redo the change you just undid. (Ctrl/⌘+Shift+Z or Ctrl+Y, outside the text editors)"
+        data-testid="sticky-redo-step"
+      >
+        <Redo2 className="h-3.5 w-3.5" />
       </Button>
       <Button
         type="button"

@@ -29,13 +29,10 @@ import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
+import { clinicalHistoryRefusal } from "@/lib/reportingWorkspaceShortcuts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const storeSrc = readFileSync(join(here, "zai-workspace/store.ts"), "utf8").replace(/\r\n/g, "\n");
-const commandsSrc = readFileSync(
-  join(here, "../hooks/radiology-workspace/useWorkspaceCommands.ts"),
-  "utf8",
-).replace(/\r\n/g, "\n");
 
 const toastMock = vi.mocked(toast);
 const DISC_L45 = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc herniation L4-L5")!;
@@ -255,11 +252,20 @@ describe("through the store — a refused clinical write is something the radiol
 
     expect(useWorkspace.getState().undoLastPatch()).toBe(false);
 
-    // Not a gap: Ctrl+Shift+Z has its own refusal toast, and it distinguishes
-    // "refused" from "nothing to undo" using the frame above. With TOAST_LIMIT
-    // at 1 a second toast from the store would only flash underneath it.
+    // Not a gap: the undo keystroke has its own refusal toast, and it distinguishes "refused" from
+    // "nothing to undo" using the frame above. With TOAST_LIMIT at 1 a second toast from the store
+    // would only flash underneath it. Asserted by CALLING the helper the keystroke calls rather than
+    // grepping the handler: redo shares that helper now, so a grep of one file no longer proves the
+    // radiologist reads this sentence — and a shared sentence is the reason it must not drift.
     expect(toastMock).not.toHaveBeenCalled();
-    expect(commandsSrc).toContain("Undo refused — the report is signed");
+    expect(clinicalHistoryRefusal("undo", false, frame ?? null, {
+      activeStudyId: useWorkspace.getState().activeStudyId,
+      isFinalized: true,
+    })?.title).toBe("Undo refused — the report is signed");
+    expect(clinicalHistoryRefusal("redo", false, frame ?? null, {
+      activeStudyId: useWorkspace.getState().activeStudyId,
+      isFinalized: true,
+    })?.title).toBe("Redo refused — the report is signed");
   });
 
   it("says nothing on a study that is not signed", () => {
