@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import {
+  activeSuppressors,
   canonicalOrderFromBaseline,
+  claimsDeclaredBy,
   falsifies,
   filterRestorableBaselines,
   insertAtCanonicalPosition,
+  mergeBaselineClaims,
   suppressedKeys,
 } from "./normalSuppression";
 
@@ -73,8 +76,8 @@ describe("Stage C-1 · a deselection restores only what nothing still falsifies"
   it("restores nothing while a surviving observation still falsifies the normal", () => {
     // Both lesions claimed the normal; the engine recorded it against whichever was clicked first.
     const replacedByTheRemovedPatch = [NORMAL_VERTEBRAE];
-    expect(filterRestorableBaselines(replacedByTheRemovedPatch, [LESION_B]))
-      .toEqual([], "the surviving lesion still falsifies it");
+    expect(filterRestorableBaselines(replacedByTheRemovedPatch, [LESION_B]),
+      "the surviving lesion still falsifies it").toEqual([]);
   });
 
   it("restores exactly once, when the last falsifying observation is removed", () => {
@@ -89,7 +92,10 @@ describe("Stage C-1 · a deselection restores only what nothing still falsifies"
       .toEqual([NORMAL_VERTEBRAE]);
   });
 
-  it("never invents a sentence the removal did not record", () => {
+  it("never invents a sentence the caller did not put in scope", () => {
+    // The filter is a filter. Which sentences are *in scope* for a removal is decided by the caller,
+    // from the canonical baseline plus the removed observation's own declaration — see
+    // `claimsDeclaredBy` below.
     expect(filterRestorableBaselines([], [LESION_A, LESION_C])).toEqual([]);
   });
 });
@@ -144,5 +150,89 @@ describe("Stage C-1 · canonical order is derived, never remembered per patch", 
   it("honours explicit ordinals where a catalogue supplies them", () => {
     const slots = canonicalOrderFromBaseline([NORMAL_CORD, NORMAL_VERTEBRAE], [7, 2]);
     expect(slots.map((s) => s.ordinal)).toEqual([7, 2]);
+  });
+});
+
+describe("Stage C-1 · a baseline claim is derived from the observation that makes it", () => {
+  const canonical = canonicalOrderFromBaseline([NORMAL_VERTEBRAE, NORMAL_CORD, NORMAL_STENOSIS]);
+
+  it("recovers a sentence the removed patch never recorded", () => {
+    // The whole point. Two observations declare the same normal; the engine writes the record only on
+    // whichever was clicked first, so the second one has an empty `replacedBaseline` and its own
+    // removal restores nothing. The declaration is still on the observation, so asking it recovers
+    // the sentence in either direction.
+    expect(claimsDeclaredBy(LESION_B, canonical)).toEqual([NORMAL_VERTEBRAE]);
+    expect(claimsDeclaredBy(LESION_A, canonical)).toEqual([NORMAL_VERTEBRAE]);
+  });
+
+  it("lists each claimed baseline sentence once", () => {
+    expect(claimsDeclaredBy(LESION_A, [...canonical, canonical[0]])).toEqual([NORMAL_VERTEBRAE]);
+  });
+
+  it("claims nothing for an observation that declares no baseline", () => {
+    // Manual radiologist text reaches the reducer this way: it is an observation with no declared
+    // baseline, so it can never authorise writing a canonical sentence back into the field.
+    expect(claimsDeclaredBy({ concept: "prior_surgery", baselineReplaces: null }, canonical)).toEqual([]);
+    expect(claimsDeclaredBy({}, canonical)).toEqual([]);
+    expect(claimsDeclaredBy(null, canonical)).toEqual([]);
+  });
+
+  it("does not widen a claim into a sentence the baseline does not state", () => {
+    // A concept alone is *not* a licence to insert text — that route decides only whether a normal may
+    // come back (`suppressedKeys`), never what gets written.
+    const unrelated = canonicalOrderFromBaseline(["Synthetic knees are unremarkable."]);
+    expect(claimsDeclaredBy(LESION_A, unrelated)).toEqual([]);
+  });
+
+  it("matches a declaration that differs only in layout", () => {
+    const spaced = canonicalOrderFromBaseline([`  ${NORMAL_VERTEBRAE.toUpperCase()}  `]);
+    expect(claimsDeclaredBy(LESION_A, spaced)).toEqual([`  ${NORMAL_VERTEBRAE.toUpperCase()}  `]);
+  });
+
+  it("unions a recorded list with a derived one without duplicating", () => {
+    expect(mergeBaselineClaims([NORMAL_VERTEBRAE], [NORMAL_VERTEBRAE, NORMAL_CORD]))
+      .toEqual([NORMAL_VERTEBRAE, NORMAL_CORD]);
+    expect(mergeBaselineClaims([], [NORMAL_CORD])).toEqual([NORMAL_CORD]);
+    expect(mergeBaselineClaims([NORMAL_CORD], [])).toEqual([NORMAL_CORD]);
+    const held = `${NORMAL_CORD}.`;
+    expect(mergeBaselineClaims([held], [NORMAL_CORD]),
+      "a trailing period is layout, not a second sentence — and the wording already on the record wins,"
+      + " because that is the text the ledger was written against")
+      .toEqual([held]);
+  });
+});
+
+describe("Stage C-1 · who counts as a suppressor", () => {
+  const holder = (over: Record<string, unknown>) => ({
+    id: "obs-1",
+    observation: { role: "finding", baselineReplaces: NORMAL_VERTEBRAE, concept: "burst_fracture" },
+    ...over,
+  });
+
+  it("takes the claim from a selected abnormality", () => {
+    expect(activeSuppressors([holder({})])).toEqual([
+      { baselineReplaces: NORMAL_VERTEBRAE, concept: "burst_fracture" },
+    ]);
+  });
+
+  it("excludes a stale row, which holds no clinical claim", () => {
+    // A stale patch is a baseline whose text was emptied when something else took its place. Counting
+    // it as a falsifier would keep a normal retired after the abnormality that retired it is gone.
+    expect(activeSuppressors([holder({ stale: true })])).toEqual([]);
+  });
+
+  it("excludes a baseline-role observation, which asserts normality rather than opposing it", () => {
+    expect(activeSuppressors([holder({ observation: { role: "baseline", baselineReplaces: NORMAL_CORD } })]))
+      .toEqual([]);
+  });
+
+  it("keeps two abnormalities that share one normal as two suppressors", () => {
+    // The case this module exists for: dropping either one must leave the other still suppressing.
+    expect(activeSuppressors([holder({ id: "a" }), holder({ id: "b" })]).length).toBe(2);
+  });
+
+  it("excludes a row that declares neither a baseline nor a concept", () => {
+    expect(activeSuppressors([holder({ observation: { role: "finding" } })])).toEqual([]);
+    expect(activeSuppressors([holder({ observation: null })])).toEqual([]);
   });
 });

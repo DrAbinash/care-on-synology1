@@ -166,6 +166,8 @@ import {
 import {
   activeSuppressors,
   canonicalOrderFromText,
+  claimsDeclaredBy,
+  type SuppressingObservation,
 } from "@/lib/clinicalSelection/normalSuppression";
 import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
 import {
@@ -3366,14 +3368,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // delete the sentence first — so a normal shared by two tiles stays retired while either is held.
     const survivingPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
     const canvas = get().startingCanvasBaseline;
+    const canonicalFindings = canonicalOrderFromText(canvas?.findings ?? null);
+    const canonicalImpression = canonicalOrderFromText(canvas?.impression ?? null);
+    // What this deselection has authority to put back. The patch's own record is only what it
+    // happened to delete first, so when two abnormalities declare one normal the second one has no
+    // record and its removal would restore nothing. The declaration itself answers the question,
+    // because it is still on the observation: a baseline sentence this tile names is in scope even
+    // if an earlier click had already taken it off the page.
+    const removedClaim: SuppressingObservation = {
+      baselineReplaces: patch.observation?.baselineReplaces ?? null,
+      concept: patch.observation?.concept ?? null,
+    };
     const result = removeLedgerObservation(
       narrativeFromState(get()),
       get().fieldProvenance,
       toLedgerPatch(patch),
       {
         surviving: activeSuppressors(survivingPatches),
-        canonicalFindings: canonicalOrderFromText(canvas?.findings ?? null),
-        canonicalImpression: canonicalOrderFromText(canvas?.impression ?? null),
+        canonicalFindings,
+        canonicalImpression,
+        claimsFindings: claimsDeclaredBy(removedClaim, canonicalFindings),
+        claimsImpression: claimsDeclaredBy(removedClaim, canonicalImpression),
       },
     );
     let nextMs = get().structuredViewerMeasurements;

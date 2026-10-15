@@ -29,6 +29,7 @@ import { coerceObservationAnchor } from "./observationAnchor";
 import {
   filterRestorableBaselines,
   insertAtCanonicalPosition,
+  mergeBaselineClaims,
   type CanonicalSlot,
   type SuppressingObservation,
 } from "./clinicalSelection/normalSuppression";
@@ -162,6 +163,14 @@ export type LedgerRestoreOptions = {
   surviving?: readonly SuppressingObservation[];
   canonicalFindings?: readonly CanonicalSlot[];
   canonicalImpression?: readonly CanonicalSlot[];
+  /**
+   * Which baseline sentences this removal has authority over. Computed by the caller from the
+   * canonical baseline *and* the removed observation's own declaration, because the patch's private
+   * `replacedBaseline` only ever lists what that patch deleted first — which is not the same set
+   * when two abnormalities declare one normal. Without it, nothing about restoration changes.
+   */
+  claimsFindings?: readonly string[];
+  claimsImpression?: readonly string[];
 };
 
 function restoreInto(
@@ -216,12 +225,18 @@ export function removeLedgerObservation(
 
   // Suppression is a fact about the set that survives, not about which patch happened to delete the
   // sentence first. Two abnormalities that declare the same normal must not disagree about it.
-  const restorableFindings = opts?.surviving
-    ? filterRestorableBaselines(patch.replacedBaseline.findings, opts.surviving)
+  const scopeFindings = opts?.claimsFindings
+    ? mergeBaselineClaims(patch.replacedBaseline.findings, opts.claimsFindings)
     : patch.replacedBaseline.findings;
-  const restorableImpression = opts?.surviving
-    ? filterRestorableBaselines(patch.replacedBaseline.impression, opts.surviving)
+  const scopeImpression = opts?.claimsImpression
+    ? mergeBaselineClaims(patch.replacedBaseline.impression, opts.claimsImpression)
     : patch.replacedBaseline.impression;
+  const restorableFindings = opts?.surviving
+    ? filterRestorableBaselines(scopeFindings, opts.surviving)
+    : scopeFindings;
+  const restorableImpression = opts?.surviving
+    ? filterRestorableBaselines(scopeImpression, opts.surviving)
+    : scopeImpression;
 
   let nextFindings = findings.text;
   let nextImpression = impression.text;

@@ -29,6 +29,104 @@ export type SuppressingObservation = {
   renderedText?: string | null;
 };
 
+/** A selected observation, as the ledger holds it, addressed by its observation id. */
+export type SuppressorHolder = {
+  id: string;
+  stale?: boolean;
+  observation?: {
+    role?: string | null;
+    baselineReplaces?: string | null;
+    concept?: string | null;
+  } | null;
+};
+
+function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): SuppressingObservation {
+  return { baselineReplaces: obs.baselineReplaces ?? null, concept: obs.concept ?? null };
+}
+
+/**
+ * The selected observations that carry a clinical claim against a baseline.
+ *
+ * Two exclusions, both deliberate:
+ *  - **`stale` patches are not suppressors.** A stale row is a baseline whose text was emptied when
+ *    something else took its place (`store.ts:2419`); it holds no clinical claim, so counting it as
+ *    falsifying a normal would keep a normal retired after the abnormality that retired it is gone.
+ *  - **A baseline-role observation is not a suppressor.** Explicitly selecting a normal tile asserts
+ *    that normality; it cannot simultaneously be what falsifies another normal.
+ *
+ * Independently-selected abnormalities are all kept, including two that share one baseline — which is
+ * the case this whole module exists for. Manually authored text is not a suppressor either, because it
+ * declares no baseline: the radiologist's sentence stays exactly where they wrote it.
+ */
+export function suppressorHolders(patches: readonly SuppressorHolder[]): SuppressorHolder[] {
+  return patches.filter((p) => {
+    const obs = p.observation;
+    if (p.stale || !obs || obs.role === "baseline") return false;
+    const claim = claimOf(obs);
+    return Boolean(nonEmpty(claim.baselineReplaces) || nonEmpty(claim.concept));
+  });
+}
+
+export function activeSuppressors(
+  patches: readonly SuppressorHolder[],
+): SuppressingObservation[] {
+  return suppressorHolders(patches).map((p) => claimOf(p.observation!));
+}
+
+/**
+ * The baseline sentences an observation declares false — whether or not it was the one that
+ * deleted them from the page.
+ *
+ * `replacedBaseline` lives on the patch that happened to remove the sentence first. That is the
+ * whole bug: deselect Burst fracture C5 while Lytic lesion C2 still falsifies the same normal, the
+ * record is consumed by the filter and goes out the door with the removed row — so when the lesion
+ * is finally deselected, the vertebral-body normal has no holder left and is never stated again.
+ *
+ * The declaration is not lost, because it is not a memory: both tiles say the same
+ * `baselineReplaces` sentence, and the canonical baseline says it too. Asking the *removed*
+ * observation which baseline sentences it falsifies therefore recovers every sentence it has
+ * authority over, including ones a earlier click had already removed. Nothing here can resurrect
+ * text a radiologist deleted by hand — a claim exists only where an observation declares it, and
+ * only against a sentence that is in the recorded canonical baseline.
+ *
+ * Deliberately narrower than `falsifies`: only the observation's own declared sentence widens the
+ * restoration scope, never a concept-level match. Concept falsification decides whether a normal
+ * may come back (`suppressedKeys`); it does not grant permission to write new text into the field.
+ */
+export function claimsDeclaredBy(
+  observation: SuppressingObservation | null | undefined,
+  canonical: readonly CanonicalSlot[],
+): string[] {
+  const declared = nonEmpty(observation?.baselineReplaces);
+  if (!declared) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const slot of canonical) {
+    if (key(slot.sentence) !== key(declared)) continue;
+    // A baseline that states the same sentence twice is one claim, not two. Restoring it twice would
+    // print the same normal two lines apart, which is the failure `mergeBaselineClaims` exists to stop.
+    if (seen.has(key(slot.sentence))) continue;
+    seen.add(key(slot.sentence));
+    out.push(slot.sentence);
+  }
+  return out;
+}
+
+/** Union without duplicating a sentence already held, keyed the way the ledger keys everything. */
+export function mergeBaselineClaims(
+  held: readonly string[],
+  inherited: readonly string[],
+): string[] {
+  const seen = new Set(held.map(key));
+  const next = [...held];
+  for (const sentence of inherited) {
+    if (seen.has(key(sentence))) continue;
+    seen.add(key(sentence));
+    next.push(sentence);
+  }
+  return next;
+}
+
 /** A baseline sentence with the position it holds in the canonical (anatomical) order. */
 export type CanonicalSlot = {
   sentence: string;
@@ -151,37 +249,4 @@ export function canonicalOrderFromBaseline(
 export function canonicalOrderFromText(text: string | null | undefined): CanonicalSlot[] {
   if (!text || !text.trim()) return [];
   return canonicalOrderFromBaseline(splitToSentences(text).map((s) => s.trim()).filter(Boolean));
-}
-
-/**
- * The observations that still falsify a normal after a deselection.
- *
- * Two exclusions, both deliberate:
- *  - **`stale` patches are not suppressors.** A stale row is a baseline whose text was emptied when
- *    something else took its place (`store.ts:2419`); it holds no clinical claim, so counting it as
- *    falsifying a normal would keep a normal retired after the abnormality that retired it is gone.
- *  - **A baseline-role observation is not a suppressor.** Explicitly selecting a normal tile asserts
- *    that normality; it cannot simultaneously be what falsifies another normal.
- *
- * Independently-selected abnormalities are all kept, including two that share one baseline — which is
- * the case this whole module exists for. Manually authored text is not a suppressor either, because it
- * declares no baseline: the radiologist's sentence stays exactly where they wrote it.
- */
-export function activeSuppressors(
-  patches: readonly {
-    stale?: boolean;
-    observation?: {
-      role?: string | null;
-      baselineReplaces?: string | null;
-      concept?: string | null;
-    } | null;
-  }[],
-): SuppressingObservation[] {
-  return patches
-    .filter((p) => !p.stale && p.observation && p.observation.role !== "baseline")
-    .map((p) => ({
-      baselineReplaces: p.observation?.baselineReplaces ?? null,
-      concept: p.observation?.concept ?? null,
-    }))
-    .filter((s) => nonEmpty(s.baselineReplaces) || nonEmpty(s.concept));
 }
