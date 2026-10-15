@@ -38,6 +38,22 @@ export type StructuredJsonEnvelope = {
    * by the radiologist. Gates strong vascular wording, so it must round-trip.
    */
   careVascularTechnique?: unknown;
+  /**
+   * Spine reporting capture state: vertebral numbering, the sequences the study
+   * actually has, the screening selections, and `impressionOrderFrozen`.
+   *
+   * The key is spelled `spineReporting`, not `careSpineReporting`, because the
+   * reader that asks for it is already shipped on the client
+   * (`mriSpineDraftState.extractSpineReportingState` reads exactly this key), and
+   * inventing a second spelling would leave that reader blind to the value this
+   * route stores.
+   *
+   * `impressionOrderFrozen` is why this is not cosmetic: spec §37 makes it the
+   * radiologist's own arrangement of the Impression, and the priority sorter must
+   * stop touching the report once it is set. Lost across a save, a reopen lets the
+   * engine re-shuffle lines the author ordered by hand.
+   */
+  spineReporting?: unknown;
   /** Applied whole-report format identity (care.report_format_identity.v1). */
   careReportFormatIdentity?: unknown;
   /**
@@ -134,6 +150,18 @@ export function extractCareVascularTechnique(column: unknown): unknown {
   if (isStructuredJsonEnvelope(column)) return column.careVascularTechnique ?? null;
   if (column.careVascularTechnique) return column.careVascularTechnique;
   return null;
+}
+
+/**
+ * The spine reporting capture state, read back from the stored column. A save that
+ * carries none keeps this value rather than clearing it: the client sends the key on
+ * every save, and an autosave that happens to carry none must not wipe the state the
+ * radiologist set.
+ */
+export function extractSpineReporting(column: unknown): unknown {
+  if (!isRecord(column)) return null;
+  const raw = column.spineReporting;
+  return isRecord(raw) ? raw : null;
 }
 
 export const CARE_REGION_TRANSITION_KIND = "care.region_transition.v1";
@@ -261,6 +289,7 @@ export function composeStructuredJsonColumn(opts: {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  spineReporting?: unknown;
   regionTransitions?: CareRegionTransition[] | null;
   reportFormatIdentity?: unknown;
   /** undefined keeps the existing linked study; null clears it. */
@@ -282,6 +311,9 @@ export function composeStructuredJsonColumn(opts: {
   const vascularTech = opts.vascularTechnique !== undefined
     ? opts.vascularTechnique
     : extractCareVascularTechnique(opts.existing);
+  const spine = opts.spineReporting !== undefined
+    ? opts.spineReporting
+    : extractSpineReporting(opts.existing);
   // `undefined` keeps the stored history. A save that carries no transition never rewrites
   // it, and a save that carries an empty array is not a client that sent nothing — the
   // client omits the key entirely when the history is empty (regionTransitionPayload), so
@@ -300,7 +332,7 @@ export function composeStructuredJsonColumn(opts: {
     : extractCareAppliedPatterns(opts.existing);
   const hasApplied = appliedPatterns.length > 0;
   const hasTransitions = regionTransitions.length > 0;
-  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions) return a4 ?? null;
+  if (!format && !ledger && !viewerMs && !canalProv && !vascularTech && !spine && !reportFormatIdentity && !linkedStudy && !hasApplied && !hasTransitions) return a4 ?? null;
   const env: StructuredJsonEnvelope = {
     kind: STRUCTURED_JSON_ENVELOPE_KIND,
     a4Cache: a4 ?? null,
@@ -310,6 +342,7 @@ export function composeStructuredJsonColumn(opts: {
   if (viewerMs) env.careViewerMeasurements = viewerMs;
   if (canalProv) env.careCanalApProvenance = canalProv;
   if (vascularTech) env.careVascularTechnique = vascularTech;
+  if (spine) env.spineReporting = spine;
   if (reportFormatIdentity) env.careReportFormatIdentity = reportFormatIdentity;
   if (linkedStudy && linkedStudy.studyId !== "" && linkedStudy.studyId != null) {
     env.linkedStudyId = linkedStudy.studyId;
@@ -338,6 +371,7 @@ export type StructuredJsonPatchInput = {
   viewerMeasurements?: unknown;
   canalApProvenance?: unknown;
   vascularTechnique?: unknown;
+  spineReporting?: unknown;
   regionTransitions?: unknown;
   appliedPatterns?: CareAppliedPattern[] | null;
   linkedStudy?: CareLinkedStudy | null;
@@ -387,10 +421,15 @@ export function buildCareStructuredJsonPatch(
     input.viewerMeasurements != null
     || input.canalApProvenance != null
     || input.vascularTechnique != null
+    || input.spineReporting != null
   ) {
+    // Absent members are written as `undefined`, which composeStructuredJsonColumn
+    // reads as "keep what is stored", so a save carrying only one of these four
+    // preserves the other three.
     patch.viewerMeasurements = input.viewerMeasurements ?? undefined;
     patch.canalApProvenance = input.canalApProvenance ?? undefined;
     patch.vascularTechnique = input.vascularTechnique ?? undefined;
+    patch.spineReporting = input.spineReporting ?? undefined;
   }
 
   // ADR-004. Only an array of transition records is a write signal: an absent or null field

@@ -386,3 +386,88 @@ sweep Phase 4 records, and `tmp/phase4-final-paths.txt` is derived from the impo
 `if (contentLocked) return;` added). `clinicalHistoryShortcuts` + `clinicalUndoRedo` +
 `finalizedMutationBoundary.hardening` + the lock contract: **129 tests, 128 passed**, the single failure being the
 Windows path defect in `aiQueryContract.test.ts` described in §10.
+
+## 12. Phase 6 — the save/reopen wire: one key was sent on every save and stored by nobody
+
+**Defect F (confirmed, fixed).** `radiology-report-generator.ts`'s `SaveDraftBody` never declared `spineReporting`,
+and a `z.object` strips the fields it does not declare. The workspace has been sending that key on **every** save
+(`useDraftPersistence.ts:505`, unconditional), so the value reached the route, was parsed away before
+`buildCareStructuredJsonPatch(rest)` ever saw it, and nothing wrote it. `structured_json` therefore never carried
+the spine capture state, on any draft, in any build.
+
+The consequence is not a missing panel. On reopen `extractSpineReportingState` returns `null` — silently, because
+that reader is deliberately defensive and falls back to defaults — so the hydrate branch at
+`useDraftPersistence.ts:310-317` does not run at all, and the store keeps what study-open reset it to:
+
+- `lumbarNumbering` back to `standard`, so a sacralisation or lumbarisation case renumbers every level sentence on
+  the page while the prose still describes the old numbering;
+- `sequencesAvailable` back to defaults, which is the acquisition gate — what the report is allowed to assert;
+- `screening` back to `absent` for all three regions;
+- `impressionOrderFrozen` back to `false`, which is spec §37's protection for an Impression the radiologist arranged
+  by hand: with the flag gone, the next `refreshImpressionFromLedger` calls `orderImpressionByPriority` and the
+  engine re-shuffles lines the author ordered.
+
+The same class as B-01's lost Technique, one layer down: a field every save carried, no writer, and a reload that
+restored a default and then autosaved that default back over the report.
+
+**What was measured as sound, so the fix stayed scoped.** `radiologyWorkspaceDraftRoundTrip.request.test.ts` R1-R5
+drive the real route against real Postgres and read the row back: Technique (through `findings_sections`, there is
+no technique column), the observation ledger with both sided rows and its provenance, viewer measurements, canal AP
+provenance, vascular answers, applied patterns, report-format identity and region transitions all land, and the
+reload route hands back the same envelope the save wrote. R7 then saves twice with `id` and asserts the same row is
+updated rather than a second draft inserted. `spineReporting` was the only key that did not survive, and R6 was red
+before the fix with the message `spineReporting was sent by every save and never reached the stored column`.
+
+**Fix.** Additive, no migration (the column is `jsonb`): declare the field on the request schema, carry it in the
+measurement group of `buildCareStructuredJsonPatch`, resolve it against the stored column in
+`composeStructuredJsonColumn`, count it in the nothing-to-write short-circuit, and add `extractSpineReporting`.
+It is stored under the unprefixed key `spineReporting` because that is the key the already-shipped client reader
+asks for; `careSpineReporting` would have stored the state where nothing can see it, which is a silent failure and
+not an error.
+
+**Coverage added, and why the existing coverage could not see this.** Three layers, because the defect lived in the
+seam between them:
+
+- `structuredJsonPatch.test.ts` +4 (16 total): the patch writes the key, an absent one keeps the stored one, a
+  request carrying only spine state produces an envelope rather than the legacy bare array, and a save carrying a
+  different key preserves the stored spine state.
+- `radiologyWorkspaceDraftRoundTrip.request.test.ts` (new, 7): real route, real column, the defect case and the
+  two-save case.
+- `workspaceDraftEnvelopeRoundTrip.test.ts` (new, 6): the whole wire with no DB — shipped format applied, shipped
+  tiles clicked, real `serializeObservationLedger()`, real server `buildCareStructuredJsonPatch` +
+  `composeStructuredJsonColumn`, through `JSON.parse(JSON.stringify(…))` as the jsonb column, then back through each
+  of the nine client readers the reopen effect uses, plus the real store hydrate and the real
+  `orderImpressionByPriority` (frozen refuses the reorder; the same call unfrozen applies it, so the freeze
+  assertion is a control and not a no-op).
+
+The two existing key-list assertions that pin the patch shape were widened with the group's fourth member (3→4 in
+the patch test, 6→7 in `radiology-report-generator.formatState.test.ts`) and each gained a
+`toBeUndefined()` check, so the new entry cannot be read as "this save wrote spine state". No assertion was
+weakened: both lists grew because the measurement group is written as a whole, which is how `vascularTechnique`
+already appeared in a patch for a request that never sent it.
+
+**Mutation proof.** `tmp/phase6-mutants.py`: control green at **36 passed**, then **8 mutants, 8 killed, 0 survived,
+0 harness faults**. M1 deletes the schema line and reproduces the shipped defect (2 kills, both from the real-DB
+suite); M2 drops the compose write; M3 writes the prefixed spelling; M4 makes the compose ignore what is stored;
+M5 misspells the server reader's key; M6 drops `!spine` from the short-circuit; M7 removes the patch-group term;
+M8 changes the **client** reader's key constant — killed, which is the point: the fence is enforced from both ends,
+not only from the writer.
+
+**A test-strength finding worth keeping.** `pr664PreMergeHardening.test.ts` BLOCKER 1 is described as using "the
+ACTUAL production serialize", but its own comment at line 127 says it "mirrors `composeStructuredJsonColumn`" — the
+envelope is hand-copied at line 67, so no change to the real compose can turn that suite red. The new suite imports
+the real module instead (relative cross-artefact imports from api-server are already established test practice in
+this package: `finalizePartialFailure.recovery.test.ts`, `composeObservations.test.ts`,
+`reportPreviewHarness.test.ts`). The mirror was left alone rather than widened into this PR.
+
+**Environmental, measured rather than assumed.** The full `api-server/src` directory on Windows shows 5 failing
+tests across 368 files: `backupHealth.test.ts` (2 — `path.resolve` yields `C:\app\data` where the suite expects
+`/app/data`), `restoreVerify.integration.test.ts` (`spawn pg_dump ENOENT`), `mwlDeploymentStatus.test.ts` (1 —
+POSIX fixture folders). Three DB suites that failed inside that 368-file run pass on their own (**53/53**), so those
+were parallel-run interference, not code. None of the five files imports anything this change edits.
+
+**Honest limit.** The new ERP suite reproduces the hydration *sequence* of `useDraftPersistence.ts:273-330`
+(line-for-line, cited) rather than executing the React effect — this repo has no React test environment. It proves
+the wire contract and the store's reaction to it; a real-browser save → close → reopen on a staging deployment is
+still the only evidence that the hook itself fires in that order, and that remains open for Phase 14.
+
