@@ -18,52 +18,6 @@ The system is just: a `docker compose` stack + one PostgreSQL database + a `.env
 
 ---
 
-## The compose project name is part of the recovery, not a detail
-
-`docker-compose.yml` declares no `name:` and nothing in this repository sets
-`COMPOSE_PROJECT_NAME`; `deploy-synology.sh` calls `docker compose` with no `-p`. So the
-project comes from wherever the operator typed it first. On the clinic box that is
-**`care-erp-github`** — measured 2026-10-13 from the deploy folder, where a bare
-`docker compose ps` listed no containers and `docker compose -p care-erp-github ps` listed
-`care-api`, `care-db`, `care-redis`, `care-web` (`CARE_ERP_CLINIC_READINESS_CHECKS.md` §B,
-and `CARE_ERP_PREDEPLOYMENT_GATE.md` §D says the same of the audit commands). The folder is
-`care-on-synology1`, which is the name a bare command would derive — a different stack.
-
-Why that decides whether a failover loses data:
-
-| Volume | Declared | Belongs to |
-| --- | --- | --- |
-| `db_data` | `external: true, name: care_main_db_data` (`docker-compose.yml:645-647`) | nothing — the fixed name is the same under every project |
-| `object_storage` | plain named volume (`:648`) | `<project>_object_storage` |
-| `uploads_data` | plain named volume (`:649`) | `<project>_uploads_data` |
-
-So starting the stack under the wrong project attaches **the real patient database** and a
-**brand-new, empty pair of upload volumes**. The ERP comes up, logs in, reports patients and
-bills — and the uploaded clinical documents and the frozen key-images are gone from the
-screen with no error anywhere. `uploads_data` holds `/app/data/uploads/**`
-(`docker-compose.yml:423`): the upload modules `reports`, `patient_documents`, `billing`,
-`site_assets` (`routes/uploads.ts:19`), expense attachments, scans, radiology report
-attachments, and `data/uploads/radiology-key-images` (`lib/frozenKeyImages.ts:33`). The
-database holds only rows and paths, never those bytes. A finalized report's **PDF** is not
-lost this way — it is rendered on demand from the database (`CARE_ERP_BACKUP_COVERAGE.md` §2)
-— which is exactly why losing the frozen images is the dangerous half: the re-rendered
-document is silently a different one, with no images in it.
-Full detail: `CARE_ERP_BACKUP_COVERAGE.md` §3 "Uploaded documents" and §4 "Frozen key
-images".
-
-- **On the standby**, choose the project name deliberately and write it on the failover
-  checklist below. `/volume1/docker/care-erp` derives `care-erp`, which is fine as long as
-  every later command says the same thing.
-- **On the primary**, name the live project in every stack command:
-  `docker compose -p care-erp-github …`.
-- **Before you call a failover complete**, prove the two upload volumes are the ones the
-  previous box had content in:
-  `docker volume ls | grep -E "uploads_data|object_storage"`, then open one uploaded patient
-  document and one signed report's **frozen key-image rail** in the UI. A green `/health`
-  does not see either of them, and a report that prints without its images looks normal.
-
----
-
 ## PART 1 — One-time pre-staging on the standby NAS (do this NOW, while healthy)
 This is what turns "hours" into "minutes."
 
@@ -91,51 +45,28 @@ This is what turns "hours" into "minutes."
 On the standby NAS shell, in `/volume1/docker/care-erp`:
 
 ```sh
-# 1. Pick the artifact by the name the job wrote, not by a guess. There is no `latest`
-#    symlink anywhere in this repo — the destination holds
-#    caredeoghar_<UTC stamp>.sql.gz[.meta] (or .sql.gz.enc when BACKUP_PASSPHRASE is set) —
-#    so list it and read which one is newest and provable. DSM does not guarantee `node` on
-#    the host, so run the repo's own tool from the image the same way the runbook does:
-docker compose run --rm --no-deps schema-verify \
-  node scripts/ops-backup-inventory.mjs
-#    (add BACKUP_DIR=… to that command's environment if the dumps are elsewhere — Hyper
-#    Backup copies them to the standby, so name the standby's own path.)
-#    Use the `artifact` column with the `manifest` / `checksum` / `restored` columns beside
-#    it. `CARE_ERP_BACKUP_RESTORE.md` §3 is the full procedure; these steps are the short
-#    form for a box that is already pre-staged.
+# 1. Make sure you have the latest good backup (synced nightly). Decrypt if encrypted:
+#    export BACKUP_PASSPHRASE   # never on the command line: it would sit in
+#    # ps -ef and in this shell's history for good
+#    openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE \
+#      -in latest.sql.gz.enc -out latest.sql.gz
+#    # or just: bash scripts/synology-restore.sh latest.sql.gz.enc — it does
+#    # the decrypt, the gzip sniff and the schema check in the right order
 
-# 2. Start ONLY the database first, so the app never serves traffic against a
-#    half-restored schema:
+# 2. Start ONLY the database first (so we restore into it before the app serves traffic)
 docker compose up -d db
 until docker exec care-db pg_isready -U erp -d diagnostic_erp -q; do sleep 2; done
 
-# 3. Restore the chosen artifact. Use `docker exec … psql`, not a host `psql`: DSM ships
-#    `openssl` but not the PostgreSQL client, which is why the backup job itself reaches
-#    pg_dump through `docker exec care-db`. Pipe it end to end — an unzipped `.sql` on disk
-#    is the whole clinic's records in plaintext, and a patient database has no reason to sit
-#    in a temp file. `ON_ERROR_STOP=1` is not optional: without it `psql` can fail every
-#    statement and still exit 0, which reads as a successful restore.
-export BACKUP_PASSPHRASE          # only when the artifact is .enc; never on the argv —
-                                  # it would sit in `ps -ef` and in this history forever
-gunzip -c /volume1/backups/caredeoghar/caredeoghar_20261015_030000.sql.gz \
-  | docker exec -i care-db psql -v ON_ERROR_STOP=1 -U erp -d diagnostic_erp
-# .enc instead: openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE \
-#                -in <artifact>.sql.gz.enc | gunzip -c | docker exec -i care-db psql …
-echo "restore exit: $?"           # must be 0 — a pipeline prints the last command's status
-# Scheduler-written files (backup_<job>_*.sql) are plain SQL, not gzipped: skip gunzip.
+# 3. Restore the latest backup into the fresh database
+gunzip -c /volume1/backups/caredeoghar/latest.sql.gz | docker exec -i care-db psql -U erp -d diagnostic_erp
 
 # 4. Bring up the rest of the stack. care-db-patch-v2 applies any migrations newer
 #    than the backup (idempotent); care-api starts only after schema is verified.
 docker compose up -d
 
-# 5. Confirm it is healthy. The NAS has no `pnpm` and no `npx` — run the repo's own
-#    checkers with `node` (they live in the image, so the container form always works).
-#    Nothing publishes 8080 on the host either: 8080 is `care-api`'s container port, so a
-#    host-side `curl localhost:8080` fails on a stack that is actually fine. The
-#    host-facing address is ${HOST_PORT:-8888} on care-web.
+# 5. Confirm it is healthy
 docker ps --format '{{.Names}}\t{{.Status}}'
-node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"
-docker compose run --rm --no-deps schema-verify node scripts/verify-deployment.mjs
+pnpm operations:verify-deployment    # or: curl -fsS http://localhost:8080/api/health/schema  → 200
 ```
 
 6. **Repoint the network** to the standby:
@@ -152,8 +83,6 @@ Do PART 1 steps 1–5 now (install Container Manager, get code, `.env`, `docker 
 
 ## Failover checklist (print this)
 - [ ] Standby has Container Manager + the code + a matching `.env` (JWT/SESSION/APP_NAME match)
-- [ ] The standby's compose **project name** is written here: `____________` — every command
-      below is run with `-p <that name>`, and it never changes after the first `up`
 - [ ] `care_main_db_data` volume exists on the standby
 - [ ] A backup no older than last night is present on the standby (`gzip -t` OK)
 - [ ] `docker compose up -d db` → `care-db` healthy
