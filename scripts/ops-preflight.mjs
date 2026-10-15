@@ -623,9 +623,12 @@ function checkBackups(ctx) {
     id: "backup.metadata",
     status: bad.length ? FAIL : PASS,
     critical: true,
+    // The passing branch prints the values themselves, and `auditSidecar` deliberately
+    // accepts any `exporter` containing "remote" — so a hand-edited sidecar can hold a
+    // connection string in a field that audits clean. Same predicate as the failures.
     detail: bad.length
       ? `${newest.name}: ${bad.join("; ")}`
-      : `${newest.name}: source_database=${meta.source_database} exporter=${meta.exporter} create_tables=${meta.create_tables ?? "?"} encrypted=${meta.encrypted ?? "?"}`,
+      : `${newest.name}: source_database=${showValue(meta.source_database)} exporter=${showValue(meta.exporter)} create_tables=${showValue(meta.create_tables ?? "?")} encrypted=${showValue(meta.encrypted ?? "?")}`,
     remediation: bad.length ? "Do not rely on this artifact. Re-take the backup from the care-db container." : "",
   };
   return [present, fresh, metadata];

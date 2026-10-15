@@ -168,6 +168,7 @@ function write(rel, text) {
  *   emitSites    — replacement emit-site map (used by T10)
  *   ageHours     — mtime of the newest backup artifact, hours before NOW
  *   withSidecar  — false to remove the .meta the backup job writes
+ *   sidecarLines — replacement `.meta` lines (the job's `bytes=` line is still appended)
  *   evidence     — replacement ops-evidence.json object (null to remove it)
  *   ledger       — filenames the migration ledger claims are applied
  */
@@ -189,7 +190,7 @@ function seedTree(knobs = {}) {
   if (knobs.withSidecar === false) {
     rmSync(`${artifactPath}.meta`, { force: true });
   } else {
-    writeFileSync(`${artifactPath}.meta`, [...SIDECAR_LINES, `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
+    writeFileSync(`${artifactPath}.meta`, [...(knobs.sidecarLines ?? SIDECAR_LINES), `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
   }
   if (knobs.ageHours !== undefined) {
     const when = new Date(NOW - knobs.ageHours * 3_600_000);
@@ -404,6 +405,27 @@ describe("T5–T8 — backup and restore evidence", () => {
     const c = runPreflight({ ctx: makeCtx() }).checks.find((x) => x.id === "backup.metadata");
     expect(c.status).toBe(FAIL);
     expect(c.detail).toMatch(/db_data/);
+  });
+
+  test("T7c a sidecar that audits clean still cannot make the gate print a credential", () => {
+    // `auditSidecar` accepts any `exporter` containing "remote" (that is what a dump pulled
+    // from a partner host looks like), so a hand-edited sidecar can carry a connection string
+    // in a field the audit passes — and the PASS branch of `backup.metadata` prints those very
+    // fields as its detail. Redacting only the failure path would hide a password in one
+    // branch and print it in the other.
+    const lines = SIDECAR_LINES.map((l) =>
+      l.startsWith("exporter=") ? `exporter=remote-postgresql://erp:${SENTINEL}@10.0.0.5:5432/diagnostic_erp` : l,
+    );
+    const { by, report } = build({ sidecarLines: lines });
+    expect(by["backup.metadata"].status).toBe(PASS);
+    expect(by["backup.metadata"].detail).toMatch(/exporter=\[redacted\]/);
+    for (const surface of [renderText(report), JSON.stringify(report)]) {
+      expect(surface).not.toContain(SENTINEL);
+      expect(surface).not.toMatch(/postgres(ql)?:\/\//i);
+    }
+    // The pass is still a pass with readable fields, not a blank one.
+    expect(by["backup.metadata"].detail).toMatch(/source_database=diagnostic_erp/);
+    expect(by["backup.metadata"].detail).toMatch(/create_tables=439/);
   });
 
   test("T8 an artifact with no sidecar is UNKNOWN, never PASS", () => {
