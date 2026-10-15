@@ -36,6 +36,7 @@ const RESET_SRC = "lib/zai-workspace/clinicalStateReset.ts";
 const DRAFT_SRC = "hooks/radiology-workspace/useDraftPersistence.ts";
 const CLINICAL_UI_SRC = "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx";
 const COMMANDS_SRC = "hooks/radiology-workspace/useWorkspaceCommands.ts";
+const SHORTCUTS_SRC = "lib/reportingWorkspaceShortcuts.ts";
 const LIFECYCLE_SRC = "lib/radiologyReportLifecycle.ts";
 const FINALIZE_SRC = "hooks/radiology-workspace/useStudyFinalize.ts";
 
@@ -412,12 +413,19 @@ describe("reset-path source contracts — the three call sites cannot drift back
     expect(undo.slice(0, 900)).toMatch(/return false;/);
   });
 
-  it("surfaces a refused undo at Ctrl+Shift+Z instead of failing silently", () => {
+  it("surfaces a refused undo at the undo keystroke instead of failing silently", () => {
+    // This refusal now spans TWO files, and the split is the point: the keystroke is claimed by a
+    // focus-aware gate, and the REASON is computed by one helper that both directions call. So the
+    // contract has two halves. A checker that only reads the handler goes green the moment the wording
+    // moves out of it — which is how the previous version of this test was written, and why it is
+    // rewritten here instead of being deleted for "no longer matching".
     const src = read(COMMANDS_SRC);
-    const block = src.slice(src.indexOf('e.ctrlKey && e.shiftKey && (e.key === "z"'));
-    const handler = block.slice(0, 1800);
+    const at = src.indexOf("if (shouldHandleClinicalUndoShortcut(e)) {");
+    expect(at, "the undo keystroke must be claimed by the editor-focus gate, not a raw modifier test")
+      .toBeGreaterThan(-1);
+    const handler = src.slice(at, at + 1800);
     expect(handler).toMatch(/undoLastPatch\(\)/);
-    expect(handler).toMatch(/topFrame\.activeStudyId !== ws\.activeStudyId/);
+    expect(handler).toMatch(/clinicalHistoryRefusal\(/);
     expect(handler).toMatch(/variant: "destructive"/);
     // pushNotification is not a usable channel: its only consumer renders
     // kind === "interrupt" as a red card headed "Critical finding detected",
@@ -425,6 +433,16 @@ describe("reset-path source contracts — the three call sites cannot drift back
     // the handler's own comment names the channel it deliberately avoids.
     const code = handler.replace(/\/\/[^\n]*/g, "");
     expect(code).not.toMatch(/pushNotification/);
+
+    const gate = read(SHORTCUTS_SRC);
+    const refusalAt = gate.indexOf("export function clinicalHistoryRefusal(");
+    expect(refusalAt, "the shared refusal helper is what makes a refused redo as explainable as a refused undo")
+      .toBeGreaterThan(-1);
+    const refusal = gate.slice(refusalAt);
+    expect(refusal).toMatch(/frame\.activeStudyId !== ws\.activeStudyId/);
+    expect(refusal).toMatch(/ws\.isFinalized/);
+    expect(refusal, "a refusal that names no recovery is the dead-end refusal PR #863 banned")
+      .toMatch(/withdraw the signature/i);
   });
 });
 

@@ -186,7 +186,10 @@ describe("every signed refusal names the same correction path, and it is one tha
 
   const FAMILY = [
     "hooks/radiology-workspace/useDraftPersistence.ts", // #859 — saveDraft's own refusal
-    "hooks/radiology-workspace/useWorkspaceCommands.ts", // #855 — the undo refusal
+    // #855 wrote the undo refusal inline in the key handler. Stage C Phase 1 moved it
+    // into the builder that serves BOTH directions, so the family member is that file
+    // now — the sentence is unchanged and has one fewer copy.
+    "lib/reportingWorkspaceShortcuts.ts", // #855 + redo — the history refusal
     "lib/zai-workspace/signedMutationRefusalNotice.ts", // #858 — the store's announcer
   ].map((rel) => readFileSync(join(here, "..", rel), "utf8"));
 

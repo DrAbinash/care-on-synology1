@@ -27,6 +27,13 @@ import {
 } from "./observationSlot";
 import { coerceObservationAnchor } from "./observationAnchor";
 import {
+  filterRestorableBaselines,
+  insertAtCanonicalPosition,
+  mergeBaselineClaims,
+  type CanonicalSlot,
+  type SuppressingObservation,
+} from "./clinicalSelection/normalSuppression";
+import {
   assertedAbnormality,
   assertsStudyNormal,
   clinicalContentSignature,
@@ -106,23 +113,44 @@ export function stripContribution(
   fieldText: string,
   contribution: string | undefined,
   provenance: FieldProvenanceMap | undefined,
+  heldElsewhere?: ReadonlySet<string>,
 ): { text: string; outcome: RemoveContributionOutcome } {
   const c = (contribution ?? "").trim();
   if (!c) return { text: fieldText, outcome: "removed" };
   const located = locateContributionInField(fieldText, c);
-  if (!located && !contributionPresent(fieldText, c)) {
+  const chunks = contributionChunks(located ?? c);
+  /**
+   * Proof is per sentence, not per block. A box can write two sentences and leave the page
+   * holding one of them: "Disc herniation L4-L5" states its finding AND "No significant
+   * central canal stenosis.", and when the canal-stenosis box is clicked the second sentence
+   * is retired as contradicted — so the herniation row's contribution no longer matches the
+   * field as a block. The old gate proved only the block, found nothing, and answered
+   * `no-op-unproven` while the caller went ahead and deleted the row: the finding stayed
+   * printed, backed by no observation, and could never be removed again because the thing
+   * that would remove it was gone. Measured on shipped tiles at this branch.
+   */
+  if (!located && !contributionPresent(fieldText, c)
+    && !chunks.some((chunk) => contributionPresent(fieldText, chunk))) {
     return { text: fieldText, outcome: "no-op-unproven" };
   }
-  const chunks = contributionChunks(located ?? c);
   if (chunks.some((chunk) => contributionProtected(chunk, provenance)) || contributionProtected(c, provenance) || contributionProtected(located ?? c, provenance)) {
     return { text: fieldText, outcome: "preserved-manual" };
   }
   let next = fieldText;
   const target = located ?? c;
-  if (next.includes(target)) {
+  const held = (chunk: string): boolean => Boolean(heldElsewhere?.has(normalizeForDedupe(chunk)));
+  // The block goes off as a block only when every sentence in it belongs to this
+  // contribution. If one of them is a sentence another live observation also wrote, the
+  // block removal would take that observation's statement with it, so this falls through
+  // to the per-sentence path, which skips the held one.
+  if (!chunks.some(held) && next.includes(target)) {
     next = removeBlock(next, target);
   } else {
     for (const chunk of chunks) {
+      // A sentence another live observation also wrote is that observation's statement, not
+      // this row's leftover. Clicking one box off must not take away words a box that is
+      // still selected is standing behind.
+      if (held(chunk)) continue;
       const hit = locateContributionInField(next, chunk);
       next = hit ? removeBlock(next, hit) : next;
     }
@@ -141,10 +169,57 @@ export function restoreBaselineSentences(fieldText: string, sentences: string[])
   return next;
 }
 
+/**
+ * Restoration options that make the outcome a property of the surviving selection set rather than of
+ * the click sequence.
+ *
+ * Omitted entirely, `removeLedgerObservation` behaves exactly as it always has — which is what a
+ * reporting surface with no v4 catalogue and no canonical order must keep doing. Supply `surviving`
+ * and a sentence a still-selected observation falsifies is never put back; supply `canonical*` and a
+ * sentence that legitimately returns rejoins its anatomical neighbours instead of landing at the end
+ * of the field, beneath the pathology it contradicts.
+ */
+export type LedgerRestoreOptions = {
+  /** Every observation still selected after this removal. */
+  surviving?: readonly SuppressingObservation[];
+  canonicalFindings?: readonly CanonicalSlot[];
+  canonicalImpression?: readonly CanonicalSlot[];
+  /**
+   * Which baseline sentences this removal has authority over. Computed by the caller from the
+   * canonical baseline *and* the removed observation's own declaration, because the patch's private
+   * `replacedBaseline` only ever lists what that patch deleted first — which is not the same set
+   * when two abnormalities declare one normal. Without it, nothing about restoration changes.
+   */
+  claimsFindings?: readonly string[];
+  claimsImpression?: readonly string[];
+  /**
+   * Sentences another live observation also wrote, keyed the way the ledger keys everything
+   * (`liveContributionKeys`). Removal works sentence by sentence, so without it one box could
+   * take away a statement a box that is still selected is standing behind.
+   */
+  heldElsewhere?: ReadonlySet<string>;
+};
+
+function restoreInto(
+  fieldText: string,
+  sentences: string[],
+  canonical: readonly CanonicalSlot[] | undefined,
+): string {
+  if (!canonical || canonical.length === 0) return restoreBaselineSentences(fieldText, sentences);
+  let next = fieldText;
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    next = insertAtCanonicalPosition(next, trimmed, canonical);
+  }
+  return next;
+}
+
 export function removeLedgerObservation(
   narrative: ReportNarrative,
   provenance: NarrativeProvenance,
   patch: LedgerPatch,
+  opts?: LedgerRestoreOptions,
 ): {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
@@ -154,13 +229,15 @@ export function removeLedgerObservation(
   if (patch.protected) {
     return { narrative, provenance, outcome: "preserved-manual", preservedManual: true };
   }
-  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings);
-  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression);
-  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique);
+  const heldElsewhere = opts?.heldElsewhere;
+  const findings = stripContribution(narrative.findings, patch.lastRendered.findings, provenance.findings, heldElsewhere);
+  const impression = stripContribution(narrative.impression, patch.lastRendered.impression, provenance.impression, heldElsewhere);
+  const technique = stripContribution(narrative.technique, patch.lastRendered.technique, provenance.technique, heldElsewhere);
   const recommendation = stripContribution(
     narrative.recommendation,
     patch.lastRendered.recommendation,
     provenance.recommendation,
+    heldElsewhere,
   );
 
   const hadContribution = Boolean(
@@ -175,13 +252,28 @@ export function removeLedgerObservation(
     || technique.text !== narrative.technique
     || recommendation.text !== narrative.recommendation;
 
+  // Suppression is a fact about the set that survives, not about which patch happened to delete the
+  // sentence first. Two abnormalities that declare the same normal must not disagree about it.
+  const scopeFindings = opts?.claimsFindings
+    ? mergeBaselineClaims(patch.replacedBaseline.findings, opts.claimsFindings)
+    : patch.replacedBaseline.findings;
+  const scopeImpression = opts?.claimsImpression
+    ? mergeBaselineClaims(patch.replacedBaseline.impression, opts.claimsImpression)
+    : patch.replacedBaseline.impression;
+  const restorableFindings = opts?.surviving
+    ? filterRestorableBaselines(scopeFindings, opts.surviving)
+    : scopeFindings;
+  const restorableImpression = opts?.surviving
+    ? filterRestorableBaselines(scopeImpression, opts.surviving)
+    : scopeImpression;
+
   let nextFindings = findings.text;
   let nextImpression = impression.text;
   if (findings.outcome === "removed") {
-    nextFindings = restoreBaselineSentences(nextFindings, patch.replacedBaseline.findings);
+    nextFindings = restoreInto(nextFindings, restorableFindings, opts?.canonicalFindings);
   }
   if (impression.outcome === "removed") {
-    nextImpression = restoreBaselineSentences(nextImpression, patch.replacedBaseline.impression);
+    nextImpression = restoreInto(nextImpression, restorableImpression, opts?.canonicalImpression);
   }
 
   const nextNarrative: ReportNarrative = {

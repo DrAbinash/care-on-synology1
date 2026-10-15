@@ -322,13 +322,23 @@ describe("the leave gate says what the two real options are", () => {
     expect(description![1].endsWith(SHARED), "this refusal must end with the shared sentence").toBe(true);
     for (const [rel, own] of [
       ["hooks/radiology-workspace/useDraftPersistence.ts", 'title: "Save refused — the report is signed"'],
-      ["hooks/radiology-workspace/useWorkspaceCommands.ts", 'title: "Undo refused — the report is signed"'],
+      // Stage C Phase 1 gave Redo the same refusal Undo had, so the two inline toasts
+      // #855 wrote in the key handler became one helper that takes the verb. The
+      // wording is the same literal, now built once for both directions.
+      ["lib/reportingWorkspaceShortcuts.ts", "refused — the report is signed"],
       ["lib/zai-workspace/signedMutationRefusalNotice.ts", "Nothing was applied."],
     ] as const) {
       const text = read(rel);
       expect(text, `${rel} must still carry its own signed refusal`).toContain(own);
       expect(text, `${rel} must use the shared sentence`).toContain(SHARED);
     }
+    // And the key handler may not re-inline a voice of its own again: both history
+    // keys route through the helper above, which is why the sentence has one home.
+    const keys = read("hooks/radiology-workspace/useWorkspaceCommands.ts");
+    expect(
+      (keys.match(/clinicalHistoryRefusal\(/g) ?? []).length,
+      "both Undo and Redo must ask the shared refusal builder",
+    ).toBe(2);
   });
 
   it("stays inside the reading budget #855 measured against eight seconds", () => {

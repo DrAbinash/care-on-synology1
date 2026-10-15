@@ -105,6 +105,10 @@ export const CLINICAL_RESET_FIELDS = [
   "regionTransitions",
   "pendingPathologyPatch",
   "patchUndoStack",
+  // The forward branch of the same history. Left behind, the next patient's workspace would carry the
+  // previous patient's redo frames — and while `redoLastPatch` refuses a frame from another study, a
+  // frame is only refused by name: the reset is what stops them being reachable at all.
+  "patchRedoStack",
   "lastPatchSnapshot",
   "startingCanvasBaseline",
   "impressionNeedsRefresh",
@@ -193,6 +197,7 @@ export function emptyClinicalState(): ClinicalResetState {
     regionTransitions: [],
     pendingPathologyPatch: null,
     patchUndoStack: [],
+    patchRedoStack: [],
     lastPatchSnapshot: null,
     startingCanvasBaseline: null,
     impressionNeedsRefresh: false,

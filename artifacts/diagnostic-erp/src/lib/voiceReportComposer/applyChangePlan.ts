@@ -221,6 +221,13 @@ export function applyChangePlan(input: ApplyChangePlanInput & { force?: boolean 
       ownership,
       provenance,
       source,
+      // Phase 5 — the same sentence fence the Quick Select path uses, so a dictated
+      // plan cannot delete a finding another observation wrote and leave its ledger
+      // row behind. Measured on this path: the disc pair below lost its first
+      // sentence with the fence absent (`tmp/composer-probe.txt`).
+      liveRows: activeObservations.map((o) => ({
+        lastRendered: { findings: o.findingsText, impression: o.impressionText },
+      })),
     });
 
     narrative = patch.narrative;

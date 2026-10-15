@@ -165,9 +165,15 @@ describe("POST /save-draft — structured_json is written once per request", () 
       "canalApProvenance",
       "linkedStudy",
       "observationLedger",
+      "spineReporting",
       "viewerMeasurements",
       "vascularTechnique",
     ].sort());
+    // The measurement group is written as a whole, so its absent members appear
+    // here as `undefined` — which composeStructuredJsonColumn reads as "keep what
+    // is stored", not "clear". This request carried no spine capture state, so a
+    // key in the patch must not be mistaken for a write of one.
+    expect(persistCalls[0]!.patch.spineReporting).toBeUndefined();
     expect(res.body.structuredJsonPersistFailed).toBe(false);
   });
 

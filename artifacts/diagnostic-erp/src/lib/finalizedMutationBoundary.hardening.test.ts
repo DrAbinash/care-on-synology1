@@ -24,9 +24,12 @@
  * and comments, because loosening the line pattern instead counts destructuring
  * READS as writes (`recomputeCopilot`, `applySelectedFormats`).
  *
- * Of the 29, twenty-two refuse through the shared predicate, three keep a named
+ * Of the 30, twenty-three refuse through the shared predicate, three keep a named
  * one-off `isFinalized` check under an allowlist that has to state why, and four
- * are the reset/hydration paths a legitimate reopen depends on. That split used to
+ * are the reset/hydration paths a legitimate reopen depends on. The thirtieth is
+ * `redoLastPatch`; Undo and it are counted through the shared `clinicalRestorePatch`
+ * call rather than a field name in their own bodies, which is the spelling a census
+ * that reads only the literal list would have dropped them both from. That split used to
  * read "of the 25, eighteen … four … three" while the lists beside it already held
  * 19 and 3 — a prose count nobody re-measured when an entry moved between lists.
  * All four numbers are now asserted, so the sentence cannot outlive the scanner.
@@ -56,6 +59,7 @@ import type { VoiceChangePlan } from "@/lib/voiceReportComposer/types";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const storeSrc = readFileSync(join(here, "zai-workspace/store.ts"), "utf8");
+const shortcutsSrc = readFileSync(join(here, "reportingWorkspaceShortcuts.ts"), "utf8").replace(/\r\n/g, "\n");
 const commandsSrc = readFileSync(
   join(here, "../hooks/radiology-workspace/useWorkspaceCommands.ts"),
   "utf8",
@@ -479,6 +483,21 @@ const GUARD_CASES: Array<{
     refusal: false,
   },
   {
+    // The forward branch of the same history. The arm steps one back WHILE UNSIGNED, which is what
+    // puts a frame on the redo stack; after signing there is a frame and no legitimate way forward,
+    // so `false` with the report byte-identical is the only correct answer. The positive control runs
+    // the same arm unsigned and the same call must really write — otherwise this case would pass on
+    // an empty stack for the wrong reason.
+    action: "redoLastPatch",
+    arm: () => {
+      useWorkspace.getState().undoLastPatch();
+      expect(useWorkspace.getState().patchRedoStack.length,
+        "a redo frame must exist for this case to mean anything").toBeGreaterThan(0);
+    },
+    call: () => useWorkspace.getState().redoLastPatch(),
+    refusal: false,
+  },
+  {
     action: "applyVoiceComposerPlan",
     arm: () => {},
     call: () => useWorkspace.getState().applyVoiceComposerPlan(
@@ -872,6 +891,17 @@ describe("the boundary cannot regress silently", () => {
       const owner = [...methods].reverse().find((mm) => mm.start <= p.line && p.line < mm.end);
       if (owner) writers.set(owner.name, owner);
     }
+    // A method that restores clinical state through the SHARED snapshot patch is a clinical writer
+    // even though no field name appears in its own body. Counting only the spelled-out form is how a
+    // refactor silently drops a guarded mutator out of this census: Undo and Redo both write the five
+    // texts, the provenance map and the ledger, and they do it through one definition so the two
+    // directions cannot drift. The census has to follow the write, not the spelling.
+    for (const mm of methods) {
+      if (writers.has(mm.name)) continue;
+      if (lines.slice(mm.start, mm.end).join("\n").includes("clinicalRestorePatch(")) {
+        writers.set(mm.name, mm);
+      }
+    }
     return [...writers.values()];
   }
 
@@ -999,6 +1029,7 @@ describe("the boundary cannot regress silently", () => {
       "confirmOverwriteAndApply", "cancelOverwrite",
       "setLinkedStudies", "clearLinkedStudy", "refreshImpressionFromLedger",
       "orderImpressionByPriority", "withdrawSystemNormalImpression", "undoLastPatch",
+      "redoLastPatch",
       "applyVoiceComposerPlan", "applyAiComposerAccepted", "clearVoiceComposerSession",
       "relateralizePatches", "applyMacroWithValues", "applyPathologyOverlay",
       "generateProfessionalReport",
@@ -1007,8 +1038,8 @@ describe("the boundary cannot regress silently", () => {
     // and prose drifted: the comment read "of the 25, eighteen … four … three"
     // while these very lists held nineteen and three. A count a reviewer has to
     // recompute by hand is a count that goes stale silently.
-    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(29);
-    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(22);
+    expect(writers.length, "the scanner's population changed — update the header comment's split").toBe(30);
+    expect(guardedByPredicate.length, "header comment: this many refuse through the shared predicate").toBe(23);
     expect(Object.keys(LEGACY_IF_GUARD).length, "header comment: this many keep a one-off isFinalized check").toBe(3);
     expect(Object.keys(EXEMPT).length, "header comment: this many are reset/hydration paths").toBe(4);
     for (const name of guardedByPredicate) {
@@ -1073,71 +1104,91 @@ describe("the boundary cannot regress silently", () => {
 });
 
 /**
- * A refusal the radiologist can trigger with the keyboard has to say so. There is
- * no DOM harness in this package, so this is a source contract over the handler
- * rather than a render test — the same shape as the cross-study undo refusal in
- * `clinicalStateReset.hardening.test.ts`.
+ * A refusal the radiologist can trigger from the keyboard has to say so. There is no DOM harness in
+ * this package, so this is a source contract over BOTH halves of the path rather than a render test —
+ * the keystroke is claimed in the command hook, the reason is computed in one pure helper that undo
+ * and redo share, and the wording a human reads lives only in that helper. A contract that greps the
+ * handler alone goes green the moment the wording moves out of it. That is not hypothetical: the
+ * previous copy of this block pinned `e.ctrlKey && e.shiftKey && (e.key === "z"` plus the inline toast
+ * beside it, and after the redo landing every assertion in it was reading a slice that no longer
+ * existed while still being able to pass. Anchor checks first, facts second.
  */
-describe("Ctrl+Shift+Z on a signed report says it was refused", () => {
-  const handlerAt = commandsSrc.indexOf('e.ctrlKey && e.shiftKey && (e.key === "z"');
-  // Comments stripped: the branch's own comment names the server route and the
-  // draft-writability guard that make its correction path real, and these
-  // assertions are about the wording the radiologist actually reads. A way back
-  // promised only in a comment is not a way back.
-  //
-  // The window is deliberately generous, and it has to be: it is a RAW slice, so
-  // the comment the branch carries is charged against it before being stripped
-  // away. At the 2600 this block used to read, the longer wording and the
-  // evidence behind it pushed the branch's `duration: 8000,` past the end — the
-  // slice came back empty and every assertion below failed for a reason that had
-  // nothing to do with the copy. Hence the explicit anchor check.
-  const handler = commandsSrc
-    .slice(handlerAt, handlerAt + 4000)
-    .replace(/\/\/[^\n]*/g, "");
-  const SIGNED = "!undone && topFrame && ws.isFinalized";
-  const signedAt = handler.indexOf(SIGNED);
-  const branchEnd = handler.indexOf("duration: 8000,", signedAt);
-  const branch = handler.slice(signedAt, branchEnd + 20);
+describe("the undo/redo keystroke says when it was refused", () => {
+  const refusalAt = shortcutsSrc.indexOf("export function clinicalHistoryRefusal(");
+  // The window is deliberately generous, and it has to be: a RAW slice charges the branch's own
+  // comment against it before anything is stripped. At the 2600 this block used to read, the longer
+  // wording and the evidence behind it pushed the signed branch past the end — the slice came back
+  // empty, and the assertions failed for a reason that had nothing to do with the copy.
+  const refusal = shortcutsSrc.slice(refusalAt, refusalAt + 3000).replace(/\/\/[^\n]*/g, "");
+  const CROSS = "frame.activeStudyId !== ws.activeStudyId";
+  const SIGNED = "if (ws.isFinalized) {";
+  const crossAt = refusal.indexOf(CROSS);
+  const signedAt = refusal.indexOf(SIGNED);
+  const branch = refusal.slice(signedAt, refusal.indexOf("signed again", signedAt) + 40);
 
-  it("the branch being asserted on is the whole toast, not an empty slice", () => {
-    expect(branchEnd, "the signed branch's toast fell outside the window above").toBeGreaterThan(-1);
+  const handlerOf = (gate: string): string => {
+    const at = commandsSrc.indexOf(gate);
+    return at < 0 ? "" : commandsSrc.slice(at, at + 1400).replace(/\/\/[^\n]*/g, "");
+  };
+  const undoHandler = handlerOf("if (shouldHandleClinicalUndoShortcut(e)) {");
+  const redoHandler = handlerOf("if (shouldHandleClinicalRedoShortcut(e)) {");
+
+  it("finds both halves before asserting anything about them", () => {
+    expect(refusalAt, "the shared refusal helper is where the wording lives now").toBeGreaterThan(-1);
+    expect(crossAt, "the cross-study refusal must still be there").toBeGreaterThan(-1);
+    expect(signedAt, "a signed report must get its own refusal, not silence").toBeGreaterThan(-1);
+    expect(undoHandler.length, "the undo keystroke must be claimed by the editor-focus gate").toBeGreaterThan(80);
+    expect(redoHandler.length, "the redo keystroke must be claimed by the editor-focus gate").toBeGreaterThan(80);
+  });
+
+  it("the branch being asserted on is the whole refusal, not an empty slice", () => {
+    expect(branch.length, "the signed branch fell outside the window above").toBeGreaterThan(120);
     expect(branch).toContain("title:");
-    expect(branch).toContain("duration: 8000,");
+    expect(branch).toContain("description:");
   });
 
   it("has a signed-report branch, and it comes after the cross-study one", () => {
-    const crossStudy = handler.indexOf("topFrame.activeStudyId !== ws.activeStudyId");
-    expect(crossStudy, "the cross-study refusal must still be there").toBeGreaterThan(-1);
-    expect(signedAt, "a signed report must get its own refusal, not silence").toBeGreaterThan(-1);
-    // Cross-study is the more specific diagnosis and must win when both hold: a
-    // frame from another patient on a signed study is a different sentence.
-    expect(signedAt).toBeGreaterThan(crossStudy);
+    // Cross-study is the more specific diagnosis and must win when both hold: a frame from another
+    // patient on a signed study is a different sentence than "your report is signed".
+    expect(signedAt).toBeGreaterThan(crossAt);
   });
 
-  it("uses the toast channel, not pushNotification", () => {
-    expect(branch).toMatch(/variant: "destructive"/);
-    // pushNotification's only consumer renders kind === "interrupt" as a red card
-    // headed "Critical finding detected", and "ledger" / "edge-glow" render nowhere.
-    expect(handler).not.toMatch(/pushNotification/);
+  it("reaches the radiologist through the toast channel, from BOTH directions", () => {
+    // pushNotification's only consumer renders kind === "interrupt" as a red card headed "Critical
+    // finding detected", and "ledger" / "edge-glow" render nowhere at all.
+    expect(refusal).not.toMatch(/pushNotification/);
+    for (const [name, handler] of [["undo", undoHandler], ["redo", redoHandler]] as const) {
+      expect(handler, name + " must ask the shared helper why it was refused")
+        .toContain("clinicalHistoryRefusal(");
+      expect(handler, name + " must show the refusal, not swallow it").toMatch(/variant: "destructive"/);
+      expect(handler, name + " must keep the refusal on screen long enough to read")
+        .toMatch(/duration: 8000/);
+    }
   });
 
   it("names the one correction path that exists, and none of the three that do not", () => {
     const wording = branch.toLowerCase();
-    expect(wording, "the branch must reach the radiologist").toMatch(/title:/);
-    expect(wording, "the branch must carry the toast").toMatch(/description:/);
-    // Withdrawal is reachable now: Report Hub renders the button in the list row
-    // (:429) and the sidebar (:943), gated on canWithdrawSignature so it is not
-    // offered for a row the route would refuse. Naming neither the action nor the
-    // place is what left this branch saying only "cannot be edited" — true, and
-    // useless to the person reading it.
+    // Withdrawal is reachable: Report Hub renders the button in the list row (:429) and the sidebar
+    // (:943), gated on canWithdrawSignature so it is never offered for a row the route would refuse.
+    // Naming neither the action nor the place is what left this branch saying only "cannot be edited"
+    // — true, and useless to the person reading it at 2am.
     expect(wording, "the refusal must name the action that exists").toContain("withdraw");
     expect(wording, "the refusal must say where to find it").toContain("report hub");
     for (const word of ["amend", "reopen", "unlock"]) {
-      // amend needs a signed structured document this clinic never produces, so
-      // POST /:id/amend answers 409 not_a_signed_structured_report for every row
-      // here; reopen and unlock are not affordances anywhere in the app. Offering
-      // one sends the radiologist to a dead end that looks like a next step.
-      expect(wording, `the refusal must not offer a ${word} path`).not.toContain(word);
+      // amend needs a signed structured document this clinic never produces, so POST /:id/amend
+      // answers 409 not_a_signed_structured_report for every row here; reopen and unlock are not
+      // affordances anywhere in the app. Offering one sends the radiologist to a dead end that looks
+      // like a next step.
+      expect(wording, "the refusal must not offer a " + word + " path").not.toContain(word);
     }
+  });
+
+  it("refuses for the same two reasons in each direction, so redo is not the unexplained one", () => {
+    // The redo stack is new; the refusals are not. One shared helper is what stops a forward step
+    // going silent on a signed report while the backward step still explains itself.
+    expect(refusal, "the title is built from the direction, so the two cannot drift apart")
+      .toMatch(/direction === "undo" [?] "Undo" : "Redo"/);
+    const titles = refusal.match(/refused [—-] [^"'`,]+/g) ?? [];
+    expect(titles.length, "one title per refusal reason, shared by both directions").toBeGreaterThanOrEqual(2);
   });
 });

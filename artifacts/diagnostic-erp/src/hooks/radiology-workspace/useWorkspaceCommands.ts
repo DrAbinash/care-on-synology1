@@ -4,7 +4,10 @@
  *
  * Keyboard precedence (single keydown chain):
  *   voiceKeyAction FIRST → Ctrl+Shift+Enter → shortcut matrix →
- *   Ctrl+K / Alt+U / Ctrl+Shift+Z / Ctrl+I / Ctrl+Shift+V / '?' / Alt+1..9
+ *   Ctrl+K / Alt+U / Ctrl+Z undo + Ctrl+Shift+Z or Ctrl+Y redo / Ctrl+I / Ctrl+Shift+V / '?' / Alt+1..9
+ *   The two history keys are the workspace's only OUTSIDE a text field — inside Findings,
+ *   Impression, Recommendation or any contenteditable, the browser keeps its own undo/redo,
+ *   because a stray comma must never roll back a Quick Select observation.
  *
  * Voice PTT/confirm/cancel keys moved here from useVoiceReporting to avoid
  * double-mounted listeners. onKeyUp PTT space stop lives in the same effect.
@@ -21,6 +24,9 @@ import { resolveWorkspaceShortcut } from "@/lib/workspaceShortcutResolve";
 import {
   saveAndNextFieldsReady,
   shouldHandleAltUndoAbnormal,
+  clinicalHistoryRefusal,
+  shouldHandleClinicalRedoShortcut,
+  shouldHandleClinicalUndoShortcut,
   shouldHandleFinalizeShortcut,
   isAiInstructionTextarea,
 } from "@/lib/reportingWorkspaceShortcuts";
@@ -233,57 +239,35 @@ export function useWorkspaceCommands(opts: UseWorkspaceCommandsOptions) {
         handleUndoLastAbnormal();
         return;
       }
-      if (e.ctrlKey && e.shiftKey && (e.key === "z" || e.key === "Z")) {
+      if (shouldHandleClinicalUndoShortcut(e)) {
         e.preventDefault();
         const ws = useWorkspace.getState();
-        // Read the frame BEFORE the pop: `undoLastPatch` returns a plain boolean
-        // (24 existing tests assert `.toBe(true)`, so widening it to a union
-        // would silently invert every one of them — `"empty"` is truthy). The
-        // frame stays on the stack when refused, so its `activeStudyId` is still
-        // readable afterwards, but capturing it here keeps the two facts that
-        // decide the message from being read at different times.
+        // Read the frame BEFORE the pop. Both directions return a plain boolean (24 existing tests
+        // assert `.toBe(true)`, so widening them to a union would silently invert every one of them
+        // — `"empty"` is truthy), and the refusal is only nameable from the frame. A refused step
+        // leaves the frame on the stack, so reading it first and asking the store afterwards keeps
+        // the two facts that decide the message from being observed at different times.
         const topFrame = ws.patchUndoStack[ws.patchUndoStack.length - 1] ?? null;
-        const undone = ws.undoLastPatch();
-        if (!undone && topFrame && topFrame.activeStudyId !== ws.activeStudyId) {
-          // The store refused to restore a frame captured against another study.
-          // Silent refusal here would leave the radiologist pressing Ctrl+Shift+Z
-          // repeatedly on a report that had already changed under them.
-          // `pushNotification` is deliberately NOT used: its only consumer
-          // renders `kind === "interrupt"` as a red card headed "Critical finding
-          // detected", and `kind: "ledger"` / `"edge-glow"` render nowhere.
-          toast({
-            title: "Undo refused — that edit belongs to a different study",
-            description:
-              "The workspace switched study since that edit was made, so restoring it would have written the previous patient's report text into this one. Nothing was changed.",
-            variant: "destructive",
-            duration: 8000,
-          });
-        } else if (!undone && topFrame && ws.isFinalized) {
-          // Same reasoning as the cross-study branch: the store refused and the
-          // frame is still there, so without this the shortcut does nothing at all
-          // and the radiologist keeps pressing it.
-          //
-          // This branch used to stop at "cannot be edited", because at the time
-          // there was no way back from the app and naming one would have been a
-          // false promise. There is one now: Report Hub's Withdraw button calls
-          // POST /api/patient-reports/:id/withdraw-signature, which nulls the
-          // signature, puts the report back to "draft", sets the bound worklist
-          // row to REPORT_IN_PROGRESS and clears its reportId and deliveryStatus
-          // (patient-reports.ts:2838-2970). assertDraftWritable refuses on
-          // REPORT_FINAL || DELIVERED || reportId (radiologyIdentity.ts:291), so
-          // all three of its conditions go with the signature and the study
-          // really is editable again — the loop closes rather than being
-          // gestured at. The message still does not offer amend or unlock: amend
-          // needs a signed structured document this clinic never produces, and
-          // there is no unlock affordance anywhere.
-          toast({
-            title: "Undo refused — the report is signed",
-            description:
-              "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can. The report returns to draft and the study can be edited and signed again.",
-            variant: "destructive",
-            duration: 8000,
-          });
-        }
+        const refusal = clinicalHistoryRefusal(
+          "undo",
+          ws.undoLastPatch(),
+          topFrame,
+          { activeStudyId: ws.activeStudyId, isFinalized: ws.isFinalized },
+        );
+        if (refusal) toast({ ...refusal, variant: "destructive", duration: 8000 });
+        return;
+      }
+      if (shouldHandleClinicalRedoShortcut(e)) {
+        e.preventDefault();
+        const ws = useWorkspace.getState();
+        const topFrame = ws.patchRedoStack[ws.patchRedoStack.length - 1] ?? null;
+        const refusal = clinicalHistoryRefusal(
+          "redo",
+          ws.redoLastPatch(),
+          topFrame,
+          { activeStudyId: ws.activeStudyId, isFinalized: ws.isFinalized },
+        );
+        if (refusal) toast({ ...refusal, variant: "destructive", duration: 8000 });
         return;
       }
       if (e.ctrlKey && (e.key === "i" || e.key === "I")) { e.preventDefault(); triggerAiImpression(); return; }

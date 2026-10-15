@@ -134,6 +134,7 @@ import {
   contributionPresent,
   contributionProtected,
   findSameSlotSiblings,
+  liveContributionKeys,
   mergeObservationInPlace,
   observationsMutuallyExclusive,
   ownershipFromObservation,
@@ -163,6 +164,12 @@ import {
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
+import {
+  activeSuppressors,
+  canonicalOrderFromText,
+  claimsDeclaredBy,
+  type SuppressingObservation,
+} from "@/lib/clinicalSelection/normalSuppression";
 import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
 import {
   CLINICAL_UNDO_DEPTH,
@@ -382,11 +389,60 @@ function captureClinicalSnapshot(s: S): PatchSnapshot {
   };
 }
 
-function withPushedClinicalUndo(s: S, snap: PatchSnapshot): Pick<S, "patchUndoStack" | "lastPatchSnapshot"> {
+function withPushedClinicalUndo(
+  s: S,
+  snap: PatchSnapshot,
+): Pick<S, "patchUndoStack" | "lastPatchSnapshot" | "patchRedoStack"> {
   const patchUndoStack = pushClinicalUndoSnapshot(s.patchUndoStack, snap, CLINICAL_UNDO_MAX);
   return {
     patchUndoStack,
     lastPatchSnapshot: topClinicalUndoSnapshot(patchUndoStack),
+    // One place, so no clinical writer has to remember it: a new edit forks the history, and replaying
+    // the branch the radiologist abandoned would overwrite what they just chose instead.
+    patchRedoStack: [],
+  };
+}
+
+/**
+ * The state a clinical history frame restores, in one definition shared by Undo and Redo.
+ *
+ * Both directions move through the SAME frames, so the set of fields a step back writes — and the
+ * optional ones it deliberately leaves alone because the frame predates them — must be identical in
+ * both. Two hand-maintained copies of that list is how a redo ends up restoring the prose but not the
+ * provenance, or a new field gets added to Undo and quietly skipped by Redo.
+ */
+function clinicalRestorePatch(snap: PatchSnapshot): Partial<S> {
+  return {
+    clinicalHistoryText: snap.clinicalHistoryText,
+    techniqueText: snap.techniqueText,
+    findingsText: snap.findingsText,
+    impressionText: snap.impressionText,
+    recommendationText: snap.recommendationText,
+    fieldProvenance: snap.fieldProvenance,
+    appliedPathologyPatches: snap.appliedPathologyPatches,
+    voiceComposerObservations: snap.voiceComposerObservations ?? [],
+    voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
+    ...(snap.appliedFormatName !== undefined
+      ? { appliedFormatName: snap.appliedFormatName }
+      : {}),
+    ...(snap.appliedFormatReportTitle !== undefined
+      ? { appliedFormatReportTitle: snap.appliedFormatReportTitle }
+      : {}),
+    ...(snap.startingCanvasBaseline !== undefined
+      ? { startingCanvasBaseline: snap.startingCanvasBaseline ?? null }
+      : {}),
+    ...(snap.appliedPatternMarkers !== undefined
+      ? { appliedPatternMarkers: snap.appliedPatternMarkers }
+      : {}),
+    ...(snap.impressionNeedsRefresh !== undefined
+      ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
+      : {}),
+    ...(snap.impressionBasis !== undefined
+      ? { impressionBasis: snap.impressionBasis ?? null }
+      : {}),
+    ...(snap.regionTransitions !== undefined
+      ? { regionTransitions: snap.regionTransitions }
+      : {}),
   };
 }
 
@@ -674,6 +730,13 @@ interface S {
   lastPatchSnapshot: PatchSnapshot | null;
   /** Bounded clinical Undo stack (~5 radiologist actions). */
   patchUndoStack: PatchSnapshot[];
+  /**
+   * The forward branch of the same history, in the same frame shape and under the same depth bound.
+   * Pushed by `undoLastPatch` and emptied by any new clinical edit, so redo can only ever replay the
+   * line of history the radiologist actually stepped back from — never a branch their next click has
+   * already replaced. Same study stamp and same signed boundary as undo, enforced in `redoLastPatch`.
+   */
+  patchRedoStack: PatchSnapshot[];
   /** Starting Canvas reference for workspace-only change highlighting. */
   startingCanvasBaseline: StartingCanvasBaseline | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
@@ -1025,6 +1088,12 @@ export type WorkspaceStore = S & {
   dismissOwnershipReview: () => void;
   dismissLedgerHydrationWarning: () => void;
   undoLastPatch: () => boolean;
+  /**
+   * Replay the frame `undoLastPatch` just took. Returns false when there is nothing to redo, when the
+   * frame belongs to another study, or when the report has been signed — the same three refusals as
+   * undo, and in every case the frame stays on the stack and the report is not written to.
+   */
+  redoLastPatch: () => boolean;
   applyVoiceComposerPlan: (plan: VoiceChangePlan, transcript: string, opts?: { force?: boolean }) => "applied" | "blocked";
   /**
    * PR #662 §3 — Fast per-level spine workflow.
@@ -1102,7 +1171,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
-  pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
   impressionDependencyReasons: [], impressionBasis: null,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
@@ -1209,6 +1278,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       isDirty: true,
       [key]: v,
       fieldProvenance: { ...get().fieldProvenance, [f]: nextProv },
+      // Typing is a clinical edit even though it takes no undo frame of its own — the editor keeps its
+      // own history for that. Redoing an abandoned branch on top of it would delete what the
+      // radiologist just wrote, with nothing left to step back to.
+      patchRedoStack: [],
     };
     if (f === "impression" && (!opts?.source || opts.source === "manual")) {
       // §37: a hand-written or hand-reordered Impression belongs to the
@@ -2450,6 +2523,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       provenance,
       source: opts.source,
       force: opts.force || (plan.action === "update" && !needsSlotConfirm),
+      // Phase 5 — the sentence fence. `patches` is already the ledger with this
+      // observation and its mutex siblings removed, so what is left is exactly the
+      // other live findings whose words must survive this click.
+      liveRows: patches,
     });
     if (routedSectionId) {
       const sectionAfter = result.narrative.findings;
@@ -2515,7 +2592,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         recommendationText: result.narrative.recommendation,
         fieldProvenance: result.provenance,
         isDirty: true,
-        ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack } : withPushedClinicalUndo(get(), snap)),
+        ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack, patchRedoStack: get().patchRedoStack } : withPushedClinicalUndo(get(), snap)),
         appliedPathologyPatches: nextPatches,
         structuredViewerMeasurements: nextMeasurements,
         ownershipReviewWarnings,
@@ -2550,7 +2627,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       recommendationText: result.narrative.recommendation,
       fieldProvenance: result.provenance,
       isDirty: true,
-      ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack } : withPushedClinicalUndo(get(), snap)),
+      ...(opts.skipUndoSnapshot ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack, patchRedoStack: get().patchRedoStack } : withPushedClinicalUndo(get(), snap)),
       appliedPathologyPatches: nextPatches,
       structuredViewerMeasurements: nextMeasurements,
       ownershipReviewWarnings,
@@ -3357,14 +3434,47 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!patch) return "missing";
     const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
     const snap = captureClinicalSnapshot(get());
-    const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
+    // Computed BEFORE the removal is applied, from the set that survives it. Suppression is a property
+    // of which abnormalities the radiologist is still holding, never of which patch happened to
+    // delete the sentence first — so a normal shared by two tiles stays retired while either is held.
+    const survivingPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
+    const canvas = get().startingCanvasBaseline;
+    const canonicalFindings = canonicalOrderFromText(canvas?.findings ?? null);
+    const canonicalImpression = canonicalOrderFromText(canvas?.impression ?? null);
+    // What this deselection has authority to put back. The patch's own record is only what it
+    // happened to delete first, so when two abnormalities declare one normal the second one has no
+    // record and its removal would restore nothing. The declaration itself answers the question,
+    // because it is still on the observation: a baseline sentence this tile names is in scope even
+    // if an earlier click had already taken it off the page.
+    const claimFor = (renderedText: string | undefined): SuppressingObservation => ({
+      baselineReplaces: patch.observation?.baselineReplaces ?? null,
+      concept: patch.observation?.concept ?? null,
+      role: patch.observation?.role ?? null,
+      renderedText: renderedText ?? null,
+    });
+    const result = removeLedgerObservation(
+      narrativeFromState(get()),
+      get().fieldProvenance,
+      toLedgerPatch(patch),
+      {
+        surviving: activeSuppressors(survivingPatches),
+        canonicalFindings,
+        canonicalImpression,
+        claimsFindings: claimsDeclaredBy(claimFor(patch.lastRendered.findings), canonicalFindings),
+        claimsImpression: claimsDeclaredBy(claimFor(patch.lastRendered.impression), canonicalImpression),
+        // Removal is proved sentence by sentence, so the same identity fence the click path
+        // uses has to guard the removal path too: a sentence another live box also wrote is
+        // that box's statement, and clicking this one off must not take it away.
+        heldElsewhere: liveContributionKeys(survivingPatches),
+      },
+    );
     let nextMs = get().structuredViewerMeasurements;
     if (remapTo) {
       nextMs = remapStructuredMeasurementsObservationId(nextMs, id, remapTo).state;
     } else {
       nextMs = detachStructuredMeasurementsFromObservation(nextMs, id).state;
     }
-    let nextPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
+    let nextPatches = survivingPatches;
     let nextProvenance = result.provenance;
     const suspendedBaseline = patch.observation
       ? nextPatches.find((candidate) =>
@@ -3418,7 +3528,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         : get().selectedObservationId,
       structuredViewerMeasurements: nextMs,
       ...(opts?.skipUndoSnapshot
-        ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack }
+        ? { lastPatchSnapshot: get().lastPatchSnapshot, patchUndoStack: get().patchUndoStack, patchRedoStack: get().patchRedoStack }
         : withPushedClinicalUndo(get(), snap)),
       isDirty: true,
     });
@@ -3514,44 +3624,53 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       });
       return false;
     }
+    // The state being stepped away from is what redo will put back. Captured here, before anything is
+    // written, because after the restore it no longer exists anywhere.
+    const steppedAway = captureClinicalSnapshot(get());
     set({
-      clinicalHistoryText: snap.clinicalHistoryText,
-      techniqueText: snap.techniqueText,
-      findingsText: snap.findingsText,
-      impressionText: snap.impressionText,
-      recommendationText: snap.recommendationText,
-      fieldProvenance: snap.fieldProvenance,
-      appliedPathologyPatches: snap.appliedPathologyPatches,
-      voiceComposerObservations: snap.voiceComposerObservations ?? [],
-      voiceComposerTranscriptHistory: snap.voiceComposerTranscriptHistory ?? [],
-      ...(snap.appliedFormatName !== undefined
-        ? { appliedFormatName: snap.appliedFormatName }
-        : {}),
-      ...(snap.appliedFormatReportTitle !== undefined
-        ? { appliedFormatReportTitle: snap.appliedFormatReportTitle }
-        : {}),
-      ...(snap.startingCanvasBaseline !== undefined
-        ? { startingCanvasBaseline: snap.startingCanvasBaseline ?? null }
-        : {}),
-      ...(snap.appliedPatternMarkers !== undefined
-        ? { appliedPatternMarkers: snap.appliedPatternMarkers }
-        : {}),
-      ...(snap.impressionNeedsRefresh !== undefined
-        ? { impressionNeedsRefresh: snap.impressionNeedsRefresh }
-        : {}),
-      ...(snap.impressionBasis !== undefined
-        ? { impressionBasis: snap.impressionBasis ?? null }
-        : {}),
-      ...(snap.regionTransitions !== undefined
-        ? { regionTransitions: snap.regionTransitions }
-        : {}),
+      ...clinicalRestorePatch(snap),
       patchUndoStack: remaining,
       lastPatchSnapshot: topClinicalUndoSnapshot(remaining),
+      patchRedoStack: pushClinicalUndoSnapshot(get().patchRedoStack, steppedAway, CLINICAL_UNDO_MAX),
       isDirty: true,
     });
     // Undo puts the prose and its dependency link back together, so the answer is
     // re-derived from the pair rather than trusting the flag the frame recorded —
     // the same predicate, whichever direction the text just moved.
+    set(deriveImpressionDependency(get()));
+    return true;
+  },
+  redoLastPatch: () => {
+    // The same refusals as undo, in the same order, for the same reasons: a signed report is not
+    // writable from client state, an empty stack is not a failure, and a frame from another study must
+    // stay where it belongs rather than be dropped on the floor.
+    //
+    // Undo passes `false` here because `useWorkspaceCommands` owns that shortcut's explanation and
+    // reads the top frame to distinguish "refused" from "nothing to undo". Redo has no command layer
+    // yet, so a silent refusal would be a shortcut that does nothing at all — the ratchet that counts
+    // the opted-out callers keeps naming exactly one, and this is not it.
+    if (refuseSignedMutation(get(), "redoLastPatch")) return false;
+    const popped = popClinicalUndoSnapshot(get().patchRedoStack);
+    if (!popped) return false;
+    const { snapshot: snap, remaining } = popped;
+    if (snap.activeStudyId !== get().activeStudyId) {
+      console.warn("[care.workspace_store] redo refused — the frame belongs to a different study", {
+        frameStudyId: snap.activeStudyId,
+        activeStudyId: get().activeStudyId,
+      });
+      return false;
+    }
+    // Redo is reversible too: the frame is handed back to the undo stack, so stepping forward does not
+    // cost the radiologist the way back they had before they pressed it.
+    const steppedAway = captureClinicalSnapshot(get());
+    const patchUndoStack = pushClinicalUndoSnapshot(get().patchUndoStack, steppedAway, CLINICAL_UNDO_MAX);
+    set({
+      ...clinicalRestorePatch(snap),
+      patchUndoStack,
+      lastPatchSnapshot: topClinicalUndoSnapshot(patchUndoStack),
+      patchRedoStack: remaining,
+      isDirty: true,
+    });
     set(deriveImpressionDependency(get()));
     return true;
   },

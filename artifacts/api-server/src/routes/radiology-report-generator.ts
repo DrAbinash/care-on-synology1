@@ -1651,6 +1651,15 @@ const SaveDraftBody = z.object({
   // (careVascularTechnique). Absent while untouched, so existing drafts are
   // written exactly as before.
   vascularTechnique: z.unknown().optional(),
+  // Spine reporting capture state (vertebral numbering, available sequences,
+  // screening selections and `impressionOrderFrozen`) — stored verbatim as the
+  // structured_json key `spineReporting`, which is the key the workspace's own
+  // reader asks for. Declared here because an undeclared request field is
+  // stripped by this schema before anything else sees it: every save was sending
+  // it and nothing was storing it, so a reopen re-derived the state from defaults
+  // and the §37 priority sorter was free to re-shuffle an Impression the
+  // radiologist had arranged by hand.
+  spineReporting: z.unknown().optional(),
   // ADR-004 region-transition history — additive envelope key
   // (careRegionTransitions). Absent on every save that has never re-regioned a report, so
   // those requests are byte-identical to what they were before this field existed.
