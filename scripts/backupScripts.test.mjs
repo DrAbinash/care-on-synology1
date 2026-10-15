@@ -27,12 +27,17 @@ import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  symlinkSync, writeFileSync, chmodSync, openSync, closeSync,
+  symlinkSync, writeFileSync, chmodSync, openSync, closeSync, utimesSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
+// The deploy gate's own reader of the census format. The backup job is tested
+// against it, not against a copy of it written here, so "the job wrote a census"
+// and "the gate can see a census" cannot drift apart in silence.
+import { CENSUS_LINE_RE } from "./ops-preflight.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..");
@@ -96,7 +101,8 @@ function makeStubs(work) {
   // is that both of them get answered.
   writeFileSync(join(bin, "docker"), [
     "#!/usr/bin/env bash",
-    `printf 'docker %s\\n' "$*" >> ${JSON.stringify(calls)}`,
+    `CALLS=${JSON.stringify(calls)}`,
+    `printf 'docker %s\\n' "$*" >> "$CALLS"`,
     'MODE="${STUB_DOCKER_MODE:-ok}"',
     'LC="$(printf \'%s\' "$*" | tr \'A-Z\' \'a-z\')"',
     'rows_for() {',
@@ -121,6 +127,21 @@ function makeStubs(work) {
     '    esac ;;',
     '  *current_database*)',
     '    echo "${STUB_CURRENT_DB:-diagnostic_erp}" ;;',
+    '  *"union all"*)',
+    '    # The backup-time census. It must be matched BEFORE the single-table row arms',
+    '    # below, because the census SQL contains `FROM "patient_reports"` and would',
+    '    # otherwise be answered with a bare count — a stub that silently misanswers',
+    '    # is how a census test passes without a census happening.',
+    '    if [ "${STUB_CENSUS_FAIL:-0}" = "1" ]; then echo "psql: error: census query failed" >&2; exit 1; fi',
+    '    CN_FILE="${CALLS}.censusn"',
+    '    N=$(cat "${CN_FILE}" 2>/dev/null || echo 0); N=$((N+1)); echo "${N}" > "${CN_FILE}"',
+    '    if [ "${N}" = "${STUB_CENSUS_FAIL_CALL:-0}" ]; then echo "psql: error: second census failed" >&2; exit 1; fi',
+    '    if [ -z "${STUB_CENSUS_BEFORE_B64:-}" ]; then echo "stub: no census configured" >&2; exit 1; fi',
+    '    if [ "${N}" = "1" ] || [ -z "${STUB_CENSUS_AFTER_B64:-}" ]; then',
+    '      printf "%s" "${STUB_CENSUS_BEFORE_B64:-}" | base64 -d',
+    '    else',
+    '      printf "%s" "${STUB_CENSUS_AFTER_B64}" | base64 -d',
+    '    fi ;;',
     '  *"ps -a"*)',
     '    printf \'%s\\n\' ${STUB_PS_NAMES:-} ;;',
     '  *"rm -f"*)',
@@ -362,6 +383,189 @@ function logText() {
   const p = join(backupDir, "backup.log");
   return existsSync(p) ? readFileSync(p, "utf8") : "";
 }
+
+describe("synology-nas-backup.sh — the backup-time census", () => {
+  // The tables the restore proof judges completeness on. Duplicated here on purpose:
+  // if the backup job and the verifier ever disagree about which tables are censused,
+  // the tests must notice, and the only way to notice is to hold the job to a list
+  // somebody else wrote down.
+  const TABLES = [
+    "patient_reports", "radiology_report_drafts", "patient_report_amendments",
+    "report_finding_instances", "radiology_worklist", "audit_logs",
+    "radiology_redelivery_obligations",
+  ];
+  const tsv = (over = {}) =>
+    TABLES.map((t) => {
+      const r = over[t] ?? { rows: 30, min: 5, max: 900, sum: 13500 };
+      return `${t}|${r.rows}|${r.min}|${r.max}|${r.sum}`;
+    }).join("\n");
+  const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
+  const meta = () => {
+    const f = readdirSync(backupDir).find((x) => x.endsWith(".meta"));
+    return f ? readFileSync(join(backupDir, f), "utf8") : "";
+  };
+  const linesFor = (which) =>
+    meta().split(/\r?\n/).filter((l) => l.startsWith(`census_${which}.`));
+  // Compared as a set, not as a prefix: the line is a sorted list and asserting on
+  // its shape is how a test passes while naming the wrong tables.
+  const censusTableSet = () =>
+    (((/^census_tables=(.*)$/m.exec(meta()) || [])[1] ?? "").split(" ").filter(Boolean).sort());
+
+  test("C1 a good backup records the bracket on both sides of the dump", () => {
+    const r = runScript(NAS_SCRIPT, {
+      STUB_CENSUS_BEFORE_B64: b64(tsv()),
+      STUB_CENSUS_AFTER_B64: b64(tsv()),
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(linesFor("before")).toHaveLength(TABLES.length);
+    expect(linesFor("after")).toHaveLength(TABLES.length);
+    expect(meta()).toContain("census_before.patient_reports=30|5|900|13500");
+    expect(censusTableSet()).toEqual([...TABLES].sort());
+  });
+
+  test("C2 the pre-dump census really precedes pg_dump, or the bracket is fiction", () => {
+    runScript(NAS_SCRIPT, { STUB_CENSUS_BEFORE_B64: b64(tsv()) });
+    const calls = callsText().split(/\r?\n/);
+    const census = calls.findIndex((l) => l.includes("UNION ALL"));
+    const dump = calls.findIndex((l) => l.includes("pg_dump"));
+    expect(census).toBeGreaterThan(-1);
+    expect(dump).toBeGreaterThan(-1);
+    expect(census).toBeLessThan(dump);
+  });
+
+  test("C3 rows written during the dump land inside the bracket, not outside it", () => {
+    const grew = tsv({ patient_reports: { rows: 34, min: 5, max: 940, sum: 15500 } });
+    const r = runScript(NAS_SCRIPT, {
+      STUB_CENSUS_BEFORE_B64: b64(tsv()),
+      STUB_CENSUS_AFTER_B64: b64(grew),
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(meta()).toContain("census_before.patient_reports=30|5|900|13500");
+    expect(meta()).toContain("census_after.patient_reports=34|5|940|15500");
+  });
+
+  test("C4 a census that cannot be taken never costs the clinic its backup", () => {
+    // The whole failure mode this job has had before: a verification step that made
+    // the dump itself disappear. Evidence missing is reported, not fatal.
+    const r = runScript(NAS_SCRIPT, { STUB_CENSUS_FAIL: "1" });
+    expect(r.code, r.out).toBe(0);
+    expect(artifacts().some((f) => f.endsWith(".sql.gz"))).toBe(true);
+    expect(meta()).toContain("census_error=");
+    expect(linesFor("before")).toEqual([]);
+    expect(linesFor("after")).toEqual([]);
+    expect(r.out).toMatch(/WARNING: no pre-dump census/);
+  });
+
+  test("C5 a half bracket is recorded as no bracket", () => {
+    // Only the post-dump query fails. Writing `before` alone would let the verifier
+    // demand exactly the pre-dump row count, and on a busy clinic a perfect backup
+    // taken while bills were being written would then FAIL. The bracket or nothing.
+    const r = runScript(NAS_SCRIPT, {
+      STUB_CENSUS_BEFORE_B64: b64(tsv()),
+      STUB_CENSUS_FAIL_CALL: "2",
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(linesFor("before")).toEqual([]);
+    expect(meta()).toMatch(/census_error=.*post-dump/);
+  });
+
+  test("C6 the census carries counts and id arithmetic, and nothing else", () => {
+    // A sidecar is pasted into tickets. `rows|min|max|idsum` is the entire payload,
+    // so a shape check here is the guard against somebody later "helpfully" adding
+    // a patient identifier to the proof.
+    runScript(NAS_SCRIPT, { STUB_CENSUS_BEFORE_B64: b64(tsv()), STUB_CENSUS_AFTER_B64: b64(tsv()) });
+    const census = meta().split(/\r?\n/).filter((l) => l.startsWith("census_"));
+    expect(census.length).toBe(TABLES.length * 2 + 1); // + census_tables
+    for (const line of census.filter((l) => !l.startsWith("census_tables"))) {
+      expect(line).toMatch(/^census_(before|after)\.[a-z_][a-z0-9_]*=\d+\|\d+\|\d+\|\d+$/);
+    }
+  });
+
+  test("C9 every number the job wrote lands in the field the readers expect", () => {
+    // C6 pins the shape; this pins the wiring. Each table gets different numbers, so
+    // a `read`/`echo` that put rows where min belongs, or wrote the next row's values
+    // under the previous row's name, changes a value here instead of sliding through a
+    // shape-only regex. Both consumers of the format are checked against the bytes the
+    // job actually published: this gate's regex, and the field order below.
+    const per = Object.fromEntries(TABLES.map((t, i) => [t, {
+      rows: 11 + i, min: 101 + i, max: 9000 + i * 7, sum: 123456 + i * 1000,
+    }]));
+    runScript(NAS_SCRIPT, { STUB_CENSUS_BEFORE_B64: b64(tsv(per)), STUB_CENSUS_AFTER_B64: b64(tsv(per)) });
+    for (const which of ["before", "after"]) {
+      const got = {};
+      for (const l of linesFor(which)) {
+        if (which === "before") expect(l, "the deploy gate must read the job's census line").toMatch(CENSUS_LINE_RE);
+        const m = /^census_(before|after)\.([a-z_][a-z0-9_]*)=(\d+)\|(\d+)\|(\d+)\|(\d+)$/.exec(l);
+        expect(m, l).toBeTruthy();
+        expect(m[1]).toBe(which);
+        got[m[2]] = m.slice(3);
+      }
+      expect(Object.keys(got).sort()).toEqual([...TABLES].sort());
+      for (const t of TABLES) {
+        expect(got[t], `${which} ${t}`).toEqual([String(per[t].rows), String(per[t].min), String(per[t].max), String(per[t].sum)]);
+      }
+    }
+  });
+
+  test("C10 a census the job could not take is not a census the gate counts", () => {
+    // The failure path writes `census_error=` and no edges. If it wrote an empty
+    // `census_before.` line instead, the gate's count would be non-zero and a box
+    // with no measurement would reach PASS.
+    runScript(NAS_SCRIPT, { STUB_CENSUS_FAIL: "1" });
+    expect(meta()).toContain("census_error=");
+    expect(linesFor("before")).toEqual([]);
+    expect(meta().split(/\r?\n/).filter((l) => CENSUS_LINE_RE.test(l))).toEqual([]);
+  });
+
+  test("C7 the censused set is configurable, and the query follows", () => {
+    runScript(NAS_SCRIPT, {
+      CARE_BACKUP_CENSUS_TABLES: "patient_reports audit_logs",
+      STUB_CENSUS_BEFORE_B64: b64("patient_reports|30|5|900|13500\naudit_logs|9000|1|9000|40504500"),
+    });
+    expect(linesFor("before")).toHaveLength(2);
+    expect(meta()).toContain("census_tables=audit_logs patient_reports");
+    expect(callsText()).not.toMatch(/UNION ALL.*radiology_worklist/);
+  });
+
+  test("C11 a post-dump edge that lost one table publishes no bracket at all", () => {
+    // `census_block` checks every configured table on BOTH sides. Dropping the
+    // after-side check would let a six-of-seven bracket through, and the verifier
+    // would then judge the missing table against a bound it cannot see is one-sided.
+    const partialAfter = TABLES.slice(1).map((t, i) => `${t}|${34 + i}|5|940|15500`).join("\n");
+    const r = runScript(NAS_SCRIPT, {
+      STUB_CENSUS_BEFORE_B64: b64(tsv()),
+      STUB_CENSUS_AFTER_B64: b64(partialAfter),
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(linesFor("before")).toEqual([]);
+    expect(linesFor("after")).toEqual([]);
+    expect(meta()).toContain("census_error=");
+    expect(r.out).toMatch(/bracket is incomplete/);
+  });
+
+  test("C8 retention removes the census with the artifact it describes", () => {
+    // A census whose dump is gone is an orphan claim about a file nobody has. The
+    // file is aged with a real mtime because the job prunes on `-mtime +N`, so a
+    // file created today would survive for a reason that has nothing to do with
+    // this assertion.
+    const old = join(backupDir, "caredeoghar_20260101_000000.sql.gz");
+    writeFileSync(old, "x".repeat(20000));
+    writeFileSync(`${old}.meta`, "artifact=caredeoghar_20260101_000000.sql.gz\nsha256_artifact=deadbeef\ncensus_before.patient_reports=30|5|900|13500\n");
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000);
+    utimesSync(old, thirtyDaysAgo, thirtyDaysAgo);
+    utimesSync(`${old}.meta`, thirtyDaysAgo, thirtyDaysAgo);
+    const r = runScript(NAS_SCRIPT, {
+      RETENTION_DAYS: "1",
+      KEEP_MIN_COPIES: "1",
+      STUB_CENSUS_BEFORE_B64: b64(tsv()),
+      STUB_CENSUS_AFTER_B64: b64(tsv()),
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(`${old}.meta`)).toBe(false);
+    expect(censusTableSet()).toEqual([...TABLES].sort());
+  });
+});
 
 describe("synology-backup.sh — the Replit pull, retired as the clinic's backup", () => {
   test("R1 HTTP 200 with a JSON error body is not a backup", () => {
@@ -710,6 +914,39 @@ describe("verify-backup-restore.sh — the restore proof", () => {
     expect(r.code, r.out).toBe(0);
     expect(r.out).toMatch(/diagnostic_erp/);
     expect(r.out).toMatch(/exporter=pg_dump/);
+  });
+
+  test("V14b the operator is told, before the restore, whether this artifact can earn a PASS", () => {
+    // The deploy gate answers UNKNOWN for a restore proof whose artifact carries no
+    // dump-time census, and the refusal it prints names THIS script as the recovery.
+    // An operator who follows it and gets silence back has no way to know they are
+    // about to record a second unattested proof, so the verifier says which kind of
+    // artifact it is holding — counting the edges it read rather than trusting the
+    // `census_tables=` line, because a hand-edited sidecar can say anything.
+    const base = (a) => ({
+      source_database: "diagnostic_erp", exporter: "pg_dump", schema_complete: "true",
+      bytes: String(readFileSync(a).length), sha256_artifact: sha256(readFileSync(a)),
+    });
+    const withCensus = join(work, "v14b-with");
+    const a1 = placeArtifact(withCensus);
+    writeSidecar(a1, {
+      ...base(a1),
+      "census_before.audit_logs": "9000|1|9000|40504500",
+      "census_after.audit_logs": "9002|1|9002|40522506",
+      census_tables: "audit_logs",
+    });
+    const r1 = runVerifier(VERIFY_SCRIPT, withCensus);
+    expect(r1.code, r1.out).toBe(0);
+    expect(r1.out).toMatch(/census: 1 table\(s\) bracketed at dump time/);
+    expect(r1.out).not.toMatch(/census: none/);
+
+    const without = join(work, "v14b-without");
+    const a2 = placeArtifact(without);
+    writeSidecar(a2, base(a2));
+    const r2 = runVerifier(VERIFY_SCRIPT, without);
+    expect(r2.code, r2.out).toBe(0);
+    expect(r2.out).toMatch(/census: none/);
+    expect(r2.out).toMatch(/synology-nas-backup\.sh/);
   });
 
   test("V15 BACKUP_DIR is where it looks when no path is given", () => {

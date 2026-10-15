@@ -136,6 +136,16 @@ if [[ -f "${BACKUP}.meta" ]]; then
   SCHEMA_COMPLETE=$(meta_get schema_complete)
   ARTIFACT_SHA=$(meta_get sha256_artifact)
   note "sidecar: exporter=${EXPORTER:-?} schema_complete=${SCHEMA_COMPLETE:-?} server=$(meta_get server_version)"
+  # The preflight gate refuses a PASS for a restore proof whose artifact carries no
+  # dump-time census, so say here, before the ten-minute restore, whether this
+  # artifact can earn one. Counting the lines rather than trusting `census_tables=`
+  # because the operator may be holding a sidecar the current job never wrote.
+  CENSUS_EDGES=$(grep -c '^census_before\.' "${META}" 2>/dev/null || true)
+  if [[ "${CENSUS_EDGES:-0}" -gt 0 ]]; then
+    note "census: ${CENSUS_EDGES} table(s) bracketed at dump time ($(meta_get census_tables))"
+  else
+    note "census: none. This artifact cannot be shown to hold what the database held when it was dumped — only that its highest ids look plausible. Verify a backup taken by the current scripts/synology-nas-backup.sh to get a proof the deploy gate will call complete."
+  fi
   if [[ -z "${SOURCE_DB}" ]]; then
     # scripts/synology-backup.sh pulls the CLOUD instance and cannot name its
     # database from here, so its sidecar records a source_url instead. Nothing is

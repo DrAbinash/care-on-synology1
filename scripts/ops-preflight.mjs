@@ -576,17 +576,32 @@ function checkBackups(ctx) {
   const roots = backupRoots(ctx.env);
   const scan = scanBackups(ctx, roots);
   const maxAgeH = Number(ctx.env.PREFLIGHT_MAX_BACKUP_AGE_HOURS || ctx.env.BACKUP_DEADMAN_MAX_AGE_HOURS || 26);
+  // A zero-byte artifact is not a backup. Measured on this NAS 2026-10-15: the
+  // dated dumps in /volume1/docker/backups/postgres/care hold 20 empty files out of
+  // 62, including six consecutive nights (10-10 to 10-15) — the job ran, the file
+  // appeared, the log said success. Counting one of those as the newest artifact
+  // turns the whole backup gate green on nothing at all, so the restorable set is
+  // what freshness is measured against, and the empties are named.
+  const empties = scan.found.filter((f) => f.bytes === 0);
+  const restorable = scan.found.filter((f) => f.bytes > 0);
 
   const present = {
     id: "backup.artifacts_present",
-    status: !scan.anyRootExists ? UNKNOWN : scan.found.length ? PASS : FAIL,
+    status: !scan.anyRootExists ? UNKNOWN : restorable.length ? PASS : FAIL,
     critical: true,
     detail: !scan.anyRootExists
       ? `no backup directory readable: ${roots.join(" or ")}`
-      : scan.found.length
-        ? `${scan.found.length} artifact(s), newest ${scan.found[0].name} (${(scan.found[0].bytes / 1024 / 1024).toFixed(1)} MB)`
-        : `the backup directory exists and holds nothing restorable: ${roots.join(", ")}`,
-    remediation: !scan.anyRootExists ? "Set BACKUP_DIR to where the job writes, or run this on the NAS." : "",
+      : restorable.length
+        ? `${scan.found.length} artifact(s), newest restorable ${restorable[0].name} (${(restorable[0].bytes / 1024 / 1024).toFixed(1)} MB)`
+          + (empties.length ? ` — ${empties.length} of them are 0 bytes and cannot be restored` : "")
+        : scan.found.length
+          ? `${scan.found.length} artifact(s) and EVERY one is 0 bytes (newest ${scan.found[0].name}) — the job is producing files, not backups`
+          : `the backup directory exists and holds nothing restorable: ${roots.join(", ")}`,
+    remediation: !scan.anyRootExists
+      ? "Set BACKUP_DIR to where the job writes, or run this on the NAS."
+      : restorable.length || !scan.found.length
+        ? ""
+        : "Find out why the dump writes an empty file (disk full, pg_dump failing after the redirect opened, a `> file` that never completed). Do not delete the empty artifacts until something restorable exists beside them.",
   };
 
   if (!scan.found.length) {
@@ -595,14 +610,24 @@ function checkBackups(ctx) {
       { id: "backup.metadata", status: UNKNOWN, critical: true, detail: "no artifact to read a sidecar for", remediation: "" }];
   }
 
-  const newest = scan.found[0];
+  if (!restorable.length) {
+    return [present,
+      { id: "backup.freshness", status: FAIL, critical: true, detail: `no non-empty artifact to date — ${empties.length} file(s) exist and all are 0 bytes`, remediation: "The last real backup is unknown. Re-run the dump and check pg_dump's exit status, not just the file's existence." },
+      { id: "backup.metadata", status: UNKNOWN, critical: true, detail: "no restorable artifact to read a sidecar for", remediation: "" }];
+  }
+
+  const newest = restorable[0];
   const ageH = (ctx.now() - newest.mtimeMs) / 3.6e6;
+  const shadowed = scan.found[0].bytes === 0;
   const fresh = {
     id: "backup.freshness",
     status: ageH <= maxAgeH ? PASS : FAIL,
     critical: true,
-    detail: `newest artifact is ${ageH.toFixed(1)}h old (limit ${maxAgeH}h)`,
-    remediation: ageH <= maxAgeH ? "" : "The daily job is not producing anything readable. A directory full of stale files is not a backup policy.",
+    detail: `newest restorable artifact is ${ageH.toFixed(1)}h old (limit ${maxAgeH}h)`
+      + (shadowed ? ` — note the MOST RECENT file ${scan.found[0].name} is 0 bytes and was not counted` : ""),
+    remediation: ageH <= maxAgeH
+      ? shadowed ? "The newest write was empty: check the dump job's exit status before trusting the next copy." : ""
+      : "The daily job is not producing anything readable. A directory full of stale files is not a backup policy.",
   };
 
   const metaPath = `${newest.file}.meta`;
@@ -634,6 +659,35 @@ function checkBackups(ctx) {
   return [present, fresh, metadata];
 }
 
+/**
+ * A census line as the backup job writes it. Duplicated from
+ * `restoreVerification.ts` on purpose — the verifier is TypeScript inside the API
+ * and this gate has to run on a box where the API is not reachable — and pinned to
+ * the same shape by a test, because two definitions that drift is how the census
+ * stops meaning anything while still printing a PASS.
+ */
+export const CENSUS_LINE_RE = /^census_before\.([a-z_][a-z0-9_]*)=(\d+)\|(\d+)\|(\d+)\|(\d+)$/;
+
+/**
+ * How many tables this artifact's sidecar brackets with a dump-time census.
+ *
+ * Derived from the file the backup job wrote, never typed by the operator: anyone
+ * can write `"censusAttested": true` into the evidence file, which would make the
+ * strongest claim in it the easiest one to fake. The sidecar is what the job
+ * produced at 03:00 while the clinic was asleep, and this reads it.
+ */
+export function censusTableCount(ctx, artifact) {
+  const name = String(artifact ?? "").trim();
+  if (!name) return 0;
+  const base = path.basename(name);
+  for (const root of backupRoots(ctx.env)) {
+    const text = ctx.readFile(path.join(root, `${base}.meta`));
+    if (text === null || text === undefined) continue;
+    return text.split(/\r?\n/).filter((l) => CENSUS_LINE_RE.test(l.trim())).length;
+  }
+  return 0;
+}
+
 /** A11 — restore evidence. An artifact is not a restore. */
 function checkRestoreEvidence(ctx) {
   const url = (ctx.env.DATABASE_URL || "").trim();
@@ -644,33 +698,55 @@ function checkRestoreEvidence(ctx) {
     if (!row || !row.artifact) return null;
     const age = evidenceAgeOk(row.verified_at, ctx.now());
     const stale = age.ok ? "" : ` (${age.reason ?? `${age.days.toFixed(0)}d old, limit ${MAX_EVIDENCE_AGE_DAYS}d`})`;
+    // Re-read from the artifact every run, rather than believing the flag the
+    // recorder wrote. The evidence file is what the operator typed; the sidecar is
+    // what the 03:00 job measured, and only the second one can show that the
+    // artifact held what the database held. A reader that took the flag on faith
+    // would let a hand-edited JSON produce this gate's strongest PASS — and an
+    // honest record whose artifact has since aged out of retention still has to go
+    // and get itself proved again against a backup that is on the box now.
+    const censusHere = censusTableCount(ctx, row.artifact);
+    const attested = censusHere > 0;
+    const claimed = row.censusAttested === true;
+    const unattested = row.passed === true && age.ok && !attested;
     return {
       id: "restore.evidence",
-      status: row.passed === true && age.ok ? PASS : row.passed === false ? FAIL : UNKNOWN,
+      status: row.passed === true && age.ok && attested ? PASS : row.passed === false ? FAIL : UNKNOWN,
       critical: true,
-      detail: `recorded proof: ${row.artifact} restored ${row.verified_at ?? "undated"}${row.tables ? `, ${row.tables} tables` : ""}${row.patients != null ? `, ${row.patients} patients` : ""}${stale}`,
+      detail: `recorded proof: ${row.artifact} restored ${row.verified_at ?? "undated"}${row.tables ? `, ${row.tables} tables` : ""}${row.patients != null ? `, ${row.patients} patients` : ""}${stale}${unattested ? `; no dump-time census in its .meta${claimed ? ", although the evidence file claims one" : ""}` : ""}`,
       remediation: row.passed === false
         ? "The last restore attempt recorded on this box FAILED. Fix the backup before anything else."
         : stale
-          ? `Re-run scripts/verify-backup-restore.sh and update ${EVIDENCE_FILE}.`
-          : "",
+          ? `Re-run scripts/verify-backup-restore.sh, then record the new proof with --record-restore rather than editing ${EVIDENCE_FILE}.`
+          : !attested
+            ? `Re-run scripts/verify-backup-restore.sh against a census-bearing artifact and record it with --record-restore; the attestation is read from the artifact's .meta, never typed.`
+            : "",
     };
   };
 
   if (url) {
-    const r = ctx.exec("psql", [url, "-Atc", "select status, ran_at from radiology_ops_checks where check_name='restore_verification' order by ran_at desc limit 1"], { timeout: 20_000 });
+    // The third field is what turns "a restore happened" into "the artifact was
+    // shown to hold what the database had when the dump was taken". Proofs written
+    // before the backup job recorded a census say `absent`, and that is UNKNOWN:
+    // the restore genuinely worked, and it cannot answer the completeness question.
+    const r = ctx.exec("psql", [url, "-Atc", "select status, ran_at, coalesce(detail->>'censusAttested','absent') from radiology_ops_checks where check_name='restore_verification' order by ran_at desc limit 1"], { timeout: 20_000 });
     if (r.code !== 0) {
       return fromRecord(recorded) ?? { id: "restore.evidence", status: UNKNOWN, critical: true, detail: `radiology_ops_checks unreadable (${firstLine(r.stderr) || "no message"})`, remediation: "" };
     }
     const line = firstLine(r.stdout);
     if (line) {
-      const [status, ranAt] = line.split("|");
+      const [status, ranAt, census] = line.split("|");
+      const attested = census === "true";
       return {
         id: "restore.evidence",
-        status: status === "pass" ? PASS : FAIL,
+        status: status === "pass" ? (attested ? PASS : UNKNOWN) : FAIL,
         critical: true,
-        detail: `latest in-app restore_verification = ${status} at ${ranAt}`,
-        remediation: status === "pass" ? "" : "A failed restore proof on the only artifact you have is the finding, not the deploy.",
+        detail: `latest in-app restore_verification = ${status} at ${ranAt}; backup-time census ${attested ? "attested" : census === "absent" ? "not recorded by the version that produced this proof" : `reported as "${census}"`}`,
+        remediation: status !== "pass"
+          ? "A failed restore proof on the only artifact you have is the finding, not the deploy."
+          : attested
+            ? ""
+            : "Take one backup with the census-bearing scripts/synology-nas-backup.sh, then verify that artifact. A restore proof without the census cannot say what the database held when the dump was taken, so it is not evidence of completeness.",
       };
     }
     // The table answers, and the answer is nothing. An operator-recorded proof
@@ -1195,6 +1271,20 @@ export function main(argv = process.argv.slice(2), options = {}) {
       values.artifact = artifact;
       values.verified_at = new Date(ctx.now()).toISOString();
       values.passed = true;
+      // Derived from the sidecar, never accepted as an argument. What decides PASS
+      // versus UNKNOWN is the artifact's own `.meta`, re-read by `restore.evidence`
+      // every run; this field is what the file said at record time. A recorder that
+      // let `--census` through would let an operator type the strongest claim in the
+      // file instead of producing the backup that earns it.
+      const censusTables = censusTableCount(ctx, artifact);
+      values.censusAttested = censusTables > 0;
+      if (censusTables === 0) {
+        process.stdout.write(
+          `NOTE: ${artifact} has no backup-time census in its .meta, so this proof is recorded as unattested and ` +
+          `restore.evidence will answer UNKNOWN rather than PASS. Take one backup with the current ` +
+          `scripts/synology-nas-backup.sh, verify that artifact, and record it.\n`,
+        );
+      }
       for (const k of ["tables", "patients"]) {
         const v = flag(argv, k);
         if (v === undefined) continue;

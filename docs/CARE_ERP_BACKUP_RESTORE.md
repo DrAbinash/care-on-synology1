@@ -103,17 +103,60 @@ published port and `ON_ERROR_STOP=1`, then checks patients/bills actually landed
 It prints `🎉 PASS` or tells you exactly what's wrong.
 
 If the artifact has a `.meta` sidecar (written by `scripts/synology-nas-backup.sh`
-since this change), two more facts are checked before any restore starts:
+since this change), what the job recorded is checked before any restore starts:
 
 * `source_database` must equal `DB_NAME` (default `diagnostic_erp`) — so a copy of
   the wrong database, with a plausible file name, is refused rather than restored
   in front of staff. Override deliberately with `DB_NAME=… bash $0 …`.
 * `sha256_artifact` must match the bytes on disk — a truncated or hand-edited copy
   fails here instead of halfway through a restore.
+* the **backup-time census** is named: `census: 7 table(s) bracketed at dump time
+  (…)`, or `census: none`. That bracket — row count, lowest id, highest id and the
+  sum of ids for each core table, taken immediately before the dump and immediately
+  after it — is what the in-app verifier's `backup_census_match` step grades the
+  restored copy against, and it is the only completeness argument that does not
+  assume ids are dense, that history is never deleted, or that nobody rebuilt a
+  sequence after 03:00. `verify-backup-restore.sh` reports which kind of artifact it
+  is holding so you know before the restore; the grading, and the `UNKNOWN` the
+  deploy gate holds a census-free proof at, happen in `restoreVerification.ts`.
 
 Artifacts without a sidecar (older copies, the in-app scheduler's own files) still
 get the full restore proof; the script just says plainly that the source database
 is not confirmed.
+
+### What each green light actually proves — and what it does not
+
+These are five different claims about a backup. This clinic has twice been misled by a
+tool that printed one word — "success" — for several of them, so the ladder is written
+down once and no check is allowed to claim a rung above the one it stands on.
+
+| Rung | The claim | Which check answers it | What it cannot see |
+|---|---|---|---|
+| 1 | The dump was **created** | `synology-nas-backup.sh`: non-empty, gzip-valid, the `pg_dump` banner **and** the completion trailer as the last lines, at least one `CREATE TABLE`, the 10 KiB floor; and the verifier's `backup_file_exists` / `backup_file_nonempty` / `schema_complete_artifact` | whether anything inside it is true; which database it came from (the sidecar's `source_database` answers that separately) |
+| 2 | It **restores** into PostgreSQL | `psql_restore` with `ON_ERROR_STOP=1` into a throwaway container, then `core_tables_exist` and the non-zero `patients` / `bills` counts | whether the restored copy is the database that was dumped at 03:00, as opposed to a good restore of an incomplete dump |
+| 3 | The restored copy is **consistent with the source at dump time** | `backup_census_match` against `census_before`/`census_after`, with `row_count_sanity` as the live high-water bound beside it | only a bracket, not content — see the paragraph below |
+| 4 | **Schema and referential integrity** | what PostgreSQL itself enforces: every `CREATE TABLE`, index, `CHECK` and `FOREIGN KEY` in the dump is re-created, and a child row whose parent is absent makes the constraint fail during rung 2. `audit_chain_verifies`, `amendment_chains_valid` and `structured_hashes_verify` additionally check three application-level chains | relationships the schema does not constrain. A bill linked to the wrong but existing patient, or a study with no accession, satisfies every constraint in the database |
+| 5 | **Full data integrity** | **nothing in this repository proves it, and nothing here claims to** | everything a checksum-and-count scheme cannot see |
+
+`count/min/max/sum(id)` is **arithmetic in a plain-text file, not a signature**. Four
+integers per table, over 7 tables, cannot see a corrupted amount in a row whose id
+is unchanged, a truncated text column, a swapped `name`/`relation`, a deleted non-core
+table, or any change at all to the rest of the database — the census covers 7 tables,
+and the schema has far more than 7. They bracket
+one instant; they do not certify content. A dump taken from a database that was already
+wrong passes every rung above, because the census compares the artifact with the source
+at the moment the source itself was wrong.
+
+The only cryptographic statement in this system is `sha256_artifact`, and it proves one
+thing: that the bytes on disk are the bytes the job published. It says nothing about
+whether those bytes were ever a correct database.
+
+What gives the census its force is **provenance, not mathematics** — the numbers were
+written by the 03:00 job before anyone needed them, and both readers re-derive them from
+the artifact's own `.meta` instead of accepting a typed claim. A person willing to edit
+the sidecar can make a census say anything, which is why a restore proof with no census
+beside it answers `UNKNOWN` at the deploy gate rather than a reassuring `PASS`, and why
+the gate never reads the attestation out of `ops-evidence.json`.
 
 If your artifact is encrypted, do not type the passphrase into the command line —
 it would sit in this box's shell history forever:
