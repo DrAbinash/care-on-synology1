@@ -13,7 +13,7 @@
 // ============================================================================
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -353,6 +353,20 @@ describe("the archive job", () => {
     }
   }, SPAWN);
 
+  test("a destination inside a .git directory is refused on its own terms", () => {
+    // The guard above compares against the repository this script sits in, so it does not cover
+    // a clone reached by another path — the deploy checkout's own `.git`, or a worktree's gitdir.
+    // Only the `.git` arm refuses that, and it had no test behind it (mutant #46 survived the
+    // battery, which is how I know the sentence "never enter GitHub" was not yet proven).
+    const f = fixture("uploads", []);
+    const repo = tempRoot("fakerepo");
+    const into = path.join(repo, ".git", "backups");
+    const r = runSh(["--class", "uploads", "--src", f.src, "--dest", into]);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toMatch(/inside a \.git directory/);
+    expect(readdirSync(into), "the refusal must happen before anything is written").toEqual([]);
+  }, SPAWN);
+
   test("an unknown class is a usage error, not a silent archive of nothing", () => {
     const f = fixture();
     const r = runSh(["--class", "dicom_images", "--src", f.src, "--dest", f.dest]);
@@ -520,6 +534,24 @@ describe("the restore reports what it actually found", () => {
     expect(v.out).toMatch(/restore=failed/);
   }, SPAWN);
 
+  test("a manifest row in neither the job's form nor a parseable shape is refused, not dropped", () => {
+    // parseManifest counts a malformed row as `bad`; the verifier's job is to refuse the whole
+    // archive rather than verify the rows it happens to understand. Mutant #34 dropped this arm
+    // and the suite stayed green, because every other manifest test writes well-formed rows.
+    const root = tempRoot("form");
+    const files = [["expenses/a.pdf", "known\n"]];
+    const { artifact } = hostile(files, {
+      root,
+      manifestText: `${manifestOf(files)}one field only, not a manifest row\n`,
+      sidecar: { manifest_sha256: null },
+    });
+    const v = runVerify([artifact]);
+    expect(v.code, v.out).toBe(1);
+    expect(v.out).toMatch(/MANIFEST_FORM/);
+    expect(v.out).toMatch(/1 row\(s\) of 2/);
+    expect(v.out).not.toMatch(/restore=ok/);
+  }, SPAWN);
+
   test("a file the manifest promises but the archive lacks is reported missing", () => {
     const root = tempRoot("missing");
     const files = [["expenses/present.pdf", "here\n"]];
@@ -644,6 +676,28 @@ describe("the restore is isolated", () => {
     expect(v.out).toMatch(/UNSAFE_INTO/);
   }, SPAWN);
 
+  test("--into pointing at a link is refused, and nothing reaches through it", () => {
+    // The isolation this whole verifier promises rests on the restore landing in the directory
+    // the operator named. A link planted at that path silently moves the extracted documents
+    // somewhere else, and mutant #29 showed the arm had no test: it could be deleted and the
+    // suite would still call the restore isolated.
+    const f = fixture();
+    expect(runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest]).code).toBe(0);
+    const target = path.join(f.root, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    const link = path.join(f.root, "restore-dir");
+    // Windows cannot make a real directory symlink unprivileged (EPERM, measured here); a
+    // junction is the same reparse point and Node's lstat reports it as a link, which is what
+    // the arm under test reads. The premise is asserted, not assumed.
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+    expect(lstatSync(link).isSymbolicLink(), `${link} is not a link on this platform`).toBe(true);
+    const v = runVerify([artifactOf(f.dest), "--into", link]);
+    expect(v.code, v.out).toBe(1);
+    expect(v.out).toMatch(/UNSAFE_INTO/);
+    expect(v.out).toMatch(/symbolic link/);
+    expect(readdirSync(target), "the refused restore wrote through the link").toEqual([]);
+  }, SPAWN);
+
   test("a refused archive still writes nothing into the directory it was given", () => {
     const root = tempRoot("silent-refusal");
     const { artifact } = hostile([["expenses/a.pdf", "known\n"]], { root, extraEntries: [{ name: "../escape.txt", content: "victim\n" }] });
@@ -703,6 +757,37 @@ describe("patient names never leave the archive", () => {
     }
     const meta = readFileSync(`${artifactOf(f.dest)}.meta`, "utf8");
     for (const needle of LEAKS) expect(meta, `sidecar must not contain ${needle}`).not.toContain(needle);
+  }, SPAWN);
+
+  test("a refusal that names the offending member shape keeps the member's path out of the output", () => {
+    // The refusal above is a MISSING finding, and MISSING is counted rather than listed, so it
+    // never puts anything into report.problems — the gate that strips `entryName` was a line no
+    // test could break, which is why mutant #42 survived: make --json attach the path
+    // unconditionally and this suite stayed green. A type rejection does carry the member name,
+    // so that is the input that actually reaches the gate.
+    const root = tempRoot("leak-type");
+    const files = [["expenses/listed.pdf", "known\n"]];
+    const { artifact } = hostile(files, {
+      root,
+      extraEntries: [{ name: "expenses/REF-7_patient-77_link.txt", type: "2", linkname: "/etc/passwd" }],
+    });
+    const plain = runVerify([artifact]);
+    expect(plain.code, plain.out).toBe(1);
+    expect(plain.out).toMatch(/SYMLINK_MEMBER/);
+    for (const needle of LEAKS) expect(plain.out, `prose must not contain ${needle}`).not.toContain(needle);
+
+    const json = runVerify([artifact, "--json"]);
+    expect(json.code).toBe(1);
+    const parsed = JSON.parse(json.out);
+    const refused = parsed.problems.find((p) => p.code === "SYMLINK_MEMBER");
+    expect(refused, "--json must still say which shape was refused").toBeTruthy();
+    expect(refused.path, "--json must not carry a member path unless --names was passed").toBeUndefined();
+    for (const needle of LEAKS) expect(json.out, `--json must not contain ${needle}`).not.toContain(needle);
+
+    const named = runVerify([artifact, "--names"]);
+    expect(named.code).toBe(1);
+    expect(named.out).toMatch(/REF-7_patient-77_link\.txt/);
+    expect(named.out).toMatch(/may identify a patient/);
   }, SPAWN);
 
   test("a refusal does not leak a path either, in prose or in --json", () => {
@@ -894,18 +979,78 @@ describe("the parsers the drill is built out of", () => {
 // This PR sits beside the database job the clinic depends on. It must not disturb it.
 // ────────────────────────────────────────────────────────────────────────────
 describe("the two new scripts do not disturb the database job they sit beside", () => {
-  test("the database backup and restore scripts are untouched by this PR", () => {
-    const git = execFileSync("git", ["diff", "--name-only", "origin/main...HEAD"], { encoding: "utf8" });
-    const files = git.split(/\r?\n/).filter(Boolean);
-    for (const protectedFile of [
-      "scripts/synology-nas-backup.sh",
-      "scripts/synology-restore.sh",
-      "scripts/verify-backup-restore.sh",
-      "scripts/ops-preflight.mjs",
-      "scripts/ops-backup-inventory.mjs",
-    ]) {
-      expect(files, `${protectedFile} must not change in this PR`).not.toContain(protectedFile);
+  test("an armed retention pass retires its own generations and nothing that merely lives beside them", () => {
+    // What "does not disturb the database job" has to mean in a test CI can actually run.
+    // The guard this replaces diffed the branch against `origin/main` to prove the five
+    // protected scripts were not edited. That is a review-scope claim, not a code property,
+    // and it could not run anywhere but a developer clone: actions/checkout leaves a
+    // detached single-commit tree with no `main` ref, so `git diff --name-only
+    // origin/main...HEAD` threw `unknown revision` and was the only red in 14,125 tests on
+    // run 38805317907. Once this merges, the same line compares main with itself — a pass
+    // that cannot fail. The database job's dumps and this job's archives share one directory
+    // on the clinic box, and retention is the only destructive path in this script, so the
+    // destructive path is what gets measured.
+    const f = fixture("uploads", []);
+    const neighbours = [
+      // the database job's own artifact family, both plaintext and encrypted
+      "caredeoghar_20261015_023000.sql.gz",
+      "caredeoghar_20261015_023000.sql.gz.enc",
+      "caredeoghar_20261015_023000.sql.gz.enc.meta",
+      // the unversioned nightly job the clinic also writes to the same directory
+      "backup_DB_2026-10-15T08-31-32-149Z.sql.enc",
+      "backup_DB_2026-10-15T08-31-32-149Z.sql.enc.meta",
+      // the hardest case: an artifact of *this* tool's own shape, same extension and
+      // directory, from the other class. Only the label separates it from what this run
+      // is allowed to retire, and it is aged on purpose so the age filter cannot save it.
+      "backup_object_storage_2026-01-01T00-00-00-UTC.tar.gz",
+      "backup_object_storage_2026-01-01T00-00-00-UTC.tar.gz.meta",
+    ];
+    for (const n of neighbours) writeFileSync(path.join(f.dest, n), `neighbour ${n}\n`);
+    const bytesOf = Object.fromEntries(neighbours.map((n) => [n, readFileSync(path.join(f.dest, n))]));
+
+    for (let i = 0; i < 2; i += 1) {
+      expect(runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest]).code).toBe(0);
     }
+    const mine = readdirSync(f.dest).filter((n) => /^backup_uploads_.*\.tar\.gz/.test(n));
+    expect(mine.length, "two generations plus their sidecars").toBe(4);
+    const aged = new Date(Date.now() - 40 * 86400000);
+    for (const n of [...mine, "backup_object_storage_2026-01-01T00-00-00-UTC.tar.gz",
+                     "backup_object_storage_2026-01-01T00-00-00-UTC.tar.gz.meta"]) {
+      utimesSync(path.join(f.dest, n), aged, aged);
+    }
+
+    const run = runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest], { KEEP_DAYS: "30", DELETE_OLD: "1" });
+    expect(run.code, run.out).toBe(0);
+    // both directions: the retirement really happened, and it really stopped at the label
+    for (const n of mine.filter((x) => !x.includes("+"))) {
+      expect(existsSync(path.join(f.dest, n)), `retention left ${n} behind`).toBe(false);
+    }
+    expect(run.out).toMatch(/retention: removing backup_uploads_/);
+    expect(run.out).not.toMatch(/removing (backup_object_storage|backup_DB|caredeoghar)/);
+    for (const n of neighbours) {
+      expect(existsSync(path.join(f.dest, n)), `retention deleted the database job's ${n}`).toBe(true);
+      expect(readFileSync(path.join(f.dest, n)), `${n} was rewritten`).toEqual(bytesOf[n]);
+    }
+  }, SPAWN);
+
+  test("a label cannot widen the delete scope past the volume this job owns", () => {
+    // `--label` is interpolated straight into the retention globs, so a glob character in it
+    // turns a tidy-up of one volume into a delete over every archive in the directory.
+    // A bare "*" is deliberately not in this list: on a Windows checkout the MSYS runtime
+    // expands argv globs before the script starts, so the script receives a pile of repository
+    // paths and answers with a usage error (exit 2) instead of this guard's answer. `upl*ads`
+    // and `uploads?` do not match any real file, pass through untouched, and reach the same
+    // character-class arm a bare star would — measured on this box, not assumed.
+    for (const bad of ["upl*ads", "uploads?", "[a-z]oader", ".hidden", "a b", "a\tb", "$HOME", "../uploads"]) {
+      const f = fixture("uploads", []);
+      const r = runSh(["--class", "uploads", "--src", f.src, "--dest", f.dest, "--label", bad]);
+      expect(r.code, `--label ${JSON.stringify(bad)} was accepted`).toBe(1);
+      expect(r.out).toMatch(/LABEL must be a plain file-name fragment/);
+      expect(published(f.dest).length, `--label ${JSON.stringify(bad)} published before refusing`).toBe(0);
+    }
+    const ok = fixture("uploads", []);
+    expect(runSh(["--class", "uploads", "--src", ok.src, "--dest", ok.dest, "--label", "uploads-v1"]).code).toBe(0);
+    expect(published(ok.dest)[0]).toMatch(/^backup_uploads-v1_/);
   }, SPAWN);
 
   test("an archive artifact shape is git-ignored, so a drill cannot commit patient documents", () => {

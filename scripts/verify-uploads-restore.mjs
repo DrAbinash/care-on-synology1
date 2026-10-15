@@ -191,12 +191,14 @@ export function pathProblem(name) {
   if (typeof name !== "string" || name.length === 0) return "CONTROL_CHARACTER";
   if (name.startsWith("//")) return "UNC_PATH";
   if (name.includes("\\")) return "BACKSLASH_PATH";
-  if (/^[a-zA-Z]:([/\\]|$)/.test(name)) return "DRIVE_PATH";
   if (name.startsWith("/")) return "ABSOLUTE_PATH";
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(name)) return "CONTROL_CHARACTER";
   const segments = name.split("/");
   if (segments.some((s) => s === "..")) return "TRAVERSAL";
+  // A colon in any segment is the whole drive-qualified question: `C:/a` and `a:b/c` both land
+  // here, and the first segment of any `X:` path necessarily carries that colon, so no separate
+  // `^[A-Za-z]:` test is needed (one was here, and mutant #10 proved it changed nothing).
   if (segments.some((s) => s.includes(":"))) return "DRIVE_PATH";
   return null;
 }

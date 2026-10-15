@@ -88,6 +88,12 @@ esac
 [ -n "$SRC" ] || { printf '%s: --src is required\n' "$SELF" >&2; exit 2; }
 [ -n "$DEST" ] || { printf '%s: --dest is required\n' "$SELF" >&2; exit 2; }
 [ -n "$LABEL" ] || LABEL="$CLASS"
+# The label is the delete scope: retention removes backup_"$LABEL"_*.tar.gz and its .enc form.
+# A glob character or a separator in it would retire archives this job does not own — `--label '*'`
+# reaches every .tar.gz in the directory, including the other class's — so plain fragments only.
+case "$LABEL" in
+  .*|*[!A-Za-z0-9._-]*) fail "LABEL must be a plain file-name fragment (letters, digits, dot, dash, underscore, not leading) — it is the delete scope of retention, given: $LABEL";;
+esac
 command -v tar >/dev/null 2>&1 || fail "tar is not on PATH — refusing to call anything a backup without it"
 command -v gzip >/dev/null 2>&1 || fail "gzip is not on PATH"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is not on PATH — the manifest cannot be built without it"

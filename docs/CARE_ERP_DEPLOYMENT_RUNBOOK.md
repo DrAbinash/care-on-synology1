@@ -532,7 +532,10 @@ Two things this deliberately does not do. It is not installed: no DSM Task Sched
 runs it, so until one exists the clinic has a script and not a backup — installing a
 schedule on this box is the owner's call (§12 step ordering applies). And it never deletes:
 retention is off unless `KEEP_DAYS` is a positive integer **and** `DELETE_OLD=1`, because
-this clinic has lost documents to a tidy-up before. Its output prints counts and hash
+this clinic has lost documents to a tidy-up before. When it is armed its scope is the label —
+only `backup_<label>_*.tar.gz` and its `.enc` form are candidates — which is why `--label` is
+validated as a plain file-name fragment: it decides what gets deleted, and a `*` in it would
+retire the other volume's archives in the same directory. Its output prints counts and hash
 prefixes only — a file name on this volume is the patient-identifying part, and `--names`
 prints exactly one, with that warning on the same line.
 
