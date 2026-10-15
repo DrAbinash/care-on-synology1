@@ -667,8 +667,9 @@ describe("T9–T12 — platform, integration and metadata", () => {
 
   test("T15 a second compose project on this checkout is FAIL before it can strand the uploads", () => {
     // The failure is silent and total: the external patient DB is reused, while a
-    // new project creates its own empty uploads/object volumes. Nine of those
-    // orphan volume pairs already exist on this NAS.
+    // new project creates its own empty uploads/object volumes. docker-compose.yml
+    // declares db_data as `external: true, name: care_main_db_data` and leaves the
+    // other two project-prefixed, which is what makes the split possible.
     const two = [
       `${TOPOLOGY.project}|running(4)|${path.resolve(root)}/docker-compose.yml`,
       `care-on-synology1|running(2)|${path.resolve(root)}/docker-compose.yml`,

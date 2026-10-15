@@ -195,13 +195,15 @@ export const ARTIFACT_GLOBS = [
  *
  * A second compose project pointed at the same compose file attaches the EXTERNAL
  * patient database (`db_data` → `care_main_db_data`) while creating brand-new
- * empty `uploads_data` / `object_storage` volumes, because those two are
- * project-prefixed. Every uploaded bill scan and frozen key image then reads as
- * deleted while the money data is perfectly intact. Measured 2026-10-15: nine
- * stray `<project>_object_storage` volumes already exist on this NAS from exactly
- * that mistake, and the project name comes from the Container Manager task — the
- * compose file has no top-level `name:` — so it cannot be inferred from the
- * checkout directory. Anything that does not match stops the deploy.
+ * empty `uploads_data` / `object_storage` volumes, because those two are declared
+ * with no `external:`/`name:` and so are project-prefixed (docker-compose.yml:644).
+ * Every uploaded bill scan and frozen key image then reads as deleted while the
+ * money data is perfectly intact. The project name comes from the Container Manager
+ * task — the compose file has no top-level `name:` — so it cannot be inferred from
+ * the checkout directory, and nothing in the repository can prove which name the
+ * live stack actually uses. That is why both checks read the running containers and
+ * why an unreadable one is UNKNOWN, which stops the deploy. Anything that does not
+ * match stops the deploy too.
  */
 export const EXPECTED_COMPOSE_PROJECT = "care-erp-github";
 export const EXPECTED_DB_VOLUME = "care_main_db_data";
