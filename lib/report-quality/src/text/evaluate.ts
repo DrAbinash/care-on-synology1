@@ -30,6 +30,7 @@ import {
   SUSPICIOUS_TERMS,
 } from "./clinicalTerms";
 import { findingsImpressionContradictions, lateralityContradictions } from "./findingsImpression";
+import { reportPlaceholderWarning } from "./placeholders";
 import { unmetRecommendationDependency } from "./recommendation";
 
 export interface TextTierFinding {
@@ -153,10 +154,15 @@ function emitWarnings(report: TextReportInput, emit: (id: RuleId, msg: string, d
     emit(contradiction.ruleId, contradiction.message, W);
   }
 
-  // Q106 — unfilled placeholder
-  if (findingsText.includes("{value}") || impressionText.includes("{value}")) {
-    emit("Q106", "An un-filled measurement placeholder {value} is still present in the report.", W);
-  }
+  // Q106 — un-filled placeholder. The vocabulary and the wording both come from
+  // ./placeholders.ts, which `reportValidator.ts` calls for the same rule, so the
+  // badge and the finalize dialog cannot disagree about what counts as unfilled.
+  // It reads every prose section, not only Findings and Impression: the shipped
+  // "Standard H&P" history tile writes `[symptom]`/`[duration]` and one
+  // Recommendation tile writes `___ weeks`, and a blank in Technique is as
+  // un-signed-off as a blank in Findings.
+  const placeholderWarning = reportPlaceholderWarning(report);
+  if (placeholderWarning) emit("Q106", placeholderWarning, W);
 
   // ── medical consistency (Q107-Q114) ──
   const fullText = [report.clinicalHistory, report.technique, findingsText, impressionText, report.recommendation]
