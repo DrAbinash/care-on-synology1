@@ -66,37 +66,59 @@ function sameMultiset(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((s, i) => s === b[i]);
 }
 
+/** Named lookups, so a renamed or removed tile fails the test that cites it. */
+function byLabel(label: string): Tile {
+  const found = TILES_BRAIN.find((t) => t.label === label);
+  if (!found) throw new Error(`no shipped MRI Brain findings tile labelled ${label}`);
+  return found;
+}
+
 /**
- * The measured register, 2026-10-15, on `origin/main` = `1841668b` + the Stage B
- * catalogue. Nine pairs of shipped MRI Brain findings tiles print DIFFERENT clinical
- * content depending on which was clicked first. Each entry is
- * `first clicked <> second clicked`, and the mechanism is one of:
+ * The measured register. Each entry is `first clicked <> second clicked`, and a listed
+ * pair prints DIFFERENT clinical content depending on which tile was clicked first.
+ * The set is pinned, not just the count, so a new pair cannot appear while an old one
+ * is fixed. Retirement of a baseline normal is the intended direction; a contribution
+ * that silently revives or deletes a statement is not. Lowering this list is v4 Stage
+ * C, and when it empties the register must be deleted rather than left at zero, so that
+ * a regression has to be re-added deliberately.
  *
- *   - a normal clicked last re-adds its sentence beside the abnormal already on the page
- *     (six pairs, including `Subarachnoid hemorrhage`, where the report then states both
- *     "No evidence of acute infarct, hemorrhage, or mass lesion" and "Acute subarachnoid
- *     hemorrhage"), or
- *   - an abnormal clicked last is evicted by the normal that follows it
- *     (`Hydrocephalus`, `Demyelinating lesion`), or
- *   - one abnormal evicts another (`Glioma recurrence` + `Cerebral edema`: the
- *     post-resection tumour sentence disappears when edema is clicked second).
+ * 2026-10-15, on `origin/main` = `1841668b` + the Stage B catalogue: nine pairs, from
+ * three mechanisms — a normal clicked last re-adding its sentence beside the abnormal
+ * already on the page (six, including `Subarachnoid hemorrhage`, where the report then
+ * stated both "No evidence of acute infarct, hemorrhage, or mass lesion" and "Acute
+ * subarachnoid hemorrhage"), an abnormal clicked last being evicted by the normal that
+ * follows it (`Hydrocephalus`, `Demyelinating lesion`), and one abnormal evicting
+ * another (`Glioma recurrence` + `Cerebral edema`: the post-resection tumour sentence
+ * disappeared when edema was clicked second).
  *
- * The set is pinned, not just the count, so a tenth pair cannot appear while an
- * eleventh is fixed. Retirement of a baseline normal is the intended direction; a
- * contribution that silently revives or deletes a statement is not. Lowering this list
- * is v4 Stage C-2, and when it empties the register must be deleted rather than left at
- * zero, so that a regression has to be re-added deliberately.
+ * 2026-10-16, on the Stage C branch merged with `origin/main` = `012dd08d`:
+ * `tiles=29 pairs=406 identical=345 sequence-only=51 content-within-group=3
+ * content-across-groups=7`. The two evictions are gone: the undeclared-pair fence prints
+ * both tiles and evicts neither where nothing declared the pair, and the level-scoped
+ * normal suppression stops a clicked normal from retiring a statement it does not
+ * falsify. Both are named and asserted in the second `it` below rather than merely
+ * dropped from this list, so their regression fails by name.
+ *
+ * The seven that remain are all the first mechanism — a baseline normal clicked LAST
+ * re-adding its sentence next to the abnormal already on the page. Retiring them needs
+ * the suppression half to treat a clicked normal as a claim to test rather than a claim
+ * to insert: the next slice, recorded in
+ * `docs/clinical/V4_STAGE_C_INTEGRATION_MAP.md` §13.
  */
 const CROSS_GROUP_ORDER_DEPENDENCE_REGISTER: readonly string[] = [
   "Normal brain parenchyma (brain_parenchyma) <> Cerebral edema (edema)",
-  "Normal brain parenchyma (brain_parenchyma) <> Demyelinating lesion (demyelinating)",
   "Normal brain parenchyma (brain_parenchyma) <> Fazekas 1 (fazekas)",
   "Normal brain parenchyma (brain_parenchyma) <> Fazekas 2 (fazekas)",
   "Normal brain parenchyma (brain_parenchyma) <> Fazekas 3 (fazekas)",
   "Normal brain parenchyma (brain_parenchyma) <> Lacunar infarcts (lacunar)",
   "Normal brain parenchyma (brain_parenchyma) <> Subarachnoid hemorrhage (subarachnoid hemorrhage)",
   "Normal ventricles (ventricular) <> Hydrocephalus (hydrocephalus)",
-  "Glioma recurrence (tumor recurrence) <> Cerebral edema (edema)",
+];
+
+/** Retired by Stage C, kept named here so the claim is tested and not just recorded. */
+const RETIRED_ORDER_DEPENDENCE: readonly [string, string][] = [
+  ["Normal brain parenchyma", "Demyelinating lesion"],
+  ["Glioma recurrence", "Cerebral edema"],
 ];
 
 /**
@@ -146,6 +168,35 @@ describe("Quick Select click-order determinism (v4 Stage C census)", () => {
     ).toBeLessThanOrEqual(ORDERED_SEQUENCE_DEBT_CEILING);
     // The register is only meaningful if the run can see the pairs at all.
     expect(withinGroup.length, "same-group pairs, where last-click-wins is intended").toBeGreaterThan(0);
+  });
+
+  it("keeps the pairs Stage C retired fixed, by name rather than by absence", () => {
+    // A register that shrinks proves the pair left the measured set; it does not name
+    // the pair it dropped, so a later change could re-break it and the census would
+    // simply report it as a new entry against a list that no longer mentions it. These
+    // two are pinned directly: both tiles still exist in the shipped library, both
+    // sentences are still printed, and the two click orders produce the same page.
+    for (const [firstLabel, secondLabel] of RETIRED_ORDER_DEPENDENCE) {
+      const a = byLabel(firstLabel), b = byLabel(secondLabel);
+      const fwd = run([a, b]), rev = run([b, a]);
+      expect(
+        fwd.text,
+        `${firstLabel} then ${secondLabel} must print the same findings as the other order`,
+      ).toBe(rev.text);
+      expect(
+        sameMultiset(content(fwd.text), content(rev.text)),
+        `${firstLabel} + ${secondLabel}: the two orders must carry the same sentences`,
+      ).toBe(true);
+      // The clinical half: neither tile's own statement is the one that disappears.
+      const printed = normalizeForDedupe(fwd.text);
+      for (const tile of [a, b]) {
+        expect(
+          printed.includes(normalizeForDedupe(tile.sentence)),
+          `"${tile.label}" is no longer printed when it is clicked onto a report that already `
+          + `has "${tile === a ? b.label : a.label}" — that is the eviction this pair had`,
+        ).toBe(true);
+      }
+    }
   });
 
   it("measures the census population from the shipped library, not from a hand-kept count", () => {

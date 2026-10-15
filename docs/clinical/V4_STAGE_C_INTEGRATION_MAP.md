@@ -481,4 +481,51 @@ Making the schema `.strict()` would turn that into a loud 400, but it would also
 a field the route does not name, which is a live-reporting risk this branch should not take unasked — recorded here
 as the follow-up decision rather than implemented.
 
+## 13. What CI saw that 121 local files could not: three failures, all of them this branch's
 
+Phase 6's head (`e8b92f62`) came back with two jobs green and **Tests + migration smoke (real Postgres) red**:
+`Test Files 3 failed | 1063 passed | 5 skipped`, `Tests 3 failed | 14254 passed | 49 skipped`. Three failures, three
+different failure modes, none of them visible to the 120-file local sweep — two because the files that broke are
+main-only, one because this branch's base was 130+ commits behind main.
+
+**1 and 2 — the shared signed-refusal sentence went invisible to the two ratchets that police it.** Stage C Phase 1
+gave Redo the same refusal Undo had by moving the wording out of the key handler into
+`reportingWorkspaceShortcuts.clinicalHistoryRefusal(…)`. Both ratchet suites name the *file* that carries the shared
+clause, so `refusedSaveIsNotAFailedSave.test.ts` and `signedReportCorrectionTruth.test.ts` went red looking for a
+refusal in `useWorkspaceCommands.ts` that now lives one module away. The move was right — a refusal must announce
+itself, and one owner for the wording serves both directions — so the family lists now point at the owner, and
+`refusedSaveIsNotAFailedSave` additionally pins that **both** history keys route through `clinicalHistoryRefusal(`
+(count 2), which is stronger than the single inline literal it replaced.
+
+The subtler half: that helper built its description from **two concatenated string literals**, so the source never
+contained the shared sentence contiguously and no `toContain` on the file could match it — a check whose entire job
+is "every refusal says this exact sentence" was defeated by a line break. The literal is one string now, and the
+comment says why, because the sentence's runtime value was never the problem.
+
+**3 — the click-order census had retired two pairs while the register still listed them.**
+`quickSelectClickOrderCensus.test.ts` is a shrink-only register of shipped MRI Brain tile pairs whose printed findings
+differ by click order, measured 2026-10-15 against `origin/main` with nine entries. Re-measured with main merged in
+(`b4f5b344`, main = `012dd08d`): **`tiles=29 pairs=406 identical=345 sequence-only=51 content-within-group=3
+content-across-groups=7`**. The two that left the list are the two this branch's mechanisms target:
+
+- `Glioma recurrence <> Cerebral edema` — one abnormal evicting another where nothing had declared the pair. The
+  undeclared-pair fence prints both and evicts neither.
+- `Normal brain parenchyma <> Demyelinating lesion` — an abnormal clicked last evicted by the normal clicked after
+  it; level-scoped normal suppression stops a normal retiring a statement it does not falsify.
+
+The file's own rule is that lowering this list is the intended direction, so the register now holds the measured
+seven — but not by absence alone. A second `it` names both retired pairs, looks them up by label in the shipped
+library (so a rename fails the test that cites them), and asserts the two click orders produce a **byte-identical**
+Findings page with **both** tiles' own sentences still printed. Lowering a ratchet without that proof would have been
+weakening an assertion; with it, the retirement is tested. The seven that remain are all one mechanism — a baseline
+normal clicked last re-adds its sentence beside the abnormal already on the page — which is why they are the next
+slice rather than seven unrelated bugs.
+
+**Measured after the merge, and one thing that flaked.** In CI's own shape (`--no-file-parallelism`, 121 files):
+**2660 passed / 1 failed**, the failure being the known Windows defect in `aiQueryContract.test.ts` (`join()`
+backslashes defeat its prefix strip; §10). The census failed **once**, in a parallel 121-file run, and passed in every
+other measurement (alone 3/3; sequential with the sweep: green). Reported rather than smoothed over: the register
+numbers were identical across three runs and the failure did not reproduce, so it is treated as harness
+nondeterminism, not a new defect. The lesson kept from it is that a local sweep on a branch 130 commits behind is not
+merged-state evidence — the merge ref is what the clinic's next deploy would run, which is why main is now merged
+into this branch rather than left for the squash to discover.
