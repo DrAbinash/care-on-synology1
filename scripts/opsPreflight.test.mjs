@@ -909,3 +909,21 @@ describe("auditSidecar prints the value it rejects, unless that value is a crede
     expect(credentialShaped("diagnostic_erp")).toBe(false);
   });
 });
+
+describe("the count the runbook tells the operator", () => {
+  test("the runbook's check count is the count the gate runs", () => {
+    // §6 asks whether a documented claim holds in the environment it targets. The runbook
+    // states how many checks the gate will run, and that figure drifts the moment a check is
+    // added — nothing executes prose, so it had quietly gone stale ("all four below and 17
+    // more" against a gate that emits 22). Assert it against the module, not against memory.
+    const runbook = readFileSync(path.join(makeContext().repo, "docs", "CARE_ERP_DEPLOYMENT_RUNBOOK.md"), "utf8");
+    const stated = [...runbook.matchAll(/\(all (\d+) checks;/g)].map((m) => Number(m[1]));
+    expect(stated.length, "the runbook must state the gate's check count where the operator reads it").toBeGreaterThan(0);
+    const { report } = build({});
+    for (const n of stated) {
+      expect(n).toBe(REQUIRED_CHECK_IDS.length);
+      expect(n).toBe(report.checks.length);
+    }
+    expect(REQUIRED_CHECK_IDS.length).toBeGreaterThan(1); // the pin is not vacuous
+  });
+});

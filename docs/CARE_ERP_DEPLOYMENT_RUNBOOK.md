@@ -12,9 +12,20 @@ _Exact steps to deploy CARE ERP on the Synology NAS (Container Manager / `docker
 ## 1a. Read-only preflight — run this before every deploy
 
 ```sh
-pnpm ops:preflight                 # or: node scripts/ops-preflight.mjs
-pnpm ops:preflight --json          # same answers, machine-readable
+node scripts/ops-preflight.mjs       # the form that runs on the NAS
+pnpm ops:preflight                   # the same thing on a dev box
+node scripts/ops-preflight.mjs --json  # machine-readable
 ```
+
+> **Which shell a command belongs to.** Synology has `node` at `/usr/local/bin/node` but
+> **`pnpm` and `npx` are not on PATH** (the toolchain lives under
+> `/volume1/@appstore/Node.js_v22/usr/local/bin/`), and `scripts/verify-deployment.mjs` additionally
+> `import pg from "pg"`, which is installed in the image rather than on the host. So every gate
+> command below is written as `node scripts/<tool>.mjs` — `ops-preflight.mjs`,
+> `ops-backup-inventory.mjs` and `deploy-health.mjs` are Node-builtins-only and therefore actually
+> run on the box. Anything needing `pg` runs in the container that has it:
+> `docker compose run --rm --no-deps schema-verify node scripts/<tool>.mjs`. Lines that say
+> `pnpm db:smoke` or `pnpm preview:reports` are **dev-box** actions, never NAS ones.
 
 `scripts/ops-preflight.mjs` touches nothing: no migration, no write, no container
 is created. It reads the repository, `.env`, `docker-compose.yml`, the backup
@@ -27,10 +38,10 @@ deploy is made against. Two other questions are not its job, and asking them of 
 would make the gate disagree with itself:
 
 ```sh
-pnpm ops:backup-inventory          # every artifact that exists, what each sidecar
-                                   # claims, which checksums were recomputed, which
-                                   # restores were ever proved, and which days are
-                                   # missing from the retained span
+node scripts/ops-backup-inventory.mjs   # every artifact that exists, what each sidecar
+                                        # claims, which checksums were recomputed, which
+                                        # restores were ever proved, and which days are
+                                        # missing from the retained span
 ```
 
 `scripts/ops-backup-inventory.mjs` is read-only in the same way and reaches **no
@@ -98,7 +109,7 @@ Run it:
 > `SOP/RECOVERY/16_RUNBOOKS/deploy-synology.sh`, `SOP/RECOVERY/03_DOCKER/docker-compose.yml` and
 > `SOP/RECOVERY/03_DOCKER/Dockerfile` used to hold older copies of the same four files while the
 > binder's index called all four "Active". They are retired pointer files now, and running them does
-> nothing but print where the live file is. `pnpm ops:preflight` fails on any un-retired copy
+> nothing but print where the live file is. `node scripts/ops-preflight.mjs` fails on any un-retired copy
 > (`deploy.config_single_source`), so this cannot quietly come back.
 
 > **If GitHub is unreachable** — a deploy is not the recovery path, but if you must bring the stack
@@ -141,7 +152,7 @@ node scripts/deploy-health.mjs --host-port 8888      # the same gate the deploy 
 curl -fsS http://localhost:8888/api/healthz          # liveness
 curl -fsS http://localhost:8888/api/health/schema    # schema-verify actually passed
 curl -fsS http://localhost:8888/api/system/version   # deployed version/commit
-pnpm operations:verify-deployment                    # full stack health
+docker compose run --rm --no-deps schema-verify node scripts/verify-deployment.mjs   # full stack health
 ```
 
 `scripts/deploy-health.mjs` is the authoritative one: it checks the container states
@@ -258,7 +269,8 @@ Twelve steps, in order, for the Synology box. Every command, path, port and serv
 name below is taken from this repository at `8ca20cf9` — `deploy-synology.sh`,
 `docker-compose.yml` and the `scripts/` directory — not from memory. **Nothing in this
 section has been executed against the clinic**, because that is a deploy, and a deploy
-is the owner's decision.
+is the owner's decision. The print-and-tick form of these steps, with the open-items
+register, is `docs/operations/CARE_PRODUCTION_READINESS_CHECKLIST.md`.
 
 Before step 1, run `CARE_ERP_PREDEPLOYMENT_GATE.md` Part 1 — the four areas: database, backup,
 PACS, HOPE — and record its Part 2, which states which outstanding P0/P1 item blocks which
@@ -273,7 +285,7 @@ cd /volume1/docker/care-erp-github/care-on-synology1
 
 | # | Step | Command | Stop the deploy if |
 |---|---|---|---|
-| 1 | Pre-deployment checks | `pnpm ops:preflight` (runs all four below and 17 more) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak. `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof |
+| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 22 checks; the four below are the ones a deploy most often fails on) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak. `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof |
 | 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
 | 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass the passphrase through the environment — never on the command line. Full procedure, including the before/after proof that production was not touched: `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §B |
 | 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md`, and `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §A for the target-verification pre-flight and how to read each finding |

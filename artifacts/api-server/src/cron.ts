@@ -1339,7 +1339,10 @@ function scheduleOpsAnomalyScan() {
     try {
       const { runOpsAnomalyScan } = await import("./routes/opsCockpit");
       const r = await runOpsAnomalyScan();
-      if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
+      // `runOpsAnomalyScan` never throws, so without this branch a scan that could not read
+      // its metrics prints nothing at all — `scanned=0 created=0` is also an idle clinic.
+      if (r.failed) console.error(`[cron] Ops anomaly scan DID NOT RUN: ${r.reason}`);
+      else if (!r.skipped && (r.created > 0 || r.scanned > 0)) {
         console.log(`[cron] Ops anomaly scan: scanned=${r.scanned} created=${r.created} deduped=${r.deduped}`);
       }
     } catch (err) {

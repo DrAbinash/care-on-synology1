@@ -206,3 +206,12 @@ Later work (still **no** shared books / PAN / roles SSO):
 **Still deferred:** Billing Desk full auto-prefill; shared staff roles/SSO;
 cross-entity finance/MIS merges (never — Hope Hospital, Hope Medicals, Care
 remain three separate PANs).
+
+## 12. Event compatibility, as measured (I12-F)
+
+`07_EVENT_COMPATIBILITY_VERIFICATION.md` is the operational counterpart to this delivery
+summary: what CARE emits today (11 types, 7 files), what the merged HOPE build can interpret
+(10), the one type that is refused rather than silently acknowledged, the signing and
+retry/dead-letter mechanics with their `file:line`, the required deployment order — and the
+three facts no repository can supply, with the probe that settles each. Read it before
+assuming the integration works because a table says so.

@@ -14,9 +14,12 @@ _Everything patient/report/billing-related lives in one PostgreSQL database (`di
 
 > **To see what is actually in the backup destination right now** (every artifact, what its
 > `.meta` sidecar claims, which checksums were recomputed, and which restores were ever
-> proved): `pnpm ops:backup-inventory`, or `node scripts/ops-backup-inventory.mjs
-> --verify-checksums`. It reads the directory and reaches no verdict; it takes no backup
-> and restores nothing.
+> proved), run it on the NAS with the `node` that Synology ships — `pnpm` is not on PATH there:
+> ```sh
+> BACKUP_DIR=/volume1/backup/care-erp/db node scripts/ops-backup-inventory.mjs --verify-checksums
+> ```
+> (`pnpm ops:backup-inventory` is the same tool on a dev box.) It reads the directory and reaches
+> no verdict; it takes no backup and restores nothing.
 
 ---
 
