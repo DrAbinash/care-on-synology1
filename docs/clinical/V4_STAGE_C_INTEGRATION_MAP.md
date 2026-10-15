@@ -471,3 +471,14 @@ were parallel-run interference, not code. None of the five files imports anythin
 the wire contract and the store's reaction to it; a real-browser save → close → reopen on a staging deployment is
 still the only evidence that the hook itself fires in that order, and that remains open for Phase 14.
 
+**The same class, censused rather than assumed.** `spineReporting` was only dangerous because nothing compared the
+sender's keys to the schema's, so the comparison was made for both writers: `useDraftPersistence.saveDraft` sends
+19 body keys plus the computed `spineReporting`, and `RadiologyReportGenerator.tsx:754` sends 12; `SaveDraftBody`
+declares 28 (it covers both senders plus `composer`). **Zero** keys are sent-but-undeclared, so no other field is
+being stripped the way this one was. What the census does not fix is the mechanism: a `z.object` strips silently, so
+the next key added to the workspace body without a schema entry will be lost the same way and the same invisibly.
+Making the schema `.strict()` would turn that into a loud 400, but it would also break any client that already sends
+a field the route does not name, which is a live-reporting risk this branch should not take unasked — recorded here
+as the follow-up decision rather than implemented.
+
+
