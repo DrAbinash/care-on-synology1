@@ -1,12 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CARE CLINICAL REPORTING ENGINE v4.0 — Stage B: the unified clinical catalogue.
 //
-// Declares the thirteen tables created by
+// Declares the fourteen tables created by
 // `migrations/zzzz_add_clinical_catalogue_v4.sql`, which extend the B1/B2 canonical
 // catalog (radiologyCatalog.ts) with the entities it does not model: an examination,
 // an anatomical section with an explicit ordinal, a normal-observation slot, an
 // authoring tile, a published tile version, a declarative parameter contract,
-// selection relationships, combination rules, recommendation rules and publications.
+// selection relationships, combination rules, recommendation rules, a publication and
+// the publication's tile-version manifest.
 //
 // DORMANT BY DESIGN: no runtime code reads these tables yet. The read path arrives
 // in Stage C behind a feature flag, so this PR cannot change any report, bill or
@@ -14,9 +15,21 @@
 //
 // Conventions are imported from radiologyCatalog.ts rather than re-typed: bigserial
 // PKs, an immutable text `key` unique among live rows, `deleted_at` soft delete, and
-// (status, version) lifecycle. CHECK constraints exist in the SQL only — drizzle
-// cannot express them, and declaring a drizzle copy would name a constraint the
-// migration does not create.
+// (status, version) lifecycle.
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DECLARE, and why that is not a gap:
+//   • CHECK constraints — drizzle cannot express them, and declaring a drizzle copy
+//     would name a constraint the migration does not create.
+//   • The composite foreign keys that make a section reference mean "a section of THIS
+//     examination". drizzle's `.references()` takes a single column, so the columns
+//     below that participate in one (`parentSectionId`, `sectionId`, `defaultOptionId`)
+//     are declared as plain foreign-key columns and the pair is enforced in SQL only.
+//     This is the same asymmetry the B1/B2 file already accepts for CHECKs, and the
+//     reason the database is built from migrations/*.sql and never from `db:push`: a
+//     push of this file would create a WEAKER schema than the one the clinic runs, and
+//     a cross-examination section reference would then be accepted in production.
+//     clinicalCatalogue.schema.test.ts pins each composite key to the SQL text so the
+//     two cannot drift apart silently.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -26,7 +39,7 @@ import {
 import { sql } from "drizzle-orm";
 import {
   auditTimestamps, lifecycle, fk,
-  findingDefinitionsTable, parameterGroupsTable, parameterOptionsTable,
+  findingDefinitionsTable, parameterGroupsTable,
 } from "./radiologyCatalog";
 
 const review = {
@@ -72,11 +85,14 @@ export const clinicalAnatomicalSectionsTable = pgTable(
       .references(() => clinicalExaminationsTable.id, { onDelete: "restrict" }),
     key: text("key").notNull(),
     label: text("label").notNull(),
-    parentSectionId: fk("parent_section_id")
-      .references((): any => clinicalAnatomicalSectionsTable.id, { onDelete: "restrict" }),
+    // Composite with examination_id in SQL (clinical_section_parent_same_exam_fkey): a
+    // section may only nest inside a section of the same examination.
+    parentSectionId: fk("parent_section_id"),
     sectionField: text("section_field").notNull().default("findings"),
-    // The order is data, never alphabetical and never insertion order (§16).
-    ordinal: integer("ordinal").notNull(),
+    // The order is data, never alphabetical and never insertion order (§16). NULL means
+    // "not yet placed" — a fact about a draft, not a lie about order — and the
+    // publication gate refuses to publish an examination that still has one.
+    ordinal: integer("ordinal"),
     emitsHeading: boolean("emits_heading").notNull().default(true),
     ...review,
     ...lifecycle,
@@ -86,7 +102,7 @@ export const clinicalAnatomicalSectionsTable = pgTable(
     keyUq: uniqueIndex("clinical_sections_key_uq")
       .on(t.examinationId, t.key).where(sql`deleted_at IS NULL`),
     ordinalUq: uniqueIndex("clinical_sections_ordinal_uq")
-      .on(t.examinationId, t.ordinal).where(sql`deleted_at IS NULL`),
+      .on(t.examinationId, t.ordinal).where(sql`deleted_at IS NULL AND ordinal IS NOT NULL`),
     parentIdx: index("clinical_sections_parent_idx").on(t.parentSectionId),
   }),
 );
@@ -98,8 +114,9 @@ export const clinicalNormalSlotsTable = pgTable(
     id: bigserial("id", { mode: "number" }).primaryKey(),
     examinationId: fk("examination_id").notNull()
       .references(() => clinicalExaminationsTable.id, { onDelete: "restrict" }),
-    sectionId: fk("section_id")
-      .references(() => clinicalAnatomicalSectionsTable.id, { onDelete: "restrict" }),
+    // Placement metadata, not identity: where the sentence prints. Composite with
+    // examination_id in SQL (clinical_slot_section_same_exam_fkey).
+    sectionId: fk("section_id"),
     conceptId: fk("concept_id").notNull()
       .references(() => findingDefinitionsTable.id, { onDelete: "restrict" }),
     key: text("key").notNull(),
@@ -108,7 +125,7 @@ export const clinicalNormalSlotsTable = pgTable(
     level: text("level"),
     laterality: text("laterality"),
     region: text("region"),
-    ordinal: integer("ordinal").notNull().default(0),
+    ordinal: integer("ordinal"),
     ...review,
     ...lifecycle,
     ...auditTimestamps,
@@ -116,12 +133,17 @@ export const clinicalNormalSlotsTable = pgTable(
   (t) => ({
     keyUq: uniqueIndex("clinical_normal_slots_key_uq")
       .on(t.examinationId, t.key).where(sql`deleted_at IS NULL`),
-    // One normal per anatomical slot: if two live rows claim the same slot, "which
-    // sentence does deselecting restore?" has no single answer.
+    // Slot identity is the runtime's own: lib/baseline-manifest documents the persisted
+    // identity as `region | concept | level | laterality` and buildSlotKey in
+    // artifacts/diagnostic-erp/src/lib/observationSlot.ts builds exactly that, so the
+    // catalogue keys the same four dimensions scoped to the examination and the field.
+    // Section is deliberately absent: five legitimate lumbar normals at one level share
+    // a section, and one basal-ganglia claim must not be storable twice.
     slotUq: uniqueIndex("clinical_normal_slots_slot_uq")
-      .on(sql`examination_id, slot_field, coalesce(section_id, 0), coalesce(lower(trim(level)), ''), coalesce(lower(trim(laterality)), '')`)
+      .on(sql`examination_id, slot_field, coalesce(lower(trim(region)), '*'), concept_id, coalesce(lower(trim(level)), ''), coalesce(lower(trim(laterality)), '')`)
       .where(sql`deleted_at IS NULL`),
     examIdx: index("clinical_normal_slots_exam_idx").on(t.examinationId, t.ordinal),
+    conceptIdx: index("clinical_normal_slots_concept_idx").on(t.conceptId),
   }),
 );
 
@@ -164,9 +186,13 @@ export const clinicalTileExaminationsTable = pgTable(
       .references(() => clinicalTilesTable.id, { onDelete: "restrict" }),
     examinationId: fk("examination_id").notNull()
       .references(() => clinicalExaminationsTable.id, { onDelete: "restrict" }),
-    sectionId: fk("section_id")
-      .references(() => clinicalAnatomicalSectionsTable.id, { onDelete: "restrict" }),
-    ordinal: integer("ordinal").notNull().default(0),
+    // Composite with examination_id in SQL (clin_tile_exam_section_same_exam_fkey): the
+    // tile of one examination cannot be filed into another examination's anatomy.
+    sectionId: fk("section_id"),
+    // NULL = "not yet placed". An implicit position (the DEFAULT 0 this column used to
+    // carry) made the SECOND tile added to an examination fail, which is the opposite of
+    // how authoring works. Reordering is unplace-then-place inside one transaction.
+    ordinal: integer("ordinal"),
     isFeatured: boolean("is_featured").notNull().default(false),
     ...auditTimestamps,
   },
@@ -174,8 +200,9 @@ export const clinicalTileExaminationsTable = pgTable(
     tileExamUq: uniqueIndex("clin_tile_exam_uq")
       .on(t.tileId, t.examinationId).where(sql`deleted_at IS NULL`),
     placementUq: uniqueIndex("clin_tile_exam_ordinal_uq")
-      .on(sql`examination_id, coalesce(section_id, 0), ordinal`).where(sql`deleted_at IS NULL`),
+      .on(sql`examination_id, coalesce(section_id, 0), ordinal`).where(sql`deleted_at IS NULL AND ordinal IS NOT NULL`),
     examIdx: index("clin_tile_exam_exam_idx").on(t.examinationId, t.ordinal),
+    tileIdx: index("clin_tile_exam_tile_idx").on(t.tileId),
   }),
 );
 
@@ -210,8 +237,10 @@ export const clinicalTileParametersTable = pgTable(
     label: text("label").notNull(),
     parameterGroupId: fk("parameter_group_id")
       .references(() => parameterGroupsTable.id, { onDelete: "restrict" }),
-    defaultOptionId: fk("default_option_id")
-      .references(() => parameterOptionsTable.id, { onDelete: "restrict" }),
+    // Composite with parameter_group_id in SQL (clin_tile_param_option_in_group_fkey →
+    // parameter_options (group_id, id)): an answer taken from a different parameter's
+    // option list is not a default, it is a different parameter's value.
+    defaultOptionId: fk("default_option_id"),
     dataType: text("data_type").notNull().default("option"),
     isRequired: boolean("is_required").notNull().default(true),
     allowMultiple: boolean("allow_multiple").notNull().default(false),
@@ -280,13 +309,16 @@ export const clinicalCombinationRulesTable = pgTable(
     key: text("key").notNull(),
     examinationId: fk("examination_id").notNull()
       .references(() => clinicalExaminationsTable.id, { onDelete: "restrict" }),
-    sectionId: fk("section_id")
-      .references(() => clinicalAnatomicalSectionsTable.id, { onDelete: "restrict" }),
+    // Composite with examination_id in SQL (clin_combo_rule_section_same_exam_fkey).
+    sectionId: fk("section_id"),
     label: text("label").notNull(),
     targetField: text("target_field").notNull().default("impression"),
     combinedText: text("combined_text").notNull(),
-    suppressMembers: boolean("suppress_members").notNull().default(false),
-    requiresOnlyMembers: boolean("requires_only_members").notNull().default(false),
+    // NO DEFAULT, on purpose. FALSE here means "print the members' own sentences AND
+    // this summary", which is the duplicate Impression the owner's Fazekas case forbids;
+    // a default would make that the accidental outcome of forgetting a column.
+    suppressMembers: boolean("suppress_members").notNull(),
+    requiresOnlyMembers: boolean("requires_only_members").notNull(),
     ordinal: integer("ordinal").notNull().default(0),
     ...review,
     ...lifecycle,
@@ -317,6 +349,9 @@ export const clinicalCombinationRuleMembersTable = pgTable(
     memberUq: uniqueIndex("clin_combo_member_uq")
       .on(sql`rule_id, coalesce(tile_id, 0), coalesce(concept_id, 0)`).where(sql`deleted_at IS NULL`),
     ruleIdx: index("clin_combo_member_rule_idx").on(t.ruleId, t.ordinal),
+    // What the publication gate looks for when it refuses a rule that requires nothing.
+    requiredIdx: index("clin_combo_member_required_idx")
+      .on(t.ruleId).where(sql`NOT is_optional AND deleted_at IS NULL`),
   }),
 );
 
@@ -371,6 +406,31 @@ export const clinicalPublicationsTable = pgTable(
   }),
 );
 
+// ── 13. Publication manifest: which tile at which stored version ─────────────
+// Without this row a publication is a hash. Rollback would have nothing to restore and
+// a signed report could not name the wording it was composed from. Append-only like the
+// version it points at: clin_pub_tiles_append_only refuses UPDATE and DELETE.
+export const clinicalPublicationTilesTable = pgTable(
+  "clinical_publication_tiles",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    publicationId: fk("publication_id").notNull()
+      .references(() => clinicalPublicationsTable.id, { onDelete: "restrict" }),
+    tileId: fk("tile_id").notNull()
+      .references(() => clinicalTilesTable.id, { onDelete: "restrict" }),
+    tileVersion: integer("tile_version").notNull(),
+    // Composite in SQL (clin_pub_tile_version_fkey → clinical_tile_versions (tile_id,
+    // version)): a publication may only name a wording that was actually snapshotted.
+    ordinal: integer("ordinal"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pubTileUq: uniqueIndex("clin_pub_tile_uq").on(t.publicationId, t.tileId),
+    tileIdx: index("clin_pub_tile_tile_idx").on(t.tileId),
+    pubIdx: index("clin_pub_tile_pub_idx").on(t.publicationId, t.ordinal),
+  }),
+);
+
 // ── Inferred types ───────────────────────────────────────────────────────────
 export type ClinicalExamination = typeof clinicalExaminationsTable.$inferSelect;
 export type ClinicalAnatomicalSection = typeof clinicalAnatomicalSectionsTable.$inferSelect;
@@ -386,3 +446,4 @@ export type ClinicalCombinationRule = typeof clinicalCombinationRulesTable.$infe
 export type ClinicalCombinationRuleMember = typeof clinicalCombinationRuleMembersTable.$inferSelect;
 export type ClinicalRecommendationRule = typeof clinicalRecommendationRulesTable.$inferSelect;
 export type ClinicalPublication = typeof clinicalPublicationsTable.$inferSelect;
+export type ClinicalPublicationTile = typeof clinicalPublicationTilesTable.$inferSelect;

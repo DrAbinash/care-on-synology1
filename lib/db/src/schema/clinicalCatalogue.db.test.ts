@@ -13,14 +13,29 @@
  * So each invariant the model depends on is executed here:
  *   • the enum CHECKs reject the spellings a human would try next;
  *   • keys free up only after a soft delete, so a retired tile cannot collide forever;
- *   • one normal per anatomical slot, and a different level is a different slot;
+ *   • a normal slot is identified by region, concept, level and side — five lumbar
+ *     normals coexist inside one section, and the same claim cannot be stored twice
+ *     under two different sections;
+ *   • a section reference means a section of the SAME examination, on every path that
+ *     can introduce one: insert, update, parent section, rule section, slot section, and
+ *     a parameter default drawn from another parameter's option list;
+ *   • a tile can be added without a position, an adjacent swap completes atomically by
+ *     unplace-then-place, a position claimed twice is refused, and two administrators
+ *     reordering one examination serialise on a row lock;
  *   • ON DELETE RESTRICT makes a concept or a restore-target undestroyable while a tile
  *     still points at it;
- *   • a relationship or a combination member must name exactly one target;
- *   • re-applying both migrations changes nothing (idempotent, so a replayed deploy is safe).
+ *   • the version history, the publication record and the publication's tile manifest
+ *     cannot be rewritten, and a manifest cannot cite a version that was never stored;
+ *   • the publication gate refuses an unplaced tile, a rule with no required member, a
+ *     tile owning a normal of an examination it is not placed in, and a rule naming an
+ *     unplaced tile — while a complete catalogue publishes;
+ *   • re-applying both migrations changes nothing (idempotent, so a replayed deploy is
+ *     safe).
  *
  * Every test runs inside a transaction that is rolled back, so no row survives and the
- * eighteen seeded draft examinations stay exactly as the migration wrote them.
+ * eighteen seeded draft examinations stay exactly as the migration wrote them. The one
+ * exception is the lock test, which needs two transactions that can both see a committed
+ * row, so it locks a seeded examination and closes both transactions in a finally block.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "pg";
@@ -133,7 +148,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
     return r.rows[0]!.id as number;
   }
 
-  it("creates all thirteen tables with every column drizzle declares", async () => {
+  it("creates all fourteen tables with every column drizzle declares", async () => {
     const expected: Record<string, string[]> = {
       clinical_examinations: ["id", "key", "label", "modality", "body_part", "protocol_scope", "template_key", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_anatomical_sections: ["id", "examination_id", "key", "label", "parent_section_id", "section_field", "ordinal", "emits_heading", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
@@ -148,16 +163,46 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       clinical_combination_rule_members: ["id", "rule_id", "tile_id", "concept_id", "required_value", "is_optional", "ordinal", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_recommendation_rules: ["id", "key", "examination_id", "label", "trigger_kind", "tile_id", "concept_id", "parameter_key", "parameter_value", "advice_text", "priority", "emit_policy", "ordinal", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_publications: ["id", "examination_id", "publication_key", "content_hash", "summary_json", "notes", "published_by", "published_at", "created_at"],
+      clinical_publication_tiles: ["id", "publication_id", "tile_id", "tile_version", "ordinal", "created_at"],
     };
     const live = await client.query<{ table_name: string; column_name: string }>(
       `SELECT table_name, column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name LIKE 'clinical_%'`,
     );
     const present = new Set(live.rows.map((r) => `${r.table_name}.${r.column_name}`));
-    expect(Object.keys(expected)).toHaveLength(13);
+    expect(Object.keys(expected)).toHaveLength(14);
     for (const [table, columns] of Object.entries(expected)) {
       const missing = columns.filter((col) => !present.has(`${table}.${col}`));
       expect(missing, `${table} is missing columns the migration was supposed to create`).toEqual([]);
+    }
+    // The catalogue creates exactly these fourteen tables — an eleventh through
+    // fourteenth appearing in the database but not in this list is a table that was added
+    // to the SQL without being thought about.
+    const created = await client.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'clinical_%'`,
+    );
+    expect(created.rows.map((r) => r.tablename).sort()).toEqual(Object.keys(expected).sort());
+  });
+
+  it("keeps the ordinal columns nullable but never zero, so a draft is not a collision", async () => {
+    const nullable = await client.query<{ table_name: string; column_name: string; is_nullable: string }>(
+      `SELECT table_name, column_name, is_nullable FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name LIKE 'clinical_%' AND column_name = 'ordinal'`,
+    );
+    const byTable = new Map(nullable.rows.map((r) => [r.table_name, r.is_nullable]));
+    // Placed-ness is a fact an author states, so these three start empty. Every other
+    // ordinal in the family is a display hint inside one parent row and keeps its default.
+    for (const table of ["clinical_anatomical_sections", "clinical_normal_slots", "clinical_tile_examinations"]) {
+      expect(byTable.get(table), `${table}.ordinal must be nullable`).toBe("YES");
+    }
+    const defaults = await client.query<{ table_name: string; column_default: string | null }>(
+      `SELECT table_name, column_default FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name LIKE 'clinical_%' AND column_name = 'ordinal'`,
+    );
+    for (const row of defaults.rows) {
+      if (["clinical_anatomical_sections", "clinical_normal_slots", "clinical_tile_examinations"].includes(row.table_name)) {
+        expect(row.column_default, `${row.table_name}.ordinal must never gain a default again`).toBeNull();
+      }
     }
   });
 
@@ -215,9 +260,11 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       const { conceptId } = await seedFixture(c, "keyfree");
       await insertTile(c, "tile.dup", conceptId);
       const second = await attempt(
-        `INSERT INTO clinical_tiles (key, concept_id, label) VALUES ('tile.dup', ${conceptId}, 'Another tile')`,
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text)
+         VALUES ('tile.dup', ${conceptId}, 'Another tile', 'A second fixture sentence.')`,
       );
       expect(second?.code, "two live tiles cannot share a key").toBe("23505");
+      expect(second?.message).toMatch(/clinical_tiles_key_uq/);
 
       await c.query(`UPDATE clinical_tiles SET deleted_at = NOW() WHERE key = 'tile.dup'`);
       const afterSoftDelete = await attempt(
@@ -342,34 +389,86 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
     });
   });
 
-  it("holds one normal per anatomical slot, and treats a level or side as a different slot", async () => {
+  it("keys a normal slot on region, concept, level and side — not on its section", async () => {
     await inTx(async (c) => {
-      const { conceptId, examId, sectionId } = await seedFixture(c, "slots");
-      const ins = (key: string, level: string | null, laterality: string | null) =>
-        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, level, laterality)
-         VALUES (${examId}, ${sectionId}, ${conceptId}, '${key}', 'findings', 'A fixture normal.', ${
-          level === null ? "NULL" : `'${level}'`}, ${laterality === null ? "NULL" : `'${laterality}'`})`;
+      const { conceptId, examId } = await seedFixture(c, "slots");
+      const other = await c.query(
+        `INSERT INTO clinical_anatomical_sections (examination_id, key, label, ordinal)
+         VALUES ($1, 'sec.slots.two', 'Second section', 2) RETURNING id`,
+        [examId],
+      );
+      const section2 = Number(other.rows[0]!.id);
+      const concept2 = await c.query(
+        `INSERT INTO finding_definitions (key, category_id, label)
+         VALUES ('concept.slots.two', (SELECT category_id FROM finding_definitions WHERE id = $1), 'Second concept')
+         RETURNING id`,
+        [conceptId],
+      ).then((r) => Number(r.rows[0]!.id));
 
-      expect(await attempt(ins("s1", null, null)), "the first normal for a slot is accepted").toBeNull();
-      const same = await attempt(ins("s2", null, null));
-      expect(same?.code, "a second live normal for the same slot must be refused").toBe("23505");
+      const ins = (key: string, opts: { section?: number; concept?: number; level?: string; laterality?: string; region?: string } = {}) =>
+        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, level, laterality, region)
+         VALUES (${examId}, ${opts.section ?? "NULL"}, ${opts.concept ?? conceptId}, '${key}', 'findings',
+                 'A fixture normal.', ${opts.level ? `'${opts.level}'` : "NULL"},
+                 ${opts.laterality ? `'${opts.laterality}'` : "NULL"},
+                 ${opts.region ? `'${opts.region}'` : "NULL"})`;
 
+      expect(await attempt(ins("s1", { region: "parenchyma" })), "the first normal for a slot is accepted").toBeNull();
+      // The claim the key exists to prevent — the same anatomical assertion twice — must
+      // be caught even when the two rows are filed under DIFFERENT sections. Under the
+      // previous key (section, level, laterality) both of these stored.
+      expect((await attempt(ins("s2", { region: "parenchyma" })))?.code,
+        "the same slot claimed twice in one section is refused").toBe("23505");
+      expect((await attempt(ins("s3", { region: "parenchyma", section: section2 })))?.code,
+        "and the same slot claimed under a different section is refused too").toBe("23505");
+
+      // A different concept is a different assertion about the same anatomy.
+      expect(await attempt(ins("s4", { region: "parenchyma", concept: concept2 })),
+        "a second concept in the same region is a second slot").toBeNull();
       // The LS Spine case: each level is its own slot, so six levels coexist.
-      expect(await attempt(ins("s3", "L4-L5", null)), "a different level is a different slot").toBeNull();
-      expect(await attempt(ins("s4", "L4-L5", "left")), "a different side is a different slot").toBeNull();
+      expect(await attempt(ins("s5", { region: "parenchyma", concept: concept2, level: "L4-L5" })),
+        "a different level is a different slot").toBeNull();
+      expect(await attempt(ins("s6", { region: "parenchyma", concept: concept2, level: "L4-L5", laterality: "left" })),
+        "a different side is a different slot").toBeNull();
       // …and padding must not smuggle in a duplicate. The laterality CHECK pins the
       // vocabulary to lowercase, so 'LEFT' is rejected before the index is consulted —
       // this probe isolates TRIM on the level, which has no CHECK of its own.
-      const whitespace = await attempt(
-        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, level, laterality)
-         VALUES (${examId}, ${sectionId}, ${conceptId}, 's5', 'findings', 'A fixture normal.', ' L4-L5 ', 'left')`,
+      expect((await attempt(
+        `INSERT INTO clinical_normal_slots (examination_id, concept_id, key, slot_field, rendered_text, level, laterality, region)
+         VALUES (${examId}, ${concept2}, 's7', 'findings', 'A fixture normal.', ' L4-L5 ', 'left', 'parenchyma')`,
+      ))?.code, "padding must not create a second claim on one slot").toBe("23505");
+      expect((await attempt(ins("s8", { region: "parenchyma", concept: concept2, laterality: "LEFT" })))?.code,
+        "'LEFT' is refused as a laterality, not normalised").toBe("23514");
+    });
+  });
+
+  it("holds the normals one examination actually needs, in four modalities", async () => {
+    // The brief's requirement, executed: several legitimate normals must coexist, because
+    // a catalogue that cannot store them cannot suppress or restore them either. Each of
+    // these is a real anatomy set, not a permutation of one row.
+    await inTx(async (c) => {
+      const f = await seedFixture(c, "many");
+      const sectionId = f.sectionId;
+      const concepts = await c.query<{ id: number }>(
+        `WITH new(key, label) AS (VALUES
+            ('c.many.disc','intervertebral disc'), ('c.many.facet','facet joint'),
+            ('c.many.flavum','ligamentum flavum'), ('c.many.form','neural foramina'),
+            ('c.many.canal','spinal canal'))
+         INSERT INTO finding_definitions (key, category_id, label)
+         SELECT key, (SELECT category_id FROM finding_definitions WHERE key = 'concept.many'), label FROM new
+         RETURNING id`,
       );
-      expect(whitespace?.code, "padding must not create a second claim on one slot").toBe("23505");
-      const upperCase = await attempt(
-        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, laterality)
-         VALUES (${examId}, ${sectionId}, ${conceptId}, 's6', 'findings', 'A fixture normal.', 'LEFT')`,
+      const regions = ["intervertebral disc", "facet joints", "ligamentum flavum", "neural foramina", "spinal canal"];
+      for (let i = 0; i < concepts.rows.length; i += 1) {
+        expect(await attempt(
+          `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, level, region)
+           VALUES (${f.examId}, ${sectionId}, ${concepts.rows[i]!.id}, 's.many.${i}', 'findings',
+                   'A fixture normal.', 'L4-L5', '${regions[i]}')`,
+        ), `lumbar normal ${regions[i]} at L4-L5 must be storable`).toBeNull();
+      }
+      const stored = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_normal_slots WHERE key LIKE 's.many.%'`,
       );
-      expect(upperCase?.code, "'LEFT' is refused as a laterality, not normalised").toBe("23514");
+      expect(stored.rows[0]!.n, "five distinct lumbar normals share one section and one level").toBe(5);
     });
   });
 
@@ -395,8 +494,8 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       expect(one).toBeNull();
 
       await c.query(
-        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text)
-         VALUES ('combo.rel', ${f.examId}, 'Fixture combo', 'impression', 'One consolidated line.')`,
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members)
+         VALUES ('combo.rel', ${f.examId}, 'Fixture combo', 'impression', 'One consolidated line.', FALSE, FALSE)`,
       );
       const ruleId = (await c.query(`SELECT id FROM clinical_combination_rules WHERE key = 'combo.rel'`)).rows[0]!.id;
       expect((await attempt(
@@ -443,23 +542,32 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `INSERT INTO clinical_tile_parameters (tile_id, key, label, data_type, unit, min_value, max_value)
          VALUES (${tileId}, 'size', 'Long axis', 'numeric', 'mm', 1, 400)`,
       )).toBeNull();
-      // min > max is a rule that can never be satisfied; the service layer enforced this
-      // for parameter_groups, and the catalogue keeps it as a plain column pair, so this
-      // asserts the honest current state: the database does NOT reject it.
-      const inverted = await attempt(
+      // min > max is a rule that can never be answered. This revision of the test used to
+      // assert the opposite ("the database does NOT reject it") and called it a documented
+      // gap; the review closed it with a named CHECK, so the inverted pair is now refused
+      // while an ordinary range still stores.
+      expect((await attempt(
         `INSERT INTO clinical_tile_parameters (tile_id, key, label, data_type, min_value, max_value)
          VALUES (${tileId}, 'bad', 'Inverted', 'numeric', 400, 1)`,
-      );
-      expect(inverted, "documented gap: range sanity is a publish-gate rule, not a CHECK").toBeNull();
+      ))?.code, "an inverted range must never be stored").toBe("23514");
+      // One bound alone is a legal half-range, and no bounds at all is a free numeric.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, data_type, min_value)
+         VALUES (${tileId}, 'half', 'Lower bound only', 'numeric', 1)`,
+      )).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, data_type)
+         VALUES (${tileId}, 'free', 'No range', 'numeric')`,
+      )).toBeNull();
     });
   });
 
   it("can express every recommendation policy §13 needs and refuses a made-up one", async () => {
     await inTx(async (c) => {
-      const { examId } = await seedFixture(c, "rec");
+      const { examId, conceptId } = await seedFixture(c, "rec");
       const ins = (key: string, policy: string) =>
-        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, advice_text, emit_policy)
-         VALUES ('${key}', ${examId}, 'Fixture advice', 'concept_present', 'Correlate clinically.', '${policy}')`;
+        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, concept_id, advice_text, emit_policy)
+         VALUES ('${key}', ${examId}, 'Fixture advice', 'concept_present', ${conceptId}, 'Correlate clinically.', '${policy}')`;
       for (const policy of ["always", "when_no_other", "when_only"]) {
         expect(await attempt(ins(`rec.${policy}`, policy)), policy).toBeNull();
       }
@@ -467,34 +575,680 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       // omission case is expressed by when_only / an empty section, not by suppression.
       expect((await attempt(ins("rec.never", "never")))?.code).toBe("23514");
       const prio = await attempt(
-        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, advice_text, priority)
-         VALUES ('rec.p', ${examId}, 'Urgent advice', 'concept_present', 'Urgent contact.', 'immediately')`,
+        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, concept_id, advice_text, priority)
+         VALUES ('rec.p', ${examId}, 'Urgent advice', 'concept_present', ${conceptId}, 'Urgent contact.', 'immediately')`,
       );
       expect(prio?.code, "priority vocabulary is routine|urgent|critical").toBe("23514");
+      expect(prio?.message, "and it is the priority CHECK that fires, not the trigger target")
+        .toMatch(/_priority_check/);
     });
   });
 
   it("keeps publication history append-only and never overwritable", async () => {
+    const HASH = "a".repeat(64);
     await inTx(async (c) => {
       const { examId } = await seedFixture(c, "pub");
       expect((await attempt(
         `INSERT INTO clinical_publications (examination_id, publication_key) VALUES (${examId}, 'pub.1')`,
       ))?.code, "content_hash is NOT NULL: a publication must be addressable by its hash").toBe("23502");
+      // The shape is the point. A column that can hold prose cannot be compared, so
+      // "did the catalogue change?" would have no answer — and this is the token a signed
+      // report cites. Measured: the previous revision stored the value below.
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${examId}, 'pub.prose', 'see the attached note')`,
+      ))?.code, "a hash column that accepts prose verifies nothing").toBe("23514");
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${examId}, 'pub.prefixed', 'sha256:aaaa')`,
+      ))?.code, "a prefixed digest is not the 64 lowercase hex digits the CHECK declares").toBe("23514");
       await c.query(
         `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.1', 'sha256:aaaa')`,
+         VALUES (${examId}, 'pub.1', '${HASH}')`,
       );
       // Not a partial index: two publications of the same key are history, and the second
       // must not silently replace the first — that is how a cache token stops being a fact.
       expect((await attempt(
         `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.1', 'sha256:bbbb')`,
+         VALUES (${examId}, 'pub.1', '${"b".repeat(64)}')`,
       ))?.code).toBe("23505");
+      // Immutable, not merely unique: a signed report cites this row to say what it was
+      // composed from, so an UPDATE that leaves the row in place still destroys the fact.
+      expect((await attempt(
+        `UPDATE clinical_publications SET content_hash = '${"b".repeat(64)}' WHERE publication_key = 'pub.1'`,
+      ))?.code, "a published record must not be rewritable").toBe("P0001");
+      expect((await attempt(
+        `DELETE FROM clinical_publications WHERE publication_key = 'pub.1'`,
+      ))?.code, "a published record must not be deletable").toBe("P0001");
       const cols = await c.query(
         `SELECT column_name FROM information_schema.columns
           WHERE table_name = 'clinical_tile_versions' AND column_name = 'deleted_at'`,
       );
       expect(cols.rows, "a version history must not be soft-deletable").toEqual([]);
+    });
+  });
+
+  it("cannot rewrite the version history a signed report cites", async () => {
+    await inTx(async (c) => {
+      const { conceptId } = await seedFixture(c, "hist");
+      const tileId = await insertTile(c, "tile.hist", conceptId);
+      await c.query(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tileId}, 1, '{"label":"as published"}')`,
+      );
+      // Measured on the previous revision: this UPDATE succeeded and the stored snapshot
+      // changed under the report that cited version 1, with no trace that it had.
+      const rewrite = await attempt(
+        `UPDATE clinical_tile_versions SET snapshot_json = '{"label":"silently rewritten"}'
+          WHERE tile_id = ${tileId} AND version = 1`,
+      );
+      expect(rewrite?.code, "version 1 of a tile is a fact, not a cell").toBe("P0001");
+      expect((await attempt(
+        `DELETE FROM clinical_tile_versions WHERE tile_id = ${tileId} AND version = 1`,
+      ))?.code, "the history cannot be erased either").toBe("P0001");
+      const stored = await c.query<{ snapshot_json: unknown }>(
+        `SELECT snapshot_json FROM clinical_tile_versions WHERE tile_id = $1 AND version = 1`,
+        [tileId],
+      );
+      expect(stored.rows[0]!.snapshot_json).toEqual({ label: "as published" });
+      // Appending the next version is the only way content moves.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tileId}, 2, '{"label":"revised"}')`,
+      ), "a new version is always allowed").toBeNull();
+      expect((await attempt(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tileId}, 2, '{"label":"duplicate"}')`,
+      ))?.code, "one row per tile per version").toBe("23505");
+      expect((await attempt(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tileId}, 0, '{"label":"zero"}')`,
+      ))?.code, "version 0 is not a version").toBe("23514");
+    });
+  });
+
+  it("names the exact wording a publication released, and cannot name one that does not exist", async () => {
+    // Without the manifest a publication is a hash: rollback has nothing to restore and a
+    // signed report cannot say which catalogue built it.
+    await inTx(async (c) => {
+      const { conceptId, examId, sectionId } = await seedFixture(c, "mani");
+      const tileId = await insertTile(c, "tile.mani", conceptId);
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES (${tileId}, ${examId}, ${sectionId}, 1)`,
+      );
+      await c.query(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tileId}, 1, '{"findings_text":"A fixture sentence."}')`,
+      );
+      await c.query(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${examId}, 'pub.mani', '${"c".repeat(64)}')`,
+      );
+      const pubId = (await c.query(
+        `SELECT id FROM clinical_publications WHERE publication_key = 'pub.mani'`,
+      )).rows[0]!.id as number;
+
+      expect(await attempt(
+        `INSERT INTO clinical_publication_tiles (publication_id, tile_id, tile_version, ordinal)
+         VALUES (${pubId}, ${tileId}, 1, 1)`,
+      ), "a published tile version is storable").toBeNull();
+      expect((await attempt(
+        `INSERT INTO clinical_publication_tiles (publication_id, tile_id, tile_version, ordinal)
+         VALUES (${pubId}, ${tileId}, 1, 2)`,
+      ))?.code, "one manifest row per tile per publication").toBe("23505");
+      // The citation is a foreign key, so it cannot point at a wording nobody snapshotted.
+      // A second publication is needed to reach it, because (publication, tile) is itself
+      // unique — the dangerous shape is an off-by-one version on a tile that IS cited.
+      await c.query(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${examId}, 'pub.mani.v7', '${"f".repeat(64)}')`,
+      );
+      const pubV7 = (await c.query(
+        `SELECT id FROM clinical_publications WHERE publication_key = 'pub.mani.v7'`,
+      )).rows[0]!.id as number;
+      expect((await attempt(
+        `INSERT INTO clinical_publication_tiles (publication_id, tile_id, tile_version, ordinal)
+         VALUES (${pubV7}, ${tileId}, 7, 1)`,
+      ))?.code, "version 7 of this tile was never published").toBe("23503");
+
+      const tile2 = await insertTile(c, "tile.mani2", conceptId);
+      expect((await attempt(
+        `INSERT INTO clinical_publication_tiles (publication_id, tile_id, tile_version, ordinal)
+         VALUES (${pubId}, ${tile2}, 1, 4)`,
+      ))?.code, "a tile with no stored version at all cannot be cited").toBe("23503");
+
+      // And the manifest is history: rewriting it re-points a citation that a report has
+      // already made.
+      expect((await attempt(
+        `UPDATE clinical_publication_tiles SET tile_version = 1 WHERE publication_id = ${pubId} AND tile_id = ${tileId}`,
+      )), "an identical update is a no-op the trigger still refuses").not.toBeNull();
+      expect((await attempt(
+        `DELETE FROM clinical_publication_tiles WHERE publication_id = ${pubId}`,
+      ))?.code, "the manifest cannot be emptied").toBe("P0001");
+      // Deleting the publication while a manifest names it is refused twice over: the
+      // append-only trigger fires first, so RESTRICT never gets the chance.
+      expect(["P0001", "23001", "23503"], "a cited publication cannot be destroyed").toContain(
+        (await attempt(`DELETE FROM clinical_publications WHERE id = ${pubId}`))?.code,
+      );
+    });
+  });
+
+  // ── Review §2: a section reference must mean "a section of THIS examination" ──────────
+  it("refuses every cross-examination reference the first revision accepted", async () => {
+    await inTx(async (c) => {
+      const brain = await seedFixture(c, "xexam-brain");
+      const spine = await seedFixture(c, "xexam-spine");
+      const tile = await insertTile(c, "tile.xexam", brain.conceptId);
+
+      // 1. The positive control first: if a legitimate pairing stopped working, the guard
+      //    would simply have made the catalogue unusable.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES (${tile}, ${brain.examId}, ${brain.sectionId}, 1)`,
+      ), "a tile placed in its own examination's section must still work").toBeNull();
+
+      // 2. The brief's own example — an MRI Brain tile assigned to an MRI Cervical Spine
+      //    section. A foreign key on section_id alone accepted it, because the section
+      //    existed; it just belonged to a different examination.
+      expect((await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES (${tile}, ${spine.examId}, ${brain.sectionId}, 2)`,
+      ))?.code, "a placement may not bridge two examinations").toBe("23503");
+
+      // 3. The same violation introduced later, by an editor moving a tile that is
+      //    already placed. An INSERT-time-only check would let this through.
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, ordinal)
+         VALUES (${tile}, ${spine.examId}, 5)`,
+      );
+      expect((await attempt(
+        `UPDATE clinical_tile_examinations SET section_id = ${brain.sectionId}
+          WHERE tile_id = ${tile} AND examination_id = ${spine.examId}`,
+      ))?.code, "re-parenting cannot smuggle a cross-examination reference in").toBe("23503");
+
+      // 4. A normal slot of one examination filed under another examination's anatomy.
+      expect((await attempt(
+        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, region)
+         VALUES (${spine.examId}, ${brain.sectionId}, ${brain.conceptId}, 's.xexam', 'findings',
+                 'A fixture normal.', 'parenchyma')`,
+      ))?.code, "a normal must live under its own examination's sections").toBe("23503");
+      expect(await attempt(
+        `INSERT INTO clinical_normal_slots (examination_id, section_id, concept_id, key, slot_field, rendered_text, region)
+         VALUES (${brain.examId}, ${brain.sectionId}, ${brain.conceptId}, 's.xexam.ok', 'findings',
+                 'A fixture normal.', 'parenchyma')`,
+      ), "and the same statement with a matching examination is accepted").toBeNull();
+
+      // 5. A section nested inside another examination's section, and one nested inside
+      //    itself. The first is the §16 order becoming meaningless; the second is an
+      //    order that never terminates.
+      expect((await attempt(
+        `INSERT INTO clinical_anatomical_sections (examination_id, key, label, parent_section_id, ordinal)
+         VALUES (${spine.examId}, 'sec.xexam.child', 'Foreign child', ${brain.sectionId}, 9)`,
+      ))?.code, "anatomy may not nest across examinations").toBe("23503");
+      const selfParent = await c.query(
+        `INSERT INTO clinical_anatomical_sections (examination_id, key, label, ordinal)
+         VALUES (${spine.examId}, 'sec.xexam.self', 'Self parent', 9) RETURNING id`,
+      );
+      const selfId = Number(selfParent.rows[0]!.id);
+      expect((await attempt(
+        `UPDATE clinical_anatomical_sections SET parent_section_id = ${selfId} WHERE id = ${selfId}`,
+      ))?.code, "a section may not be its own parent").toBe("23514");
+
+      // 6. A combination rule that would print into another examination's section.
+      expect((await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, section_id, label, target_field, combined_text, suppress_members, requires_only_members)
+         VALUES ('combo.xexam', ${spine.examId}, ${brain.sectionId}, 'Foreign rule', 'impression',
+                 'A consolidated line.', FALSE, FALSE)`,
+      ))?.code, "a rule may not reference unrelated anatomy").toBe("23503");
+      expect(await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, section_id, label, target_field, combined_text, suppress_members, requires_only_members)
+         VALUES ('combo.xexam.ok', ${spine.examId}, ${spine.sectionId}, 'Own rule', 'impression',
+                 'A consolidated line.', FALSE, FALSE)`,
+      ), "the same rule against its own section is accepted").toBeNull();
+
+      // 7. A parameter default taken from a different parameter's option list. MATCH
+      //    SIMPLE would skip a composite key with a NULL half, so the companion CHECK is
+      //    what closes that door.
+      const groups = await c.query<{ id: number }>(
+        `INSERT INTO parameter_groups (key, label) VALUES ('pg.xexam.a','Severity'), ('pg.xexam.b','Size') RETURNING id`,
+      );
+      const [groupA, groupB] = groups.rows.map((r) => Number(r.id));
+      const optionA = await c.query(
+        `INSERT INTO parameter_options (group_id, key, label) VALUES (${groupA}, 'po.a', 'Mild') RETURNING id`,
+      );
+      const optId = Number(optionA.rows[0]!.id);
+      expect((await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, default_option_id)
+         VALUES (${tile}, 'param.xexam', 'Severity', ${groupB}, ${optId})`,
+      ))?.code, "a Size parameter may not default to a Severity option").toBe("23503");
+      expect(await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, default_option_id)
+         VALUES (${tile}, 'param.xexam.ok', 'Severity', ${groupA}, ${optId})`,
+      ), "the matching group and option is accepted").toBeNull();
+      expect((await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, default_option_id)
+         VALUES (${tile}, 'param.xexam.orphan', 'No group', ${optId})`,
+      ))?.code, "an option with no group is a half-filled composite key").toBe("23514");
+
+      // 8. Existing valid records remain compatible: nothing above disturbed the eighteen
+      //    seeded scopes, and every accepted statement is still readable.
+      const seeded = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_examinations
+          WHERE key LIKE 'mr.%' OR key LIKE 'ct.%' OR key LIKE 'us.%' OR key LIKE 'mg.%' OR key LIKE 'xr.%'`,
+      );
+      expect(seeded.rows[0]!.n, "the guard changed no seeded row").toBe(18);
+      const readable = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_tile_examinations WHERE tile_id = $1`,
+        [tile],
+      );
+      expect(readable.rows[0]!.n, "the two legitimate placements are both there").toBe(2);
+    });
+  });
+
+  // ── Review §4: ordering that an administrator can actually use ─────────────────────────
+  it("lets a tile be added without a position, and reordered without a collision", async () => {
+    await inTx(async (c) => {
+      const f = await seedFixture(c, "order");
+      // Six tiles: five belong to this fixture's examination, the sixth is the one placed in
+      // a second examination below, because a shared tile would make the position-collision
+      // probes ambiguous about which placement row refused.
+      const tiles = await c.query<{ id: number }>(
+        `WITH new(key) AS (VALUES ('o.1'),('o.2'),('o.3'),('o.4'),('o.5'),('o.6'))
+         INSERT INTO clinical_tiles (key, concept_id, label, findings_text)
+         SELECT key, $1, 'Ordered tile', 'A fixture sentence.' FROM new RETURNING id`,
+        [f.conceptId],
+      );
+      const ids = tiles.rows.map((r) => Number(r.id));
+
+      // Requirement 1: adding must not fail. The previous revision gave every placement the
+      // same implicit position (DEFAULT 0) and a unique index, so the SECOND tile added to
+      // an examination could not be stored at all.
+      for (const id of ids.slice(0, 5)) {
+        expect(await attempt(
+          `INSERT INTO clinical_tile_examinations (tile_id, examination_id) VALUES (${id}, ${f.examId})`,
+        ), `tile ${id} added with no position stated`).toBeNull();
+      }
+      const unplaced = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_tile_examinations
+          WHERE examination_id = $1 AND ordinal IS NULL`,
+        [f.examId],
+      );
+      expect(unplaced.rows[0]!.n, "five tiles are waiting to be placed").toBe(5);
+
+      // A position belongs to an examination (and within it, to a section): two examinations
+      // both starting at position 1 is normal, not a collision. An index that forgot the
+      // examination half would make the second clinic scope unauthorable — so position 1 is
+      // claimed here first, and the other examination then attempts the same number. Both
+      // statements must be measured: the first is legal, the second is a real collision.
+      await c.query(`UPDATE clinical_tile_examinations SET ordinal = 1 WHERE tile_id = ${ids[0]}`);
+      const second = await seedFixture(c, "order-b");
+      expect(await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES (${ids[5]}, ${second.examId}, ${second.sectionId}, 1)`,
+      ), "position 1 in a DIFFERENT examination is independent").toBeNull();
+      await c.query(`DELETE FROM clinical_tile_examinations WHERE tile_id = ${ids[5]}`);
+
+      // 0 is not a position, and inside ONE examination a position is claimed once. This row
+      // already exists with no ordinal, so nothing but the position index can refuse it —
+      // naming it in the message is what separates this from a key-collision accident.
+      expect((await attempt(
+        `UPDATE clinical_tile_examinations SET ordinal = 0 WHERE tile_id = ${ids[1]}`,
+      ))?.code, "ordinal 0 is refused").toBe("23514");
+      const sameExam = await attempt(
+        `UPDATE clinical_tile_examinations SET ordinal = 1 WHERE tile_id = ${ids[1]}`,
+      );
+      expect(sameExam?.code, "two tiles may not claim position 1").toBe("23505");
+      expect(sameExam?.message, "and it is the POSITION index which refused").toMatch(
+        /clin_tile_exam_ordinal_uq/,
+      );
+      await c.query(`UPDATE clinical_tile_examinations SET ordinal = 2 WHERE tile_id = ${ids[1]}`);
+
+      // Requirement 3 + 4: an adjacent swap, atomically, by unplacing then placing. The
+      // naive two-UPDATE version is refused, which is the point: the collision is visible
+      // instead of silently overwriting a neighbour.
+      expect((await attempt(
+        `UPDATE clinical_tile_examinations SET ordinal = 2 WHERE tile_id = ${ids[0]};
+         UPDATE clinical_tile_examinations SET ordinal = 1 WHERE tile_id = ${ids[1]}`,
+      ))?.code, "a swap that never releases a position is refused").toBe("23505");
+      expect(await attempt(
+        `UPDATE clinical_tile_examinations SET ordinal = NULL WHERE tile_id IN (${ids[0]}, ${ids[1]});
+         UPDATE clinical_tile_examinations SET ordinal = 2 WHERE tile_id = ${ids[0]};
+         UPDATE clinical_tile_examinations SET ordinal = 1 WHERE tile_id = ${ids[1]}`,
+      ), "the documented protocol swaps two neighbours").toBeNull();
+
+      // Requirement 5: moving a tile into another section of its own examination.
+      await c.query(
+        `INSERT INTO clinical_anatomical_sections (examination_id, key, label, ordinal)
+         VALUES (${f.examId}, 'sec.order.two', 'Second section', 2)`,
+      );
+      expect(await attempt(
+        `UPDATE clinical_tile_examinations SET section_id = (
+            SELECT id FROM clinical_anatomical_sections WHERE key = 'sec.order.two'
+         ), ordinal = 3 WHERE tile_id = ${ids[2]}`,
+      ), "moving between sections of the same examination is a normal edit").toBeNull();
+
+      // Requirement 2 + 7: the stored order is the anatomy's, never the click order. Five
+      // tiles placed bottom-up must read back top-down, with ties impossible because a
+      // position cannot be claimed twice.
+      await c.query(
+        `UPDATE clinical_tile_examinations SET ordinal = 4 WHERE tile_id = ${ids[3]};
+         UPDATE clinical_tile_examinations SET ordinal = 5 WHERE tile_id = ${ids[4]}`,
+      );
+      const readBack = await c.query<{ tile_key: string }>(
+        `SELECT k.key AS tile_key FROM clinical_tile_examinations p
+           JOIN clinical_tiles k ON k.id = p.tile_id
+          WHERE p.examination_id = $1
+          ORDER BY p.ordinal`,
+        [f.examId],
+      );
+      expect(readBack.rows.map((r) => r.tile_key), "retrieval follows the stored ordinals")
+        .toEqual(["o.2", "o.1", "o.3", "o.4", "o.5"]);
+    });
+  });
+
+  it("serialises two administrators reordering the same examination", async () => {
+    // Requirement 5 of §4: concurrent edits must not silently overwrite each other. The
+    // protocol is a row lock on the examination, taken before the positions are rewritten.
+    // The subject is one of the eighteen seeded scopes, because a lock test needs two
+    // transactions that can both SEE the row — a fixture inside a rolled-back transaction
+    // would be invisible to the second connection, and the lock would appear to work.
+    const row = await client.query<{ id: string }>(
+      `SELECT id FROM clinical_examinations WHERE key = 'mr.brain'`,
+    );
+    expect(row.rows.length, "the seeded MRI Brain scope exists to lock").toBe(1);
+    const examId = Number(row.rows[0]!.id);
+    const other = new Client({ connectionString: dbUrl });
+    await other.connect();
+    let secondWriterIn = false;
+    let blocked: Promise<unknown> | null = null;
+    try {
+      await client.query("BEGIN");
+      await client.query(`SELECT id FROM clinical_examinations WHERE id = ${examId} FOR UPDATE`);
+      blocked = other.query("BEGIN").then(() => other.query(
+        `SELECT id FROM clinical_examinations WHERE id = ${examId} FOR UPDATE`,
+      )).then(() => { secondWriterIn = true; });
+      // The second writer must wait, not proceed. 1.5 s is generous on a CI runner and
+      // still fails loudly if the lock is missing, because an unlocked read returns
+      // immediately.
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(secondWriterIn, "the second reorder must wait for the first, not interleave").toBe(false);
+      await client.query("ROLLBACK");
+      await blocked;
+      expect(secondWriterIn, "and it proceeds as soon as the first releases the row").toBe(true);
+      await other.query("ROLLBACK");
+    } finally {
+      // A test that leaves the shared connection inside an open transaction poisons every
+      // test that runs after it in the file, so both transactions are closed here.
+      await client.query("ROLLBACK").catch(() => undefined);
+      // The pending lock-wait belongs to a test that has already concluded; letting it
+      // reject after the assertion would surface as an unhandled error and be blamed on
+      // the next test in the file.
+      blocked?.catch(() => undefined);
+      await other.end().catch(() => undefined);
+    }
+  });
+
+  // ── Review §5: publication is where a draft's incompleteness stops being legal ────────
+  it("refuses to publish a catalogue that cannot print in a defined order", async () => {
+    const HASH = "d".repeat(64);
+    await inTx(async (c) => {
+      const f = await seedFixture(c, "gate");
+      const tiles = await c.query<{ id: number }>(
+        `WITH new(key) AS (VALUES ('g.1'),('g.2'),('g.3'),('g.4'))
+         INSERT INTO clinical_tiles (key, concept_id, label, findings_text)
+         SELECT key, $1, 'Gate tile', 'A fixture sentence.' FROM new RETURNING id`,
+        [f.conceptId],
+      );
+      const [one, two, three, four] = tiles.rows.map((r) => Number(r.id));
+
+      // Rule 1: an unplaced tile is not an order. A draft may be unordered; a publication
+      // may not, because composing would fall back to whatever the database read first.
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+         VALUES (${one}, ${f.examId}, ${f.sectionId}, 1), (${two}, ${f.examId}, ${f.sectionId}, 2)`,
+      );
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id)
+         VALUES (${four}, ${f.examId}, ${f.sectionId})`,
+      );
+      const unplaced = await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${f.examId}, 'pub.gate.unplaced', '${HASH}')`,
+      );
+      expect(unplaced?.code, "publishing with an unplaced tile is refused").toBe("P0001");
+      expect(unplaced?.message, "and says which tile").toMatch(/with no ordinal/);
+      // Placing it is the whole remedy, and the refusal left no publication behind.
+      expect((await attempt(
+        `UPDATE clinical_tile_examinations SET ordinal = 3 WHERE tile_id = ${four}`,
+      )), "placing it is the whole remedy").toBeNull();
+      const left = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_publications WHERE publication_key = 'pub.gate.unplaced'`,
+      );
+      expect(left.rows[0]!.n, "a refused publication leaves no row behind").toBe(0);
+
+      // Rule 3: a combination rule with no required member would print an impression
+      // against a selection nobody made (§27).
+      const otherExam = await seedFixture(c, "gate-empty");
+      await c.query(
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members)
+         VALUES ('combo.empty', ${otherExam.examId}, 'Only optional members', 'impression',
+                 'An invented impression.', FALSE, FALSE)`,
+      );
+      await c.query(
+        `INSERT INTO clinical_combination_rule_members (rule_id, concept_id, is_optional)
+         VALUES ((SELECT id FROM clinical_combination_rules WHERE key = 'combo.empty'), ${f.conceptId}, TRUE)`,
+      );
+      const emptyRule = await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${otherExam.examId}, 'pub.gate.empty', '${HASH}')`,
+      );
+      expect(emptyRule?.code, "a rule that requires nothing is refused at publication").toBe("P0001");
+      expect(emptyRule?.message).toMatch(/no required member/);
+      // …but the draft itself stays legal, because an author adding members one at a time
+      // is in the middle of building the rule.
+      const ruleRow = await c.query<{ id: number }>(
+        `SELECT id FROM clinical_combination_rules WHERE key = 'combo.empty'`,
+      );
+      expect((await attempt(
+        `INSERT INTO clinical_combination_rule_members (rule_id, concept_id, is_optional)
+         VALUES (${ruleRow.rows[0]!.id}, ${f.conceptId}, FALSE)`,
+      ))?.code, "one member may not be both optional and required").toBe("23505");
+      expect(await attempt(
+        `UPDATE clinical_combination_rule_members SET is_optional = FALSE
+          WHERE rule_id = ${ruleRow.rows[0]!.id}`,
+      ), "the author making it required is a plain update").toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${otherExam.examId}, 'pub.gate.fixed', '${HASH}')`,
+      ), "and then it publishes").toBeNull();
+
+      // Rule 4: a tile may only retire a normal of an examination it is placed in.
+      await c.query(
+        `INSERT INTO clinical_normal_slots (examination_id, concept_id, key, slot_field, rendered_text, region)
+         VALUES (${f.examId}, ${f.conceptId}, 's.gate.normal', 'findings', 'A fixture normal.', 'gate region')`,
+      );
+      expect((await attempt(
+        `INSERT INTO clinical_tile_normal_replacements (tile_id, normal_slot_id)
+         VALUES (${three}, (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal'))`,
+      )), "the edge itself is storable: tile 3 is a real tile").toBeNull();
+      const foreignNormal = await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${f.examId}, 'pub.gate.foreign', '${HASH}')`,
+      );
+      expect(foreignNormal?.code, "a tile that owns a baseline it cannot offer is refused").toBe("P0001");
+      expect(foreignNormal?.message).toMatch(/retires a normal of an examination it is not placed in/);
+
+      // Rule 5: a rule may not name a tile the examination cannot offer.
+      await c.query(
+        `UPDATE clinical_tile_normal_replacements SET tile_id = ${one}
+          WHERE normal_slot_id = (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal')`,
+      );
+      const unplacedMember = await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members)
+         VALUES ('combo.unplaced', ${f.examId}, 'Names an unplaced tile', 'impression',
+                 'A consolidated line.', TRUE, FALSE);
+         INSERT INTO clinical_combination_rule_members (rule_id, tile_id, is_optional)
+         VALUES ((SELECT id FROM clinical_combination_rules WHERE key = 'combo.unplaced'), ${three}, FALSE);
+         INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${f.examId}, 'pub.gate.member', '${HASH}')`,
+      );
+      expect(unplacedMember?.code, "a rule over a tile nobody can select is refused").toBe("P0001");
+      expect(unplacedMember?.message).toMatch(/names a tile that is not placed/);
+
+      // The publishable case: everything placed, every rule grounded in a selectable tile.
+      await c.query(
+        `DELETE FROM clinical_tile_normal_replacements
+          WHERE normal_slot_id = (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal')`,
+      );
+      expect(await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${f.examId}, 'pub.gate.ok', '${HASH}')`,
+      ), "a complete catalogue publishes").toBeNull();
+
+      // A global publication has no per-examination rules to evaluate; the manifest
+      // foreign key is what guarantees it names only real stored versions.
+      expect(await attempt(
+        `INSERT INTO clinical_publications (publication_key, content_hash) VALUES ('pub.gate.global', '${HASH}')`,
+      ), "an examination-wide bundle is allowed").toBeNull();
+    });
+  });
+
+  it("refuses the clinical nonsense an administrator can type into a draft", async () => {
+    await inTx(async (c) => {
+      const f = await seedFixture(c, "nonsense");
+      const tile = await insertTile(c, "tile.nonsense", f.conceptId);
+
+      // A tile that excludes itself can never be selected, and a rule that points at
+      // nothing matches nothing.
+      expect((await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES (${tile}, ${tile}, 'excludes')`,
+      ))?.code, "no self-relationship").toBe("23514");
+      // A tile that renders nothing when clicked is the silent-failure class, not a style
+      // problem: all four text columns empty means the strip shows a button with no text.
+      expect((await attempt(
+        `INSERT INTO clinical_tiles (key, concept_id, label) VALUES ('tile.blank', ${f.conceptId}, 'Blank tile')`,
+      ))?.code, "a tile must carry some clinical text").toBe("23514");
+      expect((await attempt(
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text) VALUES ('', ${f.conceptId}, 'Blank key', 'x')`,
+      ))?.code, "the key is the handle a publication cites").toBe("23514");
+      // A range nobody can satisfy.
+      const group = await c.query(`INSERT INTO parameter_groups (key, label) VALUES ('pg.nonsense','Range') RETURNING id`);
+      expect((await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, data_type, min_value, max_value)
+         VALUES (${tile}, 'p.size', 'Long axis', ${Number(group.rows[0]!.id)}, 'numeric', 40, 5)`,
+      ))?.code, "min_value above max_value can never be answered").toBe("23514");
+      // A recommendation conditioned on a parameter it never names.
+      expect((await attempt(
+        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, tile_id, parameter_value, advice_text)
+         VALUES ('rec.orphan', ${f.examId}, 'Orphan condition', 'parameter_value', ${tile}, 'mild',
+                 'An unrelated piece of advice.')`,
+      ))?.code, "a parameter condition needs the parameter it conditions on").toBe("23514");
+      // A rule that fires on every report of the examination because it names nothing.
+      expect((await attempt(
+        `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, advice_text)
+         VALUES ('rec.nobody', ${f.examId}, 'No target', 'tile_selected', 'Advice for everyone.')`,
+      ))?.code, "tile_selected must name a tile").toBe("23514");
+      // The two combination flags are clinical decisions, so neither can be defaulted, and
+      // each is asserted BY NAME: a probe that only checks the SQLSTATE passes when the
+      // other column fires, which is exactly how a "both flags omitted" case hid the fact
+      // that restoring a DEFAULT to either one left the suite green.
+      const bothOmitted = await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text)
+         VALUES ('combo.nodefault', ${f.examId}, 'Flags omitted', 'impression', 'A line.')`,
+      );
+      expect(bothOmitted?.code, "both flags may not be omitted").toBe("23502");
+      const suppressOnly = await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members)
+         VALUES ('combo.nodefault.a', ${f.examId}, 'Requires omitted', 'impression', 'A line.', TRUE)`,
+      );
+      expect(suppressOnly?.code, "requires_only_members may not be defaulted").toBe("23502");
+      expect(suppressOnly?.message, "and it is THAT column which refused").toMatch(/requires_only_members/);
+      const requiresOnly = await attempt(
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, requires_only_members)
+         VALUES ('combo.nodefault.b', ${f.examId}, 'Suppress omitted', 'impression', 'A line.', TRUE)`,
+      );
+      expect(requiresOnly?.code, "suppress_members may not be defaulted").toBe("23502");
+      expect(requiresOnly?.message, "and it is THAT column which refused").toMatch(/suppress_members/);
+      // A normal sentence that says nothing cannot be suppressed or restored.
+      expect((await attempt(
+        `INSERT INTO clinical_normal_slots (examination_id, concept_id, key, slot_field, rendered_text, region)
+         VALUES (${f.examId}, ${f.conceptId}, 's.blank', 'findings', '', 'blank region')`,
+      ))?.code, "rendered_text must not be empty").toBe("23514");
+    });
+  });
+
+  // ── Review §5H: the owner's Fazekas case, expressed as catalogue data ──────────────────
+  it("can express two anatomical findings and one consolidated impression", async () => {
+    await inTx(async (c) => {
+      const f = await seedFixture(c, "fazekas");
+      const concepts = await c.query<{ id: number }>(
+        `WITH new(key, label) AS (VALUES ('c.faz','white matter hyperintensity'), ('catro','cerebral atrophy'))
+         INSERT INTO finding_definitions (key, category_id, label)
+         SELECT key, (SELECT category_id FROM finding_definitions WHERE key = 'concept.fazekas'), label FROM new
+         RETURNING id`,
+      );
+      const [faz, atrophy] = concepts.rows.map((r) => Number(r.id));
+      const tiles = await c.query<{ id: number }>(
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text, impression_text, conflict_group)
+         VALUES ('fazekas.grade1', $1, 'Fazekas grade 1',
+                 'Fazekas grade 1 white matter hyperintensities.', 'Mild chronic small-vessel change.', 'fazekas'),
+                ('senile.changes',  $2, 'Senile changes',
+                 'Mild age-related cerebral atrophy.', 'Mild age-related cerebral atrophy.', '')
+         RETURNING id`,
+        [faz, atrophy],
+      );
+      const [tFaz, tAtrophy] = tiles.rows.map((r) => Number(r.id));
+      for (const [id, ordinal] of [[tFaz, 1], [tAtrophy, 2]] as const) {
+        expect(await attempt(
+          `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+           VALUES (${id}, ${f.examId}, ${f.sectionId}, ${ordinal})`,
+        ), `tile ${id} placed`).toBeNull();
+      }
+
+      // The consolidated sentence the owner asked for: two separate anatomical
+      // observations, ONE impression, no duplicate, no extra recommendation, and no model
+      // call anywhere in it — so the rule and its members must be plain rows.
+      expect(await attempt(
+        `INSERT INTO clinical_combination_rules
+           (key, examination_id, section_id, label, target_field, combined_text, suppress_members, requires_only_members, status)
+         VALUES ('combo.fazekas.senile', ${f.examId}, ${f.sectionId},
+                 'Fazekas plus senile changes', 'impression',
+                 'Mild chronic small-vessel ischemic changes (Fazekas grade 1) with mild age-related cerebral atrophy.',
+                 TRUE, FALSE, 'active')`,
+      ), "the rule is storable").toBeNull();
+      const ruleId = (await c.query(
+        `SELECT id FROM clinical_combination_rules WHERE key = 'combo.fazekas.senile'`,
+      )).rows[0]!.id as number;
+      for (const [ordinal, tileId] of [[1, tFaz], [2, tAtrophy]] as const) {
+        expect(await attempt(
+          `INSERT INTO clinical_combination_rule_members (rule_id, tile_id, ordinal, is_optional)
+           VALUES (${ruleId}, ${tileId}, ${ordinal}, FALSE)`,
+        ), "both observations are required members").toBeNull();
+      }
+      const shape = await c.query<{ n: string; suppress: boolean; only_members: boolean; field: string; members: string }>(
+        `SELECT r.key AS n, r.suppress_members AS suppress, r.requires_only_members AS only_members,
+                r.target_field AS field,
+                (SELECT count(*)::text FROM clinical_combination_rule_members m
+                  WHERE m.rule_id = r.id AND NOT m.is_optional) AS members
+           FROM clinical_combination_rules r WHERE r.key = 'combo.fazekas.senile'`,
+      );
+      expect(shape.rows[0]!.field, "the combination writes the Impression").toBe("impression");
+      expect(shape.rows[0]!.suppress, "it replaces the members rather than adding to them").toBe(true);
+      expect(shape.rows[0]!.only_members, "it may still fire alongside an unrelated finding").toBe(false);
+      expect(shape.rows[0]!.members, "two required observations, both selectable").toBe("2");
+      // Grades share a conflict group and a concept family without becoming one concept.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
+         VALUES (${tFaz}, 1, '{"findings_text":"Fazekas grade 1 white matter hyperintensities."}')`,
+      ), "the wording the rule combines is snapshottable").toBeNull();
+      // And the examination as a whole is publishable, so the composer will find a
+      // complete, ordered catalogue rather than a half-built one.
+      expect(await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${f.examId}, 'pub.fazekas', '${"e".repeat(64)}')`,
+      ), "the Fazekas catalogue publishes").toBeNull();
     });
   });
 
