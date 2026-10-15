@@ -73,12 +73,25 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
   }
 
   /**
-   * Postgres reports an ON DELETE RESTRICT breach as `23001 restrict_violation`,
-   * while a plain NO ACTION key raises `23503 foreign_key_violation`. Asserting 23001
-   * therefore proves the migration's RESTRICT actually took effect rather than being
-   * silently defaulted.
+   * A RESTRICT breach in either server dialect. PostgreSQL 18 reports it as
+   * `23001 restrict_violation`; 16 and 17 report `23503 foreign_key_violation`, which is
+   * what the clinic's CI container and the NAS both run. Asserting one code alone makes
+   * the suite version-dependent — the first CI run failed exactly this way, red on
+   * PostgreSQL 16 and green locally on 18.
+   *
+   * The error CODE therefore cannot distinguish RESTRICT from NO ACTION on ≤17, so the
+   * constraint NAME in the message is the assertion that proves which relationship is
+   * protecting the row. It is also what makes the CASCADE mutant die: under CASCADE the
+   * statement succeeds, there is no error at all, and `attempt()` returns null.
    */
-  const RESTRICT_VIOLATION = "23001";
+  const RESTRICT_CODES = ["23001", "23503"];
+  function expectRestrict(err: { code: string; message: string } | null, why: string) {
+    expect(err, `${why}: the delete must be refused`).not.toBeNull();
+    expect(
+      RESTRICT_CODES,
+      `${why}: PostgreSQL reports a RESTRICT breach as ${RESTRICT_CODES.join(" or ")}, got ${err?.code}`,
+    ).toContain(err?.code);
+  }
 
   /**
    * The fixture chain a tile needs: category → concept → examination → section.
@@ -227,7 +240,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       // relationship protected the concept. The constraint name in the message is what
       // makes that distinction, so it is part of the assertion.
       const conceptDelete = await attempt(`DELETE FROM finding_definitions WHERE id = ${conceptId}`);
-      expect(conceptDelete?.code, "concept is RESTRICT-referenced by a tile").toBe(RESTRICT_VIOLATION);
+      expectRestrict(conceptDelete, "concept is RESTRICT-referenced by a tile");
       expect(conceptDelete?.message, "protected by this specific key").toMatch(/clinical_tiles_concept_id_fkey/);
 
       await c.query(
@@ -248,12 +261,42 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       const slotDelete = await attempt(
         `DELETE FROM clinical_normal_slots WHERE key = 'slot.restrict'`,
       );
-      expect(slotDelete?.code, "normal slot is RESTRICT-referenced by a tile").toBe(RESTRICT_VIOLATION);
+      expectRestrict(slotDelete, "normal slot is RESTRICT-referenced by the tile that restores it");
       expect(slotDelete?.message).toMatch(/clinical_tile_normal_replacements_normal_slot_id_fkey/);
-      const tileDelete = await attempt(`DELETE FROM clinical_tiles WHERE id = ${tileId}`);
-      expect(tileDelete?.code, "tile is RESTRICT-referenced by its placement edge").toBe(RESTRICT_VIOLATION);
-      const examDelete = await attempt(`DELETE FROM clinical_examinations WHERE id = ${examId}`);
-      expect(examDelete?.code, "examination is RESTRICT-referenced by a placed tile").toBe(RESTRICT_VIOLATION);
+      // The fixture tile now carries two RESTRICT dependants (the replacement edge and
+      // the placement edge) and PostgreSQL evaluates a table's foreign keys in an
+      // unspecified order, so naming a constraint on that row's delete would be a coin
+      // toss CI's PostgreSQL 16 could lose. Each remaining claim therefore gets its own
+      // row with exactly ONE dependant, which is what makes the constraint name a fact
+      // rather than a guess.
+      const placedTile = await insertTile(c, "tile.placed", conceptId);
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, ordinal)
+         VALUES (${placedTile}, ${examId}, 1)`,
+      );
+      const tileDelete = await attempt(`DELETE FROM clinical_tiles WHERE id = ${placedTile}`);
+      expectRestrict(tileDelete, "tile is RESTRICT-referenced by its placement edge");
+      expect(tileDelete?.message, "by this specific key").toMatch(/clinical_tile_examinations_tile_id_fkey/);
+
+      const bareExam = await c.query(
+        `INSERT INTO clinical_examinations (key, label, modality, body_part, protocol_scope)
+         VALUES ('fx.bare', 'Bare examination', 'MR', 'Bare Part', 'Standard') RETURNING id`,
+      );
+      const bareExamId = Number(bareExam.rows[0]!.id);
+      const bareTile = await insertTile(c, "tile.bare", conceptId);
+      await c.query(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, ordinal)
+         VALUES (${bareTile}, ${bareExamId}, 1)`,
+      );
+      const examDelete = await attempt(`DELETE FROM clinical_examinations WHERE id = ${bareExamId}`);
+      expectRestrict(examDelete, "examination is RESTRICT-referenced by a placed tile");
+      expect(examDelete?.message, "by this specific key").toMatch(/clinical_tile_examinations_examination_id_fkey/);
+      // Remove the dependant and the same delete must succeed. Without this, every
+      // assertion above would also pass on a table whose deletes are blocked outright.
+      await c.query(`DELETE FROM clinical_tile_examinations WHERE tile_id = ${bareTile}`);
+      const unblocked = await attempt(`DELETE FROM clinical_examinations WHERE id = ${bareExamId}`);
+      expect(unblocked, "RESTRICT prevents orphaning, it does not freeze the table").toBeNull();
+
       // An unreferenced concept MAY go: RESTRICT is a guard against orphaning, not a
       // refusal to ever clean up. Without this the four assertions above could pass on a
       // table where every delete is blocked.
