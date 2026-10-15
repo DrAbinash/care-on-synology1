@@ -357,7 +357,7 @@ describe("the precedence claim is the code, not a paraphrase", () => {
   test("...and every API start re-stamps that database hash from the environment", () => {
     // This is the half that makes the rotate-key button a trap rather than a
     // no-op: it works, then the next boot quietly undoes it.
-    expect(lineAt(API_INDEX, 2974).trim()).toBe("bootstrapHopeCareIntegration()");
+    expect(lineAt(API_INDEX, 2982).trim()).toBe("bootstrapHopeCareIntegration()");
     const updateBranch = windowOf(BOOTSTRAP, 145, 8);
     expect(updateBranch).toContain(".set({");
     expect(updateBranch).toContain("keyHash,");
@@ -407,8 +407,8 @@ describe("dual-accept, as the code actually stands", () => {
   test("a missing secret fails closed rather than sending unsigned events", () => {
     // Without this the rotation sequence would be unsafe: half-configured would
     // mean a peer accepting unauthenticated callbacks.
-    expect(lineAt(OUTBOX, 336)).toContain("if (!cfg.url || !cfg.secret)");
-    expect(windowOf(OUTBOX, 341, 4)).toContain("delivery_not_configured");
+    expect(lineAt(OUTBOX, 344)).toContain("if (!cfg.url || !cfg.secret)");
+    expect(windowOf(OUTBOX, 361, 4)).toContain("delivery_not_configured");
     expect(DOC).toContain("delivery_not_configured");
   });
 });

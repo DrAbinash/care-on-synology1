@@ -40,9 +40,35 @@ would make the gate disagree with itself:
 ```sh
 node scripts/ops-backup-inventory.mjs   # every artifact that exists, what each sidecar
                                         # claims, which checksums were recomputed, which
-                                        # restores were ever proved, and which days are
-                                        # missing from the retained span
+                                        # restores were ever proved, which days are
+                                        # missing from the retained span, and — under
+                                        # `data classes:` — whether each class of clinic
+                                        # data has any artifact at all
 ```
+
+**What the `data classes:` block claims, and what it does not.** An artifact table
+answers *what is in here*; it cannot answer *what is missing*, because a class with no
+artifact contributes no row. That is not theoretical: the dump destination holds 1,280
+database artifacts, every inventory of them has printed clean, and the uploaded patient
+documents on the `uploads_data` volume — measured at 83 MB inside `care-api` on
+2026-10-16 — are named by no backup job in this repository at all, so nothing here can
+restore them. `docs/CARE_ERP_BACKUP_COVERAGE.md` §3 says the same thing from the code,
+and the block agrees with it rather than inventing a second account.
+
+Every class therefore gets an answer even when the answer is zero:
+
+| Verdict | Means |
+|---|---|
+| `covered` | at least one artifact in the roots searched names this class |
+| `not covered here` | nothing in the roots searched names it — which is **not** the same claim as "not covered anywhere" |
+| `unknown` | no root could be read, so this says nothing about the backups, only about where the tool was run from |
+| `not applicable` | the DICOM store, excluded from ERP disaster recovery by standing owner decision (I12 §2, re-confirmed 2026-10-16) — listed so it is visible, never counted as a gap, and never counted as covered by anything here |
+
+Because the verdict is scoped to the roots actually searched — printed on the `searched:`
+line — ask each destination in turn before concluding anything: the nightly job writes
+`…/care-erp/db` and `…/care-erp/config` as siblings, so
+`BACKUP_DIR=/volume1/backup/care-erp/config node scripts/ops-backup-inventory.mjs` is a
+different question, with a different honest answer.
 
 `scripts/ops-backup-inventory.mjs` is read-only in the same way and reaches **no
 verdict** — it is an inventory, not a second gate. What it can tell you that a file
