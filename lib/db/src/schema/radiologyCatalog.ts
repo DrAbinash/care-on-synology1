@@ -30,7 +30,10 @@ import {
 import { sql } from "drizzle-orm";
 
 // Shared column fragments (kept identical across tables for consistency).
-const auditTimestamps = {
+// Exported because the v4 clinical catalogue (clinicalCatalogue.ts) extends this
+// same family: two halves of one catalogue must not drift on what "soft-deleted"
+// or "versioned" means, and a second private copy is exactly how that drift starts.
+export const auditTimestamps = {
   createdBy: text("created_by"),
   updatedBy: text("updated_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -39,7 +42,7 @@ const auditTimestamps = {
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 };
 
-const lifecycle = {
+export const lifecycle = {
   // draft → active → deprecated (one-directional; enforced in the validation layer)
   status: text("status").notNull().default("draft"),
   // Monotonic; bumped by exactly 1 on each content change (optimistic locking).
@@ -47,7 +50,7 @@ const lifecycle = {
 };
 
 // A bigint FK column helper (mode:number → JS number, safe below 2^53).
-const fk = (col: string) => bigint(col, { mode: "number" });
+export const fk = (col: string) => bigint(col, { mode: "number" });
 
 // ── Parameter library ────────────────────────────────────────────────────────
 

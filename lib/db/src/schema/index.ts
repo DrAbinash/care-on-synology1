@@ -160,6 +160,7 @@ export * from "./radiologyQuickFindings";
 export * from "./featureFlags";
 export * from "./reportFindingInstances";
 export * from "./radiologyCatalog";
+export * from "./clinicalCatalogue";
 export * from "./staffQuickDoctors";
 export * from "./reportQualityEngine";
 export * from "./canonicalStudy";
