@@ -2522,6 +2522,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       provenance,
       source: opts.source,
       force: opts.force || (plan.action === "update" && !needsSlotConfirm),
+      // Phase 5 — the sentence fence. `patches` is already the ledger with this
+      // observation and its mutex siblings removed, so what is left is exactly the
+      // other live findings whose words must survive this click.
+      liveRows: patches,
     });
     if (routedSectionId) {
       const sectionAfter = result.narrative.findings;

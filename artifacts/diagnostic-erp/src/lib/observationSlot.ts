@@ -597,6 +597,89 @@ export function contributionProtected(
   });
 }
 
+/** A ledger row, narrowed to what the contribution fence needs. */
+export type ContributionRow = {
+  stale?: boolean;
+  source?: string;
+  observation?: { role?: string };
+  lastRendered?: { findings?: string; impression?: string };
+};
+
+/**
+ * Rows that state a FINDING. A materialized Full Normal baseline row and the
+ * system-owned normal impression are excluded by kind, not only by wording: the
+ * sweep showed why. `xrayChestSubMasters`, `cervicalQuickSelectCatalogue` and
+ * `reportPreviewHarness` all broke the moment only the wording test was left,
+ * because a baseline row also carries sentences that are not normal statements at
+ * all — "Routine six sequences were acquired.", a section heading, a comparison
+ * note — and those are exactly what a later tile's anatomy match would have
+ * protected, freezing the baseline the first abnormality is supposed to retire.
+ */
+function findingRows(rows: readonly ContributionRow[]): ContributionRow[] {
+  return rows.filter((row) => !row.stale
+    && row.source !== "system"
+    && row.observation?.role !== "baseline");
+}
+
+function renderedSentences(row: ContributionRow): string[] {
+  const out: string[] = [];
+  for (const text of [row.lastRendered?.findings, row.lastRendered?.impression]) {
+    for (const s of splitToSentences(text ?? "")) {
+      const k = normalizeForDedupe(s);
+      if (k) out.push(k);
+    }
+  }
+  return out;
+}
+
+/**
+ * The words that other live observations already put on the page as FINDINGS.
+ *
+ * Ownership is inferred from prose (`conceptsAssertedIn`) and prose is loose: a
+ * sentence describing a post-resection cavity "suggestive of edema" reads as an
+ * edema statement, so the Cerebral edema box owned the Glioma box's own sentence
+ * and deleted it while the Glioma row stayed live on the ledger — a finding the
+ * radiologist believes they reported, present in the state and absent from the
+ * page. Measured over the undeclared MRI Brain abnormal pairs, every sentence
+ * lost to another tile was a tile's own contribution.
+ *
+ * So the fence is identity, not prose: a finding another live row rendered belongs
+ * to that row, and only the row that wrote it — or a mutex sibling replacing it,
+ * which the caller has already dropped from the list — may take it away.
+ *
+ * A live row's NORMAL statements deliberately stay outside the fence. The
+ * radiologist journey requires contradictory normals to go away automatically,
+ * and "No midline shift." inside the hydrocephalus box is a normal even though it
+ * travels with a finding: once a selected hemorrhage states a midline shift, the
+ * report cannot carry both. Baseline scaffold normals are not contributions
+ * either, so every retirement path the brain and spine catalogues depend on is
+ * untouched — together with the row-kind exclusions in `findingRows`.
+ */
+export function liveContributionKeys(rows: readonly ContributionRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const row of findingRows(rows)) {
+    for (const k of renderedSentences(row)) {
+      if (assertsNormalStatement(k)) continue;
+      keys.add(k);
+    }
+  }
+  return keys;
+}
+
+/**
+ * RESIDUAL, measured and left open on purpose. Eviction only looks backwards at what
+ * is already on the page, so a pair whose second box also carries a normal clause
+ * resolves differently by order: hemorrhage-after-hydrocephalus retires "No midline
+ * shift.", hydrocephalus-after-hemorrhage writes it. Suppressing the incoming normal
+ * here makes the two agree — and breaks four shipped tests in
+ * `siblingContradiction.ownership.test.ts` (T1, T2, T7, T9) that exist to keep that
+ * very sentence on the page AND warn about it: a normal the radiologist clicked is
+ * theirs, visible with a warning, and the engine may not delete it quietly to make a
+ * test pass. The bounded truth is that a contradicted normal is either retired or
+ * printed-and-named, never printed silently; closing the last bit of the asymmetry
+ * needs the contradiction check to read the ledger rather than the page, which is a
+ * composition-model change and not a fence.
+ */
 export function selectedQuickFindingIds(patchIds: string[]): number[] {
   const out: number[] = [];
   for (const id of patchIds) {

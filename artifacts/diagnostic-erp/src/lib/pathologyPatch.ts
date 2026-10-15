@@ -28,8 +28,10 @@ import {
   conceptsAssertedIn,
   extractLevel,
   hasStructuredOwnership,
+  liveContributionKeys,
   normalizeLevel,
   sentenceOwnedBySlot,
+  type ContributionRow,
 } from "./observationSlot";
 
 export type PathologyOwnership = {
@@ -329,12 +331,24 @@ export function applyPathologyPatch(opts: {
   source?: InsertSource;
   /** When true, replace matching manually edited anatomy sentences. */
   force?: boolean;
+  /**
+   * The other LIVE ledger rows. A finding one of them already rendered is never
+   * evicted by this patch — see `liveContributionKeys`, whose comment records why a
+   * live row's NORMAL statements stay retirable and what that leaves open. Pass
+   * nothing and the patch behaves exactly as it was before, which is what keeps the
+   * single-patch tests honest.
+   */
+  liveRows?: readonly ContributionRow[];
 }): PathologyPatchResult {
   const source: InsertSource = opts.source ?? "quick-findings";
   const incomingHay = [
     opts.incoming.findings, opts.incoming.impression,
     opts.incoming.technique, opts.incoming.recommendation,
   ].filter(Boolean).join("\n");
+  // Phase 5 — the sentence fence. Keys of findings other live rows already
+  // rendered; `owns` below refuses to evict them. Null when the caller passes no
+  // ledger, which keeps every single-patch caller exactly as it was tested.
+  const protectedKeys = opts.liveRows ? liveContributionKeys(opts.liveRows) : null;
   const slotObs = buildCanonicalObservation({
     concept: opts.ownership.concept,
     conflictGroup: opts.ownership.conflictGroup,
@@ -395,23 +409,32 @@ export function applyPathologyPatch(opts: {
       }
     }
 
-    const owns = (probe: string): boolean => structured
-      ? sentenceOwnedBySlot(probe, {
-        concept: slotObs.concept ?? opts.ownership.concept ?? null,
-        level: slotObs.level || opts.ownership.level || "",
-        laterality: slotObs.laterality || opts.ownership.laterality || "",
-        anatomicalSection: slotObs.anatomicalSection,
-        baselineReplaces: baseline,
-        alsoOwns,
-        supersedesGlobals: globalNormalsSupersededBy(slotObs.concept ?? opts.ownership.concept ?? null),
-      }) && overwritesAbnormalClaim(probe)
-      : Boolean(
-        (baseline && probe.includes(baseline))
-        || sentenceMentions(probe, keys)
-        || (asserted.length > 0 && deniesPathology(probe, asserted))
-        || (incomingOrgans.size > 0 && asserted.length > 0 &&
-          [...incomingOrgans].some((org) => sentenceMentions(probe, [org]))),
-      );
+    const owns = (probe: string, unit: string): boolean => {
+      // Phase 5 — an undeclared pair prints both findings. Ownership read off
+      // prose must never evict a finding another live observation rendered. The
+      // radiologist's manual text has its own protection further down this loop;
+      // a tile's contribution is the same class of thing, and losing it is worse
+      // because the ledger still says the finding was reported.
+      if (protectedKeys?.has(normalizeForDedupe(unit))
+        || protectedKeys?.has(normalizeForDedupe(probe))) return false;
+      return structured
+        ? sentenceOwnedBySlot(probe, {
+          concept: slotObs.concept ?? opts.ownership.concept ?? null,
+          level: slotObs.level || opts.ownership.level || "",
+          laterality: slotObs.laterality || opts.ownership.laterality || "",
+          anatomicalSection: slotObs.anatomicalSection,
+          baselineReplaces: baseline,
+          alsoOwns,
+          supersedesGlobals: globalNormalsSupersededBy(slotObs.concept ?? opts.ownership.concept ?? null),
+        }) && overwritesAbnormalClaim(probe)
+        : Boolean(
+          (baseline && probe.includes(baseline))
+          || sentenceMentions(probe, keys)
+          || (asserted.length > 0 && deniesPathology(probe, asserted))
+          || (incomingOrgans.size > 0 && asserted.length > 0 &&
+            [...incomingOrgans].some((org) => sentenceMentions(probe, [org]))),
+        );
+    };
 
     // Walk the field line by line so a document keeps its document shape.
     const lines = existing.split(/\r?\n/);
@@ -439,7 +462,7 @@ export function applyPathologyPatch(opts: {
         // `L4-L5: …no herniation…` is reachable by the L4-L5 tile even when the
         // clause itself does not repeat the level.
         const probe = prefix ? `${prefix} ${u}` : u;
-        if (!owns(probe)) {
+        if (!owns(probe, u)) {
           keep.push(u);
           continue;
         }

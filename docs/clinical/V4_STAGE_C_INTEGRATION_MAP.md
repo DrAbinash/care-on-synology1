@@ -124,8 +124,10 @@ not re-derive it.
    no DB, no AI, no clock, no `Math.random`.
 2. **Redo.** There is **no** redo stack, no `restorePatch`, and zero matches for `redo` in `store.ts`.
    Undo exists at depth 5; Phase 9 requires the forward half.
-3. **Undeclared cross-group default.** `clinicalSelectionContract.db.test.ts:523` is `it.skip` —
-   "print both, evict neither" is specified and unimplemented.
+3. **Undeclared cross-group default.** ~~`clinicalSelectionContract.db.test.ts:523` is `it.skip` —
+   "print both, evict neither" is specified and unimplemented.~~ **Closed** — see §8. The runtime half
+   now runs in `clinicalSelection/undeclaredPairPreservation.test.ts`; the schema-side `it.skip` stays,
+   because a catalogue row still cannot express a runtime sentence.
 4. **`NULL section_id` semantics.** `section_id` is nullable on `clinical_tile_examinations` (`:360`)
    and `clinical_normal_slots` (`:241`); check 10 only requires same-examination, so a cross-section
    retirement publishes today. Stage C must define it and refuse the ambiguous case.
@@ -164,3 +166,52 @@ sentence, so they are wording-blocked by an owner decision, not by code.
 3. **Redo** as a sibling of the existing snapshot mechanism, reusing `captureClinicalSnapshot`.
 4. **Live publication binding last** (Phase 2 proper): `lib/db` subpath + one read-only verified route
    + session identity, with the explicit "no v4 publication" compatibility branch.
+
+## 8. Phase 5 closed — the narrative fence (measured first, then fixed)
+
+**Mechanism, measured not assumed.** A census over every undeclared MRI Brain abnormal pair (distinct
+concept AND distinct conflict group, no declared relationship) — 117 pairs, 4 that split by click order,
+4 that lose a finding — gives one shape in every case: **the ledger row stays `live` and its sentence
+leaves Findings.** So it is not `observationsMutuallyExclusive` (that needs an identical concept) and not
+the same-slot replacement plan. It is the ownership oracle: `conceptsAssertedIn` reads a sentence as
+asserting every concept it mentions, so "…post-resection cavity… suggestive of edema" reads as an edema
+statement and the Cerebral edema box owned — deleted — the Glioma box's own sentence. A row present in
+the state and absent from the page is a finding the radiologist believes they reported.
+
+**Remedy: identity, not prose.** `liveContributionKeys` (`observationSlot.ts`) indexes the finding
+statements of the other live ledger rows, and `applyPathologyPatch` refuses to own a sentence in that
+set (`pathologyPatch.ts`, both the bare-unit and level-prefixed forms — a spine line's level is stored on
+one side of the split and not the other). Callers: `applyPathologyOverlay` passes the ledger already
+reduced for the write (incoming row and its mutex siblings dropped, so an in-place slot update still
+replaces its own earlier wording), and `applyChangePlan` passes the dictation plan's own observations —
+measured on that path too: the disc pair lost its first sentence without the fence.
+
+**What stayed retirable, on purpose.** A live row's *normal* statements are outside the fence.
+"No midline shift." inside the hydrocephalus box is a normal even though it travels with a finding, and
+contradictory normals must go away automatically. Wording alone is not enough: a materialized Full Normal
+baseline row also carries sentences that state no normality at all (an acquisition line, a comparison
+note), so `findingRows` excludes rows by kind as well — `stale`, `source: "system"`,
+`role: "baseline"`. That was measured, not designed: dropping the two kind checks made
+`xrayChestSubMasters`, `cervicalQuickSelectCatalogue` and `reportPreviewHarness` fail, which is exactly
+the false normality freezing that the first abnormality is supposed to retire. Baseline scaffold normals
+are not contributions at all, so every retirement path the brain and spine catalogues depend on is
+untouched.
+
+**Tried and rejected, recorded so it is not re-derived.** Suppressing an *incoming* normal that a live
+finding already contradicts does make the last click-order difference vanish, and it breaks four shipped
+tests in `siblingContradiction.ownership.test.ts` (T1, T2, T7, T9) whose whole job is to keep a normal the
+radiologist clicked on the page **and warn about it**. A clicked normal is theirs; the engine may retire
+it as a contradicted baseline, never delete it quietly on the way in. Residual, bounded: a contradicted
+normal is either retired (finding clicked second) or printed-and-warned (finding clicked first). Closing
+that last asymmetry means the contradiction check reading the ledger instead of the page — a composition
+change, not a fence.
+
+**Evidence.** `clinicalSelection/undeclaredPairPreservation.test.ts` — 22 tests: the four census pairs
+print both findings in either order, yield one report regardless of the mouse, keep manual text, restore
+the whole baseline on deselection, and pin the ledger half (both rows stay) so a future fix that moves the
+loss into the ledger fails loudly. Mutation battery `tmp/phase2b-mutants.py` — 9 mutants: fence removed,
+each match arm alone, `stale`/`system`/`baseline` rows protected, live-row normals protected, and each
+caller unwired — **9 killed, 0 survivors**, control 31 green over
+`undeclaredPairPreservation` + `siblingContradiction.ownership`. Whole Stage C sweep after the change:
+**76 files, 1764 tests, all passing**; `tsc -p artifacts/diagnostic-erp` stays at the 61 pre-existing
+errors, none in the four files touched.
