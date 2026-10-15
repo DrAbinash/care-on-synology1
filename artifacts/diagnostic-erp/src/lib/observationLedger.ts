@@ -475,10 +475,19 @@ export function reconstructProvenanceFromLedger(
   };
 }
 
+/**
+ * Words that are anatomy or grammar rather than a finding, so asserting one
+ * says nothing another sentence could contradict. "intracranial" is here because
+ * the scaffold's own two normals disagree about it without disagreeing about
+ * anything: "Flow voids in major intracranial vessels are preserved." beside
+ * "No intracranial hemorrhage is seen." Measured across both click orders of all
+ * 528 pairs of the 33 shipped MRI Brain findings boxes, that one pair accounted
+ * for 276 of the 280 warnings the ownership change below produces on its own.
+ */
 const SIBLING_STOP = new Set([
   "lesion", "lesions", "signal", "normal", "abnormal", "intensity", "white", "matter",
   "there", "this", "that", "with", "from", "into", "without", "showing", "appear",
-  "appearance", "grade", "space", "spaces", "system", "bilateral",
+  "appearance", "grade", "space", "spaces", "system", "bilateral", "intracranial",
 ]);
 const SIBLING_DENIAL =
   /\b(no|without|absence of|not identified|not seen|free of|no evidence|no definite|no obvious|no apparent|no significant)\b/i;
@@ -492,8 +501,12 @@ function assertedDistinctiveTokens(text: string): string[] {
 export type UnownedSiblingWarning = { sentence: string; token: string };
 
 /**
- * Conservative: warn only when leftover unowned text denies a distinctive
- * token the new observation asserts. Never deletes the sentence.
+ * Conservative: warn only when text this observation does not own denies a
+ * distinctive token the observation asserts. Never deletes the sentence.
+ *
+ * `ownedLastRendered` is the asserting observation's own rendered text — pass the
+ * whole ledger here and a contradiction between two observations disappears,
+ * because each one's sentence exempts the other's. See the ledger wrapper below.
  */
 export function detectUnownedSiblingConflicts(opts: {
   findings: string;
@@ -526,12 +539,19 @@ export function detectUnownedSiblingConflicts(opts: {
 /**
  * Re-run sibling detection over the full active ledger (finalize + banner).
  * Never deletes leftover sentences.
+ *
+ * Each observation is judged against the text it does NOT own. Flattening the
+ * whole ledger into the exempt set — what this function used to do — made every
+ * observation exempt every other one's sentences, so the detector could only ever
+ * fire on text no observation claimed at all. Two boxes disagreeing about one
+ * anatomy is the case a radiologist actually meets: "Basal ganglia hemorrhage"
+ * renders "Mass effect with midline shift of ___ mm." and "Hydrocephalus" renders
+ * "…No midline shift.", and clicked in that order both reach the page.
  */
 export function detectUnownedSiblingConflictsForLedger(opts: {
   findings: string;
   patches: Array<{ lastRendered: { findings?: string }; protected?: boolean }>;
 }): UnownedSiblingWarning[] {
-  const ownedLastRendered = opts.patches.map((p) => p.lastRendered.findings ?? "");
   const seen = new Set<string>();
   const out: UnownedSiblingWarning[] = [];
   for (const p of opts.patches) {
@@ -541,7 +561,7 @@ export function detectUnownedSiblingConflictsForLedger(opts: {
     for (const w of detectUnownedSiblingConflicts({
       findings: opts.findings,
       incomingFindings: incoming,
-      ownedLastRendered,
+      ownedLastRendered: [incoming],
     })) {
       const key = `${w.token}::${normalizeContributionMatch(w.sentence)}`;
       if (seen.has(key)) continue;
@@ -552,7 +572,13 @@ export function detectUnownedSiblingConflictsForLedger(opts: {
   return out;
 }
 
-export const UNOWNED_SIBLING_HINT = "Review nearby unowned text after this finding changed.";
+/**
+ * Named for the unowned-leftover case it was written for; it now also covers a
+ * sentence another observation owns, which is why it names the contradiction
+ * rather than the provenance. Nothing is deleted either way.
+ */
+export const UNOWNED_SIBLING_HINT =
+  "Another sentence in these Findings contradicts this finding. Re-read both before signing.";
 
 export const ORPHANED_RECOMMENDATION_HINT =
   "This advice came from a finding that has since changed or been removed. Re-read it before signing.";
