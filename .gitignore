@@ -128,3 +128,13 @@ ocr-worker/.venv/
 ocr-worker/.env
 
 legacy-reference/
+
+# Backup artifacts, wherever a drill happens to write them. The document archives are
+# patient data by construction — an uploaded bill or referral letter is the file, and its
+# name often carries the patient's name — so an artifact must never be one `git add -A`
+# away from GitHub. `.partial` is the interrupted-write shape of the same file.
+backup_*.tar.gz
+backup_*.tar.gz.enc
+backup_*.tar.gz.meta
+backup_*.tar.gz.enc.meta
+.backup_*.partial
