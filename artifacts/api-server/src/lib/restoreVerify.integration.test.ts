@@ -8,7 +8,7 @@ import { existsSync, rmSync, writeFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Pool } from "pg";
-import { runRestoreVerification } from "./restoreVerification";
+import { runRestoreVerification, dbUrlParts } from "./restoreVerification";
 
 const hasDb = !!process.env.DATABASE_URL;
 
@@ -65,16 +65,14 @@ const dumpTools = (() => {
 
 const MARKER = "restore-count-probe";
 
-type Seeded = { ids: number[]; rows: number; maxId: number };
-
 async function probePool() {
-  const url = new URL(process.env.DATABASE_URL ?? "");
+  const parts = dbUrlParts();
   return new Pool({
-    host: url.hostname,
-    port: Number(url.port || 5432),
-    user: url.username,
-    password: url.password,
-    database: url.pathname.replace(/^\//, ""),
+    host: parts.host,
+    port: Number(parts.port),
+    user: parts.user,
+    password: parts.password,
+    database: parts.database,
     max: 1,
   });
 }
@@ -96,12 +94,19 @@ async function auditState(pool: Pool) {
 }
 
 function takeDump(file: string) {
-  const url = new URL(process.env.DATABASE_URL ?? "");
+  const parts = dbUrlParts();
+  // Credentials come from dbUrlParts(), the same parse the verifier under test uses.
+  // The first version of this helper re-derived them from DATABASE_URL by hand and
+  // omitted PGPASSWORD, so `pg_dump` blocked on a terminal prompt and every CI run
+  // died with `pg_dump failed: Password:` — invisible locally, where the test
+  // database accepts trust authentication.
+  // --no-password turns that class of mis-wiring into an immediate, named failure
+  // instead of a prompt that eats the test timeout.
   const r = spawnSync("pg_dump", [
-    "--host", url.hostname, "--port", url.port || "5432", "--username", url.username,
-    "--dbname", url.pathname.replace(/^\//, ""), "--no-owner", "--no-privileges",
-    "--clean", "--if-exists", "--file", file,
-  ], { encoding: "utf8" });
+    "--host", parts.host, "--port", parts.port, "--username", parts.user,
+    "--dbname", parts.database, "--no-owner", "--no-privileges",
+    "--clean", "--if-exists", "--no-password", "--file", file,
+  ], { encoding: "utf8", env: { ...process.env, PGPASSWORD: parts.password } });
   if (r.status !== 0 || !existsSync(file)) throw new Error(`pg_dump failed: ${r.stderr}`);
   return file;
 }

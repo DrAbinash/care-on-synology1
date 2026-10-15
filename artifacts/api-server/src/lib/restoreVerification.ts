@@ -203,7 +203,14 @@ function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; stdin
   });
 }
 
-function dbUrlParts(): { host: string; port: string; user: string; password: string; database: string } {
+/**
+ * Exported so the probe file builds its `pg_dump`/`psql` invocations from the same
+ * parse the verifier uses. A second copy of this parse in the tests is how
+ * `restoreVerify.integration.test.ts` came to run `pg_dump` without a password:
+ * the verifier passed `PGPASSWORD`, the test built its own URL and forgot it, and
+ * trust authentication on the developer box hid the difference until CI.
+ */
+export function dbUrlParts(): { host: string; port: string; user: string; password: string; database: string } {
   const url = new URL(process.env.DATABASE_URL ?? "");
   return {
     host: url.hostname,
