@@ -8,7 +8,7 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 ## 📌 Master Navigation Index
 
 ### 📂 01. Infrastructure Setup & Data Flows
-*   [deploy-synology.sh](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/deploy-synology.sh) — Active production deployment script.
+*   [deploy-synology.sh](01_INFRASTRUCTURE/deploy-synology.sh) — **RETIRED POINTER, DO NOT RUN.** The live production deployment script is [`deploy-synology.sh`](../../deploy-synology.sh) at the repository root; the copy that used to be here was 51 lines against 292 and would have deployed without fetching `main`, without the migration container, and without any health check. [`scripts/ops-preflight.mjs`](../../scripts/ops-preflight.mjs) (`deploy.config_single_source`) fails if a runnable copy returns.
 *   [SYNOLOGY-INSTALL.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/SYNOLOGY-INSTALL.md) — Synology NAS & Docker environment initialization guide.
 *   [ERP_MODULE_DEPENDENCY_MAP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/ERP_MODULE_DEPENDENCY_MAP.md) — Cross-module component dependency matrix.
 *   [ERP_DATA_FLOW_MAP.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/01_INFRASTRUCTURE/ERP_DATA_FLOW_MAP.md) — End-to-end data pipeline map.
@@ -19,8 +19,8 @@ Welcome to the Care Diagnostics ERP System Recovery Portal. This document acts a
 *   [Database_Master_Map.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/02_DATABASE/Database_Master_Map.md) — Master table and relation definitions.
 
 ### 📂 03. Containerization (Docker)
-*   [docker-compose.yml](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/docker-compose.yml) — Active multi-container config.
-*   [Dockerfile](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/03_DOCKER/Dockerfile) — Multi-stage application build specification.
+*   [docker-compose.yml](03_DOCKER/docker-compose.yml) — **RETIRED POINTER, DO NOT RUN.** The live config is [`docker-compose.yml`](../../docker-compose.yml) at the repository root (649 lines, 7 services). This copy had 5 services and no `schema-verify`, so a stack built from it starts the API without the schema gate.
+*   [Dockerfile](03_DOCKER/Dockerfile) — **RETIRED POINTER, DO NOT BUILD.** The live definition is [`Dockerfile`](../../Dockerfile) at the repository root (223 lines). This copy has no `ARG GIT_COMMIT/ERP_VERSION/BUILD_NUMBER` bake, so an image built from it reports version `unknown` and no deploy can be attributed to a commit.
 
 ### 📂 04. PACS, Orthanc & Conquest
 *   [PACS_CURRENT_STATE_REPORT.md](file:///c:/Users/abina/caredeoghar--antigravity/SOP/RECOVERY/04_PACS_ORTHANC/PACS_CURRENT_STATE_REPORT.md) — Active Orthanc PACS routing structure.

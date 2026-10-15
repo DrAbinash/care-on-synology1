@@ -9,6 +9,57 @@ _Exact steps to deploy CARE ERP on the Synology NAS (Container Manager / `docker
 2. External DB volume exists: `docker volume create care_main_db_data` (only if not already present — **never** recreate over real data).
 3. Optional integrations (Orthanc, OHIF, Ollama, n8n) configured only if in use.
 
+## 1a. Read-only preflight — run this before every deploy
+
+```sh
+pnpm ops:preflight                 # or: node scripts/ops-preflight.mjs
+pnpm ops:preflight --json          # same answers, machine-readable
+```
+
+`scripts/ops-preflight.mjs` touches nothing: no migration, no write, no container
+is created. It reads the repository, `.env`, `docker-compose.yml`, the backup
+directory, the migration ledger and the external-result-link audit, and answers
+one question — **is this box ready to deploy?** — as `READY`, `NOT_READY` or
+`INSUFFICIENT_EVIDENCE` (exit 0 / 1 / 2).
+
+Read the status words as what they are:
+
+* **PASS** — the gate measured it and it is right.
+* **FAIL** — the gate measured it and it is wrong. Fix before deploying.
+* **UNKNOWN** — the gate could not tell, and refuses to guess. A critical UNKNOWN
+  blocks `READY` on purpose: "no restore has ever been proven here" is not the
+  same fact as "the restore works", and treating the two alike is how a clinic
+  ends up with backups it cannot use.
+* **NOT_APPLICABLE** — deliberately out of scope. `backup.orthanc_images` is the
+  only one: DICOM image backup is excluded from ERP disaster recovery by owner
+  decision, and the line says in as many words that it is not a pass.
+
+Some facts are not observable from a repository at all — whether the deployed
+HOPE build refuses an event it cannot interpret, whether anyone has ever restored
+a backup on this box, what the pre-deploy image IDs were. For those the gate reads
+`ops-evidence.json`, a small file **you** write after doing the work:
+
+```sh
+node scripts/ops-preflight.mjs --record-restore   # after a real restore proof
+node scripts/ops-preflight.mjs --help             # the file's shape
+```
+
+It is gitignored, and that is load-bearing: `deploy-synology.sh` runs
+`git reset --hard origin/main`, which would delete a tracked evidence file on
+every single deploy. Recorded evidence older than 90 days is UNKNOWN again.
+
+Two environment caveats, both deliberate:
+
+* Run it **on the NAS**, from `/volume1/docker/care-erp-github/care-on-synology1`.
+  On a laptop there is no `/volume1`, no docker and usually no live `.env`, so the
+  gate reports `INSUFFICIENT_EVIDENCE` rather than pretending. If only the
+  committed template `deploy/synology/care.env` is present, every check that reads
+  *values* says UNKNOWN — the template lists every key with example content, and
+  "all 9 required variables present" read off an example file is the exact false
+  green this gate exists to prevent.
+* `deploy.metadata` legitimately FAILs before `deploy-synology.sh` Step 2 has run,
+  because Step 2 is what writes `GIT_COMMIT`/`BUILD_NUMBER` into `.env`.
+
 ## 1. Standard deploy (automated)
 The repo ships `deploy-synology.sh`, which does exactly:
 ```sh
@@ -24,6 +75,23 @@ Run it:
 ```sh
 ./deploy-synology.sh
 ```
+
+> **There is one deployment script, and it is this one.** `SOP/RECOVERY/01_INFRASTRUCTURE/deploy-synology.sh`,
+> `SOP/RECOVERY/16_RUNBOOKS/deploy-synology.sh`, `SOP/RECOVERY/03_DOCKER/docker-compose.yml` and
+> `SOP/RECOVERY/03_DOCKER/Dockerfile` used to hold older copies of the same four files while the
+> binder's index called all four "Active". They are retired pointer files now, and running them does
+> nothing but print where the live file is. `pnpm ops:preflight` fails on any un-retired copy
+> (`deploy.config_single_source`), so this cannot quietly come back.
+
+> **If GitHub is unreachable** — a deploy is not the recovery path, but if you must bring the stack
+> up from the checkout you already have, do not substitute an old copy of the script. From the
+> repository root, with the tree you want to run already present:
+> ```sh
+> sudo docker compose up -d --build
+> node scripts/deploy-health.mjs --wait --host-port "${HOST_PORT:-8888}"
+> ```
+> That is Step 3 of the script and nothing else: no `git reset`, no `.env` rewriting, no build-number
+> bump. Running the previous commit is an acceptable outcome; running an unverified one is not.
 
 > **Why main:** Agent/PR work merges to GitHub `main`. The former deploy branch
 > `feature/website-login-redirection` no longer exists on the remote. If the NAS
@@ -187,7 +255,7 @@ cd /volume1/docker/care-erp-github/care-on-synology1
 
 | # | Step | Command | Stop the deploy if |
 |---|---|---|---|
-| 1 | Pre-deployment checks | `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak |
+| 1 | Pre-deployment checks | `pnpm ops:preflight` (runs all four below and 17 more) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak. `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof |
 | 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
 | 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass the passphrase through the environment — never on the command line. Full procedure, including the before/after proof that production was not touched: `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §B |
 | 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md`, and `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §A for the target-verification pre-flight and how to read each finding |

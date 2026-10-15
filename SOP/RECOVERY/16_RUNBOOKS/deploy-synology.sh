@@ -1,51 +1,16 @@
 #!/bin/bash
-# =============================================================================
-# Synology NAS Automated Production Deployment Script
-# =============================================================================
+# RETIRED — DO NOT RUN. Pointer only, no deployment steps.
 #
-# This script handles code dependency installation, codebase build validation,
-# non-interactive database migrations, and graceful restart of the Docker containers.
+# The one deployment program is ./deploy-synology.sh at the repository root.
+# This copy was 51 lines while the live script was 292, and 16_RUNBOOKS listed it
+# as the script for "immediate sysadmin execution" — running it would have
+# deployed a stale checkout with `pnpm db:deploy` and no health check, then
+# reported success. See SOP/RECOVERY/01_INFRASTRUCTURE/deploy-synology.sh for the
+# full history, docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md for the procedure, and
+# scripts/ops-preflight.mjs (deploy.config_single_source) for the guard.
 #
-# Usage:
-#   chmod +x deploy-synology.sh
-#   ./deploy-synology.sh
-# =============================================================================
-
-set -e
-
-echo "====================================================================="
-echo "🚀 Starting Production Deployment on Synology NAS..."
-echo "====================================================================="
-
-# Load environment variables if .env file exists
-if [ -f .env ]; then
-  echo "🔑 Loading environment variables from .env..."
-  export $(grep -v '^#' .env | xargs)
-fi
-
-# 1. Install dependencies
-echo -e "\n📦 Step 1: Installing workspace dependencies..."
-pnpm install --frozen-lockfile --ignore-scripts
-
-# 2. Build validation
-echo -e "\n🛠️  Step 2: Building codebase (typechecks and compilations)..."
-pnpm run build
-
-# 3. Run Database Migrations
-echo -e "\n🗄️  Step 3: Running database migrations (non-interactive)..."
-pnpm db:deploy
-
-# 4. Restart Docker Stack
-echo -e "\n🐋 Step 4: Rebuilding and restarting Docker containers..."
-if command -v docker-compose &> /dev/null; then
-  docker-compose up -d --build
-elif command -v docker &> /dev/null && docker compose version &> /dev/null; then
-  docker compose up -d --build
-else
-  echo "⚠️  Warning: Neither 'docker compose' nor 'docker-compose' command was found."
-  echo "Please restart your Docker stack manually via Synology Container Manager."
-fi
-
-echo -e "\n====================================================================="
-echo "✅ Deployment completed successfully!"
-echo "====================================================================="
+# From the repository root, in this order:
+#   node scripts/ops-preflight.mjs
+#   bash deploy-synology.sh
+echo "RETIRED — DO NOT RUN. Run ./deploy-synology.sh from the repository root instead." >&2
+exit 1
