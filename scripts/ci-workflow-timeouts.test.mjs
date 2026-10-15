@@ -57,3 +57,31 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
     expect(step * 60, "workflow step preempts the script's own retry budgets").toBeGreaterThan(update + install);
   });
 });
+
+describe("the Vitest step cap fits the suite that actually runs (measured 2026-10-15)", () => {
+  // main at 1841668b, run 38698375279: the step started 07:24:21, printed
+  // `Test Files  1037 passed | 5 skipped` / `Tests  13507 passed | 17 skipped` at
+  // 07:34:29 — 10 min 8 s — and was then killed by the 10-minute cap. Eight seconds
+  // of headroom on a fully passing suite. That is not a gate: a red run that really
+  // means "green but long" teaches everyone to ignore red, and it hides every genuine
+  // failure behind a clock. Sized at 2x the measured duration, not at a round number.
+  const MEASURED_SECONDS = 608;
+  const vitestStep = Number(yml.match(/Vitest suite[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+
+  it("exists and leaves double the measured passing duration", () => {
+    expect(vitestStep, "the Vitest step has no timeout cap at all").toBeGreaterThan(0);
+    expect(vitestStep * 60, "cap below 2x the measured duration of a passing suite")
+      .toBeGreaterThanOrEqual(2 * MEASURED_SECONDS);
+  });
+
+  it("is not preempted by the job cap, which would reintroduce the same clock", () => {
+    const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith("test:"));
+    expect(block, "job test missing").toBeTruthy();
+    const jobCap = Number(/timeout-minutes:\s*(\d+)/.exec(block)?.[1] ?? 0);
+    const stepCaps = [...block.matchAll(/timeout-minutes:\s*(\d+)/g)].map((m) => Number(m[1]));
+    const stepsTotal = stepCaps.reduce((a, b) => a + b, 0) - jobCap;
+    expect(jobCap, "job test has no timeout cap").toBeGreaterThan(0);
+    expect(jobCap, "the job backstop is smaller than the sum of its own step caps, so it is the real cap")
+      .toBeGreaterThanOrEqual(stepsTotal);
+  });
+});
