@@ -79,7 +79,8 @@ clinical_tile_relationships  parent_child | requires | excludes | supersedes | c
 clinical_combination_rules   A + B → this one consolidated sentence
 clinical_combination_rule_members
 clinical_recommendation_rules conditional advice, with an emit policy
-clinical_publications        what was live, and its content hash
+clinical_publications        what was released, and the hash of its content
+clinical_publication_tiles   which tile at which stored version (rollback + citation)
 ```
 
 Reused rather than replaced, because it is already the right shape:
@@ -101,7 +102,7 @@ Deliberately **not** FK-linked: `clinical_examinations.template_key` is a soft t
 migrated database. A dormant schema must not acquire a live dependency on a production table; the
 B1/B2 file states the same discipline (`radiologyCatalog.ts:23`).
 
-Five properties are enforced by the database, not by application code, because the content will
+Eight properties are enforced by the database, not by application code, because the content will
 arrive through SQL seeds and an admin editor, both of which bypass any service layer the B1/B2
 tables relied on:
 
@@ -115,15 +116,77 @@ tables relied on:
    provenance row is never silently re-pointed.
 3. **`ON DELETE RESTRICT` everywhere, no cascade.** A concept, a normal slot, an examination or a
    tile in use cannot be destroyed — it can only be soft-deleted.
-4. **Order is an integer with a unique constraint**, per examination. A duplicate ordinal is a
-   write error, not a report whose section order depends on which row the database read first.
-5. **One normal per anatomical slot** (`(examination, field, section, level, laterality)`), with
-   `TRIM`/`LOWER` normalisation. This is the "6 tiles compete for one baseline sentence" case, and
-   the level dimension is what lets L4-L5 and L3-L4 coexist without one migrating into the other.
+4. **Order is a nullable integer that must be positive when present**, unique per
+   `(examination, section)`. NULL means "not yet placed", which is a fact about a draft; a
+   duplicate position is a write error, and an incomplete order is refused at publication rather
+   than composed in whatever order the database happened to read.
+5. **A normal slot is identified the way the reporting runtime identifies it:**
+   `(examination, field, region, concept, level, laterality)` with `TRIM`/`LOWER` normalisation.
+   `lib/baseline-manifest` documents the persisted ownership key as `region | concept | level |
+   laterality` and `buildSlotKey` (`artifacts/diagnostic-erp/src/lib/observationSlot.ts:287`)
+   builds that, so the catalogue cannot invent a fifth dimension or drop one without the two
+   disagreeing — which is a static test, not a paragraph. Section is placement metadata, never
+   identity: one lumbar section legitimately holds disc, facet, ligamentum flavum, foramina and
+   canal normals at the same level, and one basal-ganglia claim must not be storable twice under
+   two sections.
+6. **A section reference means a section of the same examination.** `section_id` alone only proves
+   the section exists; every table that carries both an examination and a section now keys the pair
+   (`FOREIGN KEY (examination_id, section_id) REFERENCES clinical_anatomical_sections
+   (examination_id, id)`), which is what makes "an MRI Brain tile in an MRI Cervical Spine section"
+   unwritable. The same trick closes the parameter library hole: a default answer must come from
+   its own parameter's option list (`(parameter_group_id, default_option_id)` →
+   `parameter_options (group_id, id)`). Because a composite key with a NULL half is skipped by
+   `MATCH SIMPLE`, each one has a companion CHECK that states the missing half is not legal.
+7. **A published version, publication or manifest row cannot be rewritten or deleted.**
+   `clinical_append_only_guard()` fires `BEFORE UPDATE OR DELETE` on all three. Uniqueness was not
+   enough: the previous revision allowed `UPDATE clinical_tile_versions SET snapshot_json = …`,
+   which changed what "version 1 of this tile" meant while leaving the row — and therefore the
+   citation in a signed report — apparently intact.
+8. **Three invariants are facts about a set of rows**, so they live in a deferrable constraint
+   trigger (`clinical_publication_gate`) rather than a CHECK or a foreign key: an examination with
+   an unplaced live tile may not be published, a combination rule with no required member may not
+   be published, and a tile or rule may not reference a normal or a placement belonging to an
+   examination it is not placed in. It is `DEFERRABLE INITIALLY IMMEDIATE` on purpose: a bulk seed
+   may defer it, while the default is that a refusal lands on the statement, which is the only way
+   a suite that rolls back every test can prove the gate ever ran.
 
-Append-only by construction: `clinical_tile_versions` and `clinical_publications` have **no
-`deleted_at` column**, and a test asserts their absence. A history you can soft-delete is not a
-history, and a publication whose hash can be overwritten is not a cache token.
+### 2a. What the independent review changed, and what it refused to change
+
+Ten defect families in the first revision were reproduced as fifteen executable probes against a
+database built by the original migration, each inside a rolled-back transaction, before any of the
+above was written. Confirmed and fixed: cross-examination section references in four tables
+(placement, parent section, rule section, slot section), a parameter default taken from another
+group, the section-based normal-slot identity (both directions: legitimate normals refused,
+duplicates accepted), `ordinal NOT NULL DEFAULT 0` making the second tile in an examination
+unwritable and an adjacent swap impossible, a tile relating to itself, a tile carrying no clinical
+text, a combination rule whose members are all optional, a `content_hash` holding prose, a
+rewritable version-history row, and an inverted numeric parameter range stored without complaint.
+An eleventh gap — a publication that could name no catalogue content at all, so neither rollback nor
+citation had an answer — was found by reading the model rather than by a probe, and is closed by
+`clinical_publication_tiles`. Every one of these is now an executed test in
+`lib/db/src/schema/clinicalCatalogue.db.test.ts`; the probe script itself was a review artefact and
+is not part of the repository.
+
+Refuted, and therefore not "fixed":
+
+* **`region` alone was not the missing dimension.** Adding it to the index would have kept the
+  duplicate case (one claim stored under two sections) while still refusing real anatomy. The
+  runtime's own four-part key was the answer, and it is a smaller change, not a bigger one.
+* **Alphabetical or insertion-order fallback was not added.** §16 forbids it; the ordinal is the
+  order, and an examination with an ordinal missing is a draft, not a report.
+* **Multi-tile relationship cycles were not constrained here.** A `CHECK` sees one row and a
+  foreign key sees one pair; cycle detection belongs to the composition walk in Stage D, which is
+  where a cycle can be refused *while composing* rather than rejected *while editing*. A
+  self-relationship is refused in the database because it is expressible in one row.
+* **`deferred constraints` for reordering were not used.** `DEFERRABLE` unique indexes do not
+  exist in PostgreSQL; the sparse-ordinal-plus-publication-gate design gives the same behaviour
+  with features the clinic's PostgreSQL 16 already has, and no per-row staging table.
+
+For an administrator, the reorder protocol is two statements in one transaction: unplace the rows
+that are moving (`SET ordinal = NULL`), then write the new positions. Reordering a whole section is
+one unplace plus N updates. Two people editing one examination serialise on
+`SELECT … FROM clinical_examinations WHERE id = … FOR UPDATE`, which is why the placement table
+cannot itself own the lock.
 
 ---
 
@@ -254,11 +317,27 @@ answer becomes a row update rather than a redesign.
 
 ## 7. What this PR does and does not do
 
-**Does:** adds thirteen catalogue tables and their Drizzle declarations (`lib/db/src/schema/
+**Does:** adds fourteen catalogue tables and their Drizzle declarations (`lib/db/src/schema/
 clinicalCatalogue.ts`), exports the shared column fragments from `radiologyCatalog.ts` so both
 halves of one catalogue cannot disagree about what soft delete means, seeds the eighteen examination
 scopes as `draft`, and proves the constraints behave as declared on a real database
-(`clinicalCatalogue.db.test.ts`) as well as statically (`clinicalCatalogue.schema.test.ts`).
+(`clinicalCatalogue.db.test.ts`) as well as statically (`clinicalCatalogue.schema.test.ts`). The
+second revision of this stage (the independent review, §2a above) added the same-examination
+composite keys, the runtime slot identity, sparse ordinals, the append-only triggers, the
+publication manifest and the publication gate — the ten defect families reproduced as failures
+first, and every guard then verified by deleting it: 36 executed mutations (29 DDL mutations
+replayed against copies of the migrated database, 7 text mutations of the migration file) each
+turned a suite red, 36/36. The two mutants that first survived were not weak constraints but weak
+tests — an existence check that proved a phrase appeared somewhere in the file rather than in the
+table it belongs to, and a two-column NOT NULL probe that passed because the other column fired —
+and both guards were rewritten. That battery is a review artefact, not repository content; what
+stays in the repo is the behaviour it forced.
+
+Two things this stage deliberately leaves open, because inventing them here would be a clinical
+decision dressed as a schema decision: a publication's manifest need not yet cover *every* tile in
+the examination (the publisher that writes it is Stage C code, and a coverage rule asserted before
+the publisher exists cannot be tested against it), and the hash algorithm is not fixed by the
+schema — the CHECK pins its shape (64 lowercase hex), not its computation.
 
 **Does not:** read from any of it, change any report, touch billing, registration, cashier,
 accounting, PACS/DICOM, Orthanc or any hospital integration; deploy; or merge. The workspace behaves
