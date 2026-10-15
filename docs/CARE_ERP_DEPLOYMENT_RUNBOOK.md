@@ -213,6 +213,74 @@ Migrations are **forward-only** — there is no automatic data rollback. To roll
 3. The schema stays forward (idempotent, additive) — an older app image runs fine against the newer schema because migrations only ADD. If a specific migration must be neutralised, **remove its `migrations/*.sql` file** (removing a file never touches the DB) and write a compensating additive migration; never edit an already-applied migration.
 4. For data corruption, restore from backup — see `CARE_ERP_RECOVERY_GUIDE.md`.
 
+## 6b. The money self-consistency gate — what green means, and what it does not cover
+
+`node scripts/financial-integrity.mjs` asks the live database whether its own money rows
+agree with each other. It is read-only in the enforced sense, not the promised one: every
+statement is a `SELECT`, the session opens with `default_transaction_read_only = on` so
+PostgreSQL refuses any write before it reaches a table, and `statement_timeout = 20s`
+cancels a slow query rather than letting it hold a snapshot over the Bill Desk. It prints
+counts and numeric row ids — a bill id, a payment id — and has no way to put a patient
+name, an MRN or a bill number into its result, because the projection is fixed in code
+(`wrapCountAndIds`) and a test asserts it.
+
+**16 gate invariants**, all measured **zero violations on the live clinic on 2026-10-15**
+(8,370 bills, 9,207 payments, 11,588 vouchers, 51 clinic closures, 255 staff closes):
+a bill's `total_amount` equals `subtotal − discount + tax`; `balance_amount` equals
+`max(0, total − paid − refund)` for a bill that is not cancelled; `paid_amount` equals the
+sum of the payment rows the ledger actually counts; no money column is negative; a discount
+never exceeds its subtotal; a refund never exceeds what was collected; one bill number per
+book; every payment belongs to a bill that exists; a voucher's two sides are different
+accounts with a positive amount and both resolve in the chart of accounts; and the same
+three identities for the day-close buckets, the variance, and the note count where notes
+were taken.
+
+**Seven advisory findings are reported and never block a deploy.** That split is measured,
+not decided by taste. `bills.bill_number_repeats_across_books` is 140 — bill numbers are
+unique *per book* (`unique(ledger_id, bill_number)`), so all 140 are correct invoices, and
+this is precisely the false positive `workspace/accounting-audit/accounting-data-audit.sql`
+DQC-01 has been printing. `orders.total_vs_active_lines` is 52,
+`user_day_closures.perfect_count_never_taken` is 240 of 255, and
+`bills.cancelled_with_money_collected` is 1. A gate that is permanently red is not a
+control, it is the reason the next real red gets walked past, so these are listed for the
+owner with their row ids and left out of the verdict.
+
+The 240 figure is the one worth reading twice: the staff self-close form pre-fills the
+counted cash from the system's own expected totals, so a drawer row saying *balanced,
+variance 0.00, no note count recorded* cannot tell a counted drawer from an uncounted one.
+Nothing in the stored data distinguishes them, which is why it is a process decision rather
+than a data defect — and why it is advisory here instead of a green tick that implies the
+cash was verified.
+
+Two shapes are deliberately not repeated from the older tooling. `paid_amount` is compared
+with the **sanctioned exclusion list** (`superseded, void, failed, reversed, cancelled,
+refund_failed` — `routes/reports.ts:239`, `lib/financialIntegrity.ts:18-25`), because
+superseding a double-post decrements the bill and posts a reversal *voucher* without
+inserting a compensating payment row (`routes/accounting.ts:1217-1253`); summing all rows
+the way `routes/books-sanity.ts:84-94` does disagrees with correct data the first time that
+happens. And bill-number uniqueness is scoped to the book, as above.
+
+At the deploy gate these two checks are `financial.money_identity` and
+`financial.day_close_identity`, both `critical`: a violation is `NOT_READY` (exit 1), and a
+database that could not be reached is `UNKNOWN` → `INSUFFICIENT_EVIDENCE` (exit 2), never a
+pass. Run the tool directly to see every row id:
+
+```bash
+node scripts/financial-integrity.mjs --advisory
+node scripts/financial-integrity.mjs --surface=money --json=output/financial-integrity.json
+```
+
+Exit codes: `0` every gate passed · `1` a gate is violated · `2` no `DATABASE_URL` ·
+`3` a gate could not be evaluated. `3` is not a smaller number than `1` — it is the answer
+"we do not know", and the gate holds it as `UNKNOWN` for that reason.
+
+**What this does not check.** It cannot see a payment recorded against the right bill but
+the wrong patient, because the schema does not constrain that; it cannot tell whether an
+amount is clinically or commercially correct; it does not reconcile against a bank
+statement, a gateway settlement file or Tally; and it reads no PHI. It answers one question
+— do the clinic's own money rows add up to each other — and it now answers it with numbers
+rather than with a status line nobody could run.
+
 ## 7. Safety guards you will see in logs (all good signs)
 - **DB target printout** — host/port/db/user printed before any mutation (catches a wrong-`.env`).
 - **DB identity check** — `system_database_identity` stamped `app_name=care-erp`; a mismatch **fails loudly** rather than migrating the wrong database.
@@ -313,7 +381,7 @@ cd /volume1/docker/care-erp-github/care-on-synology1
 
 | # | Step | Command | Stop the deploy if |
 |---|---|---|---|
-| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 24 checks; the four below are the ones a deploy most often fails on) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak. `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof |
+| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 26 checks; the four below are the ones a deploy most often fails on) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` · `node scripts/financial-integrity.mjs` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, a guarded secret is weak, or a money invariant disagrees with its own rows (`financial.money_identity`, `financial.day_close_identity` — see §6b). `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof or a money check with no reachable database |
 | 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
 | 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass the passphrase through the environment — never on the command line. Full procedure, including the before/after proof that production was not touched: `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §B |
 | 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md`, and `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §A for the target-verification pre-flight and how to read each finding |

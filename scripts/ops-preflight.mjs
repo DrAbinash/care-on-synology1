@@ -64,6 +64,7 @@ import {
   isHopeIntegrationArmed,
   loadEnvFile,
 } from "./check-env-secrets.mjs";
+import { runSurface as runFinancialSurface, MONEY as FINANCIAL_MONEY, CLOSES as FINANCIAL_CLOSES, UNVERIFIED as FINANCIAL_UNVERIFIED } from "./financial-integrity.mjs";
 import { sameCommit } from "./build-identity.mjs";
 
 export const PASS = "PASS";
@@ -138,6 +139,8 @@ export const HOPE_UNSUPPORTED_EVENTS = ["diagnostic_electronic_film.available"];
   "migrations.static",
   "migrations.pending",
   "links.external_result_duplicates",
+  "financial.money_identity",
+  "financial.day_close_identity",
   "backup.artifacts_present",
   "backup.freshness",
   "backup.metadata",
@@ -161,6 +164,8 @@ export const REQUIRED_CHECK_IDS = [
   "migrations.static",
   "migrations.pending",
   "links.external_result_duplicates",
+  "financial.money_identity",
+  "financial.day_close_identity",
   "backup.artifacts_present",
   "backup.freshness",
   "backup.metadata",
@@ -591,6 +596,27 @@ function checkExternalLinks(ctx) {
     return { id: "links.external_result_duplicates", status: FAIL, critical: true, detail: `${dupes[1]} duplicate (referral_id, care_report_id) group(s). The UNIQUE migration WILL refuse, and one row of a pair may hold a critical acknowledgement a clinician already made.`, remediation: "Reconcile by hand. This tool never picks a winner and never deletes." };
   }
   return { id: "links.external_result_duplicates", status: PASS, critical: true, detail: "the existing audit reports no duplicate link groups" };
+}
+
+/**
+ * The money self-consistency gate. `scripts/financial-integrity.mjs` owns the SQL and
+ * the gate/advisory split; this asks only the gate half of it, because those 16
+ * invariants measured zero violations on the live clinic (8,370 bills / 9,207 payments /
+ * 11,588 vouchers, 2026-10-15) while the advisory half measures a real backlog that
+ * would leave the gate permanently red. `critical: true` means an unrunnable check stops
+ * a READY verdict: a money check that could not run is not a money check that passed.
+ */
+export function checkFinancialIntegrity(ctx) {
+  return [FINANCIAL_MONEY, FINANCIAL_CLOSES].map((surface) => {
+    const r = runFinancialSurface({ exec: ctx.exec, env: ctx.env, surface, gatesOnly: true });
+    return {
+      ...r,
+      status: r.status === FINANCIAL_UNVERIFIED ? UNKNOWN : r.status,
+      // The per-row detail belongs to the tool's own output; the gate line stays a
+      // count, and nothing here can carry a patient field.
+      results: undefined,
+    };
+  });
 }
 
 /** A9 + A10 + sidecar metadata. */
@@ -1344,6 +1370,7 @@ export function runPreflight(options = {}) {
   push(checkMigrationsStatic(ctx));
   push(checkMigrationsPending(ctx));
   push(checkExternalLinks(ctx));
+  push(...checkFinancialIntegrity(ctx));
   push(...checkBackups(ctx));
   push(checkRestoreEvidence(ctx));
   push(checkDisk(ctx));
