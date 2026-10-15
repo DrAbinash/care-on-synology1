@@ -16,7 +16,7 @@
  * application state — see `docs/clinical/V4_STAGE_C_INTEGRATION_MAP.md` §1.
  */
 
-import { normalizeForDedupe } from "../reportFieldMerge";
+import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import { sentenceMatchesConcept } from "../observationSlot";
 
 /** The minimum an observation has to say to be consulted. Mirrors `CanonicalObservation`. */
@@ -145,4 +145,43 @@ export function canonicalOrderFromBaseline(
     sentence,
     ordinal: ordinals?.[index] ?? index,
   }));
+}
+
+/** The canonical anatomical order of a recorded baseline — a format's Findings or Impression text. */
+export function canonicalOrderFromText(text: string | null | undefined): CanonicalSlot[] {
+  if (!text || !text.trim()) return [];
+  return canonicalOrderFromBaseline(splitToSentences(text).map((s) => s.trim()).filter(Boolean));
+}
+
+/**
+ * The observations that still falsify a normal after a deselection.
+ *
+ * Two exclusions, both deliberate:
+ *  - **`stale` patches are not suppressors.** A stale row is a baseline whose text was emptied when
+ *    something else took its place (`store.ts:2419`); it holds no clinical claim, so counting it as
+ *    falsifying a normal would keep a normal retired after the abnormality that retired it is gone.
+ *  - **A baseline-role observation is not a suppressor.** Explicitly selecting a normal tile asserts
+ *    that normality; it cannot simultaneously be what falsifies another normal.
+ *
+ * Independently-selected abnormalities are all kept, including two that share one baseline — which is
+ * the case this whole module exists for. Manually authored text is not a suppressor either, because it
+ * declares no baseline: the radiologist's sentence stays exactly where they wrote it.
+ */
+export function activeSuppressors(
+  patches: readonly {
+    stale?: boolean;
+    observation?: {
+      role?: string | null;
+      baselineReplaces?: string | null;
+      concept?: string | null;
+    } | null;
+  }[],
+): SuppressingObservation[] {
+  return patches
+    .filter((p) => !p.stale && p.observation && p.observation.role !== "baseline")
+    .map((p) => ({
+      baselineReplaces: p.observation?.baselineReplaces ?? null,
+      concept: p.observation?.concept ?? null,
+    }))
+    .filter((s) => nonEmpty(s.baselineReplaces) || nonEmpty(s.concept));
 }

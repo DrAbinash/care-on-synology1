@@ -163,6 +163,10 @@ import {
   type LedgerPatch,
   type SerializedObservationLedger,
 } from "@/lib/observationLedger";
+import {
+  activeSuppressors,
+  canonicalOrderFromText,
+} from "@/lib/clinicalSelection/normalSuppression";
 import { mayReplaceMachineTechniqueWithApproved } from "@/lib/techniqueStudyTabOrigin";
 import {
   CLINICAL_UNDO_DEPTH,
@@ -3357,14 +3361,28 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (!patch) return "missing";
     const remapTo = (opts?.remapEvidenceTo ?? "").trim() || null;
     const snap = captureClinicalSnapshot(get());
-    const result = removeLedgerObservation(narrativeFromState(get()), get().fieldProvenance, toLedgerPatch(patch));
+    // Computed BEFORE the removal is applied, from the set that survives it. Suppression is a property
+    // of which abnormalities the radiologist is still holding, never of which patch happened to
+    // delete the sentence first — so a normal shared by two tiles stays retired while either is held.
+    const survivingPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
+    const canvas = get().startingCanvasBaseline;
+    const result = removeLedgerObservation(
+      narrativeFromState(get()),
+      get().fieldProvenance,
+      toLedgerPatch(patch),
+      {
+        surviving: activeSuppressors(survivingPatches),
+        canonicalFindings: canonicalOrderFromText(canvas?.findings ?? null),
+        canonicalImpression: canonicalOrderFromText(canvas?.impression ?? null),
+      },
+    );
     let nextMs = get().structuredViewerMeasurements;
     if (remapTo) {
       nextMs = remapStructuredMeasurementsObservationId(nextMs, id, remapTo).state;
     } else {
       nextMs = detachStructuredMeasurementsFromObservation(nextMs, id).state;
     }
-    let nextPatches = get().appliedPathologyPatches.filter((p) => p.id !== id);
+    let nextPatches = survivingPatches;
     let nextProvenance = result.provenance;
     const suspendedBaseline = patch.observation
       ? nextPatches.find((candidate) =>
