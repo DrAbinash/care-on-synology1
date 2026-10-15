@@ -27,6 +27,7 @@
     "db:bootstrap": "node scripts/apply-all-migrations.mjs",
     "operations:verify-deployment": "node scripts/verify-deployment.mjs",
     "ops:preflight": "node scripts/ops-preflight.mjs",
+    "ops:hope-route": "node scripts/hope-route-probe.mjs",
     "ops:backup-inventory": "node scripts/ops-backup-inventory.mjs",
     "operations:verify-ollama-ai-draft": "node scripts/verify-ollama-ai-draft.mjs",
     "validate:radiology-content": "pnpm --filter @workspace/scripts run validate:radiology-content",
