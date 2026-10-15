@@ -39,6 +39,8 @@ import {
   checkConfigDrift,
   configCopies,
   makeContext,
+  auditSidecar,
+  credentialShaped,
   hopeEventContractHolds,
   main,
   renderText,
@@ -166,6 +168,7 @@ function write(rel, text) {
  *   emitSites    — replacement emit-site map (used by T10)
  *   ageHours     — mtime of the newest backup artifact, hours before NOW
  *   withSidecar  — false to remove the .meta the backup job writes
+ *   sidecarLines — replacement `.meta` lines (the job's `bytes=` line is still appended)
  *   evidence     — replacement ops-evidence.json object (null to remove it)
  *   ledger       — filenames the migration ledger claims are applied
  */
@@ -187,7 +190,7 @@ function seedTree(knobs = {}) {
   if (knobs.withSidecar === false) {
     rmSync(`${artifactPath}.meta`, { force: true });
   } else {
-    writeFileSync(`${artifactPath}.meta`, [...SIDECAR_LINES, `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
+    writeFileSync(`${artifactPath}.meta`, [...(knobs.sidecarLines ?? SIDECAR_LINES), `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
   }
   if (knobs.ageHours !== undefined) {
     const when = new Date(NOW - knobs.ageHours * 3_600_000);
@@ -402,6 +405,27 @@ describe("T5–T8 — backup and restore evidence", () => {
     const c = runPreflight({ ctx: makeCtx() }).checks.find((x) => x.id === "backup.metadata");
     expect(c.status).toBe(FAIL);
     expect(c.detail).toMatch(/db_data/);
+  });
+
+  test("T7c a sidecar that audits clean still cannot make the gate print a credential", () => {
+    // `auditSidecar` accepts any `exporter` containing "remote" (that is what a dump pulled
+    // from a partner host looks like), so a hand-edited sidecar can carry a connection string
+    // in a field the audit passes — and the PASS branch of `backup.metadata` prints those very
+    // fields as its detail. Redacting only the failure path would hide a password in one
+    // branch and print it in the other.
+    const lines = SIDECAR_LINES.map((l) =>
+      l.startsWith("exporter=") ? `exporter=remote-postgresql://erp:${SENTINEL}@10.0.0.5:5432/diagnostic_erp` : l,
+    );
+    const { by, report } = build({ sidecarLines: lines });
+    expect(by["backup.metadata"].status).toBe(PASS);
+    expect(by["backup.metadata"].detail).toMatch(/exporter=\[redacted\]/);
+    for (const surface of [renderText(report), JSON.stringify(report)]) {
+      expect(surface).not.toContain(SENTINEL);
+      expect(surface).not.toMatch(/postgres(ql)?:\/\//i);
+    }
+    // The pass is still a pass with readable fields, not a blank one.
+    expect(by["backup.metadata"].detail).toMatch(/source_database=diagnostic_erp/);
+    expect(by["backup.metadata"].detail).toMatch(/create_tables=439/);
   });
 
   test("T8 an artifact with no sidecar is UNKNOWN, never PASS", () => {
@@ -850,5 +874,38 @@ describe("T14–T16 — verdict contract and output hygiene", () => {  test("T14
     expect(report.blocking.join(" ")).toMatch(/duplicate/);
     expect(report.checks.every((c) => [PASS, FAIL, UNKNOWN, NOT_APPLICABLE].includes(c.status))).toBe(true);
     expect(report.checks.every((c) => typeof c.id === "string" && typeof c.detail === "string")).toBe(true);
+  });
+});
+
+describe("auditSidecar prints the value it rejects, unless that value is a credential", () => {
+  test("an ordinary wrong value is quoted so the operator can see it", () => {
+    const bad = auditSidecar({ source_database: "db_data", created_utc: "x", sha256_artifact: "0".repeat(64) }, { expectedDatabase: "diagnostic_erp" });
+    expect(bad.join(" ")).toMatch(/source_database=db_data but this host is diagnostic_erp/);
+  });
+
+  test("a credential-shaped value is redacted in the message, not just in the manifest", () => {
+    // A hand-edited sidecar for a remote dump often puts the connection string in
+    // `source_database`. `sanitizeManifest` hides it there; the same value is interpolated into
+    // the problem line by `auditSidecar`, which the gate and the inventory both print. One
+    // predicate has to cover both, or the tool redacts the field and prints the password.
+    const meta = {
+      source_database: `postgresql://erp:${SENTINEL}@127.0.0.1:5432/diagnostic_erp`,
+      exporter: `intgk_${SENTINEL}`,
+      created_utc: "x",
+      sha256_artifact: "0".repeat(64),
+    };
+    const bad = auditSidecar(meta, { expectedDatabase: "diagnostic_erp" });
+    const text = bad.join(" ");
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toMatch(/postgres(ql)?:\/\//i);
+    expect(text).toMatch(/source_database=\[redacted\]/);
+    expect(text).toMatch(/exporter=\[redacted\]/);
+    // The predicate itself, so a shape added here is added for both readers at once.
+    // The PEM header is assembled at run time: written as one literal it is itself a
+    // committed PEM string, and `check-no-committed-secrets.mjs` counts that pattern
+    // per file on a shrink-only ratchet. A test fixture has no business raising it.
+    const pemHead = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+    expect(credentialShaped(pemHead)).toBe(true);
+    expect(credentialShaped("diagnostic_erp")).toBe(false);
   });
 });

@@ -22,6 +22,24 @@ directory, the migration ledger and the external-result-link audit, and answers
 one question — **is this box ready to deploy?** — as `READY`, `NOT_READY` or
 `INSUFFICIENT_EVIDENCE` (exit 0 / 1 / 2).
 
+It deliberately looks at the **newest** artifact only, because that is the one a
+deploy is made against. Two other questions are not its job, and asking them of it
+would make the gate disagree with itself:
+
+```sh
+pnpm ops:backup-inventory          # every artifact that exists, what each sidecar
+                                   # claims, which checksums were recomputed, which
+                                   # restores were ever proved, and which days are
+                                   # missing from the retained span
+```
+
+`scripts/ops-backup-inventory.mjs` is read-only in the same way and reaches **no
+verdict** — it is an inventory, not a second gate. What it can tell you that a file
+count cannot: four dumps from one night are one day of coverage, a `.meta` whose dump
+is gone means retention deleted something it should not have, and a directory full of
+perfect-looking artifacts can still contain no proven restore. Which datasets the
+`pg_dump` in front of you does **not** contain is `docs/CARE_ERP_BACKUP_COVERAGE.md`.
+
 Read the status words as what they are:
 
 * **PASS** — the gate measured it and it is right.
