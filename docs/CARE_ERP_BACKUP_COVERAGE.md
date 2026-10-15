@@ -72,6 +72,51 @@ inspection asks for.
 | Status | **COVERED** for the dump path. **NOT PROVEN** for restorability |
 | How it is still lost | `docker compose down -v`, `docker volume rm care_main_db_data`, or `docker volume prune` on this box — `db_data` is `external` but not immune. Guarded by prose only (`docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md:186`), and the loss is total if the dump destination is on the same volume set |
 
+## 1a. What is actually on the clinic box — measured read-only 2026-10-15
+
+Everything above describes what the repository *defines*. This section is what the
+DS1522+ *holds*, listed as the `abinash` SSH account with no sudo: file names, sizes
+and dates only, no contents read, nothing written, nothing deleted. It changes the
+reading of the table above, which is why it is here rather than in a footnote.
+
+| Destination | Measured |
+|---|---|
+| `/volume1/backup/care-erp/db` | **The live CARE destination.** 1277 files, every one named `backup_DB_<YYYY-MM-DDTHH-MM-SS-mmmZ>.sql.enc`. Newest `backup_DB_2026-10-15T09-31-02-967Z.sql.enc`, oldest 2026-09-15 → about **hourly**, ~30-day retention, and **two files within the same hour** (e.g. `…T08-30-13-062Z` and `…T08-31-32-149Z`), which is roughly double the storage a single job would need. Sizes grew from ~425 MB (15 Sep) to ~818 MB (15 Oct). `owner root:root`, mode `644`. **Zero `.meta` sidecars** |
+| `/volume1/docker/backups/postgres/care` | 62 files `care_erp_<YYYY-MM-DD>_<HH-MM>.dump`, and **20 of them are 0 bytes — including six consecutive nights, 2026-10-10 through 2026-10-15.** `owner abinash:users`, mode `777`. The job exits, the file appears with today's name, and there is nothing in it |
+| `/volume1/docker/backups/postgres/hope` | 62 files `hope_erp_…dump`, 2 zero-byte. HOPE's database, not CARE's — and not this gate's job |
+| `/volume1/docker/backups/{auto-db,config,db}` | Stale hourly sets, last write 2026-08-26T18:30 (111 / 635 / 1270 files). These are the predecessors of the live `care-erp/db` destination |
+| `/volume1/docker/backups/posgres/` | A misspelled second tree holding `redis`, `synoscheduler` and an empty `care` |
+
+Three consequences, stated plainly:
+
+1. **`synology-nas-backup.sh` is not what runs on this box.** No `caredeoghar_*`
+   artifact exists in any destination above. The script, the `.meta` sidecar it writes,
+   and every integrity claim that depends on that sidecar describe a job that is not
+   producing the files the clinic actually has. The live writer produces
+   `backup_DB_*.sql.enc` with no sidecar at all, so `backup.metadata` reports UNKNOWN
+   about the newest real artifact — correctly, and that UNKNOWN is now documented here
+   instead of being argued away.
+2. **A zero-byte artifact used to count as a backup.** `backup.artifacts_present`
+   passed on any file it recognised, and freshness was dated from the newest file's
+   mtime whatever its size — so the six empty nights above read as a healthy week of
+   backups. Now: an empty artifact is `INVALID` in
+   `node scripts/ops-backup-inventory.mjs`, is excluded from the coverage span, and
+   in the gate the newest **non-empty** artifact is what freshness is measured
+   against, with the empty newer file named in the same line. A directory in which
+   every artifact is empty is `FAIL`.
+3. **The dates came from mtimes because no parser understood the names.** The live
+   files carry ISO dates (`2026-10-15T09-31-02-967Z`); the old parser matched only a
+   run of eight digits, so it fitted just the `caredeoghar_20261015_023000`
+   convention this box does not use. The inventory now reads ISO and compact names
+   alike, validates them against the real calendar (`2026-02-30` is not a day), and
+   prints which source answered — `sidecar=N, name=N, mtime=N` — because an
+   mtime-dated tree describes when files were copied, not when they were taken.
+
+Not changed here, and left as owner decisions: which job should own the CARE dump,
+whether the duplicate hourly writer is stopped (it doubles ~800 MB every hour it
+runs), whether `.enc` artifacts get sidecars, and what the retention target is.
+Nothing above was deleted, moved or replaced.
+
 ## 2. Signed and finalized reports
 
 Two different things wear the same name; they have different coverage.

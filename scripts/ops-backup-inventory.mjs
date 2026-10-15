@@ -80,13 +80,52 @@ import {
 
 const DAY_MS = 86_400_000;
 
-/** The UTC day an artifact belongs to: its own record first, then its name, then its mtime. */
-function artifactDay(a, meta) {
+/** A real calendar day in the narrow band a backup can plausibly carry. */
+export function isPlausibleDay(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text ?? ""));
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const t = Date.UTC(y, mo - 1, d);
+  const back = new Date(t);
+  // Round-trip rejects 2026-02-31, month 13, day 40 — the digits that an
+  // unvalidated regex happily turns into a coverage day.
+  return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d;
+}
+
+/**
+ * The UTC day an artifact belongs to, from its own record first: the sidecar, then
+ * the name, then the modification time — and WHICH of those answered is returned,
+ * because a coverage span built from mtimes describes when files were copied, not
+ * when the clinic was backed up. A restored or rsynced tree has fresh mtimes on
+ * every file in it.
+ *
+ * The name patterns are the ones actually present on the clinic box, measured
+ * 2026-10-15 in `/volume1/backup/care-erp/db`, `/volume1/docker/backups/*`:
+ *   backup_DB_2026-10-15T09-31-02-967Z.sql.enc   (ISO date, then -separated time)
+ *   caredeoghar_20261015_023000.sql.gz           (compact, this is what the old
+ *                                                  parser matched — and nothing else)
+ *   care_erp_2026-10-15_02-15.dump               (dated subdirectory job)
+ *   care_db_daily_2026-10-15.sql.gz              (day only, dashed)
+ * A bare run of eight digits is no longer trusted: `backup_1762394400.sql` is a
+ * unix timestamp and used to become the day 1762-39-44, which then poisoned the
+ * oldest/newest span and reported months of missing backups.
+ */
+export function artifactDay(a, meta) {
   const fromMeta = String(meta?.created_utc || "").slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(fromMeta)) return fromMeta;
-  const fromName = a.name.match(/(\d{4})(\d{2})(\d{2})/);
-  if (fromName) return `${fromName[1]}-${fromName[2]}-${fromName[3]}`;
-  return a.mtimeIso.slice(0, 10);
+  if (isPlausibleDay(fromMeta)) return { day: fromMeta, source: "sidecar" };
+
+  const name = String(a?.name ?? "");
+  const dashed = name.match(/(2\d{3})-(\d{2})-(\d{2})/);
+  if (dashed && isPlausibleDay(`${dashed[1]}-${dashed[2]}-${dashed[3]}`)) {
+    return { day: `${dashed[1]}-${dashed[2]}-${dashed[3]}`, source: "name" };
+  }
+  const compact = name.match(/(2\d{3})(\d{2})(\d{2})/);
+  if (compact && isPlausibleDay(`${compact[1]}-${compact[2]}-${compact[3]}`)) {
+    return { day: `${compact[1]}-${compact[2]}-${compact[3]}`, source: "name" };
+  }
+
+  return { day: String(a?.mtimeIso || "").slice(0, 10), source: "mtime" };
 }
 
 /**
@@ -169,19 +208,46 @@ export function reportName(name) {
 const MANIFEST_FIELDS = [
   "artifact", "created_utc", "source_container", "source_database", "server_version",
   "exporter", "schema_complete", "create_tables", "encrypted", "bytes",
-  "sha256_sql_gzipped", "sha256_artifact",
+  "sha256_sql_gzipped", "sha256_artifact", "census_tables", "census_error",
 ];
 const SECRET_KEY = /(passphrase|password|secret|token|apikey|api_key|credential|connection|uri|url|key)$/i;
+
+/**
+ * The backup-time census: `census_before.<table>` / `census_after.<table>`, each a
+ * bracketed `rows|min|max|idsum`. Keyed per table, so they cannot be listed in a
+ * fixed allowlist — instead the key AND the value are both shape-checked, and only
+ * an all-digits payload survives. A sidecar is machine-written today; a key shaped
+ * like a census line but holding a token must not become the one field that turns
+ * an inventory dump into a credential dump.
+ */
+const CENSUS_KEY = /^census_(before|after)\.([a-z_][a-z0-9_]*)$/;
+const CENSUS_VALUE = /^\d+\|\d+\|\d+\|\d+$/;
 
 export function sanitizeManifest(meta) {
   const out = {};
   let hidden = 0;
   for (const [k, v] of Object.entries(meta ?? {})) {
+    const census = CENSUS_KEY.exec(k);
+    if (census) {
+      if (CENSUS_VALUE.test(String(v))) out[k] = String(v);
+      else hidden++;
+      continue;
+    }
     if (!MANIFEST_FIELDS.includes(k)) { hidden++; continue; }
     out[k] = SECRET_KEY.test(k) || credentialShaped(v) ? "[redacted]" : v;
   }
   if (hidden) out.redacted_fields = hidden;
   return out;
+}
+
+/**
+ * How many tables this artifact carries backup-time evidence for — the pre-dump
+ * half only, because a bracket with one edge missing is not a bracket and the
+ * verifier refuses it too.
+ */
+export function censusCoverage(manifest) {
+  if (!manifest) return 0;
+  return Object.keys(manifest).filter((k) => CENSUS_KEY.test(k) && k.startsWith("census_before.")).length;
 }
 
 /**
@@ -217,7 +283,9 @@ export async function inspect(ctx, roots, opts = {}) {
       mtimeIso,
       ageHours: Number((((now - a.mtimeMs) / 3.6e6)).toFixed(1)),
       day: mtimeIso.slice(0, 10),
+      daySource: "mtime",
       manifest: null,
+      census: 0,
       problems: [],
       checksum: "absent",
       recordedSha: null,
@@ -244,6 +312,7 @@ export async function inspect(ctx, roots, opts = {}) {
         // the report, but it must still be checked where it matters (`sha256_artifact`
         // format, `bytes` against the real file, `source_database` against this host).
         row.manifest = sanitizeManifest(meta);
+        row.census = censusCoverage(row.manifest);
         row.recordedSha = meta.sha256_artifact ?? null;
         row.checksum = meta.sha256_artifact ? "recorded" : "absent";
         row.problems.push(...auditSidecar(meta, { actualBytes: a.bytes, expectedDatabase }));
@@ -251,7 +320,17 @@ export async function inspect(ctx, roots, opts = {}) {
       }
     }
 
-    row.day = artifactDay(a, row.manifest);
+    const dated = artifactDay(a, row.manifest);
+    row.day = dated.day;
+    row.daySource = dated.source;
+    // An empty file is the worst kind of green: the job exits 0, the log says
+    // success, the file exists with today's name, and there is nothing in it.
+    // Measured 2026-10-15 in /volume1/docker/backups/postgres/care — 20 of 62 dumps
+    // are 0 bytes, including six consecutive nights.
+    if (a.bytes === 0) {
+      row.problems.push("0 bytes — the dump produced nothing; this artifact cannot restore");
+      row.status = "INVALID";
+    }
     // A file dated ahead of the clock is not a cosmetic problem: the retention
     // pass is `find -mtime +N -delete`, so a future mtime makes that artifact
     // invisible to its own cleanup, and an age computed against it goes negative.
@@ -302,10 +381,14 @@ export async function inspect(ctx, roots, opts = {}) {
 
   // Day coverage. A directory can be full of Tuesday's four attempts and have
   // nothing from Monday, which an "N artifacts" count hides completely.
-  const days = [...new Set(rows.map((r) => r.day))].sort();
+  const restorableRows = rows.filter((r) => r.bytes > 0);
+  const days = [...new Set(restorableRows.map((r) => r.day))].sort();
   const coverage = days.length ? coverageGaps(days, now) : null;
 
   const counts = rows.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
+  // Reported beside the status counts because it is the number that says how much
+  // of this fleet can answer "complete?", as opposed to "restorable?".
+  const censusBearing = rows.filter((r) => r.census > 0).length;
   const recorded = rowOrNull(recordedRestore);
   const restoreEvidence = {
     // The recorded name came from an operator typing `--artifact`, not from the job, so it
@@ -324,6 +407,7 @@ export async function inspect(ctx, roots, opts = {}) {
     maxAgeHours: maxAgeH,
     artifacts: rows,
     counts,
+    censusBearing,
     interrupted: inv.partials.map((p) => ({ artifact: reportName(p.name), bytes: p.bytes, mtimeIso: new Date(p.mtimeMs).toISOString() })),
     orphanSidecars: inv.orphanSidecars.map((s) => reportName(s.name)),
     subdirectories: inv.subdirs,
@@ -369,8 +453,8 @@ export function render(inv) {
       ? "No restorable artifact in the directory. A directory that exists and holds nothing is the finding."
       : "No backup directory could be read from here. That is UNKNOWN about the backups, not evidence that there are none — run this on the NAS, or set BACKUP_DIR.");
   } else {
-    const head = ["artifact", "size", "age", "source_database", "tables", "manifest", "checksum", "restored", "status"];
-    const w = [40, 9, 7, 17, 7, 10, 9, 12, 10];
+    const head = ["artifact", "size", "age", "source_database", "tables", "manifest", "census", "checksum", "restored", "status"];
+    const w = [40, 9, 7, 17, 7, 10, 7, 9, 12, 10];
     lines.push(head.map((h, i) => h.padEnd(w[i])).join(" "));
     for (const r of inv.artifacts) {
       lines.push([
@@ -380,6 +464,11 @@ export function render(inv) {
         (r.manifest?.source_database ?? "-"),
         (r.manifest?.create_tables ?? "-"),
         r.manifest ? "yes" : "NO",
+        // How many tables this artifact can prove it held at dump time. A column of
+        // `no` is the honest picture of a backup fleet that cannot answer the
+        // completeness question, and it is the number that rises nightly once the
+        // census-bearing job is the one running.
+        r.census ? `${r.census}t` : "no",
         r.checksum,
         r.restored,
         r.status,
@@ -391,7 +480,12 @@ export function render(inv) {
   const c = inv.counts;
   lines.push(`counts: ${Object.entries(c).map(([k, v]) => `${k} ${v}`).join(", ") || "no artifacts"}`
     + ` · interrupted .partial: ${inv.interrupted.length}`
-    + ` · orphan .meta: ${inv.orphanSidecars.length}`);
+    + ` · orphan .meta: ${inv.orphanSidecars.length}`
+    + ` · census-bearing: ${inv.censusBearing}/${inv.artifacts.length}`);
+  if (inv.artifacts.length && inv.censusBearing === 0) {
+    lines.push("  NONE of these artifacts carries a backup-time census, so no restore of any of them can prove it held");
+    lines.push("  what the database had when the dump was taken — only that it restored. See synology-nas-backup.sh.");
+  }
   if (inv.interrupted.length) {
     lines.push("  A .partial left behind means a job died mid-write. It is not a backup and must never be restored from.");
     for (const p of inv.interrupted) lines.push(`    ${p.artifact} (${(p.bytes / 1024 / 1024).toFixed(1)}M, ${p.mtimeIso})`);
@@ -406,7 +500,18 @@ export function render(inv) {
     lines.push("  If the job files dumps into dated folders, BACKUP_DIR must point at them — otherwise this list says \"no artifacts\" about backups that exist.");
   }
   if (inv.coverage) {
-    lines.push(`coverage: ${inv.coverage.distinctDays} distinct day(s) from ${inv.coverage.oldest} to ${inv.coverage.newest}`);
+    const bySource = inv.artifacts.reduce((acc, r) => {
+      acc[r.daySource ?? "mtime"] = (acc[r.daySource ?? "mtime"] || 0) + 1;
+      return acc;
+    }, {});
+    const empties = inv.artifacts.filter((r) => r.bytes === 0).length;
+    lines.push(`coverage: ${inv.coverage.distinctDays} distinct day(s) from ${inv.coverage.oldest} to ${inv.coverage.newest}`
+      + ` — dated by sidecar=${bySource.sidecar || 0}, name=${bySource.name || 0}, mtime=${bySource.mtime || 0}`
+      + (empties ? `, and ${empties} zero-byte artifact(s) excluded from it` : ""));
+    if (bySource.mtime) {
+      lines.push("  mtime-dated artifact(s): their own name and sidecar carried no date, so the day this tool reports is when the FILE was written — a copied or restored tree reports its copy date, not the backup's.");
+    }
+    if (empties) lines.push("  zero-byte artifact(s) cannot restore, so they are listed with their status and never counted as a day of coverage.");
     if (inv.coverage.missing.length) {
       lines.push(`  MISSING ${inv.coverage.missing.length} day(s) in that span: ${inv.coverage.missing.slice(0, 14).join(", ")}${inv.coverage.missing.length > 14 ? " …" : ""}`);
       lines.push("  A gap means no artifact for that date, so nothing from it is recoverable. A directory full of one day's retries looks healthy by count and is not.");

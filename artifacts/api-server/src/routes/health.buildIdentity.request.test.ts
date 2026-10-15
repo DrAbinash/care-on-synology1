@@ -24,16 +24,29 @@ describe.skipIf(!hasDatabaseUrl())("GET /api/health build identity", () => {
   it("returns status ok and build.commit without leaking env secrets", async () => {
     const res = await request(app).get("/api/health").expect(200);
     expect(res.body.status).toBe("ok");
-    // Exactly the three identity fields — nothing else may ride out of /api/health.
+    // The exact fields that may ride out of /api/health: the identity the image
+    // resolved, the stamp .env declared, and the version it carried with it. A new
+    // field has to be added here on purpose, so this list is the secret guard.
     expect(Object.keys(res.body.build).sort()).toEqual([
       "artifactSha256",
+      "buildNumber",
       "commit",
+      "declaredGitCommit",
+      "gitBranch",
+      "identitySource",
       "imageBuiltAt",
+      "staleStampDetected",
+      "version",
     ]);
     expect(res.body.build.commit).toBe("0616667905b5");
+    // No build-info.json in this test process, so the commit came from the env
+    // stamp alone. `identitySource` is the field that stops that from reading as
+    // proof: it must say "declared", never "build-context-git".
+    expect(res.body.build.identitySource).toBe("build-arg-declared");
+    expect(res.body.build.staleStampDetected).toBe(false);
     // Self-derived fields stay null-or-text: a missing build-info.json must not
     // be dressed up as a value.
-    for (const key of ["artifactSha256", "imageBuiltAt"]) {
+    for (const key of ["artifactSha256", "imageBuiltAt", "declaredGitCommit", "gitBranch", "version", "buildNumber"]) {
       const value = res.body.build[key];
       expect(value === null || (typeof value === "string" && value.length > 0)).toBe(true);
     }

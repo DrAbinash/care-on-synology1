@@ -73,6 +73,70 @@ ACTUAL_DB=$(docker exec "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -Atc
 
 SOURCE_VERSION=$(docker exec "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -Atc "show server_version" 2>/dev/null || echo "unknown")
 
+# ─── 1b. WHAT THE DATABASE HELD, RECORDED AT DUMP TIME ───────────────────────
+# A restore proof has to answer "did the artifact contain what the database held
+# when it was taken?", and the only honest reference for that is a measurement made
+# at that moment. Without one, completeness is judged against the LIVE table some
+# later day — which cannot see history deleted after the dump, and calls a rebuilt
+# sequence or a wrong-database artifact a pass as long as the top id looks plausible.
+#
+# So: census the core tables immediately before the dump and immediately after it.
+# pg_dump's contents are a consistent snapshot somewhere inside that bracket, so the
+# artifact is required to fall inside it. `restoreVerification.ts` grades that and
+# exports `censusSql()`, which `scripts/backupScripts.test.mjs` pins to this
+# template byte-for-byte — two definitions of a census is how the check dies.
+#
+# Counts, min/max ids and an id sum only. No patient data, no identifiers, nothing
+# that has to be redacted, and nothing that grows the artifact.
+CENSUS_TABLES_DEFAULT="patient_reports radiology_report_drafts patient_report_amendments report_finding_instances radiology_worklist audit_logs radiology_redelivery_obligations"
+CENSUS_TABLES="${CARE_BACKUP_CENSUS_TABLES:-${CENSUS_TABLES_DEFAULT}}"
+CENSUS_ROW_TEMPLATE=$'SELECT \'@T@\' AS census_table, count(*)::bigint AS row_count, coalesce(min("id"), 0)::bigint AS id_min, coalesce(max("id"), 0)::bigint AS id_max, coalesce(sum("id"), 0)::numeric AS id_sum FROM "@T@"'
+
+census_sql(){
+  local sql="" t
+  for t in ${CENSUS_TABLES}; do
+    if [ -n "${sql}" ]; then sql="${sql} UNION ALL "; fi
+    sql="${sql}${CENSUS_ROW_TEMPLATE//@T@/${t}}"
+  done
+  printf '%s' "${sql}"
+}
+
+# Emits `census_<which>.<table>=rows|min|max|idsum`, one line per table. Prints
+# nothing and returns non-zero on any failure: the census must never be the reason
+# a nightly backup does not happen.
+take_census(){
+  local which="$1" raw t r mn mx s
+  if ! raw=$(docker exec "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -AtF'|' -c "$(census_sql)" 2>/dev/null); then
+    return 1
+  fi
+  if [ -z "${raw}" ]; then return 1; fi
+  while IFS='|' read -r t r mn mx s; do
+    if [ -z "${t}" ]; then continue; fi
+    echo "census_${which}.${t}=${r}|${mn}|${mx}|${s}"
+  done <<< "${raw}"
+}
+
+# Both halves or neither. A `before` without an `after` would make the verifier
+# demand the artifact hold EXACTLY the pre-dump row count, and on a busy clinic a
+# dump that ran while bills were being written would then fail a perfect backup.
+census_block(){
+  local before="$1" after="$2" t
+  if [ -z "${before}" ] || [ -z "${after}" ]; then return 1; fi
+  for t in ${CENSUS_TABLES}; do
+    if ! printf '%s\n' "${before}" | grep -q "^census_before\.${t}="; then return 1; fi
+    if ! printf '%s\n' "${after}"  | grep -q "^census_after\.${t}=";  then return 1; fi
+  done
+  printf '%s\n%s\n' "${before}" "${after}"
+}
+
+CENSUS_ERROR=""
+CENSUS_META=""
+CENSUS_BEFORE=$(take_census before) || CENSUS_BEFORE=""
+if [ -z "${CENSUS_BEFORE}" ]; then
+  CENSUS_ERROR="no pre-dump census could be taken"
+  log "WARNING: ${CENSUS_ERROR} — the backup proceeds, but its completeness will be judged by the live high-water bound alone"
+fi
+
 # ─── 2. DUMP INTO A PARTIAL FILE ─────────────────────────────────────────────
 # Published only after every check below passes, so a crashed or truncated run can
 # never leave something named like a backup in the restore operator's way.
@@ -83,6 +147,12 @@ fi
 if [ "${PIPESTATUS[0]:-1}" -ne 0 ]; then
   fail "pg_dump exited non-zero — discarding truncated dump"
 fi
+
+# The far edge of the census bracket, taken before the artifact is re-read for the
+# integrity checks below: every second between the dump finishing and this query
+# running is a second the clinic kept writing into, and a wide bracket is a census
+# that proves less.
+CENSUS_AFTER=$(take_census after) || CENSUS_AFTER=""
 
 # ─── 3. VERIFY THE ARTIFACT, NOT JUST THE COMPRESSION ────────────────────────
 # `gzip -t` proves the bytes decompress. It does not prove PostgreSQL can restore
@@ -151,6 +221,11 @@ fi
 
 # ─── 6b. THE SIDECAR RECORD ──────────────────────────────────────────────────
 META="${FINAL}.meta"
+CENSUS_META=$(census_block "${CENSUS_BEFORE}" "${CENSUS_AFTER}") || CENSUS_META=""
+if [ -z "${CENSUS_META}" ] && [ -z "${CENSUS_ERROR}" ]; then
+  CENSUS_ERROR="no post-dump census could be taken, so the bracket is incomplete"
+  log "WARNING: ${CENSUS_ERROR}"
+fi
 # sha256_artifact is over the file the operator will actually find (the .enc when
 # encrypted); sha256_sql_gzipped is over the dump itself. verify-backup-restore.sh
 # checks the first one before it spends ten minutes restoring a copy that was
@@ -168,6 +243,13 @@ META="${FINAL}.meta"
   echo "encrypted=$([ -n "${BACKUP_PASSPHRASE}" ] && echo yes || echo no)"
   echo "sha256_sql_gzipped=${SHA}"
   echo "sha256_artifact=$(sha256sum < "${FINAL}" | cut -d' ' -f1)"
+  if [ -n "${CENSUS_META}" ]; then
+    printf '%s\n' "${CENSUS_META}"
+    echo "census_tables=$(printf '%s\n' "${CENSUS_META}" | sed -n 's/^census_before\.\([a-z_0-9]*\)=.*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  fi
+  if [ -n "${CENSUS_ERROR}" ]; then
+    echo "census_error=${CENSUS_ERROR}"
+  fi
 } > "${META}.partial" && mv "${META}.partial" "${META}" || fail "could not write ${META}"
 
 # ─── 7. RETENTION, WITH A FLOOR ──────────────────────────────────────────────
