@@ -215,3 +215,58 @@ caller unwired — **9 killed, 0 survivors**, control 31 green over
 `undeclaredPairPreservation` + `siblingContradiction.ownership`. Whole Stage C sweep after the change:
 **76 files, 1764 tests, all passing**; `tsc -p artifacts/diagnostic-erp` stays at the 61 pre-existing
 errors, none in the four files touched.
+
+## 9. Phase 3 closed — the compositions a radiologist actually builds (measured, then two fixes)
+
+`clinicalSelection/multiTilePreservation.test.ts` drives the shipped store over the shapes the journey
+is made of, using **shipped tiles clicked onto the shipped per-level "Standard Normal" documents** — no
+invented wording, because invented wording tests invented behaviour:
+
+three levels of one family (disc bulge C4-C5 / C5-C6 / C6-C7) · three concepts at one level (herniation +
+desiccation + cord compression at C5-C6, and the same three at L4-L5) · both sides of one box (foraminal
+stenosis C5-C6, left then right) · the same slot named twice (herniation → extrusion; mild → moderate
+stenosis) — the one shape where replacing is correct · removal in every order · a manual sentence written
+into the middle of it. Every order assertion compares the *set of finding lines*, sorted: an observation's
+sentence lands where its level block sits, so line position legitimately varies while the claims must not.
+
+Two defects surfaced, both reproduced with the Phase 5 fence switched off (`liveRows: []`) to prove they
+predate it — identical output, so neither is a regression from this branch.
+
+**A — one box, two sides, one ledger row.** `quickSelectTilePayload.ts` minted `qs-<tile.id>` for every
+click, while the engine resolves left and right into different `slotKey`s and the report the radiologist
+is writing says both. The second click therefore overwrote the first row in the ledger (`dropIds` and the
+row filter both key on the id) and left its sentence on the page. Measured on shipped data: Findings
+carried "Left neural foraminal stenosis at C5-C6." **and** "Right neural foraminal stenosis at C5-C6.",
+the Impression carried both, the ledger held one row recorded as right — so clicking the box off deleted
+the right statement and left the left one printed, saved, and no longer backed by any observation. A
+withdrawn clinical claim that cannot be withdrawn. The row identity now carries the side the click was
+made with (`quickSelectRowId`), and the strip's chip reads as applied for any side of the box
+(`quickSelectRowBelongsTo`). A tile that asks for no side keeps the exact id it has always had, so every
+deselect-by-tile caller is untouched.
+
+**B — a deselected level never gave its normal back.** `falsifies` route 2 (concept-level falsification)
+had no level, so a bulge at C5-C6 also falsified the C4-C5 normal. Retirement at click time was already
+level-correct (`applyPathologyPatch` checks the slot), and each row recorded its own
+`replacedBaseline` — but on removal the survivor set said the sentence was still contradicted, the record
+was filtered out, and it left with the row. Measured: three levels of disc bulge, all three boxes clicked
+off, and the report permanently stated nothing about the C4-C5 and C5-C6 discs while C6-C7's normal came
+back. The claim now carries the level it resolved to, and the guard fires **only** when both sides name a
+level: a study-wide baseline ("No spondylolisthesis is seen.") stays falsified by any observation about
+that concept, an observation whose level never resolved keeps the behaviour it had, and a regional bucket
+("lumbar", from whole-spine screening) covers every level inside it. Guessing a level boundary would leave
+a contradicted normal printed beside the abnormality that contradicts it, which is the worse failure.
+
+**What deliberately stayed.** The severity ladder and same-slot replacement (herniation → extrusion at one
+level still yields one row and one statement); shared study-wide normals under the Phase 3-9 set-based
+rule — `baselineReplaces` is route 1 and returns before the level guard, so
+`sharedBaselineRetirement.test.ts` is unmodified and passing; the §8 residual, untouched.
+
+**Evidence.** 15 Phase 3 composition tests + 6 new unit tests on the two oracles
+(`normalSuppression.test.ts`, `quickSelectTilePayload.test.ts`). The six suites that pin these two fixes:
+**111 passed**. Mutation battery `tmp/phase3-mutants.py`: **6 mutants, 6 killed** — row id ignoring the
+side, chip state matching only the exact id, `falsifies` without the level scope, the scope forgetting
+regional buckets, the ledger claim dropping its level, and the guard firing where it must not. Full sweep
+`tmp/stagec-all-tests.txt` plus the new file: **77 files, 1784 tests, 0 failures** (with `DATABASE_URL`
+pointed at the scratch cluster; without it `applyChangePlan.safety.test.ts` cannot import
+`@workspace/ai-providers` and errors at collection, which is environmental, not a verdict). No TypeScript
+compiler is installed in this worktree, so the type-level check is CI's `pnpm typecheck`, not a local run.

@@ -35,6 +35,38 @@ describe("Stage C-1 · falsification is a property of one observation", () => {
     expect(falsifies(LESION_A, NORMAL_STENOSIS)).toBe(false);
   });
 
+  it("scopes a concept-level claim to the level the baseline names", () => {
+    // A three-level cervical composition retires each level's own normal at click time
+    // and must be able to hand each one back when that box is clicked off. The oracle
+    // had no level, so a bulge at C5-C6 also falsified the C4-C5 normal, and once that
+    // row's record left with it the C4-C5 sentence was gone from the report for good.
+    const BULGE_C56 = { concept: "disc_contour", level: "C5-C6" };
+    expect(falsifies(BULGE_C56, "C5-C6: No significant disc bulge or protrusion is seen.")).toBe(true);
+    expect(falsifies(BULGE_C56, "L4-L5: No significant disc bulge or protrusion is seen.")).toBe(false);
+  });
+
+  it("keeps a declared study-wide claim falsifying, whatever level the observation carries", () => {
+    // The shared-baseline fix routes through `baselineReplaces`, not the concept oracle, so
+    // a level must not give it an escape hatch: two fractures at two levels still hold one
+    // declared vertebral-body normal false, and it returns only when the last of them goes.
+    const burst = { baselineReplaces: NORMAL_VERTEBRAE, concept: "burst_fracture", level: "C5-C6" };
+    expect(falsifies(burst, NORMAL_VERTEBRAE)).toBe(true);
+    expect(filterRestorableBaselines([NORMAL_VERTEBRAE], [burst])).toEqual([]);
+  });
+
+  it("falls back to the concept when either side names no level", () => {
+    // Guessing a level boundary here would leave a contradicted normal printed beside
+    // the abnormality that contradicts it, which is the worse failure.
+    expect(falsifies({ concept: "disc_contour" }, "C5-C6: No significant disc bulge or protrusion is seen.")).toBe(true);
+    expect(falsifies({ concept: "disc_contour", level: "C5-C6" }, "No significant disc bulge or protrusion is seen.")).toBe(true);
+  });
+
+  it("reads a regional bucket as covering every level inside that region", () => {
+    // Whole-spine screening observations resolve to a bucket, not a disc space.
+    expect(falsifies({ concept: "disc_contour", level: "lumbar" }, "L4-L5: No significant disc bulge or protrusion is seen.")).toBe(true);
+    expect(falsifies({ concept: "disc_contour", level: "cervical" }, "L4-L5: No significant disc bulge or protrusion is seen.")).toBe(false);
+  });
+
   it("ignores layout differences that are not clinical differences", () => {
     expect(falsifies({ baselineReplaces: `  ${NORMAL_VERTEBRAE}  ` }, NORMAL_VERTEBRAE)).toBe(true);
     expect(falsifies({ baselineReplaces: NORMAL_VERTEBRAE.toLowerCase() }, NORMAL_VERTEBRAE)).toBe(true);
@@ -43,6 +75,13 @@ describe("Stage C-1 · falsification is a property of one observation", () => {
   it("treats an observation declaring nothing as falsifying nothing", () => {
     expect(falsifies({ baselineReplaces: "", concept: null }, NORMAL_VERTEBRAE)).toBe(false);
     expect(falsifies({}, NORMAL_VERTEBRAE)).toBe(false);
+  });
+
+  it("carries the level through from the ledger row", () => {
+    // Without this the guard above can never see a level, and the set the store passes
+    // is exactly the shape a removal is judged against.
+    const rows = [{ id: "r1", observation: { concept: "disc_contour", level: "C5-C6", role: "finding" } }];
+    expect(activeSuppressors(rows)).toEqual([{ baselineReplaces: null, concept: "disc_contour", level: "C5-C6" }]);
   });
 });
 

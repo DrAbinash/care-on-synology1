@@ -17,6 +17,37 @@ import type { QuickSelectParameterValues } from "./quickSelectParameterContract"
 const opt = (v: string | undefined) => (v ?? "").trim() || undefined;
 
 /**
+ * The ledger row one Quick Select box owns for one click.
+ *
+ * A box is not the observation. "Foraminal stenosis C5-C6" clicked with the side set
+ * to Left and the same box clicked with the side set to Right are two claims at two
+ * slots — the engine already resolves them to different `slotKey`s, because
+ * `buildSlotKey` carries laterality — and the report the radiologist is writing says
+ * both. So the row identity carries the side too.
+ *
+ * With one id for both clicks the second click overwrote the first row in the ledger
+ * while its sentence stayed on the page (`dropIds` and the row filter both key on the
+ * id). Measured on shipped data at this branch: Findings carried "Left neural
+ * foraminal stenosis at C5-C6." and "Right neural foraminal stenosis at C5-C6.", the
+ * impression carried both, and the ledger had a single row recorded as right. Clicking
+ * the box off removed the right statement and left the left one in the report with no
+ * observation behind it — a clinical claim the radiologist had already withdrawn, still
+ * printed, still saved, and no longer removable through the ledger.
+ *
+ * Tiles that ask for no side keep the exact id they have always had, so every
+ * deselect-by-tile caller is untouched.
+ */
+export function quickSelectRowId(tileId: string, side?: string): string {
+  const chosen = (side ?? "").trim().toLowerCase();
+  return chosen ? `qs-${tileId}:${chosen}` : `qs-${tileId}`;
+}
+
+/** True for the row this box owns — at any side, which is what the strip's chip state needs. */
+export function quickSelectRowBelongsTo(id: string, tileId: string): boolean {
+  return id === `qs-${tileId}` || id.startsWith(`qs-${tileId}:`);
+}
+
+/**
  * The overlay payload one click sends. `incoming` and `templates` are the same
  * object because a Quick Select contribution has no separate "display" wording.
  *
@@ -51,7 +82,7 @@ export function quickSelectTilePatch(
       concept: tile.concept,
     },
     source: "quick-select",
-    id: `qs-${tile.id}`,
+    id: quickSelectRowId(tile.id, params.side),
     region: tile.scopeBodyPart,
     concept: tile.concept,
     label: tile.label,

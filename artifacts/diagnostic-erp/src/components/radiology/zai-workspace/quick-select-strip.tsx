@@ -1,5 +1,5 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectRowBelongsTo, quickSelectRowId, quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
 import {
   QUICK_SELECT_SEVERITIES,
   announceQuickSelectParameterRefusal,
@@ -292,6 +292,7 @@ export function QuickSelectStrip({
             key={tile.id}
             tile={tile}
             field={field}
+            side={qsSide}
             disabled={disabled}
             onPick={() => {
               const ws = useWorkspace.getState();
@@ -352,6 +353,7 @@ export function QuickSelectStrip({
 function QuickSelectTileBox({
   tile,
   field,
+  side,
   onPick,
   onFav,
   onEdit,
@@ -359,13 +361,22 @@ function QuickSelectTileBox({
 }: {
   tile: QuickSelectTile;
   field: QuickSelectField;
+  side: string;
   onPick: () => void;
   onFav: () => void;
   onEdit: () => void;
   disabled?: boolean;
 }) {
   const cat = tile.category in CAT_TILE ? tile.category : "normal";
-  const patch = useWorkspaceSelector((s) => s.appliedPathologyPatches.find((p) => p.id === `qs-${tile.id}`));
+  // The row this box owns for the side currently chosen, falling back to any side of
+  // the same box: "selected" means this tile is on the page, and since a sided tile now
+  // writes one row per side, the exact-id lookup would show an applied box as idle the
+  // moment the radiologist moved the side chip.
+  const patch = useWorkspaceSelector((s) => {
+    const wanted = side ? quickSelectRowId(tile.id, side) : "";
+    return s.appliedPathologyPatches.find((p) => p.id === wanted)
+      ?? s.appliedPathologyPatches.find((p) => quickSelectRowBelongsTo(p.id, tile.id));
+  });
   const findings = useWorkspaceSelector((s) => s.findingsText);
   const blockedChip = Boolean(patch && field === "findings" && patchFindingsContributionBlocked(patch, findings));
   return (

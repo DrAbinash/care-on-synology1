@@ -10,7 +10,7 @@
  * lumbo-sacral spine" advice underneath it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { quickSelectTileFromForm, quickSelectTilePatch } from "./quickSelectTilePayload";
+import { quickSelectRowBelongsTo, quickSelectRowId, quickSelectTileFromForm, quickSelectTilePatch } from "./quickSelectTilePayload";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTilesForContext } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./fullReportBaseline";
@@ -236,5 +236,33 @@ describe("editing a shipped box keeps what it carries", () => {
     ]) {
       expect(tile(label).recommendationSentence, label).toBeTruthy();
     }
+  });
+});
+
+describe("the ledger row one box owns", () => {
+  it("gives each chosen side its own row, and no side the id it has always had", () => {
+    // Left and right of one box are two claims at two slots — the engine already
+    // resolves them to different `slotKey`s — and one id for both made the second click
+    // overwrite the first row while the first sentence stayed in the report: a finding
+    // the radiologist had clicked off, still printed, still saved, no longer removable.
+    expect(quickSelectRowId("t1")).toBe("qs-t1");
+    expect(quickSelectRowId("t1", "")).toBe("qs-t1");
+    expect(quickSelectRowId("t1", "left")).toBe("qs-t1:left");
+    expect(quickSelectRowId("t1", "Right")).toBe("qs-t1:right");
+    const sided = tile("Foraminal stenosis C5-C6");
+    const left = quickSelectTilePatch(sided, "findings", { side: "left" });
+    const right = quickSelectTilePatch(sided, "findings", { side: "right" });
+    expect(left.id).not.toBe(right.id);
+    expect(quickSelectTilePatch(sided, "findings").id, "a click with no side keeps the historical id")
+      .toBe(`qs-${sided.id}`);
+  });
+
+  it("finds every row one box wrote, and only that box's", () => {
+    // The strip's chip has to read as applied when any side of the box is on the page,
+    // which is what `quickSelectRowBelongsTo` is for.
+    expect(quickSelectRowBelongsTo("qs-t1", "t1")).toBe(true);
+    expect(quickSelectRowBelongsTo("qs-t1:left", "t1")).toBe(true);
+    expect(quickSelectRowBelongsTo("qs-t1x:left", "t1")).toBe(false);
+    expect(quickSelectRowBelongsTo("qs-t1:left", "t2")).toBe(false);
   });
 });

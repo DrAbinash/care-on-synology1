@@ -17,7 +17,7 @@
  */
 
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
-import { sentenceMatchesConcept } from "../observationSlot";
+import { extractLevel, normalizeLevel, sentenceMatchesConcept } from "../observationSlot";
 
 /** The minimum an observation has to say to be consulted. Mirrors `CanonicalObservation`. */
 export type SuppressingObservation = {
@@ -25,6 +25,11 @@ export type SuppressingObservation = {
   baselineReplaces?: string | null;
   /** Resolved clinical concept, when one exists. */
   concept?: string | null;
+  /**
+   * The level this observation speaks about — "C5-C6", a regional bucket like "cervical", or
+   * "" when nothing resolved. Restoration needs it; see `falsifies`.
+   */
+  level?: string | null;
   /** Text the observation actually put in the report — used for concept-level falsification. */
   renderedText?: string | null;
   /** `role === "baseline"` marks a row that ASSERTS a normal rather than opposing one. */
@@ -39,11 +44,16 @@ export type SuppressorHolder = {
     role?: string | null;
     baselineReplaces?: string | null;
     concept?: string | null;
+    level?: string | null;
   } | null;
 };
 
 function claimOf(obs: NonNullable<SuppressorHolder["observation"]>): SuppressingObservation {
-  return { baselineReplaces: obs.baselineReplaces ?? null, concept: obs.concept ?? null };
+  return {
+    baselineReplaces: obs.baselineReplaces ?? null,
+    concept: obs.concept ?? null,
+    ...(nonEmpty(obs.level) ? { level: obs.level } : {}),
+  };
 }
 
 /**
@@ -162,13 +172,43 @@ function nonEmpty(text: string | null | undefined): string {
  *  2. the observation carries a resolved concept and the baseline sentence is about that concept —
  *     the same oracle `applyPathologyPatch` uses through `sentenceOwnedBySlot`, reused here rather
  *     than re-derived, so the two paths cannot disagree about what a tile falsifies.
+ *
+ * Route 2 is level-scoped, and that scoping is what makes a deselection able to put a normal back.
+ * Three shipped tiles at C4-C5, C5-C6 and C6-C7 all carry the concept `disc_contour`, and each one
+ * retired only its own level's "C4-C5: No significant disc bulge or protrusion is seen." on the page.
+ * Without a level test, the surviving C5-C6 and C6-C7 observations falsify the C4-C5 sentence too, so
+ * deselecting the C4-C5 box restored nothing — and its record left with the row, permanently. Measured
+ * at `e0991715`+branch: a three-level cervical composition, all three boxes clicked off, printed a
+ * normal report with two of its three level normals missing for good.
+ *
+ * The guard only fires where BOTH sides actually name a level. A study-wide baseline ("No
+ * spondylolisthesis is seen.") is falsified by any observation about that concept at any level, and an
+ * observation whose level never resolved keeps the behaviour it has always had — guessing a level
+ * boundary here would leave a contradicted normal on the page, which is the worse failure.
  */
 export function falsifies(observation: SuppressingObservation, sentence: string): boolean {
   const declared = nonEmpty(observation.baselineReplaces);
   if (declared && key(declared) === key(sentence)) return true;
   const concept = nonEmpty(observation.concept);
-  if (concept && sentenceMatchesConcept(sentence, concept)) return true;
-  return false;
+  if (!concept || !sentenceMatchesConcept(sentence, concept)) return false;
+  return !namesOtherLevel(observation, sentence);
+}
+
+const BUCKET_REGION_LETTER: Record<string, string> = {
+  cervical: "C",
+  dorsal: "DT",
+  lumbar: "LS",
+};
+
+/** True when the observation's level and the sentence's level are two different places. */
+function namesOtherLevel(observation: SuppressingObservation, sentence: string): boolean {
+  const mine = normalizeLevel(nonEmpty(observation.level));
+  if (!mine) return false;
+  const theirs = extractLevel(sentence);
+  if (!theirs) return false;
+  const bucket = BUCKET_REGION_LETTER[mine];
+  if (bucket) return !bucket.includes(theirs[0].toUpperCase());
+  return mine !== theirs;
 }
 
 /**
