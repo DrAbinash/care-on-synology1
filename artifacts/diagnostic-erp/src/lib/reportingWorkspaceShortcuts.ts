@@ -184,9 +184,13 @@ export function clinicalHistoryRefusal(
     // structured document this clinic never produces, and there is no unlock affordance anywhere.
     return {
       title: `${verb} refused — the report is signed`,
+      // One contiguous literal, deliberately: two ratchet suites
+      // (refusedSaveIsNotAFailedSave, signedReportCorrectionTruth) pin this file as a
+      // member of the shared-sentence family by looking for the sentence in the
+      // source, and a `+` split in the middle of it makes the sentence invisible to
+      // exactly the check whose whole job is to keep it identical across refusals.
       description:
-        "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or "
-        + "an administrator can. The report returns to draft and the study can be edited and signed again.",
+        "Nothing was changed. To correct it, withdraw the signature from Report Hub — only the signer or an administrator can. The report returns to draft and the study can be edited and signed again.",
     };
   }
   return null;
