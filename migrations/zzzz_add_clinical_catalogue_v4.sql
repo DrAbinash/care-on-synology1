@@ -1320,6 +1320,27 @@ BEGIN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §4: an unsatisfiable recommendation trigger)', problem;
   END IF;
 
+  -- 16. Every rule in force must state its precedence. A placed tile (check 1) and a section
+  --     (check 9) already have to say where they sit; a combination rule was the third ordering
+  --     object and the only one a publication could freeze without a position. Two rules of one
+  --     field with no ordinals are applied in whatever order the reader's scan produces, and one
+  --     rule with no ordinal leaves the same hole for the next author to fall into: the frozen
+  --     document would say "these observations consolidate into this sentence" and stay silent on
+  --     where that sentence belongs, so the restoring composer invents a tiebreak and the
+  --     invention becomes the configuration. Nullable in the table because a rule under
+  --     construction has not been placed yet — the refusal is at publication, like check 1.
+  --     The predicate is `status <> 'deprecated'` for the same reason the unique index and check
+  --     12 use it: the three must not disagree about who is in force.
+  SELECT 'combination rule ' || r.key || ' has no stated precedence for the ' || r.target_field || ' field'
+    INTO problem
+    FROM clinical_combination_rules r
+   WHERE r.examination_id = exam AND r.deleted_at IS NULL AND r.status <> 'deprecated'
+     AND r.ordinal IS NULL
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §3: no composition order for an unplaced rule)', problem;
+  END IF;
+
   RETURN NEW;
 END;
 $$;

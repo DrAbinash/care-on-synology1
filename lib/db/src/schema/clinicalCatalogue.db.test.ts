@@ -1464,12 +1464,14 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       expect(left.rows[0]!.n, "a refused publication leaves no row behind").toBe(0);
 
       // Rule 3: a combination rule with no required member would print an impression
-      // against a selection nobody made (§27).
+      // against a selection nobody made (§27). The ordinal is here because this fixture is
+      // published twice more below and expects SUCCESS: a rule with no stated precedence is
+      // refused by check 16, and the two concerns must not be confused in one test.
       const otherExam = await seedFixture(c, "gate-empty");
       await c.query(
-        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members)
+        `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members, ordinal)
          VALUES ('combo.empty', ${otherExam.examId}, 'Only optional members', 'impression',
-                 'An invented impression.', FALSE, FALSE)`,
+                 'An invented impression.', FALSE, FALSE, 1)`,
       );
       await c.query(
         `INSERT INTO clinical_combination_rule_members (rule_id, concept_id, is_optional)
@@ -1654,13 +1656,14 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       // The consolidated sentence the owner asked for: two separate anatomical
       // observations, ONE impression, no duplicate, no extra recommendation, and no model
       // call anywhere in it — so the rule and its members must be plain rows.
+      // ordinal 1 is stated because a rule that is published must say where it sits (§3).
       expect(await attempt(
         `INSERT INTO clinical_combination_rules
-           (key, examination_id, section_id, label, target_field, combined_text, suppress_members, requires_only_members, status)
+           (key, examination_id, section_id, label, target_field, combined_text, suppress_members, requires_only_members, ordinal, status)
          VALUES ('combo.fazekas.senile', ${f.examId}, ${f.sectionId},
                  'Fazekas plus senile changes', 'impression',
                  'Mild chronic small-vessel ischemic changes (Fazekas grade 1) with mild age-related cerebral atrophy.',
-                 TRUE, FALSE, 'active')`,
+                 TRUE, FALSE, 1, 'active')`,
       ), "the rule is storable").toBeNull();
       const ruleId = (await c.query(
         `SELECT id FROM clinical_combination_rules WHERE key = 'combo.fazekas.senile'`,
