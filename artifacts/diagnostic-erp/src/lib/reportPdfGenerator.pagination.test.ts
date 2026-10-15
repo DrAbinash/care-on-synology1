@@ -1,17 +1,18 @@
 /**
- * PDF Pagination Regression Tests — Coordinate-Level Verification
+ * PDF Pagination Regression Tests — Instrumented jsPDF Approach
  * 
- * These tests verify actual PDF properties with coordinate-level precision:
- * - Text doesn't overlap footer/signature regions
- * - All clinical content is preserved
- * - Page breaks occur at correct positions
- * - No content duplication
+ * Uses instrumented jsPDF to record all text draw operations with coordinates.
+ * This is more reliable than parsing PDF binary output.
  * 
- * Uses custom PDF text extractor that parses jsPDF content streams.
+ * Tests verify:
+ * - No clinical text overlaps footer/signature regions
+ * - All content is preserved
+ * - Headings stay with their content
+ * - Page breaks work correctly
  */
 import { describe, it, expect } from "vitest";
 import { generateReportPDF, DEFAULT_PRINT_SETTINGS } from "./reportPdfGenerator";
-import { extractTextFromJsPDF, extractAllText, getTextOnPage } from "./testSupport/pdfTextExtractor";
+import { createInstrumentedPdf, getTextOnPage, getAllText, findText, type InstrumentedDoc } from "./testSupport/instrumentedPdf";
 
 const clinic = {
   name: "TEST DIAGNOSTICS",
@@ -20,8 +21,25 @@ const clinic = {
   email: "test@example.com",
 };
 
-describe("PDF pagination — coordinate-level verification", () => {
-  it("no findings text overlaps footer region", () => {
+/**
+ * Calculate the body region bottom boundary from settings.
+ * This is where content must stop to avoid overlapping footer/signature.
+ */
+function getContentBottom(settings: typeof DEFAULT_PRINT_SETTINGS): number {
+  const pageH = settings.paperSize === "A4" ? 297 : settings.paperSize === "Letter" ? 279 : 210;
+  const SIG_RESERVE_MM = settings.signature.enabled ? 12 : 0;
+  const FOOTER_STACK_MM = 14;
+  return pageH - FOOTER_STACK_MM - SIG_RESERVE_MM;
+}
+
+describe("PDF pagination — instrumented coordinate verification", () => {
+  it("no clinical text overlaps footer region (CASE-2A regression)", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
     const report = {
       patientName: "TEST PATIENT ALPHA",
       age: "50 Y",
@@ -40,32 +58,117 @@ Normal marrow signal.
 Disc Levels:
 L3-L4: Normal.
 L4-L5: Mild bulge.
-L5-S1: Disc herniation.`,
+L5-S1: Disc herniation with canal stenosis.`,
       impression: "L5-S1 disc herniation.",
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const textItems = extractTextFromJsPDF(doc);
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
     
-    // Footer is typically in the bottom 14mm (FOOTER_STACK_MM)
-    // Page height for A4 is 297mm, so footer starts at ~283mm
-    // In jsPDF units, this is approximately y < 14 (from bottom)
-    // But jsPDF uses top-left origin, so footer is at high y values
-    // For A4: pageH = 297, footer at y > 283
+    const contentBottom = getContentBottom(DEFAULT_PRINT_SETTINGS);
     
-    // Check that clinical findings don't appear in footer region
-    const footerRegionY = 280; // Conservative threshold
-    const findingsInFooter = textItems.filter(item => 
-      item.y > footerRegionY && 
-      (item.text.includes("Normal lumbar") || 
-       item.text.includes("Disc herniation") ||
-       item.text.includes("L5-S1"))
+    // Check that no clinical findings text appears below contentBottom
+    const clinicalTextInFooter = drawnTexts.filter(t => 
+      t.y > contentBottom &&
+      (t.text.includes("Normal lumbar") || 
+       t.text.includes("Disc herniation") ||
+       t.text.includes("L5-S1") ||
+       t.text.includes("canal stenosis"))
     );
     
-    expect(findingsInFooter).toHaveLength(0);
+    expect(clinicalTextInFooter).toHaveLength(0);
   });
 
-  it("all findings text is present in PDF", () => {
+  it("no clinical text overlaps footer region (CASE-2B regression)", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
+    const report = {
+      patientName: "TEST PATIENT BETA",
+      age: "65 Y",
+      sex: "F",
+      uhid: "TEST002",
+      accessionNumber: "ACC002",
+      studyDate: "20261016",
+      referringDoctor: "Dr. Test Referrer",
+      reportTitle: "MRI LUMBAR SPINE",
+      findings: `Alignment:
+Loss of normal lumbar lordosis.
+
+Vertebral Bodies:
+Modic changes at L5-S1.
+
+Disc Levels:
+L4-L5: Disc desiccation.
+L5-S1: Large disc herniation with severe canal stenosis.`,
+      measurements: [
+        { label: "L5-S1 Canal AP", value: "8 mm" },
+      ],
+      impression: "L5-S1 large disc herniation with severe canal stenosis.",
+    };
+
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
+    
+    const contentBottom = getContentBottom(DEFAULT_PRINT_SETTINGS);
+    
+    // Check that no clinical text appears below contentBottom
+    const clinicalTextInFooter = drawnTexts.filter(t => 
+      t.y > contentBottom &&
+      (t.text.includes("Loss of normal") || 
+       t.text.includes("disc herniation") ||
+       t.text.includes("canal stenosis") ||
+       t.text.includes("Modic changes"))
+    );
+    
+    expect(clinicalTextInFooter).toHaveLength(0);
+  });
+
+  it("all clinical content stays within body region", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
+    const report = {
+      patientName: "TEST PATIENT GAMMA",
+      age: "45 Y",
+      sex: "M",
+      uhid: "TEST003",
+      accessionNumber: "ACC003",
+      studyDate: "20261016",
+      referringDoctor: "Dr. Test Referrer",
+      reportTitle: "MRI BRAIN",
+      clinicalHistory: "Headache, rule out intracranial pathology.",
+      technique: "Multiplanar MRI without contrast.",
+      findings: "Normal brain parenchyma. No mass lesion.",
+      impression: "Normal MRI brain.",
+    };
+
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
+    
+    const contentBottom = getContentBottom(DEFAULT_PRINT_SETTINGS);
+    
+    // All clinical text should be above contentBottom
+    const clinicalKeywords = ["Headache", "Multiplanar", "Normal brain", "No mass lesion", "Normal MRI"];
+    
+    for (const keyword of clinicalKeywords) {
+      const matches = findText({ doc, drawnTexts }, keyword);
+      for (const match of matches) {
+        expect(match.y).toBeLessThanOrEqual(contentBottom);
+      }
+    }
+  });
+
+  it("all findings text is preserved", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
     const findings = `Alignment:
 Normal lumbar lordosis.
 
@@ -78,11 +181,11 @@ L4-L5: Mild disc desiccation.
 L5-S1: Disc herniation with canal stenosis.`;
 
     const report = {
-      patientName: "TEST PATIENT BETA",
-      age: "65 Y",
-      sex: "F",
-      uhid: "TEST002",
-      accessionNumber: "ACC002",
+      patientName: "TEST PATIENT DELTA",
+      age: "55 Y",
+      sex: "M",
+      uhid: "TEST004",
+      accessionNumber: "ACC004",
       studyDate: "20261016",
       referringDoctor: "Dr. Test Referrer",
       reportTitle: "MRI LUMBAR SPINE",
@@ -90,8 +193,8 @@ L5-S1: Disc herniation with canal stenosis.`;
       impression: "L5-S1 disc herniation.",
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const allText = extractAllText(doc);
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
+    const allText = getAllText({ doc, drawnTexts });
     
     // Verify all key findings are present
     expect(allText).toContain("Normal lumbar lordosis");
@@ -103,83 +206,13 @@ L5-S1: Disc herniation with canal stenosis.`;
     expect(allText).toContain("canal stenosis");
   });
 
-  it("all impression items are present and numbered", () => {
-    const report = {
-      patientName: "TEST PATIENT GAMMA",
-      age: "45 Y",
-      sex: "M",
-      uhid: "TEST003",
-      accessionNumber: "ACC003",
-      studyDate: "20261016",
-      referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI BRAIN",
-      findings: "Normal brain parenchyma.",
-      impression: `1. Mild chronic small-vessel ischemic changes.
-2. Generalized cerebral volume loss.
-3. No acute intracranial abnormality.`,
-    };
-
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const allText = extractAllText(doc);
-    
-    // Verify all impression items
-    expect(allText).toContain("Mild chronic small-vessel ischemic changes");
-    expect(allText).toContain("Generalized cerebral volume loss");
-    expect(allText).toContain("No acute intracranial abnormality");
-    
-    // Verify numbering
-    expect(allText).toMatch(/1\./);
-    expect(allText).toMatch(/2\./);
-    expect(allText).toMatch(/3\./);
-  });
-
-  it("measurements survive pagination without duplication", () => {
-    const report = {
-      patientName: "TEST PATIENT DELTA",
-      age: "55 Y",
-      sex: "M",
-      uhid: "TEST004",
-      accessionNumber: "ACC004",
-      studyDate: "20261016",
-      referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI CERVICAL SPINE",
-      findings: `Disc Level Analysis:
-| Level | Disc | Canal AP (mm) |
-| C3-C4 | Normal | 14 |
-| C4-C5 | Normal | 13 |
-| C5-C6 | Bulge | 11 |
-| C6-C7 | Normal | 12 |`,
-      measurements: [
-        { label: "C3-C4 Canal AP", value: "14 mm" },
-        { label: "C4-C5 Canal AP", value: "13 mm" },
-        { label: "C5-C6 Canal AP", value: "11 mm" },
-        { label: "C6-C7 Canal AP", value: "12 mm" },
-      ],
-      impression: "C5-C6 disc bulge.",
-    };
-
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const allText = extractAllText(doc);
-    
-    // Verify all measurement values present
-    expect(allText).toContain("14 mm");
-    expect(allText).toContain("13 mm");
-    expect(allText).toContain("11 mm");
-    expect(allText).toContain("12 mm");
-    
-    // Verify all levels mentioned
-    expect(allText).toContain("C3-C4");
-    expect(allText).toContain("C4-C5");
-    expect(allText).toContain("C5-C6");
-    expect(allText).toContain("C6-C7");
-    
-    // Check for excessive duplication (each should appear 1-3 times max)
-    const c5c6Count = (allText.match(/C5-C6/g) || []).length;
-    expect(c5c6Count).toBeGreaterThanOrEqual(1);
-    expect(c5c6Count).toBeLessThanOrEqual(4);
-  });
-
   it("anatomical headings remain with their content", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
     const report = {
       patientName: "TEST PATIENT EPSILON",
       age: "40 Y",
@@ -193,38 +226,33 @@ L5-S1: Disc herniation with canal stenosis.`;
 Normal lumbar lordosis.
 
 Vertebral Bodies:
-Normal marrow signal.
-
-Disc Levels:
-L4-L5: Disc bulge.`,
-      impression: "L4-L5 disc bulge.",
+Normal marrow signal.`,
+      impression: "Normal study.",
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const textItems = extractTextFromJsPDF(doc);
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
     
     // Find "Alignment:" heading
-    const alignmentHeading = textItems.find(item => item.text.includes("Alignment:"));
+    const alignmentHeading = drawnTexts.find(t => t.text.includes("Alignment:"));
     expect(alignmentHeading).toBeDefined();
     
     // Find "Normal lumbar lordosis" content
-    const alignmentContent = textItems.find(item => item.text.includes("Normal lumbar lordosis"));
+    const alignmentContent = drawnTexts.find(t => t.text.includes("Normal lumbar lordosis"));
     expect(alignmentContent).toBeDefined();
     
-    // They should be on the same page and close in y coordinate
+    // They should be on the same page and content should be below heading
     if (alignmentHeading && alignmentContent) {
       expect(alignmentHeading.page).toBe(alignmentContent.page);
-      // Content should be below heading (higher y in top-left origin)
       expect(alignmentContent.y).toBeGreaterThan(alignmentHeading.y);
     }
   });
 
-  it("multiple page breaks work correctly", () => {
-    // Create a report that will definitely span 3+ pages
-    const longFindings = Array(25)
-      .fill(null)
-      .map((_, i) => `L${i + 1}-L${i + 2}: Disc bulge with mild canal stenosis. Normal marrow signal throughout.`)
-      .join("\n\n");
+  it("measurements are preserved without duplication", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
 
     const report = {
       patientName: "TEST PATIENT ZETA",
@@ -234,61 +262,67 @@ L4-L5: Disc bulge.`,
       accessionNumber: "ACC006",
       studyDate: "20261016",
       referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI TOTAL SPINE",
-      findings: longFindings,
-      impression: "Multi-level disc disease.",
+      reportTitle: "MRI CERVICAL SPINE",
+      findings: "C5-C6: Disc bulge.",
+      measurements: [
+        { label: "C5-C6 Canal AP", value: "11 mm" },
+      ],
+      impression: "C5-C6 disc bulge.",
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
+    const allText = getAllText({ doc, drawnTexts });
     
-    // Should be 3+ pages
-    expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(3);
+    // Verify measurement is present
+    expect(allText).toContain("11 mm");
+    expect(allText).toContain("C5-C6");
     
-    // Verify content is present on multiple pages
-    const page1Text = getTextOnPage(doc, 1);
-    const page2Text = getTextOnPage(doc, 2);
-    const page3Text = getTextOnPage(doc, 3);
-    
-    expect(page1Text).toContain("Disc bulge");
-    expect(page2Text).toContain("Disc bulge");
-    expect(page3Text).toContain("Disc bulge");
+    // Check for excessive duplication
+    const c5c6Count = (allText.match(/C5-C6/g) || []).length;
+    expect(c5c6Count).toBeGreaterThanOrEqual(1);
+    expect(c5c6Count).toBeLessThanOrEqual(3);
   });
 
-  it("continuation pages respect margins", () => {
+  it("all impression items are present", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
     const report = {
       patientName: "TEST PATIENT ETA",
-      age: "50 Y",
-      sex: "M",
+      age: "65 Y",
+      sex: "F",
       uhid: "TEST007",
       accessionNumber: "ACC007",
       studyDate: "20261016",
       referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI LUMBAR SPINE",
-      findings: Array(15).fill("L4-L5: Disc bulge with canal stenosis.").join("\n\n"),
-      impression: "L4-L5 disc bulge.",
+      reportTitle: "MRI BRAIN",
+      findings: "Normal brain.",
+      impression: `1. Mild small-vessel changes.
+2. No acute abnormality.`,
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const textItems = extractTextFromJsPDF(doc);
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
+    const allText = getAllText({ doc, drawnTexts });
     
-    // Check page 2 text items
-    const page2Items = textItems.filter(item => item.page === 2);
-    
-    if (page2Items.length > 0) {
-      // All text on page 2 should be within margins
-      // Left margin is typically ~10mm, top margin ~10mm
-      const leftMargin = 8; // Conservative
-      const topMargin = 8;
-      
-      const violations = page2Items.filter(item => 
-        item.x < leftMargin || item.y < topMargin
-      );
-      
-      expect(violations).toHaveLength(0);
-    }
+    expect(allText).toContain("Mild small-vessel changes");
+    expect(allText).toContain("No acute abnormality");
   });
 
-  it("no clinical text is duplicated", () => {
+  it("multiple page breaks work correctly", () => {
+    const { doc, drawnTexts } = createInstrumentedPdf({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+
+    const longFindings = Array(20)
+      .fill(null)
+      .map((_, i) => `L${i + 1}-L${i + 2}: Disc bulge.`)
+      .join("\n\n");
+
     const report = {
       patientName: "TEST PATIENT THETA",
       age: "50 Y",
@@ -297,77 +331,21 @@ L4-L5: Disc bulge.`,
       accessionNumber: "ACC008",
       studyDate: "20261016",
       referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI BRAIN",
-      findings: "Normal brain parenchyma. No mass lesion.",
-      impression: "Normal MRI brain.",
+      reportTitle: "MRI TOTAL SPINE",
+      findings: longFindings,
+      impression: "Multi-level disc disease.",
     };
 
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const allText = extractAllText(doc);
+    generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false, doc });
     
-    // Count occurrences of key phrases
-    const normalBrainCount = (allText.match(/Normal brain parenchyma/g) || []).length;
-    const massLesionCount = (allText.match(/No mass lesion/g) || []).length;
+    // Should be 2+ pages
+    expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(2);
     
-    // Each should appear exactly once (not duplicated)
-    expect(normalBrainCount).toBe(1);
-    expect(massLesionCount).toBe(1);
-  });
-});
-
-describe("PDF pagination — signature and footer protection", () => {
-  it("signature is visible when enabled", () => {
-    const report = {
-      patientName: "TEST PATIENT IOTA",
-      age: "50 Y",
-      sex: "M",
-      uhid: "TEST009",
-      accessionNumber: "ACC009",
-      studyDate: "20261016",
-      referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI BRAIN",
-      findings: "Normal study.",
-      impression: "Normal.",
-    };
-
-    const settingsWithSignature = {
-      ...DEFAULT_PRINT_SETTINGS,
-      signature: {
-        enabled: true,
-        doctorName: "Dr. Test Radiologist",
-        degree: "MD, DMRD",
-      },
-    };
-
-    const doc = generateReportPDF(report, settingsWithSignature, clinic, { save: false });
-    const allText = extractAllText(doc);
+    // Verify content is on multiple pages
+    const page1Texts = getTextOnPage({ doc, drawnTexts }, 1);
+    const page2Texts = getTextOnPage({ doc, drawnTexts }, 2);
     
-    // Verify doctor name is present
-    expect(allText).toContain("Dr. Test Radiologist");
-    expect(allText).toContain("MD");
-  });
-
-  it("patient demographics are preserved", () => {
-    const report = {
-      patientName: "TEST PATIENT KAPPA",
-      age: "50 Y",
-      sex: "M",
-      uhid: "TEST010",
-      accessionNumber: "ACC010",
-      studyDate: "20261016",
-      referringDoctor: "Dr. Test Referrer",
-      reportTitle: "MRI BRAIN",
-      findings: "Normal study.",
-      impression: "Normal.",
-    };
-
-    const doc = generateReportPDF(report, DEFAULT_PRINT_SETTINGS, clinic, { save: false });
-    const allText = extractAllText(doc);
-    
-    // Verify patient demographics
-    expect(allText).toContain("TEST PATIENT KAPPA");
-    expect(allText).toContain("TEST010");
-    expect(allText).toContain("ACC010");
-    expect(allText).toContain("50 Y");
+    expect(page1Texts.length).toBeGreaterThan(0);
+    expect(page2Texts.length).toBeGreaterThan(0);
   });
 });

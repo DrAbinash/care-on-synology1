@@ -882,6 +882,8 @@ export function generateReportPDF(
     letterhead?: CareLetterpadChrome;
     /** Settings → Doctors rows — used to resolve signature degree by name. */
     doctorsCatalog?: Array<{ name: string; degree?: string | null }>;
+    /** Optional pre-created jsPDF instance (for testing with instrumented docs). */
+    doc?: jsPDF;
   },
 ): jsPDF {
   const fmt = settings.paperSize;
@@ -892,7 +894,7 @@ export function generateReportPDF(
   };
   const [w, h] = sizes[fmt] ?? sizes.A4;
   const isLand = settings.orientation === "landscape";
-  const doc = new jsPDF({
+  const doc = opts?.doc ?? new jsPDF({
     unit: "mm",
     format: fmt.toLowerCase(),
     orientation: isLand ? "landscape" : "portrait",
