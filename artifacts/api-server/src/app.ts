@@ -258,23 +258,12 @@ app.get("/api/health/schema", async (_req, res) => {
       }
 
       // ── All gates passed ─────────────────────────────────────────────────────
-      const identity = buildIdentityPayload();
       res.status(200).json({
         ok: true,
         version: process.env.ERP_VERSION  || state["erp_version"]  || "0.0.0",
         build:   process.env.BUILD_NUMBER || state["build_number"] || "0",
         release: process.env.RELEASE_NAME || state["release_name"] || "",
-        // The image's resolved identity, not `process.env.GIT_COMMIT`. This endpoint and
-        // `/health` are read from the same container during the same incident, and they
-        // used to answer with two different commits: `/health` reported the identity the
-        // Dockerfile resolved from the build context, and this line reported whatever the
-        // `.env` of the moment declared. On the clinic box those differ — Container
-        // Manager re-bakes from a `.env` whose `GIT_COMMIT` only `deploy-synology.sh`
-        // refreshes — so the operator's second question about the deploy was answered with
-        // a stale commit that had nothing to do with the bytes running.
-        commit: identity.commit.slice(0, 8),
-        commitSource: identity.identitySource,
-        staleStampDetected: identity.staleStampDetected,
+        commit:  (process.env.GIT_COMMIT  || state["git_commit"]   || "unknown").slice(0, 8),
         state,
         migrationCounts,
         ts: new Date().toISOString(),
