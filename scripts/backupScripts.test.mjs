@@ -252,6 +252,22 @@ function runScript(script, env = {}, args = []) {
 
 function require_sep() { return process.platform === "win32" ? ";" : ":"; }
 
+// Resolved once, absolutely: V10 hands the child a PATH that deliberately lacks a tool,
+// and Node resolves the program to spawn against the *child's* env — so `bash` itself would
+// stop being findable and the test would fail for the wrong reason (empty output, ENOENT).
+// On Windows the POSIX path bash reports (`/usr/bin/bash`) is not spawnable by Node, so it
+// is converted to the native one; `cygpath` is asked through argv, never by interpolating a
+// path that contains spaces into a shell string.
+const BASH = (() => {
+  const posix = (spawnSync("bash", ["-c", 'command -v bash'], { encoding: "utf8" }).stdout || "").trim();
+  if (!posix) return "bash";
+  if (process.platform === "win32") {
+    const win = (spawnSync("bash", ["-c", 'cygpath -w "$0"', posix], { encoding: "utf8" }).stdout || "").trim();
+    if (win) return win;
+  }
+  return posix;
+})();
+
 const artifacts = () =>
   readdirSync(backupDir).filter((f) => !f.endsWith(".log") && !f.startsWith(".")).sort();
 
@@ -484,19 +500,18 @@ function writeSidecar(artifactPath, fields) {
   );
 }
 
-function runVerifier(script, target, env = {}, { withStubs = true } = {}) {
+function runVerifier(script, target, env = {}, { pathOnly = null } = {}) {
   // stdout/stderr go to FILES, not pipes. The verifier prints a heartbeat from a
   // background subshell (`sleep 30`), and a grandchild that inherits a Node pipe
   // would keep it open and stall the parent for that whole interval.
   const outPath = join(work, `verify-${Math.random().toString(36).slice(2)}.out`);
   const fd = openSync(outPath, "w+");
-  const r = spawnSync("bash", [script, ...(target ? [target] : [])], {
+  const r = spawnSync(BASH, [script, ...(target ? [target] : [])], {
     cwd: REPO,
     stdio: ["ignore", fd, fd],
     env: {
-      ...(withStubs
-        ? { ...process.env, PATH: `${stub.bin}${require_sep()}${process.env.PATH}` }
-        : { ...process.env, PATH: process.env.PATH }),
+      ...process.env,
+      PATH: pathOnly ?? `${stub.bin}${require_sep()}${process.env.PATH}`,
       STUB_READY: "1",
       VERIFY_READY_TIMEOUT: "2",
       ...env,
@@ -605,9 +620,29 @@ describe("verify-backup-restore.sh — the restore proof", () => {
   test("V10 a missing dependency is named, not mistaken for a bad backup", () => {
     const dir = join(work, "v10");
     placeArtifact(dir);
-    const r = runVerifier(VERIFY_SCRIPT, dir, {}, { withStubs: false });
+    // The absence is built here rather than hoped for. This test used to run with the
+    // machine's real PATH and expect `docker` not to be on it — true on a Windows station,
+    // false on a CI runner that ships Docker. There the verifier walked past the preflight,
+    // restored the synthetic two-table dump, and failed with "Core table 'payments' is
+    // missing", so the assertion was measuring the runner, not the dependency check.
+    // The PATH the script now sees contains the seven tools it preflights, plus the `date`
+    // it evaluates before reaching that loop, and `docker` is deliberately not in it.
+    const bin = join(work, "v10-bin");
+    mkdirSync(bin, { recursive: true });
+    // `#!/bin/sh`, not `#!/usr/bin/env bash`: the shebang is an absolute path the kernel can
+    // honour, while `env` would have to search the very PATH this test restricts — and the
+    // script evaluates `$(date +%s)` two lines before the preflight, so the `date` stub does
+    // get executed, not merely found.
+    for (const tool of ["openssl", "gzip", "gunzip", "grep", "find", "mktemp", "stat", "date"]) {
+      writeFileSync(join(bin, tool), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(bin, tool), 0o755);
+    }
+    const r = runVerifier(VERIFY_SCRIPT, dir, {}, { pathOnly: bin });
     expect(r.code, r.out).not.toBe(0);
-    expect(r.out).toMatch(/docker/);
+    expect(r.out, r.out).toMatch(/'docker' is not installed or not on PATH/);
+    // The message must also say which side of the failure the operator is on, or a missing
+    // tool reads as "there are no backups" — the confusion this script exists to prevent.
+    expect(r.out, r.out).toMatch(/not a problem with the\s+backup/);
     expect(r.out).not.toMatch(/No backup artifact found/);
   });
 
