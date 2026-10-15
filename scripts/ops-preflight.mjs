@@ -576,17 +576,32 @@ function checkBackups(ctx) {
   const roots = backupRoots(ctx.env);
   const scan = scanBackups(ctx, roots);
   const maxAgeH = Number(ctx.env.PREFLIGHT_MAX_BACKUP_AGE_HOURS || ctx.env.BACKUP_DEADMAN_MAX_AGE_HOURS || 26);
+  // A zero-byte artifact is not a backup. Measured on this NAS 2026-10-15: the
+  // dated dumps in /volume1/docker/backups/postgres/care hold 20 empty files out of
+  // 62, including six consecutive nights (10-10 to 10-15) — the job ran, the file
+  // appeared, the log said success. Counting one of those as the newest artifact
+  // turns the whole backup gate green on nothing at all, so the restorable set is
+  // what freshness is measured against, and the empties are named.
+  const empties = scan.found.filter((f) => f.bytes === 0);
+  const restorable = scan.found.filter((f) => f.bytes > 0);
 
   const present = {
     id: "backup.artifacts_present",
-    status: !scan.anyRootExists ? UNKNOWN : scan.found.length ? PASS : FAIL,
+    status: !scan.anyRootExists ? UNKNOWN : restorable.length ? PASS : FAIL,
     critical: true,
     detail: !scan.anyRootExists
       ? `no backup directory readable: ${roots.join(" or ")}`
-      : scan.found.length
-        ? `${scan.found.length} artifact(s), newest ${scan.found[0].name} (${(scan.found[0].bytes / 1024 / 1024).toFixed(1)} MB)`
-        : `the backup directory exists and holds nothing restorable: ${roots.join(", ")}`,
-    remediation: !scan.anyRootExists ? "Set BACKUP_DIR to where the job writes, or run this on the NAS." : "",
+      : restorable.length
+        ? `${scan.found.length} artifact(s), newest restorable ${restorable[0].name} (${(restorable[0].bytes / 1024 / 1024).toFixed(1)} MB)`
+          + (empties.length ? ` — ${empties.length} of them are 0 bytes and cannot be restored` : "")
+        : scan.found.length
+          ? `${scan.found.length} artifact(s) and EVERY one is 0 bytes (newest ${scan.found[0].name}) — the job is producing files, not backups`
+          : `the backup directory exists and holds nothing restorable: ${roots.join(", ")}`,
+    remediation: !scan.anyRootExists
+      ? "Set BACKUP_DIR to where the job writes, or run this on the NAS."
+      : restorable.length || !scan.found.length
+        ? ""
+        : "Find out why the dump writes an empty file (disk full, pg_dump failing after the redirect opened, a `> file` that never completed). Do not delete the empty artifacts until something restorable exists beside them.",
   };
 
   if (!scan.found.length) {
@@ -595,14 +610,24 @@ function checkBackups(ctx) {
       { id: "backup.metadata", status: UNKNOWN, critical: true, detail: "no artifact to read a sidecar for", remediation: "" }];
   }
 
-  const newest = scan.found[0];
+  if (!restorable.length) {
+    return [present,
+      { id: "backup.freshness", status: FAIL, critical: true, detail: `no non-empty artifact to date — ${empties.length} file(s) exist and all are 0 bytes`, remediation: "The last real backup is unknown. Re-run the dump and check pg_dump's exit status, not just the file's existence." },
+      { id: "backup.metadata", status: UNKNOWN, critical: true, detail: "no restorable artifact to read a sidecar for", remediation: "" }];
+  }
+
+  const newest = restorable[0];
   const ageH = (ctx.now() - newest.mtimeMs) / 3.6e6;
+  const shadowed = scan.found[0].bytes === 0;
   const fresh = {
     id: "backup.freshness",
     status: ageH <= maxAgeH ? PASS : FAIL,
     critical: true,
-    detail: `newest artifact is ${ageH.toFixed(1)}h old (limit ${maxAgeH}h)`,
-    remediation: ageH <= maxAgeH ? "" : "The daily job is not producing anything readable. A directory full of stale files is not a backup policy.",
+    detail: `newest restorable artifact is ${ageH.toFixed(1)}h old (limit ${maxAgeH}h)`
+      + (shadowed ? ` — note the MOST RECENT file ${scan.found[0].name} is 0 bytes and was not counted` : ""),
+    remediation: ageH <= maxAgeH
+      ? shadowed ? "The newest write was empty: check the dump job's exit status before trusting the next copy." : ""
+      : "The daily job is not producing anything readable. A directory full of stale files is not a backup policy.",
   };
 
   const metaPath = `${newest.file}.meta`;

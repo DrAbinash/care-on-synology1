@@ -16,7 +16,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { isArtifact, makeContext } from "./ops-preflight.mjs";
-import { classify, coverageGaps, inspect, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
+import { classify, artifactDay, coverageGaps, inspect, isPlausibleDay, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const DB = "diagnostic_erp";
@@ -571,5 +571,98 @@ describe("sanitizeManifest", () => {
     const inv = classify(ctxFor(), [backupDir]);
     expect(inv.artifacts.map((a) => a.name)).toEqual(["caredeoghar_not-a-timestamp.sql.gz"]);
     expect(inv.other.map((f) => f.name)).toEqual(["notes.txt"]);
+  });
+});
+
+// The day an artifact belongs to used to come from one regex — /(\d{4})(\d{2})(\d{2})/
+// — which matched only the compact `caredeoghar_20261015_023000` convention, ignored
+// the ISO names every other writer on this box actually uses, and would accept any
+// eight digits it found. These fixtures are the names measured read-only on the NAS
+// 2026-10-15, in /volume1/backup/care-erp/db and /volume1/docker/backups/*.
+describe("the day an artifact belongs to", () => {
+  const a = (name, mtimeIso = "2026-09-01T04:00:00.000Z") => ({ name, mtimeIso });
+
+  test("reads the hourly writer's ISO name — the case the old regex missed entirely", () => {
+    const r = artifactDay(a("backup_DB_2026-10-15T09-31-02-967Z.sql.enc"), null);
+    expect(r).toEqual({ day: "2026-10-15", source: "name" });
+  });
+
+  test("reads the compact name the clinic's own script writes", () => {
+    expect(artifactDay(a("caredeoghar_20261015_023000.sql.gz"), null)).toEqual({ day: "2026-10-15", source: "name" });
+  });
+
+  test("reads a date-only name and a dashed dated-dump name", () => {
+    expect(artifactDay(a("care_db_daily_2026-10-15.sql.gz"), null).day).toBe("2026-10-15");
+    expect(artifactDay(a("care_erp_2026-10-15_02-15.dump"), null).day).toBe("2026-10-15");
+  });
+
+  test("prefers the sidecar's own record over the name, and the name over the mtime", () => {
+    const artifact = a("backup_DB_2026-10-15T09-31-02-967Z.sql.enc", "2026-09-01T04:00:00.000Z");
+    expect(artifactDay(artifact, { created_utc: "2026-10-14T23:59:59Z" })).toEqual({ day: "2026-10-14", source: "sidecar" });
+    expect(artifactDay(artifact, null).source).toBe("name");
+    expect(artifactDay(a("no-date-here.sql.gz", "2026-09-01T04:00:00.000Z"), null)).toEqual({ day: "2026-09-01", source: "mtime" });
+  });
+
+  test("refuses eight digits that are not a date instead of inventing a coverage day", () => {
+    // A unix timestamp in the name used to become the day 1762-39-44, which then
+    // anchored the oldest/newest span and reported four centuries of missing backups.
+    const r = artifactDay(a("backup_1762394400.sql", "2026-10-15T04:00:00.000Z"), null);
+    expect(r).toEqual({ day: "2026-10-15", source: "mtime" });
+  });
+
+  test("an impossible compact date in a name is refused, not turned into a coverage day", () => {
+    // 2026-02-30 is shaped exactly like a date and is not one. Accepting it would
+    // put a phantom day inside the oldest/newest span and report real days missing.
+    const r = artifactDay(a("care_db_daily_20260230.sql.gz", "2026-10-15T04:00:00.000Z"), null);
+    expect(r).toEqual({ day: "2026-10-15", source: "mtime" });
+    expect(isPlausibleDay("2026-02-30")).toBe(false);
+  });
+
+  test("says a name with no date came from the mtime, so a copied tree is not read as a backup date", () => {
+    expect(artifactDay(a("caredeoghar_restore_copy.sql.gz", "2026-10-15T04:00:00.000Z"), null).source).toBe("mtime");
+  });
+
+  test("validates the calendar, not just the digits", () => {
+    expect(isPlausibleDay("2026-02-31")).toBe(false);
+    expect(isPlausibleDay("2026-04-31")).toBe(false);
+    expect(isPlausibleDay("2026-13-01")).toBe(false);
+    expect(isPlausibleDay("2024-02-29")).toBe(true);
+    expect(isPlausibleDay("2026-10-15")).toBe(true);
+    expect(isPlausibleDay("2026-10-15T09:31")).toBe(false);
+    expect(isPlausibleDay("")).toBe(false);
+    expect(isPlausibleDay(null)).toBe(false);
+  });
+
+  test("an invalid sidecar date does not outrank a valid name", () => {
+    const r = artifactDay(a("backup_DB_2026-10-15T09-31-02-967Z.sql.enc"), { created_utc: "2026-13-40" });
+    expect(r).toEqual({ day: "2026-10-15", source: "name" });
+  });
+});
+
+describe("zero-byte artifacts in the inventory", () => {
+  test("are INVALID, and are not counted as a day of coverage", async () => {
+    const good = artifact(1);
+    const empty = artifact(0, { body: "", sidecar: false });
+    expect(empty.bytes).toBe(0);
+
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const emptyRow = inv.artifacts.find((r) => r.artifact === empty.name);
+    const goodRow = inv.artifacts.find((r) => r.artifact === good.name);
+    expect(goodRow.status).toBe("OK");
+    expect(emptyRow.status).toBe("INVALID");
+    expect(emptyRow.problems.join(" ")).toMatch(/0 bytes/);
+    // The empty file is dated today; coverage must stop at the last real backup.
+    expect(inv.coverage.newest).toBe("2026-10-14");
+    const out = render(inv);
+    expect(out).toMatch(/1 zero-byte artifact\(s\) excluded from it/);
+    expect(out).toMatch(/zero-byte artifact\(s\) cannot restore/);
+  });
+
+  test("dates each artifact by where the date came from, so a copied tree is visible", async () => {
+    artifact(2, { sidecar: false });          // name-carries the date
+    artifact(1);                              // sidecar carries it
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.artifacts.map((r) => r.daySource).sort()).toEqual(["name", "sidecar"]);
+    expect(render(inv)).toMatch(/dated by sidecar=1, name=1/);
   });
 });

@@ -14,6 +14,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   RESTORE_CORE_TABLES,
+  RESTORE_ROW_COUNT_MARKERS,
+  evaluateRowCountSanity,
+  quoteRestoreIdentifier,
   sqlArtifactHasCreateTable,
   evaluateCoreTablesPresent,
   evaluateBackupFile,
@@ -195,5 +198,119 @@ describe("schema warnings remain visible (pass_with_warnings)", () => {
     const src = readFileSync(join(REPO, "scripts/db-schema-verify.cjs"), "utf8");
     expect(src).toContain('return hasNonBlockingIssues ? "pass_with_warnings" : "full_pass"');
     expect(src).not.toMatch(/pass_with_warnings.*=.*"full_pass"/);
+  });
+});
+
+describe("row_count_sanity compares the artifact with its own horizon", () => {
+  // The defect this replaces: the verifier counted the LIVE database at the moment
+  // of verification, so on a clinic that is writing reports and audit rows every
+  // day, each row created after the dump made a complete restore look truncated.
+  // The proof therefore failed for a reason that had nothing to do with the backup,
+  // which is how a restore check stops being read.
+  type Row = { count: number; highWater: number; sourceThrough: number; sourceTotal?: number };
+
+  const harness = (perTable: Record<string, Row>) => {
+    const totalsAsked: string[] = [];
+    const boundsSeen: Array<[string, number]> = [];
+    return {
+      totalsAsked,
+      boundsSeen,
+      readers: {
+        async restored(table: string) {
+          return { count: perTable[table].count, highWater: perTable[table].highWater };
+        },
+        async sourceThrough(table: string, _marker: string, highWater: number) {
+          boundsSeen.push([table, highWater]);
+          return perTable[table].sourceThrough;
+        },
+        async sourceTotal(table: string) {
+          totalsAsked.push(table);
+          return perTable[table].sourceTotal ?? 0;
+        },
+      },
+    };
+  };
+
+  it("passes a busy box: rows written after the artifact cannot fail the proof", async () => {
+    const h = harness({
+      audit_logs: { count: 100, highWater: 9_000, sourceThrough: 100, sourceTotal: 137 },
+      patient_reports: { count: 12, highWater: 400, sourceThrough: 12, sourceTotal: 20 },
+    });
+    const step = await evaluateRowCountSanity(["audit_logs", "patient_reports"], h.readers);
+    expect(step.ok).toBe(true);
+    // The bound used is the restored table's own high-water id, nothing else.
+    expect(h.boundsSeen).toEqual([["audit_logs", 9_000], ["patient_reports", 400]]);
+    // A non-empty restore never asks for the live total.
+    expect(h.totalsAsked).toEqual([]);
+  });
+
+  it("still fails a truncated restore and names how many rows are missing", async () => {
+    const h = harness({ radiology_worklist: { count: 90, highWater: 500, sourceThrough: 100 } });
+    const step = await evaluateRowCountSanity(["radiology_worklist"], h.readers);
+    expect(step.ok).toBe(false);
+    expect(step.detail).toMatch(/restored 90 rows but the source holds 100/);
+    expect(step.detail).toMatch(/10 row\(s\) the artifact already had are missing/);
+  });
+
+  it("keeps the comparison strict: a one-row gap is a failure, not a tolerance", async () => {
+    // The temptation after the false-failure bug is to forgive "a few rows", which is
+    // precisely how a restore missing rows starts passing. Nothing is forgiven here.
+    const h = harness({ audit_logs: { count: 99, highWater: 500, sourceThrough: 100 } });
+    const step = await evaluateRowCountSanity(["audit_logs"], h.readers);
+    expect(step.ok).toBe(false);
+    expect(step.detail).toMatch(/1 row\(s\) the artifact already had are missing/);
+  });
+
+  it("fails a core table that restored empty while the source holds rows", async () => {
+    const h = harness({ patient_reports: { count: 0, highWater: 0, sourceThrough: 0, sourceTotal: 4_212 } });
+    const step = await evaluateRowCountSanity(["patient_reports"], h.readers);
+    expect(step.ok).toBe(false);
+    expect(step.detail).toMatch(/restored empty while the source holds 4,212 row/);
+    expect(h.totalsAsked).toEqual(["patient_reports"]);
+  });
+
+  it("passes a genuinely empty database without inventing a failure", async () => {
+    const h = harness({ patient_reports: { count: 0, highWater: 0, sourceThrough: 0, sourceTotal: 0 } });
+    const step = await evaluateRowCountSanity(["patient_reports"], h.readers);
+    expect(step.ok).toBe(true);
+  });
+
+  it("fails loudly for a core table with no declared high-water column", async () => {
+    // The quiet way this check dies: a table is added to RESTORE_CORE_TABLES, has no
+    // marker, and the loop skips it. Skipping must cost the verification, not pass it.
+    const h = harness({ brand_new_table: { count: 5, highWater: 5, sourceThrough: 5 } });
+    const step = await evaluateRowCountSanity(["brand_new_table"], h.readers);
+    expect(step.ok).toBe(false);
+    expect(step.detail).toMatch(/no high-water column is declared/);
+    expect(step.detail).toMatch(/failing rather than skipping/);
+  });
+
+  it("every restore-core table declares a marker, so none is silently unbount", () => {
+    for (const table of RESTORE_CORE_TABLES) {
+      expect(RESTORE_ROW_COUNT_MARKERS[table], `${table} must declare its high-water column`).toBeTruthy();
+    }
+  });
+
+  it("carries a bigint high-water mark through to the source bound", async () => {
+    const beyondInt32 = Number(2_147_483_648);
+    const h = harness({
+      report_finding_instances: { count: 3, highWater: beyondInt32, sourceThrough: 3 },
+    });
+    const step = await evaluateRowCountSanity(["report_finding_instances"], h.readers);
+    expect(step.ok).toBe(true);
+    expect(h.boundsSeen).toEqual([["report_finding_instances", beyondInt32]]);
+  });
+});
+
+describe("the restore count queries cannot be shaped by a name", () => {
+  it("accepts the real identifiers", () => {
+    expect(quoteRestoreIdentifier("audit_logs")).toBe('"audit_logs"');
+    expect(quoteRestoreIdentifier("id")).toBe('"id"');
+  });
+
+  it("refuses anything that would close the quoted identifier", () => {
+    for (const bad of ['a"b', "a b", "a;DROP", 'x" FROM y--', "", "9lives", "Upper"]) {
+      expect(() => quoteRestoreIdentifier(bad), bad).toThrow(/refusing to build a count query/);
+    }
   });
 });

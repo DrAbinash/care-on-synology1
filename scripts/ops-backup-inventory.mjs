@@ -80,13 +80,52 @@ import {
 
 const DAY_MS = 86_400_000;
 
-/** The UTC day an artifact belongs to: its own record first, then its name, then its mtime. */
-function artifactDay(a, meta) {
+/** A real calendar day in the narrow band a backup can plausibly carry. */
+export function isPlausibleDay(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text ?? ""));
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const t = Date.UTC(y, mo - 1, d);
+  const back = new Date(t);
+  // Round-trip rejects 2026-02-31, month 13, day 40 — the digits that an
+  // unvalidated regex happily turns into a coverage day.
+  return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d;
+}
+
+/**
+ * The UTC day an artifact belongs to, from its own record first: the sidecar, then
+ * the name, then the modification time — and WHICH of those answered is returned,
+ * because a coverage span built from mtimes describes when files were copied, not
+ * when the clinic was backed up. A restored or rsynced tree has fresh mtimes on
+ * every file in it.
+ *
+ * The name patterns are the ones actually present on the clinic box, measured
+ * 2026-10-15 in `/volume1/backup/care-erp/db`, `/volume1/docker/backups/*`:
+ *   backup_DB_2026-10-15T09-31-02-967Z.sql.enc   (ISO date, then -separated time)
+ *   caredeoghar_20261015_023000.sql.gz           (compact, this is what the old
+ *                                                  parser matched — and nothing else)
+ *   care_erp_2026-10-15_02-15.dump               (dated subdirectory job)
+ *   care_db_daily_2026-10-15.sql.gz              (day only, dashed)
+ * A bare run of eight digits is no longer trusted: `backup_1762394400.sql` is a
+ * unix timestamp and used to become the day 1762-39-44, which then poisoned the
+ * oldest/newest span and reported months of missing backups.
+ */
+export function artifactDay(a, meta) {
   const fromMeta = String(meta?.created_utc || "").slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(fromMeta)) return fromMeta;
-  const fromName = a.name.match(/(\d{4})(\d{2})(\d{2})/);
-  if (fromName) return `${fromName[1]}-${fromName[2]}-${fromName[3]}`;
-  return a.mtimeIso.slice(0, 10);
+  if (isPlausibleDay(fromMeta)) return { day: fromMeta, source: "sidecar" };
+
+  const name = String(a?.name ?? "");
+  const dashed = name.match(/(2\d{3})-(\d{2})-(\d{2})/);
+  if (dashed && isPlausibleDay(`${dashed[1]}-${dashed[2]}-${dashed[3]}`)) {
+    return { day: `${dashed[1]}-${dashed[2]}-${dashed[3]}`, source: "name" };
+  }
+  const compact = name.match(/(2\d{3})(\d{2})(\d{2})/);
+  if (compact && isPlausibleDay(`${compact[1]}-${compact[2]}-${compact[3]}`)) {
+    return { day: `${compact[1]}-${compact[2]}-${compact[3]}`, source: "name" };
+  }
+
+  return { day: String(a?.mtimeIso || "").slice(0, 10), source: "mtime" };
 }
 
 /**
@@ -217,6 +256,7 @@ export async function inspect(ctx, roots, opts = {}) {
       mtimeIso,
       ageHours: Number((((now - a.mtimeMs) / 3.6e6)).toFixed(1)),
       day: mtimeIso.slice(0, 10),
+      daySource: "mtime",
       manifest: null,
       problems: [],
       checksum: "absent",
@@ -251,7 +291,17 @@ export async function inspect(ctx, roots, opts = {}) {
       }
     }
 
-    row.day = artifactDay(a, row.manifest);
+    const dated = artifactDay(a, row.manifest);
+    row.day = dated.day;
+    row.daySource = dated.source;
+    // An empty file is the worst kind of green: the job exits 0, the log says
+    // success, the file exists with today's name, and there is nothing in it.
+    // Measured 2026-10-15 in /volume1/docker/backups/postgres/care — 20 of 62 dumps
+    // are 0 bytes, including six consecutive nights.
+    if (a.bytes === 0) {
+      row.problems.push("0 bytes — the dump produced nothing; this artifact cannot restore");
+      row.status = "INVALID";
+    }
     // A file dated ahead of the clock is not a cosmetic problem: the retention
     // pass is `find -mtime +N -delete`, so a future mtime makes that artifact
     // invisible to its own cleanup, and an age computed against it goes negative.
@@ -302,7 +352,8 @@ export async function inspect(ctx, roots, opts = {}) {
 
   // Day coverage. A directory can be full of Tuesday's four attempts and have
   // nothing from Monday, which an "N artifacts" count hides completely.
-  const days = [...new Set(rows.map((r) => r.day))].sort();
+  const restorableRows = rows.filter((r) => r.bytes > 0);
+  const days = [...new Set(restorableRows.map((r) => r.day))].sort();
   const coverage = days.length ? coverageGaps(days, now) : null;
 
   const counts = rows.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
@@ -406,7 +457,18 @@ export function render(inv) {
     lines.push("  If the job files dumps into dated folders, BACKUP_DIR must point at them — otherwise this list says \"no artifacts\" about backups that exist.");
   }
   if (inv.coverage) {
-    lines.push(`coverage: ${inv.coverage.distinctDays} distinct day(s) from ${inv.coverage.oldest} to ${inv.coverage.newest}`);
+    const bySource = inv.artifacts.reduce((acc, r) => {
+      acc[r.daySource ?? "mtime"] = (acc[r.daySource ?? "mtime"] || 0) + 1;
+      return acc;
+    }, {});
+    const empties = inv.artifacts.filter((r) => r.bytes === 0).length;
+    lines.push(`coverage: ${inv.coverage.distinctDays} distinct day(s) from ${inv.coverage.oldest} to ${inv.coverage.newest}`
+      + ` — dated by sidecar=${bySource.sidecar || 0}, name=${bySource.name || 0}, mtime=${bySource.mtime || 0}`
+      + (empties ? `, and ${empties} zero-byte artifact(s) excluded from it` : ""));
+    if (bySource.mtime) {
+      lines.push("  mtime-dated artifact(s): their own name and sidecar carried no date, so the day this tool reports is when the FILE was written — a copied or restored tree reports its copy date, not the backup's.");
+    }
+    if (empties) lines.push("  zero-byte artifact(s) cannot restore, so they are listed with their status and never counted as a day of coverage.");
     if (inv.coverage.missing.length) {
       lines.push(`  MISSING ${inv.coverage.missing.length} day(s) in that span: ${inv.coverage.missing.slice(0, 14).join(", ")}${inv.coverage.missing.length > 14 ? " …" : ""}`);
       lines.push("  A gap means no artifact for that date, so nothing from it is recoverable. A directory full of one day's retries looks healthy by count and is not.");

@@ -385,6 +385,52 @@ describe("T5–T8 — backup and restore evidence", () => {
     expect(by["backup.freshness"].status).toBe(PASS);
   });
 
+  // A zero-byte artifact is the worst kind of green: the dump job exits 0, the log
+  // says success, the file exists with today's name, and there is nothing in it.
+  // This is not hypothetical on this NAS — the dated dumps in
+  // /volume1/docker/backups/postgres/care hold 20 empty files out of 62, including
+  // six consecutive nights (2026-10-10 to 2026-10-15), measured 2026-10-15 read-only.
+  const addEmptyNewer = (name = "caredeoghar_20261015_030000.sql.gz", ageMs = 3_600_000) => {
+    const empty = path.join(backupDir, name);
+    writeFileSync(empty, Buffer.alloc(0));
+    const when = new Date(NOW - ageMs);
+    utimesSync(empty, when, when);
+    return empty;
+  };
+
+  test("T6c a 0-byte newest artifact is never the thing freshness is measured against", () => {
+    seedTree({});
+    addEmptyNewer();
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["backup.artifacts_present"].status).toBe(PASS);
+    expect(by["backup.artifacts_present"].detail).toMatch(/1 of them are 0 bytes/);
+    expect(by["backup.freshness"].status).toBe(PASS);
+    expect(by["backup.freshness"].detail).toMatch(/newest restorable/);
+    expect(by["backup.freshness"].detail).toMatch(/the MOST RECENT file caredeoghar_20261015_030000\.sql\.gz is 0 bytes and was not counted/);
+    expect(by["backup.freshness"].remediation).toMatch(/exit status/);
+  });
+
+  test("T6d a directory whose every artifact is 0 bytes is FAIL, not a box with backups", () => {
+    seedTree({});
+    writeFileSync(artifactPath, Buffer.alloc(0));
+    const report = runPreflight({ ctx: makeCtx() });
+    const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
+    expect(by["backup.artifacts_present"].status).toBe(FAIL);
+    expect(by["backup.artifacts_present"].detail).toMatch(/EVERY one is 0 bytes/);
+    expect(by["backup.freshness"].status).toBe(FAIL);
+    expect(by["backup.metadata"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T6e a fresh empty write does not rescue a stale restorable backup", () => {
+    seedTree({ ageHours: 30 });
+    addEmptyNewer();
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    // The old code would have reported the 1-hour-old file as fresh and passed.
+    expect(by["backup.freshness"].status).toBe(FAIL);
+    expect(by["backup.freshness"].detail).toMatch(/30\.0h/);
+  });
+
   test("T7 a sidecar that contradicts the artifact is FAIL, naming every mismatch", () => {
     seedTree({});
     writeFileSync(`${artifactPath}.meta`, [

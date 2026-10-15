@@ -5,9 +5,10 @@
  *
  *   dump exists → size > 0 → sha256 recorded → gzip/decrypt integrity →
  *   restore into a THROWAWAY database → core radiology tables exist →
- *   row counts match the source → signed structured reports survive the
- *   jsonb round-trip AND their content hashes still verify → amendment
- *   chains stay linear → audit-chain linkage verifies → throwaway dropped.
+ *   row counts cover every source row up to the restored tables' own high-water
+ *   ids → signed structured reports survive the jsonb round-trip AND their
+ *   content hashes still verify → amendment chains stay linear → audit-chain
+ *   linkage verifies → throwaway dropped.
  *
  * NEVER touches production data: it only CREATEs/DROPs `restore_verify_*`
  * databases and reads the source. Results persist to radiology_ops_checks so
@@ -66,6 +67,102 @@ export const RESTORE_CORE_TABLES = [
 
 /** @deprecated Use RESTORE_CORE_TABLES — kept as alias for existing imports. */
 export const CORE_TABLES = RESTORE_CORE_TABLES;
+
+/**
+ * The monotonic column each core table is bounded by when its completeness is
+ * judged. Every one of these ids comes from a sequence, so a row's id is allocated
+ * when it is inserted and never changes — which makes the restored table's own
+ * highest id the exact line between "the artifact had to contain this" and "this
+ * arrived after the artifact was taken".
+ *
+ * A core table missing from this map FAILS the verification rather than being
+ * skipped, because a silently unbount table is a check that no longer exists.
+ */
+export const RESTORE_ROW_COUNT_MARKERS: Record<string, string> = {
+  patient_reports: "id",
+  radiology_report_drafts: "id",
+  patient_report_amendments: "id",
+  report_finding_instances: "id",
+  radiology_worklist: "id",
+  audit_logs: "id",
+  radiology_redelivery_obligations: "id",
+};
+
+/**
+ * Sequence-generated ids and column names here are all lower-case SQL identifiers,
+ * so anything else is a bug or an attack — and the count queries interpolate these
+ * directly (drizzle's sql.raw has no parameter slots for identifiers). Exported
+ * because it is the only thing standing between the marker map and a query string.
+ */
+export function quoteRestoreIdentifier(name: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
+    throw new Error(`refusing to build a count query around ${JSON.stringify(name)}`);
+  }
+  return `"${name}"`;
+}
+
+export type RestoreCountReaders = {
+  /** Rows in the restored throwaway table, and its own highest marker value. */
+  restored(table: string, marker: string): Promise<{ count: number; highWater: number }>;
+  /** Source rows whose marker is at or below `highWater` — the rows the artifact had to contain. */
+  sourceThrough(table: string, marker: string, highWater: number): Promise<number>;
+  /** All source rows. Asked only when the restored table came back empty. */
+  sourceTotal(table: string): Promise<number>;
+};
+
+/**
+ * Did the artifact contain the data it was supposed to?
+ *
+ * This used to compare the restored counts with the LIVE database's counts taken
+ * now, minutes after the dump — so every bill, audit row and signed report written
+ * since the artifact was taken made the restored table look short, and a perfect
+ * restore failed on a busy clinic box. Bounding the source at the restored table's
+ * own high-water id removes that: the artifact is required to hold everything that
+ * existed when it was taken, and rows created afterwards cannot fail it.
+ *
+ * The genuine guarantees stay: a truncated or empty restore still fails, and a
+ * table whose bound cannot be computed fails loudly instead of passing quietly.
+ *
+ * One residual window is stated rather than hidden. Sequence values are allocated at
+ * insert time, so a transaction that took id 998 and committed *after* the dump
+ * snapshot, while a later id 999 committed before it, leaves the source holding a row
+ * `<= highWater` that the artifact legitimately lacks. That fails this step. It is
+ * kept strict because the only alternative is a tolerance, and a tolerance is exactly
+ * how a truncated restore starts passing; the numbers in the failure line are what a
+ * human needs to tell the two apart.
+ */
+export async function evaluateRowCountSanity(
+  tables: readonly string[],
+  readers: RestoreCountReaders,
+): Promise<RestoreVerificationStep> {
+  const problems: string[] = [];
+  const bounded: string[] = [];
+  for (const table of tables) {
+    const marker = RESTORE_ROW_COUNT_MARKERS[table];
+    if (!marker) {
+      problems.push(`${table}: no high-water column is declared, so its completeness cannot be proved — failing rather than skipping it`);
+      continue;
+    }
+    const { count, highWater } = await readers.restored(table, marker);
+    const required = await readers.sourceThrough(table, marker, highWater);
+    if (count < required) {
+      problems.push(`${table}: restored ${count} rows but the source holds ${required} with ${marker} <= ${highWater}, so ${(required - count).toLocaleString("en-US")} row(s) the artifact already had are missing`);
+    } else if (count === 0) {
+      const total = await readers.sourceTotal(table);
+      if (total > 0) problems.push(`${table}: restored empty while the source holds ${total.toLocaleString("en-US")} row(s) — the artifact carried no rows for it`);
+      else bounded.push(`${table} 0/0`);
+    } else {
+      bounded.push(`${table} ${count.toLocaleString("en-US")}/${highWater.toLocaleString("en-US")}`);
+    }
+  }
+  return {
+    name: "row_count_sanity",
+    ok: problems.length === 0,
+    detail: problems.length
+      ? problems.join("; ").slice(0, 500)
+      : `restored covers every source row up to its own id high-water mark; rows written since the artifact was taken are excluded from the comparison — ${bounded.join(", ")}`,
+  };
+}
 
 /**
  * True when SQL looks schema-complete (contains CREATE TABLE).
@@ -293,17 +390,28 @@ export async function runRestoreVerification(
       if (!coreStep.ok) return finish(false);
     }
 
-    // Row-count sanity vs the SOURCE (live) database — counts only; schema
-    // proof above already ran against the throwaway.
-    const mismatches: string[] = [];
-    for (const table of RESTORE_CORE_TABLES) {
-      const src = await db.execute(sql.raw(`SELECT count(*)::int AS c FROM ${table}`));
-      const dst = await restoredPool.query(`SELECT count(*)::int AS c FROM ${table}`);
-      const srcCount = Number((src.rows[0] as { c: number }).c);
-      const dstCount = Number(dst.rows[0].c);
-      if (dstCount < srcCount) mismatches.push(`${table}: restored ${dstCount} < source ${srcCount}`);
-    }
-    if (!step("row_count_sanity", mismatches.length === 0, mismatches.length ? mismatches.join("; ") : "restored counts cover the source")) return finish(false);
+    // Row-count sanity, bounded by the restored tables' own high-water ids so a
+    // busy clinic cannot fail a perfect restore (see evaluateRowCountSanity).
+    const pool = restoredPool;
+    const countStep = await evaluateRowCountSanity(RESTORE_CORE_TABLES, {
+      async restored(table, marker) {
+        const r = await pool.query(
+          `SELECT count(*)::bigint AS c, COALESCE(max(${quoteRestoreIdentifier(marker)})::bigint, 0) AS hi FROM ${quoteRestoreIdentifier(table)}`,
+        );
+        return { count: Number(r.rows[0].c), highWater: Number(r.rows[0].hi) };
+      },
+      async sourceThrough(table, marker, highWater) {
+        const r = await db.execute(sql.raw(
+          `SELECT count(*)::bigint AS c FROM ${quoteRestoreIdentifier(table)} WHERE ${quoteRestoreIdentifier(marker)} <= ${Math.trunc(highWater)}`,
+        ));
+        return Number((r.rows[0] as { c: number | string }).c);
+      },
+      async sourceTotal(table) {
+        const r = await db.execute(sql.raw(`SELECT count(*)::bigint AS c FROM ${quoteRestoreIdentifier(table)}`));
+        return Number((r.rows[0] as { c: number | string }).c);
+      },
+    });
+    if (!step(countStep.name, countStep.ok, countStep.detail)) return finish(false);
 
     // Signed structured reports: jsonb round-trip + content hash verify.
     const signed = await restoredPool.query(
