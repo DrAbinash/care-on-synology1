@@ -56,6 +56,9 @@ const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 // different age. See the note in seedTree for why the stamp is never the wall clock.
 const DEFAULT_ARTIFACT_AGE_HOURS = 6;
 const HEAD_SHA = "a".repeat(40);
+
+/** The Container Manager identity a healthy production box reports. */
+const TOPOLOGY = { project: "care-erp-github", dbVolume: "care_main_db_data" };
 const DATABASE_URL = "postgresql://erp@127.0.0.1:59999/diagnostic_erp";
 
 const ENV_TEMPLATE = {
@@ -94,6 +97,13 @@ const COMPOSE = [
   "      CRON_SECRET: ${CRON_SECRET:-}",
   "  web:",
   "    image: node:22",
+  "",
+  "volumes:",
+  "  db_data:",
+  "    external: true",
+  "    name: care_main_db_data",
+  "  object_storage:",
+  "  uploads_data:",
   "",
 ].join("\n");
 
@@ -265,6 +275,37 @@ function router(over = {}) {
     "git status --porcelain": { stdout: "" },
     "check-migration-order.cjs": { stdout: '{"violations":[],"checkedFiles":2}\n' },
     "audit-external-result-links.mjs": { stdout: "No duplicates found: the constraint can be added without touching a single existing row.\n" },
+    // The identity a real checkout of this tree would resolve at build time.
+    "build-identity.mjs": {
+      stdout: JSON.stringify({
+        imageBuiltAt: "2026-10-15T02:51:49Z",
+        commit: HEAD_SHA,
+        identitySource: "build-context-git",
+        gitBranch: "main",
+        gitRef: "refs/heads/main",
+        declaredGitCommit: HEAD_SHA,
+        staleStampDetected: false,
+        version: "2.0.0",
+        buildNumber: "1",
+      }) + "\n",
+    },
+    // The image IDs a rollback record needs, as `docker inspect care-api
+    // --format {{.Image}}` answers it.
+    "{{.Image}}": { stdout: "sha256:4a8f03cc7246024b198dc1b9a9549660cd79254c3f364353a82d740733380052\n" },
+    // The three docker reads the topology checks make. Order matters as much as
+    // content: the labels command also names care-api, so its more specific needle
+    // has to be tried first or the mount answer would be returned for it.
+    "com.docker.compose.project": { stdout: `${TOPOLOGY.project}|${path.resolve(root)}\n` },
+    "inspect care-db": {
+      stdout: "volume care_main_db_data /volume1/@docker/volumes/care_main_db_data/_data->/var/lib/postgresql/data;",
+    },
+    "inspect care-api": {
+      stdout: "volume care-erp-github_uploads_data /volume1/@docker/volumes/care-erp-github_uploads_data/_data->/app/data/uploads;"
+        + "volume care-erp-github_object_storage /volume1/@docker/volumes/care-erp-github_object_storage/_data->/app/data/object-storage;",
+    },
+    "docker compose ls": {
+      stdout: `${TOPOLOGY.project}|running(4)|${path.resolve(root)}/docker-compose.yml\nhope|running(3)|/volume1/docker/hope/docker-compose.yml\n`,
+    },
     "docker compose": { stdout: "" },
     current_database: { stdout: "diagnostic_erp\n" },
     system_database_identity: { stdout: "care-erp|production\n" },
@@ -275,8 +316,11 @@ function router(over = {}) {
   return (cmd, args) => {
     const joined = [cmd, ...(args ?? [])].join(" ");
     for (const [needle, value] of Object.entries(table)) {
-      if (value !== null && joined.includes(needle)) {
-        return { code: value.code ?? 0, stdout: value.stdout ?? "", stderr: value.stderr ?? "", missing: !!value.missing };
+      const hit = typeof value === "function" ? value(joined) : value;
+      if (hit) {
+        if (joined.includes(needle)) {
+          return { code: hit.code ?? 0, stdout: hit.stdout ?? "", stderr: hit.stderr ?? "", missing: !!hit.missing };
+        }
       }
     }
     return { code: 0, stdout: "", stderr: "", missing: false };
@@ -368,7 +412,9 @@ describe("T1–T4 — deployment configuration", () => {
     expect(by["env.required"].status).toBe(UNKNOWN);
     expect(by["env.required"].detail).toMatch(/template/);
     expect(by["credentials.safe"].status).toBe(UNKNOWN);
-    expect(by["deploy.metadata"].status).toBe(UNKNOWN);
+    // Build identity is deliberately NOT one of the .env value checks: it comes
+    // from the checkout's git refs, which a template cannot fake either way.
+    expect(by["deploy.metadata"].status).toBe(PASS);
     expect(report.envIsTemplate).toBe(true);
     expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
     expect(renderText(report)).toMatch(/the live \.env was not found/);
@@ -679,11 +725,152 @@ describe("T9–T12 — platform, integration and metadata", () => {
     expect(by["schedulers.consistent"].detail).toMatch(/double-fires/);
   });
 
-  test("T12 missing build metadata is FAIL and names the keys", () => {
+  test("T12 build identity comes from the checkout, so an empty .env no longer hides it", () => {
     const { by, report } = build({ env: { GIT_COMMIT: undefined, BUILD_NUMBER: "" } });
+    expect(by["deploy.metadata"].status).toBe(PASS);
+    expect(by["deploy.metadata"].detail).toContain(HEAD_SHA.slice(0, 12));
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T12e a checkout that cannot resolve its own commit FAILS, critically", () => {
+    // This is the lying-stamp condition: if the tree cannot name its commit, the
+    // image can only repeat whatever .env said, and a rollback becomes unattributable.
+    const unresolved = JSON.stringify({ commit: null, identitySource: "build-arg-declared", gitResolveReason: "no HEAD file", declaredGitCommit: "2d51e8d7" });
+    const { by, report } = build({}, { "build-identity.mjs": { stdout: `${unresolved}\n` } });
     expect(by["deploy.metadata"].status).toBe(FAIL);
-    expect(by["deploy.metadata"].detail).toMatch(/GIT_COMMIT/);
+    expect(by["deploy.metadata"].critical).toBe(true);
+    expect(by["deploy.metadata"].detail).toMatch(/no HEAD file/);
     expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T12f a stale .env stamp is reported as overridden, not as a conflict to fix first", () => {
+    const drift = JSON.stringify({ commit: HEAD_SHA, identitySource: "build-context-git", gitBranch: "main", version: "2.0.0", buildNumber: "1", declaredGitCommit: "2d51e8d7", staleStampDetected: true });
+    const { by } = build({ env: { GIT_COMMIT: "2d51e8d7" } }, { "build-identity.mjs": { stdout: `${drift}\n` } });
+    expect(by["deploy.metadata"].status).toBe(PASS);
+    expect(by["deploy.metadata"].detail).toMatch(/\.env still declares 2d51e8d7/);
+  });
+
+  test("T12g with no node, the identity is unknown rather than assumed", () => {
+    const { by } = build({}, { "build-identity.mjs": { missing: true } });
+    expect(by["deploy.metadata"].status).toBe(UNKNOWN);
+    expect(by["deploy.metadata"].critical).toBe(true);
+  });
+
+  test("T15 a second compose project on this checkout is FAIL before it can strand the uploads", () => {
+    // The failure is silent and total: the external patient DB is reused, while a
+    // new project creates its own empty uploads/object volumes. docker-compose.yml
+    // declares db_data as `external: true, name: care_main_db_data` and leaves the
+    // other two project-prefixed, which is what makes the split possible.
+    const two = [
+      `${TOPOLOGY.project}|running(4)|${path.resolve(root)}/docker-compose.yml`,
+      `care-on-synology1|running(2)|${path.resolve(root)}/docker-compose.yml`,
+    ].join("\n");
+    const { by, report } = build({}, { "docker compose ls": { stdout: `${two}\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].critical).toBe(true);
+    expect(by["deploy.project_identity"].detail).toContain("care-on-synology1");
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T15b the running stack composed from a different checkout is FAIL", () => {
+    const { by } = build({}, { "com.docker.compose.project": { stdout: `${TOPOLOGY.project}|/volume1/docker/usg-reports\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].detail).toMatch(/usg-reports/);
+  });
+
+  test("T15c a wrong project name is FAIL and names the project to rebuild", () => {
+    const { by } = build({}, { "com.docker.compose.project": { stdout: `care-on-synology1|${path.resolve(root)}\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].remediation).toContain("care-erp-github");
+  });
+
+  test("T15d with no docker the topology is UNKNOWN, never a clean bill", () => {
+    // Docker missing is not one unreadable command: every docker read the topology
+    // checks make has to fail, or the mount half would still look proven.
+    const { by, report } = build({}, {
+      "com.docker.compose.project": { missing: true },
+      "docker compose ls": { missing: true },
+      "inspect care-db": { missing: true },
+      "inspect care-api": { missing: true },
+    });
+    expect(by["deploy.project_identity"].status).toBe(UNKNOWN);
+    expect(by["deploy.volume_identity"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T15e db_data declared without external is FAIL — a new project means an empty database", () => {
+    const compose = COMPOSE.replace("    external: true\n    name: care_main_db_data\n", "");
+    const { by } = build({ compose });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toMatch(/not `external`/);
+  });
+
+  test("T15f db_data external but pointed at another volume is FAIL and names both", () => {
+    const compose = COMPOSE.replace("name: care_main_db_data", "name: care-erp-github_db_data");
+    const { by } = build({ compose });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toContain("care-erp-github_db_data");
+    expect(by["deploy.volume_identity"].detail).toContain("not care_main_db_data");
+  });
+
+  test("T15g uploads mounted from another project's volume is FAIL", () => {
+    // The exact shape of the mistake: the right database, the wrong document store.
+    const { by } = build({}, {
+      "inspect care-api": { stdout: "volume care-on-synology1_uploads_data /volume1/@docker/volumes/care-on-synology1_uploads_data/_data->/app/data/uploads;volume care-on-synology1_object_storage /x->/app/data/object-storage;" },
+    });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toMatch(/does not mount the care-erp-github_uploads_data/);
+    expect(by["deploy.volume_identity"].remediation).toMatch(/STOP/);
+  });
+
+  test("T15h --record-rollback --auto reads the IDs instead of asking for them", () => {
+    seedTree({ evidence: null });
+    const ctx = makeCtx();
+    const written = [];
+    // Capture AND write: the claim under test is that a later run of the gate can
+    // read the record back, which a capture-only stub would silently fake.
+    const code = main(["--record-rollback", "--auto", "--no-rerun"], {
+      ctx,
+      writeFile: (f, t) => { written.push([f, t]); writeFileSync(f, t); },
+    });
+    expect(code).toBe(0);
+    expect(written).toHaveLength(1);
+    const data = JSON.parse(written[0][1]);
+    expect(data.rollback.previous_commit).toBe(HEAD_SHA);
+    expect(data.rollback.api_image).toBe("sha256:4a8f03cc7246024b198dc1b9a9549660cd79254c3f364353a82d740733380052");
+    expect(data.rollback.db_image).toBe(data.rollback.api_image);
+    // The whole point of recording it: the reader must now call rollback possible.
+    const by = Object.fromEntries(runPreflight({ ctx }).checks.map((c) => [c.id, c]));
+    expect(by["rollback.prerequisites"].status).toBe(PASS);
+  });
+
+  test("T15i --auto records nothing when an image ID cannot be read", () => {
+    // A rollback record with a guessed ID is worse than none: it reads as complete
+    // and points at an image that does not exist.
+    seedTree({ evidence: null });
+    const ctx = makeCtx({ exec: router({ "{{.Image}}": { code: 1, stdout: "", stderr: "error: No such object: care-api" } }) });
+    const written = [];
+    const err = [];
+    const real = process.stderr.write;
+    process.stderr.write = (chunk) => { err.push(String(chunk)); return true; };
+    let code;
+    try {
+      code = main(["--record-rollback", "--auto", "--no-rerun"], { ctx, writeFile: (f, t) => written.push([f, t]) });
+    } finally {
+      process.stderr.write = real;
+    }
+    expect(code).toBe(1);
+    expect(written).toEqual([]);
+    expect(err.join("")).toMatch(/Nothing was written/);
+  });
+
+  test("T15j an explicit flag still wins over what --auto read", () => {
+    seedTree({ evidence: null });
+    const ctx = makeCtx();
+    const written = [];
+    const code = main(["--record-rollback", "--auto", "--previous-commit", "b".repeat(40), "--no-rerun"], { ctx, writeFile: (f, t) => written.push([f, t]) });
+    expect(code).toBe(0);
+    expect(JSON.parse(written[0][1]).rollback.previous_commit).toBe("b".repeat(40));
   });
 
   test("T12h the recorder writes what the reader reads — evidence survives a reload", () => {
@@ -1157,5 +1344,24 @@ describe("the count the runbook tells the operator", () => {
       expect(n).toBe(report.checks.length);
     }
     expect(REQUIRED_CHECK_IDS.length).toBeGreaterThan(1); // the pin is not vacuous
+  });
+
+  test("every document that quotes the count quotes the same one", () => {
+    // A second document renumbering the same gate is the same lie in a different
+    // place: the operator follows whichever one they happen to open.
+    const repo = makeContext().repo;
+    const docs = [
+      ["docs/CARE_ERP_NAS_VALIDATION_CHECKLIST.md", /(\d+) readiness answers/g],
+      ["docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md", /all (\d+) checks/g],
+    ];
+    let seen = 0;
+    for (const [rel, pattern] of docs) {
+      const text = readFileSync(path.join(repo, ...rel.split("/")), "utf8");
+      for (const m of text.matchAll(pattern)) {
+        seen += 1;
+        expect(Number(m[1]), `${rel} states ${m[1]}`).toBe(REQUIRED_CHECK_IDS.length);
+      }
+    }
+    expect(seen, "at least one other document must quote the count, or this test guards nothing").toBeGreaterThan(0);
   });
 });

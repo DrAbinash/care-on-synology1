@@ -170,6 +170,24 @@ fi
 info "Building and starting containers (this takes 3-5 minutes)..."
 echo ""
 
+# ── Step 3a: Record what to go back to, BEFORE anything is replaced ──────────
+# The line below takes the containers down and the one after that retags
+# :latest, so the image IDs a rollback needs exist only until this runs.
+# `--record-rollback --auto` reads HEAD and the running containers by itself and
+# writes NOTHING when it cannot read one of them, because a rollback record with
+# a guessed image ID reads as complete and points at an image that does not
+# exist. Not fatal: on a first-ever install there is nothing here to record.
+RB_NODE=$(command -v node || true)
+if [ -n "$RB_NODE" ]; then
+  ROLLBACK_CODE=0
+  sudo "$RB_NODE" scripts/ops-preflight.mjs --record-rollback --auto --no-rerun || ROLLBACK_CODE=$?
+  if [ "$ROLLBACK_CODE" -ne 0 ]; then
+    warn "No pre-deploy rollback record was written (exit $ROLLBACK_CODE). Rollback is still possible through git (§11), but not through recorded image IDs."
+  fi
+else
+  warn "node is not on PATH, so the pre-deploy image IDs cannot be recorded."
+fi
+
 sudo docker compose down --remove-orphans 2>/dev/null || true
 # `sudo` resets the environment by default, so the GIT_COMMIT/GIT_BRANCH/
 # ERP_VERSION/etc. exported above never reached docker compose's
@@ -275,6 +293,29 @@ if ! sudo "$NODE_BIN" scripts/deploy-health.mjs --wait --timeout-seconds "$DEPLO
   fail "Deployment NOT verified. Do not use the ERP until the check above passes."
 fi
 
+# ── Step 5b: Prove the running containers are the commit this deploy intended ──
+# Health answers "it is up"; it does not answer "it is THIS code". For six weeks
+# /health reported 2d51e8d7 (2026-09-16) for an image containing 2026-10-12 code,
+# because GIT_COMMIT reached the image from .env and only this script refreshes
+# .env. The image now resolves its own SHA from the checkout's Git refs, so the
+# running application can be asked — and a disagreement is a failed deploy, not a
+# detail. Exit 2 (UNKNOWN) is deliberately not folded into success: the banner at
+# the end says which of the two it is.
+info "Verifying the deployed build identity..."
+IDENTITY_CODE=0
+IDENTITY_VERIFIED=false
+sudo "$NODE_BIN" scripts/verify-deployed-identity.mjs \
+  --expected "$GIT_COMMIT" --base-url "http://localhost:${HOST_PORT}" || IDENTITY_CODE=$?
+if [ "$IDENTITY_CODE" -eq 1 ]; then
+  echo ""
+  fail "Deployment NOT verified: the containers are running a different commit than ${GIT_COMMIT:0:12}. Rebuild the existing care-erp-github project from this checkout, or roll back to the image IDs recorded before the rebuild."
+elif [ "$IDENTITY_CODE" -eq 0 ]; then
+  IDENTITY_VERIFIED=true
+else
+  IDENTITY_VERIFIED=false
+  warn "Deployed commit could NOT be verified (exit 2 = unknown, not ok). The app is healthy but its identity is unproven. Run: sudo $NODE_BIN scripts/build-identity.mjs --git-dir .git --print"
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}============================================================${NC}"
@@ -287,6 +328,12 @@ echo -e "  Completed   : $(date '+%d %B %Y  %H:%M')"
 echo ""
 echo -e "  Verified    : care-db, care-db-patch-v2, care-schema-verify, care-api,"
 echo -e "                care-web + /nginx-health, /api/healthz, /api/health/schema"
+if [ "$IDENTITY_VERIFIED" = "true" ]; then
+  echo -e "  ${GREEN}Running commit: ${GIT_COMMIT:0:12} — resolved by the image itself and confirmed${NC}"
+else
+  echo -e "  ${YELLOW}Running commit: NOT VERIFIED (identity unknown). The health checks passed, but${NC}"
+  echo -e "  ${YELLOW}nobody has proved these containers are ${GIT_COMMIT:0:12}. Run the command in Step 5b.${NC}"
+fi
 echo -e "  ${YELLOW}If login doesn't work after 1 minute, run:${NC}"
 echo -e "  ${YELLOW}docker logs care-api --tail 40${NC}"
 echo ""
