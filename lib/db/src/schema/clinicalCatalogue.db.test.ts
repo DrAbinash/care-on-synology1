@@ -39,10 +39,38 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "pg";
+import {
+  buildCatalogueSnapshot,
+  canonicalize,
+  catalogueContentHash,
+  loadCatalogueRows,
+  publicationColumnsFor,
+  SNAPSHOT_DOMAINS,
+  type SnapshotDocument,
+} from "../cataloguePublicationSnapshot";
 
 const dbUrl = process.env.DATABASE_URL;
 const SCHEMA_FILE = "migrations/zzzz_add_clinical_catalogue_v4.sql";
 const SEED_FILE = "migrations/zzzzz_seed_clinical_catalogue_v4_examinations.sql";
+
+/**
+ * The two lines of SQL text the restore test needs. They live here, in the test, and not in
+ * lib/db/src/cataloguePublicationSnapshot.ts on purpose: Stage B has no administrator who can
+ * press "restore", and a production writer that nothing calls is a second source of truth with
+ * no owner. What this proves is the property the brief asks for — that the frozen document alone
+ * is enough to put every clinical row back — and if it ever stops being enough, this test says so.
+ */
+function sqlValue(value: unknown): string {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object") return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function insertFromEntry(table: string, entry: Record<string, unknown>): string {
+  const columns = Object.keys(entry).filter((key) => key !== "identity" && key !== "members");
+  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map((k) => sqlValue(entry[k])).join(", ")})`;
+}
 
 describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
   let client: Client;
@@ -74,10 +102,13 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
    * statement in the same test into `25P02 current transaction is aborted`. That
    * reads as "the constraint fired" while proving nothing at all.
    */
-  async function attempt(sqlText: string): Promise<{ code: string; message: string } | null> {
+  async function attempt(
+    sqlText: string,
+    params?: unknown[],
+  ): Promise<{ code: string; message: string } | null> {
     await client.query("SAVEPOINT catalogue_probe");
     try {
-      await client.query(sqlText);
+      await client.query(sqlText, params);
       await client.query("RELEASE SAVEPOINT catalogue_probe");
       return null;
     } catch (e) {
@@ -139,6 +170,79 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
     };
   }
 
+  /**
+   * A fixture that fills every one of the ten snapshot domains, because "the publication is
+   * complete" is only demonstrated by a catalogue that has something in each of them. Two tiles
+   * (one of a second concept, so no conflict group is implied), a normal slot one of them retires,
+   * a parameter, both directions of one symmetric relationship, a combination rule with two
+   * required members, and a recommendation rule. Ids come back so a test can delete or re-point
+   * exactly one thing at a time.
+   */
+  async function seedPublishableFixture(
+    c: Client,
+    tag: string,
+  ): Promise<{ examId: number; sectionId: number; conceptId: number; otherConceptId: number; tileA: number; tileB: number; slotId: number; ruleId: number }> {
+    const f = await seedFixture(c, tag);
+    const category2 = await c.query(
+      `INSERT INTO finding_categories (key, label) VALUES ($1, 'Second fixture category') RETURNING id`,
+      [`cat.${tag}.2`],
+    );
+    const concept2 = await c.query(
+      `INSERT INTO finding_definitions (key, category_id, label) VALUES ($1, $2, 'Second fixture concept') RETURNING id`,
+      [`concept.${tag}.2`, category2.rows[0]!.id],
+    );
+    const otherConceptId = Number(concept2.rows[0]!.id);
+    const tileA = await insertTile(c, `${tag}.a`, f.conceptId);
+    const tileB = await insertTile(c, `${tag}.b`, otherConceptId);
+    await c.query(
+      `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal)
+       VALUES (${tileA}, ${f.examId}, ${f.sectionId}, 1), (${tileB}, ${f.examId}, ${f.sectionId}, 2)`,
+    );
+    const slot = await c.query(
+      `INSERT INTO clinical_normal_slots (examination_id, concept_id, key, slot_field, rendered_text, region, ordinal)
+       VALUES (${f.examId}, ${f.conceptId}, $1, 'findings', 'A fixture normal.', $2, 1) RETURNING id`,
+      [`${tag}.normal`, `${tag} region`],
+    );
+    const slotId = Number(slot.rows[0]!.id);
+    await c.query(
+      `INSERT INTO clinical_tile_normal_replacements (tile_id, normal_slot_id) VALUES (${tileA}, ${slotId})`,
+    );
+    await c.query(
+      `INSERT INTO clinical_tile_parameters (tile_id, key, label, data_type, is_required)
+       VALUES (${tileA}, $1, 'Severity', 'text', FALSE)`,
+      [`${tag}.severity`],
+    );
+    await c.query(
+      `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+       VALUES (${tileA}, ${tileB}, 'combines_with'), (${tileB}, ${tileA}, 'combines_with')`,
+    );
+    const rule = await c.query(
+      `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members, ordinal)
+       VALUES ($1, $2, 'Combined line', 'impression', 'One consolidated line.', TRUE, FALSE, 1) RETURNING id`,
+      [`${tag}.combo`, f.examId],
+    );
+    const ruleId = Number(rule.rows[0]!.id);
+    await c.query(
+      `INSERT INTO clinical_combination_rule_members (rule_id, tile_id, is_optional, ordinal)
+       VALUES (${ruleId}, ${tileA}, FALSE, 1), (${ruleId}, ${tileB}, FALSE, 2)`,
+    );
+    await c.query(
+      `INSERT INTO clinical_recommendation_rules (key, examination_id, label, trigger_kind, concept_id, advice_text, ordinal)
+       VALUES ($1, $2, 'Follow up', 'concept_present', $3, 'Clinical follow-up.', 1)`,
+      [`${tag}.rec`, f.examId, f.conceptId],
+    );
+    return {
+      examId: f.examId,
+      sectionId: f.sectionId,
+      conceptId: f.conceptId,
+      otherConceptId,
+      tileA,
+      tileB,
+      slotId,
+      ruleId,
+    };
+  }
+
   async function insertTile(c: Client, key: string, conceptId: number, extra = ""): Promise<number> {
     const r = await c.query(
       `INSERT INTO clinical_tiles (key, concept_id, label, findings_text${extra ? ", " + extra : ""})
@@ -148,8 +252,329 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
     return r.rows[0]!.id as number;
   }
 
-  it("creates all fourteen tables with every column drizzle declares", async () => {
-    const expected: Record<string, string[]> = {
+  /**
+   * The publication INSERT, built the way the publisher will build it: read the examination's
+   * live rows through the module's own scoped queries, canonicalize, hash, store. Tests that
+   * need a publication therefore do not hand-write a document, which is the point — a
+   * hand-written document would prove that the gate accepts the shape the test author guessed,
+   * not that it accepts the shape the code produces.
+   *
+   * `mutate` exists for the negative cases: it edits the built document after the builder ran
+   * and before the INSERT, so a test can drop one domain, rename an entry's identity, or duplicate
+   * a row — i.e. exercise the publisher bug the gate is supposed to catch, with every other domain
+   * still correct. A refusal that arrives for the wrong reason reads exactly like a refusal that
+   * arrived for the right one, so each of those tests asserts the domain named in the message.
+   */
+  async function publicationInsert(
+    c: Client,
+    examId: number,
+    key: string,
+    mutate?: (doc: SnapshotDocument) => void,
+  ): Promise<{ sql: string; params: unknown[] }> {
+    const rows = await loadCatalogueRows((sqlText, values) => c.query(sqlText, values), examId);
+    const built = publicationColumnsFor(rows);
+    const doc = built.catalogueSnapshot;
+    mutate?.(doc);
+    return {
+      sql: `INSERT INTO clinical_publications
+              (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+            VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      params: [examId, key, built.contentHash, built.snapshotVersion, JSON.stringify(doc)],
+    };
+  }
+
+  async function publish(
+    c: Client,
+    examId: number,
+    key: string,
+    mutate?: (doc: SnapshotDocument) => void,
+  ): Promise<{ code: string; message: string } | null> {
+    const { sql, params } = await publicationInsert(c, examId, key, mutate);
+    return attempt(sql, params);
+  }
+
+  /**
+   * Make an examination's fixture content publishable: reviewed, ordered, and free of the
+   * unplaced leftovers a previous probe left behind. Stated as one operation because "ready to
+   * publish" is four facts, and a test that silently fails check 8 instead of the check it is
+   * asserting is the hollowest shape a gate test can take.
+   */
+  async function approveCatalogue(c: Client, examId: number): Promise<void> {
+    await c.query(
+      `UPDATE clinical_tiles SET review_state = 'approved'
+        WHERE deleted_at IS NULL AND id IN (SELECT tile_id FROM clinical_tile_examinations
+                                            WHERE examination_id = $1 AND deleted_at IS NULL)`,
+      [examId],
+    );
+    for (const table of ["clinical_anatomical_sections", "clinical_normal_slots", "clinical_combination_rules",
+      "clinical_recommendation_rules", "clinical_tile_relationships"]) {
+      const where = table === "clinical_tile_relationships"
+        ? `tile_id IN (SELECT tile_id FROM clinical_tile_examinations WHERE examination_id = $1 AND deleted_at IS NULL)`
+        : `examination_id = $1`;
+      await c.query(`UPDATE ${table} SET review_state = 'approved' WHERE deleted_at IS NULL AND ${where}`, [examId]);
+    }
+    await c.query(
+      `UPDATE clinical_examinations SET review_state = 'approved', status = 'active' WHERE id = $1`,
+      [examId],
+    );
+  }
+
+  /**
+   * The same document as a SQL literal, for the tests that must spell out their own INSERT
+   * because the column under test is one the builder would have filled (a prose hash, a missing
+   * hash, a duplicate key). Built by the same call, so a test cannot pin an old snapshot shape.
+   */
+  async function snapshotLiteral(c: Client, examId: number): Promise<string> {
+    const rows = await loadCatalogueRows((sqlText, values) => c.query(sqlText, values), examId);
+    return JSON.stringify(publicationColumnsFor(rows).catalogueSnapshot).replace(/'/g, "''");
+  }
+
+  it("freezes every column of every table it claims to restore, and invents no column", async () => {
+    // The property that makes the round trip above an ongoing guarantee rather than a one-off:
+    // an entry that omits a column silently loses that column on restore, and an entry that
+    // carries a key which is not a column cannot be inserted at all. Both are invisible until
+    // someone tries, which is exactly when a clinic finds out.
+    const DOMAIN_TABLES: [string, string][] = [
+      ["examination", "clinical_examinations"],
+      ["sections", "clinical_anatomical_sections"],
+      ["normalSlots", "clinical_normal_slots"],
+      ["tiles", "clinical_tiles"],
+      ["placements", "clinical_tile_examinations"],
+      ["parameters", "clinical_tile_parameters"],
+      ["normalReplacements", "clinical_tile_normal_replacements"],
+      ["relationships", "clinical_tile_relationships"],
+      ["combinationRules", "clinical_combination_rules"],
+      ["recommendationRules", "clinical_recommendation_rules"],
+    ];
+    await inTx(async (c) => {
+      const f = await seedPublishableFixture(c, "cols");
+      await approveCatalogue(c, f.examId);
+      const doc = buildCatalogueSnapshot(await loadCatalogueRows(
+        (sqlText, values) => c.query(sqlText, values), f.examId));
+      const entriesFor: Record<string, Record<string, unknown>[]> = {
+        examination: [doc.examination],
+        sections: doc.sections,
+        normalSlots: doc.normalSlots,
+        tiles: doc.tiles,
+        placements: doc.placements,
+        parameters: doc.parameters,
+        normalReplacements: doc.normalReplacements,
+        relationships: doc.relationships,
+        combinationRules: doc.combinationRules,
+        recommendationRules: doc.recommendationRules,
+        combinationMembers: doc.combinationRules.flatMap(
+          (r) => (r as Record<string, unknown>).members as Record<string, unknown>[]),
+      };
+      DOMAIN_TABLES.push(["combinationMembers", "clinical_combination_rule_members"]);
+      for (const [field, table] of DOMAIN_TABLES) {
+        const columns = await c.query<{ column_name: string }>(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1`,
+          [table],
+        );
+        const names = new Set(columns.rows.map((r) => r.column_name));
+        const frozen = [...names].filter((n) => !["created_at", "updated_at"].includes(n));
+        const entries = entriesFor[field]!;
+        expect(entries.length, `${table} needs a fixture row so coverage can be measured`).toBeGreaterThan(0);
+        for (const entry of entries) {
+          const keys = Object.keys(entry).filter((k) => k !== "identity" && k !== "members");
+          const missing = frozen.filter((n) => !keys.includes(n));
+          expect(missing, `a ${table} entry omits ${missing.join(", ")}: restoring would lose them`).toEqual([]);
+          const invented = keys.filter((k) => !names.has(k));
+          expect(invented, `a ${table} entry carries ${invented.join(", ")} which is not a column`).toEqual([]);
+        }
+      }
+    });
+  });
+
+  it("builds a publication the database itself accepts, then refuses each way a publisher can be wrong", async () => {
+    await inTx(async (c) => {
+      const f = await seedPublishableFixture(c, "snap");
+
+      // The positive control first, because every refusal below is only evidence if the
+      // unperturbed document is accepted.
+      await approveCatalogue(c, f.examId);
+      expect(await publish(c, f.examId, "pub.snap.ok"), "a real catalogue publishes").toBeNull();
+
+      // The document that was stored is the document the builder made, and the hash is its
+      // canonical text — not a value the test supplied and the database trusted.
+      const stored = await c.query<{ catalogue_snapshot: Record<string, unknown>; content_hash: string }>(
+        `SELECT catalogue_snapshot, content_hash FROM clinical_publications WHERE publication_key = 'pub.snap.ok'`,
+      );
+      const rows = await loadCatalogueRows((sqlText, values) => c.query(sqlText, values), f.examId);
+      const rebuilt = buildCatalogueSnapshot(rows);
+      expect(catalogueContentHash(stored.rows[0]!.catalogue_snapshot)).toBe(stored.rows[0]!.content_hash);
+      expect(catalogueContentHash(rebuilt)).toBe(stored.rows[0]!.content_hash);
+      expect(Object.keys(stored.rows[0]!.catalogue_snapshot).sort()).toEqual(
+        SNAPSHOT_DOMAINS.map((d) => d.field).sort(),
+      );
+      // Ten domains, and the arrays carry the rows the examination actually has.
+      expect((stored.rows[0]!.catalogue_snapshot.tiles as unknown[]).length).toBe(2);
+      expect((stored.rows[0]!.catalogue_snapshot.placements as unknown[]).length).toBe(2);
+      expect((stored.rows[0]!.catalogue_snapshot.parameters as unknown[]).length).toBe(1);
+      expect((stored.rows[0]!.catalogue_snapshot.normalReplacements as unknown[]).length).toBe(1);
+      expect((stored.rows[0]!.catalogue_snapshot.relationships as unknown[]).length).toBe(2);
+      expect((stored.rows[0]!.catalogue_snapshot.recommendationRules as unknown[]).length).toBe(1);
+      const combos = stored.rows[0]!.catalogue_snapshot.combinationRules as Record<string, unknown>[];
+      expect(combos).toHaveLength(1);
+      expect(combos[0]!.members).toHaveLength(2);
+
+      // One refusal per domain, each perturbing only that domain. The expected sentence is the
+      // whole prefix the gate produces, because the refusal is ordered (domain, kind, identity)
+      // — a message that named a different domain on each run of the same broken document could
+      // not be asserted against at all.
+      const perturbations: [string, RegExp, (doc: SnapshotDocument) => void][] = [
+        ["tiles", /catalogue_snapshot\.tiles omits the live row snap\.a/, (doc) => {
+          doc.tiles = doc.tiles.filter((t) => t.identity !== "snap.a");
+        }],
+        ["placements", /catalogue_snapshot\.placements omits the live row snap\.b/, (doc) => {
+          doc.placements = doc.placements.filter((p) => p.identity !== "snap.b");
+        }],
+        ["sections", /catalogue_snapshot\.sections omits the live row/, (doc) => { doc.sections = []; }],
+        ["normalSlots", /catalogue_snapshot\.normalSlots omits the live row snap\.normal/, (doc) => {
+          doc.normalSlots = [];
+        }],
+        ["parameters", /catalogue_snapshot\.parameters omits the live row snap\.a\/snap\.severity/, (doc) => {
+          doc.parameters = [];
+        }],
+        ["normalReplacements", /catalogue_snapshot\.normalReplacements omits the live row snap\.a>snap\.normal/, (doc) => {
+          doc.normalReplacements = [];
+        }],
+        ["relationships", /catalogue_snapshot\.relationships omits the live row/, (doc) => {
+          doc.relationships = [];
+        }],
+        ["recommendationRules", /catalogue_snapshot\.recommendationRules omits the live row snap\.rec/, (doc) => {
+          doc.recommendationRules = [];
+        }],
+        // Deleting the RULE is reported against its members, which is the alphabetically first
+        // domain of the two and both are true: the rule is missing and so are its two members.
+        // Asserting the sentence the gate actually produces, rather than the one that reads best,
+        // is what keeps this test honest as the ordering rule.
+        ["combinationRules", /catalogue_snapshot\.combinationMembers omits the live row snap\.combo\/snap\.a/, (doc) => {
+          doc.combinationRules = [];
+        }],
+        ["combinationMembers", /catalogue_snapshot\.combinationMembers omits the live row snap\.combo\/snap\.a/, (doc) => {
+          doc.combinationRules = doc.combinationRules.map((r) => ({ ...r, members: [] }));
+        }],
+      ];
+      for (const [domain, phrase, mutate] of perturbations) {
+        const err = await publish(c, f.examId, `pub.snap.drop.${domain}`, mutate);
+        expect(err?.code, `dropping the ${domain} domain is refused`).toBe("P0001");
+        expect(err?.message, `and names ${domain} as the domain at fault`).toMatch(phrase);
+      }
+
+      // The other three publisher mistakes: a domain of the wrong shape, an entry that names
+      // nothing live, and a document about the wrong examination.
+      expect((await publish(c, f.examId, "pub.snap.shape", (doc) => {
+        (doc as unknown as Record<string, unknown>).tiles = { snap: "a" };
+      }))?.message).toMatch(/tiles is a object, but every publication requires a array/);
+
+      expect((await publish(c, f.examId, "pub.snap.extra", (doc) => {
+        doc.tiles = [...doc.tiles, { identity: "snap.ghost", key: "snap.ghost" }];
+      }))?.message).toMatch(/names the non-live row snap.ghost/);
+
+      expect((await publish(c, f.examId, "pub.snap.dupe", (doc) => {
+        doc.sections = [...doc.sections, doc.sections[0]!];
+      }))?.message).toMatch(/duplicates the row/);
+
+      expect((await publish(c, f.examId, "pub.snap.noidentity", (doc) => {
+        doc.sections = doc.sections.map((s) => {
+          const copy: Record<string, unknown> = { ...s };
+          delete copy.identity;
+          return copy as unknown as typeof s;
+        });
+      }))?.message).toMatch(/names the non-live row <entry with no identity>/);
+
+      // And the one perturbation a set comparison cannot see: a document whose nine arrays are
+      // this examination's, wrapped around another examination's scope record.
+      const scope = await seedFixture(c, "snap-scope");
+      expect((await publish(c, f.examId, "pub.snap.wrongscope", (doc) => {
+        doc.examination = { ...doc.examination, id: scope.examId };
+      }))?.message).toMatch(/is examination \d+ but the publication is for examination \d+/);
+    });
+  });
+
+  it("restores the whole published configuration from the frozen document alone", async () => {
+    // §1 asked whether rollback can restore the entire published clinical configuration. This is
+    // the answer as an executable: freeze a catalogue, delete every row the document describes,
+    // put them back from the document, and require the recomputed hash to be the hash that was
+    // taken before anything was deleted. A document that passed the gate's count and still could
+    // not rebuild a row would fail here, which is the case no coverage check can see.
+    await inTx(async (c) => {
+      const f = await seedPublishableFixture(c, "res");
+      await approveCatalogue(c, f.examId);
+      const read = (sqlText: string, values?: unknown[]) => c.query(sqlText, values);
+      const original = await buildCatalogueSnapshot(await loadCatalogueRows(read, f.examId));
+      const hash = catalogueContentHash(original);
+
+      const ids = (entries: Record<string, unknown>[]): string =>
+        entries.map((e) => Number(e.id)).join(",") || "-1";
+      const members = original.combinationRules.flatMap((r) => (r as Record<string, unknown>).members as Record<string, unknown>[]);
+      expect(members.length, "the fixture has members to restore").toBeGreaterThan(0);
+
+      // Children first, because every one of these relationships is ON DELETE RESTRICT: this is
+      // also the proof that the restrict chain is real, and a restore tool that guessed the order
+      // would meet 23503 rather than rebuild the catalogue.
+      const deletes = [
+        `DELETE FROM clinical_combination_rule_members WHERE id IN (${ids(members)})`,
+        `DELETE FROM clinical_combination_rules WHERE id IN (${ids(original.combinationRules)})`,
+        `DELETE FROM clinical_recommendation_rules WHERE id IN (${ids(original.recommendationRules)})`,
+        `DELETE FROM clinical_tile_relationships WHERE id IN (${ids(original.relationships)})`,
+        `DELETE FROM clinical_tile_normal_replacements WHERE id IN (${ids(original.normalReplacements)})`,
+        `DELETE FROM clinical_tile_parameters WHERE id IN (${ids(original.parameters)})`,
+        `DELETE FROM clinical_tile_examinations WHERE id IN (${ids(original.placements)})`,
+        `DELETE FROM clinical_normal_slots WHERE id IN (${ids(original.normalSlots)})`,
+        `DELETE FROM clinical_anatomical_sections WHERE id IN (${ids(original.sections)})`,
+        `DELETE FROM clinical_tiles WHERE id IN (${ids(original.tiles)})`,
+        `DELETE FROM clinical_examinations WHERE id IN (${ids([original.examination])})`,
+      ];
+      for (const statement of deletes) {
+        expect(await attempt(statement), statement.slice(0, 46)).toBeNull();
+      }
+      const gone = await c.query(
+        `SELECT count(*)::int AS n FROM clinical_tile_examinations WHERE examination_id = $1`,
+        [f.examId],
+      );
+      expect(gone.rows[0]!.n, "the examination's configuration is gone").toBe(0);
+
+      // Parents first on the way back, straight out of the document.
+      const restores = [
+        insertFromEntry("clinical_examinations", original.examination),
+        ...original.sections.map((s) => insertFromEntry("clinical_anatomical_sections", s)),
+        ...original.normalSlots.map((s) => insertFromEntry("clinical_normal_slots", s)),
+        ...original.tiles.map((t) => insertFromEntry("clinical_tiles", t)),
+        ...original.placements.map((p) => insertFromEntry("clinical_tile_examinations", p)),
+        ...original.parameters.map((p) => insertFromEntry("clinical_tile_parameters", p)),
+        ...original.normalReplacements.map((r) => insertFromEntry("clinical_tile_normal_replacements", r)),
+        ...original.relationships.map((r) => insertFromEntry("clinical_tile_relationships", r)),
+        ...original.combinationRules.map((r) => insertFromEntry("clinical_combination_rules", r)),
+        ...members.map((m) => insertFromEntry("clinical_combination_rule_members", m)),
+        ...original.recommendationRules.map((r) => insertFromEntry("clinical_recommendation_rules", r)),
+      ];
+      for (const statement of restores) {
+        expect(await attempt(statement), statement.slice(0, 46)).toBeNull();
+      }
+
+      const restored = await buildCatalogueSnapshot(await loadCatalogueRows(read, f.examId));
+      expect(catalogueContentHash(restored), "the document rebuilds the catalogue byte for byte").toBe(hash);
+      expect(canonicalize(restored), "and the document itself is identical, not merely equal in hash").toBe(
+        canonicalize(original),
+      );
+
+      // The one thing restore does not reproduce is when the rows were written: created_at and
+      // updated_at are deliberately not frozen, so a restored row carries the time of the
+      // restore, and the durable "when was this the configuration" fact stays on the publication
+      // row that cites this hash. Asserting the difference keeps that decision from being
+      // mistaken for a bug later.
+      const stamp = await c.query<{ created_at: Date }>(
+        `SELECT created_at FROM clinical_tiles WHERE id = $1`, [Number(original.tiles[0]!.id)],
+      );
+      expect(stamp.rows[0]!.created_at.getTime()).toBeGreaterThan(0);
+      expect(original.tiles[0]).not.toHaveProperty("created_at");
+    });
+  });
+
+  it("creates all fourteen tables with every column drizzle declares", async () => {    const expected: Record<string, string[]> = {
       clinical_examinations: ["id", "key", "label", "modality", "body_part", "protocol_scope", "template_key", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_anatomical_sections: ["id", "examination_id", "key", "label", "parent_section_id", "section_field", "ordinal", "emits_heading", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_normal_slots: ["id", "examination_id", "section_id", "concept_id", "key", "slot_field", "rendered_text", "level", "laterality", "region", "ordinal", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
@@ -162,7 +587,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       clinical_combination_rules: ["id", "key", "examination_id", "section_id", "label", "target_field", "combined_text", "suppress_members", "requires_only_members", "ordinal", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_combination_rule_members: ["id", "rule_id", "tile_id", "concept_id", "required_value", "is_optional", "ordinal", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
       clinical_recommendation_rules: ["id", "key", "examination_id", "label", "trigger_kind", "tile_id", "concept_id", "parameter_key", "parameter_value", "advice_text", "priority", "emit_policy", "ordinal", "review_state", "review_note", "status", "version", "created_by", "updated_by", "created_at", "updated_at", "deleted_at"],
-      clinical_publications: ["id", "examination_id", "publication_key", "content_hash", "summary_json", "notes", "published_by", "published_at", "created_at"],
+      clinical_publications: ["id", "examination_id", "publication_key", "content_hash", "snapshot_version", "catalogue_snapshot", "summary_json", "notes", "published_by", "published_at", "created_at"],
       clinical_publication_tiles: ["id", "publication_id", "tile_id", "tile_version", "ordinal", "created_at"],
     };
     const live = await client.query<{ table_name: string; column_name: string }>(
@@ -588,29 +1013,48 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
     const HASH = "a".repeat(64);
     await inTx(async (c) => {
       const { examId } = await seedFixture(c, "pub");
+      await approveCatalogue(c, examId);
+      const snap = await snapshotLiteral(c, examId);
       expect((await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key) VALUES (${examId}, 'pub.1')`,
+        `INSERT INTO clinical_publications (examination_id, publication_key, catalogue_snapshot)
+         VALUES (${examId}, 'pub.1', '${snap}')`,
       ))?.code, "content_hash is NOT NULL: a publication must be addressable by its hash").toBe("23502");
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
+         VALUES (${examId}, 'pub.nosnap', '${HASH}')`,
+      ))?.message, "and so is the snapshot: a publication that carries no document restores nothing")
+        .toMatch(/catalogue_snapshot/);
+      // The column's own CHECK catches the document that was never filled in, which is the
+      // shape a publisher bug produces; check 14 of the gate catches the document that was
+      // filled in wrongly, which is a shape no publisher intends.
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, catalogue_snapshot)
+         VALUES (${examId}, 'pub.blank', '${HASH}', '{}'::jsonb)`,
+      ))?.code, "an empty snapshot is not a publication").toBe("23514");
       // The shape is the point. A column that can hold prose cannot be compared, so
       // "did the catalogue change?" would have no answer — and this is the token a signed
       // report cites. Measured: the previous revision stored the value below.
       expect((await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.prose', 'see the attached note')`,
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, catalogue_snapshot)
+         VALUES (${examId}, 'pub.prose', 'see the attached note', '${snap}')`,
       ))?.code, "a hash column that accepts prose verifies nothing").toBe("23514");
       expect((await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.prefixed', 'sha256:aaaa')`,
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, catalogue_snapshot)
+         VALUES (${examId}, 'pub.prefixed', 'sha256:aaaa', '${snap}')`,
       ))?.code, "a prefixed digest is not the 64 lowercase hex digits the CHECK declares").toBe("23514");
+      expect((await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+         VALUES (${examId}, 'pub.version', '${HASH}', 0, '${snap}')`,
+      ))?.code, "snapshot_version 0 is not a serialization convention").toBe("23514");
       await c.query(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.1', '${HASH}')`,
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, catalogue_snapshot)
+         VALUES (${examId}, 'pub.1', '${HASH}', '${snap}')`,
       );
       // Not a partial index: two publications of the same key are history, and the second
       // must not silently replace the first — that is how a cache token stops being a fact.
       expect((await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.1', '${"b".repeat(64)}')`,
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, catalogue_snapshot)
+         VALUES (${examId}, 'pub.1', '${"b".repeat(64)}', '${snap}')`,
       ))?.code).toBe("23505");
       // Immutable, not merely unique: a signed report cites this row to say what it was
       // composed from, so an UPDATE that leaves the row in place still destroys the fact.
@@ -681,10 +1125,8 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `INSERT INTO clinical_tile_versions (tile_id, version, snapshot_json)
          VALUES (${tileId}, 1, '{"findings_text":"A fixture sentence."}')`,
       );
-      await c.query(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.mani', '${"c".repeat(64)}')`,
-      );
+      await approveCatalogue(c, examId);
+      expect(await publish(c, examId, "pub.mani"), "the manifest test's publication is accepted").toBeNull();
       const pubId = (await c.query(
         `SELECT id FROM clinical_publications WHERE publication_key = 'pub.mani'`,
       )).rows[0]!.id as number;
@@ -700,10 +1142,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
       // The citation is a foreign key, so it cannot point at a wording nobody snapshotted.
       // A second publication is needed to reach it, because (publication, tile) is itself
       // unique — the dangerous shape is an off-by-one version on a tile that IS cited.
-      await c.query(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${examId}, 'pub.mani.v7', '${"f".repeat(64)}')`,
-      );
+      expect(await publish(c, examId, "pub.mani.v7"), "a second publication is history, not a replacement").toBeNull();
       const pubV7 = (await c.query(
         `SELECT id FROM clinical_publications WHERE publication_key = 'pub.mani.v7'`,
       )).rows[0]!.id as number;
@@ -1012,10 +1451,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id)
          VALUES (${four}, ${f.examId}, ${f.sectionId})`,
       );
-      const unplaced = await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${f.examId}, 'pub.gate.unplaced', '${HASH}')`,
-      );
+      const unplaced = await publish(c, f.examId, "pub.gate.unplaced");
       expect(unplaced?.code, "publishing with an unplaced tile is refused").toBe("P0001");
       expect(unplaced?.message, "and says which tile").toMatch(/with no ordinal/);
       // Placing it is the whole remedy, and the refusal left no publication behind.
@@ -1039,10 +1475,7 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `INSERT INTO clinical_combination_rule_members (rule_id, concept_id, is_optional)
          VALUES ((SELECT id FROM clinical_combination_rules WHERE key = 'combo.empty'), ${f.conceptId}, TRUE)`,
       );
-      const emptyRule = await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${otherExam.examId}, 'pub.gate.empty', '${HASH}')`,
-      );
+      const emptyRule = await publish(c, otherExam.examId, "pub.gate.empty");
       expect(emptyRule?.code, "a rule that requires nothing is refused at publication").toBe("P0001");
       expect(emptyRule?.message).toMatch(/no required member/);
       // …but the draft itself stays legal, because an author adding members one at a time
@@ -1058,10 +1491,8 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `UPDATE clinical_combination_rule_members SET is_optional = FALSE
           WHERE rule_id = ${ruleRow.rows[0]!.id}`,
       ), "the author making it required is a plain update").toBeNull();
-      expect(await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${otherExam.examId}, 'pub.gate.fixed', '${HASH}')`,
-      ), "and then it publishes").toBeNull();
+      await approveCatalogue(c, otherExam.examId);
+      expect(await publish(c, otherExam.examId, "pub.gate.fixed"), "and then it publishes").toBeNull();
 
       // Rule 4: a tile may only retire a normal of an examination it is placed in.
       await c.query(
@@ -1072,45 +1503,58 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
         `INSERT INTO clinical_tile_normal_replacements (tile_id, normal_slot_id)
          VALUES (${three}, (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal'))`,
       )), "the edge itself is storable: tile 3 is a real tile").toBeNull();
-      const foreignNormal = await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${f.examId}, 'pub.gate.foreign', '${HASH}')`,
-      );
+      const foreignNormal = await publish(c, f.examId, "pub.gate.foreign");
       expect(foreignNormal?.code, "a tile that owns a baseline it cannot offer is refused").toBe("P0001");
       expect(foreignNormal?.message).toMatch(/retires a normal of an examination it is not placed in/);
 
-      // Rule 5: a rule may not name a tile the examination cannot offer.
+      // Rule 5: a rule may not name a tile the examination cannot offer. The replacement edge
+      // is re-pointed at a placed tile first, so the refusal below is check 5's and not a second
+      // sighting of check 4 — which the previous revision of this test also relied on and which
+      // is invisible in the message unless the probe is ordered this way. The three statements
+      // are one probe, and the rollback that attempt() performs is what keeps the rule out of
+      // the fixture for the publishable case below.
       await c.query(
         `UPDATE clinical_tile_normal_replacements SET tile_id = ${one}
           WHERE normal_slot_id = (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal')`,
       );
-      const unplacedMember = await attempt(
+      expect((await attempt(
         `INSERT INTO clinical_combination_rules (key, examination_id, label, target_field, combined_text, suppress_members, requires_only_members)
          VALUES ('combo.unplaced', ${f.examId}, 'Names an unplaced tile', 'impression',
                  'A consolidated line.', TRUE, FALSE);
          INSERT INTO clinical_combination_rule_members (rule_id, tile_id, is_optional)
-         VALUES ((SELECT id FROM clinical_combination_rules WHERE key = 'combo.unplaced'), ${three}, FALSE);
-         INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${f.examId}, 'pub.gate.member', '${HASH}')`,
-      );
+         VALUES ((SELECT id FROM clinical_combination_rules WHERE key = 'combo.unplaced'), ${three}, FALSE)`,
+      )), "the rule and its member are storable in draft").toBeNull();
+      const unplacedMember = await publish(c, f.examId, "pub.gate.member");
       expect(unplacedMember?.code, "a rule over a tile nobody can select is refused").toBe("P0001");
       expect(unplacedMember?.message).toMatch(/names a tile that is not placed/);
 
-      // The publishable case: everything placed, every rule grounded in a selectable tile.
+      // The publishable case: everything placed, every rule grounded in a selectable tile,
+      // and every printed sentence reviewed. The probe rule is removed by name rather than
+      // left to a savepoint rollback, because a fixture that becomes clean only as a side
+      // effect of an earlier failure is a fixture nobody can read.
+      await c.query(
+        `DELETE FROM clinical_combination_rule_members
+          WHERE rule_id = (SELECT id FROM clinical_combination_rules WHERE key = 'combo.unplaced')`,
+      );
+      await c.query(`DELETE FROM clinical_combination_rules WHERE key = 'combo.unplaced'`);
       await c.query(
         `DELETE FROM clinical_tile_normal_replacements
           WHERE normal_slot_id = (SELECT id FROM clinical_normal_slots WHERE key = 's.gate.normal')`,
       );
-      expect(await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${f.examId}, 'pub.gate.ok', '${HASH}')`,
-      ), "a complete catalogue publishes").toBeNull();
+      await approveCatalogue(c, f.examId);
+      expect(await publish(c, f.examId, "pub.gate.ok"), "a complete catalogue publishes").toBeNull();
 
-      // A global publication has no per-examination rules to evaluate; the manifest
-      // foreign key is what guarantees it names only real stored versions.
-      expect(await attempt(
-        `INSERT INTO clinical_publications (publication_key, content_hash) VALUES ('pub.gate.global', '${HASH}')`,
-      ), "an examination-wide bundle is allowed").toBeNull();
+      // A publication that names no examination is refused, and the reason is the gate itself:
+      // every check above is a statement about one examination's rows, so the previous revision
+      // let `INSERT INTO clinical_publications (publication_key, content_hash)` through with an
+      // early return — a citable "published" record for content no check ever looked at. The
+      // committed test that pinned that behaviour as intended asserted it was "allowed"; it is
+      // now the regression this line replaces.
+      const global = await attempt(
+        `INSERT INTO clinical_publications (publication_key, content_hash) VALUES ('pub.gate.global', '${"d".repeat(64)}')`,
+      );
+      expect(global?.code, "a publication must name the examination whose configuration it freezes").toBe("23502");
+      expect(global?.message).toMatch(/examination_id/);
     });
   });
 
@@ -1244,11 +1688,11 @@ describe.skipIf(!dbUrl)("the v4 clinical catalogue behaves as declared", () => {
          VALUES (${tFaz}, 1, '{"findings_text":"Fazekas grade 1 white matter hyperintensities."}')`,
       ), "the wording the rule combines is snapshottable").toBeNull();
       // And the examination as a whole is publishable, so the composer will find a
-      // complete, ordered catalogue rather than a half-built one.
-      expect(await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash)
-         VALUES (${f.examId}, 'pub.fazekas', '${"e".repeat(64)}')`,
-      ), "the Fazekas catalogue publishes").toBeNull();
+      // complete, ordered catalogue rather than a half-built one. Review is part of "complete":
+      // the gate refuses unreviewed wording, so the fixture states the radiologist's sign-off
+      // rather than slipping past the check.
+      await approveCatalogue(c, f.examId);
+      expect(await publish(c, f.examId, "pub.fazekas"), "the Fazekas catalogue publishes").toBeNull();
     });
   });
 

@@ -32,6 +32,7 @@ import {
   clinicalPublicationsTable, clinicalPublicationTilesTable,
 } from "./clinicalCatalogue";
 import * as catalogue from "./clinicalCatalogue";
+import { MEMBER_FIELD, SNAPSHOT_DOMAINS } from "../cataloguePublicationSnapshot";
 
 const HERE = __dirname;
 // lib/db/src/schema → repo root is four levels, not the five a file under
@@ -340,11 +341,81 @@ describe("v4 catalogue — constraints that make the model deterministic", () =>
 
   it("holds a publication hash shaped like a hash", () => {
     const body = createTableBody(SCHEMA_STMTS, "clinical_publications");
-    expect(body).toContain("content_hash    TEXT NOT NULL");
-    // A column that can hold prose cannot be compared, so "did the catalogue change?"
-    // would have no answer. Measured: 'see the attached note' stored without complaint.
-    expect(body).toContain("content_hash ~ '^[a-f0-9]{64}$'");
+    // Matched on whitespace, because the column block is aligned for reading and re-aligning it
+    // is not a model change: an earlier revision of this guard pinned the spaces and went red on
+    // a comment.
+    expect(stmtText(body)).toContain("content_hash TEXT NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$')");
     expect(SCHEMA_SQL).toContain("CREATE UNIQUE INDEX IF NOT EXISTS clin_publications_key_uq ON clinical_publications (publication_key)");
+  });
+
+  it("makes a publication a restorable state, not a list of versions", () => {
+    const body = stmtText(createTableBody(SCHEMA_STMTS, "clinical_publications"));
+    // examination_id NOT NULL closes the bypass the first review found: every arm of the gate is
+    // a statement about one examination, so a row naming none skipped all of them.
+    expect(body).toContain("examination_id BIGINT NOT NULL REFERENCES clinical_examinations (id) ON DELETE RESTRICT");
+    expect(body).toContain("catalogue_snapshot JSONB NOT NULL CHECK (catalogue_snapshot <> '{}'::jsonb)");
+    expect(body).toContain("snapshot_version INTEGER NOT NULL DEFAULT 1 CHECK (snapshot_version >= 1)");
+    // The document is the payload; the hash is derived from it. Nothing may be stored in the
+    // column that is not an object with the domains the reader knows.
+    expect(SCHEMA_STMTS).not.toMatch(/catalogue_snapshot\s+JSONB\s*,/);
+  });
+
+  it("refuses a publication that names no examination instead of returning early", () => {
+    // A regression guard on a guard: the previous revision carried
+    // `IF exam IS NULL THEN RETURN NEW`, and a committed test asserted the bypass was intended.
+    const body = SCHEMA_SQL.slice(SCHEMA_SQL.indexOf("CREATE OR REPLACE FUNCTION clinical_publication_gate()"));
+    expect(body).not.toMatch(/IF\s+exam\s+IS\s+NULL\s+THEN\s+RETURN/);
+    expect(body).toContain("RAISE EXCEPTION 'clinical catalogue cannot be published");
+  });
+
+  it("requires the same ten domains in the gate that the publisher writes", () => {
+    // The two halves of the snapshot contract live in different languages: check 14 lists the
+    // domains in SQL, cataloguePublicationSnapshot.ts lists them in TypeScript. If they drift, a
+    // real publication is refused (or accepted with a partial document), and neither file looks
+    // wrong on its own. So the list is read out of the migration and compared to the module.
+    const gate = SCHEMA_SQL.slice(SCHEMA_SQL.indexOf("CREATE OR REPLACE FUNCTION clinical_publication_gate()"));
+    const needList = gate.slice(gate.indexOf("FROM (VALUES"), gate.indexOf("AS need(field, shape)"));
+    expect(needList.length, "the gate declares its domain list").toBeGreaterThan(0);
+    const listed = [...needList.matchAll(/\('([a-zA-Z]+)',\s*'(object|array)'\)/g)].map((m) => `${m[1]}:${m[2]}`);
+    const fromModule = SNAPSHOT_DOMAINS.map((d) => `${d.field}:${d.shape}`);
+    expect(listed.sort()).toEqual([...fromModule].sort());
+    // Combination members are a nested domain in the module and a flattened arm in the gate.
+    expect(gate).toContain(MEMBER_FIELD);
+  });
+
+  it("orders combination rules by a stated precedence and refuses an implied one", () => {
+    const body = stmtText(createTableBody(SCHEMA_STMTS, "clinical_combination_rules"));
+    // DEFAULT 0 gave every rule the same position, which is precedence decided by read order.
+    expect(body).toContain("ordinal INTEGER,");
+    expect(body).toContain("CONSTRAINT clin_combo_rules_ordinal_positive_chk CHECK (ordinal IS NULL OR ordinal > 0)");
+    expect(body).not.toContain("ordinal INTEGER NOT NULL DEFAULT 0");
+    expect(stmtText(SCHEMA_SQL)).toContain(
+      "CREATE UNIQUE INDEX IF NOT EXISTS clin_combo_rules_field_ordinal_uq ON clinical_combination_rules (examination_id, target_field, ordinal) WHERE deleted_at IS NULL AND ordinal IS NOT NULL AND status <> 'deprecated'",
+    );
+  });
+
+  it("states the symmetric vocabulary and refuses the half-declared pair", () => {
+    const body = stmtText(createTableBody(SCHEMA_STMTS, "clinical_tile_relationships"));
+    expect(body).toContain("CHECK (relation_kind IN ('parent_child','requires','excludes','supersedes','combines_with','coexists'))");
+    const gate = SCHEMA_SQL.slice(SCHEMA_SQL.indexOf("CREATE OR REPLACE FUNCTION clinical_publication_gate()"));
+    // 'coexists' only means something because the gate refuses an undeclared conflict group;
+    // a vocabulary word nothing checks is a word authors will misuse.
+    expect(gate).toContain("r.relation_kind IN ('excludes','coexists')");
+    expect(gate).toContain("r.relation_kind IN ('excludes','supersedes','coexists')");
+    // The cycle walk must not include the symmetric kinds: a pair that excludes each other is a
+    // two-node loop by definition and would refuse every legitimate catalogue.
+    expect(gate).toContain("r.relation_kind IN ('requires','parent_child','supersedes')");
+  });
+
+  it("does not claim a digest the server cannot compute", () => {
+    // The hash↔document check lives in TypeScript because pgcrypto is not installed for this
+    // repository. If that ever changes, this guard is the place that has to be told — and a
+    // migration that silently called digest() would fail to apply on a box without the extension.
+    // Comment-stripped: this file's own safety prose mentions digest() and CREATE EXTENSION, and
+    // an absence assertion run over raw text matches the words that describe the rule instead of
+    // the rule.
+    expect(SCHEMA_STMTS).not.toMatch(/\bdigest\s*\(/);
+    expect(SCHEMA_STMTS).not.toMatch(/CREATE\s+EXTENSION/i);
   });
 
   it("records which tile at which stored version a publication released", () => {

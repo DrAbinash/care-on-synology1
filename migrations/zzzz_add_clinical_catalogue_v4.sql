@@ -456,7 +456,7 @@ CREATE TABLE IF NOT EXISTS clinical_tile_relationships (
   related_tile_id    BIGINT REFERENCES clinical_tiles (id) ON DELETE RESTRICT,
   related_concept_id BIGINT REFERENCES finding_definitions (id) ON DELETE RESTRICT,
   relation_kind      TEXT NOT NULL
-                     CHECK (relation_kind IN ('parent_child','requires','excludes','supersedes','combines_with')),
+                     CHECK (relation_kind IN ('parent_child','requires','excludes','supersedes','combines_with','coexists')),
   condition_json     JSONB,
   ordinal            INTEGER NOT NULL DEFAULT 0,
   review_state       TEXT NOT NULL DEFAULT 'unreviewed'
@@ -473,10 +473,16 @@ CREATE TABLE IF NOT EXISTS clinical_tile_relationships (
   CONSTRAINT clin_tile_rel_single_target_chk CHECK (num_nonnulls(related_tile_id, related_concept_id) = 1),
   -- A tile that excludes, requires or supersedes itself is a rule that can never be
   -- satisfied and never stops firing. Measured: this file stored it without comment.
-  -- Cycles across two or more tiles are NOT forbidden here, because 'combines_with' is
-  -- deliberately symmetric and a requires-chain across examinations is legitimate;
-  -- those are resolved by the composition walk in Stage D, which detects a cycle it
-  -- cannot resolve and refuses to compose rather than looping.
+  -- Cycles across two or more tiles are NOT refused HERE, because a CHECK sees one row and
+  -- an author mid-edit is entitled to save a graph that is temporarily cyclic; they are
+  -- refused at PUBLICATION by clinical_publication_gate, which is the point where a cycle
+  -- would otherwise reach a patient.
+  -- 'coexists' is in the vocabulary so that a pair meant to print together is a STATED
+  -- relationship rather than the absence of one. With only 'excludes' and 'supersedes'
+  -- available, "nothing was declared" and "these two deliberately coexist" are the same set
+  -- of rows, and no check can tell them apart — which is precisely how PR #1014's
+  -- order-dependent pairs survived: an undeclared relationship is not a decision. Whether a
+  -- pair coexists is a radiologist's call (§27), recorded in review_state.
   CONSTRAINT clin_tile_rel_not_self_chk CHECK (related_tile_id IS NULL OR related_tile_id <> tile_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS clin_tile_rel_uq
@@ -505,13 +511,27 @@ CREATE TABLE IF NOT EXISTS clinical_combination_rules (
   -- Impression with no duplicate; a default of FALSE would print the two member
   -- sentences AND the summary, which is the exact defect this table exists to fix, and
   -- a default is a silent clinical decision. The author states it.
+  -- SCOPE, and it is deliberately narrow: this retires the members' contributions to
+  -- TARGET_FIELD and to nothing else. Combining two Impressions must never remove the two
+  -- anatomical Findings they were built from — those sentences are the evidence the
+  -- Impression rests on, and a report that prints a conclusion while withholding its
+  -- observations is the failure §27 forbids. The guarantee is structural, not a promise:
+  -- this table has one target_field and no column that names a field to suppress, so a
+  -- cross-field suppression cannot be stored. An author who wants both fields consolidated
+  -- writes two rules, one per field, each with its own precedence.
   suppress_members      BOOLEAN NOT NULL,
   -- §12: "when only the liver is abnormal" — the rule must be able to require that
   -- nothing else abnormal is present, so it cannot fire over an unrelated finding.
   -- Also no default: TRUE and FALSE mean two different things about when a sentence
   -- may be printed, and an omitted column should not choose between them.
   requires_only_members BOOLEAN NOT NULL,
-  ordinal               INTEGER NOT NULL DEFAULT 0,
+  -- Precedence WITHIN ONE FIELD. Two live rules writing the same field of one examination
+  -- at the same position leave the composer free to pick either, which is the same class of
+  -- defect as a tile with no anatomical position: the printed report would depend on which
+  -- row the database happened to read first. Nullable with no default for exactly the reason
+  -- clinical_tile_examinations.ordinal is: a rule under construction has no precedence yet,
+  -- and claiming one is an act of authoring, not a side effect of the insert.
+  ordinal               INTEGER,
   review_state          TEXT NOT NULL DEFAULT 'unreviewed'
                         CHECK (review_state IN ('unreviewed','approved','uncertain')),
   review_note           TEXT,
@@ -525,10 +545,16 @@ CREATE TABLE IF NOT EXISTS clinical_combination_rules (
   -- A rule of one examination may not print into another examination's section.
   CONSTRAINT clin_combo_rule_section_same_exam_fkey
     FOREIGN KEY (examination_id, section_id)
-    REFERENCES clinical_anatomical_sections (examination_id, id) ON DELETE RESTRICT
+    REFERENCES clinical_anatomical_sections (examination_id, id) ON DELETE RESTRICT,
+  CONSTRAINT clin_combo_rules_ordinal_positive_chk CHECK (ordinal IS NULL OR ordinal > 0)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS clin_combo_rules_key_uq ON clinical_combination_rules (examination_id, key) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS clin_combo_rules_exam_idx ON clinical_combination_rules (examination_id, target_field, ordinal);
+-- One precedence position per (examination, field), among the rules that are actually in
+-- force. A deprecated rule keeps its history but stops competing for a position.
+CREATE UNIQUE INDEX IF NOT EXISTS clin_combo_rules_field_ordinal_uq
+  ON clinical_combination_rules (examination_id, target_field, ordinal)
+  WHERE deleted_at IS NULL AND ordinal IS NOT NULL AND status <> 'deprecated';
 
 CREATE TABLE IF NOT EXISTS clinical_combination_rule_members (
   id             BIGSERIAL PRIMARY KEY,
@@ -617,16 +643,64 @@ CREATE INDEX IF NOT EXISTS clin_rec_rules_exam_idx ON clinical_recommendation_ru
 -- prose in that column silently defeats both — every publication compares unequal to
 -- every other, and Stage F's "has the live content changed since this publication?"
 -- question stops having an answer.
+--
+-- catalogue_snapshot is what makes a publication a RESTORABLE STATE and not a list.
+-- A manifest of tile versions cannot answer "what did the whole configuration say":
+-- the sections and their order, the normal wording, the parameters and their defaults,
+-- the replacement and conflict relationships, the combination and recommendation rules
+-- and every review state are each edited in place elsewhere, so a historical report's
+-- catalogue could not be reassembled from it, and rollback could not be total. One
+-- immutable document per publication carries all of it, in TEN domains — examination,
+-- sections, normalSlots, tiles, placements, parameters, normalReplacements,
+-- relationships, combinationRules (each entry with its own members nested inside) and
+-- recommendationRules — which is the twelve questions §1 of the review asks about, with
+-- review status and section order carried as fields of the entries they belong to rather
+-- than as domains of their own.
+--
+-- What it does NOT freeze, deliberately: the canonical vocabulary the domains point at by
+-- id — finding_definitions, parameter_groups, parameter_options. Those are B1/B2 tables
+-- with their own admin-gated lifecycle and their own live content, and freezing them here
+-- would put a second copy of the clinic's concept list inside every publication. The
+-- consequence is stated rather than hidden: a report published today cites a concept
+-- whose label can still be edited tomorrow, so "the exact wording of every sentence" is
+-- exact for the tile text and approximate for the option text. If that has to be closed,
+-- it is an `eleventh domain + snapshot_version = 2`, which is the reason the version column
+-- exists instead of an assumption.
+--
+-- The shape, the canonical ordering and the hash rule are defined in
+-- lib/db/src/cataloguePublicationSnapshot.ts and asserted there by tests, because a
+-- serialization convention that lives only in prose is how two publishers disagree about
+-- the same catalogue. The hash is sha256 over the canonical text, so drift is detected by
+-- recomputing it from the live rows — never by byte-comparing jsonb, whose key order is
+-- Postgres' business, not ours.
 CREATE TABLE IF NOT EXISTS clinical_publications (
-  id              BIGSERIAL PRIMARY KEY,
-  examination_id  BIGINT REFERENCES clinical_examinations (id) ON DELETE RESTRICT,
-  publication_key TEXT NOT NULL CHECK (publication_key <> ''),
-  content_hash    TEXT NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$'),
-  summary_json    JSONB,
-  notes           TEXT,
-  published_by    TEXT,
-  published_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id                 BIGSERIAL PRIMARY KEY,
+  -- NOT NULL, and this is the gate's own integrity, not tidiness. Every check in
+  -- clinical_publication_gate() is a statement about one examination's rows, so a
+  -- publication with no examination skipped all of them. Measured, not argued: the
+  -- previous revision of this file carried `IF exam IS NULL THEN RETURN NEW`, and
+  -- clinicalCatalogue.db.test.ts asserted that `INSERT INTO clinical_publications
+  -- (publication_key, content_hash) VALUES ('pub.gate.global', <64 hex>)` returns NULL —
+  -- i.e. a committed test pinned the bypass as intended behaviour. That row is a citable
+  -- "the catalogue was published" record for content no gate ever looked at, which is the
+  -- exact hole §4 of the review exists to close. A publication is the frozen state OF an
+  -- examination; to publish the whole catalogue is to publish each examination, which also
+  -- gives rollback a unit that means something clinically.
+  examination_id     BIGINT NOT NULL REFERENCES clinical_examinations (id) ON DELETE RESTRICT,
+  publication_key    TEXT NOT NULL CHECK (publication_key <> ''),
+  content_hash       TEXT NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$'),
+  -- Which serialization convention produced the document, so a later format can be read
+  -- without guessing. Never defaulted to "whatever the newest code assumes".
+  snapshot_version   INTEGER NOT NULL DEFAULT 1 CHECK (snapshot_version >= 1),
+  -- A publication whose snapshot is an empty object answers nothing, which is the failure
+  -- this column exists to remove. The gate checks that it actually covers the live rows;
+  -- this CHECK only refuses the document that was never filled in.
+  catalogue_snapshot JSONB NOT NULL CHECK (catalogue_snapshot <> '{}'::jsonb),
+  summary_json       JSONB,
+  notes              TEXT,
+  published_by       TEXT,
+  published_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS clin_publications_key_uq ON clinical_publications (publication_key);
 CREATE INDEX IF NOT EXISTS clin_publications_exam_idx ON clinical_publications (examination_id, published_at);
@@ -705,13 +779,11 @@ DECLARE
   exam     BIGINT := NEW.examination_id;
   problem  TEXT;
 BEGIN
-  -- A global publication (no examination) is the publisher's own bundle of named
-  -- versions; per-examination rules cannot be evaluated against it, and the manifest
-  -- foreign key already guarantees every tile it names has a real stored version.
-  IF exam IS NULL THEN
-    RETURN NEW;
-  END IF;
-
+  -- There is deliberately no "if the publication names no examination, allow it" arm
+  -- here. The column is NOT NULL, so such a row cannot reach this function at all, and
+  -- the reason it is NOT NULL is in the comment on clinical_publications above: an arm
+  -- that returns early is an arm every one of the fifteen checks below stops existing for.
+  --
   -- 1. Every live tile placed in the examination must have a position, and no
   --    position may be claimed twice. The second cannot happen (the unique index
   --    refuses it), so this is the first.
@@ -797,6 +869,455 @@ BEGIN
    LIMIT 1;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 cross-examination reference)', problem;
+  END IF;
+
+  -- 6. A symmetric relationship declared in one direction only has no winner. 'excludes'
+  --    and 'coexists' describe a PAIR, so a row from A to B without its mirror is not a
+  --    decision — it is a rule whose result depends on which tile the composer happens to
+  --    visit first, which is the mechanism PR #1014 measured. 'supersedes' is deliberately
+  --    excluded from this check: it names its own winner, so one direction IS the decision.
+  SELECT 'relationship ' || r.relation_kind || ' between ' || a.key || ' and ' || b.key
+         || ' is declared in one direction only'
+    INTO problem
+    FROM clinical_tile_relationships r
+    JOIN clinical_tiles a ON a.id = r.tile_id AND a.deleted_at IS NULL
+    JOIN clinical_tiles b ON b.id = r.related_tile_id AND b.deleted_at IS NULL
+   WHERE r.deleted_at IS NULL
+     AND r.relation_kind IN ('excludes','coexists')
+     AND EXISTS (SELECT 1 FROM clinical_tile_examinations p
+                  WHERE p.tile_id = a.id AND p.examination_id = exam AND p.deleted_at IS NULL)
+     AND EXISTS (SELECT 1 FROM clinical_tile_examinations p
+                  WHERE p.tile_id = b.id AND p.examination_id = exam AND p.deleted_at IS NULL)
+     AND NOT EXISTS (
+       SELECT 1 FROM clinical_tile_relationships back
+        WHERE back.tile_id = b.id AND back.related_tile_id = a.id
+          AND back.relation_kind = r.relation_kind AND back.deleted_at IS NULL
+     )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: an undeclared winner is a click-order bug waiting to happen)', problem;
+  END IF;
+
+  -- 7. An unresolved clinical conflict. Two live tiles in one examination that share a
+  --    conflict group and have NO relationship between them in either direction are not
+  --    "known to coexist" — nothing says so. Publication is the last point where that can
+  --    be caught before a patient sees it, and where the clinical answer is genuinely
+  --    undecided it is recorded as 'coexists' with review_state, not left blank.
+  WITH placed AS (
+    SELECT k.id, k.key, k.conflict_group
+      FROM clinical_tile_examinations p
+      JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+     WHERE p.examination_id = exam AND p.deleted_at IS NULL AND k.conflict_group <> ''
+  )
+  SELECT 'tiles ' || a.key || ' and ' || b.key || ' share conflict group ' || a.conflict_group
+         || ' and nothing declares how they resolve'
+    INTO problem
+    FROM placed a
+    JOIN placed b ON b.conflict_group = a.conflict_group AND b.id > a.id
+   WHERE NOT EXISTS (
+     SELECT 1 FROM clinical_tile_relationships r
+      WHERE r.deleted_at IS NULL
+        AND r.relation_kind IN ('excludes','supersedes','coexists')
+        AND ((r.tile_id = a.id AND r.related_tile_id = b.id)
+          OR (r.tile_id = b.id AND r.related_tile_id = a.id))
+   )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §27: no clinical assertion without a stated relationship)', problem;
+  END IF;
+
+  -- 8. Mandatory clinical wording must be reviewed. A tile, a normal, a section heading, or an
+  --    active rule that prints a sentence nobody has approved is not publishable content; the
+  --    same fact that makes 'uncertain' honest in a draft makes it disqualifying at publication.
+  --    A section is in this list because emits_heading prints its label on the page: an
+  --    unreviewed heading is wording the patient reads.
+  SELECT kind || ' ' || key || ' prints wording that is ' || state
+    INTO problem
+    FROM (
+      SELECT 'tile' AS kind, k.key, k.review_state AS state
+        FROM clinical_tile_examinations p
+        JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+       WHERE p.examination_id = exam AND p.deleted_at IS NULL AND k.status <> 'deprecated'
+         AND k.review_state <> 'approved'
+      UNION ALL
+      SELECT 'section', s.key, s.review_state
+        FROM clinical_anatomical_sections s
+       WHERE s.examination_id = exam AND s.deleted_at IS NULL AND s.status <> 'deprecated'
+         AND s.emits_heading AND s.review_state <> 'approved'
+      UNION ALL
+      SELECT 'normal slot', n.key, n.review_state
+        FROM clinical_normal_slots n
+       WHERE n.examination_id = exam AND n.deleted_at IS NULL AND n.status <> 'deprecated'
+         AND n.review_state <> 'approved'
+      UNION ALL
+      SELECT 'combination rule', r.key, r.review_state
+        FROM clinical_combination_rules r
+       WHERE r.examination_id = exam AND r.deleted_at IS NULL AND r.status <> 'deprecated'
+         AND r.review_state <> 'approved'
+      UNION ALL
+      SELECT 'recommendation rule', r.key, r.review_state
+        FROM clinical_recommendation_rules r
+       WHERE r.examination_id = exam AND r.deleted_at IS NULL AND r.status <> 'deprecated'
+         AND r.review_state <> 'approved'
+    ) u
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §27: unreviewed clinical wording stays in draft)', problem;
+  END IF;
+
+  -- 9. Anatomy must be fully ordered. An unplaced tile was check 1; a section with no
+  --    position makes the order of everything under it undefined.
+  SELECT 'section ' || s.key || ' has no position in its examination'
+    INTO problem
+    FROM clinical_anatomical_sections s
+   WHERE s.examination_id = exam AND s.deleted_at IS NULL AND s.ordinal IS NULL
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §16)', problem;
+  END IF;
+
+  -- 10. A normal that was retired cannot be the normal a tile replaces. The cross-check
+  --     above silently drops a soft-deleted slot out of its own join, so a replacement
+  --     pointing at a retired normal would pass it and then do nothing at all.
+  SELECT 'tile ' || k.key || ' retires ' || ns.key || ', a normal that has been retired'
+    INTO problem
+    FROM clinical_tile_normal_replacements nr
+    JOIN clinical_tiles k ON k.id = nr.tile_id AND k.deleted_at IS NULL
+    JOIN clinical_normal_slots ns ON ns.id = nr.normal_slot_id
+   WHERE ns.examination_id = exam AND nr.deleted_at IS NULL AND ns.deleted_at IS NOT NULL
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4: a replacement whose normal is gone leaves the abnormality printed beside a baseline nobody declared)', problem;
+  END IF;
+
+  -- 11. A required choice parameter must have something to choose from. A required
+  --     'option'-typed parameter with no default and an empty (or absent) option list is a
+  --     sentence with a hole in it: the composer either prints the placeholder or drops the
+  --     clause, and both are the defect the parameter contract exists to remove.
+  SELECT 'parameter ' || tp.key || ' on tile ' || k.key || ' is required but has no answer to choose from'
+    INTO problem
+    FROM clinical_tile_examinations p
+    JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+    JOIN clinical_tile_parameters tp ON tp.tile_id = k.id AND tp.deleted_at IS NULL
+   WHERE p.examination_id = exam AND p.deleted_at IS NULL
+     AND tp.is_required AND tp.data_type = 'option'
+     AND tp.default_option_id IS NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM parameter_options o
+        WHERE o.group_id = tp.parameter_group_id AND o.deleted_at IS NULL
+     )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §9: an unanswered required parameter)', problem;
+  END IF;
+
+  -- 12. Two active rules may not claim the same required observation for the same field.
+  --     Whichever order they are applied in, one of the two consolidated sentences would
+  --     have to be discarded, and nothing in the catalogue says which — so precedence is
+  --     stated by ordinal (unique per examination and field) AND overlap is refused.
+  SELECT 'combination rules ' || a.key || ' and ' || b.key
+         || ' both claim a required member for the ' || a.target_field || ' field'
+    INTO problem
+    FROM clinical_combination_rules a
+    JOIN clinical_combination_rules b
+      ON b.examination_id = a.examination_id AND b.target_field = a.target_field AND b.id > a.id
+     AND b.deleted_at IS NULL AND b.status <> 'deprecated'
+   WHERE a.examination_id = exam AND a.deleted_at IS NULL AND a.status <> 'deprecated'
+     AND EXISTS (
+       SELECT 1
+         FROM clinical_combination_rule_members ma
+         JOIN clinical_combination_rule_members mb
+           ON mb.rule_id = b.id AND mb.deleted_at IS NULL AND NOT mb.is_optional
+          AND COALESCE(mb.tile_id, -1) = COALESCE(ma.tile_id, -1)
+          AND COALESCE(mb.concept_id, -1) = COALESCE(ma.concept_id, -1)
+        WHERE ma.rule_id = a.id AND ma.deleted_at IS NULL AND NOT ma.is_optional
+     )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §3: overlapping combinations have no defined precedence)', problem;
+  END IF;
+
+  -- 13. A directional relationship cycle. Refused here rather than at edit time: an author
+  --     building a chain is allowed to save a graph that is temporarily wrong, and a CHECK
+  --     cannot see a path. 'excludes', 'coexists' and 'combines_with' are symmetric by
+  --     definition, so their two-node loops are not cycles in this sense; the three kinds
+  --     walked below each point somewhere, and a loop among them means no composition order
+  --     exists. The depth cap is a second line of defence, not the detection.
+  WITH RECURSIVE placed AS (
+    SELECT k.id
+      FROM clinical_tile_examinations p
+      JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+     WHERE p.examination_id = exam AND p.deleted_at IS NULL
+  ), edges AS (
+    SELECT r.tile_id AS from_id, r.related_tile_id AS to_id
+      FROM clinical_tile_relationships r
+      -- Both ends restricted to this examination's placed set, so the cycle reported is
+      -- one this examination can actually reach. A loop that runs through a tile not
+      -- placed here cannot reorder the print sequence here.
+      JOIN placed a ON a.id = r.tile_id
+      JOIN placed b ON b.id = r.related_tile_id
+     WHERE r.deleted_at IS NULL
+       AND r.relation_kind IN ('requires','parent_child','supersedes')
+  ), walk AS (
+    SELECT e.from_id AS origin, e.to_id AS at, ARRAY[e.from_id] AS path,
+           e.to_id = e.from_id AS cyclic
+      FROM edges e
+    UNION ALL
+    SELECT w.origin, e.to_id, w.path || w.at, e.to_id = ANY (w.path || w.at)
+      FROM walk w
+      JOIN edges e ON e.from_id = w.at
+     WHERE NOT w.cyclic AND array_length(w.path, 1) < 20
+  )
+  SELECT 'tile ' || k.key || ' takes part in a requires/parent_child/supersedes cycle'
+    INTO problem
+    FROM walk w
+    JOIN clinical_tiles k ON k.id = w.origin
+   WHERE w.cyclic
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §4: no composition order exists)', problem;
+  END IF;
+
+  -- 14. The snapshot is the published state, so it has to agree with the live rows it
+  --     claims to freeze. Three separate refusals, because three different publisher
+  --     mistakes produce one symptom ("the document is not the configuration"): a domain
+  --     missing entirely, a domain of the wrong JSON shape, and a domain that covers the
+  --     wrong rows. The third compares on each entry's `identity` — the stable,
+  --     examination-scoped handle the publisher writes — and in BOTH directions: a count is
+  --     satisfied by the right number of the wrong tiles, and a one-directional set check is
+  --     satisfied by a document that also names rows that were never live. Duplicate
+  --     identities get their own refusal because a set comparison cannot see them: two
+  --     copies of a member of the set are both "in" the set.
+  --
+  --     Ten domains, because the brief's completeness question names twelve things a
+  --     published catalogue has to answer (tile wording, normal wording, sections, section
+  --     order, placements, parameters and defaults, replacement rules, conflict
+  --     relationships, combination rules, recommendation rules, review status, examination
+  --     scope) and a tile-version manifest answers none of them except wording. Parameters,
+  --     replacements and relationships are each a separate table with its own lifecycle, so
+  --     each is a separate domain; combination members nest inside their rule because a
+  --     member of a rule that is not in the document is meaningless, and the flattened set
+  --     comparison below still sees every one of them.
+  --
+  --     Scope of each domain is stated in the FROM clause, and lib/db/src/
+  --     cataloguePublicationSnapshot.ts is the only other place those ten predicates exist.
+  --     The two are proved to agree by a test that publishes a real builder-produced
+  --     document for a real fixture catalogue and then perturbs one domain at a time: SQL
+  --     and TypeScript computing different identities cannot survive that.
+  --
+  --     The hash is deliberately NOT recomputed here. pgcrypto is not installed for this
+  --     repository (measured: pg_available_extensions returns no row for it, and no
+  --     migration in migrations/ calls digest()), so hash↔document agreement is enforced by
+  --     the publisher and asserted in cataloguePublicationSnapshot.test.ts. A CHECK that
+  --     cannot compute the value it validates is a comment, not a constraint.
+  SELECT 'catalogue_snapshot.' || need.field || ' is '
+         || CASE WHEN NOT (NEW.catalogue_snapshot ? need.field) THEN 'absent'
+                 ELSE 'a ' || jsonb_typeof(NEW.catalogue_snapshot -> need.field) END
+         || ', but every publication requires a ' || need.shape
+    INTO problem
+    FROM (VALUES
+      ('examination',        'object'),
+      ('sections',           'array'),
+      ('normalSlots',        'array'),
+      ('tiles',              'array'),
+      ('placements',         'array'),
+      ('parameters',         'array'),
+      ('normalReplacements', 'array'),
+      ('relationships',      'array'),
+      ('combinationRules',   'array'),
+      ('recommendationRules','array')
+    ) AS need(field, shape)
+   WHERE NOT (NEW.catalogue_snapshot ? need.field)
+      OR jsonb_typeof(NEW.catalogue_snapshot -> need.field) IS DISTINCT FROM need.shape
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a publication that does not carry every domain freezes nothing)', problem;
+  END IF;
+
+  -- The arrays below are scoped by examination, but the examination object is not: without
+  -- this arm a publisher with one row of each domain in hand could wrap another
+  -- examination's scope record around them and every set comparison would still pass,
+  -- because each of those comparisons asks "is this live row in the document", never
+  -- "whose examination is this document about".
+  SELECT 'catalogue_snapshot.examination is examination '
+         || coalesce(NEW.catalogue_snapshot -> 'examination' ->> 'id', '<no id>')
+         || ' but the publication is for examination ' || exam::text
+    INTO problem
+   WHERE coalesce(NEW.catalogue_snapshot -> 'examination' ->> 'id', '') <> exam::text
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a snapshot of the wrong examination restores the wrong configuration)', problem;
+  END IF;
+
+  -- A rule entry without a "members" array is refused before the comparison below, not by
+  -- it: jsonb_array_elements() of a non-array raises, so the publisher would get an opaque
+  -- server error instead of a sentence naming the domain it forgot to freeze.
+  SELECT 'catalogue_snapshot.combinationRules entry '
+         || coalesce(rule.value ->> 'identity', '<no identity>')
+         || ' has a "members" field that is '
+         || coalesce(jsonb_typeof(rule.value -> 'members'), 'absent')
+    INTO problem
+    FROM jsonb_array_elements(NEW.catalogue_snapshot -> 'combinationRules') AS rule(value)
+   WHERE jsonb_typeof(rule.value -> 'members') IS DISTINCT FROM 'array'
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §3: a rule frozen without its members cannot be restored)', problem;
+  END IF;
+
+  WITH live(field, identity) AS (
+    SELECT 'sections', s.key
+      FROM clinical_anatomical_sections s
+     WHERE s.examination_id = exam AND s.deleted_at IS NULL
+    UNION ALL
+    SELECT 'normalSlots', n.key
+      FROM clinical_normal_slots n
+     WHERE n.examination_id = exam AND n.deleted_at IS NULL
+    UNION ALL
+    SELECT 'tiles', k.key
+      FROM clinical_tile_examinations p
+      JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+     WHERE p.examination_id = exam AND p.deleted_at IS NULL
+    UNION ALL
+    -- Same live set as 'tiles', different payload: 'tiles' freezes what the observation
+    -- says, 'placements' freezes where it prints. They coincide because a placement row
+    -- cannot exist without a tile and a published examination cannot carry a tile nobody
+    -- placed, which is exactly the redundancy a coverage check has to be told about
+    -- rather than allowed to hide.
+    SELECT 'placements', k.key
+      FROM clinical_tile_examinations p
+      JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+     WHERE p.examination_id = exam AND p.deleted_at IS NULL
+    UNION ALL
+    SELECT 'parameters', tk.key || '/' || tp.key
+      FROM clinical_tile_parameters tp
+      JOIN clinical_tiles tk ON tk.id = tp.tile_id AND tk.deleted_at IS NULL
+     WHERE tp.deleted_at IS NULL
+       AND EXISTS (SELECT 1 FROM clinical_tile_examinations p
+                    WHERE p.tile_id = tp.tile_id AND p.examination_id = exam
+                      AND p.deleted_at IS NULL)
+    UNION ALL
+    SELECT 'normalReplacements', k.key || '>' || ns.key
+      FROM clinical_tile_normal_replacements nr
+      JOIN clinical_tiles k ON k.id = nr.tile_id AND k.deleted_at IS NULL
+      JOIN clinical_normal_slots ns ON ns.id = nr.normal_slot_id AND ns.deleted_at IS NULL
+     WHERE nr.deleted_at IS NULL AND ns.examination_id = exam
+       AND EXISTS (SELECT 1 FROM clinical_tile_examinations p
+                    WHERE p.tile_id = nr.tile_id AND p.examination_id = exam
+                      AND p.deleted_at IS NULL)
+    UNION ALL
+    -- A relationship is configuration of ITS tile, so it is in scope when that tile is
+    -- placed here, whether or not the other end is. An edge pointing outside the
+    -- examination is inert for it, and freezing it is what makes restore total. b is
+    -- joined without the soft-delete filter because the row exists and names a key; a
+    -- relationship to a retired tile still has to come back on restore.
+    SELECT 'relationships',
+           a.key || '~' || r.relation_kind || '~'
+           || COALESCE(b.key, 'concept:' || r.related_concept_id::text)
+      FROM clinical_tile_relationships r
+      JOIN clinical_tiles a ON a.id = r.tile_id AND a.deleted_at IS NULL
+      LEFT JOIN clinical_tiles b ON b.id = r.related_tile_id
+     WHERE r.deleted_at IS NULL
+       AND EXISTS (SELECT 1 FROM clinical_tile_examinations p
+                    WHERE p.tile_id = r.tile_id AND p.examination_id = exam
+                      AND p.deleted_at IS NULL)
+    UNION ALL
+    SELECT 'combinationRules', r.key
+      FROM clinical_combination_rules r
+     WHERE r.examination_id = exam AND r.deleted_at IS NULL
+    UNION ALL
+    SELECT 'combinationMembers',
+           cr.key || '/' || COALESCE(k.key, 'concept:' || m.concept_id::text)
+      FROM clinical_combination_rule_members m
+      JOIN clinical_combination_rules cr ON cr.id = m.rule_id
+                                        AND cr.examination_id = exam
+                                        AND cr.deleted_at IS NULL
+      LEFT JOIN clinical_tiles k ON k.id = m.tile_id
+     WHERE m.deleted_at IS NULL
+    UNION ALL
+    SELECT 'recommendationRules', r.key
+      FROM clinical_recommendation_rules r
+     WHERE r.examination_id = exam AND r.deleted_at IS NULL
+  ), doc(field, identity) AS (
+    SELECT f.field, value ->> 'identity'
+      FROM (VALUES ('sections'),('normalSlots'),('tiles'),('placements'),('parameters'),
+                   ('normalReplacements'),('relationships'),('combinationRules'),
+                   ('recommendationRules')) AS f(field)
+     CROSS JOIN LATERAL jsonb_array_elements(NEW.catalogue_snapshot -> f.field) AS v(value)
+    UNION ALL
+    SELECT 'combinationMembers', member.value ->> 'identity'
+      FROM jsonb_array_elements(NEW.catalogue_snapshot -> 'combinationRules') AS rule(value)
+     CROSS JOIN LATERAL jsonb_array_elements(rule.value -> 'members') AS member(value)
+  )
+  , diff AS (
+    SELECT 'omits' AS kind, l.field, l.identity
+      FROM live l
+     WHERE NOT EXISTS (SELECT 1 FROM doc d
+                        WHERE d.field = l.field AND d.identity = l.identity)
+    UNION ALL
+    SELECT 'names', d.field, d.identity
+      FROM doc d
+     WHERE NOT EXISTS (SELECT 1 FROM live l
+                        WHERE l.field = d.field AND l.identity = d.identity)
+    UNION ALL
+    SELECT 'duplicates', d.field, d.identity
+      FROM doc d GROUP BY d.field, d.identity HAVING count(*) > 1
+  )
+  -- coalesce on the identity is load-bearing: an entry carrying no "identity" field
+  -- compares unequal to every live row, so it is correctly reported as non-live — but
+  -- '… names the non-live row ' || NULL is NULL, which sets problem to NULL, and the very
+  -- defect this statement exists to catch would walk straight through the IF below.
+  SELECT 'catalogue_snapshot.' || diff.field || ' '
+         || CASE diff.kind
+              WHEN 'omits' THEN 'omits the live row '
+              WHEN 'names' THEN 'names the non-live row '
+              ELSE 'duplicates the row '
+            END
+         || coalesce(diff.identity, '<entry with no identity>')
+    INTO problem
+    FROM diff
+   -- Deterministic, and not for cosmetics: a diff can hold many rows, and a report that names a
+   -- different domain on each run of the same broken document cannot be asserted against. So the
+   -- refusal is always the alphabetically-first domain, then kind, then identity — which is why
+   -- deleting a combination rule reports its orphaned members first.
+   ORDER BY diff.field, diff.kind, diff.identity
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a publication must freeze exactly the examination''s live row set, and a duplicated entry makes one catalogue hash differently depending on the publisher''s loop order)', problem;
+  END IF;
+
+  -- 15. An unsatisfiable recommendation trigger. 'parameter_value' reads a parameter off
+  --     a tile: with no tile there is nothing to read it from, and with a parameter key
+  --     the tile does not define the condition can never become true. Either way the
+  --     advice is silent forever while the catalogue says it fires, which is the failure
+  --     mode §23 of the plan assigns to the runtime but is fully decidable from the rows
+  --     at publication time.
+  SELECT 'recommendation rule ' || r.key
+         || ' conditions on a parameter but names no tile to read it from'
+    INTO problem
+    FROM clinical_recommendation_rules r
+   WHERE r.examination_id = exam AND r.deleted_at IS NULL AND r.status <> 'deprecated'
+     AND r.trigger_kind = 'parameter_value' AND r.tile_id IS NULL
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §4: an unsatisfiable recommendation trigger)', problem;
+  END IF;
+
+  SELECT 'recommendation rule ' || r.key || ' conditions on parameter ' || r.parameter_key
+         || ', which tile ' || k.key || ' does not define'
+    INTO problem
+    FROM clinical_recommendation_rules r
+    JOIN clinical_tiles k ON k.id = r.tile_id AND k.deleted_at IS NULL
+   WHERE r.examination_id = exam AND r.deleted_at IS NULL AND r.status <> 'deprecated'
+     AND r.trigger_kind = 'parameter_value'
+     AND r.parameter_key IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM clinical_tile_parameters tp
+        WHERE tp.tile_id = r.tile_id AND tp.deleted_at IS NULL
+          AND tp.key = r.parameter_key
+     )
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §4: an unsatisfiable recommendation trigger)', problem;
   END IF;
 
   RETURN NEW;

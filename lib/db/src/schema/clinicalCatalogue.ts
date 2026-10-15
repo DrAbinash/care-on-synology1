@@ -319,7 +319,13 @@ export const clinicalCombinationRulesTable = pgTable(
     // a default would make that the accidental outcome of forgetting a column.
     suppressMembers: boolean("suppress_members").notNull(),
     requiresOnlyMembers: boolean("requires_only_members").notNull(),
-    ordinal: integer("ordinal").notNull().default(0),
+    // Nullable, no default: precedence is stated, never assumed. DEFAULT 0 here gave every
+    // rule in an examination the same position, so two rules applying to one selection
+    // resolved by whatever order the rows came back in — and a partial unique index cannot
+    // exclude a value that is present. NULL means "this rule has no stated precedence yet",
+    // which clin_combo_rules_field_ordinal_uq then leaves unconstrained, because a rule
+    // nobody has ordered cannot collide with one.
+    ordinal: integer("ordinal"),
     ...review,
     ...lifecycle,
     ...auditTimestamps,
@@ -390,10 +396,17 @@ export const clinicalPublicationsTable = pgTable(
   "clinical_publications",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
-    examinationId: fk("examination_id")
+    // NOT NULL: every check in clinical_publication_gate() is about one examination's rows,
+    // so a publication naming no examination was refused by nothing. See the migration
+    // comment for the measured version of that sentence.
+    examinationId: fk("examination_id").notNull()
       .references(() => clinicalExaminationsTable.id, { onDelete: "restrict" }),
     publicationKey: text("publication_key").notNull(),
     contentHash: text("content_hash").notNull(),
+    // Which serialization convention produced catalogue_snapshot, so a later format is read
+    // by knowing which one it is rather than by guessing the newest code's assumptions.
+    snapshotVersion: integer("snapshot_version").notNull().default(1),
+    catalogueSnapshot: jsonb("catalogue_snapshot").notNull(),
     summaryJson: jsonb("summary_json"),
     notes: text("notes"),
     publishedBy: text("published_by"),
