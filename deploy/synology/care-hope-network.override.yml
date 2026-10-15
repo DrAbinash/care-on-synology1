@@ -1,0 +1,62 @@
+# care-hope-network.override.yml — put CARE's API and HOPE's app on ONE network
+#
+# WHAT THIS IS FOR
+#   CARE posts signed reports to HOPE at `INTEGRATION_HOPE_CALLBACK_URL`. The value
+#   the deploy template ships is `http://192.168.1.137:7080/…` — the NAS's own LAN
+#   address and HOPE's published port. Measured on the production box on 2026-10-15
+#   with `node scripts/hope-route-probe.mjs --container care-api`:
+#
+#     that URL, from the NAS host            → HTTP 401  (HOPE answers; unsigned request)
+#     that URL, from inside care-api         → TimeoutError, no answer in 5 s
+#     http://hope_hospital_app:5000          → ENOTFOUND from both
+#
+#   A container on this DSM cannot reach its own host's published port (hairpin/DNAT is
+#   not enabled), and the two stacks are on separate compose networks so neither
+#   resolves the other's container name. So the outbox cannot deliver a report today,
+#   while every existing check reports the integration as configured and healthy.
+#
+#   The two addresses that DO answer from inside a container are `192.168.64.1:7080`
+#   (care-api's bridge gateway) and `192.168.48.4:5000` (HOPE's container IP). Neither
+#   is a permanent answer: both are reassigned when a container is recreated, which on
+#   this box happens at every Container Manager update — so a URL made from them works
+#   until the night it silently stops.
+#
+#   This file creates ONE named bridge network that both projects can join. The
+#   containers then address each other by CONTAINER DNS, which is the name that
+#   survives a recreate; the IP underneath it changing is exactly what DNS is for.
+#   The network is deliberately NOT `external`: compose creates it if it is missing and
+#   reuses it if it exists, which is what Container Manager's project editor expects.
+#   `name:` is fixed so the network is not renamed with the project prefix
+#   (`care-erp-github_default` style) — HOPE's stack has to be able to say its name.
+#
+#   THIS FILE IS NOT APPLIED BY ANYTHING IN THIS REPOSITORY. `deploy-synology.sh` does
+#   not read it and CI does not apply it. Attaching a live clinical container to a new
+#   network changes production networking, and the owner approves that — see
+#   docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md §14a for the ordered procedure and the two
+#   commands that verify it worked before any report depends on it.
+#
+# HOW IT IS USED (the operator's step, not an automated one)
+#   docker compose -p care-erp-github -f docker-compose.yml \
+#     -f deploy/synology/care-hope-network.override.yml config   # first: preview only
+#   …and then, with approval, the same command with `up -d` in place of `config`.
+#
+#   The override is additive: it adds one network membership to `api`. It changes no
+#   image, no volume, no port, no environment value, and nothing about the database.
+#   Removing it returns the stack to exactly the topology running today.
+
+name: care-hope-net
+
+services:
+  api:
+    networks:
+      # `default` is the project network the stack already uses — care-db, care-redis
+      # and care-web must stay reachable exactly as they are. The second entry is the
+      # new shared one. Listing both is required: declaring only the new network would
+      # detach the API from its own database.
+      - default
+      - care_hope_net
+
+networks:
+  care_hope_net:
+    name: care_hope_net
+    driver: bridge

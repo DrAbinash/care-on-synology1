@@ -381,7 +381,7 @@ cd /volume1/docker/care-erp-github/care-on-synology1
 
 | # | Step | Command | Stop the deploy if |
 |---|---|---|---|
-| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 26 checks; the four below are the ones a deploy most often fails on) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` · `node scripts/financial-integrity.mjs` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, a guarded secret is weak, or a money invariant disagrees with its own rows (`financial.money_identity`, `financial.day_close_identity` — see §6b). `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof or a money check with no reachable database |
+| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 27 checks; the four below are the ones a deploy most often fails on. One of the 27, `hope.route`, answers NOT_APPLICABLE unless you set `PREFLIGHT_CHECK_HOPE_ROUTE=1` — see §14a for why a pre-launch peer's network is opt-in) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` · `node scripts/financial-integrity.mjs` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, a guarded secret is weak, or a money invariant disagrees with its own rows (`financial.money_identity`, `financial.day_close_identity` — see §6b). `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof or a money check with no reachable database |
 | 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
 | 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass the passphrase through the environment — never on the command line. Full procedure, including the before/after proof that production was not touched: `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §B |
 | 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md`, and `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §A for the target-verification pre-flight and how to read each finding |
@@ -537,3 +537,80 @@ in the baseline as the owner's rotation decision, each with its own blast radius
 (`BACKUP_PASSPHRASE` seals the encrypted backups the warning above refers to; the
 session keys sign every staff login).
 
+
+## 14a. CARE → HOPE: the route a signed report has to travel
+
+**What is wrong, measured rather than reasoned.** `node scripts/hope-route-probe.mjs
+--container care-api --dns hope_hospital_app --dns-port 5000` was run read-only on the
+production box on 2026-10-15:
+
+| attempt | result |
+| --- | --- |
+| `http://192.168.1.137:7080/…` from the NAS host (the value `deploy/synology/care.env` ships) | `HTTP 401` — HOPE answers, and refuses the unsigned probe |
+| the same URL **from inside `care-api`** | `TimeoutError` after 5 s — no answer |
+| `http://hope_hospital_app:5000/…` from either | `ENOTFOUND` — the name does not resolve |
+
+So the callback address that every existing check describes as configured and correct
+has never carried a report. A container on this DSM cannot reach its own host's
+published port (hairpin/DNAT is off), and CARE's `care-erp-github_default` and HOPE's
+`hope_erp_network` are different networks, so neither stack can resolve the other's
+name. `hope.integration` cannot see either fact: it reads configuration, and the
+configuration is fine.
+
+**What does not fix it.** Two other addresses do answer from inside a container today —
+the bridge gateway `192.168.64.1:7080` and HOPE's container IP `192.168.48.4:5000`.
+Neither is a permanent answer: Docker reassigns both when a container is recreated,
+which on this box happens at every Container Manager update. Configuring one of them
+buys a working route until the night it silently stops, with the outbox retrying into a
+dead letter. The durable form is the peer's **network alias on a network both containers
+join** — the name survives the recreate, which is the entire point of DNS.
+
+**The change, when the owner approves it.** `deploy/synology/care-hope-network.override.yml`
+creates one named bridge (`care_hope_net`) and joins `api` to it, keeping `default` so
+the API is still attached to its own database. Measured against the live compose file
+with `care-api` NOT restarted — resolved with `docker compose … config --format json`,
+volumes sorted so a re-ordering is not miscounted as a change, base-vs-base as the
+control:
+
+| comparison | lines that differ |
+| --- | --- |
+| base vs base (control) | 0 |
+| base vs base **+ override** | **1** — `"care_hope_net": null` added to `api.networks` |
+
+Nothing else in the resolved config moves: no image, no port, no volume, no environment
+value. Compose validates it (`config -q` exits 0). HOPE's stack must then join the same
+network — `docker network connect care_hope_net hope_hospital_app` — which is a change
+to *that* project's runtime and is not performed by anything in this repository.
+
+**Order of work (each step verified before the next):**
+
+1. `node scripts/hope-route-probe.mjs --container care-api` — record the blocked verdict
+   you are starting from.
+2. Preview: `docker compose -p care-erp-github -f docker-compose.yml -f
+   deploy/synology/care-hope-network.override.yml config --quiet` — must exit 0. This
+   applies nothing.
+3. With approval, apply it through Container Manager (or `docker compose … up -d` from
+   the deploy directory). CARE restarts; Bill Desk and Accounting are down for the length
+   of that restart, so this is a clinic-hours decision, not a maintenance one.
+4. Attach HOPE: `docker network connect care_hope_net hope_hospital_app`.
+5. `docker exec care-api getent hosts hope_hospital_app` — the name must resolve.
+6. Re-run step 1 with `--dns hope_hospital_app --dns-port 5000`. The candidate must read
+   `HTTP 401` **from inside the container**. That is the pass condition: a status, not a
+   connection.
+7. Only then set `INTEGRATION_HOPE_CALLBACK_URL=http://hope_hospital_app:5000/api/integration/care-callback`
+   — the container-DNS form with the path the receiver actually serves.
+8. `PREFLIGHT_CHECK_HOPE_ROUTE=1 node scripts/ops-preflight.mjs` — `hope.route` must be
+   PASS before a report is relied on.
+
+**Rollback.** Remove the `-f` argument (or delete the override file) and re-deploy: the
+stack returns to the single `default` network it runs on today. `docker network disconnect
+care_hope_net care-api` and `… hope_hospital_app` undo the runtime membership without
+touching either project's files. No data, no volume and no schema is involved in either
+direction.
+
+**Why the gate asks permission.** `hope.route` is `critical: false` and only runs with
+`PREFLIGHT_CHECK_HOPE_ROUTE=1`. HOPE is not in clinical use; the Bill Desk is. A check
+that can fail because a pre-launch peer is unreachable must never be able to stop a CARE
+release — §2 of the deployment policy puts it that way round. The row is still emitted
+unarmed, as NOT_APPLICABLE with the flag that would measure it, because an omitted check
+is invisible and a declined one is visible.

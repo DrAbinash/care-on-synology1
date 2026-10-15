@@ -1417,3 +1417,106 @@ describe("the count the runbook tells the operator", () => {
     expect(seen, "at least one other document must quote the count, or this test guards nothing").toBeGreaterThan(0);
   });
 });
+
+describe("T-HR — hope.route: does the callback address answer from inside the container?", () => {
+  // The measured production state, as the probe reports it: the URL `care.env` ships
+  // returns 401 from the NAS host (HOPE answering an unsigned request) and times out
+  // from inside `care-api`, because a container on this DSM cannot reach its own host's
+  // published port. `hope.integration` reads the configuration and is satisfied. Every
+  // report CARE has ever sent through that address has failed silently.
+  const blocked = {
+    "hope-route-probe.mjs": {
+      code: 1,
+      stdout: "CARE→HOPE route probe — from this host and from inside care-api\n"
+        + "  CONFIGURED [this host] http://hope.example:7080/api/integration/care-callback\n"
+        + "      kind=lan-ip outcome=reachable — HTTP 401\n"
+        + "  CONFIGURED [inside care-api] http://hope.example:7080/api/integration/care-callback\n"
+        + "      kind=lan-ip outcome=refused — TimeoutError — no answer before the 5 s deadline\n"
+        + "verdict: blocked\n",
+    },
+  };
+
+  test("T-HR1 the route is opt-in and visible, never silently skipped", () => {
+    const { by, report } = build({});
+    expect(by["hope.route"].status).toBe(NOT_APPLICABLE);
+    // Not "pass": the gate has to say it did not look, and name the way to make it look.
+    expect(by["hope.route"].detail).toMatch(/ROUTE was not measured/i);
+    expect(by["hope.route"].remediation).toMatch(/PREFLIGHT_CHECK_HOPE_ROUTE=1/);
+    expect(report.verdict).not.toBe(NOT_READY);
+  });
+
+  test("T-HR2 opted in, the configured URL answering from inside the container is PASS", () => {
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 0, stdout: "verdict: reachable\n  CONFIGURED [inside care-api] http://hope_hospital_app:5000/api/integration/care-callback\n      kind=container-dns outcome=reachable — HTTP 401\n" },
+    });
+    expect(by["hope.route"].status).toBe(PASS);
+    expect(by["hope.route"].detail).toMatch(/answers from inside care-api/);
+  });
+
+  test("T-HR3 opted in, a route that dies inside the container is FAIL and names the fix", () => {
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, blocked);
+    expect(by["hope.route"].status).toBe(FAIL);
+    expect(by["hope.route"].detail).toMatch(/does NOT answer from inside care-api/);
+    expect(by["hope.route"].remediation).toMatch(/care-hope-network\.override\.yml/);
+    expect(by["hope.route"].critical).toBe(false);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T-HR4 the container-IP and bridge-gateway forms are named as not-a-fix", () => {
+    // Both answer today. Both change when a container is recreated, which on this box
+    // is every Container Manager update — so a remedy that suggested them would trade a
+    // broken route for a intermittently broken one.
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, blocked);
+    expect(by["hope.route"].remediation).toMatch(/not a fix|next recreate/i);
+    expect(by["hope.route"].remediation).not.toMatch(/192\.168\.64\.1|192\.168\.48\.4/);
+  });
+
+  test("T-HR5 exit 2 is UNKNOWN, and a non-critical UNKNOWN does not stop a deploy", () => {
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 2, stdout: "verdict: unknown\n" },
+    });
+    expect(by["hope.route"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T-HR6 the probe not being runnable is UNKNOWN, not a blocked route", () => {
+    // A laptop has no `care-api` container. Reporting FAIL there would be the gate
+    // inventing a production finding out of its own missing environment.
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: null, missing: true, stdout: "" },
+    });
+    expect(by["hope.route"].status).toBe(UNKNOWN);
+    expect(by["hope.route"].detail).toMatch(/could not run/);
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T-HR7 the EXIT CODE decides, not the probe's prose", () => {
+    // A probe that prints "reachable" and exits 1 is a broken probe, and the gate must
+    // follow the code — the same rule the deploy health gate uses for every child script.
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 1, stdout: "verdict: reachable\n" },
+    });
+    expect(by["hope.route"].status).toBe(FAIL);
+  });
+
+  test("T-HR8 PREFLIGHT_CHECK_HOPE_ROUTE=0 and =false stay opt-out", () => {
+    for (const off of ["0", "false", "FALSE", ""]) {
+      const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: off } }, blocked);
+      expect(by["hope.route"].status, `value ${JSON.stringify(off)}`).toBe(NOT_APPLICABLE);
+    }
+  });
+
+  test("T-HR9 an unarmed integration emits the row as NOT_APPLICABLE and runs no probe", () => {
+    const calls = [];
+    seedTree({ env: { HOPE_PARTNER_KEY: undefined, INTEGRATION_HOPE_CALLBACK_URL: undefined, HOPE_CARE_INTEGRATION_FORCE: undefined, INTEGRATION_HOPE_SIGNING_SECRET: undefined } });
+    const report = runPreflight({
+      ctx: makeCtx({
+        exec: (cmd, args) => { calls.push([cmd, ...(args ?? [])].join(" ")); return router()("git", ["rev-parse", "HEAD"]); },
+      }),
+    });
+    const row = report.checks.find((c) => c.id === "hope.route");
+    expect(row.status).toBe(NOT_APPLICABLE);
+    expect(row.detail).toMatch(/no callback URL/i);
+    expect(calls.some((c) => c.includes("hope-route-probe.mjs"))).toBe(false);
+  });
+});

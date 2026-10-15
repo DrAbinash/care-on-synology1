@@ -175,6 +175,7 @@ export const REQUIRED_CHECK_IDS = [
   "compose.services_required",
   "hope.integration",
   "hope.receiver_version",
+  "hope.route",
   "rollback.prerequisites",
   "schedulers.consistent",
   "deploy.metadata",
@@ -884,6 +885,11 @@ function checkHope(ctx, merged) {
       detail: "no callbacks are configured, so the receiver's build cannot affect this deployment",
       remediation: "",
     });
+    rows.push(hopeRouteRow(merged, {
+      status: NOT_APPLICABLE,
+      detail: "no callback URL is configured on this host, so there is no route to measure",
+      remediation: "",
+    }));
     return rows;
   }
 
@@ -904,7 +910,81 @@ function checkHope(ctx, merged) {
 
   const receiver = receiverVersionCheck(ctx);
   rows.push(receiver);
+  rows.push(checkHopeRoute(ctx, merged, callback));
   return rows;
+}
+
+/**
+ * The one fact about the callback that is not observable from a config file: whether
+ * the address answers FROM THE CONTAINER THAT HAS TO POST TO IT.
+ *
+ * `hope.integration` proves a URL is set and syntactically the right shape. It cannot
+ * prove a route. On this NAS the shipped value `http://192.168.1.137:7080/…` returns
+ * 401 from the host (HOPE answering an unsigned request — a live route) and times out
+ * from inside `care-api`, because a container cannot reach its own host's published
+ * port (hairpin/DNAT), measured 2026-10-15 with scripts/hope-route-probe.mjs. Every
+ * gate that only reads configuration calls that healthy. It is not: not one report has
+ * ever reached HOPE through it.
+ *
+ * It is OPT-IN (`PREFLIGHT_CHECK_HOPE_ROUTE=1`) and `critical: false`, deliberately.
+ * HOPE is not in clinical use; Bill Desk and Accounting are live on this same deploy.
+ * A check that can fail because a pre-launch peer is unreachable must not be able to
+ * stop a CARE release — §2 puts it before that integration. Being advisory is not the
+ * same as being silent: the row is always emitted, and unarmed it says so and names the
+ * flag that measures it.
+ */
+function hopeRouteRow(merged, base) {
+  const optIn = String(merged.PREFLIGHT_CHECK_HOPE_ROUTE || "").trim();
+  return {
+    id: "hope.route",
+    status: base.status,
+    critical: false,
+    detail: base.detail,
+    remediation: base.remediation
+      || (optIn ? "" : "Opt-in check: run with PREFLIGHT_CHECK_HOPE_ROUTE=1 (or `node scripts/hope-route-probe.mjs --container care-api`) to measure the route from inside the API container."),
+  };
+}
+
+function checkHopeRoute(ctx, merged, callbackUrl) {
+  const optIn = String(merged.PREFLIGHT_CHECK_HOPE_ROUTE || "").trim();
+  if (!optIn || optIn === "0" || optIn.toLowerCase() === "false") {
+    return hopeRouteRow(merged, {
+      status: NOT_APPLICABLE,
+      detail: `the callback URL is configured but its ROUTE was not measured (opt-in); the configured address is ${callbackUrl}`,
+      remediation: "",
+    });
+  }
+  const container = String(merged.CARE_API_CONTAINER || "care-api").trim();
+  const r = ctx.exec("node", [path.join("scripts", "hope-route-probe.mjs"), "--url", callbackUrl, "--container", container], { timeout: 120_000 });
+  if (r.missing) {
+    return hopeRouteRow(merged, {
+      status: UNKNOWN,
+      detail: `the route probe could not run (node or docker unavailable here), so nothing is known about ${callbackUrl}`,
+      remediation: "Run `node scripts/hope-route-probe.mjs --container " + container + "` on the NAS itself.",
+    });
+  }
+  // The exit code is the verdict; the text is only the explanation. A probe that
+  // printed "reachable" and exited 1 is a probe bug, and the code is what CI reads.
+  const said = String(r.stdout || "").split(/\r?\n/).filter((l) => l.trim()).slice(0, 6).join(" · ");
+  if (r.code === 0) {
+    return hopeRouteRow(merged, {
+      status: PASS,
+      detail: `the configured callback URL answers from inside ${container}: ${said}`,
+      remediation: "",
+    });
+  }
+  if (r.code === 1) {
+    return hopeRouteRow(merged, {
+      status: FAIL,
+      detail: `the configured callback URL does NOT answer from inside ${container}, so no signed report can reach HOPE even though the URL is set. ${said}`,
+      remediation: "See docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md §14a: one shared user-defined bridge network (deploy/synology/care-hope-network.override.yml) plus the peer's container DNS. A bridge-gateway or container-IP address is not a fix — both change on the next recreate.",
+    });
+  }
+  return hopeRouteRow(merged, {
+    status: UNKNOWN,
+    detail: `the route probe returned exit ${r.code}, which is not a verdict: ${said || String(r.stderr || "").slice(0, 160)}`,
+    remediation: "Run the probe directly and read its report before trusting this row.",
+  });
 }
 
 /**
