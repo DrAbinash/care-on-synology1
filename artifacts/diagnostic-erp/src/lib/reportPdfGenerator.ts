@@ -341,12 +341,20 @@ function drawWrappedBody(
   font: string,
   size: number,
   lineH: number,
+  contentBottom?: number,
+  ensureSpace?: (needed: number) => void,
 ): number {
   doc.setFont(font, "normal");
   doc.setFontSize(size);
   doc.setTextColor(20, 20, 20);
   const lines = doc.splitTextToSize(text, maxW) as string[];
   for (const line of lines) {
+    // If pagination parameters provided, check space before each line
+    if (contentBottom !== undefined && ensureSpace) {
+      if (y + lineH > contentBottom) {
+        ensureSpace(lineH);
+      }
+    }
     doc.text(line, x, y);
     y += lineH;
   }
@@ -359,7 +367,12 @@ function drawWrappedBody(
  *  Headings authored on their own line ("Alignment:") and `|`-delimited tables
  *  (per-level canal diameters) come from the same document model the print and
  *  preview surfaces read, so the downloaded PDF shows the same structure the
- *  radiologist saw on screen instead of a wall of text. */
+ *  radiologist saw on screen instead of a wall of text.
+ *
+ *  Block-aware pagination: each logical block (heading, table, or paragraph)
+ *  is checked against contentBottom before rendering. If insufficient space
+ *  remains, a page break is triggered so blocks never overlap the signature
+ *  or footer. */
 function drawFindingsBlock(
   doc: jsPDF,
   findings: string,
@@ -369,24 +382,63 @@ function drawFindingsBlock(
   font: string,
   bodySize: number,
   lineH: number,
+  contentBottom: number,
+  ensureSpace: (needed: number) => void,
 ): number {
   const normalized = normalizeReportPlainText(findings);
-  for (const block of parseFindingsDocument(normalized)) {
+  const blocks = parseFindingsDocument(normalized);
+  
+  // Professional radiology report spacing:
+  // - 6-8 pt (2.1-2.8mm) before anatomical subheadings
+  // - 4-6 pt (1.4-2.1mm) between independent observations
+  // - Keep headings with their associated content
+  const HEADING_SPACE_BEFORE = lineH * 0.7;  // ~2.8mm for medium (6-8pt target)
+  const PARA_SPACE_AFTER = lineH * 0.5;      // ~2.0mm for medium (4-6pt target)
+  
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    const nextBlock = i < blocks.length - 1 ? blocks[i + 1] : null;
+    
     if (block.kind === "heading") {
+      // Add spacing before heading (except for first block)
+      if (i > 0) {
+        y += HEADING_SPACE_BEFORE;
+      }
+      // Reserve space for heading + at least one paragraph line to avoid orphaned headings
+      // If next block is a paragraph, reserve space for heading + first few lines
+      let reserveHeight = lineH * 1.2;  // heading itself
+      if (nextBlock && nextBlock.kind === "para") {
+        // Estimate first paragraph height (at least 2 lines)
+        reserveHeight += lineH * 2.5;
+      }
+      ensureSpace(reserveHeight);
+      
       doc.setFont(font, "bold");
       doc.setFontSize(bodySize);
       doc.setTextColor(30, 27, 75);
       doc.text(block.text, x, y);
       y += lineH;
-      y += lineH * 0.2;
+      y += lineH * 0.25;  // Small space after heading before content
       continue;
     }
     if (block.kind === "table") {
+      // Estimate table height: header row + data rows + padding
+      const tableHeight = (block.rows.length + 1) * lineH * 1.5 + lineH * 0.35;
+      ensureSpace(tableHeight);
       y = drawFindingsTable(doc, block.header, block.rows, x, y, maxW, font, bodySize, lineH);
-      y += lineH * 0.35;
+      y += PARA_SPACE_AFTER;
       continue;
     }
-    for (const para of block.text.split(/\n+/).map((p) => p.trim()).filter(Boolean)) {
+    // For paragraphs, estimate height based on text length and available width
+    const paragraphs = block.text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+    for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
+      const para = paragraphs[pIdx];
+      // Estimate lines needed for this paragraph
+      const approxCharsPerLine = maxW / (bodySize * 0.35);
+      const estLines = Math.max(1, Math.ceil(para.length / approxCharsPerLine));
+      const paraHeight = estLines * lineH + PARA_SPACE_AFTER;
+      ensureSpace(paraHeight);
+
       // The PDF half of the editor's colour: a line that asserts pathology is
       // drawn bold, a normal one is not, on every surface the report reaches.
       const emphatic = isAbnormalFindingsLine(para);
@@ -407,7 +459,8 @@ function drawFindingsBlock(
       } else {
         y = drawInlineMarkdown(doc, para, x, y, maxW, font, bodySize, lineH, x, emphatic);
       }
-      y += lineH * 0.35;
+      // Add spacing after paragraph (professional radiology spacing)
+      y += PARA_SPACE_AFTER;
     }
   }
   return y;
@@ -565,6 +618,8 @@ function drawNumberedImpression(
   font: string,
   bodySize: number,
   lineH: number,
+  contentBottom?: number,
+  ensureSpace?: (needed: number) => void,
 ): number {
   const rawLines = impression.split(/\n+/).map((l) => l.trim()).filter(Boolean);
   const items = rawLines.map((l, i) => {
@@ -578,6 +633,13 @@ function drawNumberedImpression(
     doc.setFont(font, "bold");
     doc.setFontSize(bodySize);
     const lines = doc.splitTextToSize(item, maxW - doc.getTextWidth(prefix)) as string[];
+    // Check space before each impression item
+    if (contentBottom !== undefined && ensureSpace) {
+      const itemHeight = lines.length * lineH + lineH * 0.25;
+      if (y + itemHeight > contentBottom) {
+        ensureSpace(itemHeight);
+      }
+    }
     doc.text(prefix, x, y);
     doc.text(lines[0] ?? "", x + doc.getTextWidth(prefix), y);
     y += lineH;
@@ -1128,7 +1190,7 @@ export function generateReportPDF(
         if (!report.clinicalHistory?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, normalizeReportPlainText(report.clinicalHistory.trim()), m.left, y, colW(), font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.clinicalHistory.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
         break;
       }
@@ -1136,7 +1198,7 @@ export function generateReportPDF(
         if (!report.technique?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, normalizeReportPlainText(report.technique.trim()), m.left, y, colW(), font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.technique.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
         break;
       }
@@ -1144,7 +1206,7 @@ export function generateReportPDF(
         if (!report.comparison?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, normalizeReportPlainText(report.comparison.trim()), m.left, y, colW(), font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.comparison.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
         break;
       }
@@ -1171,7 +1233,7 @@ export function generateReportPDF(
         if (!report.findings?.trim()) break;
         ensureSpace(16);
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
-        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH);
+        y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
         break;
       }
@@ -1208,7 +1270,7 @@ export function generateReportPDF(
         if (!report.impression?.trim()) break;
         ensureSpace(14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
-        y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH);
+        y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
         break;
       }
@@ -1216,7 +1278,7 @@ export function generateReportPDF(
         if (!report.recommendation?.trim()) break;
         ensureSpace(12);
         y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
-        y = drawWrappedBody(doc, normalizeReportPlainText(report.recommendation.trim()), m.left, y, colW(), font, fs.body, lineH);
+        y = drawWrappedBody(doc, normalizeReportPlainText(report.recommendation.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
         break;
       }

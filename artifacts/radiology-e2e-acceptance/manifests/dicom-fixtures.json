@@ -1,0 +1,518 @@
+{
+  "version": "1.0",
+  "created": "2026-10-16",
+  "purpose": "Synthetic DICOM fixture specifications for E2E acceptance test",
+  "disclaimer": "All UIDs are synthetic. No real patient data is used.",
+  "uidRoot": "1.2.826.0.1.3680043.8.498.",
+  "fixtures": [
+    {
+      "caseId": "CASE-1A",
+      "exam": "MRI Brain",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100001",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100001.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100001.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal brain parenchyma"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100001.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal ventricles"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100001.2",
+          "seriesDescription": "AX T2 FLAIR",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100001.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 FLAIR - no white matter lesions"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 3,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT ALPHA",
+        "patientID": "TEST-001",
+        "patientAge": "045Y",
+        "patientSex": "M"
+      }
+    },
+    {
+      "caseId": "CASE-1B",
+      "exam": "MRI Brain",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100002",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100002.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100002.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - cerebral volume loss"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100002.2",
+          "seriesDescription": "AX T2 FLAIR",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100002.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 FLAIR - periventricular white matter changes"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100002.2.2",
+              "instanceNumber": 2,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 FLAIR - generalized atrophy"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 3,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT BETA",
+        "patientID": "TEST-002",
+        "patientAge": "068Y",
+        "patientSex": "F"
+      }
+    },
+    {
+      "caseId": "CASE-2A",
+      "exam": "MRI Lumbosacral Spine",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100003",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100003.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100003.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal lumbar lordosis"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100003.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal disc heights"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100003.2",
+          "seriesDescription": "AX T2",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100003.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 L4-L5 - normal canal"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 3,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT GAMMA",
+        "patientID": "TEST-003",
+        "patientAge": "032Y",
+        "patientSex": "M"
+      }
+    },
+    {
+      "caseId": "CASE-2B",
+      "exam": "MRI Lumbosacral Spine",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100004",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100004.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100004.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - loss of lordosis"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100004.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - L5-S1 disc protrusion"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100004.2",
+          "seriesDescription": "AX T2",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100004.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 L5-S1 - left foraminal narrowing"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100004.2.2",
+              "instanceNumber": 2,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 L4-L5 - disc bulge"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 4,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT DELTA",
+        "patientID": "TEST-004",
+        "patientAge": "052Y",
+        "patientSex": "F"
+      }
+    },
+    {
+      "caseId": "CASE-3A",
+      "exam": "MRI Cervical Spine",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100005",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100005.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100005.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal cervical lordosis"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100005.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - normal cord"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100005.2",
+          "seriesDescription": "AX T2",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100005.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 C5-C6 - normal canal"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 3,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT EPSILON",
+        "patientID": "TEST-005",
+        "patientAge": "028Y",
+        "patientSex": "F"
+      }
+    },
+    {
+      "caseId": "CASE-3B",
+      "exam": "MRI Cervical Spine",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100006",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100006.1",
+          "seriesDescription": "SAG T1",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100006.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - straightened lordosis"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100006.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 - C5-C6 osteophyte complex"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100006.2",
+          "seriesDescription": "AX T2",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100006.2.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 C5-C6 - moderate canal narrowing"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100006.2.2",
+              "instanceNumber": 2,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 C4-C5 - mild foraminal narrowing"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 4,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT ZETA",
+        "patientID": "TEST-006",
+        "patientAge": "058Y",
+        "patientSex": "M"
+      }
+    },
+    {
+      "caseId": "CASE-4A",
+      "exam": "MRI Brain with Cervical Spine Screening",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100007",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100007.1",
+          "seriesDescription": "SAG T1 BRAIN",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100007.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 brain - normal"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100007.2",
+          "seriesDescription": "SAG T1 CERVICAL",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100007.2.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 cervical screening - normal"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 2,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT ETA",
+        "patientID": "TEST-007",
+        "patientAge": "042Y",
+        "patientSex": "F"
+      }
+    },
+    {
+      "caseId": "CASE-4B",
+      "exam": "MRI Brain with Cervical Spine Screening",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100008",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100008.1",
+          "seriesDescription": "AX T2 FLAIR BRAIN",
+          "modality": "MR",
+          "bodyPart": "BRAIN",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100008.1.1",
+              "instanceNumber": 1,
+              "imageType": "AXIAL",
+              "keyImage": true,
+              "caption": "Axial T2 FLAIR - white matter changes"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100008.2",
+          "seriesDescription": "SAG T1 CERVICAL",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100008.2.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 cervical - C5-C6 osteophyte"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 2,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT THETA",
+        "patientID": "TEST-008",
+        "patientAge": "065Y",
+        "patientSex": "M"
+      }
+    },
+    {
+      "caseId": "CASE-5A",
+      "exam": "MRI Lumbosacral Spine with Whole Spine Screening",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100009",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100009.1",
+          "seriesDescription": "SAG T1 LUMBAR",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100009.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 lumbar - normal"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100009.2",
+          "seriesDescription": "SAG T1 WHOLE SPINE",
+          "modality": "MR",
+          "bodyPart": "WHOLE_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100009.2.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 whole spine screening - normal"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 2,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT IOTA",
+        "patientID": "TEST-009",
+        "patientAge": "035Y",
+        "patientSex": "M"
+      }
+    },
+    {
+      "caseId": "CASE-5B",
+      "exam": "MRI Lumbosacral Spine with Whole Spine Screening",
+      "studyInstanceUID": "1.2.826.0.1.3680043.8.498.100010",
+      "series": [
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100010.1",
+          "seriesDescription": "SAG T1 LUMBAR",
+          "modality": "MR",
+          "bodyPart": "LUMBAR_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100010.1.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 lumbar - multilevel disease"
+            },
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100010.1.2",
+              "instanceNumber": 2,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 lumbar - L4-L5 protrusion"
+            }
+          ]
+        },
+        {
+          "seriesInstanceUID": "1.2.826.0.1.3680043.8.498.100010.2",
+          "seriesDescription": "SAG T1 CERVICAL",
+          "modality": "MR",
+          "bodyPart": "CERVICAL_SPINE",
+          "instances": [
+            {
+              "sopInstanceUID": "1.2.826.0.1.3680043.8.498.100010.2.1",
+              "instanceNumber": 1,
+              "imageType": "SAGITTAL",
+              "keyImage": true,
+              "caption": "Sagittal T1 cervical screening - degenerative changes"
+            }
+          ]
+        }
+      ],
+      "totalKeyImages": 3,
+      "patientIdentity": {
+        "patientName": "TEST PATIENT KAPPA",
+        "patientID": "TEST-010",
+        "patientAge": "055Y",
+        "patientSex": "F"
+      }
+    }
+  ],
+  "summary": {
+    "totalStudies": 10,
+    "totalSeries": 20,
+    "totalKeyImages": 31,
+    "note": "These are synthetic DICOM fixture specifications. Actual DICOM files would need to be generated using a DICOM library or sourced from a synthetic DICOM generator. For this acceptance test, we will mock the image attachment pathway using placeholder images that reference these UIDs."
+  }
+}
