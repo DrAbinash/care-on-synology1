@@ -49,9 +49,21 @@ BACKUP_PASSPHRASE="$(cat /volume1/scripts/.passphrase)" bash /volume1/care-diagn
 refuses anything else, writes to a `.partial` and publishes with `mv`, requires
 the dump banner **and** the `-- PostgreSQL database dump complete` trailer,
 requires at least one `CREATE TABLE`, refuses a dump below 10 KiB, records a
-`.meta` sidecar (source database, server version, exporter, sha256), encrypts
-only after a round-trip check proves the encrypted copy decrypts back to the same
-bytes, and never prunes below `KEEP_MIN_COPIES`.
+`.meta` sidecar (source database, server version, exporter, sha256, **and a
+census of the core tables taken immediately before and immediately after the
+dump**), encrypts only after a round-trip check proves the encrypted copy decrypts
+back to the same bytes, and never prunes below `KEEP_MIN_COPIES`.
+
+The census is four numbers per table — row count, lowest id, highest id, sum of
+ids — and nothing else. It is what turns a restore proof from "the artifact
+restored, and its highest ids look plausible" into "the artifact held what the
+database held at 03:00, and here is the bracket it had to fall inside". A
+high-water id cannot see history deleted after the dump, a rebuilt sequence, or a
+dump of the wrong database that happens to have a plausible top id; a row count
+compared against the *live* table fails a perfect restore, because the clinic keeps
+writing while a backup ages. `CARE_BACKUP_CENSUS_TABLES` overrides the table list;
+a census that cannot be taken is recorded as `census_error=` and never costs the
+nightly backup.
 
 The inline form of this section used to be:
 
@@ -108,5 +120,24 @@ source database and sha256, and fails if `patients` or `bills` land empty. Exit 
 is the only evidence that counts. `SOP/RECOVERY/13_RESTORE/verify-backup-restore.sh`
 is a byte-identical copy of that script for the binder, and CI fails if the two
 ever differ — read the `scripts/` one when changing it.
+
+Before it starts, the verifier tells you which kind of artifact it is holding:
+`census: 7 table(s) bracketed at dump time (…)`, or `census: none`. A
+census-bearing artifact is judged against the numbers the job recorded while the
+dump ran, which is the only completeness argument that survives a row deleted after
+the dump or a sequence that was rebuilt. An older artifact is still worth
+restoring — it simply cannot be shown to be complete, so verify a backup taken by
+the current script instead of recording a proof the deploy gate will hold at
+UNKNOWN.
+
+Record the result so the gate can see it:
+
+```bash
+node scripts/ops-preflight.mjs --record-restore --artifact caredeoghar_YYYYMMDD_HHMMSS.sql.gz --tables 439 --patients 8123
+```
+
+The attestation is read from that artifact's `.meta` and is never typed. A proof
+pointed at an artifact with no census is recorded as unattested, and
+`restore.evidence` answers UNKNOWN with the command above as its remedy.
 
 

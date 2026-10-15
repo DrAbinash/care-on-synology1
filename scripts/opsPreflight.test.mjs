@@ -38,6 +38,8 @@ import {
   DRIFT_EXEMPT,
   checkConfigDrift,
   configCopies,
+  censusTableCount,
+  CENSUS_LINE_RE,
   makeContext,
   auditSidecar,
   credentialShaped,
@@ -50,7 +52,13 @@ import {
 const GOOD_SECRET = "synthetic-strong-value-never-a-real-one-32ch";
 const SENTINEL = "SENTINEL-SECRET-DO-NOT-PRINT-9b2c1d";
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
+// seedTree stamps the artifact this many hours before NOW unless a case asks for a
+// different age. See the note in seedTree for why the stamp is never the wall clock.
+const DEFAULT_ARTIFACT_AGE_HOURS = 6;
 const HEAD_SHA = "a".repeat(40);
+
+/** The Container Manager identity a healthy production box reports. */
+const TOPOLOGY = { project: "care-erp-github", dbVolume: "care_main_db_data" };
 const DATABASE_URL = "postgresql://erp@127.0.0.1:59999/diagnostic_erp";
 
 const ENV_TEMPLATE = {
@@ -90,6 +98,13 @@ const COMPOSE = [
   "  web:",
   "    image: node:22",
   "",
+  "volumes:",
+  "  db_data:",
+  "    external: true",
+  "    name: care_main_db_data",
+  "  object_storage:",
+  "  uploads_data:",
+  "",
 ].join("\n");
 
 /** The live deploy program, as the drift scan sees it. */
@@ -121,6 +136,10 @@ const HEALTHY_EVIDENCE = {
     artifact: "caredeoghar_20261014_030000.sql.gz",
     verified_at: new Date(NOW - 6 * 3_600_000).toISOString(),
     passed: true,
+    // The gate only calls a restore proof complete when the artifact's sidecar
+    // bracketed it at dump time. The control box is one where that is true; the
+    // cases where it is not are below, and they answer UNKNOWN.
+    censusAttested: true,
     tables: 439,
     patients: 8123,
   },
@@ -137,6 +156,37 @@ const HEALTHY_EVIDENCE = {
   },
 };
 
+/**
+ * The census block `scripts/synology-nas-backup.sh` takes around its own dump and
+ * writes into the `.meta` sidecar: one line per core table, per edge.
+ *
+ * The healthy fixture has to carry these lines because `restore.evidence` derives
+ * its attestation from them and from nothing else — anyone can type
+ * `"censusAttested": true` into the evidence file, so the gate reads the file the
+ * 03:00 job produced instead. A fixture without them is a fixture for a box whose
+ * backup job predates the census, and the control has to reach PASS.
+ *
+ * The table list is read out of the backup job rather than copied, so the fixture
+ * cannot quietly census a table the job no longer does. The four numbers are
+ * computed, not remembered: the ids are taken to run 1..n, so min=1, max=n,
+ * sum=n(n+1)/2, and the after-edge is three rows longer because the clinic keeps
+ * writing while a dump runs.
+ */
+const BACKUP_SH = readFileSync(new URL("./synology-nas-backup.sh", import.meta.url), "utf8");
+const CENSUS_TABLES = (BACKUP_SH.match(/^CENSUS_TABLES_DEFAULT="([^"]+)"/m) ?? [])[1]?.trim().split(/\s+/) ?? [];
+
+const censusEdge = (n) => `${n}|1|${n}|${(n * (n + 1)) / 2}`;
+
+function censusSidecarLines(baseRows = 40) {
+  const lines = [];
+  CENSUS_TABLES.forEach((t, i) => {
+    lines.push(`census_before.${t}=${censusEdge(baseRows + i)}`);
+    lines.push(`census_after.${t}=${censusEdge(baseRows + i + 3)}`);
+  });
+  lines.push(`census_tables=${CENSUS_TABLES.join(" ")}`);
+  return lines;
+}
+
 const SIDECAR_LINES = [
   "artifact=caredeoghar_20261014_030000.sql.gz",
   "created_utc=2026-10-14T03:00:00Z",
@@ -148,6 +198,7 @@ const SIDECAR_LINES = [
   "create_tables=439",
   "encrypted=no",
   `sha256_artifact=${"0".repeat(64)}`,
+  ...censusSidecarLines(),
 ];
 
 let root;
@@ -192,10 +243,14 @@ function seedTree(knobs = {}) {
   } else {
     writeFileSync(`${artifactPath}.meta`, [...(knobs.sidecarLines ?? SIDECAR_LINES), `bytes=${readFileSync(artifactPath).length}`, ""].join("\n"));
   }
-  if (knobs.ageHours !== undefined) {
-    const when = new Date(NOW - knobs.ageHours * 3_600_000);
-    utimesSync(artifactPath, when, when);
-  }
+  // The mtime is pinned to the frozen NOW rather than left at the wall clock, and
+  // always pinned — not only when a test asks for an age. `makeCtx().now()` is a
+  // fixed instant, so an artifact stamped "when the test ran" ages backwards once
+  // the real clock passes that instant, and any case that orders two artifacts by
+  // mtime flips on its own. T6c did exactly that: green in CI before 11:00 UTC on
+  // 2026-10-15, red after it, with no code change between the two runs.
+  const when = new Date(NOW - (knobs.ageHours ?? DEFAULT_ARTIFACT_AGE_HOURS) * 3_600_000);
+  utimesSync(artifactPath, when, when);
   const evidence = knobs.evidence === undefined ? HEALTHY_EVIDENCE : knobs.evidence;
   if (evidence === null) rmSync(path.join(root, EVIDENCE_FILE), { force: true });
   else write(EVIDENCE_FILE, JSON.stringify(evidence, null, 2));
@@ -220,18 +275,55 @@ function router(over = {}) {
     "git status --porcelain": { stdout: "" },
     "check-migration-order.cjs": { stdout: '{"violations":[],"checkedFiles":2}\n' },
     "audit-external-result-links.mjs": { stdout: "No duplicates found: the constraint can be added without touching a single existing row.\n" },
+    // The identity a real checkout of this tree would resolve at build time.
+    "build-identity.mjs": {
+      stdout: JSON.stringify({
+        imageBuiltAt: "2026-10-15T02:51:49Z",
+        commit: HEAD_SHA,
+        identitySource: "build-context-git",
+        gitBranch: "main",
+        gitRef: "refs/heads/main",
+        declaredGitCommit: HEAD_SHA,
+        staleStampDetected: false,
+        version: "2.0.0",
+        buildNumber: "1",
+      }) + "\n",
+    },
+    // The image IDs a rollback record needs, as `docker inspect care-api
+    // --format {{.Image}}` answers it.
+    "{{.Image}}": { stdout: "sha256:4a8f03cc7246024b198dc1b9a9549660cd79254c3f364353a82d740733380052\n" },
+    // The three docker reads the topology checks make. Order matters as much as
+    // content: the labels command also names care-api, so its more specific needle
+    // has to be tried first or the mount answer would be returned for it.
+    "com.docker.compose.project": { stdout: `${TOPOLOGY.project}|${path.resolve(root)}\n` },
+    "inspect care-db": {
+      stdout: "volume care_main_db_data /volume1/@docker/volumes/care_main_db_data/_data->/var/lib/postgresql/data;",
+    },
+    "inspect care-api": {
+      stdout: "volume care-erp-github_uploads_data /volume1/@docker/volumes/care-erp-github_uploads_data/_data->/app/data/uploads;"
+        + "volume care-erp-github_object_storage /volume1/@docker/volumes/care-erp-github_object_storage/_data->/app/data/object-storage;",
+    },
+    "docker compose ls": {
+      stdout: `${TOPOLOGY.project}|running(4)|${path.resolve(root)}/docker-compose.yml\nhope|running(3)|/volume1/docker/hope/docker-compose.yml\n`,
+    },
     "docker compose": { stdout: "" },
     current_database: { stdout: "diagnostic_erp\n" },
     system_database_identity: { stdout: "care-erp|production\n" },
     schema_migrations_log: { stdout: "20260101_a.sql\n20260102_b.sql\n" },
     restore_verification: { stdout: "" },
+    // The money gate: every statement carries `financial-integrity:<id>` in a comment,
+    // and the healthy box answers each with a marked zero row.
+    "financial-integrity:": { stdout: "FI|0|\n" },
     ...over,
   };
   return (cmd, args) => {
     const joined = [cmd, ...(args ?? [])].join(" ");
     for (const [needle, value] of Object.entries(table)) {
-      if (value !== null && joined.includes(needle)) {
-        return { code: value.code ?? 0, stdout: value.stdout ?? "", stderr: value.stderr ?? "", missing: !!value.missing };
+      const hit = typeof value === "function" ? value(joined) : value;
+      if (hit) {
+        if (joined.includes(needle)) {
+          return { code: hit.code ?? 0, stdout: hit.stdout ?? "", stderr: hit.stderr ?? "", missing: !!hit.missing };
+        }
       }
     }
     return { code: 0, stdout: "", stderr: "", missing: false };
@@ -323,7 +415,9 @@ describe("T1–T4 — deployment configuration", () => {
     expect(by["env.required"].status).toBe(UNKNOWN);
     expect(by["env.required"].detail).toMatch(/template/);
     expect(by["credentials.safe"].status).toBe(UNKNOWN);
-    expect(by["deploy.metadata"].status).toBe(UNKNOWN);
+    // Build identity is deliberately NOT one of the .env value checks: it comes
+    // from the checkout's git refs, which a template cannot fake either way.
+    expect(by["deploy.metadata"].status).toBe(PASS);
     expect(report.envIsTemplate).toBe(true);
     expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
     expect(renderText(report)).toMatch(/the live \.env was not found/);
@@ -351,6 +445,55 @@ describe("T1–T4 — deployment configuration", () => {
     });
     expect(by["links.external_result_duplicates"].status).toBe(UNKNOWN);
     expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4c money invariants that hold make both financial gates PASS", () => {
+    const { by, report } = build({}, {});
+    expect(by["financial.money_identity"].status).toBe(PASS);
+    expect(by["financial.day_close_identity"].status).toBe(PASS);
+    expect(by["financial.money_identity"].detail).toContain("11 bills, payments and vouchers invariants hold");
+    expect(by["financial.day_close_identity"].detail).toContain("5 clinic and staff day close invariants hold");
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T4d a violated money invariant is FAIL and NOT_READY — a failed integrity check blocks the deploy", () => {
+    const { by, report } = build({}, { "financial-integrity:": { stdout: "FI|2|17,9184\n" } });
+    expect(by["financial.money_identity"].status).toBe(FAIL);
+    expect(by["financial.money_identity"].detail).toMatch(/2 violations \(rows 17, 9184/);
+    expect(by["financial.day_close_identity"].status).toBe(FAIL);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T4e an unreachable database is UNKNOWN with a critical flag, never a pass", () => {
+    const { by, report } = build({}, { "financial-integrity:": { code: 2, stdout: "", stderr: "psql: error: connection to server failed" } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(by["financial.money_identity"].critical).toBe(true);
+    expect(by["financial.money_identity"].detail).toMatch(/could not be evaluated/);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4f an empty answer is not zero violations", () => {
+    // The router's default for an unmatched command is exit 0 with empty stdout, so a
+    // gate that read emptiness as cleanliness would be green on a box that ran nothing.
+    const { by, report } = build({}, { "financial-integrity:": { stdout: "" } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4g no DATABASE_URL means the money checks name that instead of judging nothing", () => {
+    const { by, report } = build({}, {}, { env: { DATABASE_URL: undefined } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(by["financial.money_identity"].detail).toContain("no DATABASE_URL");
+    expect(by["financial.money_identity"].critical, "an unrun money gate must be able to stop READY").toBe(true);
+    expect(by["financial.day_close_identity"].detail).toContain("no DATABASE_URL");
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4h no UNVERIFIED leaks out of the money tool into the gate's vocabulary", () => {
+    const { report } = build({}, {});
+    const financial = report.checks.filter((c) => c.id.startsWith("financial."));
+    expect(financial.length).toBe(2);
+    for (const c of financial) expect([PASS, FAIL, UNKNOWN, NOT_APPLICABLE]).toContain(c.status);
   });
 });
 
@@ -383,6 +526,52 @@ describe("T5–T8 — backup and restore evidence", () => {
   test("T6b the limit is the operator's, not a constant nobody can change", () => {
     const { by } = build({ ageHours: 30 }, {}, { env: { PREFLIGHT_MAX_BACKUP_AGE_HOURS: "36" } });
     expect(by["backup.freshness"].status).toBe(PASS);
+  });
+
+  // A zero-byte artifact is the worst kind of green: the dump job exits 0, the log
+  // says success, the file exists with today's name, and there is nothing in it.
+  // This is not hypothetical on this NAS — the dated dumps in
+  // /volume1/docker/backups/postgres/care hold 20 empty files out of 62, including
+  // six consecutive nights (2026-10-10 to 2026-10-15), measured 2026-10-15 read-only.
+  const addEmptyNewer = (name = "caredeoghar_20261015_030000.sql.gz", ageMs = 3_600_000) => {
+    const empty = path.join(backupDir, name);
+    writeFileSync(empty, Buffer.alloc(0));
+    const when = new Date(NOW - ageMs);
+    utimesSync(empty, when, when);
+    return empty;
+  };
+
+  test("T6c a 0-byte newest artifact is never the thing freshness is measured against", () => {
+    seedTree({});
+    addEmptyNewer();
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["backup.artifacts_present"].status).toBe(PASS);
+    expect(by["backup.artifacts_present"].detail).toMatch(/1 of them are 0 bytes/);
+    expect(by["backup.freshness"].status).toBe(PASS);
+    expect(by["backup.freshness"].detail).toMatch(/newest restorable/);
+    expect(by["backup.freshness"].detail).toMatch(/the MOST RECENT file caredeoghar_20261015_030000\.sql\.gz is 0 bytes and was not counted/);
+    expect(by["backup.freshness"].remediation).toMatch(/exit status/);
+  });
+
+  test("T6d a directory whose every artifact is 0 bytes is FAIL, not a box with backups", () => {
+    seedTree({});
+    writeFileSync(artifactPath, Buffer.alloc(0));
+    const report = runPreflight({ ctx: makeCtx() });
+    const by = Object.fromEntries(report.checks.map((c) => [c.id, c]));
+    expect(by["backup.artifacts_present"].status).toBe(FAIL);
+    expect(by["backup.artifacts_present"].detail).toMatch(/EVERY one is 0 bytes/);
+    expect(by["backup.freshness"].status).toBe(FAIL);
+    expect(by["backup.metadata"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T6e a fresh empty write does not rescue a stale restorable backup", () => {
+    seedTree({ ageHours: 30 });
+    addEmptyNewer();
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    // The old code would have reported the 1-hour-old file as fresh and passed.
+    expect(by["backup.freshness"].status).toBe(FAIL);
+    expect(by["backup.freshness"].detail).toMatch(/30\.0h/);
   });
 
   test("T7 a sidecar that contradicts the artifact is FAIL, naming every mismatch", () => {
@@ -588,11 +777,152 @@ describe("T9–T12 — platform, integration and metadata", () => {
     expect(by["schedulers.consistent"].detail).toMatch(/double-fires/);
   });
 
-  test("T12 missing build metadata is FAIL and names the keys", () => {
+  test("T12 build identity comes from the checkout, so an empty .env no longer hides it", () => {
     const { by, report } = build({ env: { GIT_COMMIT: undefined, BUILD_NUMBER: "" } });
+    expect(by["deploy.metadata"].status).toBe(PASS);
+    expect(by["deploy.metadata"].detail).toContain(HEAD_SHA.slice(0, 12));
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T12e a checkout that cannot resolve its own commit FAILS, critically", () => {
+    // This is the lying-stamp condition: if the tree cannot name its commit, the
+    // image can only repeat whatever .env said, and a rollback becomes unattributable.
+    const unresolved = JSON.stringify({ commit: null, identitySource: "build-arg-declared", gitResolveReason: "no HEAD file", declaredGitCommit: "2d51e8d7" });
+    const { by, report } = build({}, { "build-identity.mjs": { stdout: `${unresolved}\n` } });
     expect(by["deploy.metadata"].status).toBe(FAIL);
-    expect(by["deploy.metadata"].detail).toMatch(/GIT_COMMIT/);
+    expect(by["deploy.metadata"].critical).toBe(true);
+    expect(by["deploy.metadata"].detail).toMatch(/no HEAD file/);
     expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T12f a stale .env stamp is reported as overridden, not as a conflict to fix first", () => {
+    const drift = JSON.stringify({ commit: HEAD_SHA, identitySource: "build-context-git", gitBranch: "main", version: "2.0.0", buildNumber: "1", declaredGitCommit: "2d51e8d7", staleStampDetected: true });
+    const { by } = build({ env: { GIT_COMMIT: "2d51e8d7" } }, { "build-identity.mjs": { stdout: `${drift}\n` } });
+    expect(by["deploy.metadata"].status).toBe(PASS);
+    expect(by["deploy.metadata"].detail).toMatch(/\.env still declares 2d51e8d7/);
+  });
+
+  test("T12g with no node, the identity is unknown rather than assumed", () => {
+    const { by } = build({}, { "build-identity.mjs": { missing: true } });
+    expect(by["deploy.metadata"].status).toBe(UNKNOWN);
+    expect(by["deploy.metadata"].critical).toBe(true);
+  });
+
+  test("T15 a second compose project on this checkout is FAIL before it can strand the uploads", () => {
+    // The failure is silent and total: the external patient DB is reused, while a
+    // new project creates its own empty uploads/object volumes. docker-compose.yml
+    // declares db_data as `external: true, name: care_main_db_data` and leaves the
+    // other two project-prefixed, which is what makes the split possible.
+    const two = [
+      `${TOPOLOGY.project}|running(4)|${path.resolve(root)}/docker-compose.yml`,
+      `care-on-synology1|running(2)|${path.resolve(root)}/docker-compose.yml`,
+    ].join("\n");
+    const { by, report } = build({}, { "docker compose ls": { stdout: `${two}\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].critical).toBe(true);
+    expect(by["deploy.project_identity"].detail).toContain("care-on-synology1");
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T15b the running stack composed from a different checkout is FAIL", () => {
+    const { by } = build({}, { "com.docker.compose.project": { stdout: `${TOPOLOGY.project}|/volume1/docker/usg-reports\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].detail).toMatch(/usg-reports/);
+  });
+
+  test("T15c a wrong project name is FAIL and names the project to rebuild", () => {
+    const { by } = build({}, { "com.docker.compose.project": { stdout: `care-on-synology1|${path.resolve(root)}\n` } });
+    expect(by["deploy.project_identity"].status).toBe(FAIL);
+    expect(by["deploy.project_identity"].remediation).toContain("care-erp-github");
+  });
+
+  test("T15d with no docker the topology is UNKNOWN, never a clean bill", () => {
+    // Docker missing is not one unreadable command: every docker read the topology
+    // checks make has to fail, or the mount half would still look proven.
+    const { by, report } = build({}, {
+      "com.docker.compose.project": { missing: true },
+      "docker compose ls": { missing: true },
+      "inspect care-db": { missing: true },
+      "inspect care-api": { missing: true },
+    });
+    expect(by["deploy.project_identity"].status).toBe(UNKNOWN);
+    expect(by["deploy.volume_identity"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T15e db_data declared without external is FAIL — a new project means an empty database", () => {
+    const compose = COMPOSE.replace("    external: true\n    name: care_main_db_data\n", "");
+    const { by } = build({ compose });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toMatch(/not `external`/);
+  });
+
+  test("T15f db_data external but pointed at another volume is FAIL and names both", () => {
+    const compose = COMPOSE.replace("name: care_main_db_data", "name: care-erp-github_db_data");
+    const { by } = build({ compose });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toContain("care-erp-github_db_data");
+    expect(by["deploy.volume_identity"].detail).toContain("not care_main_db_data");
+  });
+
+  test("T15g uploads mounted from another project's volume is FAIL", () => {
+    // The exact shape of the mistake: the right database, the wrong document store.
+    const { by } = build({}, {
+      "inspect care-api": { stdout: "volume care-on-synology1_uploads_data /volume1/@docker/volumes/care-on-synology1_uploads_data/_data->/app/data/uploads;volume care-on-synology1_object_storage /x->/app/data/object-storage;" },
+    });
+    expect(by["deploy.volume_identity"].status).toBe(FAIL);
+    expect(by["deploy.volume_identity"].detail).toMatch(/does not mount the care-erp-github_uploads_data/);
+    expect(by["deploy.volume_identity"].remediation).toMatch(/STOP/);
+  });
+
+  test("T15h --record-rollback --auto reads the IDs instead of asking for them", () => {
+    seedTree({ evidence: null });
+    const ctx = makeCtx();
+    const written = [];
+    // Capture AND write: the claim under test is that a later run of the gate can
+    // read the record back, which a capture-only stub would silently fake.
+    const code = main(["--record-rollback", "--auto", "--no-rerun"], {
+      ctx,
+      writeFile: (f, t) => { written.push([f, t]); writeFileSync(f, t); },
+    });
+    expect(code).toBe(0);
+    expect(written).toHaveLength(1);
+    const data = JSON.parse(written[0][1]);
+    expect(data.rollback.previous_commit).toBe(HEAD_SHA);
+    expect(data.rollback.api_image).toBe("sha256:4a8f03cc7246024b198dc1b9a9549660cd79254c3f364353a82d740733380052");
+    expect(data.rollback.db_image).toBe(data.rollback.api_image);
+    // The whole point of recording it: the reader must now call rollback possible.
+    const by = Object.fromEntries(runPreflight({ ctx }).checks.map((c) => [c.id, c]));
+    expect(by["rollback.prerequisites"].status).toBe(PASS);
+  });
+
+  test("T15i --auto records nothing when an image ID cannot be read", () => {
+    // A rollback record with a guessed ID is worse than none: it reads as complete
+    // and points at an image that does not exist.
+    seedTree({ evidence: null });
+    const ctx = makeCtx({ exec: router({ "{{.Image}}": { code: 1, stdout: "", stderr: "error: No such object: care-api" } }) });
+    const written = [];
+    const err = [];
+    const real = process.stderr.write;
+    process.stderr.write = (chunk) => { err.push(String(chunk)); return true; };
+    let code;
+    try {
+      code = main(["--record-rollback", "--auto", "--no-rerun"], { ctx, writeFile: (f, t) => written.push([f, t]) });
+    } finally {
+      process.stderr.write = real;
+    }
+    expect(code).toBe(1);
+    expect(written).toEqual([]);
+    expect(err.join("")).toMatch(/Nothing was written/);
+  });
+
+  test("T15j an explicit flag still wins over what --auto read", () => {
+    seedTree({ evidence: null });
+    const ctx = makeCtx();
+    const written = [];
+    const code = main(["--record-rollback", "--auto", "--previous-commit", "b".repeat(40), "--no-rerun"], { ctx, writeFile: (f, t) => written.push([f, t]) });
+    expect(code).toBe(0);
+    expect(JSON.parse(written[0][1]).rollback.previous_commit).toBe("b".repeat(40));
   });
 
   test("T12h the recorder writes what the reader reads — evidence survives a reload", () => {
@@ -612,6 +942,147 @@ describe("T9–T12 — platform, integration and metadata", () => {
     // Sections the operator has not recorded stay absent, not blanked.
     const data = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
     expect(data.hope_receiver).toBeUndefined();
+  });
+
+  test("T12c1 the census line the gate counts is the line the backup job writes", () => {
+    // A census has three definitions in this system: the shell that writes it, the
+    // TypeScript verifier that grades it, and this gate that derives the deploy
+    // PASS from it. Two of those three drift here. Each `${var}` is planted with a
+    // DIFFERENT number, so a job that emits the fields in a different order than
+    // psql returned them changes the parsed census instead of sliding through a
+    // shape-only regex.
+    const template = (BACKUP_SH.match(/AS census_table[\s\S]*?FROM "@T@"/) ?? [""])[0];
+    expect([...template.matchAll(/AS (\w+)/g)].map((m) => m[1]))
+      .toEqual(["census_table", "row_count", "id_min", "id_max", "id_sum"]);
+    const read = (BACKUP_SH.match(/while IFS='\|' read -r (\w+) (\w+) (\w+) (\w+) (\w+)/) ?? []).slice(1);
+    expect(read).toEqual(["t", "r", "mn", "mx", "s"]);
+    const digits = { r: "41", mn: "7", mx: "9301", s: "41288350" };
+    const emit = BACKUP_SH.match(/^\s*echo "census_\$\{which\}\.\$\{t\}=([^"]+)"/m);
+    expect(emit, "the backup job must write a census_<edge>.<table> line").toBeTruthy();
+    const line = `census_before.audit_logs=` + emit[1].replace(/\$\{(\w+)\}/g, (_, v) => digits[v] ?? `<<${v}>>`);
+    expect(line).toBe("census_before.audit_logs=41|7|9301|41288350");
+    expect(line.match(CENSUS_LINE_RE)?.slice(1)).toEqual(["audit_logs", "41", "7", "9301", "41288350"]);
+    // And the fixture this file builds is the same shape, not a private dialect.
+    for (const l of censusSidecarLines()) if (l.startsWith("census_before.")) expect(l).toMatch(CENSUS_LINE_RE);
+  });
+
+  test("T12c2 the census tables the fixture censes are the tables the job censes", () => {
+    // Nothing here is allowed to invent its own table list, or this file would keep
+    // passing against a job that quietly stopped bracketing half the record.
+    expect(CENSUS_TABLES).toEqual(expect.arrayContaining(["patient_reports", "audit_logs", "radiology_worklist"]));
+    expect(CENSUS_TABLES.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(CENSUS_TABLES).size).toBe(CENSUS_TABLES.length);
+  });
+
+  test("T12c3 the attestation counts dump-time edges, and only those", () => {
+    seedTree({});
+    const ctx = makeCtx();
+    const ART = "caredeoghar_20261014_030000.sql.gz";
+    expect(censusTableCount(ctx, ART)).toBe(CENSUS_TABLES.length);
+    // An `after` with no `before` is a half bracket and proves nothing.
+    const half = censusSidecarLines().filter((l) => !l.startsWith("census_before."));
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), ...half] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // A census the job could not take is reported, not counted.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "census_error=psql exited 1"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // A census line whose numbers are not numbers is not a measurement.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "census_before.audit_logs=N/A|?|?|?"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // And a line that only MENTIONS a census is not one either: the sidecar is a
+    // key=value file, and a note field that quotes the format must not be read as
+    // the measurement it describes.
+    seedTree({ sidecarLines: [...SIDECAR_LINES.filter((l) => !l.startsWith("census")), "note=census_before.audit_logs=1|2|3|4"] });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    // No sidecar at all, and no artifact named at all.
+    seedTree({ withSidecar: false });
+    expect(censusTableCount(makeCtx(), ART)).toBe(0);
+    expect(censusTableCount(makeCtx(), "   ")).toBe(0);
+    expect(censusTableCount(makeCtx(), null)).toBe(0);
+    // A path, not a bare name: the sidecar lives next to the artifact.
+    seedTree({});
+    expect(censusTableCount(makeCtx(), path.join(backupDir, ART))).toBe(CENSUS_TABLES.length);
+  });
+
+  test("T12c4 an operator cannot type the strongest claim in the evidence file", () => {
+    // The whole point of deriving the census from the sidecar: a recorder that
+    // accepted `--census-attested`, or a reader that believed a hand-edited flag,
+    // would make PASS the easiest field in the file to produce.
+    const censusFree = SIDECAR_LINES.filter((l) => !l.startsWith("census"));
+    seedTree({ evidence: null, sidecarLines: censusFree });
+    const chunks = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (c) => { chunks.push(String(c)); return true; };
+    let code;
+    try {
+      code = main(["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--census-attested", "true", "--no-rerun"],
+        { ctx: makeCtx(), writeFile: (f, t) => writeFileSync(f, t, "utf8") });
+    } finally { process.stdout.write = realWrite; }
+    expect(code).toBe(0);
+    const data = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
+    expect(data.restore_verification.censusAttested).toBe(false);
+    expect(chunks.join("")).toMatch(/NOTE:.*no backup-time census/);
+    const by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/no dump-time census/);
+    expect(by["restore.evidence"].remediation).toMatch(/census-bearing/);
+    // The recovery the refusal names is the one this repo has: the script exists,
+    // and the flag it is told to use is the flag the binary accepts.
+    expect(existsSync(new URL("./verify-backup-restore.sh", import.meta.url))).toBe(true);
+    expect(by["restore.evidence"].remediation).toContain("--record-restore");
+    // And with the census present, the same command records the attestation on its
+    // own and says nothing about it.
+    seedTree({ evidence: null });
+    const said = [];
+    process.stdout.write = (c) => { said.push(String(c)); return true; };
+    try {
+      main(["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--no-rerun"],
+        { ctx: makeCtx(), writeFile: (f, t) => writeFileSync(f, t, "utf8") });
+    } finally { process.stdout.write = realWrite; }
+    expect(JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8")).restore_verification.censusAttested).toBe(true);
+    expect(said.join("")).not.toMatch(/NOTE/);
+  });
+
+  test("T12c5 the reader re-reads the artifact and does not inherit the file's claim", () => {
+    const censusFree = SIDECAR_LINES.filter((l) => !l.startsWith("census"));
+    // A forged attestation: the JSON says the census exists, the artifact's sidecar
+    // says it does not. The artifact is the evidence, so it wins.
+    seedTree({ sidecarLines: censusFree });
+    let by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/although the evidence file claims one/);
+    // The other direction, which is the one that must not cost a clinic a deploy:
+    // a proof recorded before this field existed, against an artifact that does
+    // carry a census. The completeness argument is in the sidecar right now, so the
+    // gate reads it and PASSes without being told.
+    seedTree({ evidence: { ...HEALTHY_EVIDENCE, restore_verification: { ...HEALTHY_EVIDENCE.restore_verification, censusAttested: undefined } } });
+    by = Object.fromEntries(runPreflight({ ctx: makeCtx() }).checks.map((c) => [c.id, c]));
+    expect(by["restore.evidence"].status).toBe(PASS);
+  });
+
+  test("T12c6 the in-app route holds the same bar as the operator's record", () => {
+    // Two routes to PASS with two evidence bars is how a gate teaches people to
+    // route around the harder one.
+    const db = (stdout) => build({}, { restore_verification: { stdout } }).by["restore.evidence"];
+    expect(db("pass|2026-10-15 02:00:00+00|true\n").status).toBe(PASS);
+    const absent = db("pass|2026-10-15 02:00:00+00|absent\n");
+    expect(absent.status).toBe(UNKNOWN);
+    expect(absent.detail).toMatch(/not recorded by the version that produced this proof/);
+    expect(absent.remediation).toMatch(/census-bearing scripts\/synology-nas-backup\.sh/);
+    const odd = db("pass|2026-10-15 02:00:00+00|maybe\n");
+    expect(odd.status).toBe(UNKNOWN);
+    expect(odd.detail).toMatch(/reported as "maybe"/);
+    // A census cannot rescue a failed restore.
+    expect(db("fail|2026-10-15 02:00:00+00|true\n").status).toBe(FAIL);
+  });
+
+  test("T12c7 a census claim in the verifier's own row is not read as a boolean", () => {
+    // `detail->>'censusAttested'` is JSON text: `true`, `false`, or absent. A check
+    // written as a string comparison against anything else lands on UNKNOWN, which
+    // is the honest answer; the day it lands on PASS is the day the gate is lying.
+    const { by } = build({}, { restore_verification: { stdout: "pass|2026-10-15 02:00:00+00|false\n" } });
+    expect(by["restore.evidence"].status).toBe(UNKNOWN);
+    expect(by["restore.evidence"].detail).toMatch(/reported as "false"/);
   });
 
   test("T12i a recorder refuses to invent the one field that makes the proof mean something", () => {
@@ -925,5 +1396,127 @@ describe("the count the runbook tells the operator", () => {
       expect(n).toBe(report.checks.length);
     }
     expect(REQUIRED_CHECK_IDS.length).toBeGreaterThan(1); // the pin is not vacuous
+  });
+
+  test("every document that quotes the count quotes the same one", () => {
+    // A second document renumbering the same gate is the same lie in a different
+    // place: the operator follows whichever one they happen to open.
+    const repo = makeContext().repo;
+    const docs = [
+      ["docs/CARE_ERP_NAS_VALIDATION_CHECKLIST.md", /(\d+) readiness answers/g],
+      ["docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md", /all (\d+) checks/g],
+    ];
+    let seen = 0;
+    for (const [rel, pattern] of docs) {
+      const text = readFileSync(path.join(repo, ...rel.split("/")), "utf8");
+      for (const m of text.matchAll(pattern)) {
+        seen += 1;
+        expect(Number(m[1]), `${rel} states ${m[1]}`).toBe(REQUIRED_CHECK_IDS.length);
+      }
+    }
+    expect(seen, "at least one other document must quote the count, or this test guards nothing").toBeGreaterThan(0);
+  });
+});
+
+describe("T-HR — hope.route: does the callback address answer from inside the container?", () => {
+  // The measured production state, as the probe reports it: the URL `care.env` ships
+  // returns 401 from the NAS host (HOPE answering an unsigned request) and times out
+  // from inside `care-api`, because a container on this DSM cannot reach its own host's
+  // published port. `hope.integration` reads the configuration and is satisfied. Every
+  // report CARE has ever sent through that address has failed silently.
+  const blocked = {
+    "hope-route-probe.mjs": {
+      code: 1,
+      stdout: "CARE→HOPE route probe — from this host and from inside care-api\n"
+        + "  CONFIGURED [this host] http://hope.example:7080/api/integration/care-callback\n"
+        + "      kind=lan-ip outcome=reachable — HTTP 401\n"
+        + "  CONFIGURED [inside care-api] http://hope.example:7080/api/integration/care-callback\n"
+        + "      kind=lan-ip outcome=refused — TimeoutError — no answer before the 5 s deadline\n"
+        + "verdict: blocked\n",
+    },
+  };
+
+  test("T-HR1 the route is opt-in and visible, never silently skipped", () => {
+    const { by, report } = build({});
+    expect(by["hope.route"].status).toBe(NOT_APPLICABLE);
+    // Not "pass": the gate has to say it did not look, and name the way to make it look.
+    expect(by["hope.route"].detail).toMatch(/ROUTE was not measured/i);
+    expect(by["hope.route"].remediation).toMatch(/PREFLIGHT_CHECK_HOPE_ROUTE=1/);
+    expect(report.verdict).not.toBe(NOT_READY);
+  });
+
+  test("T-HR2 opted in, the configured URL answering from inside the container is PASS", () => {
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 0, stdout: "verdict: reachable\n  CONFIGURED [inside care-api] http://hope_hospital_app:5000/api/integration/care-callback\n      kind=container-dns outcome=reachable — HTTP 401\n" },
+    });
+    expect(by["hope.route"].status).toBe(PASS);
+    expect(by["hope.route"].detail).toMatch(/answers from inside care-api/);
+  });
+
+  test("T-HR3 opted in, a route that dies inside the container is FAIL and names the fix", () => {
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, blocked);
+    expect(by["hope.route"].status).toBe(FAIL);
+    expect(by["hope.route"].detail).toMatch(/does NOT answer from inside care-api/);
+    expect(by["hope.route"].remediation).toMatch(/care-hope-network\.override\.yml/);
+    expect(by["hope.route"].critical).toBe(false);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T-HR4 the container-IP and bridge-gateway forms are named as not-a-fix", () => {
+    // Both answer today. Both change when a container is recreated, which on this box
+    // is every Container Manager update — so a remedy that suggested them would trade a
+    // broken route for a intermittently broken one.
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, blocked);
+    expect(by["hope.route"].remediation).toMatch(/not a fix|next recreate/i);
+    expect(by["hope.route"].remediation).not.toMatch(/192\.168\.64\.1|192\.168\.48\.4/);
+  });
+
+  test("T-HR5 exit 2 is UNKNOWN, and a non-critical UNKNOWN does not stop a deploy", () => {
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 2, stdout: "verdict: unknown\n" },
+    });
+    expect(by["hope.route"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T-HR6 the probe not being runnable is UNKNOWN, not a blocked route", () => {
+    // A laptop has no `care-api` container. Reporting FAIL there would be the gate
+    // inventing a production finding out of its own missing environment.
+    const { by, report } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: null, missing: true, stdout: "" },
+    });
+    expect(by["hope.route"].status).toBe(UNKNOWN);
+    expect(by["hope.route"].detail).toMatch(/could not run/);
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T-HR7 the EXIT CODE decides, not the probe's prose", () => {
+    // A probe that prints "reachable" and exits 1 is a broken probe, and the gate must
+    // follow the code — the same rule the deploy health gate uses for every child script.
+    const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: "1" } }, {
+      "hope-route-probe.mjs": { code: 1, stdout: "verdict: reachable\n" },
+    });
+    expect(by["hope.route"].status).toBe(FAIL);
+  });
+
+  test("T-HR8 PREFLIGHT_CHECK_HOPE_ROUTE=0 and =false stay opt-out", () => {
+    for (const off of ["0", "false", "FALSE", ""]) {
+      const { by } = build({ env: { PREFLIGHT_CHECK_HOPE_ROUTE: off } }, blocked);
+      expect(by["hope.route"].status, `value ${JSON.stringify(off)}`).toBe(NOT_APPLICABLE);
+    }
+  });
+
+  test("T-HR9 an unarmed integration emits the row as NOT_APPLICABLE and runs no probe", () => {
+    const calls = [];
+    seedTree({ env: { HOPE_PARTNER_KEY: undefined, INTEGRATION_HOPE_CALLBACK_URL: undefined, HOPE_CARE_INTEGRATION_FORCE: undefined, INTEGRATION_HOPE_SIGNING_SECRET: undefined } });
+    const report = runPreflight({
+      ctx: makeCtx({
+        exec: (cmd, args) => { calls.push([cmd, ...(args ?? [])].join(" ")); return router()("git", ["rev-parse", "HEAD"]); },
+      }),
+    });
+    const row = report.checks.find((c) => c.id === "hope.route");
+    expect(row.status).toBe(NOT_APPLICABLE);
+    expect(row.detail).toMatch(/no callback URL/i);
+    expect(calls.some((c) => c.includes("hope-route-probe.mjs"))).toBe(false);
   });
 });

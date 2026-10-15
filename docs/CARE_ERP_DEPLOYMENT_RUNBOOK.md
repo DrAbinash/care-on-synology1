@@ -86,8 +86,25 @@ Two environment caveats, both deliberate:
   *values* says UNKNOWN — the template lists every key with example content, and
   "all 9 required variables present" read off an example file is the exact false
   green this gate exists to prevent.
-* `deploy.metadata` legitimately FAILs before `deploy-synology.sh` Step 2 has run,
-  because Step 2 is what writes `GIT_COMMIT`/`BUILD_NUMBER` into `.env`.
+* `deploy.metadata` asks the **checkout** what commit it is, by running
+  `node scripts/build-identity.mjs` here, so it no longer depends on `deploy-synology.sh`
+  Step 2 having written `GIT_COMMIT` into `.env`. What it can now say is stronger than
+  "the variables are filled in": either this tree resolves its commit — in which case
+  the image built from it will report that SHA whatever `.env` claims — or it cannot,
+  which is a critical **FAIL**, because an image that cannot resolve its commit can
+  only repeat a stamp it was handed. If `.env` declares a different SHA, the line says
+  so and says the image will override it; that is drift in a file, not a defect.
+* `deploy.project_identity` and `deploy.volume_identity` are the two checks a
+  Container Manager deploy can break and a shell deploy cannot: they read the compose
+  labels off the running `care-api`, list every compose project that claims this
+  checkout's `docker-compose.yml`, and then verify that the patient database is on
+  `care_main_db_data` and the uploads and object storage on `care-erp-github_*`.
+  A second project reuses the external database while creating fresh **empty** upload
+  volumes, so the clinic's bill scans and frozen key images read as deleted while every
+  money row is intact. Both are critical: `UNKNOWN` blocks `READY` here on purpose,
+  because "I could not read the mounts" is not the same fact as "the mounts are right".
+  Override the expected names with `CARE_COMPOSE_PROJECT` / `CARE_DB_VOLUME` if a box
+  ever legitimately differs — never by editing the constants.
 
 ## 1. Standard deploy (automated)
 The repo ships `deploy-synology.sh`, which does exactly:
@@ -152,8 +169,19 @@ node scripts/deploy-health.mjs --host-port 8888      # the same gate the deploy 
 curl -fsS http://localhost:8888/api/healthz          # liveness
 curl -fsS http://localhost:8888/api/health/schema    # schema-verify actually passed
 curl -fsS http://localhost:8888/api/system/version   # deployed version/commit
+node scripts/verify-deployed-identity.mjs --expected "$(git rev-parse HEAD)"   # the running API IS this commit
 docker compose run --rm --no-deps schema-verify node scripts/verify-deployment.mjs   # full stack health
 ```
+
+`scripts/verify-deployed-identity.mjs` is the step that used to be a human reading a
+SHA off a page. It asks the deployed API what it is (`/health`, cross-checked against
+`/api/health`) and compares that with the commit the deploy intended, and it has three
+answers: exit **0 PASS** only when the running image resolved its own commit from Git
+metadata and that commit is the expected one; **1 FAIL** when it is a different commit,
+which means the containers are not running the code you deployed; **2 UNKNOWN** when the
+API is unreachable, says nothing commit-shaped, or reports a stamp it was *handed*
+rather than one it resolved (`identitySource=build-arg-declared`). UNKNOWN is not a pass
+and never means "deployed correctly" — an unverifiable deploy is an unverified one.
 
 `scripts/deploy-health.mjs` is the authoritative one: it checks the container states
 and the three endpoints above, prints each answer it got, and exits non-zero if any
@@ -185,6 +213,74 @@ Migrations are **forward-only** — there is no automatic data rollback. To roll
 3. The schema stays forward (idempotent, additive) — an older app image runs fine against the newer schema because migrations only ADD. If a specific migration must be neutralised, **remove its `migrations/*.sql` file** (removing a file never touches the DB) and write a compensating additive migration; never edit an already-applied migration.
 4. For data corruption, restore from backup — see `CARE_ERP_RECOVERY_GUIDE.md`.
 
+## 6b. The money self-consistency gate — what green means, and what it does not cover
+
+`node scripts/financial-integrity.mjs` asks the live database whether its own money rows
+agree with each other. It is read-only in the enforced sense, not the promised one: every
+statement is a `SELECT`, the session opens with `default_transaction_read_only = on` so
+PostgreSQL refuses any write before it reaches a table, and `statement_timeout = 20s`
+cancels a slow query rather than letting it hold a snapshot over the Bill Desk. It prints
+counts and numeric row ids — a bill id, a payment id — and has no way to put a patient
+name, an MRN or a bill number into its result, because the projection is fixed in code
+(`wrapCountAndIds`) and a test asserts it.
+
+**16 gate invariants**, all measured **zero violations on the live clinic on 2026-10-15**
+(8,370 bills, 9,207 payments, 11,588 vouchers, 51 clinic closures, 255 staff closes):
+a bill's `total_amount` equals `subtotal − discount + tax`; `balance_amount` equals
+`max(0, total − paid − refund)` for a bill that is not cancelled; `paid_amount` equals the
+sum of the payment rows the ledger actually counts; no money column is negative; a discount
+never exceeds its subtotal; a refund never exceeds what was collected; one bill number per
+book; every payment belongs to a bill that exists; a voucher's two sides are different
+accounts with a positive amount and both resolve in the chart of accounts; and the same
+three identities for the day-close buckets, the variance, and the note count where notes
+were taken.
+
+**Seven advisory findings are reported and never block a deploy.** That split is measured,
+not decided by taste. `bills.bill_number_repeats_across_books` is 140 — bill numbers are
+unique *per book* (`unique(ledger_id, bill_number)`), so all 140 are correct invoices, and
+this is precisely the false positive `workspace/accounting-audit/accounting-data-audit.sql`
+DQC-01 has been printing. `orders.total_vs_active_lines` is 52,
+`user_day_closures.perfect_count_never_taken` is 240 of 255, and
+`bills.cancelled_with_money_collected` is 1. A gate that is permanently red is not a
+control, it is the reason the next real red gets walked past, so these are listed for the
+owner with their row ids and left out of the verdict.
+
+The 240 figure is the one worth reading twice: the staff self-close form pre-fills the
+counted cash from the system's own expected totals, so a drawer row saying *balanced,
+variance 0.00, no note count recorded* cannot tell a counted drawer from an uncounted one.
+Nothing in the stored data distinguishes them, which is why it is a process decision rather
+than a data defect — and why it is advisory here instead of a green tick that implies the
+cash was verified.
+
+Two shapes are deliberately not repeated from the older tooling. `paid_amount` is compared
+with the **sanctioned exclusion list** (`superseded, void, failed, reversed, cancelled,
+refund_failed` — `routes/reports.ts:239`, `lib/financialIntegrity.ts:18-25`), because
+superseding a double-post decrements the bill and posts a reversal *voucher* without
+inserting a compensating payment row (`routes/accounting.ts:1217-1253`); summing all rows
+the way `routes/books-sanity.ts:84-94` does disagrees with correct data the first time that
+happens. And bill-number uniqueness is scoped to the book, as above.
+
+At the deploy gate these two checks are `financial.money_identity` and
+`financial.day_close_identity`, both `critical`: a violation is `NOT_READY` (exit 1), and a
+database that could not be reached is `UNKNOWN` → `INSUFFICIENT_EVIDENCE` (exit 2), never a
+pass. Run the tool directly to see every row id:
+
+```bash
+node scripts/financial-integrity.mjs --advisory
+node scripts/financial-integrity.mjs --surface=money --json=output/financial-integrity.json
+```
+
+Exit codes: `0` every gate passed · `1` a gate is violated · `2` no `DATABASE_URL` ·
+`3` a gate could not be evaluated. `3` is not a smaller number than `1` — it is the answer
+"we do not know", and the gate holds it as `UNKNOWN` for that reason.
+
+**What this does not check.** It cannot see a payment recorded against the right bill but
+the wrong patient, because the schema does not constrain that; it cannot tell whether an
+amount is clinically or commercially correct; it does not reconcile against a bank
+statement, a gateway settlement file or Tally; and it reads no PHI. It answers one question
+— do the clinic's own money rows add up to each other — and it now answers it with numbers
+rather than with a status line nobody could run.
+
 ## 7. Safety guards you will see in logs (all good signs)
 - **DB target printout** — host/port/db/user printed before any mutation (catches a wrong-`.env`).
 - **DB identity check** — `system_database_identity` stamped `app_name=care-erp`; a mismatch **fails loudly** rather than migrating the wrong database.
@@ -206,7 +302,7 @@ probe changed after #952 — it is `node scripts/deploy-health.mjs`, not port 80
 
 | # | Check | Command | Evidence that it passed | Where |
 |---|---|---|---|---|
-| 1 | A backup exists, and it is proven to restore | `bash scripts/synology-nas-backup.sh` then `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` (§"2. Verifying a backup restores" of `CARE_ERP_BACKUP_RESTORE.md`) | the verifier exits 0: it restored the real artifact into a throwaway container with `ON_ERROR_STOP=1`, and its printed `patients`/`bills`/`payments`/`vouchers`/`patient_reports` counts are non-zero. It checks the restored side only — comparing against the live counts is yours to do | NAS |
+| 1 | A backup exists, and it is proven to restore | `bash scripts/synology-nas-backup.sh` then `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` (§"2. Verifying a backup restores" of `CARE_ERP_BACKUP_RESTORE.md`) | the verifier exits 0: it restored the real artifact into a throwaway container with `ON_ERROR_STOP=1`, and its printed `patients`/`bills`/`payments`/`vouchers`/`patient_reports` counts are non-zero. Completeness is the other half and needs the census: the job brackets each core table (`rows`/`min id`/`max id`/`sum id`, before and after the dump) into the `.meta`, the verifier prints `census: N table(s) bracketed at dump time` for the artifact it is holding, and `restore.evidence` holds a proof of a census-free artifact at `UNKNOWN` — it restored, that is all it can say | NAS |
 | 2 | Migrations this deploy will run | `git log --name-only --diff-filter=A <last-deploy>..origin/main -- migrations/*.sql` | every added file is reviewed; `deploy-synology.sh` prints the commit it reset to, and `<last-deploy>` is that SHA | NAS |
 | 3 | Migration order and idempotency | `node scripts/check-migration-order.cjs` | `✓ No ordering violations` — **LOCAL: re-ran at `8ca20cf9`, 189 files, clean.** Re-application is refused by `schema_migrations_log(name, kind, sha256)` (`docker/db-patch-entrypoint.sh:223,347`), so an edited file cannot silently re-run | LOCAL + NAS |
 | 4 | What actually mutated the schema | `docker logs care-db-patch-v2 --tail 60` and `docker inspect --format '{{.State.ExitCode}}' care-db-patch-v2` | `Exited (0)`, and the log names each file applied. `care-api` will not start unless patch **and** `care-schema-verify` both exit 0 (`depends_on: … service_completed_successfully`) | NAS |
@@ -285,15 +381,15 @@ cd /volume1/docker/care-erp-github/care-on-synology1
 
 | # | Step | Command | Stop the deploy if |
 |---|---|---|---|
-| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 22 checks; the four below are the ones a deploy most often fails on) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, or a guarded secret is weak. `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof |
+| 1 | Pre-deployment checks | `node scripts/ops-preflight.mjs` (all 27 checks; the four below are the ones a deploy most often fails on. One of the 27, `hope.route`, answers NOT_APPLICABLE unless you set `PREFLIGHT_CHECK_HOPE_ROUTE=1` — see §14a for why a pre-launch peer's network is opt-in) · `df -h /volume1` · `docker compose config --quiet` · `node scripts/check-migration-order.cjs` · `node scripts/check-env-secrets.mjs --file .env` · `node scripts/financial-integrity.mjs` | the preflight says `NOT_READY`, disk is under 10 % free, compose cannot interpolate its own variables, the migration order gate reports a violation, a guarded secret is weak, or a money invariant disagrees with its own rows (`financial.money_identity`, `financial.day_close_identity` — see §6b). `INSUFFICIENT_EVIDENCE` is not a green light either — it means a critical check could not be run, most often the restore proof or a money check with no reachable database |
 | 2 | Git revision verification | `git fetch origin main` · `git rev-parse origin/main` · `git log --name-only --diff-filter=A $(cat .git-deployed 2>/dev/null \|\| echo HEAD)..origin/main -- migrations/*.sql lib/db/drizzle/` | the SHA you are about to deploy is not the one you reviewed, or a new SQL file appeared that nobody read. Record the SHA: `echo "<sha>" > .git-deployed` after step 9 passes |
 | 3 | Database backup, then prove it restores | `bash scripts/synology-nas-backup.sh` · `bash scripts/verify-backup-restore.sh /volume1/backups/caredeoghar` | either exits non-zero. `verify-backup-restore.sh` restores the real artifact into a **throwaway** container with `ON_ERROR_STOP=1`, refuses a dump that is not schema-complete, and fails if `patients` or `bills` landed empty — that is the only evidence that counts, because `deploy-synology.sh` takes **no** backup itself (§10.3) and the next step resets the working tree and recreates every container. If the artifact is encrypted, pass the passphrase through the environment — never on the command line. Full procedure, including the before/after proof that production was not touched: `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §B |
 | 4 | Historical migration-ledger audit | `docker compose run --rm --no-deps schema-verify node scripts/audit-migration-ledger.mjs --json=output/ledger-audit-$(date +%F).json` | it prints any `RECORDED_BUT_ABSENT`, `CRITICAL_TABLE_MISSING` or `CRITICAL_COLUMN_MISSING`. This is the step that finds a migration the ledger recorded as applied but Postgres never finished — the condition #955 prevents but cannot undo. It is read-only by construction (`default_transaction_read_only=on`, `SELECT`/`SHOW` only). See `docs/MIGRATION_LEDGER_AUDIT.md`, and `docs/CARE_ERP_CLINIC_READINESS_CHECKS.md` §A for the target-verification pre-flight and how to read each finding |
-| 5 | Record what to go back to, then rebuild | `docker inspect --format '{{.Image}}' care-api care-web > /volume1/docker/backups/images-$(date +%F).txt` · `bash deploy-synology.sh` | the image IDs cannot be written (disk), or the script exits non-zero. The script does `git reset --hard origin/main` → `docker compose down --remove-orphans` → `sudo GIT_COMMIT=… docker compose up -d --build`, forwarding the version stamps explicitly because `sudo` resets the environment (§11 explains why the image IDs matter) |
+| 5 | Record what to go back to, then rebuild | `node scripts/ops-preflight.mjs --record-rollback --auto` · `bash deploy-synology.sh` | the record refuses to write (it prints what it could not read and writes **nothing**, because a rollback record with a guessed image ID reads as complete and points at an image that does not exist), or the script exits non-zero. `--auto` takes `previous_commit` from this checkout's HEAD and `api_image`/`web_image`/`db_image` from the containers that are running now — afterwards they are gone. The script does `git reset --hard origin/main` → `docker compose down --remove-orphans` → `sudo GIT_COMMIT=… docker compose up -d --build`, forwarding the version stamps explicitly because `sudo` resets the environment (§11 explains why the image IDs matter) |
 | 6 | Migration execution | `docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-db-patch-v2` · `docker logs care-db-patch-v2 --tail 60` | it is anything other than `exited 0`. Since #955 a Drizzle file that raises an unexpected error **fails the container** instead of being recorded and skipped forever; the log names the file and the statement. `deploy-synology.sh` already waits for this and fails on timeout (§10.2), so this step is the human double-check, not the only check |
 | 7 | Schema verification | `docker inspect --format='{{.State.Status}} {{.State.ExitCode}}' care-schema-verify` · `sed -n '1,40p' STARTUP_SCHEMA_VERIFICATION.md` | it did not exit 0. Note the limits: `SCHEMA_REPAIR` defaults to `false` and `SCHEMA_VERIFY_STRICT` to `false`, so drift is *reported* not blocked, and this container checks the columns the migration files declare — which is exactly the check that **passed** on a half-migrated database before #955. Step 4 is the audit that closes that gap; one is not a substitute for the other |
 | 8 | Container startup | `docker ps --format '{{.Names}}\t{{.Status}}'` | `care-db`, `care-api`, `care-web`, `care-redis` are not `healthy`/`Up`, or `care-db-patch-v2`/`care-schema-verify` are still running. `care-api` cannot start unless both exited 0 (`depends_on: … service_completed_successfully`), so an API that is restarting while the others are fine means the schema, not the app |
-| 9 | Health verification | `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` · `curl -fsS "http://localhost:${HOST_PORT:-8888}/api/system/version"` | the gate exits non-zero. It probes `/nginx-health`, `/api/healthz` and `/api/health/schema` and checks the **bodies**, because an unknown path on `care-web` answers `index.html` with status 200 — a bare successful curl proves nothing. The version endpoint must report the SHA from step 2 |
+| 9 | Health verification | `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` · `node scripts/verify-deployed-identity.mjs --expected "$(git rev-parse HEAD)"` · `curl -fsS "http://localhost:${HOST_PORT:-8888}/api/system/version"` | the gate exits non-zero, or the identity check exits **1** (the containers are running a different commit than the one you deployed — the deploy has *not* happened, whatever the page looks like) or **2** (the running image cannot resolve its own commit, so nothing has been proven). It probes `/nginx-health`, `/api/healthz` and `/api/health/schema` and checks the **bodies**, because an unknown path on `care-web` answers `index.html` with status 200 — a bare successful curl proves nothing |
 | 10 | PACS connectivity | the `node`-based `/system` probe in `CARE_ERP_PREDEPLOYMENT_GATE.md` §C (**`care-api` has no `wget`**) · `curl -fsS http://127.0.0.1:3010/care/build-info.json` · `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` | Orthanc does not answer from inside the API container. `ORTHANC_INTERNAL_URL` defaults to `http://care-orthanc:8042` (`docker-compose.yml:336`), but **`care-pacs` is a different compose project on its own bridge network (`care-pacs-net`)**, so that name only resolves if the two projects share a network — the reason `ORTHANC_CHANGES_POLLER` exists and must be `false` when `care-erp-sync` runs. Measured on the clinic box 2026-10-13: `care-orthanc` does **not** resolve from `care-api`, and the live `ORTHANC_INTERNAL_URL` is the interface address `http://172.16.1.139:8042`, which answered HTTP 200 in 50–67 ms — so this leg works through an address, not through Docker DNS, and it will break silently if that interface is renumbered. The viewer's own address comes from `OHIF_URL` in the deployed environment (it may be `/ohif`, relative to the ERP origin); **there is no `OHIF_PUBLIC_BASE_URL` in compose** — that name appears only as a commented example in `.env.example`. A PACS failure does not stop reports: the frozen-image path prints a reference image with the PACS down, which `pacsImagePicker.request.test.ts` pins. Full read-only check sequence: `CARE_ERP_CLINIC_READINESS_CHECKS.md` §C |
 | 11 | Clinical reporting smoke | in the browser at `http://172.16.1.139:${HOST_PORT:-8888}`: open a worklist row → one Quick Select finding → save → reopen → Print → Download PDF → durable PDF | any step differs from the same report before the deploy. What has to be true: the UHID is the patient's own code and never a numeric FK; the accession prints **only** where the server can prove it belongs to that patient (#954); attached images keep their order; a caption prints with the radiologist's own capitalisation and an absent caption prints no blank band. `pnpm preview:reports` renders the same chain locally with no server and no database — use it before you blame the NAS |
 | 12 | Rollback | `git reset --hard <previous-sha>` · `docker compose up -d --build` · re-run steps 8–9 | see §11: migrations are **forward-only**, so rollback means the older app runs against the newer schema (safe, because migrations only ADD) or the image IDs from step 5 are used to retag. Never edit or delete a ledger row to make a finding disappear, and never re-run a destructive migration file; if data is implicated, `bash scripts/synology-restore.sh <artifact>` into a scratch container first and confirm, then restore for real |
@@ -305,6 +401,98 @@ are about to migrate is not the database the ledger thinks you have.
 Two things this sequence deliberately does not do: it does not rotate any credential
 (`deploy/synology/care.env` and `hope.env` are reported in §13 and left alone by owner
 decision), and it does not touch Git history.
+
+## 12a. The same deploy from Container Manager (how the clinic actually deploys)
+
+`deploy-synology.sh` is not the only supported path — DSM's Container Manager can build
+and start the same project, and on this box it is the one in use. It is safe **only** in
+the order below, because the two things the shell script does automatically — advance the
+checkout to `origin/main`, and refresh the version stamps in `.env` — are exactly the two
+things Container Manager cannot do. Everything here runs against the **existing** project
+`care-erp-github`; nothing creates a second one, and that is the point of steps 1 and 6.
+
+| # | Step | Where | Stop if |
+|---|---|---|---|
+| 1 | Identity of what is live now | `node scripts/ops-preflight.mjs` | `deploy.project_identity` or `deploy.volume_identity` is **FAIL** or **UNKNOWN**. The project name a Container Manager task uses comes from the task, not the folder, so this is the only place it can be checked; a second project on the same compose file reuses the patient database and creates fresh empty upload volumes |
+| 2 | Backup + restore proof, ledger audit | §12 steps 3 and 4 | either fails. Container Manager takes no backup and runs no audit |
+| 3 | Advance the checkout | `git fetch origin main` · `git rev-parse origin/main` · `git checkout main` · `git reset --hard origin/main` in `/volume1/docker/care-erp-github/care-on-synology1` | the SHA shown is not the one reviewed. `git status --porcelain` must be empty — a dirty checkout means the build will ship local edits nobody reviewed |
+| 4 | Record the rollback target | `node scripts/ops-preflight.mjs --record-rollback --auto` | it writes nothing and prints what it could not read. Do this **before** the rebuild; afterwards the old image IDs no longer exist |
+| 5 | Check the commit this checkout will claim | `node scripts/build-identity.mjs --git-dir .git --print` | `identitySource` is not `build-context-git`, or `staleStampDetected` is `true` and you expected `.env` to be current. The image resolves its own SHA from `.git/HEAD` and `.git/refs`, so a `.env` left behind by the last `deploy-synology.sh` run can no longer be mistaken for the build identity |
+| 6 | Build and deploy the **existing** project | Container Manager → **Project** → `care-erp-github` → **Build** (or the project's update action). Do not use "Create Project", and do not re-deploy from the compose-file wizard under a new name | the UI offers a different project name, or the volumes it lists are not `care_main_db_data` / `care-erp-github_uploads_data` / `care-erp-github_object_storage`. A redownloaded-or-recreated project is how the clinic's uploaded bill scans disappear while the accounting data stays perfect |
+| 7 | Migrations + schema verification | §12 steps 6 and 7 (`care-db-patch-v2` and `care-schema-verify` must both be `exited 0`) | anything else. Container Manager's "started" status says nothing about the two one-shot containers the API waits on |
+| 8 | Prove what is actually running | `node scripts/deploy-health.mjs --host-port "${HOST_PORT:-8888}"` · `node scripts/verify-deployed-identity.mjs --expected <sha from step 3>` | the identity check exits **1**: the containers are a different commit than the deploy intended. Exit **2** means the image cannot name its own commit, so nothing is proven — re-run step 5 and rebuild |
+| 9 | Clinical smoke + record | §12 steps 11 and 12's `echo "<sha>" > .git-deployed` | the report differs from the same report before the deploy |
+
+Step 5 asks the **host** what commit it is on, which is not the same question as what the
+**image** will claim — the difference is one file, `.dockerignore`, and whether the image
+can still resolve a SHA after the ignore rules are applied to it. That is proved by
+building, not by reading, and `node scripts/docker-build-identity.mjs` (§12b) is what does
+it: it builds a disposable image from this repository as the context, so the same ignore
+rules the api image gets are the ones under test, and then asks the real resolver the same
+question four ways.
+
+Rollback from Container Manager is the same §11 procedure with the same constraint: the
+images are built, not pulled, so retagging the IDs recorded in step 4 is the only way back
+without a rebuild, and migrations are forward-only. `docker compose down -v`,
+`docker volume prune`, and deleting the project to "start again" are not rollback — they
+delete the patient database and the upload volumes with it.
+
+
+## 12b. Proving the build-identity claim with a real build
+
+Step 5 above asks the **host** what commit it is on. That is not the same question as
+"what will the **image** say", and the difference is one file: `.dockerignore`. The image
+can only resolve a commit if `.git/HEAD` and `.git/refs` survive into the build context,
+and whether they do is a property of a Docker version's ignore-file semantics, not of the
+text of the file. So it is checked by building:
+
+| Command | What it proves | Cost |
+|---|---|---|
+| `node scripts/docker-build-identity.mjs --tier context` | a real `docker build` over this repository's context, in which the production `scripts/build-identity.mjs` resolves this checkout's SHA — and then loses it when the refs or HEAD are hidden | one `node:22-bookworm-slim` pull plus a context copy; seconds |
+| `node scripts/docker-build-identity.mjs --tier real` | the **production Dockerfile's** `api-build` stage does the same with a deliberately false `GIT_COMMIT`, and the recorded `artifactSha256` matches the bytes copied out of the built image | a full in-image `pnpm install` + build of this monorepo; minutes |
+| CI job **Build identity (disposable docker build)** | the context tier on every PR and every push to `main`; the real tier when the workflow is run by hand | — |
+
+Exit codes, and only the first is evidence:
+
+* **0 PASS** — every arm held. This is the only state to quote.
+* **1 FAIL** — a build reported a commit it was not built from, or the identity survived
+  with the metadata hidden, which means it never came from the metadata.
+* **2 UNVERIFIED** — it ran, but an arm could not be exercised (no refs in the checkout,
+  or HEAD detached). Not a pass. On CI this is almost always the checkout step: a
+  detached HEAD resolves the SHA from `HEAD` alone, so hiding `.git/refs` changes nothing
+  and arm C would be theatre.
+* **3 UNAVAILABLE** — no Docker on this machine. The claim is **unproven here**, which is
+  why it is not run on the Windows development box.
+
+Two cautions before running it on the NAS:
+
+* It builds **disposable** images tagged `care-build-identity-probe:*` and removes the
+  container and the image on **every** exit path — a build that fails, a `docker create`
+  that times out after the daemon made the container, and a `docker cp` that throws
+  half-way are all covered, because a cleaner that only acts on success leaks exactly
+  those cases. It starts nothing, touches no volume, and is not a deploy — but
+  `--tier real` does write a full monorepo image to disk. Check
+  `docker system df` first; the clinic's disk headroom is the reason the nightly dumps are
+  the thing that must stay small, not this.
+* It must be run from a **real clone**. In a linked `git worktree`, `.git` is a one-line
+  pointer file, so no HEAD or refs can enter any context, and the harness answers
+  UNVERIFIED rather than reporting a pass about a tree that cannot carry an identity.
+  `/volume1/docker/care-erp-github/care-on-synology1` is a normal clone and is fine.
+* Every exit, including the two declines above, writes the `--json` proof when the flag is
+  given, with `verdict`, `exitCode` and an `abstain` reason. A CI artifact that appeared
+  only when the answer was comfortable would be read as "nothing to see" instead of
+  "this machine could not measure it".
+
+**Measured, and what the measurement does not cover.** The first run of this proof anywhere
+was CI, on 2026-10-15, at `5e54b561`: all ten arms PASS, the context tier in **24 s** of a
+39 s job, on Docker server **28.0.4**. The NAS builds on Docker **24.0.2** — and the whole
+reason this test exists is that the two builder generations are not known to agree on
+whether `!.git/refs` re-includes a directory's children. So the CI pass proves the
+mechanism and the wiring; it does not prove 24.0.2's ignore semantics, and arm C is exactly
+the arm that would differ. Run `node scripts/docker-build-identity.mjs --tier context` once
+in the NAS deploy checkout when it is quiet, and treat its exit 0 as the last of the three
+numbers this section is asking for.
+
 
 
 ## 13. Secrets in tracked files — reported, not corrected here
@@ -349,3 +537,80 @@ in the baseline as the owner's rotation decision, each with its own blast radius
 (`BACKUP_PASSPHRASE` seals the encrypted backups the warning above refers to; the
 session keys sign every staff login).
 
+
+## 14a. CARE → HOPE: the route a signed report has to travel
+
+**What is wrong, measured rather than reasoned.** `node scripts/hope-route-probe.mjs
+--container care-api --dns hope_hospital_app --dns-port 5000` was run read-only on the
+production box on 2026-10-15:
+
+| attempt | result |
+| --- | --- |
+| `http://192.168.1.137:7080/…` from the NAS host (the value `deploy/synology/care.env` ships) | `HTTP 401` — HOPE answers, and refuses the unsigned probe |
+| the same URL **from inside `care-api`** | `TimeoutError` after 5 s — no answer |
+| `http://hope_hospital_app:5000/…` from either | `ENOTFOUND` — the name does not resolve |
+
+So the callback address that every existing check describes as configured and correct
+has never carried a report. A container on this DSM cannot reach its own host's
+published port (hairpin/DNAT is off), and CARE's `care-erp-github_default` and HOPE's
+`hope_erp_network` are different networks, so neither stack can resolve the other's
+name. `hope.integration` cannot see either fact: it reads configuration, and the
+configuration is fine.
+
+**What does not fix it.** Two other addresses do answer from inside a container today —
+the bridge gateway `192.168.64.1:7080` and HOPE's container IP `192.168.48.4:5000`.
+Neither is a permanent answer: Docker reassigns both when a container is recreated,
+which on this box happens at every Container Manager update. Configuring one of them
+buys a working route until the night it silently stops, with the outbox retrying into a
+dead letter. The durable form is the peer's **network alias on a network both containers
+join** — the name survives the recreate, which is the entire point of DNS.
+
+**The change, when the owner approves it.** `deploy/synology/care-hope-network.override.yml`
+creates one named bridge (`care_hope_net`) and joins `api` to it, keeping `default` so
+the API is still attached to its own database. Measured against the live compose file
+with `care-api` NOT restarted — resolved with `docker compose … config --format json`,
+volumes sorted so a re-ordering is not miscounted as a change, base-vs-base as the
+control:
+
+| comparison | lines that differ |
+| --- | --- |
+| base vs base (control) | 0 |
+| base vs base **+ override** | **1** — `"care_hope_net": null` added to `api.networks` |
+
+Nothing else in the resolved config moves: no image, no port, no volume, no environment
+value. Compose validates it (`config -q` exits 0). HOPE's stack must then join the same
+network — `docker network connect care_hope_net hope_hospital_app` — which is a change
+to *that* project's runtime and is not performed by anything in this repository.
+
+**Order of work (each step verified before the next):**
+
+1. `node scripts/hope-route-probe.mjs --container care-api` — record the blocked verdict
+   you are starting from.
+2. Preview: `docker compose -p care-erp-github -f docker-compose.yml -f
+   deploy/synology/care-hope-network.override.yml config --quiet` — must exit 0. This
+   applies nothing.
+3. With approval, apply it through Container Manager (or `docker compose … up -d` from
+   the deploy directory). CARE restarts; Bill Desk and Accounting are down for the length
+   of that restart, so this is a clinic-hours decision, not a maintenance one.
+4. Attach HOPE: `docker network connect care_hope_net hope_hospital_app`.
+5. `docker exec care-api getent hosts hope_hospital_app` — the name must resolve.
+6. Re-run step 1 with `--dns hope_hospital_app --dns-port 5000`. The candidate must read
+   `HTTP 401` **from inside the container**. That is the pass condition: a status, not a
+   connection.
+7. Only then set `INTEGRATION_HOPE_CALLBACK_URL=http://hope_hospital_app:5000/api/integration/care-callback`
+   — the container-DNS form with the path the receiver actually serves.
+8. `PREFLIGHT_CHECK_HOPE_ROUTE=1 node scripts/ops-preflight.mjs` — `hope.route` must be
+   PASS before a report is relied on.
+
+**Rollback.** Remove the `-f` argument (or delete the override file) and re-deploy: the
+stack returns to the single `default` network it runs on today. `docker network disconnect
+care_hope_net care-api` and `… hope_hospital_app` undo the runtime membership without
+touching either project's files. No data, no volume and no schema is involved in either
+direction.
+
+**Why the gate asks permission.** `hope.route` is `critical: false` and only runs with
+`PREFLIGHT_CHECK_HOPE_ROUTE=1`. HOPE is not in clinical use; the Bill Desk is. A check
+that can fail because a pre-launch peer is unreachable must never be able to stop a CARE
+release — §2 of the deployment policy puts it that way round. The row is still emitted
+unarmed, as NOT_APPLICABLE with the flag that would measure it, because an omitted check
+is invisible and a declined one is visible.
