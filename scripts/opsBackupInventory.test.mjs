@@ -15,8 +15,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { makeContext } from "./ops-preflight.mjs";
-import { classify, coverageGaps, inspect, main, render, restoreRows } from "./ops-backup-inventory.mjs";
+import { isArtifact, makeContext } from "./ops-preflight.mjs";
+import { classify, coverageGaps, inspect, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const DB = "diagnostic_erp";
@@ -410,6 +410,136 @@ describe("output contract", () => {
     // A manifest may record a container name; it must never be asked to record a password.
     expect(text).not.toMatch(/postgres:\/\/|postgresql:\/\//i);
   });
+
+  test("a sidecar that carries a credential does not publish it in the table or in --json", async () => {
+    // `row.manifest` used to be the parsed sidecar verbatim, so every extra key a job or a
+    // person wrote into the .meta was reprinted by --json — and this output is pasted into
+    // tickets and handovers. The manifest is machine-written; the inventory must not be the
+    // thing that turns a backup directory into a credential dump.
+    const a = artifact(0, { sidecar: false });
+    writeFileSync(`${a.file}.meta`, [
+      `artifact=${a.name}`, `created_utc=${a.createdUtc}`, "source_container=care-db",
+      `source_database=${DB}`, "server_version=PostgreSQL 16.14", "exporter=pg_dump",
+      "schema_complete=true", "create_tables=439", "encrypted=yes",
+      `sha256_artifact=${"0".repeat(64)}`, `bytes=${a.bytes}`,
+      `passphrase=${SENTINEL}`, `connection=postgresql://erp:${SENTINEL}@127.0.0.1:5432/diagnostic_erp`,
+      "patient_name=Ramesh Kumar", "",
+    ].join("\n"), "utf8");
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const text = render(inv) + JSON.stringify(inv);
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toMatch(/Ramesh/);
+    expect(text).not.toMatch(/postgres(ql)?:\/\//i);
+    // The fields the audit actually uses are still emitted, so sanitising costs nothing.
+    expect(inv.artifacts[0].manifest.source_database).toBe(DB);
+    expect(inv.artifacts[0].manifest.create_tables).toBe("439");
+    expect(inv.artifacts[0].manifest.redacted_fields).toBe(3);
+    expect(inv.artifacts[0].status).toBe("OK");
+    // A hand-named leftover is reported by kind, never by name.
+    write(path.join("backups", "Ramesh_Kumar_9876543210.sql.gz.partial"), "half a dump");
+    const again = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const againText = render(again) + JSON.stringify(again);
+    expect(againText).not.toMatch(/Ramesh|9876543210/);
+    expect(again.interrupted[0].artifact).toBe("<unrecognised-name.sql.gz.partial>");
+  });
+
+  test("a credential in an allowlisted field is redacted from the problem line too", async () => {
+    // `source_database` is a field the inventory prints and audits, so `sanitizeManifest`
+    // leaves it alone — until someone writes a connection string into it, which is what a
+    // hand-edited sidecar for a remote dump actually looks like. The manifest copy is
+    // shape-redacted; the message that quotes the value it just rejected must be too, or the
+    // tool redacts the field and prints the password one line below it.
+    const a = artifact(0, { sidecar: false });
+    writeFileSync(`${a.file}.meta`, [
+      `artifact=${a.name}`, `created_utc=${a.createdUtc}`, "source_container=care-db",
+      `source_database=postgresql://erp:${SENTINEL}@127.0.0.1:5432/diagnostic_erp`,
+      "server_version=PostgreSQL 16.14", "exporter=pg_dump", "schema_complete=true",
+      "create_tables=439", "encrypted=yes", `sha256_artifact=${"0".repeat(64)}`, `bytes=${a.bytes}`, "",
+    ].join("\n"), "utf8");
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const text = render(inv) + JSON.stringify(inv);
+    expect(text).not.toContain(SENTINEL);
+    expect(text).not.toMatch(/postgres(ql)?:\/\//i);
+    // The finding is still reported — redacting the value must not silence the problem.
+    expect(inv.artifacts[0].status).toBe("INVALID");
+    expect(inv.artifacts[0].problems.join(" ")).toMatch(/source_database=\[redacted\] but this host is diagnostic_erp/);
+    expect(inv.artifacts[0].manifest.source_database).toBe("[redacted]");
+  });
+
+  test("a hand-named file is reported by kind everywhere it appears, not only while truncated", async () => {
+    // One directory, one report, one rule. A name the backup job did not write cannot be an
+    // artifact at all (`isArtifact` refuses it) and is masked in the unwatched list — so the
+    // last place it could still be printed in full was the restore proof, whose `--artifact`
+    // value is typed by a person. The size and day still identify the file in `ls`.
+    artifact(0);
+    const stray = write(path.join("backups", "Ramesh_Kumar_9876543210.sql.gz"), "a whole dump");
+    utimesSync(stray, new Date(NOW - 3_600_000), new Date(NOW - 3_600_000));
+    write("ops-evidence.json", JSON.stringify({
+      restore_verification: { artifact: "Ramesh_Kumar_9876543210.sql.gz", verified_at: new Date(NOW - 3_600_000).toISOString(), passed: true },
+    }));
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const text = render(inv) + JSON.stringify(inv);
+    expect(text).not.toMatch(/Ramesh|Kumar|9876543210/);
+    expect(inv.unwatched).toContain("<unrecognised-name.sql.gz>");
+    expect(inv.restoreEvidence.recorded.artifact).toBe("<unrecognised-name.sql.gz>");
+    expect(render(inv)).toMatch(/recorded for <unrecognised-name/);
+    // The job's own dump is untouched by all of this — the operator has to ask for it by name.
+    expect(inv.artifacts.map((r) => r.artifact)).toEqual([day(0).name]);
+  });
+
+  test("every name the inventory accepts as a backup is a name it prints", () => {
+    // `isArtifact` decides what counts as a dump and `reportName` decides what may be
+    // printed. They read the same job conventions; if a pattern is in one and not the
+    // other, a real backup is either ignored or shown as `<unrecognised-name …>` and the
+    // operator cannot name the file they need to restore.
+    const jobNames = [
+      "caredeoghar_20261015_030000.sql.gz",
+      "caredeoghar_20261015_030000.sql.gz.enc",
+      "backup_nightly_2026-10-15T02-00-00.sql",
+      "backup_nightly_2026-10-15T02-00-00.sql.enc",
+      "care_db_daily_2026-10-15.sql.gz",
+    ];
+    for (const name of jobNames) {
+      expect(isArtifact(name)).toBe(true);
+      expect(reportName(name)).toBe(name);
+    }
+  });
+
+  test("reportName keeps job-generated names and reports the rest by kind", () => {
+    expect(reportName("caredeoghar_20261015_030000.sql.gz.partial")).toBe("caredeoghar_20261015_030000.sql.gz.partial");
+    expect(reportName("backup_nightly_2026-10-15T02-00-00.sql.enc")).toBe("backup_nightly_2026-10-15T02-00-00.sql.enc");
+    expect(reportName("/volume1/backups/caredeoghar_20261015_030000.sql.gz.meta")).toBe("caredeoghar_20261015_030000.sql.gz.meta");
+    expect(reportName("Ramesh_Kumar.sql.gz.partial")).toBe("<unrecognised-name.sql.gz.partial>");
+    expect(reportName("Kumar_final.sql.gz.meta")).toBe("<unrecognised-name.sql.gz.meta>");
+    expect(reportName("notes.txt")).toBe("<unrecognised-name.txt>");
+    expect(reportName("no_extension_at_all")).toBe("<unrecognised-name>");
+    expect(reportName(undefined)).toBe("<unrecognised-name>");
+  });
+
+describe("sanitizeManifest", () => {
+  test("keeps the allowlist, drops the rest, redacts a credential hidden in a legal field", () => {
+    const s = sanitizeManifest({
+      artifact: "a.sql.gz", source_database: "diagnostic_erp",
+      passphrase: "hunter2", patient: "Ramesh Kumar", connection: "postgresql://erp:hunter2@h/db",
+      server_version: "postgresql://erp:pw@h/db",
+    });
+    expect(s.artifact).toBe("a.sql.gz");
+    expect(s.source_database).toBe("diagnostic_erp");
+    expect(Object.keys(s)).not.toContain("passphrase");
+    expect(Object.keys(s)).not.toContain("patient");
+    expect(Object.keys(s)).not.toContain("connection");
+    expect(s.redacted_fields).toBe(3);
+    // An allowlisted key is not a guarantee about its value.
+    expect(s.server_version).toBe("[redacted]");
+    expect(JSON.stringify(s)).not.toContain("hunter2");
+    expect(JSON.stringify(s)).not.toContain("Ramesh");
+  });
+  test("a normal sidecar loses nothing", () => {
+    const s = sanitizeManifest({ artifact: "a.sql.gz", created_utc: "2026-10-15T03:00:00Z", source_database: DB, exporter: "pg_dump", schema_complete: "true", create_tables: "439", encrypted: "no", bytes: "20", sha256_artifact: "0".repeat(64) });
+    expect(s.redacted_fields).toBeUndefined();
+    expect(s.sha256_artifact).toBe("0".repeat(64));
+  });
+});
 
   test("--json is parseable and carries the same facts as the text", async () => {
     artifact(0);
