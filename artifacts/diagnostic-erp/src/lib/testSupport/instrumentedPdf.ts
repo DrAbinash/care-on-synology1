@@ -1,8 +1,9 @@
 /**
  * Instrumented jsPDF wrapper for testing.
- * 
- * Records all text drawing operations with coordinates and page numbers.
- * This is more reliable than parsing PDF binary output.
+ *
+ * Records every text draw with the page it landed on and its mm coordinates, so
+ * pagination assertions are made against the renderer's real output positions
+ * rather than a parse of the PDF byte stream.
  */
 import { jsPDF } from "jspdf";
 
@@ -19,79 +20,54 @@ export interface InstrumentedDoc {
 }
 
 /**
- * Create an instrumented jsPDF document that records all text operations.
+ * jsPDF declares `text()` as one fixed-arity signature, so a forwarding wrapper
+ * must spread a tuple rather than an untyped array — spreading `any[]` into it
+ * is TS2556. Deriving the parameter list from jsPDF keeps every supported call
+ * shape, including the ones jspdf-autotable draws table cells through.
  */
-export function createInstrumentedPdf(...args: ConstructorParameters<typeof jsPDF>): InstrumentedDoc {
+type TextCall = Parameters<jsPDF["text"]>;
+
+export function createInstrumentedPdf(
+  ...args: ConstructorParameters<typeof jsPDF>
+): InstrumentedDoc {
   const doc = new jsPDF(...args);
   const drawnTexts: DrawnText[] = [];
-  
-  // Store original text method
   const originalText = doc.text.bind(doc);
-  
-  // Override text method to record draws
-  doc.text = function(...args: any[]) {
-    // jsPDF.text has multiple signatures:
-    // text(text, x, y)
-    // text(text, x, y, options)
-    // text([text, ...], x, y)
-    
-    let text: string;
-    let x: number;
-    let y: number;
-    
-    if (typeof args[0] === 'string') {
-      text = args[0];
-      x = args[1];
-      y = args[2];
-    } else if (Array.isArray(args[0])) {
-      text = args[0].join('\n');
-      x = args[1];
-      y = args[2];
-    } else {
-      // Unknown signature, call original and don't record
-      return originalText(...args);
-    }
-    
-    // Record the draw
+
+  doc.text = (...call: TextCall): jsPDF => {
+    const [content, x, y] = call;
     drawnTexts.push({
-      page: doc.getNumberOfPages(),
-      text,
+      // getCurrentPageInfo, not getNumberOfPages: the generator walks back over
+      // earlier pages with setPage() to stamp the footer and watermark, and
+      // those draws would otherwise all be blamed on the last page.
+      page: doc.getCurrentPageInfo().pageNumber,
+      text: typeof content === "string" ? content : content.join("\n"),
       x,
       y,
     });
-    
-    // Call original
-    return originalText(...args);
-  } as any;
-  
+    return originalText(...call);
+  };
+
   return { doc, drawnTexts };
 }
 
-/**
- * Get all text drawn on a specific page.
- */
-export function getTextOnPage(instrumented: InstrumentedDoc, pageNum: number): DrawnText[] {
-  return instrumented.drawnTexts.filter(t => t.page === pageNum);
+/** All text drawn on one page, in draw order. */
+export function getTextOnPage(
+  { drawnTexts }: Pick<InstrumentedDoc, "drawnTexts">,
+  pageNum: number,
+): DrawnText[] {
+  return drawnTexts.filter((t) => t.page === pageNum);
 }
 
 /**
- * Get all text as a single string.
+ * Every drawn string, in draw order, as one searchable blob. Prose is drawn
+ * word-by-word, so whitespace runs are collapsed — otherwise a phrase spread
+ * across several draws can never be matched.
  */
-export function getAllText(instrumented: InstrumentedDoc): string {
-  return instrumented.drawnTexts.map(t => t.text).join(' ');
-}
-
-/**
- * Check if any text was drawn below a y threshold (footer region).
- */
-export function hasTextBelowY(instrumented: InstrumentedDoc, yThreshold: number): boolean {
-  return instrumented.drawnTexts.some(t => t.y > yThreshold);
-}
-
-/**
- * Find text items matching a pattern.
- */
-export function findText(instrumented: InstrumentedDoc, pattern: string | RegExp): DrawnText[] {
-  const regex = typeof pattern === 'string' ? new RegExp(pattern, 'i') : pattern;
-  return instrumented.drawnTexts.filter(t => regex.test(t.text));
+export function getAllText({ drawnTexts }: Pick<InstrumentedDoc, "drawnTexts">): string {
+  return drawnTexts
+    .map((t) => t.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
