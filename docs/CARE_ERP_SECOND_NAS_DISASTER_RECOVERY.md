@@ -179,7 +179,7 @@ a script, and it is the highest-value item in this section:
 
 | collision | primary value (this repo) | what a careless standby does |
 |---|---|---|
-| compose **project name** | the ERP is `/volume1/docker/care-erp-github/care-on-synology1`, composed as project `care-erp-github` | a stack composed from a folder named `care-erp` is a *different* project: `down`/`logs`/`ps` without the same `-p` match nothing, print no output, and return **success** |
+| compose **project name** | the ERP is `/volume1/docker/care-erp-github/care-on-synology1`, composed as project `care-erp-github` | a stack composed from a folder named `care-erp` is a *different* project: `down`/`logs`/`ps` without the same `-p` match nothing, print no output, and return **success**. The same mistake with `up` is worse than a blind command: `db_data` is pinned to the external name `care_main_db_data`, so the new project attaches the **real patient database**, while `object_storage` and `uploads_data` (`docker-compose.yml:648-649`) are created **empty** under the new prefix — an ERP that logs in, reports patients and prints bills, with no uploaded documents and no frozen key-images, and nothing in `/health` that sees it |
 | external volume | `db_data` is `external: true, name: care_main_db_data` | `docker volume create care_main_db_data` on a box that already has one restores the clinic into someone else's running database |
 | host port | `"${HOST_PORT:-8888}:80"` (`docker-compose.yml:545`), `"${DB_BIND_ADDR:-127.0.0.1}:${DB_HOST_PORT:-5400}:5432"` (`:80`) | the second stack cannot bind 8888 and the first keeps serving stale code while everyone believes the failover happened |
 | **schedulers** | `ENABLE_SCHEDULERS: ${ENABLE_SCHEDULERS:-}` (`docker-compose.yml:280`) gates in-process cron: backups, HOPE outbox, WhatsApp, retention | two live schedulers = double outbound sends, double purges, and a day-close that ran twice |
@@ -388,6 +388,10 @@ for whatever the audit asks about the gap.
 - [ ] `docker compose up -d db` → `care-db` healthy; restore with no `ERROR:` lines
 - [ ] `docker compose up -d` → all containers healthy, `care-db-patch-v2` and `care-schema-verify` `Exited(0)`
 - [ ] `node scripts/deploy-health.mjs --host-port 8888` exits 0
+- [ ] The stack came up under the project name you chose in PART 0, so `uploads_data` and
+      `object_storage` are the volumes that hold content — open one uploaded patient document
+      and one signed report's frozen key-image rail in the UI. `deploy-health` passing does
+      not cover either, and a report that prints without its images looks normal.
 - [ ] `ENABLE_SCHEDULERS` is off if the primary is anywhere still alive
 - [ ] Network repointed; a test login and a test bill work; the PART 3 losses are stated to whoever signs off
 - [ ] Change the bootstrap admin PIN if `BOOTSTRAP_ADMIN_FORCE` was used
