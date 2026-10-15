@@ -342,7 +342,7 @@ function drawWrappedBody(
   size: number,
   lineH: number,
   contentBottom?: number,
-  ensureSpace?: (needed: number) => void,
+  ensureSpace?: (needed: number) => number,
 ): number {
   doc.setFont(font, "normal");
   doc.setFontSize(size);
@@ -351,9 +351,7 @@ function drawWrappedBody(
   for (const line of lines) {
     // If pagination parameters provided, check space before each line
     if (contentBottom !== undefined && ensureSpace) {
-      if (y + lineH > contentBottom) {
-        ensureSpace(lineH);
-      }
+      y = ensureSpace(lineH);  // CRITICAL: Use returned y after potential page break
     }
     doc.text(line, x, y);
     y += lineH;
@@ -383,7 +381,7 @@ function drawFindingsBlock(
   bodySize: number,
   lineH: number,
   contentBottom: number,
-  ensureSpace: (needed: number) => void,
+  ensureSpace: (needed: number) => number,
 ): number {
   const normalized = normalizeReportPlainText(findings);
   const blocks = parseFindingsDocument(normalized);
@@ -411,7 +409,7 @@ function drawFindingsBlock(
         // Estimate first paragraph height (at least 2 lines)
         reserveHeight += lineH * 2.5;
       }
-      ensureSpace(reserveHeight);
+      y = ensureSpace(reserveHeight);  // CRITICAL: Use returned y after potential page break
       
       doc.setFont(font, "bold");
       doc.setFontSize(bodySize);
@@ -424,7 +422,7 @@ function drawFindingsBlock(
     if (block.kind === "table") {
       // Estimate table height: header row + data rows + padding
       const tableHeight = (block.rows.length + 1) * lineH * 1.5 + lineH * 0.35;
-      ensureSpace(tableHeight);
+      y = ensureSpace(tableHeight);  // CRITICAL: Use returned y after potential page break
       y = drawFindingsTable(doc, block.header, block.rows, x, y, maxW, font, bodySize, lineH);
       y += PARA_SPACE_AFTER;
       continue;
@@ -437,7 +435,7 @@ function drawFindingsBlock(
       const approxCharsPerLine = maxW / (bodySize * 0.35);
       const estLines = Math.max(1, Math.ceil(para.length / approxCharsPerLine));
       const paraHeight = estLines * lineH + PARA_SPACE_AFTER;
-      ensureSpace(paraHeight);
+      y = ensureSpace(paraHeight);  // CRITICAL: Use returned y after potential page break
 
       // The PDF half of the editor's colour: a line that asserts pathology is
       // drawn bold, a normal one is not, on every surface the report reaches.
@@ -619,7 +617,7 @@ function drawNumberedImpression(
   bodySize: number,
   lineH: number,
   contentBottom?: number,
-  ensureSpace?: (needed: number) => void,
+  ensureSpace?: (needed: number) => number,
 ): number {
   const rawLines = impression.split(/\n+/).map((l) => l.trim()).filter(Boolean);
   const items = rawLines.map((l, i) => {
@@ -636,9 +634,7 @@ function drawNumberedImpression(
     // Check space before each impression item
     if (contentBottom !== undefined && ensureSpace) {
       const itemHeight = lines.length * lineH + lineH * 0.25;
-      if (y + itemHeight > contentBottom) {
-        ensureSpace(itemHeight);
-      }
+      y = ensureSpace(itemHeight);  // CRITICAL: Use returned y after potential page break
     }
     doc.text(prefix, x, y);
     doc.text(lines[0] ?? "", x + doc.getTextWidth(prefix), y);
@@ -1171,12 +1167,13 @@ export function generateReportPDF(
   /** Page index (1-based) where the report body last drew — signature stays here. */
   let bodyPage = 1;
 
-  const ensureSpace = (needed: number) => {
+  const ensureSpace = (needed: number): number => {
     if (y + needed > contentBottom) {
       doc.addPage();
       y = drawLetterPadChrome();
       bodyPage = doc.getNumberOfPages();
     }
+    return y;
   };
   /** Narrow beside rail on page 1; full width after page break. */
   const colW = () => (sideRail && bodyPage === 1 ? textW : contentW);
@@ -1188,7 +1185,7 @@ export function generateReportPDF(
     switch (section) {
       case "clinicalHistory": {
         if (!report.clinicalHistory?.trim()) break;
-        ensureSpace(12);
+        y = ensureSpace(12);
         y = drawSectionHeading(doc, "CLINICAL HISTORY:", m.left, y, font, fs.heading);
         y = drawWrappedBody(doc, normalizeReportPlainText(report.clinicalHistory.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
@@ -1196,7 +1193,7 @@ export function generateReportPDF(
       }
       case "technique": {
         if (!report.technique?.trim()) break;
-        ensureSpace(12);
+        y = ensureSpace(12);
         y = drawSectionHeading(doc, "TECHNIQUE:", m.left, y, font, fs.heading);
         y = drawWrappedBody(doc, normalizeReportPlainText(report.technique.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
@@ -1204,7 +1201,7 @@ export function generateReportPDF(
       }
       case "comparison": {
         if (!report.comparison?.trim()) break;
-        ensureSpace(12);
+        y = ensureSpace(12);
         y = drawSectionHeading(doc, "COMPARISON:", m.left, y, font, fs.heading);
         y = drawWrappedBody(doc, normalizeReportPlainText(report.comparison.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.55;
@@ -1212,7 +1209,7 @@ export function generateReportPDF(
       }
       case "measurements": {
         if (!report.measurements || report.measurements.length === 0) break;
-        ensureSpace(28);
+        y = ensureSpace(28);
         y = drawSectionHeading(doc, "MEASUREMENTS:", m.left, y, font, fs.heading);
         autoTable(doc, {
           startY: y,
@@ -1231,7 +1228,7 @@ export function generateReportPDF(
       }
       case "findings": {
         if (!report.findings?.trim()) break;
-        ensureSpace(16);
+        y = ensureSpace(16);
         y = drawSectionHeading(doc, "FINDINGS:", m.left, y, font, fs.heading);
         y = drawFindingsBlock(doc, report.findings.trim(), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
@@ -1268,7 +1265,7 @@ export function generateReportPDF(
       }
       case "impression": {
         if (!report.impression?.trim()) break;
-        ensureSpace(14);
+        y = ensureSpace(14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
         y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
@@ -1276,7 +1273,7 @@ export function generateReportPDF(
       }
       case "recommendation": {
         if (!report.recommendation?.trim()) break;
-        ensureSpace(12);
+        y = ensureSpace(12);
         y = drawSectionHeading(doc, "RECOMMENDATION:", m.left, y, font, fs.heading);
         y = drawWrappedBody(doc, normalizeReportPlainText(report.recommendation.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
         y += lineH * 0.4;
