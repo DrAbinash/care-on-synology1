@@ -244,7 +244,7 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
     // admin happened to open Integration Administration and pressed Retry. A report
     // sitting in 'sending' is a report nobody was told had stopped moving.
     const staleRes = await tx.execute(
-      sql`SELECT id, attempts, max_attempts FROM integration_outbox
+      sql`SELECT id, attempts, max_attempts, event_type, payload FROM integration_outbox
            WHERE status = 'sending'
              AND locked_at IS NOT NULL
              AND locked_at < NOW() - (${leaseMs} || ' milliseconds')::interval
@@ -252,10 +252,10 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
            LIMIT ${limit}
            FOR UPDATE SKIP LOCKED`,
     );
-    const staleRows = ((staleRes as unknown as { rows?: Array<{ id: number; attempts: number; max_attempts: number }> }).rows
-      ?? (staleRes as unknown as Array<{ id: number; attempts: number; max_attempts: number }>)) as Array<{ id: number; attempts: number; max_attempts: number }>;
+    type StaleRow = { id: number; attempts: number; max_attempts: number; event_type: string; payload: unknown };
+    const staleRows = ((staleRes as unknown as { rows?: StaleRow[] }).rows ?? (staleRes as unknown as StaleRow[]));
 
-    const abandonedRows: Array<{ id: number; attemptNo: number; dead: boolean }> = [];
+    const abandonedRows: Array<{ id: number; attemptNo: number; dead: boolean; eventType: string; payload: unknown }> = [];
     for (const s of staleRows) {
       // Consume one attempt. A crash before the write-back does NOT increment
       // `attempts`, so reclaiming without charging an attempt would let a worker that
@@ -275,7 +275,7 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
           lockedBy: null,
         })
         .where(eq(integrationOutboxTable.id, s.id));
-      abandonedRows.push({ id: s.id, attemptNo, dead: isDead });
+      abandonedRows.push({ id: s.id, attemptNo, dead: isDead, eventType: s.event_type, payload: s.payload });
     }
 
     const res = await tx.execute(
@@ -298,7 +298,15 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
   let recovered = 0, recoveredDead = 0;
   for (const a of abandoned) {
     recovered++;
-    if (a.dead) recoveredDead++;
+    if (a.dead) {
+      recoveredDead++;
+      // A reclaimed dead-letter is the same terminal event as a refusal that exhausted
+      // its budget, and the film has to be told either way. Until now only the two HTTP
+      // legs called this, so a film dead-lettered by reclaim kept `HOPE_PENDING` forever:
+      // no badge, no worklist marker, no exit — the one path where the worker that would
+      // have marked it is the worker that died.
+      await markFilmHopeUndelivered({ eventType: a.eventType, payload: a.payload }, "delivery_abandoned");
+    }
     await recordAttempt(a.id, a.attemptNo, "failure", null, null, "delivery_abandoned", 0);
   }
 
@@ -337,8 +345,18 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
       // Not configured yet — back off and retry later (do NOT dead-letter a
       // config gap; it clears itself once the partner is provisioned). No request was
       // made, so nothing is recorded in the attempt history if the write is refused.
+      //
+      // And no attempt is charged. This branch is reached before any `fetch`, so burning
+      // the budget here means a row that waited out the provisioning gap arrives at its
+      // FIRST real failure with `attempts` already at `max_attempts` — and the transport
+      // leg below then dead-letters it on one refused request. The clinic's own state on
+      // 2026-10-15 is that shape: the callback route is not configured to answer, the
+      // outbox is empty because HOPE carries no traffic yet, and the first report sent
+      // after HOPE is switched on would have had its retries spent before it started.
+      // `nextAttemptAt` still moves, so the row keeps being revisited on the backoff curve
+      // rather than spinning every tick.
       const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
-        status: "pending", attempts: attemptNo, lastError: "delivery_not_configured",
+        status: "pending", attempts: row.attempts, lastError: "delivery_not_configured",
         nextAttemptAt: new Date(Date.now() + backoffMs(attemptNo)), lockedAt: null, lockedBy: null,
       });
       if (adopted) {
@@ -414,7 +432,7 @@ export async function dispatchPendingOutbox(opts: { limit?: number; workerId?: s
         }
       }
     } catch (err) {
-      const msg = (err as Error)?.name === "AbortError" ? "timeout" : ((err as Error)?.message ?? "delivery_error").slice(0, 300);
+      const msg = deliveryErrorReason(err);
       const isDead = attemptNo >= row.maxAttempts;
       const adopted = await finalizeOwnedTransition(row.id, workerId, leaseToken, {
         status: isDead ? "dead" : "pending", attempts: attemptNo, lastError: msg,
@@ -472,9 +490,45 @@ async function recordAttempt(outboxId: number, attemptNo: number, status: "succe
   } catch { /* best effort */ }
 }
 
+/**
+ * Why a delivery actually failed, in the words that let an operator fix it.
+ *
+ * `fetch` does not report a transport failure — it rejects with a `TypeError` whose
+ * message is the constant string "fetch failed", and puts the reason one level down in
+ * `err.cause` (`ECONNREFUSED`, `ENOTFOUND`, `EHOSTUNREACH`, `ETIMEDOUT`, a certificate
+ * error). Recording only `err.message` therefore wrote "fetch failed" into
+ * `last_error` and into every attempt row for a route that was dead for a specific,
+ * findable reason — which is exactly what the clinic measured on 2026-10-15: the
+ * CARE→HOPE callback address does not answer, and the outbox said nothing more useful
+ * than "fetch failed" while an operator had to work out whether it was DNS, a firewall,
+ * or a container that had been recreated under a new IP.
+ *
+ * Only the code and the cause's own message are appended; nothing that could carry a
+ * secret or a body is.
+ */
+export function deliveryErrorReason(err: unknown): string {
+  if (typeof err === "string") return err.slice(0, 300);
+  const e = err as (Error & { cause?: unknown }) | null | undefined;
+  const name = e?.name === "AbortError" ? "timeout" : (e?.message ?? "delivery_error");
+  if (e?.name === "AbortError") return name;
+  const cause = e?.cause as (Error & { code?: string }) | string | null | undefined;
+  const code = cause && typeof cause === "object" ? cause.code : undefined;
+  const causeText = cause && typeof cause === "object" ? cause.message : (typeof cause === "string" ? cause : undefined);
+  const parts = [name];
+  if (code && !name.includes(code)) parts.push(code);
+  if (causeText && causeText !== name && !name.includes(causeText)) parts.push(causeText);
+  return parts.join(": ").slice(0, 300);
+}
+
 /** Manual retry of a dead/failed event (admin action). */
 export async function retryOutboxEvent(id: number): Promise<void> {
+  // The budget is reset as well as the status, or Retry is a single shot at the very
+  // thing it exists to survive. A dead row has `attempts >= max_attempts`; setting only
+  // `status` makes the next attempt compute `attemptNo = attempts + 1`, which is still
+  // over the limit, so the row dead-letters again on its FIRST failure and the operator
+  // pressing Retry a second time is doing the same thing a third time. Retrying means
+  // "we fixed the route, give it its normal budget back" — so give it the budget.
   await db.update(integrationOutboxTable)
-    .set({ status: "pending", nextAttemptAt: new Date(), lockedAt: null, lockedBy: null })
+    .set({ status: "pending", attempts: 0, nextAttemptAt: new Date(), lockedAt: null, lockedBy: null, lastError: "manual_retry" })
     .where(eq(integrationOutboxTable.id, id));
 }

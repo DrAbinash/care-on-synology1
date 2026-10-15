@@ -31,7 +31,7 @@ interface HopCall {
 let calls: HopCall[] = [];
 /** `http422` is HOPE's I11-D refusal: a permanent non-success it answers for an event
  *  type or envelope version it cannot interpret. */
-let failMode: "none" | "timeout" | "http500" | "http422" = "none";
+let failMode: "none" | "timeout" | "http500" | "http422" | "transport" = "none";
 /** Per-test seam: runs inside the fake HOPE endpoint, so the test can observe or
  *  disturb outbox state at the exact moment a delivery is in flight. */
 let onCall: ((eventId: string | null) => Promise<void>) | null = null;
@@ -46,6 +46,18 @@ const fetchStub = vi.fn(async (input: unknown, init?: { method?: string; headers
   calls.push({ url, eventId: parsed.eventId ?? null, headerEventId: headers["x-care-event-id"] ?? null, body });
   if (onCall) await onCall(parsed.eventId ?? null);
   if (failMode === "timeout") return Promise.reject(new Error("aborted"));
+  if (failMode === "transport") {
+    // Exactly what undici hands back when the route is dead: the rejection is a
+    // TypeError whose message is the constant "fetch failed", and the reason — the one
+    // an operator could act on — is only on `cause`. Reproduced rather than simulated,
+    // because the clinic measured this shape on 2026-10-15 against a callback address
+    // that does not answer.
+    return Promise.reject(
+      Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("connect ECONNREFUSED 192.168.64.1:7080"), { code: "ECONNREFUSED" }),
+      }),
+    );
+  }
   if (failMode === "http500") {
     return { status: 500, ok: false, text: async () => "hope exploded" } as unknown as Response;
   }
@@ -828,7 +840,13 @@ suite("PR-I2 outbox abandoned-delivery recovery (real PostgreSQL)", () => {
     // The retry wins: the event is queued again and the late 200 cannot mark it sent.
     expect(row.status).toBe("pending");
     expect(row.sent_at).toBeNull();
-    expect(row.attempts).toBe(3);
+    // The counter reads 0 because an administrator's Retry now returns the budget to the
+    // event it exists to grant. This assertion used to read `3`, which was not the property
+    // under test but the shape of the bug: a retry that left `attempts` at its dead value
+    // re-dead-lettered the row on the next single failure (see Test 37). Everything this
+    // test was written to protect — the fence refusing the late 200, the lock cleared, the
+    // delivery count unchanged — is asserted on the lines around it, untouched.
+    expect(Number(row.attempts)).toBe(0);
     expect(row.locked_by).toBeNull();
     expect(r.sent).toBe(0);
     expect(r.conflicts).toBe(1);
@@ -1172,5 +1190,129 @@ suite("PR-I11D HOPE event compatibility — sender side (real PostgreSQL)", () =
 
     expect((await readOutbox("i11d-crosstalk")).status).toBe("dead");
     expect((await readFilm(artifactId)).hope_delivery_status).toBe("PENDING");
+  });
+
+  // ── PR-I4: four ways a dead route turns into a silently lost delivery ──────
+
+  it("Test 36 — a film dead-lettered by RECLAIM reaches its artifact, not just one refused over HTTP", async () => {
+    // `markFilmHopeUndelivered` was called on the two HTTP legs only. A worker that dies
+    // between the claim and any write-back has its row reclaimed, and the reclaim can
+    // itself exhaust the budget — the same terminal event, reached by the one path where
+    // the worker that would have marked the film is the worker that died. Before this fix
+    // the outbox said `dead` and the artifact stayed PENDING forever: no badge, no
+    // worklist marker, no exit.
+    const id = await insertOutbox({
+      name: "i4-reclaim-film",
+      eventType: "diagnostic_electronic_film.available",
+      payload: { careFilmArtifactId: 0, referralUuid: `${MARKER}-referral` },
+      status: "sending",
+      attempts: 7,
+      maxAttempts: 8,
+      lockedBy: "worker-that-died",
+      lockedAgoMs: 600_000,
+    });
+    const artifactId = await attachFilmArtifact("i4-reclaim-film", id);
+    await pool.query(
+      `UPDATE integration_outbox SET payload = jsonb_set(payload,'{careFilmArtifactId}',$2::jsonb) WHERE id = $1`,
+      [id, String(artifactId)],
+    );
+    await pool.query(
+      `UPDATE electronic_film_artifacts SET ingest_status = 'HOPE_PENDING', hope_delivery_status = 'PENDING' WHERE id = $1`,
+      [artifactId],
+    );
+
+    const before = calls.length;
+    const r = await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+
+    const row = await readOutbox("i4-reclaim-film");
+    expect(row.status).toBe("dead");
+    expect(row.last_error).toBe("delivery_abandoned");
+    expect(r.dead).toBe(1);
+    expect(calls.length, "a reclaimed row is not delivered by the worker that finds it").toBe(before);
+
+    const film = await readFilm(artifactId);
+    expect(film.hope_delivery_status).toBe("FAILED");
+    expect(String(film.error_message)).toContain("delivery_abandoned");
+    expect(film.ingest_status).toBe("HOPE_PENDING");
+  });
+
+  it("Test 37 — an operator's Retry gives the event its budget back instead of one shot", async () => {
+    // Retry set `status='pending'` and left `attempts` at the value that killed the row.
+    // The next dispatch therefore computed `attemptNo = attempts + 1`, which is still over
+    // `max_attempts`, and the event dead-lettered on its FIRST failure again — so pressing
+    // Retry after fixing the route looked like a retry that did not work, three times in a
+    // row, and the report was still never sent.
+    const id = await insertOutbox({ name: "i4-retry-budget", attempts: 8, maxAttempts: 8, status: "dead" });
+    await pool.query(
+      `UPDATE integration_outbox SET last_error = 'delivery_abandoned', sent_at = NULL WHERE id = $1`,
+      [id],
+    );
+
+    await outbox.retryOutboxEvent(id);
+    const reset = await readOutbox("i4-retry-budget");
+    expect(reset.status).toBe("pending");
+    expect(Number(reset.attempts)).toBe(0);
+
+    // And prove the consequence that mattered: the retried row is delivered, and a failure
+    // on it is retried rather than terminal.
+    failMode = "http500";
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const after = await readOutbox("i4-retry-budget");
+    expect(Number(after.attempts)).toBe(1);
+    expect(after.status).toBe("pending");
+    expect(calls.map((c) => c.eventId)).toContain(eventIdFor("i4-retry-budget"));
+  });
+
+  it("Test 38 — a transport failure records WHY it failed, not the word fetch failed", async () => {
+    // No partner row is needed: `beforeEach` configures the HOPE callback from the
+    // environment, which is the shape production uses on this clinic's box.
+    await insertOutbox({ name: "i4-cause", attempts: 0, maxAttempts: 8 });
+    failMode = "transport";
+    const r = await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+
+    const row = await readOutbox("i4-cause");
+    expect(row.status).toBe("pending");
+    expect(r.failed).toBe(1);
+    // The assertion that fails on the old code: `last_error` was the constant "fetch failed".
+    expect(String(row.last_error)).toContain("ECONNREFUSED");
+    expect(String(row.last_error)).toContain("fetch failed");
+    const [attempt] = await attemptsFor("i4-cause");
+    expect(String(attempt.error)).toMatch(/ECONNREFUSED/);
+  });
+
+  it("Test 39 — an event that waited out the provisioning gap still has its retries when HOPE arrives", async () => {
+    // `delivery_not_configured` charged an attempt although no request was made. A row that
+    // spent its ticks before the partner was provisioned therefore reached its first REAL
+    // failure with the budget already gone, and died on one refused request. This is the
+    // clinic's current shape: HOPE carries no traffic yet, so every event queues
+    // unconfigured, and the first report sent after HOPE is switched on would have had its
+    // retries spent before it started.
+    delete process.env.INTEGRATION_HOPE_CALLBACK_URL;
+    delete process.env.INTEGRATION_HOPE_SIGNING_SECRET;
+    await insertOutbox({ name: "i4-gap", attempts: 5, maxAttempts: 8 });
+
+    const r = await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const row = await readOutbox("i4-gap");
+    expect(row.status).toBe("pending");
+    expect(String(row.last_error)).toBe("delivery_not_configured");
+    expect(Number(row.attempts)).toBe(5);
+    expect(r.failed).toBe(1);
+    const [gapAttempt] = await attemptsFor("i4-gap");
+    expect(String(gapAttempt?.error)).toBe("delivery_not_configured");
+
+    // The consequence the untouched budget protects: HOPE is configured, the event is
+    // delivered to a refusing endpoint, and it is still inside its retry budget rather than
+    // dead-lettered on the first real try.
+    process.env.INTEGRATION_HOPE_CALLBACK_URL = "https://hope.invalid/callback";
+    process.env.INTEGRATION_HOPE_SIGNING_SECRET = "synthetic-secret";
+    failMode = "http500";
+    await pool.query(
+      `UPDATE integration_outbox SET next_attempt_at = NOW() - interval '1 second' WHERE event_id = $1`,
+      [eventIdFor("i4-gap")],
+    );
+    await freshDispatch(outbox, { workerId: "w1", limit: 50 });
+    const after = await readOutbox("i4-gap");
+    expect(Number(after.attempts)).toBe(6);
+    expect(after.status).toBe("pending");
   });
 });

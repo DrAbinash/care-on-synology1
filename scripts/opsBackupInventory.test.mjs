@@ -16,7 +16,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { isArtifact, makeContext } from "./ops-preflight.mjs";
-import { classify, artifactDay, censusCoverage, coverageGaps, inspect, isPlausibleDay, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
+import { DATA_CLASSES, EXCLUDED, IN_SCOPE, classCoverage, classify, artifactDay,  censusCoverage, coverageGaps, inspect, isPlausibleDay, main, render, reportName, restoreRows, sanitizeManifest } from "./ops-backup-inventory.mjs";
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const DB = "diagnostic_erp";
@@ -764,5 +764,189 @@ describe("zero-byte artifacts in the inventory", () => {
     const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
     expect(inv.artifacts.map((r) => r.daySource).sort()).toEqual(["name", "sidecar"]);
     expect(render(inv)).toMatch(/dated by sidecar=1, name=1/);
+  });
+});
+
+describe("data classes — every class is answered, including the ones that answer zero", () => {
+  test("the table is well formed and its scopes are the only two this tool knows", () => {
+    expect(DATA_CLASSES.length).toBeGreaterThan(3);
+    for (const c of DATA_CLASSES) {
+      expect(c.id, `${c.label} has an id`).toBeTruthy();
+      expect(c.pattern instanceof RegExp, `${c.id} carries a pattern`).toBe(true);
+      expect([IN_SCOPE, EXCLUDED], `${c.id} has a declared scope`).toContain(c.scope);
+      if (c.scope === EXCLUDED) expect(c.why.length, `${c.id} cites the decision`).toBeGreaterThan(10);
+    }
+    // Adding or removing a class is a deliberate act, so it has to break here first.
+    expect(DATA_CLASSES.filter((c) => c.scope === IN_SCOPE).map((c) => c.id))
+      .toEqual(["database", "uploads", "object_storage", "config"]);
+  });
+
+  test("each declared class is reported exactly once", async () => {
+    artifact(0);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.classes.rows.map((r) => r.id)).toEqual(DATA_CLASSES.map((c) => c.id));
+  });
+
+  test("a database-only destination answers about uploads and object storage, and says so only about these roots", async () => {
+    artifact(0);
+    artifact(1);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const byId = Object.fromEntries(inv.classes.rows.map((r) => [r.id, r]));
+    expect(byId.database.files).toBe(2); // a .meta beside a dump is not a second backup of anything
+    expect(byId.uploads.files).toBe(0);
+    expect(byId.object_storage.files).toBe(0);
+    const out = render(inv);
+    expect(out).toMatch(/not covered here\s+uploads/);
+    expect(out).toMatch(/not covered here\s+object_storage/);
+    expect(out).toMatch(/uploads, object_storage, config are in scope, and are not covered here/);
+    expect(out).toMatch(/nothing ever wrote it/);
+  });
+
+  test("an artifact for a class is coverage for that class and no other", async () => {
+    write(path.join("backups", "backup_uploads_20261015.tar.gz"), "x");
+    artifact(0);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const byId = Object.fromEntries(inv.classes.rows.map((r) => [r.id, r]));
+    expect(byId.uploads.files).toBe(1);
+    expect(byId.object_storage.files).toBe(0);
+    // The clean-line "is not covered" must then name object_storage only.
+    const missing = render(inv).match(/  ([a-z_, ]+) (?:is|are) in scope, and/)[1];
+    expect(missing).not.toMatch(/uploads/);
+    expect(missing).toMatch(/object_storage/);
+  });
+
+  test("matching runs on the real name, before the output mask can hide it", async () => {
+    // A hand-named archive is masked for publication, and a matcher fed the masked
+    // string would report a real backup of patient documents as though it did not exist.
+    write(path.join("backups", "patient uploads 2026-10-15.tar.gz"), "x");
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.classes.rows.find((r) => r.id === "uploads").files).toBe(1);
+    const out = render(inv);
+    expect(out).toMatch(/covered\s+uploads/);
+    expect(out).not.toMatch(/patient uploads/);
+    expect(out).toMatch(/<unrecognised-name\.tar\.gz>/);
+  });
+
+  test("an unreadable destination answers unknown, never absent", async () => {
+    const inv = await inspect(ctxFor(), [path.join(root, "nope")], { restoreRows: [] });
+    expect(inv.classes.rows.find((r) => r.id === "uploads").files).toBe(0);
+    const out = render(inv);
+    expect(out).toMatch(/unknown\s+uploads\s+no backup root could be read/);
+    expect(out).not.toMatch(/not covered here\s+uploads/);
+    expect(out).not.toMatch(/are not covered here/);
+  });
+
+  test("the owner-excluded DICOM class is visible, cited, and never a gap", async () => {
+    artifact(0);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const row = inv.classes.rows.find((r) => r.id === "dicom_images");
+    expect(row.scope).toBe(EXCLUDED);
+    expect(row.files).toBe(0);
+    expect(row.why).toMatch(/owner decision/i);
+    expect(row.why).toMatch(/not a gap/);
+    const out = render(inv);
+    expect(out).toMatch(/not applicable\s+.*dicom_images/);
+    // A DICOM artifact sitting in the folder must still not be counted as coverage.
+    expect(out).not.toMatch(/covered\s+dicom_images/);
+    const missing = out.match(/  (\S.*?) (?:is|are) in scope, and (?:is|are) not covered here/);
+    expect(missing[1]).not.toMatch(/dicom/);
+  });
+
+  test("a DICOM-named file in an ERP root is seen but still declared out of scope", async () => {
+    write(path.join("backups", "backup_dicom_export_20261015.tar"), "x");
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.classes.rows.find((r) => r.id === "dicom_images").files).toBe(0);
+  });
+
+  test("--json carries the class block, so a script cannot lose it", async () => {
+    artifact(0);
+    const chunks = [];
+    const realWrite = process.stdout.write;
+    process.stdout.write = (s) => { chunks.push(String(s)); return true; };
+    let code = 0;
+    try {
+      code = await main(["--json"], { ctx: ctxFor(), roots: [backupDir], restoreRows: [] });
+    } finally { process.stdout.write = realWrite; }
+    expect(code).toBe(0);
+    const parsed = JSON.parse(chunks.join(""));
+    expect(parsed.classes.rows.length).toBe(DATA_CLASSES.length);
+    expect(parsed.classes.rows.find((r) => r.id === "uploads").files).toBe(0);
+  });
+
+  test("uncovered classes do not change the exit code, because this tool reaches no verdict", async () => {
+    artifact(0);
+    const realWrite = process.stdout.write;
+    process.stdout.write = () => true;
+    try {
+      expect(await main([], { ctx: ctxFor(), roots: [backupDir], restoreRows: [] })).toBe(0);
+    } finally { process.stdout.write = realWrite; }
+  });
+});
+
+describe("the class note cannot claim completeness in the same run that says a class is missing", () => {
+  test("an uncovered class forces the note that names the destination problem", async () => {
+    artifact(0);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    const out = render(inv);
+    expect(out).toMatch(/no artifact in the root\(s\) searched — point BACKUP_DIR at each destination/);
+    expect(out).not.toMatch(/every in-scope class has at least one artifact in the root\(s\) searched/);
+  });
+
+  test("the completeness note appears only when every in-scope class really is present", async () => {
+    artifact(0);
+    write(path.join("backups", "backup_uploads_20261015.tar.gz"), "x");
+    write(path.join("backups", "backup_object_storage_20261015.tar"), "x");
+    write(path.join("backups", "backup_config_20261015.sql.enc"), "x");
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(inv.classes.rows.filter((r) => r.scope === IN_SCOPE && r.files === 0)).toEqual([]);
+    const out = render(inv);
+    expect(out).toMatch(/every in-scope class has at least one artifact in the root\(s\) searched/);
+    expect(out).not.toMatch(/no artifact in the root\(s\) searched/);
+    expect(out).not.toMatch(/is(?:|es) in scope, and (?:is|are) not covered here/);
+    // The owner-excluded class is still answered, and still not counted as missing.
+    expect(out).toMatch(/not applicable\s+dicom_images/);
+  });
+
+  test("the searched scope is printed, because the claim is only ever about these roots", async () => {
+    artifact(0);
+    const inv = await inspect(ctxFor(), [backupDir], { restoreRows: [] });
+    expect(render(inv)).toMatch(/searched: .*backups/);
+    expect(inv.classes.searchedRoots).toEqual([backupDir]);
+  });
+});
+
+describe("the verdict words the tool prints are the words the operator is told", () => {
+  const at = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8").split("\r\n").join("\n");
+
+  test("the verdicts a run can print are exactly the four the runbook explains", async () => {
+    artifact(0);
+    const readable = render(await inspect(ctxFor(), [backupDir], { restoreRows: [] }));
+    const unreadable = render(await inspect(ctxFor(), [path.join(root, "nope")], { restoreRows: [] }));
+    // Read only the `data classes:` block itself. Prose elsewhere in the report uses
+    // the same words ("the uploads volume holds"), and a scanner that cannot tell a
+    // table row from a sentence manufactures verdicts that the tool never printed.
+    const block = (out) => {
+      const lines = out.split(/\r?\n/);
+      const i = lines.findIndex((l) => l === "data classes:");
+      expect(i, "the report must carry a `data classes:` section").toBeGreaterThan(-1);
+      return lines.slice(i + 1, i + 1 + DATA_CLASSES.length);
+    };
+    const words = new Set();
+    for (const lines of [block(readable), block(unreadable)]) {
+      for (const line of lines) {
+        const id = DATA_CLASSES.map((c) => c.id).find((x) => line.includes(" " + x));
+        expect(id, `every block row names a declared class: ${line}`).toBeTruthy();
+        words.add(line.slice(2, line.indexOf(" " + id)).trim());
+      }
+    }
+    expect([...words].sort()).toEqual(["covered", "not applicable", "not covered here", "unknown"]);
+
+    const runbook = at("../docs/CARE_ERP_DEPLOYMENT_RUNBOOK.md");
+    for (const w of words) expect(runbook, `the runbook must explain \`${w}\``).toContain("`" + w + "`");
+    // The owner's ruling has to be stated where the row is explained, or the next
+    // reader of a `not applicable` line reopens it as a gap.
+    expect(runbook).toMatch(/never counted as a gap/);
+    expect(runbook).toMatch(/excluded from ERP disaster recovery by standing owner decision/);
+    expect(at("../docs/CARE_ERP_NAS_VALIDATION_CHECKLIST.md")).toContain("not covered here");
   });
 });

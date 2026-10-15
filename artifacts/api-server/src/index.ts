@@ -38,6 +38,7 @@ import { validateRadiologyConfig } from "./lib/pacs/pacsConfig.js";
 import { shouldForceBootstrapReset } from "./lib/bootstrapAdmin.js";
 import { bootstrapHopeCareIntegration } from "./lib/bootstrapHopeCareIntegration.js";
 import { markStartupMigrationsSettled } from "./lib/startupState";
+import { buildIdentityPayload } from "./lib/buildIdentity";
 
 // Bootstrap admin account for fresh production databases.
 //
@@ -2841,11 +2842,18 @@ if (Number.isNaN(port) || port <= 0) {
 
 const server = app.listen({ port, exclusive: true }, () => {
   logger.info({ port }, "Server listening");
+  const bootIdentity = buildIdentityPayload();
   logger.info(
     {
       version: process.env.ERP_VERSION || "0.0.0",
       build: process.env.BUILD_NUMBER || "0",
-      gitCommit: (process.env.GIT_COMMIT || "unknown").slice(0, 12),
+      // Same rule as `/health` and `/api/health/schema`: the identity the image resolved
+      // from its own build context outranks the stamp `.env` declared, and the source is
+      // logged so a declared value is never read as proof. The boot line is what a person
+      // scrolls first after an incident deploy, and it used to be the one place that could
+      // print a commit the running bytes were never built from.
+      gitCommit: bootIdentity.commit.slice(0, 12),
+      commitSource: bootIdentity.identitySource,
       gitBranch: process.env.GIT_BRANCH || "unknown",
       buildDate: process.env.BUILD_DATE || "unknown",
     },
