@@ -5,7 +5,7 @@ _Run this on the Synology NAS, on the clinic LAN, to establish the known-good de
 **Fastest path:** most checks are covered by one command —
 ```sh
 node scripts/deploy-health.mjs --host-port 8888 --docker-prefix sudo   # containers + the three endpoints
-node scripts/ops-preflight.mjs                                          # 26 readiness answers, read-only
+node scripts/ops-preflight.mjs                                          # 27 readiness answers, read-only
 ```
 `deploy-health.mjs` is Node-builtins-only, so it runs with the NAS's own `/usr/local/bin/node`.
 The fuller subsystem verifier needs `pg`, which is installed inside the image rather than on the
