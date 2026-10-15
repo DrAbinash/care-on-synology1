@@ -267,3 +267,40 @@ describe("censusAttested", () => {
     expect(censusAttested(halves, TABLES)).toBe(true);
   });
 });
+
+describe("the restore document holds itself to what this code can prove", () => {
+  const doc = readFileSync(join(REPO, "docs", "CARE_ERP_BACKUP_RESTORE.md"), "utf8")
+    .split("\r\n")
+    .join("\n");
+
+  it("names the census's table count as a digit that equals the producer's list", () => {
+    // Written as a digit rather than the word so this assertion means anything:
+    // adding an eighth table to CENSUS_TABLES_DEFAULT must edit the prose or go red.
+    const claimed = [...doc.matchAll(/\b(\d+) tables?\b/g)].map((m) => Number(m[1]));
+    expect(claimed.length).toBeGreaterThanOrEqual(3);
+    for (const n of claimed) {
+      expect(n, `the document says "${n} tables"; the job censuses ${TABLES.length}`).toBe(TABLES.length);
+    }
+    expect(doc).toContain(`far more than ${TABLES.length}`);
+  });
+
+  it("keeps all five rungs of the claim ladder, and leaves rung 5 unanswered", () => {
+    const rows = [...doc.matchAll(/^\| (\d) \| (.*)$/gm)];
+    expect(rows.map((r) => r[1])).toEqual(["1", "2", "3", "4", "5"]);
+    const rung = (n: string) => rows.find((r) => r[1] === n)?.[0] ?? "";
+    expect(rung("3")).toContain("consistent with the source at dump time");
+    expect(rung("3")).toContain("backup_census_match");
+    expect(rung("4")).toContain("Schema and referential integrity");
+    expect(rung("5")).toContain("Full data integrity");
+    // The rung that would be the lie: no check may be named as answering it.
+    expect(rung("5")).toContain("nothing in this repository proves it");
+  });
+
+  it("refuses the cryptographic claim for the census and reserves it for the hash", () => {
+    expect(doc).toContain("not a signature");
+    expect(doc).toContain("provenance, not mathematics");
+    const lines = doc.split("\n").filter((l) => /cryptographic/i.test(l));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("sha256_artifact");
+  });
+});
