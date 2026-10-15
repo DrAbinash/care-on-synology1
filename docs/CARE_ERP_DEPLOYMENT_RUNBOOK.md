@@ -408,6 +408,17 @@ Two cautions before running it on the NAS:
   UNVERIFIED rather than reporting a pass about a tree that cannot carry an identity.
   `/volume1/docker/care-erp-github/care-on-synology1` is a normal clone and is fine.
 
+**Measured, and what the measurement does not cover.** The first run of this proof anywhere
+was CI, on 2026-10-15, at `5e54b561`: all ten arms PASS, the context tier in **24 s** of a
+39 s job, on Docker server **28.0.4**. The NAS builds on Docker **24.0.2** — and the whole
+reason this test exists is that the two builder generations are not known to agree on
+whether `!.git/refs` re-includes a directory's children. So the CI pass proves the
+mechanism and the wiring; it does not prove 24.0.2's ignore semantics, and arm C is exactly
+the arm that would differ. Run `node scripts/docker-build-identity.mjs --tier context` once
+in the NAS deploy checkout when it is quiet, and treat its exit 0 as the last of the three
+numbers this section is asking for.
+
+
 
 ## 13. Secrets in tracked files — reported, not corrected here
 

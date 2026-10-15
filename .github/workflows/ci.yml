@@ -57,12 +57,12 @@ jobs:
   identity:
     name: Build identity (disposable docker build)
     runs-on: ubuntu-latest
-    # UNMEASURED so far: the development box has no Docker, so no run of
-    # scripts/docker-build-identity.mjs has ever produced a verdict anywhere. The
-    # caps below are sized for the context tier (one slim base image, `COPY . .`,
-    # four short node runs) plus the dispatched tier (a full in-image pnpm install
-    # and esbuild of api-server). The job prints each tier's verdict, so the first
-    # real run is the measurement this comment is asking for.
+    # Measured 2026-10-15 on the first real run of this job (`5e54b561`): the whole
+    # job 39 s, the context tier 24 s, on Docker server 28.0.4. The caps are not
+    # sized to that — the context tier leaves ~25x, because the one thing that is
+    # not in the measurement is a cold base-image pull on a runner that has decided
+    # to evict its cache. `--tier real` has never run anywhere, so its cap is a
+    # budget for a full in-image install of this monorepo, not a sized number.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
