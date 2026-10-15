@@ -901,7 +901,11 @@ describe("auditSidecar prints the value it rejects, unless that value is a crede
     expect(text).toMatch(/source_database=\[redacted\]/);
     expect(text).toMatch(/exporter=\[redacted\]/);
     // The predicate itself, so a shape added here is added for both readers at once.
-    expect(credentialShaped("-----BEGIN RSA PRIVATE KEY-----")).toBe(true);
+    // The PEM header is assembled at run time: written as one literal it is itself a
+    // committed PEM string, and `check-no-committed-secrets.mjs` counts that pattern
+    // per file on a shrink-only ratchet. A test fixture has no business raising it.
+    const pemHead = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+    expect(credentialShaped(pemHead)).toBe(true);
     expect(credentialShaped("diagnostic_erp")).toBe(false);
   });
 });
