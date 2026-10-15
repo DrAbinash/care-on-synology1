@@ -24,10 +24,15 @@
  * refusal at all.
  *
  * ARMS EXECUTED ONLY HERE: 2, 8 (all five wording kinds plus the emits_heading boundary), 9, 10,
- * 11, 15, 17, 18 — the last two found by the adversarial pass, which rebuilt a database from zero
- * through the real migration pipeline and asked what a catalogue could publish while losing or
- * reaching outside itself. Checks 1, 3, 4, 5, 6, 7, 12, 13, 14, 16 already have executable coverage
- * in clinicalCatalogue.db.test.ts, clinicalSelectionContract.db.test.ts and
+ * 11, 11b, 15, 17, 18, 19, 20a, 20b — checks 11b, 19 and 20 are the independent review's RV-02,
+ * RV-04 and RV-05, each added because the state it refuses was measured as storable AND publishable.
+ * 17 and 18 were found by the adversarial pass, which rebuilt a database from zero through the real
+ * migration pipeline and asked what a catalogue could publish while losing or reaching outside
+ * itself. 14b and the stale publisher that check 0's row lock cannot reach are executed here; the
+ * row lock's own race, the read-side verifier and the governing-publication binding are executed in
+ * clinicalCatalogue.db.test.ts.
+ * Checks 1, 3, 4, 5, 6, 7, 12, 13, 14, 16 already have executable coverage in
+ * clinicalCatalogue.db.test.ts, clinicalSelectionContract.db.test.ts and
  * clinicalCombinationContract.db.test.ts; this file's static test is what makes that claim
  * checkable rather than remembered.
  */
@@ -381,8 +386,70 @@ describe.skipIf(!dbUrl)("a publication is refused for exactly the reason stated,
         `UPDATE clinical_tile_parameters SET default_option_id = $1
           WHERE tile_id = $2 AND key = 'fazekas'`,
         [optionId, f.tileId],
-      ), "pointing the parameter at a default is a plain update").toBeNull();
-      expect(await publish("pub.param.defaulted", f.examId), "and a default IS an answer: it publishes").toBeNull();
+      ), "pointing the parameter at the retired option is a plain update: the composite FK does not read deleted_at").toBeNull();
+
+      // RV-02. The previous revision of this test ended one statement earlier and asserted the
+      // opposite — "a default IS an answer: it publishes" — for a default naming a retired option.
+      // That is the state the review asked to be refused: the composer substitutes a token whose
+      // wording the clinic has already retired, and the frozen sentence prints it for as long as
+      // the report is citable. No foreign key can see it, because retiring an option is an UPDATE
+      // of `deleted_at` and ON DELETE RESTRICT only answers a DELETE.
+      const retiredDefault = await publish("pub.param.default.retired", f.examId);
+      expect(retiredDefault?.code, "so the gate is the only thing that can see it").toBe("P0001");
+      expect(retiredDefault?.message, "naming the parameter, the tile, the option and what is wrong with it")
+        .toMatch(/parameter fazekas on tile param.tile defaults to Grade 1 \(grade1\), an option that has been retired/);
+
+      // The remedy the refusal names, driven in the same transaction.
+      expect(await attempt(`UPDATE parameter_options SET deleted_at = NULL WHERE id = $1`, [optionId])).toBeNull();
+      expect(await publish("pub.param.default.live", f.examId), "a live, active default IS an answer").toBeNull();
+
+      // The remaining states RV-02 asks about, each proved separately rather than inferred from the
+      // first: an inactive option, a retired GROUP, and a foreign group.
+      for (const status of ["draft", "deprecated"]) {
+        expect(await attempt(
+          `UPDATE parameter_options SET status = $1 WHERE id = $2`, [status, optionId],
+        ), `${status} is a legal option status`).toBeNull();
+        const inactive = await publish(`pub.param.default.${status}`, f.examId);
+        expect(inactive?.code, `a required parameter defaulting to a ${status} option is not answered`).toBe("P0001");
+        expect(inactive?.message, "and the refusal quotes the status it found")
+          .toMatch(new RegExp(`defaults to Grade 1 \\(grade1\\), an option that is ${status}, not active`));
+        expect(await attempt(
+          `UPDATE parameter_options SET status = 'active' WHERE id = $1`, [optionId],
+        )).toBeNull();
+        expect(await publish(`pub.param.default.${status}.fixed`, f.examId), "reactivating it is the whole fix").toBeNull();
+      }
+
+      // One level up: the option is fine, but the whole parameter group has been retired. Still
+      // nothing a foreign key can see, and still a default nobody can choose.
+      expect(await attempt(`UPDATE parameter_groups SET deleted_at = NOW() WHERE id = $1`, [groupId])).toBeNull();
+      const retiredGroup = await publish("pub.param.default.retired.group", f.examId);
+      expect(retiredGroup?.code, "a default of a retired group is refused").toBe("P0001");
+      expect(retiredGroup?.message).toMatch(
+        /defaults to Grade 1 \(grade1\), an option of a parameter group that has been retired/,
+      );
+      expect(await attempt(`UPDATE parameter_groups SET deleted_at = NULL WHERE id = $1`, [groupId])).toBeNull();
+
+      // A foreign group needs no gate arm and is proved to need none: the composite key
+      // (parameter_group_id, default_option_id) → parameter_options (group_id, id) refuses the row
+      // at the statement, so the state the arm would have to describe cannot be stored.
+      const otherGroup = await client.query(
+        `INSERT INTO parameter_groups (key, label, data_type, status)
+         VALUES ('param.other', 'Another group', 'option', 'active') RETURNING id`,
+      );
+      const otherOption = await client.query(
+        `INSERT INTO parameter_options (group_id, key, label, status)
+         VALUES ($1, 'other.ans', 'An answer of another group', 'active') RETURNING id`,
+        [Number(otherGroup.rows[0]!.id)],
+      );
+      const foreign = await attempt(
+        `UPDATE clinical_tile_parameters SET default_option_id = $1
+          WHERE tile_id = $2 AND key = 'fazekas'`,
+        [Number(otherOption.rows[0]!.id), f.tileId],
+      );
+      expect(foreign?.code, "a default from another group cannot be stored at all").toBe("23503");
+      expect(foreign?.message).toMatch(/clin_tile_param_option_in_group_fkey/);
+      expect(await publish("pub.param.foreign.unchanged", f.examId),
+        "the refused UPDATE left the valid default in place, so the examination still publishes").toBeNull();
     } finally {
       await client.query("ROLLBACK");
     }
@@ -645,49 +712,506 @@ describe.skipIf(!dbUrl)("a publication is refused for exactly the reason stated,
     }
   });
 
-  it("certifies which rows a document freezes, not what those rows say — and says why", async () => {
+  it("refuses a document whose wording is not the wording the rows hold, and names both", async () => {
+    // Check 14 compares MEMBERSHIP. Until Stage B r4 that was the whole story, and the story had
+    // a hole in it measured on the previous revision: the same true identities with one invented
+    // sentence published, because the content_hash is computed over the fabricated document and so
+    // agrees with it by construction. Check 14b closes it for the columns that decide what prints.
     await client.query("BEGIN");
     try {
       const f = await seedValid(client, "forge");
       const doc = buildCatalogueSnapshot(await loadCatalogueRows((s, v) => client.query(s, v), f.examId));
       expect(await publish("pub.forge.honest", f.examId), "the honest document publishes").toBeNull();
 
-      // Same identities, one fabricated sentence: this PASSES, and pinning that is the point. The
-      // gate compares membership — which identities appear in each domain — because only the
-      // publisher's serializer can produce the canonical bytes, and a SQL reimplementation would be
-      // a second source of truth for the hash. A reviewer who read check 14 as content
-      // authentication would trust a publication nobody certified.
+      const insertDoc = (key: string, d: unknown) => attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+         VALUES ($1, $2, repeat('d', 64), $3, $4::jsonb)`,
+        [f.examId, key, 1, JSON.stringify(d)],
+      );
+
+      // Same identities, one fabricated sentence.
       const forged = JSON.parse(JSON.stringify(doc)) as typeof doc;
       (forged.tiles[0] as Record<string, unknown>).findings_text = "A sentence nobody approved.";
-      const res = await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
-         VALUES ($1, $2, repeat('d', 64), $3, $4::jsonb)`,
-        [f.examId, "pub.forge.lie", 1, JSON.stringify(forged)],
-      );
-      expect(res, "the measured limit: true identities and a false sentence pass the gate").toBeNull();
-      const stored = await client.query<{ s: { tiles: { findings_text: string }[] } }>(
-        `SELECT catalogue_snapshot AS s FROM clinical_publications WHERE publication_key = 'pub.forge.lie'`,
-      );
-      const live = await client.query<{ findings_text: string }>(
-        `SELECT findings_text FROM clinical_tiles WHERE id = $1`, [f.tileId],
-      );
-      expect(stored.rows[0]!.s.tiles[0].findings_text, "the publication holds the fabricated wording").toBe(
-        "A sentence nobody approved.",
-      );
-      expect(live.rows[0]!.findings_text, "while the live row holds the real one").toBe("A fixture finding sentence.");
+      const lie = await insertDoc("pub.forge.lie", forged);
+      expect(lie?.code, "true identities and a false sentence are now refused").toBe("P0001");
+      expect(lie?.message, "and the refusal quotes both sides, because 'the document is wrong' is not actionable")
+        .toMatch(/freezes tile forge.tile with findings_text = 'A sentence nobody approved\.', but the live row says 'A fixture finding sentence\.'/);
 
-      // What the arm DOES guarantee, stated in the same breath so the limit is not mistaken for an
-      // absence of checking: a document that drops one live row is refused.
+      // The same, for each of the columns that reach the page — a reviewer who thinks this arm is
+      // a findings_text check has not read it, and an arm that only guards one field is an arm that
+      // can be stepped over by editing another.
+      for (const column of ["impression_text", "recommendation_text", "technique_text", "review_state", "status", "conflict_group"]) {
+        const one = JSON.parse(JSON.stringify(doc)) as typeof doc;
+        (one.tiles[0] as Record<string, unknown>)[column] = column === "conflict_group" ? "sneaked"
+          : column === "review_state" ? "uncertain" : column === "status" ? "draft" : `Changed ${column}`;
+        const err = await insertDoc(`pub.forge.${column}`, one);
+        expect(err?.code, `${column} drift is refused too`).toBe("P0001");
+        expect(err?.message).toContain(column);
+      }
+
+      // What check 14 still guarantees, stated in the same breath so the two are not confused: a
+      // document that drops one live row is refused by membership, before values are ever reached.
       const missing = JSON.parse(JSON.stringify(doc)) as typeof doc;
       missing.tiles = missing.tiles.slice(1);
-      expect((await attempt(
-        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
-         VALUES ($1, $2, repeat('d', 64), $3, $4::jsonb)`,
-        [f.examId, "pub.forge.missing", 1, JSON.stringify(missing)],
-      ))?.code, "a document missing one live row is refused").toBe("P0001");
+      expect((await insertDoc("pub.forge.missing", missing))?.code,
+        "a document missing one live row is refused").toBe("P0001");
+
+      // And the remedy the arm implies is not editorial: rebuild from the rows and publish.
+      expect(await publish("pub.forge.rebuilt", f.examId), "a freshly built document publishes").toBeNull();
     } finally {
       await client.query("ROLLBACK");
     }
+  });
+
+  it("refuses the stale publisher, which is the concurrency defect the row lock cannot reach", async () => {
+    // The adversarial review measured this twice: a session read the catalogue, another committed a
+    // wording change, and the first published a document that described a configuration that no
+    // longer existed. Check 0's row lock serialises the two WRITES, and cannot retroactively refresh
+    // a document built before the other transaction landed — so the refusal has to come from
+    // comparing the document against the rows at the moment the gate runs, which is what this
+    // asserts. READ COMMITTED gives the gate's statement the newest committed snapshot, so an edit
+    // that landed between the read and the INSERT is visible here exactly as it is in production.
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "stale");
+      const rows = await loadCatalogueRows((s, v) => client.query(s, v), f.examId);
+      const stale = buildCatalogueSnapshot(rows);
+      expect(await publish("pub.stale.control", f.examId), "the same catalogue publishes before it moves").toBeNull();
+
+      await client.query(
+        `UPDATE clinical_tiles SET findings_text = 'VERSION TWO, written by another admin.' WHERE id = $1`,
+        [f.tileId],
+      );
+      const refused = await attempt(
+        `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+         VALUES ($1, 'pub.stale.read', repeat('d', 64), 1, $2::jsonb)`,
+        [f.examId, JSON.stringify(stale)],
+      );
+      expect(refused?.code, "the stale document is refused").toBe("P0001");
+      expect(refused?.message).toMatch(/but the live row says 'VERSION TWO, written by another admin\.'/);
+
+      // The named remedy: re-read and publish. Nothing about the catalogue has to be unwound.
+      expect(await publish("pub.stale.refreshed", f.examId), "rebuilding from the live rows is the whole fix").toBeNull();
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("refuses a required parameter whose default answer cannot be chosen", async () => {
+    // RV-02. Two guards each assumed the other covered this. The composite foreign key cannot fire
+    // for a retired option, because retiring one is an UPDATE of deleted_at and RESTRICT only sees
+    // DELETE; and arm 11's own `default_option_id IS NULL` term is FALSE for a parameter that names
+    // a default, so the arm stayed silent. The service layer is no help either: radiologyCatalog's
+    // deleteParameterOption() blocks only finding_parameter_bindings and has never heard of
+    // clinical_tile_parameters. Publication is the only place the pair can be checked.
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "opt");
+      const group = await client.query<{ id: number }>(
+        `INSERT INTO parameter_groups (key, label, data_type) VALUES ('opt.severity', 'Severity', 'option') RETURNING id`,
+      );
+      const groupId = Number(group.rows[0]!.id);
+      const addOption = async (key: string, status: string, deleted = false): Promise<number> => {
+        const r = await client.query<{ id: number }>(
+          `INSERT INTO parameter_options (group_id, key, label, status)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [groupId, key, key, status],
+        );
+        const id = Number(r.rows[0]!.id);
+        if (deleted) await client.query(`UPDATE parameter_options SET deleted_at = NOW() WHERE id = $1`, [id]);
+        return id;
+      };
+      const otherGroup = await client.query<{ id: number }>(
+        `INSERT INTO parameter_groups (key, label, data_type) VALUES ('opt.laterality', 'Laterality', 'option') RETURNING id`,
+      );
+      const foreignOption = await client.query<{ id: number }>(
+        `INSERT INTO parameter_options (group_id, key, label, status) VALUES ($1, 'left', 'Left', 'active') RETURNING id`,
+        [Number(otherGroup.rows[0]!.id)],
+      );
+
+      const setDefault = (optionId: number | null, required = true) => attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, default_option_id, data_type, is_required)
+         VALUES ($1, 'opt.severity', 'Severity', $2, $3, 'option', $4)
+         ON CONFLICT DO NOTHING`,
+        [f.tileId, groupId, optionId, required],
+      );
+      const reDefault = async (optionId: number | null, required = true) => {
+        await client.query(`DELETE FROM clinical_tile_parameters WHERE tile_id = $1 AND key = 'opt.severity'`, [f.tileId]);
+        expect(await setDefault(optionId, required), "the parameter row is storable").toBeNull();
+      };
+
+      // The foreign-group case is the draft layer's, and it is asserted here so the story of this
+      // defect has all three of its pieces in one place.
+      expect((await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, default_option_id, data_type, is_required)
+         VALUES ($1, 'opt.foreign', 'Severity', $2, $3, 'option', TRUE)`,
+        [f.tileId, groupId, Number(foreignOption.rows[0]!.id)],
+      ))?.code, "a Severity parameter cannot default to a Laterality option").toBe("23503");
+
+      // 1. The live, active answer: the control without which every refusal below is meaningless.
+      const good = await addOption("mild", "active");
+      await reDefault(good);
+      expect(await publish("pub.opt.active", f.examId), "an active default publishes").toBeNull();
+
+      // 2. Retired — the measured P1 defect.
+      const gone = await addOption("moderate", "active", true);
+      await reDefault(gone);
+      const retiredRefusal = await publish("pub.opt.retired", f.examId);
+      expect(retiredRefusal?.code, "a retired default is refused at publication").toBe("P0001");
+      expect(retiredRefusal?.message).toMatch(
+        /parameter opt.severity on tile opt.tile defaults to moderate \(moderate\), an option that has been retired/,
+      );
+
+      // 3 and 4. Inactive, in both of the vocabulary's own states.
+      for (const status of ["draft", "deprecated"]) {
+        const option = await addOption(`as.${status}`, status);
+        await reDefault(option);
+        const err = await publish(`pub.opt.${status}`, f.examId);
+        expect(err?.code, `a ${status} default is refused`).toBe("P0001");
+        expect(err?.message, "and the refusal names the status it saw").toContain(`an option that is ${status}, not active`);
+      }
+
+      // 5. The option is fine; its group has been retired, so nothing can be chosen from it.
+      await reDefault(good);
+      expect(await attempt(`UPDATE parameter_groups SET deleted_at = NOW() WHERE id = $1`, [groupId])).toBeNull();
+      const groupGone = await publish("pub.opt.group.retired", f.examId);
+      expect(groupGone?.code, "a default of a retired group is refused").toBe("P0001");
+      expect(groupGone?.message).toContain("an option of a parameter group that has been retired");
+      expect(await attempt(`UPDATE parameter_groups SET deleted_at = NULL WHERE id = $1`, [groupId])).toBeNull();
+
+      // 6. Scope control: the arm is about a REQUIRED parameter, because an optional one that
+      //    cannot be answered prints nothing. Without this the guard could be over-broad and the
+      //    suite would still be green.
+      await reDefault(gone, false);
+      expect(await publish("pub.opt.optional.retired", f.examId),
+        "an optional parameter with the same retired default still publishes").toBeNull();
+
+      // 7. The remedy the refusal names is to give it an answer that exists.
+      await reDefault(good);
+      expect(await publish("pub.opt.fixed", f.examId), "pointing the default at a live active option is the whole fix").toBeNull();
+
+      // 8. And the original arm 11a case, unregressed: required, no default, no live options.
+      await client.query(`DELETE FROM clinical_tile_parameters WHERE tile_id = $1`, [f.tileId]);
+      expect(await attempt(
+        `INSERT INTO clinical_tile_parameters (tile_id, key, label, parameter_group_id, default_option_id, data_type, is_required)
+         VALUES ($1, 'opt.none', 'Severity', $2, NULL, 'option', TRUE)`,
+        [f.tileId, groupId],
+      )).toBeNull();
+      expect(await attempt(`UPDATE parameter_options SET deleted_at = NOW() WHERE group_id = $1`, [groupId])).toBeNull();
+      const empty = await publish("pub.opt.empty", f.examId);
+      expect(empty?.code, "a required parameter with no answers at all is still refused").toBe("P0001");
+      expect(empty?.message).toContain("is required but has no answer to choose from");
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("refuses two relationship kinds that cannot both be true of one pair", async () => {
+    // RV-04. clin_tile_rel_uq keys on (tile, relation_kind, target), which is what lets a second
+    // statement about the same pair be stored at all — and the snapshot module has always said
+    // 'excludes' beside 'coexists' is a contradiction rather than a refinement. Measured: both
+    // published. A composer handed both has to pick, and the pick is a fact about traversal order.
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "contra");
+      // A second placed tile to be contradicted about, ordered and reviewed like the first.
+      const other = await client.query<{ id: number }>(
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text, review_state, status)
+         VALUES ('contra.tile2', (SELECT concept_id FROM clinical_tiles WHERE id = $1),
+                 'Second abnormality', 'A second fixture sentence.', 'approved', 'active') RETURNING id`,
+        [f.tileId],
+      );
+      const tile2 = Number(other.rows[0]!.id);
+      expect(await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal, created_by)
+         VALUES ($1, $2, $3, 2, 'validation')`, [tile2, f.examId, f.sectionId],
+      )).toBeNull();
+
+      // Symmetric kinds are declared both ways, because check 6 (a one-sided symmetric
+      // relationship) runs first and would otherwise be the refusal heard — which is exactly how a
+      // gate test comes to prove nothing. Directional kinds are declared one way only, for the same
+      // reason in the other direction: a mutual `requires` is a two-edge cycle, and check 13
+      // refuses the cycle long before arm 19 sees the pair. Measured: that is the refusal this
+      // test's first revision heard at pub.contra.requires.supersedes, and it proved nothing about
+      // either arm.
+      const SYMMETRIC = new Set(["excludes", "coexists", "combines_with"]);
+      const declare = (kind: string, extraTile: number | null = null) => attempt(
+        SYMMETRIC.has(kind)
+          ? `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+             VALUES ($1, $2, $3), ($2, $1, $3)`
+          : `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+             VALUES ($1, $2, $3)`,
+        [extraTile ?? f.tileId, tile2, kind],
+      );
+      /** The refusal must come from arm 19, not from whichever arm happens to run first. */
+      const clashMessage = /are declared both \w+ and \w+, which cannot both be true of one pair/;
+
+      expect(await declare("excludes"), "the first half is storable in draft").toBeNull();
+      expect(await publish("pub.contra.control", f.examId), "and a mutual exclusion alone publishes").toBeNull();
+
+      expect(await declare("coexists"), "the contradicting half is storable in draft too").toBeNull();
+      const clash = await publish("pub.contra.clash", f.examId);
+      expect(clash?.code, "but the pair cannot be published").toBe("P0001");
+      expect(clash?.message, "and the refusal names both kinds and both tiles")
+        .toMatch(/are declared both (excludes and coexists|coexists and excludes), which cannot both be true of one pair/);
+
+      // The other three combinations, each with its own reasoning, and none of them inferred from
+      // the first: an arm that catches one spelling of a contradiction is an arm that can be
+      // stepped over by choosing another.
+      await client.query(
+        `DELETE FROM clinical_tile_relationships WHERE relation_kind = 'coexists'`,
+      );
+      expect(await declare("combines_with"), "combines_with is storable").toBeNull();
+      const combines = await publish("pub.contra.combines", f.examId);
+      expect(combines?.code, "'excludes' and 'combines_with' cannot both hold of one pair").toBe("P0001");
+      expect(combines?.message, "and by this arm").toMatch(clashMessage);
+
+      await client.query(`DELETE FROM clinical_tile_relationships WHERE relation_kind = 'combines_with'`);
+      expect(await declare("requires"), "requires is storable").toBeNull();
+      const requiresClash = await publish("pub.contra.requires", f.examId);
+      expect(requiresClash?.code, "a tile cannot require the partner it excludes").toBe("P0001");
+      expect(requiresClash?.message, "and the refusal is arm 19's, not check 13's cycle refusal")
+        .toMatch(clashMessage);
+
+      await client.query(`DELETE FROM clinical_tile_relationships`);
+      expect(await declare("coexists")).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'supersedes')`, [tile2, f.tileId],
+      ), "a one-directional supersedes needs no mirror").toBeNull();
+      const supersedes = await publish("pub.contra.supersedes", f.examId);
+      expect(supersedes?.code, "'coexists' and a supersession of the same pair disagree").toBe("P0001");
+      expect(supersedes?.message).toMatch(clashMessage);
+
+      // The two combinations deliberately NOT refused, pinned so the arm cannot quietly widen into
+      // a ban on more than one relationship per pair — which is what makes 'requires' and
+      // 'supersedes' coexistable in the model at all.
+      await client.query(`DELETE FROM clinical_tile_relationships`);
+      expect(await declare("excludes")).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'supersedes')`, [f.tileId, tile2],
+      )).toBeNull();
+      expect(await publish("pub.contra.excludes.supersedes", f.examId),
+        "excludes plus supersedes names a winner, so it refines rather than contradicts").toBeNull();
+
+      await client.query(`DELETE FROM clinical_tile_relationships WHERE relation_kind = 'excludes'`);
+      expect(await declare("requires"), "one-directional requires joins the surviving supersedes").toBeNull();
+      expect(await publish("pub.contra.requires.supersedes", f.examId),
+        "requires is about selection and supersedes about printing, so one tile may do both to the same partner").toBeNull();
+
+      // Scope: a contradiction between one tile here and one tile elsewhere is not this
+      // examination's business, and check 18 refuses the cross-examination edge long before.
+      const elsewhere = await seedValid(client, "contra2");
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'excludes'), ($2, $1, 'excludes'), ($1, $2, 'coexists'), ($2, $1, 'coexists')`,
+        [f.tileId, elsewhere.tileId],
+      ), "the cross-examination pair is storable in draft").toBeNull();
+      const foreign = await publish("pub.contra.foreign", f.examId);
+      expect(foreign?.code, "and is refused").toBe("P0001");
+      expect(foreign?.message, "by the arm that scopes relationships, not by the contradiction arm")
+        .toMatch(/points at contra2.tile|does not offer/);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("gives a concept end one meaning or refuses it, and never both", async () => {
+    // RV-05. Three arms walk relationships through related_tile_id, so a row with that column NULL
+    // was invisible to all of them: a one-directional concept-ended 'excludes' published while the
+    // pair it was meant to resolve kept no declared winner. The correction decides per kind whether
+    // a concept has a determinable meaning, and refuses the ones that have none — because a
+    // relationship that passes publication validation and then does something else at runtime is
+    // the failure this catalogue exists to prevent.
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "cend");
+      const conceptId = (await client.query<{ concept_id: number }>(
+        `SELECT concept_id FROM clinical_tiles WHERE id = $1`, [f.tileId],
+      )).rows[0]!.concept_id;
+      // A concept nothing in this examination produces.
+      const cat = await client.query<{ id: number }>(
+        `INSERT INTO finding_categories (key, label) VALUES ('cend.cat2', 'Second category') RETURNING id`,
+      );
+      const farConcept = await client.query<{ id: number }>(
+        `INSERT INTO finding_definitions (key, category_id, label) VALUES ('cend.con2', $1, 'Unplaced concept') RETURNING id`,
+        [Number(cat.rows[0]!.id)],
+      );
+
+      // 20a — a pair kind at a concept end: refused, and the refusal names the remedy.
+      for (const kind of ["excludes", "coexists", "combines_with"]) {
+        expect(await attempt(
+          `INSERT INTO clinical_tile_relationships (tile_id, related_concept_id, relation_kind)
+           VALUES ($1, $2, $3)`, [f.tileId, conceptId, kind],
+        ), `${kind} to a concept is storable in draft`).toBeNull();
+        const err = await publish(`pub.cend.pair.${kind}`, f.examId);
+        expect(err?.code, `${kind} asserts a pair, so a concept end is refused`).toBe("P0001");
+        expect(err?.message).toMatch(/names a pair rather than a tile/);
+        expect(err?.message, "and the remedy is the one a radiologist can perform")
+          .toMatch(/point it at the tile it excludes or keeps/);
+        await client.query(`DELETE FROM clinical_tile_relationships WHERE related_concept_id IS NOT NULL`);
+      }
+
+      // The remedy, actually driven: the same rule naming a tile resolves against a second member
+      // of the pair and publishes.
+      const pair = await client.query<{ id: number }>(
+        `INSERT INTO clinical_tiles (key, concept_id, label, findings_text, review_state, status)
+         VALUES ('cend.tile2', $1, 'Hemorrhage tile', 'A second fixture sentence.', 'approved', 'active') RETURNING id`,
+        [Number(farConcept.rows[0]!.id)],
+      );
+      const pairId = Number(pair.rows[0]!.id);
+      expect(await attempt(
+        `INSERT INTO clinical_tile_examinations (tile_id, examination_id, section_id, ordinal, created_by)
+         VALUES ($1, $2, $3, 2, 'validation')`, [pairId, f.examId, f.sectionId],
+      )).toBeNull();
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_tile_id, relation_kind)
+         VALUES ($1, $2, 'excludes'), ($2, $1, 'excludes')`, [f.tileId, pairId],
+      )).toBeNull();
+      expect(await publish("pub.cend.pair.fixed", f.examId), "the tile-ended pair publishes").toBeNull();
+
+      // 20b — a directional kind at a concept this examination cannot produce: unsatisfiable.
+      // A third concept, deliberately: `cend.con2` is now carried by the placed cend.tile2 the
+      // remedy step above created, so using it here would prove nothing about reachability — the
+      // arm would find a carrier and stay silent, and the test would pass by reading as a
+      // supported configuration. A fixture that drifts under its own remedy steps is how a gate
+      // arm ends up with no coverage at all.
+      await client.query(`DELETE FROM clinical_tile_relationships`);
+      const nowhereCat = await client.query<{ id: number }>(
+        `INSERT INTO finding_categories (key, label) VALUES ('cend.cat3', 'Third category') RETURNING id`,
+      );
+      const nowhere = await client.query<{ id: number }>(
+        `INSERT INTO finding_definitions (key, category_id, label) VALUES ('cend.con3', $1, 'Concept nothing here produces') RETURNING id`,
+        [Number(nowhereCat.rows[0]!.id)],
+      );
+      for (const kind of ["requires", "parent_child", "supersedes"]) {
+        expect(await attempt(
+          `INSERT INTO clinical_tile_relationships (tile_id, related_concept_id, relation_kind)
+           VALUES ($1, $2, $3)`, [f.tileId, Number(nowhere.rows[0]!.id), kind],
+        ), `${kind} to an unreachable concept is storable in draft`).toBeNull();
+        const err = await publish(`pub.cend.unreachable.${kind}`, f.examId);
+        expect(err?.code, `${kind} needs a concept something here carries`).toBe("P0001");
+        expect(err?.message).toMatch(/no tile placed in this examination carries/);
+        await client.query(`DELETE FROM clinical_tile_relationships WHERE related_concept_id IS NOT NULL`);
+      }
+
+      // And the supported case, which is the reason the column exists: a requirement on a concept
+      // that IS produced here survives the tile being later split, because the concept is the fact.
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_concept_id, relation_kind)
+         VALUES ($1, $2, 'requires')`, [f.tileId, conceptId],
+      )).toBeNull();
+      expect(await publish("pub.cend.supported", f.examId), "a reachable concept requirement publishes").toBeNull();
+
+      // A retired concept is refused the same way a retired option is: the vocabulary row still
+      // exists, so no foreign key fires, and nothing would resolve it at runtime.
+      await client.query(`DELETE FROM clinical_tile_relationships`);
+      expect(await attempt(
+        `INSERT INTO clinical_tile_relationships (tile_id, related_concept_id, relation_kind)
+         VALUES ($1, $2, 'supersedes')`, [f.tileId, Number(farConcept.rows[0]!.id)],
+      )).toBeNull();
+      expect(await attempt(
+        `UPDATE finding_definitions SET deleted_at = NOW() WHERE id = $1`, [Number(farConcept.rows[0]!.id)],
+      ), "retiring the concept is a legal editorial act").toBeNull();
+      const gone = await publish("pub.cend.concept.gone", f.examId);
+      expect(gone?.code, "a rule pointing at a retired concept is refused").toBe("P0001");
+      expect(gone?.message).toMatch(/which has been retired/);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("holds its refusal until COMMIT when the gate is deferred, and rolls back cleanly", async () => {
+    // The trigger is DEFERRABLE INITIALLY IMMEDIATE on purpose, and both halves need their own
+    // proof. Nothing in the suite exercised the deferred path, so a revision that set
+    // INITIALLY DEFERRED would have made every gate refusal land at COMMIT — and a suite that wraps
+    // each test in BEGIN/ROLLBACK would report the gate as passing while it had never once run.
+    //
+    // The deferred proofs come in two forms, because each proves something the other cannot: a
+    // pending row forced to check at `SET CONSTRAINTS … IMMEDIATE` stays inside the rolled-back
+    // transaction and so leaves nothing behind, while the real COMMIT boundary can only be reached
+    // by a COMMIT that actually runs — and that needs its own transaction. A nested BEGIN is a
+    // no-op in PostgreSQL, so the first revision's inner COMMIT ended the OUTER transaction too:
+    // measured, the refusal rolled the fixture away and the next step died on
+    // "catalogue snapshot: examination N has no live row to freeze", which is a harness fault
+    // dressed up as a gate result.
+    const insert = `INSERT INTO clinical_publications (examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot)
+                    VALUES ($1, $2, repeat('d', 64), 1, $3::jsonb)`;
+    const countOf = async (key: string) => (await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM clinical_publications WHERE publication_key = $1`, [key],
+    )).rows[0]!.n;
+
+    // ── 1 and 2: inside one rolled-back transaction ──────────────────────────────────────────
+    await client.query("BEGIN");
+    try {
+      const f = await seedValid(client, "defer");
+      const goodJson = JSON.stringify(
+        buildCatalogueSnapshot(await loadCatalogueRows((s, v) => client.query(s, v), f.examId)),
+      );
+      const bad = JSON.parse(goodJson) as Record<string, unknown>;
+      delete bad.recommendationRules;
+      const badJson = JSON.stringify(bad);
+
+      // 1. The default: the refusal arrives on the statement, while the transaction is still open.
+      const immediate = await attempt(insert, [f.examId, "pub.defer.immediate", badJson]);
+      expect(immediate?.code, "INITIALLY IMMEDIATE refuses at the INSERT").toBe("P0001");
+      expect(immediate?.message).toMatch(/catalogue_snapshot.recommendationRules is absent/);
+
+      // 2. Deferred: the same row is accepted, becomes visible, and is refused the moment the
+      //    pending check is demanded — which proves the arm was pending rather than skipped.
+      await client.query("SAVEPOINT deferred_probe");
+      await client.query("SET CONSTRAINTS clin_publication_gate DEFERRED");
+      await client.query(insert, [f.examId, "pub.defer.staged", badJson]);
+      expect(await countOf("pub.defer.staged"), "a deferred gate lets the statement through").toBe("1");
+      await expect(client.query("SET CONSTRAINTS clin_publication_gate IMMEDIATE"))
+        .rejects.toMatchObject({ code: "P0001" });
+      await client.query("ROLLBACK TO SAVEPOINT deferred_probe");
+      expect(await countOf("pub.defer.staged"), "and rolling the deferred work back stores nothing").toBe("0");
+
+      // 3. The same forced path with a document the gate has no objection to: the deferred arm is
+      //    not a no-op that passes everything, so it has to be shown satisfied as well as shown
+      //    refusing. The bulk-seed path DEFERRABLE exists for (Stage H writing a bundle in any
+      //    order) is proved usable, and then rolled back — an aborted deploy must not leave a
+      //    citable "the catalogue was published" record behind, and the append-only guard means the
+      //    only way to be sure is to never commit one here.
+      await client.query("SAVEPOINT deferred_good");
+      await client.query("SET CONSTRAINTS clin_publication_gate DEFERRED");
+      await client.query(insert, [f.examId, "pub.defer.valid", goodJson]);
+      expect(await countOf("pub.defer.valid"), "a valid document is accepted while deferred").toBe("1");
+      await client.query("SET CONSTRAINTS clin_publication_gate IMMEDIATE");
+      expect(await countOf("pub.defer.valid"), "and the forced check accepts it: the arm ran and found nothing").toBe("1");
+      await client.query("ROLLBACK TO SAVEPOINT deferred_good");
+      expect(await countOf("pub.defer.valid"), "and it too leaves nothing behind").toBe("0");
+    } finally {
+      await client.query("ROLLBACK");
+    }
+
+    // ── 4: the COMMIT boundary itself, in its own transaction ─────────────────────────────────
+    await client.query("BEGIN");
+    const f2 = await seedValid(client, "defercommit");
+    const bad2 = JSON.parse(JSON.stringify(
+      buildCatalogueSnapshot(await loadCatalogueRows((s, v) => client.query(s, v), f2.examId)),
+    )) as Record<string, unknown>;
+    delete bad2.recommendationRules;
+    await client.query("SET CONSTRAINTS clin_publication_gate DEFERRED");
+    await client.query(insert, [f2.examId, "pub.defer.commit.bad", JSON.stringify(bad2)]);
+    expect(await countOf("pub.defer.commit.bad"), "the row is staged inside the committing transaction").toBe("1");
+    let commitFailed: { code?: string } | null = null;
+    try {
+      await client.query("COMMIT");
+    } catch (e) {
+      commitFailed = e as { code?: string };
+    }
+    await client.query("ROLLBACK").catch(() => undefined);
+    expect(commitFailed?.code, "and it is the COMMIT that fails, not the INSERT").toBe("P0001");
+    expect(await countOf("pub.defer.commit.bad"), "so a refused commit stores nothing").toBe("0");
+
+    const after = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM clinical_publications
+        WHERE publication_key IN ('pub.defer.immediate', 'pub.defer.staged', 'pub.defer.valid', 'pub.defer.commit.bad')`,
+    );
+    expect(after.rows[0]!.n, "nothing from this test outlives it, deferred or not").toBe("0");
   });
 
   it("never has to check for a duplicate baseline, because one cannot be stored", async () => {

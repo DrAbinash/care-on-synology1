@@ -72,16 +72,22 @@ clinical_anatomical_sections section identity + an explicit, unique ordinal     
 clinical_normal_slots        the baseline sentence an examination asserts, per slot
 clinical_tiles               one clickable observation, bound to a canonical concept
 clinical_tile_examinations   where a tile appears, and in what position
-clinical_tile_versions       append-only published snapshot
 clinical_tile_parameters     declared parameters, bound to the existing parameter library
 clinical_tile_normal_replacements   which normals this tile retires and restores
 clinical_tile_relationships  parent_child | requires | excludes | supersedes | combines_with
 clinical_combination_rules   A + B → this one consolidated sentence
 clinical_combination_rule_members
 clinical_recommendation_rules conditional advice, with an emit policy
-clinical_publications        what was released, and the hash of its content
-clinical_publication_tiles   which tile at which stored version (rollback + citation)
+clinical_publications        what was released: content hash + the whole frozen catalogue
+clinical_current_publications  (view) the one governing publication per examination
 ```
+
+Eleven tables hold editable content, one holds history, and one view derives the present. The
+history is a single table on purpose: `clinical_tile_versions` and `clinical_publication_tiles`
+existed in earlier revisions and were removed, because `catalogue_snapshot` on the publication row
+already freezes every tile at every column the manifest could name, and a second place that claims
+to remember is a second thing that can be wrong. §2a records what replaced each of them and which
+test proves the replacement holds.
 
 Reused rather than replaced, because it is already the right shape:
 
@@ -137,11 +143,13 @@ tables relied on:
    its own parameter's option list (`(parameter_group_id, default_option_id)` →
    `parameter_options (group_id, id)`). Because a composite key with a NULL half is skipped by
    `MATCH SIMPLE`, each one has a companion CHECK that states the missing half is not legal.
-7. **A published version, publication or manifest row cannot be rewritten or deleted.**
-   `clinical_append_only_guard()` fires `BEFORE UPDATE OR DELETE` on all three. Uniqueness was not
-   enough: the previous revision allowed `UPDATE clinical_tile_versions SET snapshot_json = …`,
-   which changed what "version 1 of this tile" meant while leaving the row — and therefore the
-   citation in a signed report — apparently intact.
+7. **A publication cannot be rewritten or deleted.** `clinical_append_only_guard()` fires
+   `BEFORE UPDATE OR DELETE` on `clinical_publications`, which is now the only history table and
+   therefore the only thing the guarantee has to cover. Uniqueness was not enough: the previous
+   revision also guarded `clinical_tile_versions`, where `UPDATE clinical_tile_versions SET
+   snapshot_json = …` could change what "version 1 of this tile" meant while leaving the row — and
+   therefore the citation in a signed report — apparently intact. That row no longer exists to be
+   rewritten; the frozen document sits in the immutable publication instead.
 8. **Three invariants are facts about a set of rows**, so they live in a deferrable constraint
    trigger (`clinical_publication_gate`) rather than a CHECK or a foreign key: an examination with
    an unplaced live tile may not be published, a combination rule with no required member may not
@@ -162,10 +170,10 @@ unwritable and an adjacent swap impossible, a tile relating to itself, a tile ca
 text, a combination rule whose members are all optional, a `content_hash` holding prose, a
 rewritable version-history row, and an inverted numeric parameter range stored without complaint.
 An eleventh gap — a publication that could name no catalogue content at all, so neither rollback nor
-citation had an answer — was found by reading the model rather than by a probe, and is closed by
-`clinical_publication_tiles`. Every one of these is now an executed test in
-`lib/db/src/schema/clinicalCatalogue.db.test.ts`; the probe script itself was a review artefact and
-is not part of the repository.
+citation had an answer — was found by reading the model rather than by a probe, and is closed by the
+`catalogue_snapshot` document carried on the publication row itself. Every one of these is now an
+executed test in `lib/db/src/schema/clinicalCatalogue.db.test.ts`; the probe script itself was a
+review artefact and is not part of the repository.
 
 Refuted, and therefore not "fixed":
 
@@ -198,17 +206,20 @@ model can hold the case at all.
   senile cerebral atrophy), each bound to its own concept and each placed in its own anatomical
   position in one examination; one `clinical_combination_rules` row targeting `impression` with
   `suppress_members = TRUE` and `requires_only_members = FALSE`; two required members; and a
-  conditional recommendation carrying `emit_policy`. It publishes: the gate raised no refusal, and
-  the manifest recorded both tiles at their stored versions (2 of 2 rows resolving through the FK).
-  So "two observations, one consolidated Impression, no duplicate, no unnecessary recommendation"
-  needs no schema change — what it still needs is the composer that reads these rows, which is
-  deliberately not in this stage.
+  conditional recommendation carrying `emit_policy`. It publishes: the gate raised no refusal. So
+  "two observations, one consolidated Impression, no duplicate, no unnecessary recommendation" needs
+  no schema change — what it still needs is the composer that reads these rows, which is
+  deliberately not in this stage. And both combined sentences are recoverable from the publication
+  itself: the frozen document carries each tile's own `findings_text`, so a citation to this
+  publication resolves both halves of the consolidated line with no second table naming them. That
+  last half is no longer a probe result but an executed test in `clinicalCatalogue.db.test.ts`.
 * **Nothing in this schema can reverse a direction.** `laterality` exists as a column on exactly one
   table (`clinical_normal_slots`, where it is part of the slot identity), there are no generated
-  columns, and the only four triggers in the family are the three append-only guards and the
-  publication gate; neither gate function mentions laterality at all. A midline-shift direction is
-  therefore not a field anything here derives from a side. The honest consequence is the other way
-  round too: the direction survives a re-composition only because the merge layer keeps prose intact
+  columns, and the only two triggers in the family are the append-only guard on
+  `clinical_publications` and the publication gate; neither function mentions laterality at all. A
+  midline-shift direction is therefore not a field anything here derives from a side. The honest
+  consequence is the other way round too: the direction survives a re-composition only because the
+  merge layer keeps prose intact
   — `artifacts/diagnostic-erp/src/lib/reportFieldMerge.ts` no longer folds a sentence onto a similar
   one — not because the schema guarantees it. Which fields are directional stays an owner
   decision, recorded in §"Decisions that are the owner's".
@@ -262,7 +273,7 @@ because one sentence was typed.
 | Stage | Deliverable | Rollback |
 |---|---|---|
 | **A** | this document | revert the PR |
-| **B** | the 13 catalogue tables, forward-only, + 18 examination scope rows as drafts | drop the 13 tables; nothing reads them |
+| **B** | the 12 catalogue tables + the governing-publication view, forward-only, + 18 examination scope rows as drafts | drop the 12 tables and the view; nothing reads them |
 | **C** | observation ownership engine: verb contract, sentence owner index, parameter declaration, undo/redo granularity | in-memory; the ledger envelope version falls back to `absent` |
 | **D** | deterministic composer: observations + catalogue → Findings/Impression/Recommendation, in ordinal order, order-independent | preview harness first (`pnpm preview:reports`), then a flag |
 | **E** | normal baseline replacement from `clinical_normal_slots` | the slot table is additive; restore falls back to `replacedBaseline` |
@@ -342,14 +353,15 @@ answer becomes a row update rather than a redesign.
 
 ## 7. What this PR does and does not do
 
-**Does:** adds fourteen catalogue tables and their Drizzle declarations (`lib/db/src/schema/
+**Does:** adds twelve catalogue tables plus the one view that derives each examination's governing
+publication, with their Drizzle declarations (`lib/db/src/schema/
 clinicalCatalogue.ts`), exports the shared column fragments from `radiologyCatalog.ts` so both
 halves of one catalogue cannot disagree about what soft delete means, seeds the eighteen examination
 scopes as `draft`, and proves the constraints behave as declared on a real database
 (`clinicalCatalogue.db.test.ts`) as well as statically (`clinicalCatalogue.schema.test.ts`). The
 second revision of this stage (the independent review, §2a above) added the same-examination
-composite keys, the runtime slot identity, sparse ordinals, the append-only triggers, the
-publication manifest and the publication gate — the ten defect families reproduced as failures
+composite keys, the runtime slot identity, sparse ordinals, the append-only trigger and the
+publication gate — the ten defect families reproduced as failures
 first, and every guard then verified by deleting it: 36 executed mutations (28 DDL mutations
 replayed against copies of the migrated database, 8 text mutations of the migration file) each
 turned a suite red, 36/36. The two mutants that first survived were not weak constraints but weak
@@ -358,11 +370,12 @@ table it belongs to, and a two-column NOT NULL probe that passed because the oth
 and both guards were rewritten. That battery is a review artefact, not repository content; what
 stays in the repo is the behaviour it forced.
 
-Two things this stage deliberately leaves open, because inventing them here would be a clinical
-decision dressed as a schema decision: a publication's manifest need not yet cover *every* tile in
-the examination (the publisher that writes it is Stage C code, and a coverage rule asserted before
-the publisher exists cannot be tested against it), and the hash algorithm is not fixed by the
-schema — the CHECK pins its shape (64 lowercase hex), not its computation.
+One thing this stage deliberately leaves open, because inventing it here would be a clinical
+decision dressed as a schema decision: the hash algorithm is not fixed by the schema — the CHECK
+pins its shape (64 lowercase hex), not its computation. A second item that used to sit in this
+paragraph, "a publication's manifest need not cover *every* tile in the examination", is closed:
+the third pass replaced the manifest with a document that gate check 14 compares to the live rows in
+both directions, so partial coverage is now refused rather than left to a future publisher.
 
 **Does not:** read from any of it, change any report, touch billing, registration, cashier,
 accounting, PACS/DICOM, Orthanc or any hospital integration; deploy; or merge. The workspace behaves
@@ -466,8 +479,9 @@ off. `CaseStatus` has exactly one member while there is no composer, so a case c
 a compile error.
 
 **Verification.** 126 tests pass with 32 skipped on a freshly migrated database; `tsc -p lib/db` is
-clean; `check-migration-order` is clean; the api-server append-only census is unchanged (53 tests)
-because no new history table or trigger was added. Fourteen mutations were attempted this round and
+clean; `check-migration-order` is clean; the api-server append-only census was unchanged at that
+revision (53 tests) because no history table or trigger was added — the fourth pass below *did*
+change it, and records what it changed. Fourteen mutations were attempted this round and
 all were killed — three on check 16, four on checks 17–18, five on the acceptance spec's guards and
 two on test-harness helpers. Three of them initially survived, and every one of those was a weak
 test rather than a strong constraint: a deprecation assertion that left the rule at an ordinal so it
@@ -482,3 +496,130 @@ Fazekas-and-atrophy line, which normals a hemorrhage retires, and the absent-cho
 whether a `deprecated` tile keeps its placement at publication; and whether the Recommendations field
 is owned by `target_field='recommendation'` combination rules, by `clinical_recommendation_rules`, or
 by an explicit precedence between the two.
+
+## 9. Stage B fourth pass — the independent review, and the six corrections it justified
+
+A second independent review read Stage B as a stranger would: the model, the gate, the snapshot
+module, the migration and the tests, without the history of why each line was written. Findings came
+back as RV-01…RV-09. Each was re-verified against the code before anything changed, and the two that
+did not survive verification are recorded below, because a review that is never contradicted is never
+actually read.
+
+**RV-01 — the drift detector existed and nothing called it.** Confirmed, and it was the worst-shaped
+finding in the round: `hashOfStoredSnapshot()` recomputed the hash of a stored publication, and the
+only thing that ever invoked it was a test asserting the function exists. So the repository could say
+"publication drift is detected" while the detection had no caller and no consumer. The correction
+builds the read side properly and refuses to overclaim it:
+
+* `verifyStoredPublication(row)` returns a verdict over four things — a `snapshot_version` this build
+  can read, the stored document re-hashing to the stored `content_hash`, every domain of
+  `SNAPSHOT_DOMAINS` present and shaped with an identity, and the document being scoped to the
+  examination the row names. `assertStoredPublication()` is the throwing form.
+* `loadVerifiedPublication()` and `loadCurrentPublication()` run the SQL through the exported
+  `PUBLICATION_LOAD_QUERY` / `CURRENT_PUBLICATION_LOAD_QUERY` and hand back a verified document or
+  throw. A missing row is a refusal, not a null, because a report citing publication 7 in a database
+  where 7 does not exist is the same class of defect as a report citing one whose hash disagrees.
+* `recomputeAgainstLiveRows()` is the drift question itself — does this stored publication still
+  describe the live catalogue — answered without changing anything it reads.
+* **What is NOT claimed:** no runtime consumer exists in Stage B, so no runtime verification exists
+  either. The claim is bounded by an executed census (`gives a Stage C consumer no way to read a
+  publication without verifying it`) that walks the production sources under the api-server routes,
+  the api-server services and `lib/db/src`, and fails on any file that names a publication without
+  calling the verifier. Measured today that census finds **zero** naming files, which is the honest
+  form of "the verifier is ready, the runtime is not". The first Stage C consumer makes the number
+  non-zero by adding a line to that assertion, and then either calls the verifier or CI names it.
+
+**RV-02 — a required parameter could default to an option that no longer exists.** Confirmed, and the
+previous revision of this repository had *pinned the wrong behaviour as correct*: the test read "a
+default IS an answer: it publishes" for a default pointing at a soft-deleted option. Gate check 11b
+refuses it now, in all three reachable shapes — an option that has been retired, an option whose
+parameter group has been retired, an option whose status is not `active` — naming the parameter, the
+tile, the option's label and key, and which of the three it found. The fourth shape the review asked
+about, an option from a foreign group, is proved to need no arm: `clin_tile_param_option_in_group_fkey`
+answers the UPDATE with `23503` and the state cannot be stored. Every refusal is paired with the
+remedy it names, driven in the same transaction.
+
+**RV-03 — two tables duplicated the snapshot.** Confirmed by reading the writers: nothing in the
+product ever inserted into `clinical_tile_versions` or `clinical_publication_tiles`, while
+`catalogue_snapshot` already froze every column of every tile a citation could name. Both tables are
+**removed**, with their triggers, their Drizzle declarations, their types and their composite foreign
+keys; the catalogue is now eleven editable tables plus one history table plus one view. The
+requirements they were meant to serve are re-proved rather than asserted: *citation* is
+`resolves the exact wording a publication froze, from the document alone`, and *rollback* stays
+`restores the whole published configuration from the frozen document alone`. That one history table is
+also the reason `clinical_append_only_guard()` now guards one table instead of three, which the
+api-server census records out loud rather than letting a shrunken list look like a passing test. A test
+asserts the **absence** of both retired tables and their Drizzle exports, because without it a later
+revision can re-add a competing history and every other test still passes.
+
+**RV-04 — two relationship kinds could contradict each other silently.** Confirmed: `clin_tile_rel_uq`
+keys on (tile, kind, target), so `excludes` and `coexists` on one pair are two rows, both publishable,
+and the composer must pick — where picking is a fact about traversal order, which is exactly the class
+PR #1014 measured on the live workspace. Gate check 19 refuses four spellings (`excludes`/`coexists`,
+`excludes`/`combines_with`, `excludes`/`requires`, `coexists`/`supersedes`) and, on purpose, does not
+refuse two: `excludes` with `supersedes` names which of two retired sentences wins, and `requires` with
+`supersedes` speaks about selection and about printing. Both allowed combinations are pinned so the arm
+cannot quietly widen into a ban on more than one relationship per pair.
+
+**RV-05 — concept-ended relationships were validated by nobody.** Confirmed, and structural: checks 6,
+7, 13 and 18 all walk relationships through `related_tile_id`, so a row with that column NULL was
+invisible to every one of them. The brief's alternative was "implement complete semantics or prohibit",
+and the honest split is by what a concept can *mean*: `excludes`, `coexists` and `combines_with` assert
+a fact about a pair, so a concept end leaves the pair's second member implicit and check 20a refuses it
+with the remedy stated. `requires`, `parent_child` and `supersedes` point somewhere and a concept is a
+legitimate target — it survives a tile being split, which is why the column exists — so check 20b
+accepts them, but only for a live concept that a tile *placed in this examination* carries, because an
+unsatisfiable requirement is advice that never fires while the catalogue says it does. Neither half is
+a comment: each is executed against a real publication.
+
+**RV-09 — which publication governs a report.** Answered with a derived rule, not a stored flag.
+`clinical_current_publications` is `DISTINCT ON (examination_id) … ORDER BY examination_id, id DESC`,
+so the governing publication is the greatest id, and gate check 0's `PERFORM … FOR UPDATE` on the
+examination row is what makes greatest id mean *last to commit* rather than *first to start* (`NOW()`
+is the transaction's start, so `published_at` cannot rank them and was not used). A new test binds it
+end to end: an unpublished examination is refused rather than silently handed the live rows; the
+session resolves exactly one identity; a second publication moves the governing row but not the
+document the first session reads; `recomputeAgainstLiveRows()` reports the older publication as
+superseded while reporting the current one as clean, which is how an upgrade stays a deliberate act
+instead of an event that happens to a report; and both rows survive in commit order, so "which
+catalogue did this report use, and has it been superseded" is a query. Stage C stores the resolved
+`publication_id` in the report's own storage — the versioned draft envelope already exists, so neither
+a new table nor a new catalogue column is required, and the catalogue holds scopes rather than
+studies.
+
+**Two findings that did not survive verification.**
+
+* *"Check 14's membership comparison means the frozen content is authenticated."* It never did, and
+  the review's own report said so — but the correction is not the paragraph that was already there.
+  Check **14b** now compares the document's seven load-bearing columns against the live rows, with
+  `IS DISTINCT FROM`, a deterministic `ORDER BY (key, ordinal)` and a refusal that quotes both values.
+  The test that had pinned a fabricated sentence publishing is inverted, and the mutant that removes
+  the comparison is killed by it.
+* *"The gate's row lock makes a stale publisher impossible."* Refuted by construction: the lock
+  serialises the two *writes*, and cannot retroactively refresh a document built before another
+  transaction landed. The stale publisher is refused by 14b comparing the document to the newest
+  committed rows, which is why the test is named for what the lock cannot do.
+
+**Harness faults found while doing this, because they are the interesting part.** A
+`return rows[0].id as number` in the fixture helper made `Promise<number>` a fiction — node-postgres
+returns BIGSERIAL as a string — so a snapshot lookup by id found nothing and the new citation test
+failed for a reason that looked like a bug in the verifier. A concept fixture that had been made
+*reachable* by the preceding remedy step nearly let check 20b pass without ever firing. And the
+deferred-gate test nested a `BEGIN`/`COMMIT` inside the suite's own transaction, where PostgreSQL
+treats the inner `BEGIN` as a no-op and the first `COMMIT` ends the outer one — so the fixture vanished
+mid-test and the failure read as "the gate refused at commit". All three were found by running the
+code, not by reading it.
+
+**Verification, this pass.** 131 tests pass with 12 skipped across the six catalogue files (152
+passing, 32 skipped for the whole `lib/db` project); `tsc -p lib/db --noEmit` reports 0 errors; the
+api-server append-only census is 53 passing with its list corrected from seven guarded tables to five.
+The mutation battery had to be rebuilt before it meant anything: the first attempt edited
+`migrations/*.sql` and re-ran the suites, and 10 of 19 mutants "survived" — because the gate is a
+stored *function*, and a file edit does not touch the database the tests talk to. Every DDL mutant is
+now replayed into a template clone of the migrated database. Result: **14 of 14 DDL mutants killed**
+(check 0's lock; 11b's three disjuncts and the whole arm; 14b's comparison and two of its seven
+columns; 19's spelling set narrowed and widened; 20a's kind list; 20b's carrier test; the view's
+ordering and its per-examination collapse), and **9 of 9** source-level mutants killed (verifier hash
+comparison, missing-row refusals, the loader's view routing, a re-added history table, the fixture's
+`as number` lie, and a publication reader that bypasses the verifier). `tmp/` holds both drivers; they
+are review artefacts and are not committed.

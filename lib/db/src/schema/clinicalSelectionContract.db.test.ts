@@ -404,6 +404,13 @@ describe.skipIf(!dbUrl)("the selection-state contract is expressible, and the am
         canonicalize(before.placements),
       );
 
+      // And the reordered catalogue is a PUBLISHABLE catalogue, not merely a differently-ordered
+      // document. Without this the test proves a serialization property and could sit on a fixture
+      // the gate would refuse: "resolution is independent of order" is a claim about clinical
+      // states a radiologist can actually reach, so both states have to be admissible.
+      expect(await publish("sep.before", examId), "the original order publishes").toBeNull();
+      expect(await publish("sep.after", examId), "the re-ordered catalogue publishes too").toBeNull();
+
       // And the converse: turning a declared coexistence into a declared exclusion leaves every
       // ordinal alone.
       await client.query(

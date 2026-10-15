@@ -4,8 +4,12 @@
  * WHAT THIS IS FOR
  * ----------------
  * `clinical_publications.catalogue_snapshot` is the only artefact that says what the whole
- * published clinical configuration was. The tile-version manifest
- * (`clinical_publication_tiles`) answers "which wording was live" for tiles and nothing else:
+ * published clinical configuration was — and, since Stage B r4, the only artefact that says it.
+ * Before it there were two others: a per-tile version history, and a publication→tile manifest whose
+ * foreign key pointed into it. Both are gone, because this document freezes every column of every
+ * row it claims (measured: a tile entry carries all twenty), so a manifest row was a second copy of
+ * a fact the publication already owned and the version history had no writer at all. The question
+ * the manifest was built to answer — which wording was live — is answered by this document alone:
  * sections and their order, normal wording, parameters and their defaults, replacement and
  * conflict relationships, combination rules with their members, recommendation rules and every
  * review state are edited in place in their own tables, so a historical report could not be
@@ -16,6 +20,16 @@
  * compares this document against the live rows domain by domain; the two are proved to agree by
  * clinicalCatalogue.db.test.ts, which publishes a builder-produced document and then perturbs
  * one domain at a time.
+ *
+ * THE READ SIDE IS HERE TOO
+ * -------------------------
+ * verifyStoredPublication(), loadVerifiedPublication() and loadCurrentPublication() are the only
+ * supported way to get a publication back out of the database. They exist because check 14 compares
+ * MEMBERSHIP and not column values, which the migration says out loud: a consumer that reads
+ * `catalogue_snapshot` with its own SELECT gets no hash check, no version check and no completeness
+ * check, and the document it composes from is then only as trustworthy as the writer that produced
+ * it. The block above verifyStoredPublication() states exactly what that guard does and does not
+ * prove — including that no runtime path calls it yet, because Stage B has no runtime path.
  *
  * WHY A CONVENTION LIVES IN CODE AND NOT IN PROSE
  * -----------------------------------------------
@@ -423,10 +437,230 @@ export function publicationColumnsFor(rows: CatalogueRows): {
  * Recomputation from a document already stored: what the drift detector compares against a fresh
  * snapshot of the live rows. Not byte-comparing jsonb on purpose — Postgres may reorder keys, so
  * equality is defined by the canonical text, exactly as it was at publication.
+ *
+ * It has one caller, verifyStoredPublication(), and that is the caller the migration's check 14
+ * comment names. Before Stage B r4 it had none: the file delegated value-level integrity to a
+ * function nothing invoked, which is how "the publisher is the guard" became a sentence about an
+ * intention rather than about code.
  */
 export function hashOfStoredSnapshot(catalogueSnapshot: unknown): string {
   return catalogueContentHash(catalogueSnapshot);
 }
+
+// ── The read side: what a consumer of a stored publication has to check ────────────────────────
+//
+// WHY THIS EXISTS AT ALL
+// Check 14 of clinical_publication_gate() compares the document's MEMBERSHIP against the live rows
+// and says, in the migration's own words, that it does not compare column values — so a document
+// carrying the right identities with fabricated wording is accepted, and its content_hash matches it
+// because the hash is computed over that same fabricated document. That is a deliberate trade (no
+// SQL reimplementation of the serializer, no pgcrypto), and the compensating control it names is a
+// stored publication's hash being recomputed from its stored jsonb. Nothing did that.
+//
+// WHAT IT CAN AND CANNOT CATCH, stated because a reviewer who assumes otherwise will be wrong:
+// a hash recomputed from a document matches that document by construction, so this detects a
+// publication whose two columns disagree — a publisher that hashed one document and stored another,
+// a value that did not survive the jsonb round trip, a row written by something that bypassed
+// publicationColumnsFor(). It does NOT detect a publication whose document agrees with itself but
+// disagrees with the live catalogue; that is the drift check, and recomputeAgainstLiveRows() is
+// where a caller with a connection performs it.
+//
+// WHAT IS NOT IMPLEMENTED, said plainly rather than implied: no runtime path calls any of this yet,
+// because Stage B has no runtime path — nothing in the product reads a publication. The verifier is
+// ready for integration and clinicalCatalogue.db.test.ts is the executable contract that says Stage C
+// must integrate it: every assertion in that suite is written against a publication read back from a
+// real server through loadVerifiedPublication()/loadCurrentPublication(), so a composer that reads
+// `catalogue_snapshot` directly instead of through them has no cover to claim.
+export const SUPPORTED_SNAPSHOT_VERSIONS: readonly number[] = [SNAPSHOT_VERSION];
+
+/** A publication exactly as `SELECT * FROM clinical_publications` hands it back. */
+export type PublicationRow = {
+  id: unknown;
+  examination_id: unknown;
+  publication_key: unknown;
+  content_hash: unknown;
+  snapshot_version: unknown;
+  catalogue_snapshot: unknown;
+};
+
+export type PublicationVerdict =
+  | {
+      ok: true;
+      publicationId: number;
+      examinationId: number;
+      publicationKey: string;
+      contentHash: string;
+      snapshotVersion: number;
+      document: SnapshotDocument;
+    }
+  | { ok: false; publicationId: number | null; failures: string[] };
+
+/** Thrown by the assert* form, so a consumer that does not want a result object still cannot ignore one. */
+export class PublicationIntegrityError extends Error {
+  readonly publicationId: number | null;
+  readonly failures: readonly string[];
+
+  constructor(publicationId: number | null, failures: readonly string[]) {
+    super(
+      `publication ${publicationId ?? "unknown"} failed integrity verification: ${failures.join("; ")} ` +
+        "(care-v4 §1: a publication that does not match its own hash is not evidence of anything)",
+    );
+    this.name = "PublicationIntegrityError";
+    this.publicationId = publicationId;
+    this.failures = failures;
+  }
+}
+
+function asInt(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * One stored publication, checked without touching the database.
+ *
+ * Four refusals, and each is a distinct way a row can look like a publication while answering a
+ * different question than the one a report is asking:
+ *   1. a serialization convention this build does not know. Reading a version 2 document with the
+ *      version 1 rules is guessing, and the version column exists so nobody has to guess.
+ *   2. a document whose stored hash does not describe it.
+ *   3. a domain missing or of the wrong shape. A partial document hashes perfectly — the hash covers
+ *      what is there, not what should be — so without this check a publication that lost
+ *      `recommendationRules` entirely would verify, and the report it composed would silently have
+ *      no advice section. The vocabulary is SNAPSHOT_DOMAINS itself, so this cannot fall out of step
+ *      with what the publisher writes.
+ *   4. a document scoped to a different examination than the row names, which is the check-14 rule
+ *      re-applied on the read side: a publication is evidence about ONE examination.
+ */
+export function verifyStoredPublication(row: PublicationRow): PublicationVerdict {
+  const publicationId = asInt(row.id);
+  const examinationId = asInt(row.examination_id);
+  const failures: string[] = [];
+
+  const snapshotVersion = asInt(row.snapshot_version);
+  if (snapshotVersion === null || !SUPPORTED_SNAPSHOT_VERSIONS.includes(snapshotVersion)) {
+    failures.push(`snapshot_version ${String(row.snapshot_version)} is not a convention this build can read (${SUPPORTED_SNAPSHOT_VERSIONS.join(", ")})`);
+  }
+
+  if (typeof row.content_hash !== "string" || !/^[a-f0-9]{64}$/.test(row.content_hash)) {
+    failures.push(`content_hash ${String(row.content_hash)} is not 64 lowercase hex`);
+  }
+
+  if (row.catalogue_snapshot === null || row.catalogue_snapshot === undefined || typeof row.catalogue_snapshot !== "object") {
+    failures.push("catalogue_snapshot is not a JSON object");
+  } else {
+    if (typeof row.content_hash === "string") {
+      const recomputed = hashOfStoredSnapshot(row.catalogue_snapshot);
+      if (recomputed !== row.content_hash) {
+        failures.push(`catalogue_snapshot hashes to ${recomputed}, not the stored ${row.content_hash}`);
+      }
+    }
+    const document = row.catalogue_snapshot as Record<string, unknown>;
+    for (const spec of SNAPSHOT_DOMAINS) {
+      const field = document[spec.field];
+      if (spec.shape === "object") {
+        if (field === null || field === undefined || Array.isArray(field) || typeof field !== "object") {
+          failures.push(`${spec.field} is ${Array.isArray(field) ? "an array" : field === undefined || field === null ? "absent" : `a ${typeof field}`}, but a publication requires it as an object`);
+          continue;
+        }
+        const frozenExam = asInt((field as Record<string, unknown>).id);
+        if (examinationId !== null && frozenExam !== null && frozenExam !== examinationId) {
+          failures.push(`catalogue_snapshot.examination.id is ${String(frozenExam)} but the publication row names examination ${String(examinationId)}`);
+        }
+        continue;
+      }
+      if (!Array.isArray(field)) {
+        failures.push(`${spec.field} is ${field === undefined || field === null ? "absent" : `a ${typeof field}`}, but a publication requires it as an array`);
+        continue;
+      }
+      for (const [index, entry] of field.entries()) {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          failures.push(`${spec.field}[${index}] is not an object`);
+        } else if (typeof (entry as Record<string, unknown>).identity !== "string" || (entry as Record<string, unknown>).identity === "") {
+          failures.push(`${spec.field}[${index}] carries no identity`);
+        }
+      }
+    }
+  }
+
+  if (failures.length > 0) return { ok: false, publicationId, failures };
+
+  return {
+    ok: true,
+    publicationId: publicationId as number,
+    examinationId: examinationId as number,
+    publicationKey: String(row.publication_key),
+    contentHash: row.content_hash as string,
+    snapshotVersion: snapshotVersion as number,
+    document: row.catalogue_snapshot as SnapshotDocument,
+  };
+}
+
+/** The throwing form, for a consumer that must not compose from an unverified document. */
+export function assertStoredPublication(row: PublicationRow): Extract<PublicationVerdict, { ok: true }> {
+  const verdict = verifyStoredPublication(row);
+  if (!verdict.ok) throw new PublicationIntegrityError(verdict.publicationId, verdict.failures);
+  return verdict;
+}
+
+/**
+ * How a publication is read back. Named here because the column list is part of the contract: a
+ * consumer that SELECTs `catalogue_snapshot` alone cannot verify anything, and a consumer that
+ * SELECT * will be handed columns this function does not check.
+ */
+export const PUBLICATION_LOAD_QUERY = `SELECT id, examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot
+                                        FROM clinical_publications WHERE id = $1`;
+
+/** The governing publication of one examination, by the rule clinical_current_publications states. */
+export const CURRENT_PUBLICATION_LOAD_QUERY = `SELECT id, examination_id, publication_key, content_hash, snapshot_version, catalogue_snapshot
+                                                 FROM clinical_current_publications WHERE examination_id = $1`;
+
+type Query = (sqlText: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+
+/**
+ * Read one publication by id and verify it. A missing row is a failure, not a null: a report that
+ * cites publication 7 in a database where 7 does not exist is the same class of defect as a report
+ * citing a publication whose hash does not match, and a caller that had to branch on null would
+ * eventually branch wrongly.
+ */
+export async function loadVerifiedPublication(query: Query, publicationId: number): Promise<Extract<PublicationVerdict, { ok: true }>> {
+  const rows = (await query(PUBLICATION_LOAD_QUERY, [publicationId])).rows;
+  if (rows.length === 0) {
+    throw new PublicationIntegrityError(publicationId, [`no publication with id ${publicationId} exists in this database`]);
+  }
+  return assertStoredPublication(rows[0] as PublicationRow);
+}
+
+/** Read the governing publication of an examination and verify it. One row, or a refusal. */
+export async function loadCurrentPublication(query: Query, examinationId: number): Promise<Extract<PublicationVerdict, { ok: true }>> {
+  const rows = (await query(CURRENT_PUBLICATION_LOAD_QUERY, [examinationId])).rows;
+  if (rows.length === 0) {
+    throw new PublicationIntegrityError(null, [`examination ${examinationId} has no published catalogue`]);
+  }
+  if (rows.length > 1) {
+    throw new PublicationIntegrityError(null, [`clinical_current_publications returned ${rows.length} governing publications for examination ${examinationId}`]);
+  }
+  return assertStoredPublication(rows[0] as PublicationRow);
+}
+
+/**
+ * The other half of integrity: does a stored publication still describe the catalogue that is live
+ * right now. This is NOT a validity check — a publication stays exactly as true of the moment it was
+ * made as the clock runs — and it is what a publisher calls before re-publishing unchanged content,
+ * and what an administrator calls to ask "has the published configuration drifted?".
+ *
+ * It needs a connection, so it is a function over the two pure ones rather than a rule inside
+ * verifyStoredPublication().
+ */
+export async function recomputeAgainstLiveRows(
+  query: Query,
+  stored: Extract<PublicationVerdict, { ok: true }>,
+): Promise<{ drifted: boolean; liveContentHash: string }> {
+  const rows = await loadCatalogueRows(query, stored.examinationId);
+  const liveContentHash = catalogueContentHash(buildCatalogueSnapshot(rows));
+  return { drifted: liveContentHash !== stored.contentHash, liveContentHash };
+}
+
 
 /**
  * The ten scoped reads that produce the rows this module freezes, each taking the examination id

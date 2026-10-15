@@ -86,10 +86,17 @@
 --     manifest also use.
 --   • Rollback and "which catalogue built this report" had no answer, because a
 --     publication recorded a hash and nothing else. This one was found by reading the
---     model, not by a probe. clinical_publication_tiles is the manifest: which tile at
---     which stored version, and it is a real foreign key onto clinical_tile_versions
---     (tile_id, version), so a publication cannot name a wording that was never
---     snapshotted.
+--     model, not by a probe. The r2 answer was clinical_publication_tiles — a manifest of
+--     which tile at which stored version, foreign-keyed onto a per-tile version history.
+--     The r3 answer replaced both with the canonical catalogue_snapshot on the
+--     publication row, and r4 removed the manifest and the version history with it: the
+--     document freezes every column of every row it claims (measured: a frozen tile entry
+--     carries all twenty), so a manifest row was a second copy of a fact the publication
+--     already owned, and the version history had no writer at all — nothing in the
+--     product inserted into it, and no trigger maintained the `version` it keyed on.
+--     clinicalCatalogue.db.test.ts is what proves the removal cost nothing: it cites a
+--     publication and resolves every sentence of every tile it froze, from the document
+--     alone, after the live rows have been edited underneath it.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- ── 0. Prerequisite: the parameter library's own composite key ───────────────
@@ -302,6 +309,14 @@ CREATE TABLE IF NOT EXISTS clinical_tiles (
                        CHECK (provenance_kind IN ('unrecorded','admin','quick_select_seed','content_pack','yaml_pack','migrated','radiologist_authored')),
   provenance_ref       TEXT,
   status               TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','deprecated')),
+  -- An EDIT counter, on the model of the B1/B2 vocabulary this catalogue reuses: the
+  -- authoring path is meant to bump it and reject a save whose expected version no longer
+  -- matches, which is how radiologyCatalog's versionedUpdate() works today. Nothing bumps
+  -- it yet, because v4 has no authoring path — measured, a fresh catalogue is stored at
+  -- version 1 and stays there. It is NOT history, and after Stage B r4 nothing in this file
+  -- claims it is: history is the publication's catalogue_snapshot, which freezes this
+  -- column along with the other nineteen, so a restored tile comes back carrying the
+  -- counter it had instead of a guess at it.
   version              INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
   created_by           TEXT,
   updated_by           TEXT,
@@ -360,23 +375,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS clin_tile_exam_uq ON clinical_tile_examination
 CREATE UNIQUE INDEX IF NOT EXISTS clin_tile_exam_ordinal_uq ON clinical_tile_examinations (examination_id, COALESCE(section_id, 0), ordinal) WHERE deleted_at IS NULL AND ordinal IS NOT NULL;
 CREATE INDEX IF NOT EXISTS clin_tile_exam_exam_idx ON clinical_tile_examinations (examination_id, ordinal);
 CREATE INDEX IF NOT EXISTS clin_tile_exam_tile_idx ON clinical_tile_examinations (tile_id);
-
--- ── 6. Tile version snapshot ─────────────────────────────────────────────────
--- Append-only. version on the row itself overwrites, so "what did the radiologist
--- publish?" would be unrecoverable — and a signed report must be able to name the
--- wording it was composed from years later. Nothing here is edited in place.
-CREATE TABLE IF NOT EXISTS clinical_tile_versions (
-  id            BIGSERIAL PRIMARY KEY,
-  tile_id       BIGINT NOT NULL REFERENCES clinical_tiles (id) ON DELETE RESTRICT,
-  version       INTEGER NOT NULL CHECK (version >= 1),
-  snapshot_json JSONB NOT NULL,
-  change_note   TEXT,
-  published_by  TEXT,
-  published_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS clin_tile_versions_uq ON clinical_tile_versions (tile_id, version);
-CREATE INDEX IF NOT EXISTS clin_tile_versions_tile_idx ON clinical_tile_versions (tile_id, published_at);
 
 -- ── 7. Declarative parameter contract ────────────────────────────────────────
 -- Today a tile's parameters are inferred by regex from the sentence prose
@@ -448,8 +446,13 @@ CREATE INDEX IF NOT EXISTS clin_tile_replaces_slot_idx ON clinical_tile_normal_r
 -- ── 9. Selection relationships ───────────────────────────────────────────────
 -- Parent/child, requires, excludes, supersedes. This is the relationship the pack
 -- format already declares (`extends`) and the importer silently flattens away, so
--- it has never survived into a table. Exactly one target: a tile, or a concept for
--- rules that must hold however the tile is later split.
+-- it has never survived into a table. Exactly one target: a tile, or a concept for the
+-- directional kinds only. 'excludes', 'coexists' and 'combines_with' assert a fact about a PAIR,
+-- so a concept end leaves the pair's second member implicit and its resolution depends on
+-- traversal order; publication refuses those three at a concept end (check 20a). 'requires',
+-- 'parent_child' and 'supersedes' point somewhere, and a concept is a meaningful "somewhere" —
+-- "however this tile is later split, it needs that finding" — so those three are accepted, but
+-- only for a concept this examination can actually produce (check 20b).
 CREATE TABLE IF NOT EXISTS clinical_tile_relationships (
   id                 BIGSERIAL PRIMARY KEY,
   tile_id            BIGINT NOT NULL REFERENCES clinical_tiles (id) ON DELETE RESTRICT,
@@ -705,38 +708,46 @@ CREATE TABLE IF NOT EXISTS clinical_publications (
 CREATE UNIQUE INDEX IF NOT EXISTS clin_publications_key_uq ON clinical_publications (publication_key);
 CREATE INDEX IF NOT EXISTS clin_publications_exam_idx ON clinical_publications (examination_id, published_at);
 
--- ── 13. Publication manifest: which tile, at which stored version ────────────
--- A publication that records only a hash cannot be rolled back and cannot be cited.
--- That was the state this file shipped in: §F of the review asked whether rollback can
--- restore a complete catalogue state and whether a report can name the catalogue
--- version it was composed from, and on the tables above both answers were no. The
--- manifest is the missing link — one row per tile in the published set, pointing at a
--- row of clinical_tile_versions by (tile_id, version), so:
---   • rollback is a re-application of the named versions, not a guess from prose;
---   • a signed report can cite publication_key and resolve the exact wording of every
---     sentence it printed, years later, which is the same guarantee B-10/#944 and
---     #981/#983 were built to give images;
---   • the foreign key onto (tile_id, version) means a publication cannot name a
---     wording that was never snapshotted, and clinical_append_only_guard means the
---     wording it does name cannot be rewritten afterwards.
--- examination_id is not repeated here: it is the publication's own, and a tile that is
--- not placed in that examination is refused by clinical_publication_gate.
-CREATE TABLE IF NOT EXISTS clinical_publication_tiles (
-  id              BIGSERIAL PRIMARY KEY,
-  publication_id  BIGINT NOT NULL REFERENCES clinical_publications (id) ON DELETE RESTRICT,
-  tile_id         BIGINT NOT NULL REFERENCES clinical_tiles (id) ON DELETE RESTRICT,
-  tile_version    INTEGER NOT NULL CHECK (tile_version >= 1),
-  ordinal         INTEGER,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  -- Only a version that was actually snapshotted may be published.
-  CONSTRAINT clin_pub_tile_version_fkey
-    FOREIGN KEY (tile_id, tile_version)
-    REFERENCES clinical_tile_versions (tile_id, version) ON DELETE RESTRICT,
-  CONSTRAINT clin_pub_tile_ordinal_positive_chk CHECK (ordinal IS NULL OR ordinal > 0)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS clin_pub_tile_uq ON clinical_publication_tiles (publication_id, tile_id);
-CREATE INDEX IF NOT EXISTS clin_pub_tile_tile_idx ON clinical_publication_tiles (tile_id);
-CREATE INDEX IF NOT EXISTS clin_pub_tile_pub_idx ON clinical_publication_tiles (publication_id, ordinal);
+-- ── 13. Which publication governs an examination ─────────────────────────────
+-- A reporting session needs exactly one answer to "which published catalogue am I
+-- composing from", and it needs that answer to stop changing underneath it. The
+-- previous revision offered none: clinical_publications carries no is_current column,
+-- and cannot — the table is append-only, so a mutable flag on it would be a row that
+-- the guard refuses to let anyone set, including the publisher who is trying to be
+-- honest. Anything else would be a second table of state that can disagree with the
+-- publications themselves.
+--
+-- So the governing publication is DERIVED, in one place, by one rule: the greatest id
+-- for that examination. Three properties make that rule safe rather than convenient:
+--
+--   • id is assigned by the publisher's own INSERT, which now takes the examination's
+--     FOR UPDATE lock inside clinical_publication_gate (check 0). Two publishers of one
+--     examination cannot hold the lock at once, so id order is commit order, and the
+--     greatest id is the last publication that reached the database — not merely the
+--     one that started earliest. published_at cannot do this: NOW() is the transaction's
+--     START time, so two concurrent publications can commit with timestamps that
+--     disagree with the order they landed in.
+--   • One row per examination is structural, not hoped for: DISTINCT ON (examination_id)
+--     over the publications of that examination. clinicalCatalogue.db.test.ts asserts
+--     the cardinality and the supersession, on a real server, rather than trusting this
+--     sentence.
+--   • A session that resolved the view once and stored the resulting id is immune to
+--     every later publication, because the row it points at is immutable and no derived
+--     rule can move a stored id. Reopening a report reads the id the report already
+--     holds — it never consults this view. That is why binding a report to a publication
+--     is a Stage C act on the report tables, not a schema change hiding here.
+--
+-- Rollback is therefore a forward append, which is what an append-only history demands:
+-- restore the rows, publish again, and the new id governs while every superseded
+-- publication stays exactly as citable as it was. Changing which publication a live
+-- report is composed from is therefore a deliberate UPDATE of that report's own stored
+-- binding, written by the report's audit trail — a Stage C act on report storage, since
+-- nothing here has a column for it yet — and never something a catalogue edit can do
+-- silently.
+CREATE OR REPLACE VIEW clinical_current_publications AS
+SELECT DISTINCT ON (p.examination_id) p.*
+  FROM clinical_publications p
+ ORDER BY p.examination_id, p.id DESC;
 
 -- ── 14. Two invariants that are facts about a SET of rows ───────────────────
 -- A CHECK sees one row; a foreign key sees one column pair. Three of the rules this
@@ -762,14 +773,16 @@ CREATE INDEX IF NOT EXISTS clin_pub_tile_pub_idx ON clinical_publication_tiles (
 CREATE OR REPLACE FUNCTION clinical_append_only_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  -- The version history and the publication record are the catalogue's audit trail:
-  -- a signed report cites them to say what it was composed from. If they can be
-  -- rewritten, the citation is worth nothing. Measured against a database built by this
-  -- file: UPDATE on clinical_tile_versions replaced the stored snapshot, so "version 1
-  -- of this tile" silently became different text with no trace.
+  -- The publication record is the catalogue's audit trail: a signed report cites it to
+  -- say what it was composed from. If it can be rewritten, the citation is worth nothing.
+  -- Measured against a database built by an earlier revision of this file: UPDATE on the
+  -- per-tile version history replaced the stored snapshot, so "version 1 of this tile"
+  -- silently became different text while a signed report's citation looked intact. The
+  -- history table is gone; the guard is what remains, and it is what protects the one
+  -- historical source of truth that is left — the publication's own catalogue_snapshot.
   RAISE EXCEPTION '% is append-only: % is refused (care-v4 clinical catalogue)',
     TG_TABLE_NAME, TG_OP
-    USING HINT = 'Insert a new row instead. A published wording that must change gets a new version, and the publication that cited the old one keeps citing it.';
+    USING HINT = 'Insert a new row instead. A published wording that must change gets a new publication, and the report that cited the old one keeps citing it.';
 END;
 $$;
 
@@ -783,6 +796,28 @@ BEGIN
   -- here. The column is NOT NULL, so such a row cannot reach this function at all, and
   -- the reason it is NOT NULL is in the comment on clinical_publications above: an arm
   -- that returns early is an arm every one of the fifteen checks below stops existing for.
+  --
+  -- 0. Publishers of the same examination are serialised here, on the examination row.
+  --    The previous revision only *recommended* this ("concurrent edits are serialised by
+  --    locking the examination row first"), and a recommendation a trigger does not
+  --    enforce is a protocol. Measured against a database built by this file: two
+  --    sessions each read the catalogue, one committed a wording change, and the other's
+  --    stale publication was accepted with no refusal at all — because every check below
+  --    compares the document against the rows *as this transaction sees them*, and a
+  --    READ COMMITTED statement sees whatever was committed before it started.
+  --    Locking inside the gate is the only place this can be enforced: every publisher
+  --    passes through this trigger whether it means to or not, and a publisher that
+  --    forgot the lock is not a publisher that behaves differently, it is one that
+  --    publishes a document no gate arm can distinguish from a fresh one.
+  --    This also makes the publication `id` a commit-ordered handle for
+  --    clinical_current_publications below: the second publisher cannot take the lock (or
+  --    an id) until the first has committed, so the greatest id is the last publication
+  --    that reached the database, not merely the one that started earliest.
+  --    Lock the examination row FIRST in your own transaction, or do not lock it at all;
+  --    a publisher that locks tiles first and the examination later deadlocks against
+  --    this statement, which is a refusal, not a corruption.
+  PERFORM 1 FROM clinical_examinations WHERE id = exam FOR UPDATE;
+
   --
   -- 1. Every live tile placed in the examination must have a position, and no
   --    position may be claimed twice. The second cannot happen (the unique index
@@ -990,10 +1025,26 @@ BEGIN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4: a replacement whose normal is gone leaves the abnormality printed beside a baseline nobody declared)', problem;
   END IF;
 
-  -- 11. A required choice parameter must have something to choose from. A required
-  --     'option'-typed parameter with no default and an empty (or absent) option list is a
-  --     sentence with a hole in it: the composer either prints the placeholder or drops the
-  --     clause, and both are the defect the parameter contract exists to remove.
+  -- 11. A required choice parameter must have something to choose from, and the answer it
+  --     names must be an answer that still exists. Two refusals, because two different
+  --     mistakes make a required parameter unanswerable:
+  --
+  --     11a. no default and an empty (or absent) option list — a sentence with a hole in
+  --          it: the composer either prints the placeholder or drops the clause, and both
+  --          are the defect the parameter contract exists to remove.
+  --     11b. a default that names an option nobody can choose. Measured: this arm did not
+  --          exist, and a required 'option' parameter whose `default_option_id` pointed at
+  --          a soft-deleted option published with no complaint. The composite foreign key
+  --          cannot catch it — `ON DELETE RESTRICT` fires on a real DELETE, and retiring a
+  --          catalogue option is an UPDATE of `deleted_at` — and neither can the service
+  --          layer, because radiologyCatalog's deleteParameterOption() blocks only
+  --          `finding_parameter_bindings` and has never heard of clinical_tile_parameters.
+  --          Publication is therefore the only point where the pair can be checked, and a
+  --          default that is retired, or is still 'draft', or is 'deprecated', is a token
+  --          the composer substitutes with text that no longer exists in the vocabulary.
+  --          A foreign *group* needs no arm here: clin_tile_param_option_in_group_fkey
+  --          already refuses the row at INSERT (measured, 23503), which is why this arm
+  --          joins on the group rather than re-checking it.
   SELECT 'parameter ' || tp.key || ' on tile ' || k.key || ' is required but has no answer to choose from'
     INTO problem
     FROM clinical_tile_examinations p
@@ -1009,6 +1060,26 @@ BEGIN
    LIMIT 1;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §9: an unanswered required parameter)', problem;
+  END IF;
+
+  SELECT 'parameter ' || tp.key || ' on tile ' || k.key || ' defaults to ' || o.label || ' ('
+         || o.key || '), '
+         || CASE WHEN o.deleted_at IS NOT NULL THEN 'an option that has been retired'
+                 WHEN g.deleted_at IS NOT NULL THEN 'an option of a parameter group that has been retired'
+                 ELSE 'an option that is ' || o.status || ', not active' END
+    INTO problem
+    FROM clinical_tile_examinations p
+    JOIN clinical_tiles k ON k.id = p.tile_id AND k.deleted_at IS NULL
+    JOIN clinical_tile_parameters tp ON tp.tile_id = k.id AND tp.deleted_at IS NULL
+    JOIN parameter_options o ON o.id = tp.default_option_id
+    JOIN parameter_groups g ON g.id = tp.parameter_group_id
+   WHERE p.examination_id = exam AND p.deleted_at IS NULL
+     AND tp.is_required AND tp.data_type = 'option'
+     AND tp.default_option_id IS NOT NULL
+     AND (o.deleted_at IS NOT NULL OR g.deleted_at IS NOT NULL OR o.status <> 'active')
+   ORDER BY o.id LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §9: the default answer of a required parameter must be a live, active option of its own group)', problem;
   END IF;
 
   -- 12. Two active rules may not claim the same required observation for the same field.
@@ -1099,23 +1170,38 @@ BEGIN
   --     member of a rule that is not in the document is meaningless, and the flattened set
   --     comparison below still sees every one of them.
   --
-  --     WHAT THIS ARM DOES NOT CERTIFY, stated because a reviewer who assumes it does will be
-  --     wrong in a dangerous direction: check 14 compares MEMBERSHIP — which identities appear in
-  --     each domain — and not column values. A document that carries the right identities with
-  --     fabricated wording passes. Measured: a publication whose tiles entry said "A sentence
-  --     nobody approved." was accepted while the live row still said something else, and its
-  --     content_hash matched the fabricated document because the hash is self-consistent by
-  --     construction. The reason is not oversight. Only the publisher's serializer produces the
-  --     canonical bytes (sorted keys at every depth, integer-shaped strings normalised, entries
-  --     ordered by (ordinal, identity)), so a SQL reimplementation would be a second source of
-  --     truth for the hash and would refuse every legitimate publication the first time the two
-  --     disagreed; and pgcrypto, while AVAILABLE on the box, is NOT installed (installed_version
-  --     NULL), and CREATE EXTENSION is a privileged act a migration cannot assume. The real guards
-  --     are therefore on the publisher side — publicationColumnsFor() hashes precisely the document
-  --     it stores, so no caller can store a document and a hash that disagree — and
-  --     hashOfStoredSnapshot() is the drift detector for a stored publication. What this arm does
-  --     guarantee is the thing a rollback needs: every row the document claims to freeze exists,
-  --     is live, is scoped to this examination, and appears exactly once.
+  --     WHAT THIS ARM CERTIFIES, AND WHAT THE ARM AFTER IT CERTIFIES. Stated precisely, because a
+  --     reviewer who assumes check 14 alone authenticates content would trust a publication for the
+  --     wrong reason. Check 14 compares MEMBERSHIP — which identities appear in each domain — and
+  --     nothing else. On its own that was demonstrably not enough: measured on the previous
+  --     revision, a publication whose tiles entry said "A sentence nobody approved." was accepted
+  --     while the live row still said something else, and its content_hash matched the fabricated
+  --     document because the hash is self-consistent by construction. Check 14b now closes that for
+  --     the columns that decide what a report prints (a tile's four sentence fields, its review
+  --     state, its lifecycle status and its conflict group), by comparing the stored entry against
+  --     the live row the same key names — no serializer involved, so no second source of truth for
+  --     the hash. What is still NOT certified anywhere in SQL: the prose of the other nine domains
+  --     (a normal slot's rendered_text or a combination rule's combined_text can drift the same
+  --     way, and is the next addition when a publisher is shown to need it), and the canonical
+  --     vocabulary this document deliberately does not freeze.
+  --
+  --     The hash is still NOT recomputed here, and that is not an oversight. Only the publisher's
+  --     serializer produces the canonical bytes (sorted keys at every depth, integer-shaped strings
+  --     normalised, entries ordered by (ordinal, identity)), so a SQL reimplementation would be a
+  --     second source of truth for the hash and would refuse every legitimate publication the first
+  --     time the two disagreed; and pgcrypto, while AVAILABLE on the box, is NOT installed
+  --     (installed_version NULL), and CREATE EXTENSION is a privileged act a migration cannot
+  --     assume. hash↔document agreement is therefore enforced on the write side by
+  --     publicationColumnsFor(), which hashes precisely the document it stores so no caller can
+  --     store a document and a hash that disagree, and on the read side by
+  --     verifyStoredPublication(), which recomputes hashOfStoredSnapshot() over the stored jsonb
+  --     and refuses a publication whose two columns disagree before handing the document to anyone.
+  --     Before Stage B r4 that read-side function existed and nothing called it, which made this
+  --     paragraph a description of an intention rather than of code; clinicalCatalogue.db.test.ts
+  --     is what makes it a description of code.
+  --
+  --     What check 14 does guarantee, and what a rollback needs: every row the document claims to
+  --     freeze exists, is live, is scoped to this examination, and appears exactly once.
   --
   --     Scope of each domain is stated in the FROM clause, and lib/db/src/
   --     cataloguePublicationSnapshot.ts is the only other place those ten predicates exist.
@@ -1303,6 +1389,63 @@ BEGIN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a publication must freeze exactly the examination''s live row set, and a duplicated entry makes one catalogue hash differently depending on the publisher''s loop order)', problem;
   END IF;
 
+  -- 14b. The document must say what the rows say, not merely name them.
+  --     Check 14 compares MEMBERSHIP, and its own comment used to stop there: measured, a
+  --     publication whose tiles entry said "A sentence nobody approved." was accepted while the
+  --     live row still said something else, and its content_hash matched the fabricated document
+  --     because the hash is self-consistent by construction. That left the clinic's only defence
+  --     against a stale publisher being "the publisher is honest", and a stale publisher is not
+  --     dishonest — it is a second administrator who saved while the first one was composing the
+  --     document, which check 0's row lock makes impossible for the WRITE but cannot undo for the
+  --     READ that already happened.
+  --     So this arm compares VALUES, for the seven columns that change what a report prints:
+  --     the four sentence fields, the review state, the lifecycle status and the conflict group.
+  --     Joining on `key` rather than `id` is deliberate — `key` is the identity check 14 has just
+  --     proven to correspond, so a document cannot dodge this arm by re-numbering the ids.
+  --     What remains uncovered, and why: the other nine domains' prose (a normal slot's
+  --     rendered_text or a combination rule's combined_text drifts today only in the same way a
+  --     tile does, and is the next seven-column addition when a publisher is proven to need it),
+  --     and the canonical vocabulary this document does not freeze at all. Values are still not
+  --     re-HASHED here — pgcrypto is not installed for this repository and a SQL reimplementation
+  --     of the canonicaliser would be a second source of truth for the hash. That half stays on
+  --     the read side, in verifyStoredPublication().
+  SELECT 'catalogue_snapshot freezes tile ' || doc.key || ' with ' || d.column_name || ' = '
+         || quote_literal(left(d.doc_value, 60)) || ', but the live row says '
+         || quote_literal(left(d.live_value, 60))
+    INTO problem
+    FROM (
+      SELECT t ->> 'key'                     AS key,
+             t ->> 'findings_text'           AS findings_text,
+             t ->> 'impression_text'         AS impression_text,
+             t ->> 'recommendation_text'     AS recommendation_text,
+             t ->> 'technique_text'          AS technique_text,
+             t ->> 'review_state'            AS review_state,
+             t ->> 'status'                  AS status,
+             t ->> 'conflict_group'          AS conflict_group
+        FROM jsonb_array_elements(NEW.catalogue_snapshot -> 'tiles') t
+    ) doc
+    JOIN clinical_tiles k ON k.key = doc.key AND k.deleted_at IS NULL
+    JOIN clinical_tile_examinations p ON p.tile_id = k.id
+                                     AND p.examination_id = exam
+                                     AND p.deleted_at IS NULL
+    CROSS JOIN LATERAL (
+      VALUES (1, 'findings_text',       doc.findings_text,       k.findings_text),
+             (2, 'impression_text',     doc.impression_text,     k.impression_text),
+             (3, 'recommendation_text', doc.recommendation_text, k.recommendation_text),
+             (4, 'technique_text',      doc.technique_text,      k.technique_text),
+             (5, 'review_state',        doc.review_state,        k.review_state),
+             (6, 'status',              doc.status,              k.status),
+             (7, 'conflict_group',      doc.conflict_group,      k.conflict_group)
+    ) AS d(ordinal, column_name, doc_value, live_value)
+   WHERE d.doc_value IS DISTINCT FROM d.live_value
+   -- Deterministic for the same reason check 14 sorts its diff: one broken document must name the
+   -- same tile and the same column on every run, or the refusal cannot be asserted against.
+   ORDER BY doc.key, d.ordinal
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §1: a snapshot that does not match the rows it freezes is a fabrication, not a version)', problem;
+  END IF;
+
   -- 15. An unsatisfiable recommendation trigger. 'parameter_value' reads a parameter off
   --     a tile: with no tile there is nothing to read it from, and with a parameter key
   --     the tile does not define the condition can never become true. Either way the
@@ -1387,8 +1530,9 @@ BEGIN
   --     on a tile the radiologist can never select here. Checks 4 and 5 already require the same
   --     scoping for replacement edges and combination members; relationships were the remaining
   --     edge type, and they are the one that decides what gets evicted.
-  --     A concept end is allowed: finding_definitions is the canonical vocabulary, deliberately
-  --     not frozen here, and it is examination-wide by design.
+  --     A concept end never reaches this arm, because a concept is not another examination's
+  --     property to scope: checks 20a and 20b decide what a concept end may mean, and this filter
+  --     is about tile ends only. If Stage C changes that, this filter has to grow a concept branch.
   SELECT 'relationship from tile ' || a.key || ' points at ' || b.key
          || ', ' || CASE WHEN b.deleted_at IS NOT NULL
                          THEN 'a tile that has been retired'
@@ -1411,6 +1555,115 @@ BEGIN
     RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: a resolution between tiles one of which this examination cannot offer)', problem;
   END IF;
 
+  -- 19. Two relationship kinds that cannot both be true of one pair.
+  --     clin_tile_rel_uq keys on (tile, relation_kind, target), which is what makes more
+  --     than one statement about a single pair storable at all — and the snapshot module
+  --     has always said that 'excludes' beside 'coexists' is a contradiction rather than a
+  --     refinement. Measured: a pair carrying both published with no complaint, and a pair
+  --     carrying 'excludes' one way and 'coexists' the other published too. A composer
+  --     handed both has to pick one, and the pick is a fact about traversal order, which is
+  --     exactly the class of defect PR #1014 measured on the live workspace.
+  --     Two combinations are deliberately NOT refused: 'excludes' beside 'supersedes' (both
+  --     say the pair does not print together, and supersedes adds which one prints, so it
+  --     refines rather than contradicts), and 'requires' beside 'supersedes' (selection and
+  --     printing are different acts — a tile can require another and then replace its
+  --     sentence).
+  WITH rel AS (
+    SELECT LEAST(r.tile_id, r.related_tile_id)    AS lo,
+           GREATEST(r.tile_id, r.related_tile_id) AS hi,
+           r.relation_kind                        AS kind
+      FROM clinical_tile_relationships r
+      JOIN clinical_tile_examinations pa
+        ON pa.tile_id = r.tile_id AND pa.examination_id = exam AND pa.deleted_at IS NULL
+      JOIN clinical_tile_examinations pb
+        ON pb.tile_id = r.related_tile_id AND pb.examination_id = exam AND pb.deleted_at IS NULL
+     WHERE r.deleted_at IS NULL AND r.related_tile_id IS NOT NULL
+   )
+  SELECT 'tiles ' || ka.key || ' and ' || kb.key || ' are declared both '
+         || x.kind || ' and ' || y.kind || ', which cannot both be true of one pair'
+    INTO problem
+    FROM rel x
+    JOIN rel y ON y.lo = x.lo AND y.hi = x.hi AND y.kind <> x.kind
+    JOIN (VALUES ('excludes', 'coexists'),
+                 ('excludes', 'combines_with'),
+                 ('excludes', 'requires'),
+                 ('coexists', 'supersedes')) bad(first_kind, second_kind)
+      ON  (x.kind = bad.first_kind  AND y.kind = bad.second_kind)
+       OR (x.kind = bad.second_kind AND y.kind = bad.first_kind)
+    JOIN clinical_tiles ka ON ka.id = x.lo
+    JOIN clinical_tiles kb ON kb.id = x.hi
+   ORDER BY x.lo, x.hi, x.kind, y.kind
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: one pair cannot be both retired and retained)', problem;
+  END IF;
+
+  -- 20. A concept-ended relationship is publishable only where a concept has one determinable
+  --     meaning, and is refused where it does not. Measured, this table used to accept a
+  --     one-directional concept-ended 'excludes' with no complaint, because checks 6, 7 and 13
+  --     each walk relationships through related_tile_id and so cannot see a row with that column
+  --     NULL: the pair the rule was meant to resolve kept no declared winner, which is the exact
+  --     state check 6 exists to refuse, reached from the other side of the same table. The
+  --     alternative — teaching 6, 7 and 13 to resolve a concept through tile membership — decides
+  --     clinical semantics nobody has ratified for a relationship that no shipped content uses.
+  --     So the correction splits the six kinds by what a concept can actually mean, and each half
+  --     is enforced rather than documented:
+  --
+  --     20a. 'excludes', 'coexists' and 'combines_with' assert a fact about a PAIR. A concept end
+  --          leaves the pair's second member implicit, so whether the rule fires depends on which
+  --          tile the composer visits first. They name tiles; anything else is refused.
+  --     20b. 'requires', 'parent_child' and 'supersedes' point somewhere, and "somewhere" can be a
+  --          concept: "this tile is not reportable unless a finding of that concept is present"
+  --          survives a tile being split, which is the reason the column exists. Those three are
+  --          accepted — but only for a concept this examination can actually produce, because a
+  --          requirement nothing here satisfies is advice that never fires while the catalogue
+  --          says it does, which is the same failure check 15 refuses for parameters.
+  SELECT 'relationship ' || r.relation_kind || ' from tile ' || a.key || ' points at '
+         || COALESCE('concept ' || f.key, 'concept #' || r.related_concept_id::text)
+         || ', which names a pair rather than a tile'
+    INTO problem
+    FROM clinical_tile_relationships r
+    JOIN clinical_tiles a ON a.id = r.tile_id
+    LEFT JOIN finding_definitions f ON f.id = r.related_concept_id AND f.deleted_at IS NULL
+   WHERE r.deleted_at IS NULL AND r.related_concept_id IS NOT NULL
+     AND r.relation_kind IN ('excludes','coexists','combines_with')
+     AND EXISTS (
+       SELECT 1 FROM clinical_tile_examinations p
+        WHERE p.tile_id = r.tile_id AND p.examination_id = exam AND p.deleted_at IS NULL
+     )
+   ORDER BY r.id
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: point it at the tile it excludes or keeps, or the pair has no second member to resolve against)', problem;
+  END IF;
+
+  SELECT 'relationship ' || r.relation_kind || ' from tile ' || a.key || ' points at '
+         || CASE WHEN f.id IS NULL
+                 THEN 'concept #' || r.related_concept_id::text || ', which has been retired'
+                 ELSE 'concept ' || f.key || ', which no tile placed in this examination carries'
+            END
+    INTO problem
+    FROM clinical_tile_relationships r
+    JOIN clinical_tiles a ON a.id = r.tile_id
+    LEFT JOIN finding_definitions f ON f.id = r.related_concept_id AND f.deleted_at IS NULL
+   WHERE r.deleted_at IS NULL AND r.related_concept_id IS NOT NULL
+     AND r.relation_kind IN ('requires','parent_child','supersedes')
+     AND EXISTS (
+       SELECT 1 FROM clinical_tile_examinations p
+        WHERE p.tile_id = r.tile_id AND p.examination_id = exam AND p.deleted_at IS NULL
+     )
+     AND (f.id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM clinical_tile_examinations q
+            JOIN clinical_tiles k ON k.id = q.tile_id AND k.deleted_at IS NULL
+             WHERE q.examination_id = exam AND q.deleted_at IS NULL
+               AND k.concept_id = r.related_concept_id
+          ))
+   ORDER BY r.id
+   LIMIT 1;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'clinical catalogue cannot be published: % (care-v4 §2: a concept rule nothing in this examination can satisfy)', problem;
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -1418,22 +1671,9 @@ $$;
 -- DROP then CREATE, because Postgres has no CREATE OR REPLACE TRIGGER before 14 and the
 -- clinic builds on 16: IF NOT EXISTS would be wrong here (a stale trigger body from an
 -- earlier revision of this file must not survive).
-DROP TRIGGER IF EXISTS clin_tile_versions_append_only ON clinical_tile_versions;
-CREATE TRIGGER clin_tile_versions_append_only
-  BEFORE UPDATE OR DELETE ON clinical_tile_versions
-  FOR EACH ROW EXECUTE FUNCTION clinical_append_only_guard();
-
 DROP TRIGGER IF EXISTS clin_publications_append_only ON clinical_publications;
 CREATE TRIGGER clin_publications_append_only
   BEFORE UPDATE OR DELETE ON clinical_publications
-  FOR EACH ROW EXECUTE FUNCTION clinical_append_only_guard();
-
--- The manifest is part of the citation, not a cache of it: if a manifest row could be
--- re-pointed at a different tile version, "this report was composed from publication
--- P, which named version 3" would stop meaning anything.
-DROP TRIGGER IF EXISTS clin_pub_tiles_append_only ON clinical_publication_tiles;
-CREATE TRIGGER clin_pub_tiles_append_only
-  BEFORE UPDATE OR DELETE ON clinical_publication_tiles
   FOR EACH ROW EXECUTE FUNCTION clinical_append_only_guard();
 
 -- DEFERRABLE so a bulk Stage-H seed can SET CONSTRAINTS ... DEFERRED and write the

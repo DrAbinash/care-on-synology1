@@ -1,13 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CARE CLINICAL REPORTING ENGINE v4.0 — Stage B: the unified clinical catalogue.
 //
-// Declares the fourteen tables created by
+// Declares the twelve tables created by
 // `migrations/zzzz_add_clinical_catalogue_v4.sql`, which extend the B1/B2 canonical
 // catalog (radiologyCatalog.ts) with the entities it does not model: an examination,
 // an anatomical section with an explicit ordinal, a normal-observation slot, an
-// authoring tile, a published tile version, a declarative parameter contract,
-// selection relationships, combination rules, recommendation rules, a publication and
-// the publication's tile-version manifest.
+// authoring tile, a declarative parameter contract, selection relationships,
+// combination rules, recommendation rules, and a publication carrying the canonical
+// catalogue_snapshot.
+//
+// TWELVE, not fourteen. Stage B r2 added a per-tile version history and a
+// publication→tile manifest so that "which wording was live" would have a row behind it;
+// r3 froze every column of every published row into the publication document itself,
+// which made both redundant, and r4 removed them. Nothing else in this file changed.
+// clinicalCatalogue.db.test.ts is what proves the removal cost nothing: it cites a
+// publication and resolves every sentence it froze, from the document alone.
+//
+// The one catalogue object drizzle cannot declare is the view
+// `clinical_current_publications`, which answers "which publication governs this
+// examination" with one row. drizzle has no view in a pgTable sense, so the SQL is the
+// definition and clinicalCatalogue.schema.test.ts asserts its shape — including the
+// ORDER BY that makes it a rule rather than a coincidence.
 //
 // DORMANT BY DESIGN: no runtime code reads these tables yet. The read path arrives
 // in Stage C behind a feature flag, so this PR cannot change any report, bill or
@@ -206,26 +219,6 @@ export const clinicalTileExaminationsTable = pgTable(
   }),
 );
 
-// ── 6. Tile version snapshot (append-only) ───────────────────────────────────
-export const clinicalTileVersionsTable = pgTable(
-  "clinical_tile_versions",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    tileId: fk("tile_id").notNull()
-      .references(() => clinicalTilesTable.id, { onDelete: "restrict" }),
-    version: integer("version").notNull(),
-    snapshotJson: jsonb("snapshot_json").notNull(),
-    changeNote: text("change_note"),
-    publishedBy: text("published_by"),
-    publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    versionUq: uniqueIndex("clin_tile_versions_uq").on(t.tileId, t.version),
-    tileIdx: index("clin_tile_versions_tile_idx").on(t.tileId, t.publishedAt),
-  }),
-);
-
 // ── 7. Declarative parameter contract ────────────────────────────────────────
 export const clinicalTileParametersTable = pgTable(
   "clinical_tile_parameters",
@@ -419,31 +412,6 @@ export const clinicalPublicationsTable = pgTable(
   }),
 );
 
-// ── 13. Publication manifest: which tile at which stored version ─────────────
-// Without this row a publication is a hash. Rollback would have nothing to restore and
-// a signed report could not name the wording it was composed from. Append-only like the
-// version it points at: clin_pub_tiles_append_only refuses UPDATE and DELETE.
-export const clinicalPublicationTilesTable = pgTable(
-  "clinical_publication_tiles",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    publicationId: fk("publication_id").notNull()
-      .references(() => clinicalPublicationsTable.id, { onDelete: "restrict" }),
-    tileId: fk("tile_id").notNull()
-      .references(() => clinicalTilesTable.id, { onDelete: "restrict" }),
-    tileVersion: integer("tile_version").notNull(),
-    // Composite in SQL (clin_pub_tile_version_fkey → clinical_tile_versions (tile_id,
-    // version)): a publication may only name a wording that was actually snapshotted.
-    ordinal: integer("ordinal"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pubTileUq: uniqueIndex("clin_pub_tile_uq").on(t.publicationId, t.tileId),
-    tileIdx: index("clin_pub_tile_tile_idx").on(t.tileId),
-    pubIdx: index("clin_pub_tile_pub_idx").on(t.publicationId, t.ordinal),
-  }),
-);
-
 // ── Inferred types ───────────────────────────────────────────────────────────
 export type ClinicalExamination = typeof clinicalExaminationsTable.$inferSelect;
 export type ClinicalAnatomicalSection = typeof clinicalAnatomicalSectionsTable.$inferSelect;
@@ -451,7 +419,6 @@ export type ClinicalNormalSlot = typeof clinicalNormalSlotsTable.$inferSelect;
 export type ClinicalTile = typeof clinicalTilesTable.$inferSelect;
 export type InsertClinicalTile = typeof clinicalTilesTable.$inferInsert;
 export type ClinicalTileExaminationPlacement = typeof clinicalTileExaminationsTable.$inferSelect;
-export type ClinicalTileVersion = typeof clinicalTileVersionsTable.$inferSelect;
 export type ClinicalTileParameter = typeof clinicalTileParametersTable.$inferSelect;
 export type ClinicalTileNormalReplacement = typeof clinicalTileNormalReplacementsTable.$inferSelect;
 export type ClinicalTileRelationship = typeof clinicalTileRelationshipsTable.$inferSelect;
@@ -459,4 +426,3 @@ export type ClinicalCombinationRule = typeof clinicalCombinationRulesTable.$infe
 export type ClinicalCombinationRuleMember = typeof clinicalCombinationRuleMembersTable.$inferSelect;
 export type ClinicalRecommendationRule = typeof clinicalRecommendationRulesTable.$inferSelect;
 export type ClinicalPublication = typeof clinicalPublicationsTable.$inferSelect;
-export type ClinicalPublicationTile = typeof clinicalPublicationTilesTable.$inferSelect;

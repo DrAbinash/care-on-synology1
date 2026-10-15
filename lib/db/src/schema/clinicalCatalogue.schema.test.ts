@@ -18,21 +18,23 @@
  * Nothing here opens a database.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { getTableColumns } from "drizzle-orm";
 import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
 
 import {
   clinicalExaminationsTable, clinicalAnatomicalSectionsTable, clinicalNormalSlotsTable,
-  clinicalTilesTable, clinicalTileExaminationsTable, clinicalTileVersionsTable,
+  clinicalTilesTable, clinicalTileExaminationsTable,
   clinicalTileParametersTable, clinicalTileNormalReplacementsTable,
   clinicalTileRelationshipsTable, clinicalCombinationRulesTable,
   clinicalCombinationRuleMembersTable, clinicalRecommendationRulesTable,
-  clinicalPublicationsTable, clinicalPublicationTilesTable,
+  clinicalPublicationsTable,
 } from "./clinicalCatalogue";
 import * as catalogue from "./clinicalCatalogue";
-import { MEMBER_FIELD, SNAPSHOT_DOMAINS } from "../cataloguePublicationSnapshot";
+import {
+  CURRENT_PUBLICATION_LOAD_QUERY, MEMBER_FIELD, PUBLICATION_LOAD_QUERY, SNAPSHOT_DOMAINS,
+} from "../cataloguePublicationSnapshot";
 
 const HERE = __dirname;
 // lib/db/src/schema → repo root is four levels, not the five a file under
@@ -63,7 +65,6 @@ const TABLES: Array<[string, PgTable]> = [
   ["clinical_normal_slots", clinicalNormalSlotsTable],
   ["clinical_tiles", clinicalTilesTable],
   ["clinical_tile_examinations", clinicalTileExaminationsTable],
-  ["clinical_tile_versions", clinicalTileVersionsTable],
   ["clinical_tile_parameters", clinicalTileParametersTable],
   ["clinical_tile_normal_replacements", clinicalTileNormalReplacementsTable],
   ["clinical_tile_relationships", clinicalTileRelationshipsTable],
@@ -71,13 +72,21 @@ const TABLES: Array<[string, PgTable]> = [
   ["clinical_combination_rule_members", clinicalCombinationRuleMembersTable],
   ["clinical_recommendation_rules", clinicalRecommendationRulesTable],
   ["clinical_publications", clinicalPublicationsTable],
-  ["clinical_publication_tiles", clinicalPublicationTilesTable],
 ];
 
 /** Tables that are history rather than editable content: append-only, no soft delete. */
-const APPEND_ONLY = new Set([
-  "clinical_tile_versions", "clinical_publications", "clinical_publication_tiles",
-]);
+const APPEND_ONLY = new Set(["clinical_publications"]);
+
+/**
+ * The two catalogue tables Stage B r4 removed, because the publication document already
+ * froze everything they held and one of them had no writer at all. Asserting their absence
+ * is the point: without it a later revision can re-add a competing history table and every
+ * remaining test still passes, which is how two sources of truth become three.
+ */
+const RETIRED_HISTORY_TABLES: Array<{ table: string; drizzleExport: string }> = [
+  { table: "clinical_tile_versions", drizzleExport: "clinicalTileVersionsTable" },
+  { table: "clinical_publication_tiles", drizzleExport: "clinicalPublicationTilesTable" },
+];
 
 /**
  * The eighteen examination scopes §21 of the brief asks for, keyed the way the seed
@@ -179,19 +188,42 @@ function createTableItems(sqlText: string, table: string): string[] {
 }
 
 describe("v4 catalogue — every declared table is created by the migration", () => {
-  it("declares exactly the fourteen Stage B tables, no more", () => {
+  it("declares exactly the twelve Stage B tables, no more", () => {
     const declared = Object.values(catalogue).filter((v) => v instanceof PgTable).length;
-    expect(declared, "PgTable exports in clinicalCatalogue.ts").toBe(14);
-    expect(TABLES).toHaveLength(14);
+    expect(declared, "PgTable exports in clinicalCatalogue.ts").toBe(12);
+    expect(TABLES).toHaveLength(12);
   });
 
-  it("creates all fourteen tables idempotently, with bigserial PKs", () => {
+  it("creates all twelve tables idempotently, with bigserial PKs", () => {
     for (const [name] of TABLES) {
       expect(SCHEMA_SQL, `${name} CREATE TABLE`).toContain(`CREATE TABLE IF NOT EXISTS ${name} (`);
     }
-    // 14 tables, one bigserial primary key each — the count is the guard against a
+    // 12 tables, one bigserial primary key each — the count is the guard against a
     // table being added to drizzle and quietly omitted from the SQL.
-    expect(SCHEMA_SQL.match(/BIGSERIAL PRIMARY KEY/g)?.length).toBe(14);
+    expect(SCHEMA_SQL.match(/BIGSERIAL PRIMARY KEY/g)?.length).toBe(12);
+  });
+
+  it("keeps exactly one immutable historical source, by keeping the retired ones retired", () => {
+    // The publication's catalogue_snapshot is the catalogue's history. r2 also created a
+    // per-tile version history and a publication→tile manifest; r4 removed both, because
+    // the document freezes every column of every row it claims, so a manifest row was a
+    // second copy of a fact the publication already owned — and measured, the version
+    // history had no writer anywhere in the product, while no trigger maintained the
+    // `version` its unique key turned on. A publication that could be cited from two
+    // places is a publication with two answers.
+    for (const { table, drizzleExport } of RETIRED_HISTORY_TABLES) {
+      // Absence asserted against SCHEMA_STMTS, comment-stripped. This file's own prose
+      // names the tables it removed, and an absence check over the raw text would match the
+      // words that describe the removal instead of the removal.
+      expect(SCHEMA_STMTS, `${table} must not be created again`).not.toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+      expect(SCHEMA_STMTS, `${table} must carry no index`).not.toContain(`ON ${table} `);
+      expect(SCHEMA_STMTS, `${table} must carry no trigger`).not.toContain(`ON ${table};`);
+      expect(catalogue, `${table} must not be declared in drizzle`).not.toHaveProperty(drizzleExport);
+    }
+    // The one that remains, and what makes it sufficient: the document carries the tile's
+    // own status and review_state, so a citation resolves wording without a second table.
+    const frozen = SNAPSHOT_DOMAINS.find((d) => d.field === "tiles");
+    expect(frozen?.shape).toBe("array");
   });
 
   it("creates every column drizzle declares, in the table that declares it", () => {
@@ -418,18 +450,92 @@ describe("v4 catalogue — constraints that make the model deterministic", () =>
     expect(SCHEMA_STMTS).not.toMatch(/CREATE\s+EXTENSION/i);
   });
 
-  it("records which tile at which stored version a publication released", () => {
-    // Without the manifest a publication is a hash: rollback has nothing to restore and a
-    // signed report cannot name the wording it was composed from.
-    const body = createTableBody(SCHEMA_STMTS, "clinical_publication_tiles");
-    expect(body.length, "clinical_publication_tiles is created").toBeGreaterThan(0);
-    expect(body).toContain("REFERENCES clinical_publications (id) ON DELETE RESTRICT");
-    // The version is a real foreign key onto the version table, not a bare integer, so a
-    // publication cannot cite a wording that was never snapshotted.
-    expect(body).toContain("CONSTRAINT clin_pub_tile_version_fkey");
-    expect(stmtText(SCHEMA_SQL))
-      .toContain("FOREIGN KEY (tile_id, tile_version) REFERENCES clinical_tile_versions (tile_id, version) ON DELETE RESTRICT");
-    expect(SCHEMA_SQL).toContain("CREATE UNIQUE INDEX IF NOT EXISTS clin_pub_tile_uq ON clinical_publication_tiles (publication_id, tile_id)");
+  it("derives one governing publication per examination, by a stated rule", () => {
+    // "Which publication governs this report" has to have exactly one answer, and it cannot
+    // be a mutable is_current column: clinical_publications is append-only, so the guard
+    // that makes a citation trustworthy is the same guard that would refuse to set the flag.
+    // The rule is therefore a view over id, and this guard pins the RULE rather than the
+    // sentence in the migration that describes it — because an ORDER BY that silently became
+    // `published_at` would still return one row, and would return a different one whenever
+    // two publishers raced (NOW() is the transaction's start, not its commit).
+    const flat = stmtText(SCHEMA_SQL);
+    expect(flat).toContain(
+      "CREATE OR REPLACE VIEW clinical_current_publications AS SELECT DISTINCT ON (p.examination_id) p.* FROM clinical_publications p ORDER BY p.examination_id, p.id DESC",
+    );
+    // A view, not a table: no new store of state that can disagree with the publications.
+    expect(flat).not.toMatch(/CREATE TABLE IF NOT EXISTS clinical_current_publications/);
+    // And the publisher's serialisation point, which is what makes greatest-id mean
+    // "last to commit" rather than "first to start".
+    expect(flat).toContain("PERFORM 1 FROM clinical_examinations WHERE id = exam FOR UPDATE");
+    // The read side must go THROUGH the view. A loader that re-implemented "which one is current"
+    // in TypeScript is a second answer to the question — and the second answer is the one a
+    // reviewer reads while the database keeps serving the first.
+    expect(CURRENT_PUBLICATION_LOAD_QUERY).toContain("FROM clinical_current_publications");
+    expect(CURRENT_PUBLICATION_LOAD_QUERY).not.toContain("FROM clinical_publications");
+    expect(CURRENT_PUBLICATION_LOAD_QUERY).not.toMatch(/ORDER BY|DISTINCT|LIMIT/i);
+    // A session that cites a publication by id reads the history table, not the view: the citation
+    // is to a fixed row, and the governing publication is a different question.
+    expect(PUBLICATION_LOAD_QUERY).toContain("FROM clinical_publications WHERE id = $1");
+  });
+
+  /** Every non-test TypeScript file under a directory, as repo-relative paths. */
+  function sourcesUnder(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(join(REPO, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...sourcesUnder(rel));
+      else if (entry.isFile() && rel.endsWith(".ts") && !rel.endsWith(".test.ts")) out.push(rel);
+    }
+    return out;
+  }
+
+  it("gives a Stage C consumer no way to read a publication without verifying it", () => {
+    // RV-01's boundary, written as an executable rule rather than a paragraph. Stage B has no
+    // runtime consumer — that is a measured fact, and it is the reason this round does NOT claim
+    // "publications are verified at read time". What it does claim is narrower and checkable: the
+    // bypass is caught in the commit that adds it. A Stage C read path that names a publication
+    // without calling the verifier turns this test red.
+    //
+    // Scope is stated rather than implied, because a census that quietly covers three directories
+    // while reading like a census of the repository is the hollow-guard failure this review found
+    // three times. These are where a reporting read path lands (api-server routes and services,
+    // plus lib/db itself); widening the scan to the SPA is a one-line change to SCANNED.
+    const SCANNED = ["artifacts/api-server/src/routes", "artifacts/api-server/src/services", "lib/db/src"];
+    // Files that own the tables by declaration or by construction, not by consumption: the Drizzle
+    // schema, its barrel, and the verifier module whose own SELECTs ARE the boundary.
+    const DECLARATIONS = [
+      "lib/db/src/cataloguePublicationSnapshot.ts",
+      "lib/db/src/schema/clinicalCatalogue.ts",
+      "lib/db/src/schema/index.ts",
+    ];
+    // Anything that reads a publication must arrive through one of these. The first four verify;
+    // the last three are the publisher's side, where the gate is the validator and the row is
+    // written rather than consumed.
+    const VERIFIED_BY =
+      /loadVerifiedPublication|loadCurrentPublication|verifyStoredPublication|assertStoredPublication|publicationColumnsFor|buildCatalogueSnapshot|loadCatalogueRows/;
+    const namesAPublication = /clinical_publications|clinical_current_publications|clinicalPublicationsTable/;
+
+    const bypasses: string[] = [];
+    let scanned = 0;
+    for (const file of SCANNED.flatMap(sourcesUnder)) {
+      if (DECLARATIONS.includes(file)) continue;
+      const text = readFileSync(join(REPO, file), "utf8");
+      if (!namesAPublication.test(text)) continue;
+      scanned += 1;
+      if (!VERIFIED_BY.test(text)) bypasses.push(file);
+    }
+    // The census itself is asserted, so an empty list cannot mean "the walk found nothing".
+    for (const dir of SCANNED) {
+      expect(sourcesUnder(dir).length, `${dir} yields files to scan`).toBeGreaterThan(0);
+    }
+    expect(bypasses, `no production file may read a publication without verifying it (scanned ${scanned} naming files)`)
+      .toEqual([]);
+    // Measured today: not one. That is the honest form of the RV-01 finding — Stage B ships a
+    // verifier and a gate, and NO runtime verification, because there is no runtime read path.
+    // Stage C makes this number non-zero by adding one, and the integrator has to change this
+    // line to do it: that is the point, not an obstacle. The first consumer then either calls the
+    // verifier and the census above goes green, or it does not and CI names the file.
+    expect(scanned, "production files naming a publication outside the verifier module").toBe(0);
   });
 });
 
@@ -449,7 +555,6 @@ describe("v4 catalogue — the relational integrity the first review found missi
       ["clinical_tile_examinations", "examination_id, section_id", "clinical_anatomical_sections", "examination_id, id"],
       ["clinical_combination_rules", "examination_id, section_id", "clinical_anatomical_sections", "examination_id, id"],
       ["clinical_tile_parameters", "parameter_group_id, default_option_id", "parameter_options", "group_id, id"],
-      ["clinical_publication_tiles", "tile_id, tile_version", "clinical_tile_versions", "tile_id, version"],
     ] as const;
     for (const [child, childCols, parent, parentCols] of expected) {
       const stmt = `FOREIGN KEY (${childCols}) REFERENCES ${parent} (${parentCols})`;
@@ -479,7 +584,10 @@ describe("v4 catalogue — the relational integrity the first review found missi
     const keys = [...flat.matchAll(
       /FOREIGN KEY \(([a-z_, ]+)\) REFERENCES ([a-z_]+) \(([a-z_, ]+)\)/g,
     )];
-    expect(keys.length, "composite foreign keys are declared").toBeGreaterThanOrEqual(6);
+    // Five since r4 removed the manifest's (tile_id, tile_version) → clinical_tile_versions
+    // (tile_id, version). The bound is a census, not a rule: it notices the loop below
+    // silently matching nothing at all.
+    expect(keys.length, "composite foreign keys are declared").toBeGreaterThanOrEqual(5);
     for (const m of keys) {
       const [, , parent, colsRaw] = m;
       const pattern = colsRaw!.replace(/,\s*/g, ",\\s*");
@@ -513,22 +621,25 @@ describe("v4 catalogue — the relational integrity the first review found missi
     expect(unnamed, "table-level CHECKs written without CONSTRAINT").toEqual([]);
     // Column-level CHECKs are not in this count: Postgres names those after the column,
     // which is stable while a column carries one CHECK, and every enum here is one.
-    expect(named, "named table-level constraints").toBeGreaterThanOrEqual(20);
+    // 19 measured after Stage B r4 removed the publication manifest, which carried two
+    // named constraints of its own. The floor exists so that a table whose constraints all
+    // silently lost their CONSTRAINT keyword is a failure rather than a smaller number.
+    expect(named, "named table-level constraints").toBeGreaterThanOrEqual(19);
   });
 
   it("makes the history that a signed report cites impossible to rewrite", () => {
     const flat = stmtText(SCHEMA_SQL);
-    for (const table of ["clinical_tile_versions", "clinical_publications", "clinical_publication_tiles"]) {
-      expect(flat, `${table} must refuse UPDATE`).toContain(
-        `CREATE TRIGGER ${table === "clinical_publication_tiles" ? "clin_pub_tiles_append_only" : table === "clinical_publications" ? "clin_publications_append_only" : "clin_tile_versions_append_only"} BEFORE UPDATE OR DELETE ON ${table} FOR EACH ROW EXECUTE FUNCTION clinical_append_only_guard()`,
-      );
-    }
+    expect(flat, "clinical_publications must refuse UPDATE").toContain(
+      "CREATE TRIGGER clin_publications_append_only BEFORE UPDATE OR DELETE ON clinical_publications FOR EACH ROW EXECUTE FUNCTION clinical_append_only_guard()",
+    );
     expect(flat).toContain("CREATE OR REPLACE FUNCTION clinical_append_only_guard()");
     // A history row that can be soft-deleted is not a history row.
-    for (const table of ["clinical_tile_versions", "clinical_publications", "clinical_publication_tiles"]) {
-      expect(createTableBody(SCHEMA_STMTS, table), `${table} must not carry deleted_at`)
-        .not.toMatch(/deleted_at\s+TIMESTAMPTZ/);
-    }
+    expect(createTableBody(SCHEMA_STMTS, "clinical_publications"), "clinical_publications must not carry deleted_at")
+      .not.toMatch(/deleted_at\s+TIMESTAMPTZ/);
+    // One guarded table, because one historical source. Counting the guards is what notices
+    // either a new immutable history appearing without one, or a retired one coming back with
+    // its trigger attached — both of which leave every other assertion in this file green.
+    expect([...flat.matchAll(/EXECUTE FUNCTION clinical_append_only_guard\(\)/g)], "append-only guards").toHaveLength(1);
   });
 
   it("runs the publication gate at statement time, so a rolled back test can see it", () => {
@@ -540,28 +651,51 @@ describe("v4 catalogue — the relational integrity the first review found missi
     // transaction that rolls back, and a deferred check never fires on a rollback — the
     // suite would report the gate as passing while it has never once run.
     expect(flat).not.toContain("INITIALLY DEFERRED");
-    // The gate is the only place a set-valued rule can live; four refusals, all named.
+    // The gate is the only place a set-valued rule can live; every refusal is named here so
+    // that an arm being deleted is visible in this file even before the database suite runs.
     for (const phrase of [
       "is placed in this examination with no ordinal",
       "has no required member",
       "retires a normal of an examination it is not placed in",
       "names a tile that is not placed in this examination",
+      // 11b — a required parameter whose default answer no longer exists to be chosen.
+      "an option that has been retired",
+      // 19 — two kinds that cannot both be true of one pair.
+      "which cannot both be true of one pair",
+      // 20a — a concept end on a kind that asserts a fact about a pair.
+      "which names a pair rather than a tile",
+      "point it at the tile it excludes or keeps",
+      // 20b — a concept end the examination cannot actually produce.
+      "no tile placed in this examination carries",
     ]) {
       expect(flat, `gate refuses: ${phrase}`).toContain(phrase);
     }
+    // Check 0: publishers of one examination are serialised by the gate itself, not by a
+    // protocol the prose recommends. This string is what turns "lock the examination first"
+    // from advice into a fact, so a revision that dropped it while leaving every arm intact
+    // would otherwise look identical.
+    expect(flat, "the gate takes the examination row lock").toContain(
+      "PERFORM 1 FROM clinical_examinations WHERE id = exam FOR UPDATE",
+    );
   });
 
   it("replaces its own triggers instead of leaving a stale body behind", () => {
     // CREATE TRIGGER has no IF NOT EXISTS, and an earlier revision of this file is live on
     // someone's database, so each trigger is dropped first by name.
     const flat = stmtText(SCHEMA_SQL);
-    for (const name of ["clin_tile_versions_append_only", "clin_publications_append_only", "clin_pub_tiles_append_only", "clin_publication_gate"]) {
+    for (const name of ["clin_publications_append_only", "clin_publication_gate"]) {
       expect(flat, `${name} is dropped before it is created`).toContain(`DROP TRIGGER IF EXISTS ${name}`);
+    }
+    // The two retired history tables' guards are retired with them, and stay retired: a
+    // DROP TRIGGER for a table this file no longer creates would fail to apply, while a
+    // CREATE TRIGGER that quietly reappeared would put a mutable history back in service.
+    for (const name of ["clin_tile_versions_append_only", "clin_pub_tiles_append_only"]) {
+      expect(flat, `${name} must not come back`).not.toContain(name);
     }
     // …and the drop can only ever reach a table this migration creates. A DROP TRIGGER on
     // a production table would remove a guard this file knows nothing about.
     const targets = [...flat.matchAll(/DROP TRIGGER IF EXISTS [a-z0-9_]+ ON ([a-z_]+)/g)].map((m) => m![1]!);
-    expect(targets.length).toBeGreaterThanOrEqual(4);
+    expect(targets.sort()).toEqual(["clinical_publications", "clinical_publications"]);
     const notOurs = targets.filter((t) => !TABLES.some(([name]) => name === t));
     expect(notOurs, `DROP TRIGGER reaches tables this migration does not create`).toEqual([]);
   });
@@ -642,9 +776,10 @@ describe("v4 catalogue — forward-only and production-safe", () => {
     // Constraints, triggers and functions are in scope too: the first revision of this
     // file scanned only tables and indexes, which is exactly the set a reviewer adding a
     // named CHECK would extend.
-    expect(names.length).toBeGreaterThan(90);
+    expect(names.length).toBeGreaterThan(80);
     expect(constraintNames.filter((n) => n.endsWith("_chk")).length).toBeGreaterThanOrEqual(12);
-    expect(constraintNames.filter((n) => n.endsWith("_fkey")).length).toBeGreaterThanOrEqual(6);
+    // 5 since r4 removed clin_pub_tile_version_fkey with the manifest it guarded.
+    expect(constraintNames.filter((n) => n.endsWith("_fkey")).length).toBeGreaterThanOrEqual(5);
   });
 
   it("seeds the eighteen §21 examinations as drafts, never as published content", () => {
