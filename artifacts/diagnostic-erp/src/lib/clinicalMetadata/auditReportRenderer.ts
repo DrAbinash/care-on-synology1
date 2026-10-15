@@ -131,8 +131,11 @@ export function renderAuditReport(
 
   out.push("## 5. Seeded database rows (radiology_quick_findings, from migrations only)");
   out.push("");
-  out.push("Read from checked-in SQL. The live Quick Select strip does not query this table, so these rows "
-    + "describe what the clinic seeded, not what an operator clicks.");
+  out.push("Read from checked-in SQL — the audit never opens a database. These rows do reach one "
+    + "live surface: `GET /api/radiology/quick-select` returns the whole table "
+    + "(`api-server/src/routes/radiologyQuickFindings.ts:56`) and `QuickFindingsPanel.tsx` renders it, "
+    + "while the reporting canvas Quick Select strip reads the TypeScript catalogue instead "
+    + "(`zai-workspace/store.ts:1100`). Two authoring surfaces, two metadata sources.");
   out.push("");
   out.push(table(
     ["file", "rows", "section", "conflict", "replaces", "template tokens in section", "unparsed", "concept column"],
