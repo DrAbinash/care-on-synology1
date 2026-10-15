@@ -599,6 +599,34 @@ describe("T9–T12 — platform, integration and metadata", () => {
     expect(existsSync(path.join(root, EVIDENCE_FILE))).toBe(false);
   });
 
+  test("T12p a malformed count is refused, not stored as null next to a success banner", () => {
+    // `--tables abc` used to write `tables: null` and print "Recorded". The file then
+    // looked like a completed proof, and nothing in it said the number had never been
+    // measured — which is the same failure shape as a backup tool reporting success on
+    // a zero-byte dump.
+    seedTree({ evidence: null });
+    const written = [];
+    for (const args of [["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--tables", "abc"],
+      ["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--tables=12.5"],
+      ["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--patients", "-3"]]) {
+      expect(main(args, { ctx: makeCtx(), writeFile: (f) => written.push(f) })).toBe(1);
+    }
+    expect(written).toEqual([]);
+    expect(existsSync(path.join(root, EVIDENCE_FILE))).toBe(false);
+    const ok = main(["--record-restore", "--artifact", "caredeoghar_20261014_030000.sql.gz", "--tables", "439", "--patients", "8123", "--no-rerun"], { ctx: makeCtx(), writeFile: (f, t) => writeFileSync(f, t, "utf8") });
+    expect(ok).toBe(0);
+    const data = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
+    expect(data.restore_verification).toMatchObject({ tables: 439, patients: 8123 });
+  });
+
+  test("T12q an artifact of only spaces names no artifact", () => {
+    seedTree({ evidence: null });
+    const written = [];
+    expect(main(["--record-restore", "--artifact", "   ", "--no-rerun"], { ctx: makeCtx(), writeFile: (f) => written.push(f) })).toBe(1);
+    expect(written).toEqual([]);
+    expect(existsSync(path.join(root, EVIDENCE_FILE))).toBe(false);
+  });
+
   test("T12j recording is additive: an existing section is merged, not overwritten", () => {
     seedTree({});
     const before = JSON.parse(readFileSync(path.join(root, EVIDENCE_FILE), "utf8"));
