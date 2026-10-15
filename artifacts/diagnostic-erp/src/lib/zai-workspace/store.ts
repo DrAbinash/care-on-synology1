@@ -3375,10 +3375,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // record and its removal would restore nothing. The declaration itself answers the question,
     // because it is still on the observation: a baseline sentence this tile names is in scope even
     // if an earlier click had already taken it off the page.
-    const removedClaim: SuppressingObservation = {
+    // The declaration is read per field, from what that field actually rendered, because two of the
+    // guards below are about the row's own words: a tile whose sentence IS the baseline, or one that
+    // asserts the normal instead of opposing it, has no authority to put it back.
+    const claimFor = (renderedText: string | undefined): SuppressingObservation => ({
       baselineReplaces: patch.observation?.baselineReplaces ?? null,
       concept: patch.observation?.concept ?? null,
-    };
+      role: patch.observation?.role ?? null,
+      renderedText: renderedText ?? null,
+    });
     const result = removeLedgerObservation(
       narrativeFromState(get()),
       get().fieldProvenance,
@@ -3387,8 +3392,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         surviving: activeSuppressors(survivingPatches),
         canonicalFindings,
         canonicalImpression,
-        claimsFindings: claimsDeclaredBy(removedClaim, canonicalFindings),
-        claimsImpression: claimsDeclaredBy(removedClaim, canonicalImpression),
+        claimsFindings: claimsDeclaredBy(claimFor(patch.lastRendered.findings), canonicalFindings),
+        claimsImpression: claimsDeclaredBy(claimFor(patch.lastRendered.impression), canonicalImpression),
       },
     );
     let nextMs = get().structuredViewerMeasurements;

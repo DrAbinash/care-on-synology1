@@ -184,6 +184,39 @@ describe("Stage C-1 · a baseline claim is derived from the observation that mak
     expect(claimsDeclaredBy(LESION_A, unrelated)).toEqual([]);
   });
 
+  it("refuses a row whose own words are the sentence", () => {
+    // The region-transition case, and the reason the guard exists. A Whole Spine report moved to
+    // Cervical Spine retires its dorsal rows one at a time through the same removal path, and each row
+    // carries `baselineReplaces` naming the sentence it rendered. Treating that as a retired normal
+    // would put back, line by line, exactly what the transition withdrew.
+    const dorsal = "Synthetic dorsal spine alignment is within normal limits.";
+    expect(claimsDeclaredBy(
+      { baselineReplaces: dorsal, concept: "alignment", renderedText: dorsal },
+      canonicalOrderFromBaseline([dorsal, NORMAL_VERTEBRAE]),
+    )).toEqual([]);
+    expect(claimsDeclaredBy(
+      { baselineReplaces: dorsal, renderedText: `Incidental note. ${dorsal} at the upper limit.` },
+      canonicalOrderFromBaseline([dorsal]),
+    ), "a row that renders the sentence inside its own longer wording is still the sentence speaking")
+      .toEqual([]);
+    expect(claimsDeclaredBy(
+      { baselineReplaces: NORMAL_VERTEBRAE, renderedText: "Synthetic burst fracture of the C5 body." },
+      canonicalOrderFromBaseline([dorsal, NORMAL_VERTEBRAE]),
+    ), "an abnormality naming a normal it did not write keeps the claim — that is the defect this fixes")
+      .toEqual([NORMAL_VERTEBRAE]);
+  });
+
+  it("refuses a row that asserts the normal rather than opposing it", () => {
+    // `role === "baseline"` is the catalogue's own spelling of "this row IS a normal", and it is the
+    // same fact as the test above in a different vocabulary. Both are checked, because a census that
+    // matches one spelling and misses the other is how the retirement came back.
+    const dorsal = "Synthetic dorsal spine alignment is within normal limits.";
+    expect(claimsDeclaredBy(
+      { role: "baseline", baselineReplaces: dorsal, renderedText: "something else entirely" },
+      canonicalOrderFromBaseline([dorsal]),
+    )).toEqual([]);
+  });
+
   it("matches a declaration that differs only in layout", () => {
     const spaced = canonicalOrderFromBaseline([`  ${NORMAL_VERTEBRAE.toUpperCase()}  `]);
     expect(claimsDeclaredBy(LESION_A, spaced)).toEqual([`  ${NORMAL_VERTEBRAE.toUpperCase()}  `]);

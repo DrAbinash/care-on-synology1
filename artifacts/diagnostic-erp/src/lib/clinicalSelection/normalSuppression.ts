@@ -27,6 +27,8 @@ export type SuppressingObservation = {
   concept?: string | null;
   /** Text the observation actually put in the report — used for concept-level falsification. */
   renderedText?: string | null;
+  /** `role === "baseline"` marks a row that ASSERTS a normal rather than opposing one. */
+  role?: string | null;
 };
 
 /** A selected observation, as the ledger holds it, addressed by its observation id. */
@@ -97,8 +99,19 @@ export function claimsDeclaredBy(
   observation: SuppressingObservation | null | undefined,
   canonical: readonly CanonicalSlot[],
 ): string[] {
-  const declared = nonEmpty(observation?.baselineReplaces);
+  if (!observation || observation.role === "baseline") return [];
+  const declared = nonEmpty(observation.baselineReplaces);
   if (!declared) return [];
+  // A row that IS a normal must not be able to authorise restoring it. Two spellings of that, both
+  // needed: `role === "baseline"` above, and the row's own words here. A Whole Spine report moved to
+  // Cervical Spine retires its dorsal and lumbar rows one at a time through this removal path, and
+  // each of those rows carries a `baselineReplaces` naming the very sentence it rendered — restoring
+  // it would put back, line by line, exactly what the transition just withdrew, and print "Dorsal
+  // spine: alignment is within normal limits" under a recorded decision that this examination does
+  // not image the dorsal spine. Substring rather than equality, because a row may render its sentence
+  // with a lead-in or trailing advice of its own.
+  const own = nonEmpty(observation.renderedText);
+  if (own && key(own).includes(key(declared))) return [];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const slot of canonical) {
