@@ -427,14 +427,15 @@ function drawFindingsBlock(
       y += PARA_SPACE_AFTER;
       continue;
     }
-    // For paragraphs, estimate height based on text length and available width
+    // For paragraphs, use jsPDF's actual text wrapping to get accurate line count
     const paragraphs = block.text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
     for (let pIdx = 0; pIdx < paragraphs.length; pIdx++) {
       const para = paragraphs[pIdx];
-      // Estimate lines needed for this paragraph
-      const approxCharsPerLine = maxW / (bodySize * 0.35);
-      const estLines = Math.max(1, Math.ceil(para.length / approxCharsPerLine));
-      const paraHeight = estLines * lineH + PARA_SPACE_AFTER;
+      // Use jsPDF's splitTextToSize for accurate line count (TASK 3 fix)
+      doc.setFont(font, "normal");
+      doc.setFontSize(bodySize);
+      const lines = doc.splitTextToSize(para, maxW) as string[];
+      const paraHeight = lines.length * lineH + PARA_SPACE_AFTER;
       y = ensureSpace(paraHeight);  // CRITICAL: Use returned y after potential page break
 
       // The PDF half of the editor's colour: a line that asserts pathology is
