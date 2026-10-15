@@ -27,6 +27,12 @@ import {
 } from "./observationSlot";
 import { coerceObservationAnchor } from "./observationAnchor";
 import {
+  filterRestorableBaselines,
+  insertAtCanonicalPosition,
+  type CanonicalSlot,
+  type SuppressingObservation,
+} from "./clinicalSelection/normalSuppression";
+import {
   assertedAbnormality,
   assertsStudyNormal,
   clinicalContentSignature,
@@ -141,10 +147,43 @@ export function restoreBaselineSentences(fieldText: string, sentences: string[])
   return next;
 }
 
+/**
+ * Restoration options that make the outcome a property of the surviving selection set rather than of
+ * the click sequence.
+ *
+ * Omitted entirely, `removeLedgerObservation` behaves exactly as it always has — which is what a
+ * reporting surface with no v4 catalogue and no canonical order must keep doing. Supply `surviving`
+ * and a sentence a still-selected observation falsifies is never put back; supply `canonical*` and a
+ * sentence that legitimately returns rejoins its anatomical neighbours instead of landing at the end
+ * of the field, beneath the pathology it contradicts.
+ */
+export type LedgerRestoreOptions = {
+  /** Every observation still selected after this removal. */
+  surviving?: readonly SuppressingObservation[];
+  canonicalFindings?: readonly CanonicalSlot[];
+  canonicalImpression?: readonly CanonicalSlot[];
+};
+
+function restoreInto(
+  fieldText: string,
+  sentences: string[],
+  canonical: readonly CanonicalSlot[] | undefined,
+): string {
+  if (!canonical || canonical.length === 0) return restoreBaselineSentences(fieldText, sentences);
+  let next = fieldText;
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    next = insertAtCanonicalPosition(next, trimmed, canonical);
+  }
+  return next;
+}
+
 export function removeLedgerObservation(
   narrative: ReportNarrative,
   provenance: NarrativeProvenance,
   patch: LedgerPatch,
+  opts?: LedgerRestoreOptions,
 ): {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
@@ -175,13 +214,22 @@ export function removeLedgerObservation(
     || technique.text !== narrative.technique
     || recommendation.text !== narrative.recommendation;
 
+  // Suppression is a fact about the set that survives, not about which patch happened to delete the
+  // sentence first. Two abnormalities that declare the same normal must not disagree about it.
+  const restorableFindings = opts?.surviving
+    ? filterRestorableBaselines(patch.replacedBaseline.findings, opts.surviving)
+    : patch.replacedBaseline.findings;
+  const restorableImpression = opts?.surviving
+    ? filterRestorableBaselines(patch.replacedBaseline.impression, opts.surviving)
+    : patch.replacedBaseline.impression;
+
   let nextFindings = findings.text;
   let nextImpression = impression.text;
   if (findings.outcome === "removed") {
-    nextFindings = restoreBaselineSentences(nextFindings, patch.replacedBaseline.findings);
+    nextFindings = restoreInto(nextFindings, restorableFindings, opts?.canonicalFindings);
   }
   if (impression.outcome === "removed") {
-    nextImpression = restoreBaselineSentences(nextImpression, patch.replacedBaseline.impression);
+    nextImpression = restoreInto(nextImpression, restorableImpression, opts?.canonicalImpression);
   }
 
   const nextNarrative: ReportNarrative = {
