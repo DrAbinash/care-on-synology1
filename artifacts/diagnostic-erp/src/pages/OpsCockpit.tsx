@@ -53,8 +53,14 @@ export default function OpsCockpit() {
   const alertsQ = useQuery({ queryKey: ["ops-alerts"], queryFn: () => api.get<Alert[]>("/api/ops-cockpit/alerts") });
 
   const scanMut = useMutation({
-    mutationFn: () => api.post<{ created: number; scanned: number }>("/api/ops-cockpit/scan", {}),
-    onSuccess: (r) => { toast({ title: "Scan complete", description: `${r.created} new alert(s)` }); qc.invalidateQueries({ queryKey: ["ops-summary"] }); qc.invalidateQueries({ queryKey: ["ops-alerts"] }); },
+    mutationFn: () => api.post<{ created: number; scanned: number; failed?: boolean; reason?: string }>("/api/ops-cockpit/scan", {}),
+    // A scan that could not read its metrics answers `scanned: 0, created: 0` — the same
+    // numbers an idle clinic produces — so it must not be announced as "Scan complete".
+    onSuccess: (r) => {
+      if (r.failed) toast({ title: "Scan did not run", description: r.reason || "the metric queries did not complete", variant: "destructive" });
+      else toast({ title: "Scan complete", description: `${r.created} new alert(s)` });
+      qc.invalidateQueries({ queryKey: ["ops-summary"] }); qc.invalidateQueries({ queryKey: ["ops-alerts"] });
+    },
     onError: (e) => toast({ title: "Scan failed", description: (e as Error).message, variant: "destructive" }),
   });
 

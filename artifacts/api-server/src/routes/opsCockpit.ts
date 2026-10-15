@@ -16,8 +16,8 @@ import { isFeatureEnabledServer } from "../lib/featureFlags";
 import { notify } from "../lib/notifications";
 import type { StaffAuthRequest } from "../middleware/requireStaffAuth";
 import {
-  DEFAULT_OPS_THRESHOLDS, evaluateMetrics, hoursSince, reliabilityCandidates,
-  type AlertCandidate, type ReliabilityReadings,
+  DEFAULT_OPS_THRESHOLDS, evaluateMetrics, hoursSince, reliabilityCandidates, scanFailureResult,
+  type AlertCandidate, type OpsScanResult, type ReliabilityReadings,
 } from "../lib/opsAnomalyDetectors";
 import { istDateOnly } from "../lib/recallEngine";
 import { logger } from "../lib/logger";
@@ -134,7 +134,7 @@ opsCockpitRouter.post("/scan", async (req, res) => {
  * breach that isn't already open today (dedupe by alertType+scope). Notifies
  * admins in-app for high/critical. Never throws.
  */
-export async function runOpsAnomalyScan(): Promise<{ skipped?: boolean; reason?: string; scanned: number; created: number; deduped: number; reliability?: ReliabilityReadings }> {
+export async function runOpsAnomalyScan(): Promise<OpsScanResult> {
   if (!(await isFeatureEnabledServer("ff_ops_cockpit"))) return { skipped: true, reason: "disabled", scanned: 0, created: 0, deduped: 0 };
   try {
     const today = istDateOnly(new Date());
@@ -172,7 +172,7 @@ export async function runOpsAnomalyScan(): Promise<{ skipped?: boolean; reason?:
     return { scanned: candidates.length, created, deduped, reliability };
   } catch (err) {
     logger.warn({ err }, "[ops-cockpit] scan failed (non-fatal)");
-    return { scanned: 0, created: 0, deduped: 0 };
+    return scanFailureResult(err);
   }
 }
 

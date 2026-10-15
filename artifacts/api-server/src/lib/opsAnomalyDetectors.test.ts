@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { severityForValue, evaluateMetric, evaluateMetrics, hoursSince, evaluateUnmeasured, reliabilityCandidates, DEFAULT_OPS_THRESHOLDS } from "./opsAnomalyDetectors";
+import { severityForValue, evaluateMetric, evaluateMetrics, hoursSince, evaluateUnmeasured, reliabilityCandidates, scanFailureResult, DEFAULT_OPS_THRESHOLDS } from "./opsAnomalyDetectors";
 
 describe("severityForValue", () => {
   test("critical / high / null bands", () => {
@@ -135,5 +135,26 @@ describe("DEFAULT_OPS_THRESHOLDS", () => {
     expect(DEFAULT_OPS_THRESHOLDS.pendingReports).toMatchObject({ alertType: "BACKLOG_SPIKE", warnAt: 50, critAt: 120 });
     expect(DEFAULT_OPS_THRESHOLDS.deliveryFailures).toMatchObject({ alertType: "DELIVERY_FAILURE_SPIKE", warnAt: 10, critAt: 30 });
     expect(DEFAULT_OPS_THRESHOLDS.overdueRecalls).toMatchObject({ alertType: "RECALL_BACKLOG", warnAt: 40, critAt: 100 });
+  });
+});
+
+describe("scanFailureResult", () => {
+  test("a scan that could not gather its readings is not the answer an idle clinic gives", () => {
+    // `evaluateUnmeasured` already refuses to let one unreadable reading look like a healthy
+    // one. The scan as a whole must do the same for itself: `{ scanned: 0, created: 0 }` is
+    // also what an empty clinic produces, and the cron caller prints nothing at those numbers.
+    const idleClinic = { scanned: 0, created: 0, deduped: 0 };
+    const r = scanFailureResult(new Error('relation "anomaly_alerts" does not exist'));
+    expect(r.failed).toBe(true);
+    expect(r.reason).toBe('relation "anomaly_alerts" does not exist');
+    expect(r).not.toEqual(idleClinic);
+  });
+
+  test("the reason is one line and never blank", () => {
+    expect(scanFailureResult(new Error("first line\nstack noise")).reason).toBe("first line");
+    expect(scanFailureResult("plain string").reason).toBe("plain string");
+    // A blank reason renders as "Scan did not run: " — which reads as though there were no reason.
+    expect(scanFailureResult(new Error("   \nnoise")).reason).toBe("the metric queries did not complete");
+    expect(scanFailureResult(undefined).failed).toBe(true);
   });
 });

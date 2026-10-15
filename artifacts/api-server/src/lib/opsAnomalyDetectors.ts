@@ -95,6 +95,30 @@ export interface ReliabilityReadings {
   backupAgeHours: number | null;
 }
 
+export interface OpsScanResult {
+  scanned: number;
+  created: number;
+  deduped: number;
+  skipped?: boolean;
+  failed?: boolean;
+  reason?: string;
+  reliability?: ReliabilityReadings;
+}
+
+/**
+ * The shape a scan returns when it could not gather its readings.
+ *
+ * `{ scanned: 0, created: 0 }` is also what an idle clinic looks like, and the cron caller
+ * prints nothing when both are zero — so a database that refused to answer was reported, to
+ * the log and to the admin who pressed "Run scan", as no anomalies. This module already says
+ * out loud when one reading cannot be measured (`evaluateUnmeasured`); the scan as a whole has
+ * to say the same about itself, or the aggregate is less honest than any of its parts.
+ */
+export function scanFailureResult(err: unknown): OpsScanResult {
+  const first = (err instanceof Error ? err.message : String(err ?? "")).split(/\r?\n/)[0].trim();
+  return { scanned: 0, created: 0, deduped: 0, failed: true, reason: first || "the metric queries did not complete" };
+}
+
 /**
  * Turn reliability readings into alert candidates. Split from the gathering so the
  * part that decides "unmeasured is not healthy" is testable without a database.
