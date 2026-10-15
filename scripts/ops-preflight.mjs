@@ -1169,7 +1169,7 @@ export function main(argv = process.argv.slice(2), options = {}) {
     if (!argv.includes(flagName)) continue;
     const values = {};
     if (section === "restore_verification") {
-      const artifact = flag(argv, "artifact");
+      const artifact = (flag(argv, "artifact") ?? "").trim();
       if (!artifact) {
         process.stderr.write("--record-restore needs --artifact <name>: a restore proof without an artifact names nothing that was proved. Nothing was written.\n");
         return 1;
@@ -1179,7 +1179,17 @@ export function main(argv = process.argv.slice(2), options = {}) {
       values.passed = true;
       for (const k of ["tables", "patients"]) {
         const v = flag(argv, k);
-        if (v !== undefined) values[k] = Number(v);
+        if (v === undefined) continue;
+        // A count that is not a whole number used to be stored as `null` with exit 0,
+        // so the evidence file looked complete and the reader could not tell that the
+        // number was never measured. Refuse the argument instead: an operator who is
+        // told "Nothing was written" will retype it, and one who is told nothing will
+        // go on trusting a proof that recorded nothing.
+        if (!/^\d+$/.test(v.trim())) {
+          process.stderr.write(`--record-restore --${k} needs a whole number and was given ${JSON.stringify(v)}. Nothing was written.\n`);
+          return 1;
+        }
+        values[k] = Number(v.trim());
       }
     } else if (section === "hope_receiver") {
       if (argv.includes("--not-refused")) values.unsupported_event_refused = false;
