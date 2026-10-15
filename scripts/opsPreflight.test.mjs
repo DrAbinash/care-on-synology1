@@ -270,6 +270,9 @@ function router(over = {}) {
     system_database_identity: { stdout: "care-erp|production\n" },
     schema_migrations_log: { stdout: "20260101_a.sql\n20260102_b.sql\n" },
     restore_verification: { stdout: "" },
+    // The money gate: every statement carries `financial-integrity:<id>` in a comment,
+    // and the healthy box answers each with a marked zero row.
+    "financial-integrity:": { stdout: "FI|0|\n" },
     ...over,
   };
   return (cmd, args) => {
@@ -396,6 +399,55 @@ describe("T1–T4 — deployment configuration", () => {
     });
     expect(by["links.external_result_duplicates"].status).toBe(UNKNOWN);
     expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4c money invariants that hold make both financial gates PASS", () => {
+    const { by, report } = build({}, {});
+    expect(by["financial.money_identity"].status).toBe(PASS);
+    expect(by["financial.day_close_identity"].status).toBe(PASS);
+    expect(by["financial.money_identity"].detail).toContain("11 bills, payments and vouchers invariants hold");
+    expect(by["financial.day_close_identity"].detail).toContain("5 clinic and staff day close invariants hold");
+    expect(report.verdict).toBe(READY);
+  });
+
+  test("T4d a violated money invariant is FAIL and NOT_READY — a failed integrity check blocks the deploy", () => {
+    const { by, report } = build({}, { "financial-integrity:": { stdout: "FI|2|17,9184\n" } });
+    expect(by["financial.money_identity"].status).toBe(FAIL);
+    expect(by["financial.money_identity"].detail).toMatch(/2 violations \(rows 17, 9184/);
+    expect(by["financial.day_close_identity"].status).toBe(FAIL);
+    expect(report.verdict).toBe(NOT_READY);
+  });
+
+  test("T4e an unreachable database is UNKNOWN with a critical flag, never a pass", () => {
+    const { by, report } = build({}, { "financial-integrity:": { code: 2, stdout: "", stderr: "psql: error: connection to server failed" } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(by["financial.money_identity"].critical).toBe(true);
+    expect(by["financial.money_identity"].detail).toMatch(/could not be evaluated/);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4f an empty answer is not zero violations", () => {
+    // The router's default for an unmatched command is exit 0 with empty stdout, so a
+    // gate that read emptiness as cleanliness would be green on a box that ran nothing.
+    const { by, report } = build({}, { "financial-integrity:": { stdout: "" } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4g no DATABASE_URL means the money checks name that instead of judging nothing", () => {
+    const { by, report } = build({}, {}, { env: { DATABASE_URL: undefined } });
+    expect(by["financial.money_identity"].status).toBe(UNKNOWN);
+    expect(by["financial.money_identity"].detail).toContain("no DATABASE_URL");
+    expect(by["financial.money_identity"].critical, "an unrun money gate must be able to stop READY").toBe(true);
+    expect(by["financial.day_close_identity"].detail).toContain("no DATABASE_URL");
+    expect(report.verdict).toBe(INSUFFICIENT_EVIDENCE);
+  });
+
+  test("T4h no UNVERIFIED leaks out of the money tool into the gate's vocabulary", () => {
+    const { report } = build({}, {});
+    const financial = report.checks.filter((c) => c.id.startsWith("financial."));
+    expect(financial.length).toBe(2);
+    for (const c of financial) expect([PASS, FAIL, UNKNOWN, NOT_APPLICABLE]).toContain(c.status);
   });
 });
 
