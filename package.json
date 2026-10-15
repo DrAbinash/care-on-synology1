@@ -21,6 +21,7 @@
     "db:migration-manifest": "node scripts/migration-manifest.mjs",
     "api:route-coverage": "node scripts/api-route-coverage.mjs",
     "preview:reports": "node scripts/preview-reports.mjs",
+    "audit:anatomy": "node scripts/audit-clinical-anatomy-metadata.mjs",
     "e2e:smoke": "playwright test tests/e2e/erp-smoke.spec.ts --config playwright.config.ts",
     "e2e:voice-composer": "playwright test tests/e2e/voice-composer-clinic-demo.spec.ts --config playwright.config.ts",
     "db:bootstrap": "node scripts/apply-all-migrations.mjs",
