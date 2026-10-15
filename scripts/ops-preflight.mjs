@@ -64,6 +64,7 @@ import {
   isHopeIntegrationArmed,
   loadEnvFile,
 } from "./check-env-secrets.mjs";
+import { sameCommit } from "./build-identity.mjs";
 
 export const PASS = "PASS";
 export const FAIL = "FAIL";
@@ -172,6 +173,8 @@ export const REQUIRED_CHECK_IDS = [
   "rollback.prerequisites",
   "schedulers.consistent",
   "deploy.metadata",
+  "deploy.project_identity",
+  "deploy.volume_identity",
   "deploy.config_single_source",
   "backup.orthanc_images",
 ];
@@ -186,6 +189,23 @@ export const ARTIFACT_GLOBS = [
   /^backup_.*\.sql(\.enc)?$/,
   /^care_db_daily_.*\.sql\.gz$/,
 ];
+
+/**
+ * The Container Manager identity this box has to keep.
+ *
+ * A second compose project pointed at the same compose file attaches the EXTERNAL
+ * patient database (`db_data` → `care_main_db_data`) while creating brand-new
+ * empty `uploads_data` / `object_storage` volumes, because those two are
+ * project-prefixed. Every uploaded bill scan and frozen key image then reads as
+ * deleted while the money data is perfectly intact. Measured 2026-10-15: nine
+ * stray `<project>_object_storage` volumes already exist on this NAS from exactly
+ * that mistake, and the project name comes from the Container Manager task — the
+ * compose file has no top-level `name:` — so it cannot be inferred from the
+ * checkout directory. Anything that does not match stops the deploy.
+ */
+export const EXPECTED_COMPOSE_PROJECT = "care-erp-github";
+export const EXPECTED_DB_VOLUME = "care_main_db_data";
+export const CARE_RUNTIME_CONTAINERS = ["care-api", "care-db", "care-web"];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -1017,21 +1037,218 @@ export function checkConfigDrift(ctx) {
   };
 }
 
-/** A18 — deployment metadata the running container will actually carry. */
-function checkDeployMetadata(ctx, envFile) {
-  const keys = ["GIT_COMMIT", "GIT_BRANCH", "BUILD_DATE", "ERP_VERSION", "BUILD_NUMBER"];
-  const fileVals = envFile.values || {};
-  const merged = { ...fileVals, ...ctx.env };
-  const missing = keys.filter((k) => !(merged[k] ?? "").trim());
+/**
+ * The pre-deploy state a rollback needs, read from the running box.
+ *
+ * Only what can actually be observed is returned; every unreadable item comes back
+ * in `problems` so the caller can refuse to write a partial record rather than
+ * store an empty one that reads as complete.
+ */
+export function deriveRollbackState(ctx) {
+  const values = {};
+  const problems = [];
+  const head = ctx.exec("git", ["rev-parse", "HEAD"], { timeout: 15_000 });
+  const sha = firstLine(head.stdout).trim();
+  if (head.code === 0 && /^[0-9a-f]{40}$/i.test(sha)) values.previous_commit = sha;
+  else problems.push("git could not name this checkout's HEAD");
+  for (const [key, container] of [["api_image", "care-api"], ["web_image", "care-web"], ["db_image", "care-db"]]) {
+    const r = ctx.exec("docker", ["inspect", container, "--format", "{{.Image}}"], { timeout: 20_000 });
+    const id = firstLine(r.stdout).trim().replace(/^sha256:/i, "");
+    if (r.code === 0 && /^[0-9a-f]{12,}$/.test(id)) values[key] = `sha256:${id}`;
+    else problems.push(`${container} is not inspectable here`);
+  }
+  return { values, problems };
+}
+
+/** A18 — will the image this checkout builds be able to say what it is?
+ *
+ * `.env` used to be the only source of build identity, and only deploy-synology.sh
+ * refreshes `.env` — so a Container Manager rebuild re-stamped new code with the
+ * previous deploy's SHA and `/health` reported `2d51e8d7` for six weeks. The stamp
+ * now comes from the checkout's own Git refs, so the question this check answers is
+ * the one that actually matters before building: can this tree resolve its commit?
+ */
+function checkDeployMetadata(ctx, mergedEnv = ctx.env) {
+  const script = path.join(ctx.repo, "scripts", "build-identity.mjs");
+  const r = ctx.exec("node", [
+    script,
+    "--git-dir", path.join(ctx.repo, ".git"),
+    "--version-file", path.join(ctx.repo, "version.json"),
+    "--print",
+  ], { timeout: 30_000 });
+  if (r.missing) {
+    return {
+      id: "deploy.metadata",
+      status: UNKNOWN,
+      critical: true,
+      detail: "node is not on this machine, so the build identity this checkout would stamp cannot be computed",
+      remediation: `Run on the NAS: node ${path.join("scripts", "build-identity.mjs")} --print`,
+    };
+  }
+  let identity = null;
+  try {
+    identity = JSON.parse(r.stdout);
+  } catch {
+    return {
+      id: "deploy.metadata",
+      status: UNKNOWN,
+      critical: true,
+      detail: `build-identity.mjs answered without identity JSON (${firstLine(r.stderr) || firstLine(r.stdout) || "no output"})`,
+      remediation: `node ${path.join("scripts", "build-identity.mjs")} --print`,
+    };
+  }
+  const resolved = identity.identitySource === "build-context-git" && identity.commit;
+  // The stale stamp lives in the .env FILE, not the process environment, so the
+  // drift comparison has to read the merged view or it compares nothing.
+  const declared = (mergedEnv.GIT_COMMIT ?? "").trim();
+  const drift = resolved && declared && !sameCommit(declared, identity.commit);
+  if (!resolved) {
+    return {
+      id: "deploy.metadata",
+      status: FAIL,
+      critical: true,
+      detail: `this checkout cannot resolve its own commit (${identity.gitResolveReason || `source=${identity.identitySource}`}), so the image it builds would report a declared stamp as if it were fact`,
+      remediation: "Build from a real git checkout (not an archive), and keep .dockerignore exposing .git/HEAD and .git/refs to the build context.",
+    };
+  }
   return {
     id: "deploy.metadata",
-    status: missing.length ? (envFile.template ? UNKNOWN : FAIL) : PASS,
-    critical: false,
-    detail: missing.length
-      ? `${envFile.template ? "cannot be judged from the committed template; " : ""}no build identity for: ${missing.join(", ")} — /health will report unknown and a rollback cannot be attributed`
-      : `build identity present: commit ${String(merged.GIT_COMMIT).slice(0, 12)} v${merged.ERP_VERSION} build ${merged.BUILD_NUMBER}`,
-    remediation: missing.length ? "deploy-synology.sh Step 2 writes these into .env; running the preflight before Step 2 legitimately reports this, so re-run after it." : "",
+    status: PASS,
+    critical: true,
+    detail: `an image built here will claim commit ${String(identity.commit).slice(0, 12)} on branch ${identity.gitBranch || "detached"}${identity.version ? ` v${identity.version} build ${identity.buildNumber}` : ""}${drift ? ` — .env still declares ${declared.slice(0, 12)}, which the image will correctly override` : ""}`,
+    remediation: drift ? "Optional: refresh .env's GIT_COMMIT so anything still reading it is not misled." : "",
   };
+}
+
+/** The labels docker keeps about a container's compose origin. */
+function composeLabels(ctx, container) {
+  const format = "{{index .Config.Labels \"com.docker.compose.project\"}}|{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}";
+  const r = ctx.exec("docker", ["inspect", container, "--format", format], { timeout: 20_000 });
+  if (r.missing) return { missing: true };
+  if (r.code !== 0) return { absent: true, stderr: r.stderr };
+  const [project, workingDir] = firstLine(r.stdout).split("|");
+  return { project: project || null, workingDir: workingDir || null };
+}
+
+function mountLines(ctx, container) {
+  const r = ctx.exec("docker", ["inspect", container, "--format", "{{range .Mounts}}{{.Type}} {{.Name}} {{.Source}}->{{.Destination}};{{end}}"], { timeout: 20_000 });
+  if (r.missing) return { missing: true };
+  if (r.code !== 0) return { absent: true };
+  return { lines: String(r.stdout || "").split(";").map((l) => l.trim()).filter(Boolean) };
+}
+
+/** A19 + A20 — the project and volume identity a Container Manager deploy can break. */
+function checkDeployTopology(ctx, expectedProject = EXPECTED_COMPOSE_PROJECT, expectedDbVolume = EXPECTED_DB_VOLUME) {
+  const repoReal = path.resolve(ctx.repo);
+
+  const labels = composeLabels(ctx, "care-api");
+  let project;
+  if (labels.missing) {
+    project = { id: "deploy.project_identity", status: UNKNOWN, critical: true, detail: "docker is not on this machine — the running stack's compose project cannot be read", remediation: `Run on the NAS: docker inspect care-api --format '{{index .Config.Labels "com.docker.compose.project"}}'` };
+  } else if (labels.absent) {
+    project = { id: "deploy.project_identity", status: UNKNOWN, critical: true, detail: "no running care-api container to read the compose project from", remediation: "docker ps --format '{{.Names}}' — is the CARE stack up at all?" };
+  } else if (labels.project !== expectedProject) {
+    project = {
+      id: "deploy.project_identity",
+      status: FAIL,
+      critical: true,
+      detail: `the running care-api belongs to compose project "${labels.project}", not "${expectedProject}"`,
+      remediation: `Do not rebuild from a differently-named project. Open the EXISTING ${expectedProject} project in Container Manager, or use docker compose -p ${expectedProject}. The project name comes from the Container Manager task, not the checkout directory.`,
+    };
+  } else if (labels.workingDir && path.resolve(labels.workingDir) !== repoReal) {
+    project = {
+      id: "deploy.project_identity",
+      status: FAIL,
+      critical: true,
+      detail: `care-api was composed from ${labels.workingDir}, which is not the checkout being verified (${repoReal})`,
+      remediation: "This box holds more than one CARE checkout. Verify and rebuild the one that actually serves the clinic; the other is a way to deploy the wrong code with total confidence.",
+    };
+  } else {
+    // A second project on the same compose file is the split-brain that strands
+    // the upload volumes, so look for it rather than trusting the running labels.
+    const listing = ctx.exec("docker", ["compose", "ls", "--all", "--format", "{{.Name}}|{{.Status}}|{{.ConfigFiles}}"], { timeout: 30_000 });
+    const claimers = listing.missing || listing.code !== 0
+      ? null
+      : String(listing.stdout || "")
+        .split(/\r?\n/)
+        .map((l) => l.split("|"))
+        .filter(([name, , files]) => name && name !== expectedProject && (files || "").includes(repoReal))
+        .map(([name]) => name);
+    project = claimers && claimers.length
+      ? {
+        id: "deploy.project_identity",
+        status: FAIL,
+        critical: true,
+        detail: `${claimers.length} other compose project(s) claim this checkout's compose file: ${claimers.join(", ")}`,
+        remediation: `Bring the extra project(s) down without -v before deploying — a second project on the same file reuses the external patient DB while creating fresh empty upload volumes. Never docker compose down -v.`,
+      }
+      : {
+        id: "deploy.project_identity",
+        status: claimers === null ? UNKNOWN : PASS,
+        critical: true,
+        detail: claimers === null
+          ? `project is ${labels.project} from ${labels.workingDir || "unknown dir"}, but docker compose ls could not list the others`
+          : `project ${labels.project} is the only claimant of ${repoReal}`,
+        remediation: claimers === null ? "docker compose ls --all" : "",
+      };
+  }
+
+  const composeText = ctx.readFile(path.join(ctx.repo, "docker-compose.yml"));
+  const live = mountLines(ctx, "care-db");
+  const apiMounts = mountLines(ctx, "care-api");
+  const problems = [];
+  if (composeText) {
+    // A non-external db_data is silently prefixed with the project name, so a new
+    // project does not reuse the patient database — it starts an EMPTY one under a
+    // familiar name. That is the configuration this check exists to catch.
+    const entry = /\n {2}db_data:([^\n]*\n)((?: {4}[^\n]*\n?)*)/.exec(composeText);
+    const child = entry ? entry[2] : "";
+    if (!entry) {
+      problems.push("docker-compose.yml declares no top-level `db_data` volume");
+    } else if (!/(^|\n) {4}external:/.test(child)) {
+      problems.push("db_data is not `external`, so its name is project-prefixed — a second project means a fresh empty database");
+    } else {
+      const named = /(^|\n) {4}name:\s*([^\n]+)/.exec(child);
+      const name = named ? named[2].trim() : null;
+      if (!name) {
+        problems.push("db_data is `external: true` with no `name:`, which resolves to <project>_db_data");
+      } else if (name !== expectedDbVolume) {
+        problems.push(`compose maps db_data to external volume "${name}", not ${expectedDbVolume}`);
+      }
+    }
+  }
+  if (live.missing || apiMounts.missing) {
+    return [project, { id: "deploy.volume_identity", status: UNKNOWN, critical: true, detail: "docker is not on this machine — the attached volumes cannot be read", remediation: `Run on the NAS: docker inspect care-db care-api --format '{{.Name}} {{json .Mounts}}'` }];
+  }
+  if (live.absent || apiMounts.absent) {
+    return [project, { id: "deploy.volume_identity", status: UNKNOWN, critical: true, detail: "care-db or care-api is not running here, so nothing can be proven about the volumes they hold", remediation: "docker ps --format '{{.Names}}'" }];
+  }
+  const dbMount = (live.lines || []).find((l) => l.includes("->/var/lib/postgresql/data")) || "";
+  if (!dbMount.includes(expectedDbVolume)) {
+    problems.push(`care-db's PostgreSQL data directory is mounted from "${dbMount || "nothing"}", not ${expectedDbVolume}`);
+  }
+  for (const suffix of ["uploads_data", "object_storage"]) {
+    const want = `${expectedProject}_${suffix}`;
+    const line = (apiMounts.lines || []).find((l) => l.includes(`/app/data/`));
+    const owns = (apiMounts.lines || []).some((l) => l.includes(want));
+    if (!owns) {
+      problems.push(`care-api does not mount the ${want} volume (${line ? `it mounts: ${line.split(" ")[1] || line}` : "no /app/data mount at all"})`);
+    }
+  }
+  const volume = {
+    id: "deploy.volume_identity",
+    status: composeText && problems.length ? FAIL : composeText ? PASS : UNKNOWN,
+    critical: true,
+    detail: !composeText
+      ? "docker-compose.yml is not readable here, so the volume wiring cannot be checked"
+      : problems.length
+        ? problems.join("; ")
+        : `patient DB on ${expectedDbVolume}, uploads and object storage on ${expectedProject}_* — the volumes a fresh project would leave behind`,
+    remediation: problems.length
+      ? "STOP. Do not rebuild from a new project name. These mounts are how a healthy-looking deploy makes the clinic's uploaded documents vanish."
+      : "",
+  };
+  return [project, volume];
 }
 
 // ─── orchestration ───────────────────────────────────────────────────────────
@@ -1056,7 +1273,12 @@ export function runPreflight(options = {}) {
   push(...checkHope(ctx, mergedEnv));
   push(checkRollback(ctx));
   push(checkSchedulers(ctx, mergedEnv));
-  push(checkDeployMetadata(ctx, envFile));
+  push(checkDeployMetadata(ctx, mergedEnv));
+  push(...checkDeployTopology(
+    ctx,
+    options.expectedComposeProject ?? mergedEnv.CARE_COMPOSE_PROJECT ?? EXPECTED_COMPOSE_PROJECT,
+    options.expectedDbVolume ?? mergedEnv.CARE_DB_VOLUME ?? EXPECTED_DB_VOLUME,
+  ));
   push(checkConfigDrift(ctx));
 
   // Owner decision, recorded so nobody re-litigates it or mistakes it for a pass.
@@ -1172,6 +1394,10 @@ RECORDING EVIDENCE THE GATE CANNOT OBSERVE
     node scripts/ops-preflight.mjs --record-rollback \\
         --previous-commit <sha> --api-image <id> --web-image <id>
         # BEFORE deploy-synology.sh rebuilds; afterwards the ids are gone
+
+    node scripts/ops-preflight.mjs --record-rollback --auto
+        # the Container Manager path: reads HEAD and the running image IDs itself.
+        # Nothing is written if any of them cannot be read.
 `;
 
 export function main(argv = process.argv.slice(2), options = {}) {
@@ -1223,9 +1449,26 @@ export function main(argv = process.argv.slice(2), options = {}) {
       if (et !== undefined) values.event_type = et;
       values.checked_at = new Date(ctx.now()).toISOString();
     } else {
-      for (const [k, f] of [["previous_commit", "previous-commit"], ["api_image", "api-image"], ["web_image", "web-image"]]) {
-        const v = flag(argv, f);
-        if (v !== undefined) values[k] = v;
+      if (argv.includes("--auto")) {
+        // Asking a clinician to type 64-character image IDs is how rollback records
+        // end up wrong or absent. Read them from the containers that are actually
+        // running, before the rebuild replaces them.
+        const derived = deriveRollbackState(ctx);
+        for (const [k, v] of Object.entries(derived.values)) values[k] = v;
+        for (const [k, f] of [["previous_commit", "previous-commit"], ["api_image", "api-image"], ["web_image", "web-image"]]) {
+          const v = flag(argv, f);
+          if (v !== undefined) values[k] = v;
+        }
+        const stillMissing = ["previous_commit", "api_image", "web_image"].filter((k) => !values[k]);
+        if (stillMissing.length) {
+          process.stderr.write(`--record-rollback --auto could not read: ${derived.problems.join("; ") || stillMissing.join(", ")}. Nothing was written — a rollback record with guessed IDs is worse than none.\n`);
+          return 1;
+        }
+      } else {
+        for (const [k, f] of [["previous_commit", "previous-commit"], ["api_image", "api-image"], ["web_image", "web-image"]]) {
+          const v = flag(argv, f);
+          if (v !== undefined) values[k] = v;
+        }
       }
       const ir = flag(argv, "irreversible-migrations");
       if (ir !== undefined) values.irreversible_migrations = ir ? ir.split(",").map((x) => x.trim()).filter(Boolean) : [];
