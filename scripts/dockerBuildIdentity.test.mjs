@@ -530,3 +530,142 @@ describe("the runbook documents the proof it tells anyone to run", () => {
     expect(existsSync(path.join(REPO_ROOT, "scripts", "docker-build-identity.mjs"))).toBe(true);
   });
 });
+
+/**
+ * The half of "disposable" that the happy-path tests cannot see. Every case here
+ * fails against a version that cleans up only when each docker call answered 0 —
+ * which is the version that leaves a container and an image on the NAS, the same
+ * box whose disk headroom §12b warns about.
+ */
+describe("a tier that dies half-way still cleans up", () => {
+  const lstat = () => ({ isDirectory: () => true });
+  const quiet = () => {};
+
+  const scripted = (failOn) => {
+    const f = fakeDocker();
+    const run = (cmd, args, opts = {}) => {
+      const joined = [cmd, ...args].join(" ");
+      if (failOn && failOn(joined)) throw new Error("harness: the daemon vanished mid-call");
+      return f.run(cmd, args, opts);
+    };
+    return { run, calls: f.calls };
+  };
+
+  it("removes the container when the copy loop throws", async () => {
+    const s = scripted((j) => j.startsWith("docker cp") && j.includes("b.json"));
+    await expect(main(["--tier", "context"], { run: s.run, log: quiet, lstat })).rejects.toThrow("daemon vanished");
+    expect(s.calls.filter((c) => c.startsWith("docker rm -f probe-"))).toHaveLength(1);
+    expect(s.calls.filter((c) => c.startsWith("docker rmi -f care-build-identity-probe:"))).toHaveLength(1);
+  });
+
+  it("removes a container the daemon created but reported as failed", async () => {
+    // A `docker create` that times out answers non-zero after the daemon has already
+    // made the container. A cleaner registered on success leaks exactly this case.
+    const f = fakeDocker();
+    const run = (cmd, args, opts = {}) => (args[0] === "create"
+      ? { status: -1, stdout: "", stderr: "timeout", error: null }
+      : f.run(cmd, args, opts));
+    const code = await main(["--tier", "context"], { run, log: quiet, lstat });
+    expect(code).not.toBe(0);
+    expect(f.calls.filter((c) => c.startsWith("docker rm -f probe-"))).toHaveLength(1);
+    expect(f.calls.filter((c) => c.startsWith("docker rmi -f care-build-identity-probe:"))).toHaveLength(1);
+  });
+
+  it("removes the image even when the build itself is what failed", async () => {
+    const f = fakeDocker();
+    const run = (cmd, args, opts = {}) => (args[0] === "build"
+      ? { status: 1, stdout: "", stderr: "step failed", error: null }
+      : f.run(cmd, args, opts));
+    const code = await main(["--tier", "context"], { run, log: quiet, lstat });
+    expect(code).toBe(EXIT_CODES[FAIL]);
+    expect(f.calls.filter((c) => c.startsWith("docker rmi -f care-build-identity-probe:"))).toHaveLength(1);
+  });
+
+  it("holds each build timeout under the CI step that waits for it", () => {
+    // A hung build must print its own named verdict before the runner cancels the
+    // step, or the reason is lost with the job. Each tier has its own budget, and a
+    // missing pairing is a failure rather than a vacuous pass.
+    const src = readFileSync(path.join(REPO_ROOT, "scripts", "docker-build-identity.mjs"), "utf8");
+    // Read as adjacent lines rather than one multi-line regex: the working tree here
+    // is CRLF, and a `\n` in a source-level regex is how such a guard silently
+    // matches nothing.
+    const source = src.split(/\r?\n/);
+    const build = {};
+    source.forEach((line, i) => {
+      const label = /label: "(\w+)-tier"/.exec(line);
+      const minutes = /timeoutMinutes: (\d+)/.exec(source[i + 1] || "");
+      if (label && minutes) build[label[1]] = Number(minutes[1]);
+    });
+    const job = identityJob.split(/\r?\n/);
+    const caps = {};
+    job.forEach((line, i) => {
+      const cap = /timeout-minutes: (\d+)/.exec(line);
+      const step = /run: node scripts\/docker-build-identity\.mjs.*--tier (\w+)/.exec(job[i + 1] || "");
+      if (cap && step) caps[step[1]] = Number(cap[1]);
+    });
+    expect(Object.keys(build).sort()).toEqual(["context", "real"]);
+    expect(Object.keys(caps).sort()).toEqual(["context", "real"]);
+    for (const tier of ["context", "real"]) {
+      expect(build[tier], `${tier} build must finish inside its step`).toBeLessThan(caps[tier]);
+    }
+  });
+
+});
+
+describe("the proof exists for the answers nobody wants", () => {
+  it("writes a machine-readable abstain when there is no Docker", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "proof-absent-"));
+    const file = path.join(dir, "context.json");
+    try {
+      const run = (cmd, args) => (args && args[0] === "version"
+        ? { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon", error: null }
+        : { status: 0, stdout: "", stderr: "", error: null });
+      const code = await main([`--tier=context`, `--json=${file}`], { run, log: () => {}, lstat: () => ({ isDirectory: () => true }) });
+      expect(code).toBe(EXIT_CODES[UNAVAILABLE]);
+      const proof = JSON.parse(readFileSync(file, "utf8"));
+      expect(proof.verdict).toBe(UNAVAILABLE);
+      expect(proof.exitCode).toBe(3);
+      expect(proof.abstain).toMatch(/no usable Docker/);
+      expect(proof.tiers).toEqual({});
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("writes a machine-readable abstain for a pointer-file .git", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "proof-pointer-"));
+    const file = path.join(dir, "context.json");
+    try {
+      const f = fakeDocker();
+      const code = await main([`--tier=context`, `--json=${file}`], { run: f.run, log: () => {}, lstat: () => ({ isDirectory: () => false }) });
+      expect(code).toBe(EXIT_CODES[UNVERIFIED]);
+      const proof = JSON.parse(readFileSync(file, "utf8"));
+      expect(proof.verdict).toBe(UNVERIFIED);
+      expect(proof.abstain).toMatch(/pointer file/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("the arms that decide the claim — the two that used to be decoration", () => {
+  const good = {
+    a: identity(),
+    b: identity({ declaredGitCommit: HEAD, staleStampDetected: false }),
+    c: identity({ commit: STALE, identitySource: SOURCE_DECLARED }),
+    d: identity({ commit: STALE, identitySource: SOURCE_DECLARED }),
+  };
+
+  it("fails arm D when HEAD was hidden and the answer is neither the checkout nor the stamp", () => {
+    // Arm D used to read only `identitySource`, so any label of "declared" passed it
+    // — including a build that invented a commit nobody handed it.
+    const invented = { ...good, d: identity({ commit: "9".repeat(40), identitySource: SOURCE_DECLARED }) };
+    const r = evaluateProbe({ manifest: manifest(), arms: invented, headSha: HEAD, staleStamp: STALE });
+    expect(r.status).toBe(FAIL);
+    expect(r.verdicts.find((v) => v.name === "D falls back to the declared stamp").status).toBe("fail");
+  });
+
+  it("fails the objects promise when the context manifest never arrived", () => {
+    // `objects-present` defaults to false, so a `docker cp` that silently failed used
+    // to hand the one arm that measures the context a pass for the cost of nothing.
+    const r = evaluateProbe({ manifest: parseContextManifest(""), arms: good, headSha: HEAD, staleStamp: STALE });
+    expect(r.status).toBe(FAIL);
+    expect(r.verdicts.find((v) => v.name === "objects stay out of the context").status).toBe("fail");
+  });
+});

@@ -97,6 +97,10 @@ export function parseContextManifest(text) {
   const headFirstLine = fields["head-first-line"] ?? "";
   return {
     raw: fields,
+    // Whether `context.tsv` arrived at all. Absence is not an empty manifest: the
+    // promise "objects stayed out" was never measured, and a default of `no` would
+    // hand that promise a pass for the cost of a failed `docker cp`.
+    present: Object.keys(fields).length > 0,
     headFirstLine,
     symbolicHead: /^ref:\s*\S+/i.test(headFirstLine),
     detachedHead: /^[0-9a-f]{40}$/i.test(headFirstLine),
@@ -192,13 +196,23 @@ export function evaluateProbe({ manifest, arms, headSha, staleStamp }) {
         ? pass("D HEAD removed degrades the identity", SOURCE_DECLARED, d.identitySource)
         : fail("D HEAD removed degrades the identity", SOURCE_DECLARED, d.identitySource, "the identity survived without .git/HEAD, so it is not derived from the checkout"),
     );
+    v.push(
+      sameCommit(d.commit, staleStamp)
+        ? pass("D falls back to the declared stamp", staleStamp, d.commit, "with no HEAD the resolver kept the stamp and labelled it, which is the honest degradation")
+        : fail("D falls back to the declared stamp", staleStamp, d.commit, "the answer changed to something that is neither the checkout nor the stamp it was handed — the resolver invented it"),
+    );
   }
 
-  // The small-context half of the promise.
+  // The small-context half of the promise. An absent manifest is a failure of the
+  // proof, not a clean measurement: `objects-present` defaults to false, so without
+  // this guard a copy that silently failed would pass the one arm that is supposed
+  // to notice the copy failed.
   v.push(
-    manifest.objectsPresent
-      ? fail("objects stay out of the context", "absent", "present", ".git/objects reached the build context — the negations re-included more than the refs")
-      : pass("objects stay out of the context", "absent", "absent"),
+    !manifest.present
+      ? fail("objects stay out of the context", "a context.tsv written by the probe", "absent", "the manifest never arrived, so nothing was measured about the context")
+      : manifest.objectsPresent
+        ? fail("objects stay out of the context", "absent", "present", ".git/objects reached the build context — the negations re-included more than the refs")
+        : pass("objects stay out of the context", "absent", "absent"),
   );
 
   return { verdicts: v, status: grade(v) };
@@ -285,14 +299,18 @@ export function gitLayout(root, lstat = lstatSync) {
   }
 }
 
-function buildImage({ run, tag, dockerfile, buildArgs, target, label, log }) {
+function buildImage({ run, tag, dockerfile, buildArgs, target, label, timeoutMinutes, log }) {
   const args = ["build", "--quiet"];
   if (target) args.push("--target", target);
   if (dockerfile) args.push("-f", dockerfile);
   args.push("--tag", tag);
   for (const [k, value] of Object.entries(buildArgs)) args.push("--build-arg", `${k}=${value}`);
   args.push(".");
-  const r = run("docker", args, { cwd: REPO_ROOT, timeout: 30 * 60_000, maxBuffer: 64 * 1024 * 1024 });
+  // Shorter than the CI step that waits on it: a hung build must produce this
+  // script's own named verdict inside the step's window, or the runner cancels the
+  // job and the reason for the failure is lost with it. The step caps live in
+  // `.github/workflows/ci.yml` and a test pins this value under them.
+  const r = run("docker", args, { cwd: REPO_ROOT, timeout: timeoutMinutes * 60_000, maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0) {
     log(`${label} build FAILED (exit ${r.status})`);
     log(String(r.stderr || r.stdout).split(/\r?\n/).slice(-25).join("\n"));
@@ -308,20 +326,29 @@ function buildImage({ run, tag, dockerfile, buildArgs, target, label, log }) {
  * runs. A file that is not in the image is left for the grading to notice — an
  * absent arm is a verdict, not a crash.
  */
-function copyOut({ run, imageId, pairs, outDir, log }) {
+function copyOut({ run, imageId, pairs, outDir, log, containers }) {
   const name = `probe-${process.pid}-${Date.now()}`;
   const created = run("docker", ["create", "--name", name, imageId], { timeout: 120_000 });
+  // Registered before its exit status is read. A `docker create` that times out may
+  // still have created the container on the daemon, and a cleaner that only removes
+  // what it saw succeed leaks precisely the case it is there to clean up.
+  containers.push(name);
   if (created.status !== 0) {
     log(`docker create failed: ${String(created.stderr).split(/\r?\n/)[0]}`);
     return;
   }
-  for (const [from, to] of pairs) {
-    const dest = path.join(outDir, to);
-    mkdirSync(path.dirname(dest), { recursive: true });
-    const r = run("docker", ["cp", `${name}:${from}`, dest], { timeout: 300_000 });
-    if (r.status !== 0) log(`  docker cp ${from} -> exit ${r.status} ${String(r.stderr).trim().split(/\r?\n/)[0]}`);
+  try {
+    for (const [from, to] of pairs) {
+      const dest = path.join(outDir, to);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      const r = run("docker", ["cp", `${name}:${from}`, dest], { timeout: 300_000 });
+      if (r.status !== 0) log(`  docker cp ${from} -> exit ${r.status} ${String(r.stderr).trim().split(/\r?\n/)[0]}`);
+    }
+  } finally {
+    run("docker", ["rm", "-f", name], { timeout: 120_000 });
+    const at = containers.indexOf(name);
+    if (at >= 0) containers.splice(at, 1);
   }
-  run("docker", ["rm", "-f", name], { timeout: 120_000 });
 }
 
 const USAGE = `docker-build-identity — prove an image names its own commit, with a real build
@@ -347,11 +374,28 @@ export async function main(argv = process.argv.slice(2), {
   const wantReal = tier === "real" || tier === "all";
   const wantContext = tier === "context" || tier === "all";
 
+  // The machine-readable proof is written for EVERY exit, including the two that
+  // decline to run. An artefact that only appears when the answer is comfortable is
+  // read by the next person as "nothing to see" rather than "this was never
+  // measured", which is the failure shape this whole PR exists to remove.
+  const report = { generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), tier, tiers: {} };
+  const writeProof = (extra) => {
+    if (typeof args.json !== "string") return;
+    const body = { ...report, ...extra };
+    if (body.verdict) body.exitCode = exitCode[body.verdict];
+    const target = path.resolve(REPO_ROOT, args.json);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, JSON.stringify(body, null, 2) + "\n");
+    log(`proof written to ${args.json}`);
+  };
+
   const docker = dockerInfo(run);
+  report.docker = docker;
   if (!docker.available) {
     log(`${UNAVAILABLE}: no usable Docker on this machine (${docker.reason})`);
     log(`   The build-identity claim is UNPROVEN here. scripts/buildIdentity.test.mjs pins the text`);
     log(`   of .dockerignore and the Dockerfile; only a real build can pin the context.`);
+    writeProof({ verdict: UNAVAILABLE, abstain: "no usable Docker on this machine", reason: docker.reason });
     return exitCode[UNAVAILABLE];
   }
   log(`docker server=${docker.server} client=${docker.client}`);
@@ -360,15 +404,31 @@ export async function main(argv = process.argv.slice(2), {
   const head = run("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, timeout: 30_000 });
   if (head.status !== 0 || layout.kind !== "directory") {
     log(`${UNVERIFIED}: the checkout cannot supply a context. ${layout.note || String(head.stderr).trim()}`);
+    writeProof({
+      verdict: UNVERIFIED,
+      abstain: layout.kind === "file" ? "the .git entry is a pointer file, so no refs can enter any build context" : "git rev-parse HEAD did not answer",
+      note: layout.note || String(head.stderr).trim(),
+    });
     return exitCode[UNVERIFIED];
   }
   const headSha = String(head.stdout).trim();
   const staleStamp = staleStampFor(headSha);
+  report.headSha = headSha;
+  report.staleStamp = staleStamp;
   log(`checkout HEAD ${headSha} — feeding in the false stamp ${staleStamp}`);
 
   const outDir = mkdtempSync(path.join(tmpdir(), "care-build-identity-"));
-  const report = { generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), docker, headSha, staleStamp, tier, tiers: {} };
   const statuses = [];
+  // Registered the moment each object exists, swept on every exit path. A cleaner
+  // that only removes what it saw succeed leaks exactly the case it is there for: a
+  // `docker create` that times out, or a throw half-way through `docker cp`, leaves
+  // a container and an image on the very box whose disk this script warns about.
+  const containers = [];
+  const images = [];
+  const sweep = () => {
+    for (const name of containers.splice(0)) run("docker", ["rm", "-f", name], { timeout: 120_000 });
+    for (const tag of images.splice(0)) run("docker", ["rmi", "-f", tag], { timeout: 120_000 });
+  };
 
   try {
     if (wantContext) {
@@ -379,14 +439,19 @@ export async function main(argv = process.argv.slice(2), {
         dockerfile: PROBE_DOCKERFILE,
         buildArgs: { STALE_COMMIT: staleStamp, REAL_COMMIT: headSha },
         label: "context-tier",
+        timeoutMinutes: 8,
         log,
       });
+      // Registered before its status is read: a build that times out may still have
+      // produced the tag, and an unregistered tag is an image nobody removes.
+      images.push(tag);
       if (built.ok) {
         copyOut({
           run,
           imageId: tag,
           outDir,
           log,
+          containers,
           pairs: [
             ["/out/context.tsv", "context.tsv"],
             ["/out/a.json", "a.json"],
@@ -404,7 +469,7 @@ export async function main(argv = process.argv.slice(2), {
       } else {
         statuses.push(FAIL);
       }
-      run("docker", ["rmi", "-f", tag], { timeout: 120_000 });
+      sweep();
     }
 
     if (wantReal) {
@@ -416,14 +481,19 @@ export async function main(argv = process.argv.slice(2), {
         target: "api-build",
         buildArgs: { GIT_COMMIT: staleStamp, GIT_BRANCH: "probe-branch", GIT_TAG: "probe-tag" },
         label: "real-tier",
+        timeoutMinutes: 22,
         log,
       });
+      // Registered before its status is read: a build that times out may still have
+      // produced the tag, and an unregistered tag is an image nobody removes.
+      images.push(tag);
       if (built.ok) {
         copyOut({
           run,
           imageId: tag,
           outDir,
           log,
+          containers,
           pairs: [
             ["/repo/build-info.json", "real-build-info.json"],
             ["/repo/artifacts/api-server/dist/index.mjs", "real-index.mjs"],
@@ -445,23 +515,16 @@ export async function main(argv = process.argv.slice(2), {
       } else {
         statuses.push(FAIL);
       }
-      run("docker", ["rmi", "-f", tag], { timeout: 120_000 });
+      sweep();
     }
   } finally {
+    sweep();
     rmSync(outDir, { recursive: true, force: true });
   }
 
   const status = statuses.includes(FAIL) ? FAIL : statuses.includes(UNVERIFIED) ? UNVERIFIED : statuses.includes(PASS) ? PASS : UNAVAILABLE;
-  const codePath = typeof args.json === "string" ? args.json : null;
-  if (codePath) {
-    const target = path.resolve(REPO_ROOT, codePath);
-    // The proof is written even when the verdict is red, because a failure with no
-    // artefact is a failure nobody can read the reason for. `tmp/` is gitignored,
-    // so it does not exist in a fresh checkout.
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, JSON.stringify(report, null, 2) + "\n");
-    log(`proof written to ${codePath}`);
-  }
+  // `tmp/` is gitignored, so the directory is created here rather than assumed.
+  writeProof({ verdict: status, gradedTiers: statuses.length });
   log(`${status}: ${statuses.length ? `${statuses.length} tier(s) graded` : "no tier ran"} (exit ${exitCode[status]})`);
   return exitCode[status];
 }

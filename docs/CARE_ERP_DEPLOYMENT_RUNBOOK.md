@@ -399,14 +399,21 @@ Exit codes, and only the first is evidence:
 Two cautions before running it on the NAS:
 
 * It builds **disposable** images tagged `care-build-identity-probe:*` and removes the
-  container and the image afterwards. It starts nothing, touches no volume, and is not a
-  deploy — but `--tier real` does write a full monorepo image to disk. Check
+  container and the image on **every** exit path — a build that fails, a `docker create`
+  that times out after the daemon made the container, and a `docker cp` that throws
+  half-way are all covered, because a cleaner that only acts on success leaks exactly
+  those cases. It starts nothing, touches no volume, and is not a deploy — but
+  `--tier real` does write a full monorepo image to disk. Check
   `docker system df` first; the clinic's disk headroom is the reason the nightly dumps are
   the thing that must stay small, not this.
 * It must be run from a **real clone**. In a linked `git worktree`, `.git` is a one-line
   pointer file, so no HEAD or refs can enter any context, and the harness answers
   UNVERIFIED rather than reporting a pass about a tree that cannot carry an identity.
   `/volume1/docker/care-erp-github/care-on-synology1` is a normal clone and is fine.
+* Every exit, including the two declines above, writes the `--json` proof when the flag is
+  given, with `verdict`, `exitCode` and an `abstain` reason. A CI artifact that appeared
+  only when the answer was comfortable would be read as "nothing to see" instead of
+  "this machine could not measure it".
 
 **Measured, and what the measurement does not cover.** The first run of this proof anywhere
 was CI, on 2026-10-15, at `5e54b561`: all ten arms PASS, the context tier in **24 s** of a
