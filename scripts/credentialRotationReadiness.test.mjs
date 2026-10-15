@@ -357,7 +357,7 @@ describe("the precedence claim is the code, not a paraphrase", () => {
   test("...and every API start re-stamps that database hash from the environment", () => {
     // This is the half that makes the rotate-key button a trap rather than a
     // no-op: it works, then the next boot quietly undoes it.
-    expect(lineAt(API_INDEX, 2974).trim()).toBe("bootstrapHopeCareIntegration()");
+    expect(lineAt(API_INDEX, 2982).trim()).toBe("bootstrapHopeCareIntegration()");
     const updateBranch = windowOf(BOOTSTRAP, 145, 8);
     expect(updateBranch).toContain(".set({");
     expect(updateBranch).toContain("keyHash,");

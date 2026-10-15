@@ -128,3 +128,7 @@ ocr-worker/.venv/
 ocr-worker/.env
 
 legacy-reference/
+
+# Written by scripts/build-identity.mjs during a build, and by the identity tests.
+# It names a commit, so a stray copy in a checkout must never be committable.
+build-info.json
