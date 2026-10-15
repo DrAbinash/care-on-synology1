@@ -3181,12 +3181,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   // Clinical history needs BOTH directions visible, not just reachable. `canUndoLastAbnormal` above is
   // a narrower gate — it asks whether the last thing worth stepping back over is an abnormality — so a
   // step that restores a format application, a deselection or hand-typed text had no control at all.
-  // The two stack lengths are the honest enabled-state: the store refuses a frame from another study or
-  // a signed report, and a button that cannot do anything should say so before it is clicked.
+  // The two stack lengths are the honest enabled-state, and the lock half of it is `contentLocked`:
+  // the same authority every other clinical control reads, so a report signed in another session does
+  // not offer a step the store is going to refuse.
   const patchUndoDepth = useWorkspace((s: WorkspaceStore) => s.patchUndoStack.length);
   const patchRedoDepth = useWorkspace((s: WorkspaceStore) => s.patchRedoStack.length);
-  const undoStepEnabled = patchUndoDepth > 0 && !isFinalized && !isLocked;
-  const redoStepEnabled = patchRedoDepth > 0 && !isFinalized && !isLocked;
+  const undoStepEnabled = patchUndoDepth > 0 && !contentLocked;
+  const redoStepEnabled = patchRedoDepth > 0 && !contentLocked;
 
   /**
    * One step back or one step forward, through the same two guards the keystroke uses. Success needs

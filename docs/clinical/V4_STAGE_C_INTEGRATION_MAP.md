@@ -347,3 +347,42 @@ Windows-only defect in that test's own path handling (`join()` yields backslash 
 `lib/aiReportingClient.ts` cannot match). It names the *allowed* typed client as the offender; the underlying
 contract holds, measured independently: exactly one file calls `/api/ai-reporting/query`, and it is
 `aiReportingClient.ts:17`.
+
+## 11. The widened sweep found a hole this branch had dug itself: clinical history gated on the session-only pair
+
+Widening the Phase 4 sweep from the 78-file Stage C list to **every file that imports `observationLedger` or the
+workspace store (105)** pulled in `signedElsewhereControlLock.contract.test.ts`, which that list had never run.
+It failed, and the failure was not Phase 4's:
+
+```
+hooks/radiology-workspace/useWorkspaceClinicalUi.tsx still gates a render on the two session-only flags
+in some order: [ '!isFinalized && !isLocked' ]
+```
+
+Those are the two Undo/Redo enabled flags this branch added for Phase 1's clinical-history controls
+(`undoStepEnabled` / `redoStepEnabled`). `!isFinalized && !isLocked` is exactly the spelling the signed-elsewhere
+ratchet bans, because the pair misses the half of "locked" that is not this session. The severity is worse than an
+enabled button that gets refused: `refuseSignedMutation` is documented as a **same-session** guard —
+`completeFinalize` is the only writer of `isFinalized: true` and nothing rehydrates it from the server's
+REPORT_FINAL status — so on a report signed on another workstation the store guard does not fire either. Before
+this fix a click on Undo or Redo there rewrote the local report freely, and the only thing that would ever say
+"no" was `assertDraftWritable` (409 REPORT_LOCKED) at save time. The rest of the workspace had already been moved
+onto the composed lock precisely so that a signed-elsewhere report is not offered clinical writes; two new
+controls reintroduced the split without touching a file the earlier PRs swept.
+
+**Fix.** Both flags now read `contentLocked`, the same value every other clinical control gates on
+(`useWorkspaceClinicalUi.tsx:836`). The stack-depth half of the expression is unchanged, so a step is offered
+exactly when there is a frame to step through. `allowEditSigned` is part of the composed lock but cannot make the
+button looser than before: its only setter call passes `false` and `signedReportCorrectionTruth.test.ts` pins
+that no click handler ever flips it on, which is also why `refuseSignedMutation` does not consult it.
+
+**The process lesson, written down because it is the reason the hole existed:** a phase's verification list built
+from that phase's own file list cannot find what the phase broke. Both sweeps in §10 that reported green were
+derived from files this branch had edited. The dependent-import sweep is what found this, so it is now the
+sweep Phase 4 records, and `tmp/phase4-final-paths.txt` is derived from the import graph rather than the plan.
+
+**Evidence.** `signedElsewhereControlLock.contract.test.ts` green (its `NEGATED_RE` and the paired
+`!contentLocked` count in `ReportCanvas` are unaffected: two expression uses in the hook, no new render guard, no
+`if (contentLocked) return;` added). `clinicalHistoryShortcuts` + `clinicalUndoRedo` +
+`finalizedMutationBoundary.hardening` + the lock contract: **129 tests, 128 passed**, the single failure being the
+Windows path defect in `aiQueryContract.test.ts` described in §10.
