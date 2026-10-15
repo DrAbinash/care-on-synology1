@@ -102,9 +102,9 @@ and that every cited path exists.
 
 - `artifacts/api-server/src/services/integration/outbox.ts:104` :: `INTEGRATION_${code}_SIGNING_SECRET` :: sign-outgoing — the only place the signing key is obtained; **env-only, no DB fallback**
 - `artifacts/api-server/src/services/integration/outbox.ts:85` :: `createHmac` :: sign-outgoing — HMAC-SHA256 over `<timestamp>.<body>`
-- `artifacts/api-server/src/services/integration/outbox.ts:370` :: `x-care-signature` :: sign-outgoing — wire format `sha256=<hex>`
-- `artifacts/api-server/src/services/integration/outbox.ts:369` :: `x-care-timestamp` :: sign-outgoing — unix seconds; the receiver's staleness rule makes host clock skew part of this edge
-- `artifacts/api-server/src/services/integration/outbox.ts:336` :: `cfg.secret` :: gate — no secret ⇒ row stays `pending` with `delivery_not_configured`; nothing sent, nothing dead-lettered
+- `artifacts/api-server/src/services/integration/outbox.ts:388` :: `x-care-signature` :: sign-outgoing — wire format `sha256=<hex>`
+- `artifacts/api-server/src/services/integration/outbox.ts:387` :: `x-care-timestamp` :: sign-outgoing — unix seconds; the receiver's staleness rule makes host clock skew part of this edge
+- `artifacts/api-server/src/services/integration/outbox.ts:344` :: `cfg.secret` :: gate — no secret ⇒ row stays `pending` with `delivery_not_configured`; nothing sent, nothing dead-lettered
 - `artifacts/api-server/src/services/electronicFilm/diagnostics.ts:120` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: display — reports set/unset only, never a value
 - `artifacts/api-server/src/lib/bootstrapHopeCareIntegration.ts:81` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
 - `docker/api-entrypoint.sh:14` :: `INTEGRATION_HOPE_SIGNING_SECRET` :: gate — arming decision
@@ -178,7 +178,7 @@ that process is `care-api`.
 |---|---|---|
 | CARE partner key only | HOPE's bearer no longer hashes to `key_hash` → every inbound request 401 (`artifacts/api-server/src/middleware/requireIntegrationPartnerAuth.ts:108` :: `invalid_or_revoked_key`) | Yes — restore the pair; nothing is queued inbound |
 | HOPE partner key only | the same 401, from the other side | Yes |
-| CARE signing secret only | CARE signs new, HOPE verifies old → callback 401; rows go `pending → http_401` and dead-letter at attempt 8 (`artifacts/api-server/src/services/integration/outbox.ts:400` :: `maxAttempts`) | Partially — dead rows need `POST /api/integration/admin/outbox/:id/retry` (`artifacts/api-server/src/routes/integration/admin.ts:213` :: `retry`) |
+| CARE signing secret only | CARE signs new, HOPE verifies old → callback 401; rows go `pending → http_401` and dead-letter at attempt 8 (`artifacts/api-server/src/services/integration/outbox.ts:418` :: `maxAttempts`) | Partially — dead rows need `POST /api/integration/admin/outbox/:id/retry` (`artifacts/api-server/src/routes/integration/admin.ts:213` :: `retry`) |
 | HOPE callback secret only | same, mirrored | Partially, as above |
 | `INTEGRATION_HOPE_CALLBACK_URL` only | events POSTed to the wrong host; unreachable ⇒ retry, then dead-letter | Yes, if caught inside the retry budget |
 | DB `code` for the partner | the env var CARE reads changes name (`artifacts/api-server/src/services/integration/outbox.ts:99`) → secret null → `delivery_not_configured`, everything stays `pending` | Yes, by restoring the code |

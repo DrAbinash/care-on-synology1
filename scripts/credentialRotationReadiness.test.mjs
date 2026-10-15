@@ -407,8 +407,8 @@ describe("dual-accept, as the code actually stands", () => {
   test("a missing secret fails closed rather than sending unsigned events", () => {
     // Without this the rotation sequence would be unsafe: half-configured would
     // mean a peer accepting unauthenticated callbacks.
-    expect(lineAt(OUTBOX, 336)).toContain("if (!cfg.url || !cfg.secret)");
-    expect(windowOf(OUTBOX, 341, 4)).toContain("delivery_not_configured");
+    expect(lineAt(OUTBOX, 344)).toContain("if (!cfg.url || !cfg.secret)");
+    expect(windowOf(OUTBOX, 361, 4)).toContain("delivery_not_configured");
     expect(DOC).toContain("delivery_not_configured");
   });
 });
