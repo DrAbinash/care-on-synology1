@@ -18,7 +18,11 @@ const aptHelper = readFileSync(path.join(root, "scripts/ci-apt-install.sh"), "ut
 
 describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)", () => {
   it("every job caps wall time so a hung step cannot sit for the 6h default", () => {
-    for (const job of ["static", "test"]) {
+    // `identity` is in this list because PR #1015 added it: a job that runs a
+    // real `docker build` is precisely the kind of step that hangs on a registry,
+    // and a cap guard that hardcodes the two older jobs silently exempts whatever
+    // comes after them.
+    for (const job of ["static", "identity", "test"]) {
       const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.startsWith(`${job}:`));
       expect(block, `job ${job} missing`).toBeTruthy();
       expect(block).toMatch(/timeout-minutes:\s*[1-9][0-9]*/);
@@ -55,6 +59,35 @@ describe("CI hang guards (PR #548 — apt-get sat past 10 min with no timeout)",
 
     const step = Number(yml.match(/Install CI apt packages[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
     expect(step * 60, "workflow step preempts the script's own retry budgets").toBeGreaterThan(update + install);
+  });
+});
+
+describe("the build-identity job fits the build it actually runs (measured 2026-10-15)", () => {
+  // Run 38743698974, job 116451658251, on head 5e54b561 — the first time this
+  // repository built anything in CI. Whole job 39 s (13:33:26 → 13:34:05); the
+  // context tier step 24 s; the dispatched real tier skipped. Docker server 28.0.4.
+  const MEASURED_CONTEXT_SECONDS = 24;
+  const block = yml.split(/\n  (?=[a-z])/).find((chunk) => chunk.includes("docker-build-identity.mjs")) || "";
+
+  it("caps the context tier at more than double the measured build", () => {
+    const step = Number(yml.match(/Prove the build context carries the identity[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+    expect(step, "the context tier step has no cap").toBeGreaterThan(0);
+    expect(step * 60, "cap below 2x the measured duration of a passing build")
+      .toBeGreaterThanOrEqual(2 * MEASURED_CONTEXT_SECONDS);
+  });
+
+  it("leaves the dispatched production tier a budget, because nobody has measured it", () => {
+    const step = Number(yml.match(/Prove the production Dockerfile[\s\S]*?timeout-minutes:\s*(\d+)/)?.[1] ?? 0);
+    expect(step, "the real tier step has no cap").toBeGreaterThanOrEqual(15);
+  });
+
+  it("runs the cheap proof before the expensive one", () => {
+    // If the expensive tier went first, a registry stall would consume the whole
+    // job budget and the `.dockerignore` claim would end the run untested.
+    expect(yml.indexOf("Prove the build context carries the identity")).toBeLessThan(
+      yml.indexOf("Prove the production Dockerfile"),
+    );
+    expect(block).toContain("docker-build-identity.mjs --tier context");
   });
 });
 

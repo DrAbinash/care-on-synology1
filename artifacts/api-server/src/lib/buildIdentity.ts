@@ -46,12 +46,51 @@ export function resolveBuildCommit(
 export function buildIdentityPayload(
   env: NodeJS.ProcessEnv = process.env,
   image: ImageBuildInfo = loadImageBuildInfo(),
-): { commit: string; imageBuiltAt: string | null; artifactSha256: string | null } {
+): {
+  commit: string;
+  identitySource: string;
+  imageBuiltAt: string | null;
+  artifactSha256: string | null;
+  gitBranch: string | null;
+  declaredGitCommit: string | null;
+  staleStampDetected: boolean;
+  version: string | null;
+  buildNumber: string | null;
+} {
+  // The image's own resolved commit outranks the env stamp, because the env stamp
+  // is whatever .env said at build time and .env is refreshed by only one of the
+  // two ways this image gets built. When the context could not resolve a commit,
+  // the declared value is still reported — labelled, so nobody mistakes it for proof.
+  const fromImage = image.commit ? normalizeBuildCommit(image.commit) : null;
+  const fromEnv = resolveBuildCommit(env);
+  const commit = fromImage || fromEnv;
+  const identitySource = fromImage
+    ? image.identitySource || "build-info-without-source"
+    : image.declaredGitCommit || fromEnv !== "unknown"
+      ? "build-arg-declared"
+      : "unknown";
   return {
-    commit: resolveBuildCommit(env),
+    commit,
+    identitySource,
     imageBuiltAt: image.imageBuiltAt,
     artifactSha256: image.artifactSha256,
+    gitBranch: image.gitBranch,
+    declaredGitCommit: image.declaredGitCommit,
+    version: image.version,
+    buildNumber: image.buildNumber,
+    staleStampDetected:
+      image.staleStampDetected ||
+      (!!fromImage && !!image.declaredGitCommit && !sameCommit(image.declaredGitCommit, image.commit)),
   };
+}
+
+/** `2d51e8d7` and `2d51e8d7ab…` are the same commit; a 6-char prefix is not. */
+function sameCommit(a: string | null, b: string | null): boolean {
+  const x = String(a ?? "").trim().toLowerCase();
+  const y = String(b ?? "").trim().toLowerCase();
+  if (!x || !y) return false;
+  const len = Math.min(x.length, y.length);
+  return len >= 7 && x.slice(0, len) === y.slice(0, len);
 }
 
 /**
@@ -63,24 +102,46 @@ export function buildIdentityPayload(
  * a rebuild started from Docker CLI or Synology Container Manager re-bakes the
  * PREVIOUS deploy's SHA into newer code. It did: `/health` reported `2d51e8d7`
  * (2026-09-16) while `dist/` contained `sync_divergence`, merged 2026-10-12, and
- * the served SPA chunks contained October-only features. `.git` is excluded from
- * the build context (`.dockerignore`), so an image cannot resolve a SHA — but it
- * can always say when it was built and what it holds, and those two facts are
- * enough to catch a stale stamp instead of believing it.
+ * the served SPA chunks contained October-only features. The image now resolves
+ * the commit itself: `.dockerignore` lets `.git/HEAD` and the refs into the build
+ * context, `scripts/build-identity.mjs` turns them into `commit`, and whatever
+ * `.env` claimed is kept beside it as `declaredGitCommit` so a disagreement is
+ * visible (`staleStampDetected`) instead of believed.
  */
 export type ImageBuildInfo = {
   imageBuiltAt: string | null;
   artifactSha256: string | null;
   declaredGitCommit: string | null;
+  /** The commit the build context's own Git refs name. Null when unresolvable. */
+  commit: string | null;
+  identitySource: string | null;
+  gitBranch: string | null;
+  staleStampDetected: boolean;
+  version: string | null;
+  buildNumber: string | null;
 };
 
 const EMPTY_IMAGE_INFO: ImageBuildInfo = {
   imageBuiltAt: null,
   artifactSha256: null,
   declaredGitCommit: null,
+  commit: null,
+  identitySource: null,
+  gitBranch: null,
+  staleStampDetected: false,
+  version: null,
+  buildNumber: null,
 };
 
-/** Parse the build-info.json body. Pure; absent or malformed input yields nulls. */
+const COMMIT_SHAPED = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * Parse the build-info.json body. Pure; absent or malformed input yields nulls.
+ *
+ * `commit` is validated rather than trusted: a build-info written by an older
+ * Dockerfile, or hand-edited on a box, must not become an authoritative identity
+ * just because a key with that name exists.
+ */
 export function parseImageBuildInfo(raw: string | null | undefined): ImageBuildInfo {
   if (!raw) return EMPTY_IMAGE_INFO;
   let data: unknown;
@@ -90,18 +151,26 @@ export function parseImageBuildInfo(raw: string | null | undefined): ImageBuildI
     return EMPTY_IMAGE_INFO;
   }
   if (typeof data !== "object" || data === null) return EMPTY_IMAGE_INFO;
+  const fields = data as Record<string, unknown>;
   const text = (key: string): string | null => {
-    const value = (data as Record<string, unknown>)[key];
+    const value = fields[key];
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     // "unknown" is the Dockerfile ARG default, not evidence of anything.
     if (!trimmed || PLACEHOLDERS.has(trimmed.toLowerCase())) return null;
     return trimmed;
   };
+  const resolved = text("commit");
   return {
     imageBuiltAt: text("imageBuiltAt"),
     artifactSha256: text("artifactSha256"),
     declaredGitCommit: text("declaredGitCommit"),
+    commit: resolved && COMMIT_SHAPED.test(resolved) ? resolved : null,
+    identitySource: text("identitySource"),
+    gitBranch: text("gitBranch"),
+    staleStampDetected: fields.staleStampDetected === true,
+    version: text("version"),
+    buildNumber: text("buildNumber"),
   };
 }
 
