@@ -142,9 +142,13 @@ app.get("/health", (_req, res) => {
   const identity = buildIdentityPayload();
   res.status(200).json({
     ok:      true,
-    version: process.env.ERP_VERSION  || "0.0.0",
-    build:   process.env.BUILD_NUMBER || "0",
-    commit:  (process.env.GIT_COMMIT  || "unknown").slice(0, 8),
+    version: identity.version || process.env.ERP_VERSION  || "0.0.0",
+    build:   identity.buildNumber || process.env.BUILD_NUMBER || "0",
+    commit:  identity.commit,
+    identitySource: identity.identitySource,
+    gitBranch: identity.gitBranch,
+    declaredCommit: identity.declaredGitCommit,
+    staleStampDetected: identity.staleStampDetected,
     imageBuiltAt: identity.imageBuiltAt,
     artifact:     identity.artifactSha256,
     ts:      new Date().toISOString(),
