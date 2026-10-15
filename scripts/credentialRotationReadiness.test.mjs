@@ -242,6 +242,53 @@ describe("anti-hallucination: every citation in the runbook resolves", () => {
   });
 });
 
+describe("the committed-secret census is the scanner's own baseline", () => {
+  const baseline = JSON.parse(src("scripts/committed-secrets-baseline.json"));
+  const files = Object.keys(baseline);
+  const total = files.reduce((a, f) => a + baseline[f], 0);
+  const bucket = (f) => {
+    if (f === "deploy/synology/care.env") return "care";
+    if (f === "deploy/synology/hope.env") return "hope";
+    if (f.endsWith(".test.ts")) return "test";
+    if (f.includes("FINANCIAL_FORMULA_CHANGE_LOG")) return "ledger";
+    if (f === ".replit") return "replit";
+    if (f.endsWith(".patch")) return "patch";
+    // A file the census has no word for is a count the runbook would silently
+    // include in its total and omit from its sentence. Fail at the shape, not the sum.
+    throw new Error(`the runbook has no bucket for ${f}`);
+  };
+  const ORDER = ["care", "hope", "test", "ledger", "replit", "patch"];
+  const counts = ORDER.map((b) => files.filter((f) => bucket(f) === b).reduce((a, f) => a + baseline[f], 0));
+
+  test("the baseline is the census the runbook describes", () => {
+    expect(total).toBe(16);
+    expect(files.length).toBe(8);
+    // Every baseline file lands in a named bucket: a seventh shape would otherwise be
+    // counted in the total and missing from the sentence that explains it.
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(total);
+  });
+
+  test("the runbook's own arithmetic adds up, digit by digit", () => {
+    // The sentence is written with digits precisely so that this is a check and not a
+    // reading-comprehension exercise. The first version said "two in test fixtures"
+    // while the baseline held three, and its enumeration summed to 15 under a stated
+    // total of 16 — which no prose review noticed, because every word sounded right.
+    // Only a digit immediately before " sit in" / " in" is a count, so file names that
+    // carry digits (`0001-Add-…patch`) cannot join the sum.
+    const sentence = DOC.match(/(\d+) sit in[\s\S]{0,900}?\d+ in total/);
+    expect(sentence, "the census sentence must state each count and a total").toBeTruthy();
+    const parts = [...sentence[0].matchAll(/\b(\d+)\s+(?:sit in|in(?!\s+total))/g)].map((m) => Number(m[1]));
+    const stated = Number((sentence[0].match(/(\d+) in total/) || [])[1]);
+    expect(parts, `the counts the runbook prints, in order ${ORDER.join("/")}`).toEqual(counts);
+    expect(stated, "the total the runbook prints").toBe(total);
+  });
+
+  test("the runbook names every file the baseline holds", () => {
+    const missing = files.filter((f) => !DOC.includes(f) && !DOC.includes(f.split("/").pop()));
+    expect(missing, `baseline files the runbook never mentions: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 describe("no invented environment-variable name", () => {
   test("every ENV_NAME in the runbook exists in compose, a template, or the shipped code", () => {
@@ -254,7 +301,11 @@ describe("no invented environment-variable name", () => {
       "docker/api-entrypoint.sh", "deploy-synology.sh", BOOTSTRAP, OUTBOX, GATE,
       POSTURE, PARTNER_AUTH, ADMIN, "scripts/ops-preflight.mjs", "scripts/deploy-health.mjs",
     ].map((f) => src(f)).join("\n");
-    const named = [...new Set([...DOC.matchAll(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}\b/g)].map((m) => m[0]))];
+    // A candidate is a SCREAMING_SNAKE name standing on its own, not one embedded in a
+    // path: `docs/archive/FINANCIAL_FORMULA_CHANGE_LOG.md` is a file the census names,
+    // not a variable an operator could set, and treating it as one would let the sweep
+    // be satisfied by whatever the document happens to mention.
+    const named = [...new Set([...DOC.matchAll(/(?:^|[^/\w.])([A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,})(?![/\w.])/gm)].map((m) => m[1]))];
     expect(named.length, "the sweep found candidate names").toBeGreaterThan(4);
     const invented = named.filter((n) => !knownSources.includes(n));
     expect(invented, `names the runbook lists that exist nowhere in the shipped config or code: ${invented.join(", ")}`).toEqual([]);
@@ -453,9 +504,10 @@ describe("the posture the inventory claims is the posture the tree has", () => {
   });
 
   test("the eight named care.env secrets really are the eight findings in that file", () => {
-    const named = /Eight sit in\s*\n?\s*`deploy\/synology\/care\.env` \(([^)]*)\)/.exec(DOC);
+    const named = /(\d+) sit in\s*\n?\s*`deploy\/synology\/care\.env` \(([^)]*)\)/.exec(DOC);
     expect(named, "(g)2 names the care.env findings").toBeTruthy();
-    const names = named[1].split(",").map((s) => s.trim().replace(/`/g, "")).filter(Boolean);
+    const names = named[2].split(",").map((s) => s.trim().replace(/`/g, "")).filter(Boolean);
+    expect(Number(named[1]), "the count the runbook prints for care.env").toBe(8);
     expect(names.length).toBe(8);
     for (const n of names) {
       const m = new RegExp(`^${n}=(.+)$`, "m").exec(src(CARE_ENV));

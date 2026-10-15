@@ -380,11 +380,19 @@ this repository contains nothing wired for that purpose.
    `scripts/check-no-committed-secrets.mjs` against
    `scripts/committed-secrets-baseline.json`. **None is a Hope-edge credential** — both are
    empty at `deploy/synology/care.env:133`, `deploy/synology/care.env:135`,
-   `deploy/synology/hope.env:61` and `deploy/synology/hope.env:62`. Eight sit in
+   `deploy/synology/hope.env:61` and `deploy/synology/hope.env:62`. 8 sit in
    `deploy/synology/care.env` (`JWT_SECRET`, `SESSION_SECRET`, `BACKUP_PASSPHRASE`,
    `CRON_SECRET`, `SUPER_ADMIN_USB_KEY`, `ICICI_SECRET_KEY`, `INTERNAL_API_KEY`,
-   `OCR_WORKER_TOKEN`), one in `deploy/synology/hope.env`, two in test fixtures, two in
-   financial change logs, one in `.replit`, one in a vendored C# patch. Names only — no
+   `OCR_WORKER_TOKEN`), 1 in `deploy/synology/hope.env`, 3 in test material — twice in
+   `artifacts/api-server/src/lib/secretStrength.test.ts` and once as a PEM block in
+   `lib/ai-providers/src/hardenedTransport.test.ts` — 2 in the two copies of the financial
+   change log (`docs/archive/FINANCIAL_FORMULA_CHANGE_LOG.md` and
+   `SOP/RECOVERY/08_FINANCIAL/FINANCIAL_FORMULA_CHANGE_LOG.md`, which the binder keeps as a
+   twin), 1 in `.replit`, 1 in a vendored C# patch
+   (`dicom-to-windows-export/DicomToWindows-electronic-film/patches/0001-Add-electronic-film-jobs-capture-modes-and-local-adm.patch`),
+   which is 16 in total, and
+   `scripts/credentialRotationReadiness.test.mjs` re-adds them from the baseline instead of
+   trusting this sentence. Names only — no
    value is needed, and none is printed here. *Decision: rotate each separately;
    `SESSION_SECRET`/`JWT_SECRET` sign out every staff member, `BACKUP_PASSPHRASE` strands
    30 days of encrypted dumps, `ICICI_SECRET_KEY` is an issuer credential. Bundling them
