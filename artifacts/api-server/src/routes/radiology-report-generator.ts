@@ -26,11 +26,7 @@ import fs from "node:fs/promises";
 import multer from "multer";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import {
-  DORSAL_JUNCTION_LEVEL,
-  canalLevelsForSegment,
-  canonicalizeCanalLevel,
-} from "@workspace/measurements";
+import { buildSpinalCanalApTableHtml } from "../lib/spinalCanalApTable";
 import {
   radiologyReportDraftsTable,
   radiologyVoiceLogsTable,
@@ -2348,79 +2344,14 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
   }
 
   // Disc-level canal AP table from spinal_measurements (LS / cervical / dorsal).
-  let spinalTableHtml = "";
-  // Two ids name this one study: the reporting workspace keys canal rows by
-  // `radiology_worklist.study_id` (the billed study) and, when the study has no
-  // billed link, by the worklist row id — while `save-draft` stores the worklist
-  // ROW id in `draft.study_id`. Reading only one of the two silently produced an
-  // empty table for every linked study, so read both and let the billed link win
-  // where they disagree.
-  const spinalStudyKeys = [...new Set(
-    [worklist?.studyId ?? null, draft.studyId ?? null].filter((k): k is number => k != null)
-  )];
-  if (spinalStudyKeys.length > 0) {
-    try {
-      const spinalRows = await db
-        .select({
-          studyId: spinalMeasurementsTable.studyId,
-          vertebraLevel: spinalMeasurementsTable.vertebraLevel,
-          canalAP: spinalMeasurementsTable.canalAP,
-        })
-        .from(spinalMeasurementsTable)
-        .where(inArray(spinalMeasurementsTable.studyId, spinalStudyKeys));
-      // The level vocabulary comes from @workspace/measurements — the same list
-      // the reporting workspace renders. This used to carry its own copy, which
-      // is how the printed sheet kept offering a C1-C2 column that no table
-      // upstream could ever fill.
-      const canonOf = (raw: string) => canonicalizeCanalLevel(raw) ?? raw;
-      const byLevel = new Map<string, string>();
-      // Least-preferred key first, so the preferred key's value overwrites it.
-      const rankOf = (k: number | null) => {
-        const i = k == null ? -1 : spinalStudyKeys.indexOf(k);
-        return i < 0 ? spinalStudyKeys.length : i;
-      };
-      const orderedRows = [...spinalRows].sort((a, b) => rankOf(b.studyId) - rankOf(a.studyId));
-      for (const r of orderedRows) {
-        const value = r.canalAP?.trim();
-        if (!value) continue;
-        byLevel.set(canonOf(r.vertebraLevel ?? ""), value);
-      }
-      const levelsFor = (segment: "lumbar" | "cervical" | "dorsal") => {
-        const base = [...canalLevelsForSegment(segment)];
-        if (segment === "dorsal" && byLevel.has(DORSAL_JUNCTION_LEVEL)) {
-          base.push(DORSAL_JUNCTION_LEVEL);
-        }
-        return base;
-      };
-      const segments = ["lumbar", "cervical", "dorsal"] as const;
-      const filled = (segment: (typeof segments)[number]) =>
-        levelsFor(segment).filter((l) => byLevel.has(l)).length;
-      const counts = segments.map(filled);
-      const best = segments[counts.indexOf(Math.max(...counts))];
-      // The most-filled segment is the one to print. This used to index `counts`
-      // with the largest COUNT instead of asking whether it is above zero, so a
-      // lumbar report's [n,0,0] read `counts[n]` — a dorsal slot, always 0 — and
-      // the table was dropped however many levels had been measured.
-      const levels = Math.max(...counts) > 0 ? levelsFor(best) : [];
-      const title = levels.length
-        ? `${best.toUpperCase()} CANAL AP DIAMETER AT ${levels[0]?.split("-")[0]} TO ${levels[levels.length - 1]
-            ?.split("-")
-            .slice(1)
-            .join("-")} LEVELS`
-        : "";
-      if (levels.some((l) => byLevel.has(l))) {
-        const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
-        const td = levels
-          .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(byLevel.get(l) || "—")}</td>`)
-          .join("");
-        spinalTableHtml = `<div class="section-heading">${esc(title)}</div>
-<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
-  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th>${th}</tr></thead>
-  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td>${td}</tr></tbody>
-</table>`;
-      }
-    } catch { /* non-fatal */ }
-  }
+  // One builder shared with the signed report’s body (lib/spinalCanalApTable.ts),
+  // so the draft the radiologist approves and the document the patient receives
+  // cannot print different measurements. Both of the study’s ids are passed,
+  // billed first, because one examination legitimately has two.
+  const spinalTableHtml = await buildSpinalCanalApTableHtml([
+    worklist?.studyId ?? null,
+    draft.studyId ?? null,
+  ]);
 
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",
