@@ -1177,14 +1177,22 @@ router.post("/radiology/report-status", async (req, res) => {
         });
         return;
       }
-      const belongs =
-        existing.reportId === rep.id ||
-        rep.studyId === existing.id ||
-        (existing.studyId != null && rep.studyId === existing.studyId);
+      // Ownership comes from the bindings the product writes, never from a
+      // number that happens to be equal: patient_reports.study_id holds the
+      // WORKLIST row id (patient-reports.ts:2164) while radiology_worklist
+      // .study_id holds a billed radiology_studies.id, and the two sequences
+      // overlap by design — matching across them would let an unrelated
+      // examination's report finalize this one. Same patient, and either the
+      // worklist's own report_id binding or a report stored against THIS
+      // worklist row. The worklist row is the examination, so its patient and
+      // its binding are the full association check.
+      const boundToThisWorklist = existing.reportId === rep.id || rep.studyId === existing.id;
+      const samePatient = existing.patientId != null && rep.patientId === existing.patientId;
+      const belongs = boundToThisWorklist && samePatient;
       if (!belongs) {
         res.status(409).json({
           error: "REPORT_BELONGS_TO_ANOTHER_STUDY",
-          message: `Report ${rep.id} belongs to a different study, so it cannot finalize this one.`,
+          message: `Report ${rep.id} is not this examination's own report (report patient ${rep.patientId} against worklist patient ${String(existing.patientId)}, worklist binding ${String(existing.reportId)} against report study_id ${String(rep.studyId)}), so it cannot finalize this study.`,
         });
         return;
       }
@@ -1211,9 +1219,10 @@ router.post("/radiology/report-status", async (req, res) => {
             .select()
             .from(patientReportsTable)
             .where(
-              existing.studyId != null
-                ? or(eq(patientReportsTable.studyId, existing.id), eq(patientReportsTable.studyId, existing.studyId))
-                : eq(patientReportsTable.studyId, existing.id)
+              and(
+                eq(patientReportsTable.studyId, existing.id),
+                existing.patientId != null ? eq(patientReportsTable.patientId, existing.patientId) : undefined,
+              )
             )
             .limit(1))[0];
       isCanonicalFinalize = Boolean(bound) && (bound.status !== "draft" || Boolean(bound.signedAt));

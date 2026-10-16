@@ -63,6 +63,7 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
   let seq = 0;
   const worklistIds: number[] = [];
   const studyIds: number[] = [];
+  const patientsCreated: number[] = [];
   const reportIds: number[] = [];
 
   const auth = { Authorization: `Bearer ${token}` };
@@ -91,6 +92,7 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
         orderId,
         orderTestId,
         patientId,
+        testId,
         modality: "MR",
         department: "MRI",
         studyDescription: "MRI Brain",
@@ -225,6 +227,8 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
     await db.delete(ordersTable).where(eq(ordersTable.id, orderId)).catch(() => {});
     await db.delete(signaturesTable).where(eq(signaturesTable.id, signatureId)).catch(() => {});
     await db.delete(testsTable).where(eq(testsTable.id, testId)).catch(() => {});
+    for (const id of patientsCreated)
+      await db.delete(patientsTable).where(eq(patientsTable.id, id)).catch(() => {});
     await db.delete(patientsTable).where(eq(patientsTable.id, patientId)).catch(() => {});
     await db.delete(portalSessionsTable).where(eq(portalSessionsTable.token, token)).catch(() => {});
   });
@@ -356,5 +360,58 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
     expect(after.reportId).toBe(reportId);
     const reports = await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId));
     expect(reports.length, "concurrent finalize must not duplicate the report row").toBe(1);
+  });
+
+  it("refuses a report that only matches on a colliding numeric id across the two id-spaces", async () => {
+    // patient_reports.study_id carries the WORKLIST ROW id while
+    // radiology_worklist.study_id carries a billed radiology_studies.id, and
+    // both are independent sequences — so the same integer legitimately means
+    // two different things. A report belonging to another patient, filed under
+    // this study's radiology_studies.id, must not be accepted as this study's
+    // finalized report just because the number lines up.
+    const { study, worklist } = await billedStudy();
+    const [otherPatient] = await db
+      .insert(patientsTable)
+      .values({
+        patientId: `FINIG-COLLIDE-${marker}`,
+        firstName: "Collision",
+        lastName: marker,
+        dateOfBirth: "1970-01-01",
+        gender: "male",
+        phone: "0000000000",
+      })
+      .returning();
+    patientsCreated.push(otherPatient.id);
+
+    const [foreign] = await db
+      .insert(patientReportsTable)
+      .values({
+        reportNumber: `RPT-COLLIDE-${marker}`,
+        patientId: otherPatient.id,
+        testId,
+        studyId: study.id,
+        type: "radiology",
+        title: `Foreign MRI Brain ${marker}`,
+        body: "<p>NOT THIS PATIENT</p>",
+        impression: "Not this patient's report.",
+        status: "verified",
+        signedByName: SIGNER,
+        signedAt: new Date(),
+      })
+      .returning();
+    reportIds.push(foreign.id);
+
+    expect(foreign.studyId, "the collision must be real: a numeric match to the study id").toBe(study.id);
+    const res = await flip({
+      worklistId: worklist.id,
+      status: "REPORT_FINAL",
+      deliveryStatus: "READY_TO_SEND",
+      reportId: foreign.id,
+      actor: SIGNER,
+    });
+    expect(res.status, `colliding-id report: ${res.status} ${res.text}`).toBe(409);
+    const after = await wl(worklist.id);
+    expect(after.status, "a refused flip must leave the study open").not.toBe("REPORT_FINAL");
+    expect(after.reportId).toBeNull();
   });
 });
