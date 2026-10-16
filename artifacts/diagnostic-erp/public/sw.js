@@ -103,6 +103,7 @@ const NETWORK_ONLY_PREFIXES = [
   "/api/radiology/report-generator/voice-preferences",  // per-radiologist voice-layer overrides (M1.6B3)
   "/api/radiology-memory/",                          // every GET here is staffId-scoped (impressions/analytics/search/patterns/measurements/classifications)
   "/api/radiology/quick-select/favorites",           // per-radiologist Quick Select favorites
+  "/api/radiology/quick-select/usage",               // per-radiologist box click counts (the strip's second ordering key)
   "/api/radiology/quick-select/learned-patterns",    // per-radiologist learning engine patterns
   "/api/portal/me",                                  // patient portal: profile (GET /me itself) + /me/bills, /me/visits,
                                                       // /me/reports, /me/appointments — all match via this one prefix
