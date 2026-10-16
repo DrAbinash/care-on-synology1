@@ -20,6 +20,7 @@ import {
   patientsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  patientReportsTable,
   radiologyAuditLogTable,
   dicomNodesTable,
   dicomPullJobsTable,
@@ -1132,7 +1133,94 @@ router.post("/radiology/report-status", async (req, res) => {
   // flip to REPORT_FINAL with no signed row is now AI-review guarded for every
   // caller — see the unreviewed-AI block below this one.
   const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
-  const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  // A study becomes REPORT_FINAL through three doors and this is the one that
+  // can be reached without any report row existing. Until now the only evidence
+  // that a report was behind the flip was `deliveryStatus` — a field the CALLER
+  // sets — so naming READY_TO_SEND alone closed billed studies that had no
+  // report at all (measured 2026-10-16 on an isolated database: HTTP 200 for a
+  // billed worklist whose study had zero patient_reports rows, leaving
+  // report_id NULL, and because the workspace's signing gate reads that same
+  // status the study could then never be signed). Canonical finalize is now
+  // decided from the stored rows: a qualifying report that belongs to THIS
+  // study, or no billable test behind it, which is the documented unbilled
+  // soft-final and stays exactly as it was.
+  let isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  if (b.status === "REPORT_FINAL") {
+    const FINALIZABLE_STATUSES = new Set([
+      "pending_verification",
+      "verified",
+      "delivered",
+      "signed",
+      "final",
+    ]);
+    const boundStudy = existing.studyId
+      ? (await db
+          .select({
+            orderTestId: radiologyStudiesTable.orderTestId,
+            billId: radiologyStudiesTable.billId,
+          })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.id, existing.studyId)))[0]
+      : undefined;
+    const isBilledStudy = Boolean(boundStudy?.orderTestId || boundStudy?.billId);
+
+    if (b.reportId) {
+      // An explicit reportId is now checked instead of trusted: it must exist,
+      // belong to this worklist/study, and have moved past draft.
+      const rep = (
+        await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, Number(b.reportId)))
+      )[0];
+      if (!rep) {
+        res.status(409).json({
+          error: "REPORT_NOT_FOUND",
+          message: `Report ${b.reportId} does not exist, so this study cannot be marked final with it.`,
+        });
+        return;
+      }
+      const belongs =
+        existing.reportId === rep.id ||
+        rep.studyId === existing.id ||
+        (existing.studyId != null && rep.studyId === existing.studyId);
+      if (!belongs) {
+        res.status(409).json({
+          error: "REPORT_BELONGS_TO_ANOTHER_STUDY",
+          message: `Report ${rep.id} belongs to a different study, so it cannot finalize this one.`,
+        });
+        return;
+      }
+      isCanonicalFinalize =
+        (rep.status !== "draft" || Boolean(rep.signedAt)) &&
+        (FINALIZABLE_STATUSES.has(rep.status) || Boolean(rep.signedAt));
+      if (!isCanonicalFinalize) {
+        res.status(409).json({
+          error: "REPORT_NOT_FINALIZED",
+          message: `Report ${rep.id} is still a draft. Sign it before marking the study final.`,
+        });
+        return;
+      }
+    } else if (isBilledStudy) {
+      // No reportId: resolve the row this study actually owns, the way create
+      // binds it (patient-reports.ts writes radiology_worklist.report_id and
+      // stores the worklist row id in patient_reports.study_id).
+      const bound = existing.reportId
+        ? (await db
+            .select()
+            .from(patientReportsTable)
+            .where(eq(patientReportsTable.id, existing.reportId)))[0]
+        : (await db
+            .select()
+            .from(patientReportsTable)
+            .where(
+              existing.studyId != null
+                ? or(eq(patientReportsTable.studyId, existing.id), eq(patientReportsTable.studyId, existing.studyId))
+                : eq(patientReportsTable.studyId, existing.id)
+            )
+            .limit(1))[0];
+      isCanonicalFinalize = Boolean(bound) && (bound.status !== "draft" || Boolean(bound.signedAt));
+    }
+    // An unbilled study keeps its existing behaviour: no report row can exist,
+    // and READY_TO_SEND is what the workspace legitimately sends for it.
+  }
   if (
     b.status === "REPORT_FINAL" &&
     !b.reportId &&
