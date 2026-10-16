@@ -38,7 +38,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **TESTING — evidence committed, behaviour deliberately unchanged** (protections recorded VERIFIED, five gaps MEASURED, one still unmeasured) | `pacsArchive.transaction.request.test.ts` **8/8** green on `origin/main` `877701f9`; mutation battery M1–M10 = **8 DETECTED with named attribution + 2 survived-as-designed**; neighbours 83/83 across 10 files; typecheck unchanged (58 pre-existing, 0 in the new file) | **#1048** (Draft, head `3905b8d3`) | see the CI note below | no | no |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **TESTING — evidence committed, behaviour deliberately unchanged** (protections recorded VERIFIED, five gaps MEASURED, one still unmeasured) | `pacsArchive.transaction.request.test.ts` **8/8** green on `origin/main` `877701f9`; mutation battery M1–M10 = **8 DETECTED with named attribution + 2 survived-as-designed**; neighbours 83/83 across 10 files; typecheck unchanged (58 pre-existing, 0 in the new file) | **#1048** (Draft, head `3905b8d3`) | **green** — all 3 jobs on `3905b8d3` (measured 2026-10-16 21:49Z) | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 
@@ -514,9 +514,11 @@ amendment supersede sweep) and five gaps as MEASURED (double object from the can
 the retry route, two archives overlapping because the `pending` write is not a lock, an unsigned draft
 archived with only a label, a placeholder archived with no revision row), corrects this section's earlier
 claim that the archive resolves to "latest signed by default" (the mode is flag-gated), and leaves exactly
-one item unmeasured — the Orthanc-accepted-but-status-write-failed path. **PR #1047** and **#1046** CI
-were green on their current heads at the time of writing; re-read them, do not assume. Nothing was merged
-or deployed by this session; no production row, container or Orthanc instance was touched._
+one item unmeasured — the Orthanc-accepted-but-status-write-failed path. **CI as measured at 2026-10-16
+21:49Z: #1048 green (all three jobs on `3905b8d3`), #1046 green (all three on `a6395b61`), #1047 green
+(all three on `0d784e98`).** Re-read them before acting — these were the live verdicts at the end of this
+pass, not a standing guarantee. Nothing was merged or deployed by this session; no production row,
+container or Orthanc instance was touched._
 
 _Previous pass, 2026-10-17 — the owner's examination-ownership ruling was recorded as a standing rule
 and implemented: **RIS-012** (an authorized combined report could not finish its second study — refused
