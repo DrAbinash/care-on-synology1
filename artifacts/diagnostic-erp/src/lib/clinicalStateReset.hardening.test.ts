@@ -593,7 +593,7 @@ const IDENTITY_CONTEXT_KEYS = [
 /**
  * Content libraries, device and UI preferences, and queue progress. None of it
  * belongs to one study, so a switch must leave it alone — clearing the worklist
- * or the tile library on every navigation would be its own bug.
+ * or a content library on every navigation would be its own bug.
  */
 const SESSION_SCOPE_KEYS = [
   "studies",
@@ -611,10 +611,6 @@ const SESSION_SCOPE_KEYS = [
   "ghostRequestSeq",
   "fatigueCardDismissed",
   "criticalSlaMinutes",
-  "quickSelectTiles",
-  "quickSelectEditorOpen",
-  "quickSelectEditingTile",
-  "quickSelectEditorField",
   "reportFormats",
   "structuredNormalRows",
   "saveAsFormatDialogOpen",

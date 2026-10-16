@@ -183,19 +183,25 @@ describe("Findings workspace — macros, hero editor, one drawer at a time", () 
     expect(settings).toContain("<ChocolateBoxSettingsPanel");
   });
 
-  it("keeps the editor as the hero by moving its tile wall into a drawer", () => {
-    expect(workspace).toContain("hideQuickSelect");
-    expect(findingsEditor).toContain("{!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} disabled={quickSelectDisabled} />}");
+  it("keeps the editor as the hero: no strip of its own, one per section instead", () => {
+    // The editor used to host a second, blunter strip — no `bodyPart`, so it
+    // scored every region-scoped box out, and no `onAfterPick`, so a pick from
+    // it never saved. It hosts none now: each section renders its own.
+    expect(findingsEditor).not.toContain("quick-select-strip");
+    expect(findingsEditor).not.toMatch(/hideQuickSelect|quickSelectDisabled/);
     expect(workspace).toMatch(/<QuickSelectStrip[\s\S]*?field="findings"/);
   });
 
-  it("scopes Findings Quick Select tiles to the selected region", () => {
+  it("scopes Findings Quick Select boxes to the selected region", () => {
     // PACS rows have no BodyPartExamined, so study.bodyPart is "" and every
-    // region-scoped tile used to score out of lookupTiles. Tiles now follow
+    // region-scoped box used to score out of the lookup. Boxes now follow
     // ReportingStudyContext (synced from the workspace region), not DICOM bodyPart.
     const strip = read("components/radiology/zai-workspace/quick-select-strip.tsx");
     expect(strip).toContain("bodyPart?: string | null");
-    expect(strip).toContain("lookupTilesForContext(tiles, field, study?.modality, reportingContext)");
+    // Pinned on the argument list, not the function's name: whatever scores the
+    // boxes for this section must be handed the synced context, or the scoping
+    // silently reverts to DICOM bodyPart and a whole-spine study offers nothing.
+    expect(strip).toMatch(/lookup\w*ForContext\(boxes, field, study\?\.modality, reportingContext\)/);
     expect(workspace).toContain('bodyPart={studySetup.matchedStudyRegion}');
   });
 

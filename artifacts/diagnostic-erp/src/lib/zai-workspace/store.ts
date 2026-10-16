@@ -1,6 +1,6 @@
 import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, QuickSelectTile, QuickSelectField, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
+import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 // Single read point for ff_radiology_critical_result_comms. staffSession.ts has
 // no imports of its own and criticalResultCommsFlag.ts imports only that, so
@@ -14,7 +14,7 @@ import {
   resolvedQuickSelectSeverity,
   unresolvedQuickSelectParameters,
 } from "./quickSelectParameterContract";
-import { DEFAULT_QUICK_SELECT_TILES, lookupTiles, loadTiles, saveTiles, createTile, resetToDefaults } from "./quick-select-library";
+import { DEFAULT_QUICK_SELECT_TILES, lookupTiles } from "./quick-select-library";
 import {
   DEFAULT_REPORT_FORMATS, lookupFormats, loadFormats, saveFormats, createFormat, resetFormatsToDefaults,
 } from "./report-formats-library";
@@ -715,7 +715,6 @@ interface S {
   sessionStartedAt: number; lastSignAt: number | null; fatigueCardDismissed: boolean;
   notification: { kind: "interrupt" | "edge-glow" | "ledger"; text: string; id: string } | null;
   criticalSlaStartedAt: number | null; criticalSlaMinutes: number; criticalSlaEscalated: boolean;
-  quickSelectTiles: QuickSelectTile[]; quickSelectEditorOpen: boolean; quickSelectEditingTile: QuickSelectTile | null; quickSelectEditorField: QuickSelectField | null;
   reportFormats: ReportFormat[]; selectedFormatIds: string[]; reportFormatPickerOpen: boolean;
   /** Templates-screen rows the current format library was built from. */
   structuredNormalRows: StructuredNormalRow[];
@@ -895,9 +894,6 @@ export type WorkspaceStore = S & {
   parkStudy: () => void; startFinalize: () => void; completeFinalize: () => void; cancelFinalize: () => void; advanceToNextStudy: () => void;
   dismissFatigueCard: () => void; pushNotification: (n: { kind: "interrupt" | "edge-glow" | "ledger"; text: string }) => void; clearNotification: () => void;
   startCriticalSla: () => void; clearCriticalSla: () => void; escalateCriticalSla: () => void;
-  openQuickSelectEditor: (t: QuickSelectTile | null, f: QuickSelectField) => void; closeQuickSelectEditor: () => void;
-  saveQuickSelectTile: (i: Omit<QuickSelectTile, "id" | "createdAt" | "updatedAt"> & { id?: string }) => void; deleteQuickSelectTile: (id: string) => void;
-  incrementTileUsage: (id: string) => void; toggleTileFavorite: (id: string) => void; resetQuickSelectToDefaults: () => void;
   toggleReportFormatPicker: () => void; setReportFormatPickerOpen: (o: boolean) => void; toggleFormatSelection: (id: string) => void; clearFormatSelection: () => void;
   /**
    * `regionChoice` says who is responsible for the region the format implies.
@@ -1182,7 +1178,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   completedStudyIds: new Set(), parkedStudyIds: new Set(),
   sessionStartedAt: Date.now(), lastSignAt: null, fatigueCardDismissed: false,
   notification: null, criticalSlaStartedAt: null, criticalSlaMinutes: 15, criticalSlaEscalated: false,
-  quickSelectTiles: typeof window !== "undefined" ? loadTiles() : DEFAULT_QUICK_SELECT_TILES, quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null,
   reportFormats: typeof window !== "undefined" ? loadFormats() : DEFAULT_REPORT_FORMATS, structuredNormalRows: [], selectedFormatIds: [], reportFormatPickerOpen: false,
   appliedFormatReportTitle: null,
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
@@ -1687,18 +1682,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   dismissFatigueCard: () => set({ fatigueCardDismissed: true }),
   pushNotification: (n) => set({ notification: { ...n, id: Math.random().toString(36).slice(2) } }), clearNotification: () => set({ notification: null }),
   startCriticalSla: () => set({ criticalSlaStartedAt: Date.now(), criticalSlaEscalated: false }), clearCriticalSla: () => set({ criticalSlaStartedAt: null, criticalSlaEscalated: false }), escalateCriticalSla: () => set({ criticalSlaEscalated: true }),
-  openQuickSelectEditor: (t, f) => set({ quickSelectEditorOpen: true, quickSelectEditingTile: t, quickSelectEditorField: f }),
-  closeQuickSelectEditor: () => set({ quickSelectEditorOpen: false, quickSelectEditingTile: null, quickSelectEditorField: null }),
-  saveQuickSelectTile: (input) => { const e = input.id ? get().quickSelectTiles.find(t => t.id === input.id) : null; let tiles: QuickSelectTile[]; if (e) tiles = get().quickSelectTiles.map(t => t.id === e.id ? { ...t, ...input, updatedAt: new Date().toISOString() } : t); else tiles = [...get().quickSelectTiles, createTile(input)]; saveTiles(tiles); set({ quickSelectTiles: tiles }); get().closeQuickSelectEditor(); },
-  deleteQuickSelectTile: (id) => { const t = get().quickSelectTiles.filter(t => t.id !== id); saveTiles(t); set({ quickSelectTiles: t }); get().closeQuickSelectEditor(); },
-  // The only tile mutator that did not persist. Its three siblings all call
-  // saveTiles, so usage counts lived in memory and reset on every reload — which
-  // also partly concealed the refused-use bug below: the false increments did not
-  // survive long enough to be noticed. `updatedAt` is deliberately not bumped —
-  // a use is not an edit to the tile's content, and the library sorts on it.
-  incrementTileUsage: (id) => { const t = get().quickSelectTiles.map(x => x.id === id ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x); saveTiles(t); set({ quickSelectTiles: t }); },
-  toggleTileFavorite: (id) => { const t = get().quickSelectTiles.map(x => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x); saveTiles(t); set({ quickSelectTiles: t }); },
-  resetQuickSelectToDefaults: () => set({ quickSelectTiles: resetToDefaults() }),
   toggleReportFormatPicker: () => set({ reportFormatPickerOpen: !get().reportFormatPickerOpen }),
   setReportFormatPickerOpen: (o) => set({ reportFormatPickerOpen: o }),
   toggleFormatSelection: (id) => { const c = get().selectedFormatIds; if (c.includes(id)) set({ selectedFormatIds: c.filter(x => x !== id) }); else if (c.length < 2) set({ selectedFormatIds: [...c, id] }); },

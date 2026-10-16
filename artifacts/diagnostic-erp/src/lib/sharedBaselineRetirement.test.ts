@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { useWorkspace, type EditorField } from "./zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./zai-workspace/quick-select-library";
 import type { QuickSelectTile } from "./zai-workspace/types";
-import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch, tileRowId } from "./zai-workspace/quickSelectTileFixture";
 import { reconstructStartingCanvasBaseline } from "./zai-workspace/startingCanvasHighlight";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "./reportFieldMerge";
@@ -85,7 +85,7 @@ function select(...tiles: Tile[]): void {
 }
 
 function deselect(t: Tile): void {
-  useWorkspace.getState().removeObservation(`qs-${t.id}`);
+  useWorkspace.getState().removeObservation(tileRowId(t));
 }
 
 function sentences(field = useWorkspace.getState().findingsText): string[] {

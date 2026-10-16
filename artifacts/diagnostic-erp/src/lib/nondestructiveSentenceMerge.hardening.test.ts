@@ -67,7 +67,7 @@ import {
   normalizeForDedupe,
 } from "@/lib/reportFieldMerge";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
-import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTileFixture";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { aiProposalBindingForImpression } from "@/lib/zai-workspace/aiProposalContext";
@@ -391,20 +391,40 @@ describe("M17/M18 — B-09 still holds on the other side of this merge change", 
     expect(useWorkspace.getState().findingsText).toBe(before);
     // And the same text cannot sneak in through mergeField's conservative append
     // without the guard: a bare mergeField call still writes whatever it is given,
-    // which is why the strip checks the parameter contract before it gets there.
+    // which is why the click path checks the parameter contract before it gets there.
     const stripped = mergeReportFieldContentWithProvenance({
       field: "findings", existing: before, incoming: INFARCT.sentence, source: "quick-select",
       existingProvenance: { "no acute infarct": ["manual"] },
     });
     expect(stripped.text).toContain("{side}");
-    expect(stripSrcGuardIsInStrip()).toBe(true);
+    expect(clickPathChecksTheParameterContract()).toBe(true);
   });
 
-  function stripSrcGuardIsInStrip(): boolean {
+  /**
+   * The guard used to be a copy inside the strip's own click handler, so this
+   * assertion grepped the strip for its name. It lives in `applyPathologyOverlay`
+   * now — one door every box click walks through, rather than one per render site —
+   * and the strip reaches it through `onToggle`. The property is unchanged: a click
+   * consults the verdict, and the store refuses an unresolved parameter before the
+   * first write. Measured across both files, because pinning either one's spelling
+   * is what made this assertion stale without making it wrong-looking.
+   */
+  function clickPathChecksTheParameterContract(): boolean {
     const strip = readFileSync(
       join(here, "../components/radiology/zai-workspace/quick-select-strip.tsx"), "utf8",
     );
-    return strip.includes("unresolvedQuickSelectParameters");
+    const store = readFileSync(join(here, "zai-workspace/store.ts"), "utf8");
+    if (!/const outcome = onToggle\(/.test(strip)) return false;
+    if (!strip.includes('if (outcome === "refused") return;')) return false;
+    const at = store.indexOf("const unresolved = unresolvedQuickSelectParameters(");
+    if (at === -1) return false;
+    // The gate must be the one this call sits inside, not merely present in the
+    // file: `isQuickSelectSource(opts.source)` also appears 25 lines above choosing
+    // the severity source, so a bare `includes` stayed green when the guard's own
+    // gate was replaced with `false`. Adjacency, with room to grow.
+    const gate = store.lastIndexOf("if (isQuickSelectSource(", at);
+    if (gate === -1 || at - gate > 200) return false;
+    return store.indexOf('return "refused";', at) > at;
   }
 });
 

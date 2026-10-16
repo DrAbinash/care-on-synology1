@@ -967,7 +967,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           label="Clinical History"
                           minHeight="56px"
                           placeholder="Presenting complaint and relevant history."
-                          hideQuickSelect
                         />
                       </div>
                       {!contentLocked && (
@@ -997,8 +996,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           label="Technique"
                           minHeight="60px"
                           placeholder="Modality, sequences, contrast..."
-                          hideQuickSelect
-                          onQuickSelectPick={() => { void saveDraft({ silent: true }); }}
                         />
                       </div>
                       {!contentLocked && (
@@ -1555,8 +1552,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     ) : linkedStudy && primaryFindingsSection ? (
                       <MultiStudyFindingsEditors disabled={contentLocked} />
                     ) : (
-                      /* B. The editor is the hero. Its Quick Select tile wall moves
-                         to the Quick Select drawer below (same component). */
+                      /* B. The editor is the hero. It hosts no Quick Select strip:
+                         each section renders its own, region-scoped, with its own
+                         draft save wired. */
                       <FindingsEditor
                         field="findings"
                         label=""
@@ -1564,7 +1562,6 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                         fillHeight
                         placeholder="Type findings. Use :macro + Tab for snippets. Ctrl+Enter for a phrase suggestion (not AI)."
                         showGhost
-                        hideQuickSelect
                         transientHighlight={
                           abnormalHighlight
                             ? { needle: abnormalHighlight.needle, token: abnormalHighlight.token }
@@ -1638,6 +1635,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           bodyPart={studySetup.matchedStudyRegion}
                           anatomyFilter={activeFindingsAnatomy}
                           disabled={contentLocked}
+                          onToggle={handleQuickToggle}
                           onAfterPick={() => { feedbackAfterAbnormalApply(); }}
                         />
                       </FindingsToolDrawer>
@@ -1880,11 +1878,11 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
                             disabled={contentLocked}
+                            onToggle={handleQuickToggle}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
                         <FindingsEditor field="impression" label="" minHeight="40vh" fillHeight placeholder="Conclusion. Ctrl+I for AI impression." showGhost
-                        quickSelectDisabled={contentLocked}
                         enableDictationBreaks
                         onClinicalFocus={(f) => { if (f === "findings" || f === "impression") focusClinicalEditor(f); }}
                       />
@@ -1921,6 +1919,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             bodyPart={studySetup.matchedStudyRegion}
                             compact
                             disabled={contentLocked}
+                            onToggle={handleQuickToggle}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
@@ -1969,7 +1968,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             )}
                           </div>
                         )}
-                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost quickSelectDisabled={contentLocked} />
+                        <FindingsEditor field="recommendation" label="Recommendation" minHeight="60px" placeholder="Follow-up, referral..." showGhost />
                       </div>
                       {!contentLocked && (
                         <FieldCareMic voice={voiceSession} target="recommendation" />

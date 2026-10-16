@@ -31,7 +31,7 @@ import {
 } from "./observationLedger";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
-import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "./zai-workspace/quickSelectTileFixture";
 import { useWorkspace } from "./zai-workspace/store";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 

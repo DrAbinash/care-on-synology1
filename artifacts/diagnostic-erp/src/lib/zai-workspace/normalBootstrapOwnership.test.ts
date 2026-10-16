@@ -26,7 +26,7 @@ import { resolveNormalBootstrapFormat } from "./normalBootstrap";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { MRI_BRAIN_STANDARD_NORMAL_MANIFEST, MRI_BRAIN_STANDARD_NORMAL_NAME } from "./baselines/mriBrainStandardNormal";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
-import { quickSelectTilePatch } from "./quickSelectTilePayload";
+import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { useWorkspace } from "./store";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { baselineManifestForFormat } from "./fullReportBaseline";

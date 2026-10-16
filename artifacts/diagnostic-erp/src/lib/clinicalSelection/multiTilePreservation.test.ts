@@ -3,7 +3,8 @@ import { useWorkspace } from "../zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "../zai-workspace/quick-select-library";
 import { DEFAULT_REPORT_FORMATS as FORMATS } from "../zai-workspace/report-formats-library";
 import type { QuickSelectTile } from "../zai-workspace/types";
-import { quickSelectTilePatch } from "../zai-workspace/quickSelectTilePayload";
+import { clinicalBoxForTile, quickSelectTilePatch, tileRowId } from "../zai-workspace/quickSelectTileFixture";
+import { quickFindingRowBelongsTo } from "../zai-workspace/quickSelectTilePayload";
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
@@ -108,7 +109,7 @@ function select(t: Tile, side?: Side): void {
 
 function deselect(t: Tile, side?: Side): void {
   useWorkspace.getState().removeObservation(
-    side ? `qs-${t.id}:${side}` : `qs-${t.id}`,
+    tileRowId(t, side),
   );
 }
 
@@ -297,7 +298,8 @@ describe("Stage C Phase 3 · the two sides of one box are two findings", () => {
     deselect(FORAMEN_C56, "left");
     // The system normal row legitimately returns once nothing contradicts it, so the
     // claim here is about this box: both of its rows are gone, and so is its text.
-    expect(rowIds().filter((id) => id.startsWith(`qs-${FORAMEN_C56.id}`))).toEqual([]);
+    const foramenBoxId = clinicalBoxForTile(FORAMEN_C56).id;
+    expect(rowIds().filter((id) => quickFindingRowBelongsTo(id, foramenBoxId))).toEqual([]);
     expect(lines(useWorkspace.getState().findingsText)).toEqual(lines(CERVICAL.findings));
   });
 

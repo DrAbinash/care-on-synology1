@@ -10,7 +10,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
-import { quickSelectTilePatch } from "./quickSelectTilePayload";
+import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { useWorkspace } from "./store";
 import { MRI_BRAIN_STANDARD_NORMAL_MANIFEST } from "./baselines/mriBrainStandardNormal";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";

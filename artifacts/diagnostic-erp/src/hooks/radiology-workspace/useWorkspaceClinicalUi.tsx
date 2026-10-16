@@ -365,7 +365,8 @@ import {
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
-import { quickFindingPatch, quickFindingRowBelongsTo } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import type { QuickSelectParameterValues } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
@@ -429,7 +430,6 @@ import {
   type PersonalReportTemplate,
   type PersonalTemplateTarget,
 } from "@/lib/personalReportTemplates";
-import { QuickSelectStrip } from "@/components/radiology/zai-workspace/quick-select-strip";
 import {
   FindingsToolDrawer,
   FindingsToolTabs,
@@ -470,7 +470,6 @@ import {
 } from "@/lib/multiStudyReport";
 import { useIsTabVisible } from "@/hooks/useIsTabVisible";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
-import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { OwnershipTracePanel } from "@/components/radiology/zai-workspace/ownership-trace-panel";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
@@ -2053,16 +2052,39 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     try { localStorage.setItem("care_reading_queue_sort", value); } catch { /* ignore */ }
   }, []);
 
-  /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
-  const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
+  /**
+   * Clinic Quick Select — pathology patches over the whole report (ownership +
+   * laterality).
+   *
+   * One writer for every surface that can click a box: the Clinic Quick Select
+   * panel, the voice path, the structured-details dialog and the section strips.
+   * That is what makes a box clinically equal whichever of them it was clicked
+   * from — the ledger row, the owned sections, the chip state, the undo frame and
+   * the last-rendered copy are all written here and nowhere else.
+   *
+   * `params` is the strip's own side/severity choice. Omitting it is not the same
+   * as passing an empty object: a caller that has no parameter UI of its own
+   * (the panel, voice) inherits the workspace's global side selector, which is
+   * the behaviour those callers have always had. A caller that DOES have one
+   * passes what it holds, including an empty side — because there is no default
+   * side here, and a box that asks for one must refuse rather than guess.
+   *
+   * The return is the overlay's own verdict, so a clicker can tell a write that
+   * landed from one that was refused and stop rewarding the refusal.
+   */
+  const handleQuickToggle = useCallback((
+    finding: QuickFinding,
+    nowSelected: boolean,
+    params?: QuickSelectParameterValues,
+  ): QuickToggleOutcome => {
     const state = useWorkspace.getState();
     if (nowSelected) {
       const patch = quickFindingPatch(finding, {
         region: studySetup.matchedStudyRegion ?? finding.studyType,
         studyType: finding.studyType,
-      }, { side: quickSide });
+      }, params ?? { side: quickSide });
       const patchId = patch.id!;
-      state.applyPathologyOverlay(patch);
+      const outcome = state.applyPathologyOverlay(patch);
       const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === patchId);
       if (applied) lastQuickRenderedRef.current.set(finding.id, applied.lastRendered);
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
@@ -2070,6 +2092,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       for (const id of lastQuickRenderedRef.current.keys()) {
         if (!ids.includes(id)) lastQuickRenderedRef.current.delete(id);
       }
+      return outcome;
     } else {
       // Every row this box owns, not only the one for the side now chosen. The
       // chip reads as applied when ANY side of the box is on the page, so a
@@ -2092,6 +2115,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
           description: "Edited clinical text was kept.",
         });
       }
+      return "removed";
     }
   }, [quickSide, toast, studySetup.matchedStudyRegion]);
   handleQuickToggleRef.current = handleQuickToggle;

@@ -10,15 +10,14 @@
  * lumbo-sacral spine" advice underneath it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   quickFindingPatch,
   quickFindingRowBelongsTo,
   quickFindingRowId,
-  quickSelectRowBelongsTo,
-  quickSelectRowId,
-  quickSelectTileFromForm,
-  quickSelectTilePatch,
 } from "./quickSelectTilePayload";
+import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTilesForContext } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
@@ -67,33 +66,6 @@ function resetWorkspace() {
   useWorkspace.getState().applyFormatById(LS_NORMAL.id);
 }
 
-describe("the payload one box click sends", () => {
-  it("carries all three sentences a findings box promises", () => {
-    const patch = quickSelectTilePatch(tile("Disc herniation L4-L5"), "findings");
-    expect(patch.incoming).toEqual({
-      findings: tile("Disc herniation L4-L5").sentence,
-      impression: tile("Disc herniation L4-L5").impressionSentence,
-      recommendation: tile("Disc herniation L4-L5").recommendationSentence,
-    });
-    expect(patch.templates).toBe(patch.incoming);
-    expect(patch.source).toBe("quick-select");
-  });
-
-  it("sends nothing it does not have", () => {
-    // A box with no advice of its own must leave the report's Recommendation
-    // exactly as the radiologist or the format wrote it.
-    const bare = quickSelectTilePatch(tile("Normal LS spine"), "findings");
-    expect(bare.incoming.recommendation).toBeUndefined();
-  });
-
-  it("routes an Impression-field box to the Impression only", () => {
-    const patch = quickSelectTilePatch(tile("Disc herniation L4-L5"), "impression");
-    expect(patch.incoming.findings).toBeUndefined();
-    expect(patch.incoming.recommendation).toBeUndefined();
-    expect(patch.incoming.impression).toBe(tile("Disc herniation L4-L5").sentence);
-  });
-});
-
 describe("one click on a normal report", () => {
   beforeEach(resetWorkspace);
 
@@ -134,6 +106,23 @@ describe("one click on a normal report", () => {
     const hits = text.split("Conservative management with NSAIDs").length - 1;
     expect(hits).toBe(1);
   });
+
+  it("leaves a section the box has no wording for exactly as the report had it", () => {
+    // Every box row carries all four text columns, so three of them are routinely
+    // empty. Empty has to mean "this box says nothing here" and not "write an
+    // empty sentence": the difference is whether opening a Normal report and
+    // clicking one box strips the Technique and the advice the format brought.
+    const bare = tile("Normal LS spine");
+    expect(bare.recommendationSentence ?? "", "the catalogue box this pins").toBe("");
+    const before = useWorkspace.getState();
+    expect(before.techniqueText.trim()).not.toBe("");
+    expect(useWorkspace.getState().applyPathologyOverlay(
+      quickSelectTilePatch(bare, "findings"),
+    )).toBe("applied");
+    const after = useWorkspace.getState();
+    expect(after.techniqueText).toBe(before.techniqueText);
+    expect(after.recommendationText).toBe(before.recommendationText);
+  });
 });
 
 describe("boxes reachable on the study being read", () => {
@@ -162,73 +151,85 @@ describe("boxes reachable on the study being read", () => {
   });
 });
 
-describe("a box the radiologist makes himself", () => {
+describe("a box the radiologist authors himself", () => {
   it("keeps the advice he typed and puts it in the report", () => {
-    // The editor's Save goes through the store, which persists to localStorage;
-    // this is the closest this suite can come to actually clicking the button.
-    const store = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    });
+    // Authoring goes through the API into radiology_quick_findings now, so the box
+    // arrives in the shape the API returns rather than from a save handler in the
+    // store. The property is the one that mattered then: his own advice reaches
+    // Recommendation, one sentence per line, underneath the format's own — and a
+    // section he left blank is not a section the box is allowed to empty.
     resetWorkspace();
+    const techniqueBefore = useWorkspace.getState().techniqueText;
+    expect(techniqueBefore.trim(), "the Normal format opens with a technique").not.toBe("");
 
     const advice = "Refer to the spine surgeon. Repeat MRI at 6 weeks.";
-    useWorkspace.getState().saveQuickSelectTile({
-      field: "findings",
+    const mine = {
+      id: 9001,
       label: "My own herniation box",
-      sentence: "Large right paracentral disc extrusion at L5-S1 compressing the S1 root.",
-      category: "abnormal",
-      scopeModality: "MR",
-      scopeBodyPart: "LS Spine",
-      favorite: false,
-      custom: true,
-      usageCount: 0,
-      impressionSentence: "Disc extrusion at L5-S1 with S1 root compression.",
-      recommendationSentence: advice,
-    });
+      studyType: "LS Spine",
+      findingText: "Large right paracentral disc extrusion at L5-S1 compressing the S1 root.",
+      impressionText: "Disc extrusion at L5-S1 with S1 root compression.",
+      techniqueText: "",
+      recommendationText: advice,
+    };
+    expect(useWorkspace.getState().applyPathologyOverlay(
+      quickFindingPatch(mine, { region: "LS Spine" }),
+    )).toBe("applied");
 
-    const mine = useWorkspace.getState().quickSelectTiles
-      .find((t) => t.label === "My own herniation box");
-    expect(mine, "the saved box is not in the catalog").toBeTruthy();
-    expect(mine!.recommendationSentence).toBe(advice);
-
-    useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(mine!, "findings"));
-    const text = useWorkspace.getState().recommendationText;
-    // One sentence per line, which is how the engine writes every section —
-    // and the report's own advice is still there underneath it.
-    expect(text.split("\n")).toEqual([
+    const s = useWorkspace.getState();
+    expect(s.recommendationText.split("\n")).toEqual([
       "Clinical correlation.",
       "Refer to the spine surgeon.",
       "Repeat MRI at 6 weeks.",
     ]);
+    expect(s.techniqueText).toBe(techniqueBefore);
   });
 });
 
 describe("editing a shipped box keeps what it carries", () => {
-  it("saves the Impression and Recommendation lines it was seeded with", () => {
-    const existing = tile("Disc herniation L4-L5");
-    // Exactly how the editor seeds its inputs from the tile being edited.
-    const saved = quickSelectTileFromForm(existing, {
-      field: "findings",
-      label: "Disc herniation L4-L5",
-      sentence: existing.sentence,
-      mnemonic: existing.mnemonic ?? "",
-      category: existing.category,
-      scopeModality: existing.scopeModality ?? "",
-      scopeBodyPart: existing.scopeBodyPart ?? "",
-      favorite: false,
-      conflictGroup: existing.conflictGroup ?? "",
-      anatomicalSection: existing.anatomicalSection ?? "",
-      baselineReplaces: existing.baselineReplaces ?? "",
-      impressionSentence: existing.impressionSentence ?? "",
-      recommendationSentence: existing.recommendationSentence ?? "",
-    });
+  // Checked out with CRLF on this repo, so normalise before slicing: an anchor
+  // that does not match silently slices to "" and every assertion below it passes.
+  const editorCode = readFileSync(
+    fileURLToPath(new URL(
+      "../../components/radiology/WorkspaceQuickFindingEditor.tsx",
+      import.meta.url,
+    )),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+
+  it("saves every sentence the box was seeded with, not only the ones with an input", () => {
     // Renaming a box used to delete the sentence it wrote into the Impression,
-    // because the save payload only carried fields that had an input.
-    expect(saved.impressionSentence).toBe(existing.impressionSentence);
-    expect(saved.recommendationSentence).toBe(existing.recommendationSentence);
+    // because the save payload only carried the fields the form had an input for.
+    // The payload is built from the draft, so all four columns have to travel even
+    // when the radiologist touched only the label.
+    const body = editorCode.slice(
+      editorCode.indexOf("const body = {"),
+      editorCode.indexOf("if (!body.studyType"),
+    );
+    expect(body.length).toBeGreaterThan(0);
+    for (const column of ["findingText", "impressionText", "techniqueText", "recommendationText"]) {
+      expect(body, `${column} must be in the save body`).toMatch(
+        new RegExp(`${column}:\\s*draft\\.${column}`),
+      );
+    }
+    // Positive control: the scanner sees a column sent from the draft…
+    expect("findingText: draft.findingText").toMatch(/findingText:\s*draft\.findingText/);
+    // …and not one it blanks or reads off something else.
+    expect("findingText: finding?.findingText ?? ''").not.toMatch(/findingText:\s*draft\.findingText/);
+    expect("techniqueText: ''").not.toMatch(/techniqueText:\s*draft\.techniqueText/);
+  });
+
+  it("seeds the draft from all four columns of the row being edited", () => {
+    // The other half of the same contract: a column the draft never read is a
+    // column the save then blanks, whichever way the body is written.
+    const seeded = editorCode.slice(
+      editorCode.indexOf("return {\n    id: f.id,"),
+      editorCode.indexOf("anatomicalSection: f.anatomicalSection"),
+    );
+    expect(seeded.length).toBeGreaterThan(0);
+    for (const column of ["findingText", "impressionText", "techniqueText", "recommendationText"]) {
+      expect(seeded, `${column} must seed the draft`).toContain(`${column}: f.${column}`);
+    }
   });
 
   it("keeps advice on the boxes the clinic relies on for a one-click report", () => {
@@ -248,45 +249,18 @@ describe("editing a shipped box keeps what it carries", () => {
   });
 });
 
-describe("the ledger row one box owns", () => {
-  it("gives each chosen side its own row, and no side the id it has always had", () => {
-    // Left and right of one box are two claims at two slots — the engine already
-    // resolves them to different `slotKey`s — and one id for both made the second click
-    // overwrite the first row while the first sentence stayed in the report: a finding
-    // the radiologist had clicked off, still printed, still saved, no longer removable.
-    expect(quickSelectRowId("t1")).toBe("qs-t1");
-    expect(quickSelectRowId("t1", "")).toBe("qs-t1");
-    expect(quickSelectRowId("t1", "left")).toBe("qs-t1:left");
-    expect(quickSelectRowId("t1", "Right")).toBe("qs-t1:right");
-    const sided = tile("Foraminal stenosis C5-C6");
-    const left = quickSelectTilePatch(sided, "findings", { side: "left" });
-    const right = quickSelectTilePatch(sided, "findings", { side: "right" });
-    expect(left.id).not.toBe(right.id);
-    expect(quickSelectTilePatch(sided, "findings").id, "a click with no side keeps the historical id")
-      .toBe(`qs-${sided.id}`);
-  });
-
-  it("finds every row one box wrote, and only that box's", () => {
-    // The strip's chip has to read as applied when any side of the box is on the page,
-    // which is what `quickSelectRowBelongsTo` is for.
-    expect(quickSelectRowBelongsTo("qs-t1", "t1")).toBe(true);
-    expect(quickSelectRowBelongsTo("qs-t1:left", "t1")).toBe(true);
-    expect(quickSelectRowBelongsTo("qs-t1x:left", "t1")).toBe(false);
-    expect(quickSelectRowBelongsTo("qs-t1:left", "t2")).toBe(false);
-  });
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
-// The same promise, for a box the database holds.
+// The builder itself, over the shapes the API actually returns.
 //
-// Until now two callers built the overlay for one box click. The strip built it
-// with `quickSelectTilePatch`; the panel's list built it inline inside
-// `handleQuickToggle`, and that inline copy carried less: no concept, no
-// severity, no declared laterality, and one ledger row id for both sides. Same
-// engine, weaker caller — so a box clicked from the database was not clinically
-// equal to the same box clicked from the strip. Commit 4 renders the database
-// boxes in the strip and deletes the localStorage tiles, which would have made
-// the weaker caller the only one.
+// Two callers used to build the overlay for one box click: the strip with
+// `quickSelectTilePatch` over a localStorage tile, and the panel's list inline
+// inside `handleQuickToggle`. The inline copy carried less — no concept, no
+// severity, no declared laterality, and one ledger row id for both sides — so a
+// box clicked from the database was not clinically equal to the same box clicked
+// from the strip. `quickFindingPatch` is now the only builder and every surface
+// calls it. The describes above this line still drive the shipped catalogue, but
+// through `quickSelectTileFixture`, so the payload they assert on is the one a
+// real click sends.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**

@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { useWorkspace } from "../zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "../zai-workspace/quick-select-library";
 import { DEFAULT_REPORT_FORMATS as FORMATS } from "../zai-workspace/report-formats-library";
-import { quickSelectTilePatch } from "../zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch, tileRowId } from "../zai-workspace/quickSelectTileFixture";
+import { isQuickSelectSource } from "../zai-workspace/quickSelectParameterContract";
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
@@ -71,7 +72,7 @@ function select(t: (typeof TRIO)[number]): void {
 }
 
 function deselect(t: (typeof TRIO)[number]): string {
-  return useWorkspace.getState().removeObservation(`qs-${t.id}`);
+  return useWorkspace.getState().removeObservation(tileRowId(t));
 }
 
 function lines(field: "findings" | "impression" | "recommendation"): string[] {
@@ -106,7 +107,7 @@ function saysNothing(sentence: string, field: "findings" | "impression" | "recom
 
 function rowIds(): string[] {
   return useWorkspace.getState().appliedPathologyPatches
-    .filter((p) => p.source === "quick-select")
+    .filter((p) => isQuickSelectSource(p.source))
     .map((p) => p.id);
 }
 
@@ -129,8 +130,8 @@ describe("Stage C Phase 4 · clicking a box off takes its words out of the repor
     saysNothing(HERNIATION_CLAIM);
     holds(STENOSIS_CLAIM);
     holds(SLIP_CLAIM);
-    expect(rowIds()).toEqual(expect.arrayContaining([`qs-${STENOSIS.id}`, `qs-${SLIP.id}`]));
-    expect(rowIds()).not.toContain(`qs-${HERNIATION.id}`);
+    expect(rowIds()).toEqual(expect.arrayContaining([tileRowId(STENOSIS), tileRowId(SLIP)]));
+    expect(rowIds()).not.toContain(tileRowId(HERNIATION));
   });
 
   it("removes the same finding whichever order put the boxes on the page", () => {
@@ -208,9 +209,10 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
    * one scope render the same Findings or Impression sentence (1,148 pairs compared with every
    * `{side}`/`{severity}` expansion, 0 collisions). So the second box here is not invented
    * clinical content — it is the radiologist's own box, which is the one way the workspace
-   * produces two live rows saying one sentence today. Custom tiles are a shipped feature
-   * (`quickSelectTileFromForm`, `custom: true`) and carry no `concept`, so they declare no
-   * relationship and coexist with the library box instead of replacing it.
+   * produces two live rows saying one sentence today. A box the radiologist authors himself
+   * (the Clinic Quick Select editor, `custom: true`) carries no `concept` unless he assigns
+   * one, so it declares no relationship and coexists with the catalogue box instead of
+   * replacing it.
    *
    * The click path already refuses to evict a live row's own sentence (Phase 5), which is why
    * both rows survive here. Removal has to be consistent with that: clicking one box off must
@@ -231,12 +233,12 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
     select(STENOSIS);
     select(COPY);
     expect(rowIds(), "two live boxes, so both rows must be on the ledger")
-      .toEqual(expect.arrayContaining([`qs-${STENOSIS.id}`, `qs-${COPY.id}`]));
+      .toEqual(expect.arrayContaining([tileRowId(STENOSIS), tileRowId(COPY)]));
     expect(rowIds()).toHaveLength(2);
 
     expect(deselect(COPY), "the copy's row is gone, so the deselection was applied").not.toBe("missing");
     holds(STENOSIS_CLAIM);
-    expect(rowIds()).toEqual([`qs-${STENOSIS.id}`]);
+    expect(rowIds()).toEqual([tileRowId(STENOSIS)]);
 
     deselect(STENOSIS);
     saysNothing(STENOSIS_CLAIM);
@@ -249,7 +251,7 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
       select(COPY);
       deselect(first);
       holds(STENOSIS_CLAIM, "findings");
-      expect(rowIds()).toEqual([`qs-${first === COPY ? STENOSIS.id : COPY.id}`]);
+      expect(rowIds()).toEqual([tileRowId(first === COPY ? STENOSIS : COPY)]);
     }
   });
 });

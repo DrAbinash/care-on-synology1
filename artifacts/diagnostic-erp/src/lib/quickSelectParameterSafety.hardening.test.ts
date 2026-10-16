@@ -56,7 +56,8 @@ vi.mock("@/hooks/use-toast", () => ({
 
 import { toast } from "@/hooks/use-toast";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
-import { quickFindingPatch, quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTileFixture";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import {
   isQuickSelectSource,
@@ -132,7 +133,7 @@ function clinicalState() {
   };
 }
 
-/** Exactly what the strip sends on a click — the production payload, not a hand-written one. */
+/** One click on a shipped catalogue entry, through the production payload builder. */
 function click(label: string, params?: { side?: Side | ""; severity?: string }) {
   const t = tile(label);
   return useWorkspace.getState().applyPathologyOverlay(
@@ -653,22 +654,36 @@ describe("wiring — the parameter reaches the boundary from the surface that co
     expect(quickSelectTilePatch(PLAIN, "findings").supportsLaterality).toBe(false);
   });
 
-  it("the strip sends its chosen parameters into the same payload the store reads", () => {
-    expect(stripCode).toMatch(/quickSelectTilePatch\(\s*tile,\s*field,\s*\{[^}]*side[^}]*severity[^}]*\}/);
+  it("the strip hands its chosen parameters to the one writer, which builds the payload the store reads", () => {
+    expect(stripCode).toMatch(/onToggle\(\s*box,\s*true,\s*\{[^}]*side[^}]*severity[^}]*\}\s*\)/);
     // Positive control: the shape the scanner wants really is a call with both keys.
-    expect("quickSelectTilePatch(tile, field, { side: qsSide, severity: qsSeverity })")
-      .toMatch(/quickSelectTilePatch\(\s*tile,\s*field,\s*\{[^}]*side[^}]*severity[^}]*\}/);
-    // …and the pre-fix call would NOT match, so the assertion is not vacuous.
-    expect("quickSelectTilePatch(tile, field)")
-      .not.toMatch(/quickSelectTilePatch\(\s*tile,\s*field,\s*\{[^}]*side[^}]*severity[^}]*\}/);
+    expect("onToggle(box, true, { side: qsSide, severity: qsSeverity })")
+      .toMatch(/onToggle\(\s*box,\s*true,\s*\{[^}]*side[^}]*severity[^}]*\}\s*\)/);
+    // …and a call that dropped them would NOT match, so the assertion is not vacuous.
+    expect("onToggle(box, true)")
+      .not.toMatch(/onToggle\(\s*box,\s*true,\s*\{[^}]*side[^}]*severity[^}]*\}\s*\)/);
   });
 
-  it("the strip checks the same predicate before the branch that bypasses the store guard", () => {
-    // recommendation / technique / history tiles go to mergeField, which has no
-    // parameter path at all — the guard has to run there too.
-    expect(stripCode).toMatch(/unresolvedQuickSelectParameters/);
-    expect(stripCode).toMatch(/mergeField\(\s*field,\s*tile\.sentence/);
+  it("the strip has no write path of its own that could bypass the store guard", () => {
+    // Recommendation / technique / history boxes used to be written with
+    // mergeField, which has no parameter path at all, so the strip had to run the
+    // guard itself before that branch. It no longer writes anything directly:
+    // every click goes to `onToggle`, so the guard inside the overlay is the only
+    // one that has to exist and there is no second place to forget it.
+    expect(stripCode).not.toMatch(/mergeField/);
+    expect(stripCode).not.toMatch(/applyPathologyOverlay/);
+    expect(stripCode).toMatch(/onToggle\(/);
+    // Positive control: the scanner really would see a direct write.
+    expect('mergeField(field, tile.sentence, { source: "quick-select" })').toMatch(/mergeField/);
     expect(quickSelectParametersIn("Correlate with {side} symptoms.")).toEqual(new Set(["side"]));
+  });
+
+  it("the strip offers a chip for every parameter any section of the box can ask for", () => {
+    // The chips are scanned over all four sentences, the same set the builder
+    // declares laterality from and the same set the refusal guard reads. Scanning
+    // one section and guarding four is how a box ends up refusing forever for a
+    // parameter no chip offered.
+    expect(stripCode).toMatch(/quickSelectParametersIn\(quickSelectBoxWrittenText\(box\)\)/);
   });
 
   it("the guard runs inside the overlay, before the overlay's first write", () => {

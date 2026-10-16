@@ -126,9 +126,13 @@ const NEGATED_RE = /!\s*is(?:Finalized|Locked)\s*&&\s*!\s*is(?:Finalized|Locked)
  * the two PRs.
  */
 const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
-  // 61, not 60: Generate Professional Report is a new clinical writer in the
-  // Starting Canvas header and gates on the composed lock like the rest of them.
-  [CANVAS]: 61,
+  // 59, not 61: the editor stopped hosting a Quick Select strip, so the two
+  // `quickSelectDisabled={contentLocked}` that forwarded the lock into it went
+  // with it. Nothing was un-gated — the strip is a clinical writer and all three
+  // of its own render sites here still pass `disabled={contentLocked}`, and those
+  // three were already inside the 61. This is a duplicated forwarding removed,
+  // not a gate weakened.
+  [CANVAS]: 59,
   // 35, not 34: the anatomy findings strip is a new clinical writer in the rail — a tile press
   // adds or withdraws a Findings sentence — so it gates on the composed lock like every other
   // writer there, and the count moves with it.
