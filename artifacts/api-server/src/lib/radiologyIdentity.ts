@@ -47,6 +47,18 @@ export function matchAllowsFinalize(wl: {
   return decision === "APPROVED" || score === "GREEN";
 }
 
+/**
+ * Match Center explicit approval — persisted on radiology_worklist.match_decision.
+ *
+ * One spelling on purpose: the clause decides whether a human has already answered "which
+ * patient is this", and it is read by DICOM re-intake, by bill auto-linking and by anything else
+ * that could re-derive the answer from data. Two copies of it would drift the first time the
+ * decision vocabulary grows.
+ */
+export function isApprovedMatchDecision(decision: string | null | undefined): boolean {
+  return String(decision ?? "").toUpperCase() === "APPROVED";
+}
+
 export function isRadiologyReportType(type: string, testDepartment?: string | null): boolean {
   if (type === "radiology") return true;
   return !!testDepartment && /(USG|MRI|CT|X-?RAY|MAMMO|DEXA|RAD)/i.test(testDepartment);
