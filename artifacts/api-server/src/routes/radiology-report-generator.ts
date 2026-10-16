@@ -3276,10 +3276,13 @@ const PreferencesSchema = z.object({
   sectionSpacing: z.enum(["spaced", "compact"]),
   impressionStyle: z.enum(["bulleted", "numbered", "plain"]),
   showEndOfReportFooter: z.boolean(),
-  footerText: z.string().max(500).optional(),
-  headerLine1: z.string().max(200).optional(),
+  // The workspace clears an optional line by sending null, and the handler below
+  // stores `data.footerText || null`; `optional()` alone would reject that body
+  // and the preferences would never persist.
+  footerText: z.string().max(500).nullable().optional(),
+  headerLine1: z.string().max(200).nullable().optional(),
   headerLine2Source: z.enum(["template_name", "custom"]),
-  headerLine2Custom: z.string().max(200).optional(),
+  headerLine2Custom: z.string().max(200).nullable().optional(),
   workspaceLayout: z.enum(["3_panel", "preview_first", "workflow"]),
   printMode: z.enum(["letterhead", "plain_paper"]).default("letterhead"),
   showLetterpadHeader: z.boolean().default(true),
