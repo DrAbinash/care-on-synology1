@@ -15,8 +15,14 @@
  *  2. nothing on the signed side reads `spinal_measurements` at all. Every
  *     signed surface (print, PDF, public/WhatsApp PDF, email share, PACS
  *     archive) renders `patient_reports.body` through
- *     `renderReportVersionHtml`, and the style flag that looks like the hook
- *     for it (`showMeasurements`) appears nowhere but a preset literal.
+ *     `renderReportVersionHtml`, and `showMeasurements` — a stored,
+ *     admin-editable institutional-style flag that defaults ON — is written by
+ *     `PUT /api/radiology/institutional-style` and read by no renderer at all
+ *     (in `patient-reports.ts` it appears only inside one preset literal). It
+ *     is left unread here too: printing the table whenever the study has
+ *     measured levels is what the draft preview does today, and giving that
+ *     dormant flag a new meaning is the owner's call, not a side effect of a
+ *     bug fix.
  *
  * The correction is to freeze the table INTO the stored body when a radiology
  * report is created, exactly where the draft preview puts it (after Findings,

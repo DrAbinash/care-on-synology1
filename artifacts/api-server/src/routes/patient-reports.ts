@@ -28,6 +28,7 @@ import { sendReportEmail } from "../email";
 import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
+import { buildSpinalCanalApTableHtml, insertCanalTableIntoBody } from "../lib/spinalCanalApTable";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import {
   ACCESSION_ROW_LABEL,
@@ -2226,6 +2227,22 @@ patientReportsRouter.post("/", async (req, res) => {
     }
   }
 
+  // A canal measurement the radiologist entered printed on the draft preview and
+  // then stopped existing: the workspace composes its clinical body without the
+  // table, and every signed surface — print, PDF, email share, PACS archive —
+  // renders the body stored here. Spliced in at the moment the examination
+  // becomes a report, so the signed document carries the numbers that were true
+  // when it was signed and a measurement entered afterwards cannot rewrite it.
+  // The two keys are the two the preview reads, billed study first: a report's
+  // own study_id holds the WORKLIST ROW id on this path.
+  const canalTableHtml =
+    type === "radiology"
+      ? await buildSpinalCanalApTableHtml([
+          bound?.worklist?.studyId ?? null,
+          bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
+        ])
+      : "";
+
   // Retry on UNIQUE collision for the report number.
   for (let attempt = 0; attempt < 3; attempt++) {
     const reportNumber = await nextReportNumber();
@@ -2240,7 +2257,7 @@ patientReportsRouter.post("/", async (req, res) => {
         billId: bound?.billId ?? (b.billId ? Number(b.billId) : null),
         studyId: bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
         title: String(b.title ?? `${test.name} — Report`).trim(),
-        body: typeof b.body === "string" ? b.body : "",
+        body: insertCanalTableIntoBody(typeof b.body === "string" ? b.body : "", canalTableHtml),
         parameters: typeof b.parameters === "string" ? b.parameters : (b.parameters ? JSON.stringify(b.parameters) : null),
         impression: typeof b.impression === "string" ? b.impression : null,
         templateId: b.templateId ? Number(b.templateId) : null,
