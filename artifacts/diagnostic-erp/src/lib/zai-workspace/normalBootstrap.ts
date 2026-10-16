@@ -376,7 +376,22 @@ export function resolveNormalBootstrapFormat(input: NormalBootstrapInput): Norma
   // the wording the radiologist edits, so it is the wording that must print.
   // This runs BEFORE the curated-baseline narrowing, which knows only about
   // formats authored in code and would otherwise discard the row.
-  const onScreen = pool.filter((f) => f.structuredTemplateId != null);
+  //
+  // It only outranks a row that OWNS its anatomy. Measured in the browser three
+  // times on this box's own clinic library: the "MRI Brain Plain" row won this
+  // rule with eight prose sentences and no `baselineManifest`, and the retirement
+  // engine — which suppresses a normal by the ledger row that speaks for it — then
+  // had nothing to attribute those sentences to. Selecting the Fazekas 1 tile left
+  // "No periventricular white matter signal change." and "No focal intraparenchymal
+  // signal abnormality." printed underneath the sentence that says periventricular
+  // lesions exist, in the same Findings block. An un-owned row is still the
+  // radiologist's own wording and still applies when they choose it (Starting
+  // Canvas / Templates); what it may no longer do is take the scaffold away from
+  // an examination whose curated baseline knows which normal each abnormality
+  // falsifies. Ownership travels with the curated baseline's name only when the
+  // row's sentences still match it — see `baselineManifestForFormat`.
+  const onScreen = pool.filter((f) => f.structuredTemplateId != null
+    && f.baselineManifest?.kind === "care.full_report_baseline.v1");
   if (onScreen.length > 0) pool = onScreen;
 
   // Within the correctly resolved protocol identity, curated versioned

@@ -23,6 +23,7 @@
 
 import { adaptSectionsJson } from "@/lib/structuredFormat/adapter";
 import { studyRegionToBodyPart } from "@/lib/pickStructuredTemplate";
+import { baselineManifestForFormat } from "./fullReportBaseline";
 import type { Modality, ReportFormat } from "./types";
 
 /** The subset of a structured_report_templates row this adapter reads. */
@@ -86,7 +87,7 @@ export function structuredTemplateToNormalFormat(
   if (!region || studyRegionToBodyPart(region) !== row.bodyPart.trim().toUpperCase()) return null;
 
   const doc = adaptSectionsJson(row.sectionsJson);
-  return {
+  const format: ReportFormat = {
     id: `structured:${row.id}`,
     name: row.templateName,
     modality,
@@ -103,6 +104,14 @@ export function structuredTemplateToNormalFormat(
     createdAt: now,
     updatedAt: now,
   };
+  // A row authored over a curated baseline's own sentences carries that baseline's
+  // ownership with it, so the retirement engine can still attribute every normal on
+  // the page. `baselineManifestForFormat` validates the manifest AGAINST this row's
+  // findings and impression: renaming a row to a curated name without keeping its
+  // sentences yields nothing, and the edited wording is then the clinic's own choice
+  // rather than something CARE auto-applied.
+  format.baselineManifest = baselineManifestForFormat(format);
+  return format;
 }
 
 /**
