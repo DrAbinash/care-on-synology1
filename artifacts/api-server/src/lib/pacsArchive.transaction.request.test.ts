@@ -28,14 +28,17 @@
  *     archived revision `superseded` instead of overwriting its row (case 4).
  *   - MEASURED (gaps, asserted as today's truth so a later change cannot land silently): a second run
  *     on the same revision writes a second DICOM object that nothing considers a duplicate (case 3,
- *     second half; case 7 through the HTTP retry route); an unsigned report is archived with only the
- *     rendered `DRAFT (not signed)` label between it and being read as the study's report, while the
- *     product's own eligibility policy refuses the same rows (case 5); a study with no report row
- *     archives the placeholder sentence and records success with NO revision row (case 6).
+ *     second half; case 7 through the HTTP retry route), and two runs started together overlap in
+ *     flight rather than excluding each other (case 8) — the study is set to `pending` with no lock,
+ *     no compare-and-set and no transaction around render → POST → persist; an unsigned report is
+ *     archived with only the rendered `DRAFT (not signed)` label between it and being read as the
+ *     study's report, while the product's own eligibility policy refuses the same rows (case 5); a
+ *     study with no report row archives the placeholder sentence and records success with NO revision
+ *     row (case 6).
  *   - NOT MEASURED here, and recorded as such in the tracker: the Orthanc-accepted-but-status-write-
  *     failed path (it needs a fault injected between two statements in the same function — the
  *     ordering is readable at pacsArchive.ts:299-324 but no test can reach it without a DB trigger on
- *     a table other suites share), and two concurrent runs on one study.
+ *     a table other suites share).
  *
  * Version-policy note, because it changes what "the archived PDF is the latest" means: the archive
  * calls `buildReportArtifact` with `versionMode: opts.versionMode`, and `effectiveResolveMode`
@@ -80,6 +83,8 @@ const edge = vi.hoisted(() => ({
   posts: [] as { tags: Record<string, string>; contentLength: number }[],
   orthancUrl: "http://orthanc-stub:8042/dicom-web",
   rejectNextUpload: false,
+  /** Makes the rasteriser take real time, so a "two runs at once" case overlaps in flight. */
+  renderDelayMs: 0,
   seq: 0,
 }));
 
@@ -88,6 +93,9 @@ vi.mock("playwright", () => ({
     launch: async () => ({
       newPage: async () => ({
         setContent: async (html: string) => {
+          if (edge.renderDelayMs > 0) {
+            await new Promise((r) => setTimeout(r, edge.renderDelayMs));
+          }
           edge.rendered.push(html);
         },
         pdf: async () => Buffer.from("STUB-PDF-BYTES"),
@@ -344,6 +352,7 @@ describe.skipIf(!dbReady)("RIS-010 — PACS archive transaction and retry record
     edge.posts = [];
     edge.orthancUrl = "http://orthanc-stub:8042/dicom-web";
     edge.rejectNextUpload = false;
+    edge.renderDelayMs = 0;
     global.fetch = (async (url: unknown, init?: { body?: string }) => {
       const u = String(url);
       if (u.endsWith("/tools/create-dicom")) {
@@ -674,6 +683,34 @@ describe.skipIf(!dbReady)("RIS-010 — PACS archive transaction and retry record
     // with no finality, eligibility or duplicate-effect check of its own.
     expect(edge.posts).toHaveLength(2);
     expect((await readStudy(f.studyId)).pacsInstanceId).toBe(res.body.instanceId);
+  }, 90_000);
+
+  it("MEASURED — two archives of one study overlap; the pending write is not a lock", async () => {
+    const f = await fixture("concurrent");
+    await reportRow(f, { signed: true, body: "FINDINGS CONCURRENT CASE" });
+    // Real in-flight overlap, not two calls that happen to queue: the rasteriser is made to take
+    // 60 ms, so both runs are inside render → POST at the same moment.
+    edge.renderDelayMs = 60;
+
+    const [a, b] = await Promise.all([archiveReportToPacs(f.studyId), archiveReportToPacs(f.studyId)]);
+    expect(a.success, JSON.stringify(a)).toBe(true);
+    expect(b.success, JSON.stringify(b)).toBe(true);
+
+    // Both reached Orthanc. Nothing claims the study, compares-and-sets the pending status, or takes
+    // the row lock that `claimWorklistForFinalize` uses elsewhere for exactly this problem.
+    expect(edge.posts).toHaveLength(2);
+    expect(new Set([a.instanceId, b.instanceId]).size).toBe(2);
+
+    // And the structured records cannot tell the difference: the study row keeps ONE instance id and
+    // UNIQUE(report_id) collapses the revision history to one row, so one of the two archived objects
+    // is referenced nowhere except the audit log.
+    const study = await readStudy(f.studyId);
+    expect(study.pacsArchiveStatus).toBe("success");
+    expect([a.instanceId, b.instanceId]).toContain(study.pacsInstanceId);
+    const revisions = await readRevisions(f.studyId);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0].status).toBe("success");
+    expect((await auditDetails(f.accession, "ORTHANC_UPLOAD_SUCCESS"))).toHaveLength(2);
   }, 90_000);
 });
 
