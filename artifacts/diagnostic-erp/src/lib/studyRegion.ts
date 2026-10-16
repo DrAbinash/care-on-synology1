@@ -13,8 +13,11 @@
  * same region — no duplicated matching logic and no divergence.
  *
  * Semantics: among the configured regions whose name appears (case-insensitively)
- * as a substring of the hint, the MOST SPECIFIC (longest name) wins; ties are
- * broken by display order (sortOrder), so the result stays deterministic.
+ * as a substring of the hint, the MOST SPECIFIC (longest name) wins WITHIN THE
+ * PRIMARY EXAMINATION CLAUSE; ties are broken by display order (sortOrder), so
+ * the result stays deterministic. If the primary clause names no anatomy at all,
+ * the whole hint is searched, so a study that resolves today never becomes
+ * unresolved.
  *
  * "Longest wins" is required for multi-modality dispatch: study-tab names are
  * scoped per modality (e.g. the generic "Brain" for MRI alongside "CT Brain
@@ -24,6 +27,16 @@
  * region name can only match when the hint literally contains that whole phrase,
  * preferring it is strictly more specific and does not regress the single-match
  * cases (e.g. MRI "Brain" still resolves to "Brain").
+ *
+ * Longest-wins was never a rule about WHICH EXAMINATION THIS IS, though it became
+ * one. `radiology_study_tabs` is seeded with the bare names 'LS Spine', 'Cervical
+ * Spine', 'Dorsal Spine', 'Whole Spine', so "MRI LS SPINE WITH SCREENING WHOLE
+ * SPINE" contains an 8-character primary and an 11-character supplementary, and
+ * the supplementary won: a lumbar examination opened the whole-spine report.
+ * "MRI BRAIN WITH CERVICAL SPINE SCREENING" lost Brain to Cervical Spine the same
+ * way. The outcome depended on tab-name length, which is why it looked
+ * intermittent — "MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING" resolves
+ * correctly only because cervical is the longer of those two names.
  */
 
 /** Classify a study-tab name into a modality family for Study Setup filtering. */
@@ -62,20 +75,40 @@ export function filterRegionNamesForModality(
   });
 }
 
+/**
+ * A connective that introduces the SUPPLEMENTARY part of an examination name:
+ * "MRI LS SPINE WITH SCREENING WHOLE SPINE", "MRI BRAIN + CERVICAL SPINE
+ * SCREENING", "MRI CERVICAL SPINE AND DORSAL SCREENING". The anatomy named
+ * before it is the examination the patient was booked for; the anatomy after it
+ * is extra coverage the report has to describe as a section, not become.
+ */
+const SUPPLEMENTARY_CLAUSE_RE = /\b(?:with|and|plus)\b|\+/i;
+
+/** The part of the hint that names the primary examination. */
+export function primaryExaminationClause(hint: string): string {
+  const at = SUPPLEMENTARY_CLAUSE_RE.exec(hint)?.index ?? -1;
+  return at > 0 ? hint.slice(0, at) : hint;
+}
+
+function longestContainedRegion(text: string, orderedRegionNames: string[]): string | null {
+  let best: string | null = null;
+  for (const name of orderedRegionNames) {
+    if (!name || !text.includes(name.toLowerCase())) continue;
+    // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
+    // lengths, preserving the original deterministic tie-break.
+    if (best === null || name.length > best.length) best = name;
+  }
+  return best;
+}
+
 export function matchStudyRegion(
   hint: string | null | undefined,
   orderedRegionNames: string[],
 ): string | null {
   if (!hint) return null;
   const h = hint.toLowerCase();
-  let best: string | null = null;
-  for (const name of orderedRegionNames) {
-    if (!name || !h.includes(name.toLowerCase())) continue;
-    // Strictly-greater keeps the FIRST (lowest sortOrder) region among equal
-    // lengths, preserving the original deterministic tie-break.
-    if (best === null || name.length > best.length) best = name;
-  }
-  return best;
+  const primary = primaryExaminationClause(h);
+  return longestContainedRegion(primary, orderedRegionNames) ?? longestContainedRegion(h, orderedRegionNames);
 }
 
 /**
@@ -168,6 +201,16 @@ export function matchStudyRegionByCoreAnatomy(
   orderedRegionNames: string[],
 ): string | null {
   if (!hint) return null;
+  const h = hint.toLowerCase();
+  if (!studyRegionTokens(h).length) return null;
+  // The same primary-examination rule as the substring match: this fallback is
+  // reached for exactly the multi-word billed names where a supplementary
+  // screening tab can also earn the projection-word bonus below.
+  const primary = primaryExaminationClause(h);
+  return coreAnatomyBest(primary, orderedRegionNames) ?? coreAnatomyBest(h, orderedRegionNames);
+}
+
+function coreAnatomyBest(hint: string, orderedRegionNames: string[]): string | null {
   const hintTokens = new Set(studyRegionTokens(hint));
   if (!hintTokens.size) return null;
 
