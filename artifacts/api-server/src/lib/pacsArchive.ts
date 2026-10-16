@@ -7,7 +7,7 @@ import {
   radiologyAuditLogTable,
   radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
@@ -28,6 +28,53 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
     headers["Authorization"] = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
   }
   return headers;
+}
+
+/**
+ * Which `patient_reports` row the PACS archive may render for a billed study — or none.
+ *
+ * `patient_reports.study_id` is a SHARED identifier space, which is why both namespaces have to be
+ * looked up: the Reporting Workspace finalize path writes the `radiology_worklist` row id into it,
+ * while legacy rows were written with the billed `radiology_studies` id. The same number therefore
+ * means "worklist row 41" for one patient and "billed study 41" for another, and the two are
+ * assigned by independent sequences that overlap by accident.
+ *
+ * Exported because this is the step that decides which human's report becomes a DICOM object in
+ * the archive, and `archiveReportToPacs` cannot be exercised without launching Chromium and
+ * POSTing to Orthanc.
+ *
+ * The guarantee is the patient predicate below: of everything reachable through either id
+ * namespace, only a report owned by this study's patient may be rendered.
+ */
+export async function resolveArchiveReportRow(study: {
+  id: number;
+  patientId: number;
+}): Promise<{ id: number } | null> {
+  const [worklistForStudy] = await db
+    .select({ id: radiologyWorklistTable.id })
+    .from(radiologyWorklistTable)
+    .where(eq(radiologyWorklistTable.studyId, study.id))
+    .limit(1);
+  const reportStudyIds = worklistForStudy?.id != null
+    ? [worklistForStudy.id, study.id]
+    : [study.id];
+  const [report] = await db
+    .select({ id: patientReportsTable.id })
+    .from(patientReportsTable)
+    .where(
+      and(
+        inArray(patientReportsTable.studyId, reportStudyIds),
+        // The scoping that makes the shared id space safe to search twice: a report may be
+        // rendered into this study's archive only if it belongs to this study's patient. Both
+        // columns are NOT NULL, so this cannot drop a legitimately-owned row.
+        eq(patientReportsTable.patientId, study.patientId),
+      ),
+    )
+    // Deterministic, newest first. Without an ORDER BY the engine returns whichever row the heap
+    // reaches, and `versionMode: "specific"` archives exactly the row picked here.
+    .orderBy(desc(patientReportsTable.id))
+    .limit(1);
+  return report ?? null;
 }
 
 export async function archiveReportToPacs(
@@ -95,29 +142,13 @@ export async function archiveReportToPacs(
     const sexStr = patient?.gender || "O";
 
     // 3. Resolve report HTML. D8: amendments share the parent's studyId, so
-    // whichever row this unordered pick lands on, buildReportArtifact resolves
-    // the chain to the latest signed version (default) — the archived PDF can
-    // never silently be a superseded report, and an explicitly historical
-    // archive carries the superseded watermark baked into its HTML.
-    //
-    // Workspace finalize stores radiology_worklist.id on patient_reports.study_id;
-    // legacy rows may still store radiology_studies.id. This archive entrypoint
-    // always receives the billed study id — look up both namespaces.
+    // whichever row this pick lands on, buildReportArtifact resolves the chain
+    // to the latest signed version (default) — the archived PDF can never
+    // silently be a superseded report, and an explicitly historical archive
+    // carries the superseded watermark baked into its HTML.
     let htmlContent = "";
     let artifact: ReportArtifact | null = null;
-    const [worklistForStudy] = await db
-      .select({ id: radiologyWorklistTable.id })
-      .from(radiologyWorklistTable)
-      .where(eq(radiologyWorklistTable.studyId, studyId))
-      .limit(1);
-    const reportStudyIds = worklistForStudy?.id != null
-      ? [worklistForStudy.id, studyId]
-      : [studyId];
-    const [report] = await db
-      .select()
-      .from(patientReportsTable)
-      .where(inArray(patientReportsTable.studyId, reportStudyIds))
-      .limit(1);
+    const report = await resolveArchiveReportRow({ id: studyId, patientId: study.patientId });
     if (report) {
       artifact = await buildReportArtifact(report.id, { surface: "pacs", versionMode: opts.versionMode });
       htmlContent = artifact?.html || "";
