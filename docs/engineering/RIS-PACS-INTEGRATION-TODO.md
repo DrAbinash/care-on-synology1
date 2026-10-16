@@ -34,13 +34,13 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-003 | Auto-link must not replace an APPROVED association | P0 | Wrong patient on a signed report | MERGED → verifying (lanes green on current main) | `67fbf901`; 5/5 `approvedPatientAssociationAutoLink.request.test.ts` on `2c8bdccd` | #1041 | green | yes | **no** |
 | RIS-004 | PACS archive report pick must be patient-scoped | P0 | Another patient's report in the image archive | MERGED | `2c8bdccd` | #1042 | green | yes | **no** |
 | **RIS-005** | **Correct patient is not yet correct examination in the archive** | **P0** | **Right patient, wrong exam filed into the study series** | **MERGED — not deployed, not clinically verified** | 7/13 cases red at `2c8bdccd` (Brain study returned report **637** = the LS Spine row, not **636**); 13/13 green at `b2ecdef9`; mutation battery A–F all killed; on `origin/main` as `877701f9` (tree-verified) | **#1044** (merged by the owner 2026-10-16 20:18Z) | **green** — see the CI note below | yes | **no** |
-| **RIS-006** | **Null `patient_reports.study_id` ownership** | **P0** | **Report claimed onto a second exam of the same patient** | **CONFIRMED → PR OPEN** (patient equality alone was sufficient; now a recorded linkage is required) | 3 of 8 cases red at `877701f9` — patient-alone association and same-patient sibling reuse both returned 200; mutants N1–N6 each killed | **#1047** | pending | no | no |
+| **RIS-006** | **Null `patient_reports.study_id` ownership** | **P0** | **Report claimed onto a second exam of the same patient** | **CONFIRMED → PR OPEN** (patient equality alone was sufficient; now a recorded linkage is required) | 3 of 8 cases red at `877701f9` — patient-alone association and same-patient sibling reuse both returned 200; mutants N1–N6 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | TODO | — | — | — | no | no |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | INVESTIGATING — existing protections catalogued; one gap measured | unsigned draft **is** returned by the pick (probe: draft 1726, then signed 1727); race / accepted-but-failed / swallowed revision writes not yet measured | none | — | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
-| RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | pending | no | no |
+| RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -235,16 +235,48 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 
 ---
 
-## RIS-010 — archive transaction safety (P1)
+## RIS-010 — archive transaction and retry safety (P1, investigating)
 
-Questions to answer from the existing code before proposing anything: can two archive jobs race;
-can the same report be archived twice; what happens when Orthanc accepts the object but the ERP
-status update fails; what happens when the report is amended afterwards; can an unsigned draft enter
-the archive; can a superseded report be mistaken for the current final one; are `StudyInstanceUID`
-and accession preserved. Existing mechanisms to look for first: `radiology_pacs_archive_revisions`
-(per-revision records with `onConflictDoUpdate`, added by BEND-1), `pacsArchiveStatus` /
-`pacsInstanceId` on `radiology_studies`, and `buildReportArtifact`'s version resolution. If they
-already cover a case, record it as `VERIFIED` rather than rebuilding it.
+Read from `877701f9` before proposing anything. **Protections that already exist** (they are real; a
+later session should not rebuild them):
+
+* `radiology_pacs_archive_revisions` keeps one row per archived **revision** —
+  `onConflictDoUpdate(target: reportId)` plus a sweep that marks the study's other successful rows
+  `superseded` (`pacsArchive.ts:330-355`), so an amendment after an archive has a recorded home;
+* `buildReportArtifact(..., { surface: "pacs", versionMode })` resolves the amendment chain to the
+  **latest signed** version by default, and `versionMode: "specific"` archives an explicitly historical
+  row with its superseded watermark baked into the HTML (`:197`);
+* `radiology_studies.pacsArchiveStatus` / `pacsArchiveResponse` / `pacsInstanceId` carry the latest
+  attempt (`:143`, `:317-324`, `:382-388`), and `ORTHANC_UPLOAD_SUCCESS` / `ORTHANC_UPLOAD_FAILURE`
+  audit rows record requested-vs-delivered report ids and the version string (`:357-373`).
+
+**Gaps, each labelled with whether it has been measured:**
+
+1. **An unsigned draft can be picked for archiving — MEASURED.** `resolveArchiveReportRow` applies no
+   finality filter, so a `patient_reports` row with `status = 'draft'` and no signature is returned as
+   the archive candidate when it is the only row for that study. Throwaway probe against the scratch
+   database: the pick returned draft row **1726** on its own, then **1727** once a signed final row
+   existed — i.e. newest-first hides the draft only while a signed row also exists. Whether
+   `buildReportArtifact` then refuses to render an unsigned row is **not** measured, and that is the
+   first question a committed test has to settle, because a half-written draft appearing in the image
+   archive as this patient's report is the clinically serious shape. Nothing was committed from the
+   probe; the file was removed and the tree is clean.
+2. **No mutual exclusion — not measured.** The study is set to `pending` (`:143`) with no lock, no
+   compare-and-set and no transaction around render → POST → persist, so two concurrent archives of the
+   same study both upload and both write. The repo already contains the patterns to reuse
+   (`claimWorklistForFinalize`'s `SELECT … FOR UPDATE` at `radiologyIdentity.ts:263`, the advisory-lock
+   style used by the outbox and ledger writers) — reuse, do not invent a queue.
+3. **Orthanc accepted, ERP write failed — not measured.** The success `UPDATE` (`:317`) is not in a
+   transaction with the revision writes; if it throws, the catch branch records
+   `pacsArchiveStatus: "failed"` (`:382`) for a study whose DICOM object **does** exist in Orthanc, and
+   the next attempt archives a second one.
+4. **Revision writes swallow their own errors — not measured.** All three revision/audit writes end in
+   `.catch(() => undefined)` (`:346`, `:354`, `:407`), so a study can read `success` with no
+   per-revision row behind it.
+
+No new archive queue, revision engine or state machine is proposed; the first two items are answered by
+one request-level test and, if confirmed, by reusing an existing lock.
+
 
 ---
 
