@@ -25,17 +25,27 @@ vi.mock("@workspace/db", () => ({
   db: {
     select: () => ({
       from: (tbl: { __name?: string }) => ({
-        // `limit` and `orderBy().limit` both terminate the chain — the real builder accepts
-        // either, and the archive's report pick uses the second to make its choice deterministic.
+        // The real builder is awaitable AND chainable: `.where(c)`, `.where(c).limit(1)` and
+        // `.where(c).orderBy(x).limit(1)` are all legal terminations, and the archive's report pick
+        // uses the last two (a bare await for every worklist row bound to the study, `.limit(1)`
+        // for the deterministic newest report). One shape answers all three.
         where: () => {
-          const limit = async () => {
+          const rows = () => {
             if (tbl?.__name === "radiology_studies") return studyRow ? [studyRow] : [];
             if (tbl?.__name === "radiology_worklist") return [{ id: 3629 }];
             if (tbl?.__name === "patients") return [{ id: 12, firstName: "Asha", lastName: "P", patientId: "PAT-1", gender: "F", dateOfBirth: null }];
             if (tbl?.__name === "patient_reports") return reportRow ? [reportRow] : [];
             return [];
           };
-          return { limit, orderBy: () => ({ limit }) };
+          // NOTE: `where` discards its argument. That is why this file cannot prove association
+          // safety in either direction — pacsArchive.reportScope.request.test.ts runs the same pick
+          // against PostgreSQL, where the predicate is what is actually under test.
+          const chain: Record<string, unknown> = {
+            then: (onFulfilled: (v: unknown[]) => unknown) => Promise.resolve(rows()).then(onFulfilled),
+            limit: () => Promise.resolve(rows()),
+          };
+          chain.orderBy = () => chain;
+          return chain;
         },
       }),
     }),
