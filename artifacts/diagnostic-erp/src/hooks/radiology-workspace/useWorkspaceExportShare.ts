@@ -366,6 +366,7 @@ const handleExportPdf = useCallback(async () => {
       studyName: studyNameForExport,
       bookedStudyName: bookedStudyNameForExport,
       headingCase,
+      impressionStyle,
       dicomWebBase: BROWSER_DICOMWEB_BASE,
       imageRefs,
       frozenKeyImages: frozenDataUrls,

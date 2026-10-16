@@ -282,6 +282,12 @@ export interface RadiologyPdfExportInput {
   recommendation: string;
   studyName: string;
   headingCase?: "all_caps" | "title_case";
+  /**
+   * The radiologist's saved impression style, passed through so the downloaded
+   * PDF matches the screen preview and the print document. Omitted means
+   * `numbered`, which is what this generator has always printed.
+   */
+  impressionStyle?: "bulleted" | "numbered" | "plain";
   dicomWebBase: string | null;
   imageRefs: ReportImageRef[];
   /**
@@ -357,6 +363,7 @@ export async function exportRadiologyReportToPdf(input: RadiologyPdfExportInput)
     },
     {
       ...settings,
+      impressionStyle: input.impressionStyle ?? settings.impressionStyle,
       header: {
         ...settings.header,
         enabled: input.showLetterpadHeader !== false, // respect toggle; default true
