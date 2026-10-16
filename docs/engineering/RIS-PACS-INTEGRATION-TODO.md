@@ -34,13 +34,13 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-003 | Auto-link must not replace an APPROVED association | P0 | Wrong patient on a signed report | MERGED → verifying (lanes green on current main) | `67fbf901`; 5/5 `approvedPatientAssociationAutoLink.request.test.ts` on `2c8bdccd` | #1041 | green | yes | **no** |
 | RIS-004 | PACS archive report pick must be patient-scoped | P0 | Another patient's report in the image archive | MERGED | `2c8bdccd` | #1042 | green | yes | **no** |
 | **RIS-005** | **Correct patient is not yet correct examination in the archive** | **P0** | **Right patient, wrong exam filed into the study series** | **MERGED — not deployed, not clinically verified** | 7/13 cases red at `2c8bdccd` (Brain study returned report **637** = the LS Spine row, not **636**); 13/13 green at `b2ecdef9`; mutation battery A–F all killed; on `origin/main` as `877701f9` (tree-verified) | **#1044** (merged by the owner 2026-10-16 20:18Z) | **green** — see the CI note below | yes | **no** |
-| **RIS-006** | **Null `patient_reports.study_id` ownership** | **P0** | **Report claimed onto a second exam of the same patient** | **BLOCKED** (evidence named below) | code census re-measured on `2c8bdccd`; production count unreadable | none | — | no | no |
+| **RIS-006** | **Null `patient_reports.study_id` ownership** | **P0** | **Report claimed onto a second exam of the same patient** | **CONFIRMED → PR OPEN** (patient equality alone was sufficient; now a recorded linkage is required) | 3 of 8 cases red at `877701f9` — patient-alone association and same-patient sibling reuse both returned 200; mutants N1–N6 each killed | **#1047** | pending | no | no |
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
 | RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | TODO | — | — | — | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
-| RIS-012 | Linked-sibling finalize may be refused by the ownership guard | P1 | Second study of a linked pair never marked final | INVESTIGATING (code trace only, unverified) | `radiologyReportLifecycle.ts:505` posts the same `reportId` against a **different** `worklistId`, which `radiologyIdentity.ts:250-259` refuses with `REPORT_WORKLIST_MISMATCH` | none | — | no | no |
+| RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | pending | no | no |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -142,44 +142,43 @@ should archive at all) 10 → **RIS-010**, not covered here.
 
 ---
 
-## RIS-006 — null `study_id` report ownership (P0, BLOCKED)
+## RIS-006 — null `study_id` report ownership (P0, PR #1047)
 
-`assertReportBelongsToWorklist` (`lib/radiologyIdentity.ts:234-260`) asks only "same patient?" when
-`report.study_id IS NULL`, because the whole worklist comparison sits inside `if (report.studyId)`
-(`:250-259`). A patient with two studies passes that for both.
+`assertReportBelongsToWorklist` (`lib/radiologyIdentity.ts:235-287`) asked only "same patient?" when
+`report.study_id IS NULL`, because the whole worklist comparison sat inside `if (report.studyId)`.
+**Confirmed at runtime on `877701f9`, not inferred from the trace**: a study-less report of patient A
+was accepted for a second, unrelated study of patient A with HTTP 200, and the worklist row took the
+`report_id` of a document written for a different examination.
 
-Re-measured on `2c8bdccd` (the untracked note at `tmp/null-study-ownership-note.md` carries the full
-census but its line numbers are stale by 5-12 lines):
+Measured census (still accurate; the untracked note at `tmp/null-study-ownership-note.md` carries the
+same list with line numbers 5–12 lines stale):
 
 * call sites: `reportComposer/composeIdentity.ts:239`, `:362`, `:572` and
-  `routes/internal-radiology.ts:1367` — the last is the load-bearing one, because finalize takes
-  `reportId` from the request body;
+  `routes/internal-radiology.ts:1367` — the last is load-bearing, because finalize takes `reportId`
+  from the request body;
 * sign / amend / deliver do not call it;
 * study-less radiology reports are **created deliberately**: `routes/patient-reports.ts:1980-1985`
-  says legacy / D5-fixture / non-workspace creates keep the pre-hardening path and that requiring a
-  bind for all `type=radiology` is "a separate product decision with fixture updates";
-* every ERP caller that sends a `reportId` to `report-status` was enumerated:
-  `diagnostic-erp/src/lib/radiologyReportLifecycle.ts:486` (the row it just finalized, which always
-  carries `study_id`) and `:505` (the **same** `reportId` against a **linked sibling** worklist row).
+  keeps legacy / D5-fixture / non-workspace creates on the pre-hardening path and calls binding all
+  `type=radiology` "a separate product decision with fixture updates";
+* every ERP caller that sends a `reportId` to `report-status`: `radiologyReportLifecycle.ts:486` (the
+  row it just finalized, which always carries `study_id`) and `:505` (the same `reportId` against a
+  linked sibling — that one is RIS-012, now allowed explicitly).
   `pages/RadiologyWorklist.tsx:1037` sends no `reportId`, so it never reaches the guard.
 
-**Why no code was written this session.** The two candidate corrections each hit an open question:
+**Correction implemented (PR #1047).** The null branch requires a linkage the database already holds
+and refuses without one — see the owner's ruling above for the three accepted linkages and the
+duplicate-intake rule. Tests: `nullStudyReportOwnership.request.test.ts`, 8 cases, 3 of them red
+before the change; mutants N1–N6 each killed with attributed failures. The refused report is asserted
+byte-identical afterwards (`study_id` still NULL, body/Impression/`updatedAt` unchanged) because a
+guard that "fixes" history by writing an id onto it would be a worse defect than the one it closes.
 
-1. Refuse when the report's null `study_id` leaves no examination evidence → also refuses the
-   documented study-less flow.
-2. Refuse when **another** worklist row back-links that report → refuses `radiologyReportLifecycle.ts:505`,
-   which legitimately marks one report final on a linked pair of studies (and is the behaviour RIS-012
-   suspects is already broken).
-
-**Missing evidence, named exactly.**
-(a) `select count(*) from patient_reports where type='radiology' and study_id is null and status in
-('final','verified','delivered')` against the clinic database — unreadable from this workstation while
-the NAS refuses `:8080`;
-(b) whether (a) is dominated by rows that carry `bill_id`/`order_id` (recoverable) or by rows with no
-billing identity at all (not recoverable);
-(c) an **owner ruling**: may one signed report legitimately be final on two worklist rows? That single
-answer decides whether a back-link contradiction is a safe refusal or a clinic-wide block.
-Until then this row stays `BLOCKED`; nothing here was retro-assigned, and no legacy report was touched.
+**What is still not known.** The production census of `patient_reports` rows with
+`type='radiology' AND study_id IS NULL AND status IN ('final','verified','delivered')`, and how many of
+those carry no `order_test_id`/`bill_id` and no promoted draft — i.e. how many historical reports this
+rule newly refuses. The NAS refuses `:8080` from this workstation, so it is unreadable here. If the
+count turns out to be large, the correction is still right but its **presentation** may need to be a
+Match-Center-visible warning plus a hard refusal only on new writes; that is the owner's call, and it
+is the reason this row is `PR OPEN` rather than `VERIFIED`.
 
 ---
 
@@ -260,22 +259,61 @@ accessions. Recommendations land here; this is not permission to rebuild MWL inf
 
 ---
 
-## RIS-012 — linked-sibling finalize, suspected refused (P1, hypothesis only)
+## RIS-012 — linked-sibling finalize was refused, now authorized explicitly (P1, PR #1047)
 
-Found while enumerating the `report-status` callers for RIS-006, and **not yet verified**: after
-signing, `diagnostic-erp/src/lib/radiologyReportLifecycle.ts:505` posts the **same** `reportId`
-against a **different** `worklistId` (the linked sibling of a paired study). On the server
-`internal-radiology.ts:1367` runs `assertReportBelongsToWorklist`, whose comparison at
-`radiologyIdentity.ts:250-259` resolves the report's own `study_id` to the primary worklist row and
-throws `REPORT_WORKLIST_MISMATCH` when that is not the row being flipped. If true, the sibling never
-reaches `REPORT_FINAL` from the workspace, and the ERP swallows it into `linkedMarkError`.
+Found while enumerating the `report-status` callers for RIS-006, then **confirmed at runtime** rather
+than left as a trace: after signing, `diagnostic-erp/src/lib/radiologyReportLifecycle.ts:505` posts the
+**same** `reportId` against a **different** `worklistId` — the linked sibling of a paired study — and
+`internal-radiology.ts:1367` ran `assertReportBelongsToWorklist`, which resolved the report's own
+`study_id` to the primary worklist row and threw `REPORT_WORKLIST_MISMATCH` (HTTP 409) because that is
+not the row being flipped. The ERP swallowed it into `linkedMarkError`, so nothing surfaced.
 
-Do not act on this from the trace. Prove it with one request-level test that creates a primary +
-sibling worklist row pair, finalizes the primary, and posts `report-status` for the sibling with that
-`reportId` — then read the sibling row back. The answer also decides RIS-006's option 2, so it is the
-cheapest next measurement in this queue.
+**Clinical meaning.** A radiologist who reports an MRI Brain and an MRI LS Spine as one combined
+document got the brain study marked final and the spine study left in the worklist as though nothing
+had been reported for it — while a signed, delivered report covering it already existed. The partner
+accession can then be re-reported or re-billed against that existing document.
+
+**Correction (PR #1047).** The guard now reads the combine the radiologist actually performed: the
+report's own draft, found with the same "latest draft for this study reference" lookup finalize itself
+uses (`routes/patient-reports.ts:973-977`), whose `structured_json` envelope carries
+`linkedStudyId` / `careLinkedStudy` written by `POST /api/radiology/report-generator/save-draft`
+(`radiology-report-generator.ts:1683`) and read through the existing `extractCareLinkedStudy`. The flip
+is allowed **only** when the row being flipped is exactly the row that envelope names; the patient
+equality check still runs first, so a combine that points at another patient's row refuses. No new
+column, no second identity system, and no bypass — the guard itself does the reading.
+
+Tests: `linkedSiblingReportFinalize.request.test.ts` (6 cases, drives
+`save-draft → POST /api/patient-reports → /sign → report-status` and re-reads the rows). Cases 2, 5 and
+6 were red at `877701f9`; 1, 3 and 4 (single exam, unlinked same-patient reuse, cross-patient reuse)
+were already green and stayed green. Mutants M1–M7 each killed with attributed failures — including M3,
+which keys the allowance on *a* combine rather than *this* row and is caught by cases 2, 3, 5 and 6.
+
+**Not yet observed:** no browser has run a real combined report end to end on a deployed build. The
+ERP's own error swallowing (`linkedMarkError`) is unchanged by this PR, so a future sibling-flip failure
+would still be quiet; worth a follow-up if the owner wants it surfaced to the radiologist.
 
 ## Standing constraints for anyone working this queue
+
+**Owner's examination-ownership ruling (2026-10-17), which settles what RIS-006 and RIS-012 were
+waiting on:**
+
+> One signed radiology report MAY legitimately cover multiple worklist examinations, but ONLY when those
+> examinations are explicitly linked under an authorized combined-report workflow. The same patient alone
+> is never sufficient.
+
+Operational consequences, all of them already enforced by code in
+`artifacts/api-server/src/lib/radiologyIdentity.ts`:
+
+* the explicit link is the one the product persists — `radiology_report_drafts.structured_json`
+  `linkedStudyId` / `careLinkedStudy`, read through the existing `extractCareLinkedStudy` — not a
+  similarity score, not a shared appointment, not a shared bill;
+* for a report with no `study_id`, an authoritative existing linkage must name the row being written:
+  the row's own `report_id` back-link, the draft promoted to the report, or the report's
+  `order_test_id` (UNIQUE per examination) resolving to the study that row is bound to;
+* nothing is inferred from `patient_id` alone, and no historical report is back-filled or re-keyed to
+  make a check pass;
+* where no linkage names the row, the association is refused and the message names the action that
+  resolves it (open the report from its own study, or link it in Match Center).
 
 Owner is a practising doctor, not a coder: explain the clinical consequence in plain language, and
 never ask them to resolve an implementation detail that the code can answer. Audit first; reuse the
@@ -318,23 +356,29 @@ a guessed identity for an approved one.
 2. **RIS-005 / PR #1044: DONE — merged by the owner into `877701f9`, CI green on the rerun.** It is
    **not deployed**, so the clinic still files the wrong examination's report until someone deploys.
    Nothing further is owed on `pacsArchive.ts` unless RIS-010 finds a transaction defect.
-3. **RIS-012**: the one-request-level-test measurement — it is cheap and it unblocks RIS-006.
-4. **RIS-006**: needs the NAS reachable for the null-`study_id` count, plus the owner's ruling on
-   one-report-two-rows.
-5. **RIS-008 / RIS-009**: re-run `studyRegion.test.ts` and the viewer contract + Chromium probe on
-   current `main`. Verification, not redesign.
-6. **RIS-010**: archive transaction safety, starting from `radiology_pacs_archive_revisions` and
+3. **RIS-012 + RIS-006 / PR #1047: both confirmed at runtime, corrected, mutation-checked, opened as a
+   Draft on `fix/linked-sibling-report-ownership` (`0d784e98`).** Do not re-derive them. Read its CI
+   result, then hand it to the owner to merge; rebase onto main if #1046 or anything else moved first.
+   If it merges, the next measurement is the production census named under RIS-006 — the number decides
+   whether the null-study refusal needs a Match-Center-visible presentation as well.
+4. **RIS-009**: the Chromium multi-navigation re-probe (Next / Previous / Park / deep link) is the only
+   unfinished verification left from the P1 list. `studyRegion.test.ts` was re-run green.
+5. **RIS-010**: archive transaction safety, starting from `radiology_pacs_archive_revisions` and
    `pacsArchiveStatus`/`pacsInstanceId` — record what already protects the clinic before proposing
    anything.
-7. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
+6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
 
-**Owner decisions outstanding:** (a) may one signed report legitimately be final on two worklist rows
-(RIS-006/RIS-012); (b) should a study with no authoritative report archive at all, given the fallback
-prints `No report body text entered.` into the DICOM object (RIS-005 case 9); (c) when the rebuilt NAS
-deployment is available, which commit to deploy and with which verified backup.
+**Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
+examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
+(b) should a study with no authoritative report archive at all, given the fallback prints
+`No report body text entered.` into the DICOM object (RIS-005 case 9); (c) once the NAS is reachable, the
+null-`study_id` census — if a large number of historical signed reports carry no linkage, does the
+refusal need a visible warning path instead of a hard block; (d) when the rebuilt NAS deployment is
+available, which commit to deploy and with which verified backup.
 
-_Last updated: 2026-10-16 end of session — RIS-005 reproduced on PostgreSQL, corrected,
-mutation-checked, CI green and **merged by the owner as `877701f9`** (still not deployed, still not
-clinically verified); RIS-003's guard and RIS-001's/RIS-002's suites re-verified green on the current
-head; RIS-006 closed out as BLOCKED with the exact measurements it needs; RIS-012 opened from the same
-enumeration. PR #1043 merged as `1066065b`; this follow-up is PR #1045._
+_Last updated: 2026-10-17 — the owner's examination-ownership ruling is recorded as a standing rule and
+implemented: **RIS-012** (an authorized combined report could not finish its second study — refused with
+`REPORT_WORKLIST_MISMATCH`, proven at request level) and **RIS-006** (a report with no `study_id` was
+attributable to any study of that patient — proven at request level) are corrected in one Draft,
+**PR #1047**, with 14 request-level cases and mutation batteries M1–M7 / N1–N6 each killed. RIS-005
+stays merged-not-deployed. Nothing was deployed, no container restarted, no production row touched._
