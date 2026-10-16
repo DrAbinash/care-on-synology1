@@ -51,10 +51,24 @@ export function isClinicalAbbreviationPeriod(text: string, periodIndex: number):
   return ABBREV_SET.has(token.toLowerCase());
 }
 
+/**
+ * True when the period at `periodIndex` closes a hand-typed list marker —
+ * `1. Finding` / `2. Impression` at the start of a line. A radiologist numbering
+ * their own impressions is not dictating a run-on sentence, and breaking the
+ * marker onto its own line makes the numbered renderer emit an empty item 1.
+ */
+const LIST_MARKER_BEFORE = /(?:^|\n)[ \t\u00a0]*\d{1,3}$/;
+
+export function isListMarkerPeriod(text: string, periodIndex: number): boolean {
+  if (text[periodIndex] !== ".") return false;
+  return LIST_MARKER_BEFORE.test(text.slice(0, periodIndex));
+}
+
 /** True when this ". " (or ".\t") boundary should become a newline. */
 export function shouldBreakAfterPeriod(text: string, periodIndex: number): boolean {
   if (isDecimalPeriod(text, periodIndex)) return false;
   if (isClinicalAbbreviationPeriod(text, periodIndex)) return false;
+  if (isListMarkerPeriod(text, periodIndex)) return false;
   return true;
 }
 
