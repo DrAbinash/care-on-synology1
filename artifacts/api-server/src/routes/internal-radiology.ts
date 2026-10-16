@@ -1140,12 +1140,19 @@ router.post("/radiology/report-status", async (req, res) => {
   // report at all (measured 2026-10-16 on an isolated database: HTTP 200 for a
   // billed worklist whose study had zero patient_reports rows, leaving
   // report_id NULL, and because the workspace's signing gate reads that same
-  // status the study could then never be signed). Canonical finalize is now
-  // decided from the stored rows: a qualifying report that belongs to THIS
-  // study, or no billable test behind it, which is the documented unbilled
-  // soft-final and stays exactly as it was.
+  // status the study could then never be signed).
+  //
+  // The door with no reportId is the open one. When a caller does name a report,
+  // assertReportBelongsToWorklist() below already proves it exists, is this
+  // patient's, and resolves to THIS worklist through
+  // resolveWorklistFromStudyRef() — the shared helper that knows
+  // patient_reports.study_id may hold either a worklist row id or a billed
+  // radiology_studies.id, the two sequences that overlap by design. Re-checking
+  // ownership here would only give one refusal two vocabularies, so what is
+  // decided from the stored rows is canonicality for the id-less call: a row
+  // bound to this worklist for this patient, or no billable test behind it.
   let isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
-  if (b.status === "REPORT_FINAL") {
+  if (b.status === "REPORT_FINAL" && !b.reportId) {
     const boundStudy = existing.studyId
       ? (await db
           .select({
@@ -1157,52 +1164,15 @@ router.post("/radiology/report-status", async (req, res) => {
       : undefined;
     const isBilledStudy = Boolean(boundStudy?.orderTestId || boundStudy?.billId);
 
-    if (b.reportId) {
-      // An explicit reportId is now checked instead of trusted: it must exist,
-      // belong to this worklist/study, and have moved past draft.
-      const rep = (
-        await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, Number(b.reportId)))
-      )[0];
-      if (!rep) {
-        res.status(409).json({
-          error: "REPORT_NOT_FOUND",
-          message: `Report ${b.reportId} does not exist, so this study cannot be marked final with it.`,
-        });
-        return;
-      }
-      // Ownership comes from the bindings the product writes, never from a
-      // number that happens to be equal: patient_reports.study_id holds the
-      // WORKLIST row id (patient-reports.ts:2164) while radiology_worklist
-      // .study_id holds a billed radiology_studies.id, and the two sequences
-      // overlap by design — matching across them would let an unrelated
-      // examination's report finalize this one. Same patient, and either the
-      // worklist's own report_id binding or a report stored against THIS
-      // worklist row. The worklist row is the examination, so its patient and
-      // its binding are the full association check.
-      const boundToThisWorklist = existing.reportId === rep.id || rep.studyId === existing.id;
-      const samePatient = existing.patientId != null && rep.patientId === existing.patientId;
-      const belongs = boundToThisWorklist && samePatient;
-      if (!belongs) {
-        res.status(409).json({
-          error: "REPORT_BELONGS_TO_ANOTHER_STUDY",
-          message: `Report ${rep.id} is not this examination's own report (report patient ${rep.patientId} against worklist patient ${String(existing.patientId)}, worklist binding ${String(existing.reportId)} against report study_id ${String(rep.studyId)}), so it cannot finalize this study.`,
-        });
-        return;
-      }
-      // The row's own lifecycle state is NOT the test. Canonical finalize
-      // flips the worklist BEFORE it signs (create -> report-status -> sign:
-      // radiologyReportLifecycle.ts, and
-      // signatureWithdrawalReopensStudy.request.test.ts:137-155 exercises that
-      // exact order), so at this moment the report is legitimately not signed
-      // yet — and after a withdrawal it is draft again while the correction is
-      // prepared for re-signing. Ownership above (this worklist's own binding,
-      // this patient) is what makes the transition safe, not a status the
-      // caller has not reached yet.
-      isCanonicalFinalize = true;
-    } else if (isBilledStudy) {
-      // No reportId: resolve the row this study actually owns, the way create
-      // binds it (patient-reports.ts writes radiology_worklist.report_id and
-      // stores the worklist row id in patient_reports.study_id).
+    if (isBilledStudy) {
+      // Resolve the row this study actually owns, the way create binds it
+      // (patient-reports.ts writes radiology_worklist.report_id and stores the
+      // worklist row id in patient_reports.study_id). The row's lifecycle state
+      // is not the test: canonical finalize flips the worklist before it signs
+      // (create -> report-status -> sign, radiologyReportLifecycle.ts, and
+      // signatureWithdrawalReopensStudy.request.test.ts exercises that exact
+      // order), so the row is legitimately unsigned at this instant — and after
+      // a withdrawal it is draft again while the correction is prepared.
       let bound: (typeof patientReportsTable.$inferSelect) | undefined = existing.reportId
         ? (await db
             .select()
@@ -1218,9 +1188,6 @@ router.post("/radiology/report-status", async (req, res) => {
               )
             )
             .limit(1))[0];
-      // Same rule as the explicit path: the row must EXIST and be this
-      // worklist's own, for this patient. Its signature state is reached after
-      // this call, so it cannot be a precondition.
       if (bound && existing.patientId != null && bound.patientId !== existing.patientId) bound = undefined;
       isCanonicalFinalize = Boolean(bound);
     }
