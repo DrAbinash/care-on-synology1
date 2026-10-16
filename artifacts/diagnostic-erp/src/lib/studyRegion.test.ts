@@ -449,6 +449,8 @@ describe("resolveAutoStudyRegion — the workspace entry point", () => {
       orderedRegionNames: SPINE_REGIONS,
     });
     expect(match.region).toBe("LS Spine");
-    expect(match.dicomRegion).toBe("Whole Spine Screening");
+    // The DICOM line says a whole spine; the billed line says the lumbar
+    // examination, and the billed name is what the patient was booked for.
+    expect(match.dicomRegion).toBe("Whole Spine");
   });
 });
