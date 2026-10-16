@@ -12,7 +12,8 @@ import {
   radiologyStudiesTable,
   radiologyWorklistTable,
 } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
+import { extractCareLinkedStudy } from "./structuredJsonColumn";
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -250,13 +251,55 @@ export async function assertReportBelongsToWorklist(reportId: number, worklist: 
   if (report.studyId) {
     const reportWorklist = await resolveWorklistFromStudyRef(report.studyId);
     if (reportWorklist && reportWorklist.id !== worklist.id) {
-      throw new RadiologyIdentityError(
-        409,
-        "REPORT_WORKLIST_MISMATCH",
-        "Report is bound to a different worklist study.",
-      );
+      // One signed document may legitimately cover a second examination, but only when a
+      // radiologist combined those two examinations into one report. That decision is already
+      // persisted server-side — the draft that produced this report stores the partner worklist row
+      // in its structured_json envelope — so the allowance reads it instead of inventing one.
+      // The patient equality checked above still runs first, so a combine naming another patient's
+      // row cannot reach here as an excuse.
+      const authorizedSiblingId = await resolveAuthorizedCombinedSiblingWorklistId({
+        studyId: report.studyId,
+      });
+      if (authorizedSiblingId !== worklist.id) {
+        throw new RadiologyIdentityError(
+          409,
+          "REPORT_WORKLIST_MISMATCH",
+          "Report is bound to a different worklist study.",
+        );
+      }
     }
   }
+}
+
+/**
+ * The worklist row this report's radiologist explicitly combined it with, or `null`.
+ *
+ * `radiology_report_drafts.structured_json.linkedStudyId` / `careLinkedStudy` is written by
+ * `POST /api/radiology/report-generator/save-draft` when the workspace's combine action names a
+ * second examination. The draft is found the way the finalize path itself finds it — latest draft for
+ * this report's own study reference (`routes/patient-reports.ts:973-977`), which is the row that
+ * finalize then promotes by `final_report_id` (`:1208`, and `:1875` for an amendment, which is how an
+ * amended combined report keeps its scope without re-deriving anything). Reading it through
+ * `extractCareLinkedStudy` means this is the same envelope the rest of the product reads: no second
+ * linkage, no new column, no migration.
+ *
+ * Deliberately narrow: an id is returned only when that draft names one. Absence is not ambiguity to
+ * be resolved by patient, modality, date or accession similarity — those are exactly the inferences
+ * that let one patient's report stand in for another examination.
+ */
+export async function resolveAuthorizedCombinedSiblingWorklistId(
+  report: { studyId: number | null },
+): Promise<number | null> {
+  if (report.studyId == null) return null;
+  const [draft] = await db
+    .select({ structuredJson: radiologyReportDraftsTable.structuredJson })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.studyId, report.studyId))
+    .orderBy(desc(radiologyReportDraftsTable.updatedAt))
+    .limit(1);
+  const linked = extractCareLinkedStudy(draft?.structuredJson);
+  const id = Number(linked?.studyId);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 export async function claimWorklistForFinalize(tx: DbTx, worklistId: number): Promise<WorklistIdentityRow> {
