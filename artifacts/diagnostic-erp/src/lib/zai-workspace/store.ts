@@ -183,7 +183,8 @@ import {
   defaultImpressionFromFindings,
   observationSlotKey,
 } from "@/lib/findingComposerModel";
-import { generateLocalImpression } from "@/lib/generateLocalImpression";
+import { cuedAbnormalSentences, generateLocalImpression, refusedAutomaticSentences } from "@/lib/generateLocalImpression";
+import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
 import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
   buildSystemNormalPatch,
@@ -989,7 +990,22 @@ export type WorkspaceStore = S & {
    * Never silently overwrites manually protected Impression text.
    */
   setObservationImpressionParticipation: (id: string, include: boolean) => "applied" | "blocked" | "missing";
-  refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => void;
+  /**
+   * Rebuild the Impression from the ledger plus whatever Findings text nobody
+   * owns.
+   *
+   * `automatic: true` is the same recomputation for a caller with no press behind
+   * it — today, the derived-impression effect. It differs in two ways, and both are
+   * about who asked: free text is concluded only when it names a recognised
+   * abnormality (never on the length default), and a Conclusion the radiologist
+   * wrote by hand is left exactly as they wrote it. The controls the doctor presses
+   * — Generate Impression, Refresh from Findings, the sign dialog's refresh,
+   * Generate Professional Report — pass nothing and behave as they always have.
+   */
+  refreshImpressionFromLedger: (opts?: {
+    excludeBaselineObservations?: boolean;
+    automatic?: boolean;
+  }) => void;
   /**
    * The radiologist has read the Impression against the Findings and says it
    * stands as written. Records that against the current clinical content, so the
@@ -2868,7 +2884,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       if (bundle) get().applyMacroBundle({ bundleId: bundle.bundleId, observations: bundle.observations });
     }
   },
-  refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean }) => {
+  refreshImpressionFromLedger: (opts?: { excludeBaselineObservations?: boolean; automatic?: boolean }) => {
     // Six callers. Four are already gated: two handlers in useWorkspaceClinicalUi
     // open with `if (contentLocked) return`, ReportCanvas hands the warning strip
     // `disabled={contentLocked}`, and XrayLsSpineCanvas reaches it only
@@ -2878,6 +2894,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // impression effect in useWorkspaceClinicalUi, which nothing gates at all.
     // Those two are what this refuses: a silent rewrite of a signed Impression.
     if (refuseSignedMutation(get(), "refreshImpressionFromLedger")) return;
+    // A silent refresh never touches a Conclusion the radiologist wrote. The
+    // derived-impression effect checked this at its own call site, which made it a
+    // rule one caller obeyed rather than a property of the action — and this action
+    // re-splits the field it writes (`splitToSentences` → lines joined with "\n"),
+    // so reaching it by any other route rebuilt a hand-written sentence into pieces
+    // and appended to it. Measured on main with the effect's own arguments:
+    // "No acute infarction. Chronic small vessel disease only." came back as three
+    // lines, the third one a finding the doctor had dictated and never concluded.
+    // The controls the doctor presses are still allowed to rewrite it — that is how
+    // they clear the stale banner a manual Impression raises.
+    if (opts?.automatic && impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression)) return;
     // `excludeBaselineObservations` is for a report that has already been judged
     // to deviate from its approved normal. The scaffold rows ARE the normal, and
     // their impression contributions — for the Brain format, "Normal MRI of the
@@ -2896,9 +2923,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // the report's own per-level normals ("C2-C3: No exiting or traversing nerve
     // root compression is seen."). A sentence a ledger row already speaks for is
     // not a leftover; only what nobody owns is still waiting to be concluded.
-    const remaining = generateLocalImpression(
-      unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n"),
-    );
+    //
+    // What the automatic path takes from those leftovers is only what names a
+    // recognised abnormality. Everything else stays a finding, where the
+    // radiologist wrote it, until they press a control that asks for prose to be
+    // summarised — because the alternative rule is a character count, and a
+    // sentence's clinical significance is not its length.
+    const leftovers = unexplainedFindingLines(get().findingsText, get().appliedPathologyPatches).join("\n");
+    const remaining = opts?.automatic
+      ? cuedAbnormalSentences(leftovers)
+      : generateLocalImpression(leftovers);
+    // A refusal has to stay visible. `deriveImpressionDependency({ rebase: true })`
+    // below is what tells the workspace this Conclusion now matches its Findings, and
+    // a silent refresh that withheld a sentence cannot also certify that pairing.
+    const refused = opts?.automatic ? refusedAutomaticSentences(leftovers).length > 0 : false;
     const next = refreshImpressionFromObservations({
       currentImpression: get().impressionText,
       patches,
@@ -2922,6 +2960,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // findings, so this is the paired write and the basis moves with it. Recorded
     // as a refresh rather than an authored write, because the dependency history
     // says who decided the summary was current.
+    //
+    // A silent refresh that refused a sentence is not that pairing, so it does not
+    // re-base. It arms the same dependency the workspace already renders instead —
+    // the amber "Impression needs refresh", the dialog that asks — which is how the
+    // doctor finds out the Conclusion does not cover everything they dictated, and
+    // how they get the one press that does. Arming rather than merely skipping keeps
+    // it on reload too, which is the reason `unreconciled` exists.
+    if (refused) {
+      set(deriveImpressionDependency(get(), undefined, { arm: "findings-changed" }));
+      return;
+    }
     set(deriveImpressionDependency(get(), { rebase: true, recordedBy: "refresh" }));
   },
   markImpressionReviewed: () => {

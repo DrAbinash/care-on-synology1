@@ -147,6 +147,59 @@ export function isAbnormalFindingLine(line: string): boolean {
   return s.length > 24;
 }
 
+/**
+ * True only when the sentence names something in CARE's own vocabulary of
+ * pathology, and asserts it rather than denying it.
+ *
+ * `isAbnormalFindingLine` answers for the length default too, and that default is
+ * a character count wearing a clinical decision: "Gyral thickening noted." is a
+ * finding nobody concludes and "A 6 mm area of gyral thickening is present along
+ * the left frontal convexity." is a finding everyone does, for one report and one
+ * sentence. That is tolerable when the radiologist presses Generate Impression —
+ * they asked for their prose to be summarised, and dropping a sentence CARE cannot
+ * read would be the worse error. It is not tolerable from the derived-impression
+ * effect, which runs with no press behind it and would otherwise move a dictated
+ * finding into the Conclusion by counting it.
+ */
+export function isCuedAbnormalFindingLine(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  return assertsAbnormality(s) && ABNORMAL_CUE_RE.test(s);
+}
+
+/**
+ * The sentences an automatic refresh may conclude from free text: only the ones
+ * CARE can name.
+ *
+ * Deliberately has no "all normal" branch. "No significant abnormality detected."
+ * is an assertion of normality, and CARE's rule for those is that they need an
+ * attributable owner — which is why the Quick Normal baselines carry a manifest.
+ * A sentence this module invents because leftover prose happened to read normal
+ * has no owner, and lands under a Conclusion that already carries an abnormality.
+ */
+export function cuedAbnormalSentences(findingsText: string): string[] {
+  return splitFindingsLines(findingsText)
+    .filter(isCuedAbnormalFindingLine)
+    .slice(0, 6);
+}
+
+/**
+ * The sentences the automatic path declines to conclude, and therefore has to
+ * say it declined.
+ *
+ * Asserting something, naming no cue, and not a normality — this is exactly the
+ * set `cuedAbnormalSentences` leaves behind. A refresh that refused any of them
+ * must not also clear the Findings→Impression dependency, or the report reads as
+ * though its Conclusion now covers a finding it does not mention. Sentences that
+ * merely read normal are not in this set: nothing is being withheld from the
+ * Conclusion by leaving them in the Findings, and a banner nobody can clear is
+ * its own defect.
+ */
+export function refusedAutomaticSentences(findingsText: string): string[] {
+  return splitFindingsLines(findingsText)
+    .filter((s) => assertsAbnormality(s) && !ABNORMAL_CUE_RE.test(s));
+}
+
 function sentencesFromFindings(findingsText: string): string[] {
   const text = findingsText.trim();
   if (!text) return [];
