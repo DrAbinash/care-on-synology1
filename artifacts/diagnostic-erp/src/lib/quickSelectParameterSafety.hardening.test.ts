@@ -56,9 +56,10 @@ vi.mock("@/hooks/use-toast", () => ({
 
 import { toast } from "@/hooks/use-toast";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
-import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch, quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
 import {
+  isQuickSelectSource,
   QUICK_SELECT_PARAMETER_SOURCES,
   quickSelectParametersIn,
   unresolvedQuickSelectParameters,
@@ -586,7 +587,53 @@ describe("T8 — census over every shipped Quick Select template", () => {
   });
 
   it("only ever guards the sources the Quick Select contract owns", () => {
-    expect([...QUICK_SELECT_PARAMETER_SOURCES].sort()).toEqual(["macro", "quick-select"]);
+    // A ratchet, not a description: every source here is a surface that can be
+    // asked for a side and a severity, and a new one must be added deliberately
+    // with a surface behind it that supplies both. `quick-findings` is the
+    // database box clicked from this same strip.
+    expect([...QUICK_SELECT_PARAMETER_SOURCES].sort()).toEqual(["macro", "quick-findings", "quick-select"]);
+  });
+
+  it("guards a database box the same way it guards a shipped tile", () => {
+    // The property the ratchet above only names. A box authored through the API
+    // is validated for wording, not for parameters, so nothing else stands
+    // between a `{severity}` in a clinic's own sentence and a literal brace in a
+    // signed report.
+    const box = quickFindingPatch(
+      {
+        id: 4001, label: "Canal stenosis", studyType: "LS Spine",
+        findingText: "{severity} central canal stenosis at L4-L5.",
+        impressionText: "", techniqueText: "", recommendationText: "",
+      },
+      { region: "LS Spine" },
+    );
+    expect(isQuickSelectSource(box.source)).toBe(true);
+    expect(unresolvedQuickSelectParameters(box.templates!, {})).toEqual(["severity"]);
+    expect(unresolvedQuickSelectParameters(box.templates!, { severity: "severe" })).toEqual([]);
+  });
+
+  it("never asks a database box for a side it would then refuse to use", () => {
+    // The store resolves the side only when the observation declares laterality,
+    // and inference reads findingsText and the properties column alone. The
+    // refusal guard reads every section. A box carrying {side} only in its
+    // impression or recommendation would therefore be asked for a side it could
+    // never spend — and refuse on every click, forever. The builder declares
+    // laterality over the same four sections the guard scans, which is what keeps
+    // the two in step; this pins that they cannot drift.
+    for (const section of ["findingText", "impressionText", "techniqueText", "recommendationText"] as const) {
+      const box = quickFindingPatch(
+        {
+          id: 4002, label: `Sided ${section}`, studyType: "LS Spine",
+          findingText: "", impressionText: "", techniqueText: "", recommendationText: "",
+          [section]: "Stenosis to the {side}.",
+        },
+        { region: "LS Spine" },
+        { side: "left" },
+      );
+      expect(box.supportsLaterality, `${section} asks for a side`).toBe(true);
+      expect(box.side, `${section}'s side must be spendable`).toBe("left");
+      expect(unresolvedQuickSelectParameters(box.templates!, { side: box.side })).toEqual([]);
+    }
   });
 });
 

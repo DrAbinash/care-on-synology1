@@ -12,9 +12,10 @@
  */
 import type { QuickSelectField, QuickSelectTile } from "./types";
 import type { PendingPathologyPatch } from "./store";
+import type { PathologyIncoming } from "../pathologyPatch";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
-const opt = (v: string | undefined) => (v ?? "").trim() || undefined;
+const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
 
 /**
  * The ledger row one Quick Select box owns for one click.
@@ -89,6 +90,114 @@ export function quickSelectTilePatch(
     findingsText: tile.sentence,
     supportsLaterality: /\{side\}/i.test(`${tile.sentence} ${tile.impressionSentence ?? ""}`),
     ...(params.side ? { side: params.side } : {}),
+    ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
+  };
+}
+
+/**
+ * A clinical box as PostgreSQL holds it and the API returns it.
+ *
+ * Every field the builder reads is optional except the identity and the four
+ * sentences, because a box with no clinical metadata at all is a real and
+ * permanent state, not an error: three of the boxes a clinic already had
+ * (Hydrocephalus, Cerebral atrophy, Midline shift) are adopted by the factory
+ * seed with their own wording, stamped customized, and no concept, conflict
+ * group, baseline or category. Those boxes must keep working exactly as they do
+ * today, and nothing here may invent ownership for them.
+ */
+export type ClinicalQuickFindingBox = {
+  id: number;
+  label: string;
+  studyType: string;
+  findingText: string;
+  impressionText: string;
+  techniqueText: string;
+  recommendationText: string;
+  concept?: string | null;
+  anatomicalSection?: string;
+  conflictGroup?: string;
+  baselineReplaces?: string;
+  properties?: string;
+};
+
+/**
+ * The ledger row one database box owns for one click.
+ *
+ * Same reasoning as `quickSelectRowId`, and the same defect it closed: Left and
+ * Right of one box are two claims at two slots, so one id for both made the
+ * second click overwrite the first row while the first sentence stayed on the
+ * page. A box that asks for no side keeps the bare `qf-<id>` it has always had,
+ * so every existing deselect caller and every saved draft still resolves.
+ *
+ * `selectedQuickFindingIds` is the other half of this contract — it has to parse
+ * what this writes, or the box stops reading as selected the moment a side is
+ * recorded. Both halves are pinned together in quickSelectTilePayload.test.ts.
+ */
+export function quickFindingRowId(boxId: number, side?: string): string {
+  const chosen = (side ?? "").trim().toLowerCase();
+  return chosen ? `qf-${boxId}:${chosen}` : `qf-${boxId}`;
+}
+
+/** True for any row this box wrote, at any side — what the chip state needs. */
+export function quickFindingRowBelongsTo(id: string, boxId: number): boolean {
+  return id === `qf-${boxId}` || id.startsWith(`qf-${boxId}:`);
+}
+
+/**
+ * The overlay payload one database box click sends.
+ *
+ * This is the same promise `quickSelectTilePatch` makes, and it exists because
+ * the promise used to be written a second time, inline in `handleQuickToggle`,
+ * where it carried less: no concept, no severity, no declared laterality, and one
+ * row id for both sides. One engine with two unequal callers meant a box clicked
+ * from the database was not clinically equal to the same box clicked from the
+ * strip — and the database is where every box lives from now on.
+ *
+ * `supportsLaterality` is declared from all four sentences on purpose. The store
+ * resolves the side only when the observation declares laterality
+ * (`store.ts:2316`), while the refusal guard scans every section it is about to
+ * write (`unresolvedQuickSelectParameters`). Inference alone reads `findingsText`
+ * and the `properties` column, so a box carrying `{side}` only in its
+ * recommendation would be asked for a side it was never allowed to use — and
+ * would refuse forever. Declaring from the same set the guard scans is what keeps
+ * those two in step.
+ */
+export function quickFindingPatch(
+  box: ClinicalQuickFindingBox,
+  ctx: { region: string; studyType?: string },
+  params: QuickSelectParameterValues = {},
+): PendingPathologyPatch {
+  const templates: PathologyIncoming = {
+    findings: box.findingText,
+    impression: box.impressionText,
+    technique: box.techniqueText,
+    recommendation: box.recommendationText,
+  };
+  const sided = /\{side\}/i.test(
+    `${box.findingText} ${box.impressionText} ${box.techniqueText} ${box.recommendationText}`,
+  );
+  return {
+    incoming: templates,
+    templates,
+    ownership: {
+      anatomicalSection: opt(box.anatomicalSection),
+      conflictGroup: opt(box.conflictGroup),
+      // An empty string here is not "no baseline" to the engine, it is a sentence
+      // to look for. Never hand it one the box did not declare.
+      baselineReplaces: opt(box.baselineReplaces),
+      concept: opt(box.concept) ?? null,
+    },
+    source: "quick-findings",
+    id: quickFindingRowId(box.id, params.side),
+    region: ctx.region,
+    studyType: ctx.studyType ?? box.studyType,
+    concept: opt(box.concept) ?? null,
+    label: box.label,
+    catalogId: box.id,
+    properties: box.properties,
+    findingsText: box.findingText,
+    supportsLaterality: sided,
+    ...(sided && params.side ? { side: params.side } : {}),
     ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
   };
 }

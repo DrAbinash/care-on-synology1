@@ -53,10 +53,19 @@ export const QUICK_SELECT_PARAMETERS: readonly QuickSelectParameterName[] = ["si
 /**
  * The write sources this contract owns. `quick-select` is the tile strip;
  * `macro` is the chocolate-box tile set, which is edited from the same Settings
- * page and inserted through the same boundary — see the module header. Every
- * other source keeps its own resolution semantics.
+ * page and inserted through the same boundary — see the module header;
+ * `quick-findings` is a clinical box the database holds, clicked from the same
+ * strip. Every other source keeps its own resolution semantics.
+ *
+ * `quick-findings` was added last and it is the source that needed it most: a
+ * database box is authored by a radiologist through a form that validates its
+ * wording but has no way to know which parameters the sentence went on to ask
+ * for, so an unguarded box wrote its own `{severity}` into Findings, Impression
+ * and the ledger verbatim. Guarding it also means a box nobody can supply a
+ * parameter for now refuses instead of printing a brace — fail-closed, as
+ * everywhere else in this module.
  */
-export const QUICK_SELECT_PARAMETER_SOURCES = ["quick-select", "macro"] as const;
+export const QUICK_SELECT_PARAMETER_SOURCES = ["quick-select", "macro", "quick-findings"] as const;
 
 export function isQuickSelectSource(source: string | undefined): boolean {
   return (QUICK_SELECT_PARAMETER_SOURCES as readonly string[]).includes(source ?? "");

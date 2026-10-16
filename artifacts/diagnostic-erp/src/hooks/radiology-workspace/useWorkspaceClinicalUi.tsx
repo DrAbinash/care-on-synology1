@@ -365,6 +365,7 @@ import {
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
+import { quickFindingPatch, quickFindingRowBelongsTo } from "@/lib/zai-workspace/quickSelectTilePayload";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
   provenanceMapToSegments,
@@ -2055,33 +2056,13 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
   /** Clinic Quick Select — pathology patches over the whole report (ownership + laterality). */
   const handleQuickToggle = useCallback((finding: QuickFinding, nowSelected: boolean) => {
     const state = useWorkspace.getState();
-    const patchId = `qf-${finding.id}`;
     if (nowSelected) {
-      const templates: PathologyIncoming = {
-        findings: finding.findingText,
-        impression: finding.impressionText,
-        technique: finding.techniqueText,
-        recommendation: finding.recommendationText,
-      };
-      const ownership = {
-        anatomicalSection: finding.anatomicalSection,
-        conflictGroup: finding.conflictGroup,
-        baselineReplaces: finding.baselineReplaces,
-      };
-      state.applyPathologyOverlay({
-        incoming: templates,
-        templates,
-        ownership,
-        source: "quick-findings",
-        side: quickSide,
-        id: patchId,
+      const patch = quickFindingPatch(finding, {
         region: studySetup.matchedStudyRegion ?? finding.studyType,
         studyType: finding.studyType,
-        label: finding.label,
-        catalogId: finding.id,
-        properties: finding.properties,
-        findingsText: finding.findingText,
-      });
+      }, { side: quickSide });
+      const patchId = patch.id!;
+      state.applyPathologyOverlay(patch);
       const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === patchId);
       if (applied) lastQuickRenderedRef.current.set(finding.id, applied.lastRendered);
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
@@ -2090,11 +2071,22 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         if (!ids.includes(id)) lastQuickRenderedRef.current.delete(id);
       }
     } else {
-      const outcome = state.removeObservation(patchId);
+      // Every row this box owns, not only the one for the side now chosen. The
+      // chip reads as applied when ANY side of the box is on the page, so a
+      // deselect that removed only the current side would leave the chip lit and
+      // the other side's sentence printed with no control left to withdraw it —
+      // the exact defect the sided row id was introduced to close. One undo frame
+      // for the whole click: the first removal snapshots the pre-click report and
+      // the rest fold into it.
+      const owned = useWorkspace.getState().appliedPathologyPatches
+        .filter((p) => quickFindingRowBelongsTo(p.id, finding.id))
+        .map((p) => p.id);
+      const outcomes = owned.map((id, i) =>
+        state.removeObservation(id, i > 0 ? { skipUndoSnapshot: true } : undefined));
       lastQuickRenderedRef.current.delete(finding.id);
       const ids = selectedQuickFindingIds(useWorkspace.getState().appliedPathologyPatches.map((p) => p.id));
       setSelectedQuickIds(new Set(ids));
-      if (outcome === "preserved-manual") {
+      if (outcomes.includes("preserved-manual")) {
         toast({
           title: "Selection cleared",
           description: "Edited clinical text was kept.",

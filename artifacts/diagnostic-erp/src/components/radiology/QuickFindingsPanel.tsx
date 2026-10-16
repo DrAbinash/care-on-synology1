@@ -51,6 +51,13 @@ export type QuickFinding = {
   anatomicalSection: string;
   conflictGroup: string;
   baselineReplaces: string;
+  /**
+   * The clinical concept this box owns, from the concept registry. Empty for a
+   * box nobody has assigned one — which is a permanent, legitimate state, not a
+   * gap to paper over: the boxes a clinic already had keep working through their
+   * text, and no concept is inferred for them behind the radiologist's back.
+   */
+  concept: string;
   // Phase 6.2 Structured Finding Assistant: JSON question definitions. Non-empty
   // → clicking opens a dialog to collect values before generating the text.
   questionsJson: string;

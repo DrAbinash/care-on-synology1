@@ -11,6 +11,7 @@ import { quickFindingsForStudyTab } from "./pickQuickProtocol";
 import { resolveChocolateOwnership } from "./chocolateMacroOwnership";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
+import { quickFindingPatch } from "./zai-workspace/quickSelectTilePayload";
 import { useWorkspace } from "./zai-workspace/store";
 import { readModularWorkspaceSrc } from "./readModularWorkspaceSrc";
 
@@ -291,8 +292,59 @@ describe("Section 4 — Quick Select + Chocolate converge on ownership path", ()
   it("handleQuickToggle uses matchedStudyRegion for patch region metadata", () => {
     const workspace = modularWorkspace();
     expect(workspace).toContain("region: studySetup.matchedStudyRegion ?? finding.studyType");
-    expect(workspace).toContain('source: "quick-findings"');
     expect(workspace).toContain("applyPathologyOverlay");
+    // The source string moved out of the hook into `quickFindingPatch`, the one
+    // builder both toggle branches now go through. Asserting the literal in the
+    // hook's text would pass on a hand-inlined patch that dropped the concept,
+    // the laterality declaration and the catalogue id — which is exactly the
+    // omission this consolidation exists to close. So: the builder sets the
+    // source, and the hook must not bypass the builder.
+    expect(workspace).toContain("quickFindingPatch(finding,");
+    expect(
+      quickFindingPatch(
+        {
+          id: 1,
+          label: "Basal ganglia hemorrhage",
+          studyType: "Brain",
+          findingText: "Acute intraparenchymal hemorrhage in the basal ganglia.",
+          impressionText: "Acute basal ganglia hemorrhage.",
+          techniqueText: "",
+          recommendationText: "",
+        },
+        { region: "Brain" },
+      ).source,
+    ).toBe("quick-findings");
+  });
+
+  it("handleQuickToggle withdraws every row a box owns, in one undo step", () => {
+    // Source contract, because this repo has no component-render harness (same
+    // reason as findingsAnatomyRailWiring.contract.test.ts). The store half of
+    // this behaviour is proven by observationOwnership.phase12.test.ts and
+    // workspaceDraftEnvelopeRoundTrip.test.ts; what only the hook can get wrong
+    // is WHICH rows it asks the store to remove and how many undo frames it
+    // spends doing it.
+    const src = read("hooks/radiology-workspace/useWorkspaceClinicalUi.tsx");
+    const start = src.indexOf("const handleQuickToggle = useCallback(");
+    expect(start, "handleQuickToggle is gone from the workspace hook").toBeGreaterThan(-1);
+    const end = src.indexOf("\n  }, [", start);
+    expect(end, "handleQuickToggle does not close where this test expects").toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    const off = body.indexOf("} else {");
+    expect(off, "the toggle has no deselect branch").toBeGreaterThan(-1);
+    const deselect = body.slice(off);
+
+    // Ownership, not the side that happens to be chosen. A box whose Left and
+    // Right are two ledger rows has to withdraw both: the chip reads as applied
+    // when ANY side is on the page, so removing only the current side would leave
+    // it lit over a sentence no control can take back.
+    expect(deselect).toContain("quickFindingRowBelongsTo(p.id, finding.id)");
+    // One click, one undo step: the first removal snapshots the pre-click report
+    // and the rest fold into that frame.
+    expect(deselect).toContain("state.removeObservation(");
+    expect(deselect).toContain("skipUndoSnapshot: true");
+    // A hand-edited sentence is kept and the radiologist is told so, rather than
+    // quietly deleted to make the chip go dark.
+    expect(deselect).toContain('"preserved-manual"');
   });
 });
 

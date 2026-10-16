@@ -10,7 +10,16 @@
  * lumbo-sacral spine" advice underneath it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { quickSelectRowBelongsTo, quickSelectRowId, quickSelectTileFromForm, quickSelectTilePatch } from "./quickSelectTilePayload";
+import {
+  quickFindingPatch,
+  quickFindingRowBelongsTo,
+  quickFindingRowId,
+  quickSelectRowBelongsTo,
+  quickSelectRowId,
+  quickSelectTileFromForm,
+  quickSelectTilePatch,
+} from "./quickSelectTilePayload";
+import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTilesForContext } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { MRI_LS_SPINE_STANDARD_NORMAL_NAME } from "./fullReportBaseline";
@@ -264,5 +273,239 @@ describe("the ledger row one box owns", () => {
     expect(quickSelectRowBelongsTo("qs-t1:left", "t1")).toBe(true);
     expect(quickSelectRowBelongsTo("qs-t1x:left", "t1")).toBe(false);
     expect(quickSelectRowBelongsTo("qs-t1:left", "t2")).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The same promise, for a box the database holds.
+//
+// Until now two callers built the overlay for one box click. The strip built it
+// with `quickSelectTilePatch`; the panel's list built it inline inside
+// `handleQuickToggle`, and that inline copy carried less: no concept, no
+// severity, no declared laterality, and one ledger row id for both sides. Same
+// engine, weaker caller — so a box clicked from the database was not clinically
+// equal to the same box clicked from the strip. Commit 4 renders the database
+// boxes in the strip and deletes the localStorage tiles, which would have made
+// the weaker caller the only one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A box exactly as the API returns it — every column, camelCase. The two
+ * fixtures below are not invented: Hydrocephalus and Midline shift are boxes a
+ * real clinic already has, and ADOPTED_HYDRO is the state a deploy measurably
+ * leaves such a row in (migration-bootstrap-smoke §5) — the clinic's own
+ * sentence, stamped customized, and no concept, conflict group, baseline or
+ * category at all.
+ */
+function dbBox(over: Record<string, unknown> = {}) {
+  return {
+    id: 1,
+    studyType: "Brain",
+    studyTabId: null,
+    label: "Box",
+    field: "findings",
+    sonKind: "",
+    parentId: null,
+    mnemonic: "",
+    concept: "",
+    scopeModality: "",
+    category: null,
+    anatomicalSection: "",
+    conflictGroup: "",
+    baselineReplaces: "",
+    icdCode: null,
+    tags: "",
+    suggests: "",
+    properties: "",
+    questionsJson: "[]",
+    findingText: "",
+    impressionText: "",
+    techniqueText: "",
+    recommendationText: "",
+    sortOrder: 100,
+    isActive: true,
+    ...over,
+  };
+}
+
+/** What the factory ships for Midline shift, and the clinic row a deploy adopts. */
+const FACTORY_MIDLINE = dbBox({
+  id: 96, label: "Midline shift", concept: "midline", scopeModality: "MR", mnemonic: "mls",
+  category: "critical", conflictGroup: "midline shift", properties: "side",
+  baselineReplaces: "No midline shift is seen.",
+  findingText: "Midline shift of ___ mm toward the {side}.",
+  impressionText: "Midline shift toward {side}.",
+  recommendationText: "Clinical correlation.",
+});
+const ADOPTED_HYDRO = dbBox({
+  id: 12, label: "Hydrocephalus", anatomicalSection: "Ventricles & CSF Spaces",
+  findingText: "Dilatation of the ventricular system out of proportion to the sulci, suggestive of hydrocephalus.",
+  impressionText: "Hydrocephalus.",
+});
+
+describe("the payload one database box click sends", () => {
+  it("carries the concept into the observation, not only the wording", () => {
+    // The single field whose absence made the two callers unequal. The engine
+    // reads ownership.concept (pathologyPatch.ts:353) and feeds it to
+    // resolveConcept as the explicit tier, so without it a box that names its
+    // own concept falls back to guessing one from its sentence — and for
+    // Midline shift there is no CONCEPT_HINTS rule, so it guesses nothing.
+    const patch = quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "right" });
+    expect(patch.ownership.concept).toBe("midline");
+    // The top-level field is what the tile path has always set. The two must not
+    // drift, or a reader of one gets a concept the other never had.
+    expect(patch.concept).toBe("midline");
+  });
+
+  it("writes every sentence a database box can carry, technique included", () => {
+    // A database box has four text columns; a strip tile has three. Dropping
+    // technique would regress against the panel path this replaces, which has
+    // always sent it.
+    const box = dbBox({
+      findingText: "F.", impressionText: "I.", techniqueText: "T.", recommendationText: "R.",
+    });
+    const patch = quickFindingPatch(box, { region: "Brain" });
+    expect(patch.incoming).toEqual({
+      findings: "F.", impression: "I.", technique: "T.", recommendation: "R.",
+    });
+    // incoming and templates are the same shape for a box click: there is no
+    // separate display wording, and a divergence between them is how a deselect
+    // comes to remove something other than what was inserted.
+    expect(patch.templates).toEqual(patch.incoming);
+  });
+
+  it("declares laterality when {side} appears only in the impression", () => {
+    // A box whose side shows up only in the Impression still owns two sides, and
+    // without the flag the engine treats Left and Right as one observation, so
+    // the second click replaces the first.
+    const box = dbBox({
+      findingText: "The disc bulges.", impressionText: "Disc bulge to the {side}.",
+    });
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { side: "left" }).supportsLaterality).toBe(true);
+  });
+
+  it("declares laterality when {side} appears only in the findings", () => {
+    const box = dbBox({
+      findingText: "{side} foraminal stenosis.", impressionText: "Foraminal stenosis.",
+    });
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { side: "left" }).supportsLaterality).toBe(true);
+  });
+
+  it("declares laterality when {side} appears only in the recommendation", () => {
+    const box = dbBox({
+      findingText: "Canal stenosis.", recommendationText: "Follow up the {side} side.",
+    });
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { side: "left" }).supportsLaterality).toBe(true);
+  });
+
+  it("does not declare laterality for a box that never asks for a side", () => {
+    const patch = quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" });
+    expect(patch.supportsLaterality).toBe(false);
+    expect(patch.side, "no side is invented for a box that does not ask for one").toBeUndefined();
+  });
+
+  it("carries the severity the radiologist chose", () => {
+    const box = dbBox({ properties: "severity", findingText: "{severity} canal stenosis." });
+    expect(quickFindingPatch(box, { region: "LS Spine" }, { severity: "severe" }).severity).toBe("severe");
+    expect(quickFindingPatch(box, { region: "LS Spine" }).severity).toBeUndefined();
+  });
+
+  it("keeps the routing fields the panel path already sent", () => {
+    // studyType routes multi-study sub-sections and catalogId ties the ledger
+    // row back to the box. Losing either is a regression this change must not
+    // introduce while fixing the four fields above.
+    const patch = quickFindingPatch(
+      FACTORY_MIDLINE, { region: "Brain", studyType: "Brain" }, { side: "right" },
+    );
+    expect(patch.studyType).toBe("Brain");
+    expect(patch.catalogId).toBe(96);
+    expect(patch.properties).toBe("side");
+    expect(patch.source).toBe("quick-findings");
+    expect(patch.label).toBe("Midline shift");
+    expect(patch.findingsText).toBe(FACTORY_MIDLINE.findingText);
+  });
+
+  it("sends the region the study decided, not the box's own study_type", () => {
+    // handleQuickToggle resolves studySetup.matchedStudyRegion first. A
+    // cross-region box has study_type '' and must still land in the region the
+    // radiologist is actually reporting.
+    const regionless = dbBox({
+      studyType: "", label: "Clinical correlation", findingText: "Clinical correlation.",
+    });
+    expect(quickFindingPatch(regionless, { region: "LS Spine" }).region).toBe("LS Spine");
+  });
+
+  it("treats an empty ownership column as no ownership", () => {
+    const patch = quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" });
+    expect(patch.ownership.anatomicalSection).toBe("Ventricles & CSF Spaces");
+    expect(patch.ownership.conflictGroup, "an empty string is not a conflict group").toBeUndefined();
+    // The load-bearing one: an empty baselineReplaces must never be handed to the
+    // engine as a sentence to retire, or a concept-less box silently suppresses
+    // whatever normal happens to be on the page.
+    expect(patch.ownership.baselineReplaces, "an empty string must not retire a normal").toBeUndefined();
+  });
+});
+
+describe("the ledger row one database box owns", () => {
+  it("gives each chosen side its own row, and no side the id it has always had", () => {
+    expect(quickFindingRowId(12)).toBe("qf-12");
+    expect(quickFindingRowId(12, "")).toBe("qf-12");
+    expect(quickFindingRowId(12, "left")).toBe("qf-12:left");
+    expect(quickFindingRowId(12, "Right")).toBe("qf-12:right");
+    const left = quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "left" });
+    const right = quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "right" });
+    expect(left.id).not.toBe(right.id);
+    // Every existing deselect caller passes the plain id; a box that asks for no
+    // side must keep it, or clicking it off stops finding its own row.
+    expect(quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" }).id).toBe("qf-12");
+  });
+
+  it("finds every row one box wrote, and only that box's", () => {
+    expect(quickFindingRowBelongsTo("qf-12", 12)).toBe(true);
+    expect(quickFindingRowBelongsTo("qf-12:left", 12)).toBe(true);
+    expect(quickFindingRowBelongsTo("qf-123:left", 12)).toBe(false);
+    expect(quickFindingRowBelongsTo("qf-12:left", 13)).toBe(false);
+    expect(quickFindingRowBelongsTo("qs-12:left", 12), "a strip tile row is not this box").toBe(false);
+  });
+
+  it("writes an id the selection parser can read back", () => {
+    // The contract that silently breaks the chip. selectedQuickFindingIds parsed
+    // /^qf-(\d+)$/ — an exact shape with no side — so the moment a row id gained
+    // ":left" every box would stop reading as selected while its sentence stayed
+    // on the page. Neither half of this pair is testable on its own.
+    const ids = [
+      quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "left" }).id!,
+      quickFindingPatch(FACTORY_MIDLINE, { region: "Brain" }, { side: "right" }).id!,
+      quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" }).id!,
+    ];
+    expect(selectedQuickFindingIds(ids)).toEqual([96, 96, 12]);
+    // Both sides of one box keep it lit; the Set the chip reads dedupes.
+    expect(new Set(selectedQuickFindingIds(ids.slice(0, 2)))).toEqual(new Set([96]));
+  });
+
+  it("still reads the historical unsided id, and refuses ids that are no box's", () => {
+    expect(selectedQuickFindingIds(["qf-7"])).toEqual([7]);
+    expect(selectedQuickFindingIds(["qs-7", "qf-abc", "bundle-1", ""])).toEqual([]);
+  });
+});
+
+describe("a box with no clinical metadata is still a usable box", () => {
+  it("builds a patch for a concept-less box instead of refusing it", () => {
+    // Owner ruling: existing concept-less boxes stay usable through their
+    // established text-insertion behaviour, and no anatomical ownership is
+    // manufactured for them. Hydrocephalus as a deploy actually leaves it is
+    // exactly this box.
+    const patch = quickFindingPatch(ADOPTED_HYDRO, { region: "Brain" });
+    expect(patch.ownership.concept, "no concept is invented from the sentence").toBeFalsy();
+    expect(patch.concept).toBeFalsy();
+    expect(patch.incoming.findings).toBe(ADOPTED_HYDRO.findingText);
+    expect(patch.incoming.impression).toBe(ADOPTED_HYDRO.impressionText);
+  });
+
+  it("carries a concept the radiologist assigns later, with no other change", () => {
+    // The remedy for the three adopted boxes is the editor, not a migration: the
+    // day he picks a concept, the same click must start recording it.
+    const owned = { ...ADOPTED_HYDRO, concept: "ventricles" };
+    expect(quickFindingPatch(owned, { region: "Brain" }).ownership.concept).toBe("ventricles");
   });
 });
