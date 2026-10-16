@@ -208,7 +208,14 @@ describe("the requests that must keep flowing", () => {
       "/api/ledgers",
       "/api/ledgers/2",
       "/api/ledgers/2/assign-doctors",
-      "/api/ledgers/2/set-default",
+      // A REAL clinical POST whose name contains "reset" and whose traffic goes
+      // through this same /api/ location: routes/index.ts:885 mounts it at
+      // /api/radiology/presentation-templates/reset-default, and it is the
+      // report-presentation template's own "make this the default" action
+      // (presentation-templates.ts:221). Anything that widens this rule past
+      // /api/ledgers/<id>/reset — a bare `.*reset`, a second map key — takes that
+      // away from the reporting workspace, which is not this PR's business.
+      "/api/radiology/presentation-templates/reset-default",
       "/api/ledgers/2/reset/extra",
       "/api/ledgers/2/resets",
       "/api/ledgers/2/bills",
