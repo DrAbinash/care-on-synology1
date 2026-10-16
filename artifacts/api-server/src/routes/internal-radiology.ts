@@ -63,6 +63,7 @@ import { cancelRadiologyMwlByAccession } from "../lib/pacs/cancelRadiologyStudyF
 import {
   RadiologyIdentityError,
   assertReportBelongsToWorklist,
+  isApprovedMatchDecision,
   matchAllowsFinalize,
   pickUniqueRow,
 } from "../lib/radiologyIdentity";
@@ -204,10 +205,14 @@ export async function runMatchingEngineForWorklist(worklistId: number): Promise<
     .where(eq(radiologyWorklistTable.id, worklistId));
 }
 
-/** Match Center explicit approval — persisted on radiology_worklist.match_decision. */
-export function isApprovedMatchDecision(decision: string | null | undefined): boolean {
-  return String(decision ?? "").toUpperCase() === "APPROVED";
-}
+/**
+ * Match Center explicit approval — persisted on radiology_worklist.match_decision. The clause
+ * itself now sits in `lib/radiologyIdentity`, which is also where bill auto-linking reads it:
+ * a second spelling of "has a human already answered which patient this is" is how the two
+ * paths start disagreeing about the same row. Re-exported because this module's re-intake
+ * guard is its published surface.
+ */
+export { isApprovedMatchDecision } from "../lib/radiologyIdentity";
 
 type WorklistIntakeValues = {
   studyId: number | null | undefined;

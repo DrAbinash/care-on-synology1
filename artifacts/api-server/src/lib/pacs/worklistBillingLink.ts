@@ -18,7 +18,7 @@ import {
 } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte, notInArray, sql } from "drizzle-orm";
 import { calculateMatchScore, normalizeAccessionKey, type DicomInput } from "./matchingEngine";
-import { pickUniqueRow } from "../radiologyIdentity";
+import { isApprovedMatchDecision, pickUniqueRow } from "../radiologyIdentity";
 import {
   NAME_REFERRAL_AUTO_DAY_RADIUS,
   capNameReferralAutoScore,
@@ -142,6 +142,26 @@ async function applyWorklistStudyLink(opts: {
   // run, or the preview over-reports the backfill's yield.
   if (!study) {
     return { linked: false, reason: "matched study row missing" };
+  }
+
+  // An APPROVED match decision is a human answering "which patient is this study", and the write
+  // below copies `radiology_studies.patient_id` onto the worklist row — so a lane that reaches
+  // another patient (lane 1 trusts the accession the bill desk typed, lane 3 ranks by name
+  // ± referral) would replace the approval with the guess it was meant to settle. Refused here,
+  // at the single write point every caller shares, and refused in preview too so a backfill
+  // dry-run cannot promise a yield the run withholds. A same-patient approval still links: the
+  // ultrasound backlog needs its bills attached, and that is not a guess about the patient.
+  if (
+    isApprovedMatchDecision(opts.worklistItem.matchDecision) &&
+    opts.worklistItem.patientId != null &&
+    study.patientId != null &&
+    study.patientId !== opts.worklistItem.patientId
+  ) {
+    return {
+      linked: false,
+      reason:
+        "patient association is APPROVED in Match Center and this billed study belongs to another patient (resolve in DICOM Match Center)",
+    };
   }
 
   if (opts.preview) {
