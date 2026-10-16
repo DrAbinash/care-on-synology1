@@ -300,6 +300,15 @@ const EmbeddedWadoViewer = forwardRef<EmbeddedViewerHandle, {
 
   return (
     <ViewerContent
+      // The panel's series selection, instance list and displayed frame are all state of THIS
+      // study. React only reuses a subtree when the type and the key both match, so without a
+      // key a study switch was a props update on the live panel: `fetchSeries` selects a series
+      // only `if (!selectedSeriesUID)`, so the previous study's selection blocked the new one,
+      // the instance request then asked for `/studies/<new>/series/<old>/instances`, failed, and
+      // the swallowed error left the previous patient's image on screen under the new study's
+      // UID. Remounting per UID resets exactly what belongs to the study and nothing else —
+      // `chosenMode` and `networkMode` re-read the staff preference from localStorage.
+      key={effectiveUid}
       studyInstanceUID={effectiveUid}
       accessionNumber={accessionNumber}
       patientName={patientName}
