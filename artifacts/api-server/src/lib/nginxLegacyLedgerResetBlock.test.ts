@@ -29,20 +29,32 @@ import { dirname, join } from "node:path";
 // with a code rather than a bare 403: the next person to reach for that helper is
 // told where the reset actually lives.
 //
-// THE FOUR WAYS THIS RULE CAN BE WRONG THAT ARE WORTH PINNING.
-//   1. MATCHING $request_uri INSTEAD OF $uri. $request_uri is still
-//      percent-encoded, so /api/ledgers/%32/reset would sail through a [0-9]+
-//      test while Express decodes it to id 32 and deletes the book. $uri is
-//      decoded and normalised.
-//   2. BLOCKING EVERY METHOD. The requirement is POST only. A regex
+// THE SIX WAYS THIS RULE CAN BE WRONG THAT ARE WORTH PINNING. Items 1 and 2 were
+// both found by running the repo's real router and the real zod schema against the
+// config, not by reading either — the rule looked correct and passed every shape a
+// person would think of first.
+//   1. CASE. Express 5 lowercases req.method before the route lookup and matches
+//      paths without regard to case, so `post /api/ledgers/2/reset` and
+//      `POST /api/ledgers/2/RESET` both execute the deletes. A `~` (case-sensitive)
+//      map key refuses the two spellings it recognises and forwards the others.
+//      The key is `~*`, which makes the edge refuse the same set Express would run.
+//   2. A DIGITS-ONLY ID. ResetLedgerParams is `zod.coerce.number()`, and measured
+//      against that schema "2 " -> 2, "1e1" -> 10, "-1" -> -1, "2.5" -> 2.5. So
+//      `/api/ledgers/2%20/reset` — which $uri has already decoded to "2 " — deletes
+//      book 2 while a [0-9]+ test calls it "not the reset route". Hence `[^/]+`.
+//   3. MATCHING $request_uri INSTEAD OF $uri. $request_uri is still
+//      percent-encoded, so nothing there is decoded: the two forms above disagree
+//      about what the request is, and the map would be deciding on a string the
+//      router never saw. $uri is decoded and normalised.
+//   4. BLOCKING EVERY METHOD. The requirement is POST only. A regex
 //      `location ~ /reset$` cannot express that without a second proxy_pass,
 //      and nginxUpstreamResolution.test.ts pins the proxied locations at exactly
 //      five because a sixth is how the upstream-freeze fix silently regresses.
 //      So the decision is made in a `map` and the location keeps one `if`+`return`.
-//   3. CATCHING THE PEN-DRIVE ROUTE. /api/super-admin/books/<id>/reset must keep
+//   5. CATCHING THE PEN-DRIVE ROUTE. /api/super-admin/books/<id>/reset must keep
 //      working; it is the safe one, and blocking it would leave the clinic with
 //      no way to empty a book at all.
-//   4. `default_type` AT SERVER OR LOCATION LEVEL. It would then also apply to
+//   6. `default_type` AT SERVER OR LOCATION LEVEL. It would then also apply to
 //      every response nginx generates in that scope — including a 502 from a
 //      recreated api container — announcing JSON while sending nginx's HTML page.
 //      It is legal in `if` context, so it belongs next to the `return`.
@@ -86,8 +98,12 @@ function legacyResetMap(): { source: string; regex: string } {
 /** Replay the map: nginx treats "0" and "" as false, any other value true. */
 function blocked(method: string, uri: string): boolean {
   const { regex } = legacyResetMap();
-  // nginx's `~` keys are PCRE against the concatenated source value.
-  return new RegExp(regex.slice(1)).test(method + uri);
+  // `~` is a case-sensitive PCRE key, `~*` case-insensitive; the flag belongs to
+  // the sigil, and Express 5 matches the route case-insensitively on both the
+  // method and the path — so a `~` key here refuses a different set of requests
+  // than the handler would have executed. See the ~* paragraph in nginx.conf.
+  const ci = regex.startsWith("~*");
+  return new RegExp(regex.slice(ci ? 2 : 1), ci ? "i" : "").test(method + uri);
 }
 
 function apiLocationBlock(): string {
@@ -119,13 +135,15 @@ describe("the legacy ledger reset map", () => {
     expect(source, "$request_uri is still percent-encoded — %32 would evade [0-9]+").not.toContain("$request_uri");
   });
 
-  test("is anchored, numeric-only, and defaults to not-blocked", () => {
+  test("is anchored, any-non-slash-id, case-insensitive, and defaults to not-blocked", () => {
     const { regex } = legacyResetMap();
-    // `~` is nginx's case-sensitive regex key sigil — the anchor has to follow it,
+    // `~*` is nginx's case-insensitive regex key; the anchor has to follow it,
     // and a bare `^` here would be an unanchored match instead.
-    expect(regex, "regex key sigil then a start anchor").toMatch(/^~\^/);
+    expect(regex, "case-insensitive regex key sigil then a start anchor").toMatch(/^~\*\^/);
     expect(regex, "must end-anchor the PCRE or /api/ledgers/2/reset/extra is caught too").toMatch(/\/reset\/\?\$$/);
-    expect(regex).toContain("/api/ledgers/[0-9]+/reset");
+    expect(regex).toContain("/api/ledgers/[^/]+/reset");
+    expect(regex, "a digits-only id leaves the coercions open — see the 2%20 case")
+      .not.toContain("[0-9]");
     const blockBody = directives.slice(
       directives.indexOf("$legacy_ledger_reset_blocked"),
       directives.indexOf("$legacy_ledger_reset_blocked") + 400,
@@ -143,6 +161,25 @@ describe("the blocked requests", () => {
       "/api/ledgers/987654/reset",
     ]) {
       expect(blocked("POST", uri), `${uri} must be blocked`).toBe(true);
+    }
+  });
+
+  test("the case variants Express itself would have executed", () => {
+    // This is the one that a hand-verified rule misses, and it was found by
+    // running the repo's real router rather than by reading it: Express 5
+    // lowercases req.method before the route lookup and matches paths ignoring
+    // case, so `post` and `/RESET` both reach ledgers.ts:280 and delete the book.
+    // A case-sensitive `~` key refused those two while still refusing the normal
+    // spelling — the rule looked correct, passed nginx -t, and left the route open.
+    for (const [method, uri] of [
+      ["post", "/api/ledgers/2/reset"],
+      ["PoSt", "/api/ledgers/2/reset"],
+      ["POST", "/api/ledgers/2/RESET"],
+      ["POST", "/api/ledgers/2/Reset"],
+      ["post", "/api/ledgers/2/RESET"],
+      ["POST", "/api/LEDGERS/2/reset"],
+    ]) {
+      expect(blocked(method, uri), `${method} ${uri} must be blocked`).toBe(true);
     }
   });
 });
@@ -171,8 +208,14 @@ describe("the requests that must keep flowing", () => {
       "/api/ledgers",
       "/api/ledgers/2",
       "/api/ledgers/2/assign-doctors",
-      "/api/ledgers/2/set-default",
-      "/api/ledgers/abc/reset",
+      // A REAL clinical POST whose name contains "reset" and whose traffic goes
+      // through this same /api/ location: routes/index.ts:885 mounts it at
+      // /api/radiology/presentation-templates/reset-default, and it is the
+      // report-presentation template's own "make this the default" action
+      // (presentation-templates.ts:221). Anything that widens this rule past
+      // /api/ledgers/<id>/reset — a bare `.*reset`, a second map key — takes that
+      // away from the reporting workspace, which is not this PR's business.
+      "/api/radiology/presentation-templates/reset-default",
       "/api/ledgers/2/reset/extra",
       "/api/ledgers/2/resets",
       "/api/ledgers/2/bills",
@@ -188,14 +231,33 @@ describe("the requests that must keep flowing", () => {
     }
   });
 
-  test("a percent-encoded id cannot evade the rule", () => {
-    // $uri is nginx's decoded, normalised path, so the request line
-    // /api/ledgers/%32/reset is evaluated here as /api/ledgers/32/reset, and
-    // /api/ledgers/../ledgers/32/reset likewise. Matching $request_uri instead
-    // would have left both of them open, which is the one way this rule could
-    // look correct and still be bypassable.
-    expect(blocked("POST", decodeURIComponent("/api/ledgers/%32/reset"))).toBe(true);
-    expect(blocked("POST", "/api/ledgers/32/reset")).toBe(true);
+  test("every id spelling the handler would coerce to a book id", () => {
+    // The reason the pattern is `[^/]+` and not `[0-9]+`. ResetLedgerParams is
+    // `zod.coerce.number()` (lib/api-zod/src/generated/api.ts:3519), measured
+    // against the real schema: "" -> 0, " " -> 0, "2 " -> 2, "-1" -> -1,
+    // "2.5" -> 2.5, "1e1" -> 10; only "2abc" and non-ASCII digits are refused.
+    // So `POST /api/ledgers/2%20/reset` decodes to "2 ", coerces to 2 and wipes
+    // book 2 — a digits-only edge rule reads that as "not the reset route" and
+    // forwards it. These are typed as the raw request target and decoded the way
+    // nginx $uri does, because that is the value the map sees.
+    const rawForms = [
+      "/api/ledgers/2/reset",
+      "/api/ledgers/2%20/reset",
+      "/api/ledgers/%20/reset",
+      "/api/ledgers/-1/reset",
+      "/api/ledgers/2.5/reset",
+      "/api/ledgers/1e1/reset",
+      "/api/ledgers/%32/reset",
+    ];
+    for (const raw of rawForms) {
+      expect(blocked("POST", decodeURIComponent(raw)), `${raw} must be blocked`).toBe(true);
+    }
+    // $uri is normalised as well as decoded, so the request line
+    // /api/ledgers/2/../2/reset reaches the map already collapsed to
+    // /api/ledgers/2/reset. That normalised form is what is asserted here — a
+    // decodeURIComponent() of it would still contain the ".." segment and would
+    // test something nginx never forwards.
+    expect(blocked("POST", "/api/ledgers/2/reset"), "the dot-dot form, as $uri collapses it").toBe(true);
   });
 });
 
@@ -245,11 +307,12 @@ describe("the /api/ location stays a single proxied block", () => {
 
   test("an insertion here is a line-number citation hazard, so re-check the one that exists", () => {
     // Anything added above the health location shifts `scripts/deploy-health.mjs`,
-    // which cites a docker/nginx.conf line number in a comment (measured 2026-10-16:
-    // it said 203 when this rule moved the block from 203 to 271). No gate asserts
-    // that comment, so it goes stale silently — which is how a troubleshooting note
-    // ends up pointing at an unrelated directive. If this test fails, the config
-    // moved: fix the citation in deploy-health.mjs, do not pin a number here.
+    // which cites a docker/nginx.conf line number in a comment. It said 203 before
+    // this rule; the rule and its why-comments moved the block to 296, and this
+    // assertion caught that shift on the very next edit — which is the whole point.
+    // No gate asserted the comment before, so a stale pointer would have pointed a
+    // future operator at the wrong directive. If this fails, the config moved: fix
+    // the citation in deploy-health.mjs. Do not pin a number here instead.
     const living = conf.split("\n").findIndex((l) => l.includes("location = /nginx-health")) + 1;
     const cited = readFileSync(join(REPO, "scripts", "deploy-health.mjs"), "utf8").match(
       /docker\/nginx\.conf:(\d+)/,
