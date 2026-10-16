@@ -7,7 +7,7 @@ import {
   radiologyAuditLogTable,
   radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
@@ -33,41 +33,78 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
 /**
  * Which `patient_reports` row the PACS archive may render for a billed study — or none.
  *
- * `patient_reports.study_id` is a SHARED identifier space, which is why both namespaces have to be
- * looked up: the Reporting Workspace finalize path writes the `radiology_worklist` row id into it,
- * while legacy rows were written with the billed `radiology_studies` id. The same number therefore
- * means "worklist row 41" for one patient and "billed study 41" for another, and the two are
- * assigned by independent sequences that overlap by accident.
+ * `patient_reports.study_id` is a SHARED identifier space, which is why both spellings have to be
+ * considered: the Reporting Workspace finalize path writes the `radiology_worklist` row id into it,
+ * while legacy rows were written with the billed `radiology_studies` id. The two tables count
+ * independently, so the same number means "worklist row 41" for one row and "billed study 41" for
+ * another — and 41 is therefore reachable twice.
  *
- * Exported because this is the step that decides which human's report becomes a DICOM object in
- * the archive, and `archiveReportToPacs` cannot be exercised without launching Chromium and
- * POSTing to Orthanc.
+ * Two separate obligations follow from that, and neither implies the other:
  *
- * The guarantee is the patient predicate below: of everything reachable through either id
- * namespace, only a report owned by this study's patient may be rendered.
+ *  - PATIENT. A report found through the wrong spelling can belong to a different human being, so
+ *    every candidate is required to carry this study's `patient_id`. Both columns are NOT NULL.
+ *  - EXAMINATION. The right patient is not the right test: an MRI Brain and an MRI LS Spine share
+ *    `patient_id` and differ in everything a radiologist cares about, and a patient's 2024 MRI Brain
+ *    and 2026 MRI Brain share `patient_id` AND `test_id`. The worklist spelling is examination-correct
+ *    by construction (that row is bound to this billed study). The legacy spelling is only accepted
+ *    when the report's own billing identity still names this study.
+ *
+ * The identity terms are the ones `bindRadiologyReportIdentity()` (lib/radiologyIdentity.ts) already
+ * enforces when a report is written — it refuses TEST_MISMATCH and ORDER_MISMATCH against the billed
+ * study, and copies `bill_id`/`order_id`/`order_test_id` from that same study onto the row. So the
+ * predicate below admits every report the finalize path could have produced for this examination, and
+ * refuses a number that merely coincides. `order_test_id` is unique per study, which is what makes a
+ * repeat examination of the SAME test separable.
+ *
+ * Those columns are nullable on a legacy row, so absence is allowed and only a CONTRADICTION refuses —
+ * otherwise this would strand reports it has no way to disprove. The residual hole, stated plainly: a
+ * legacy row with no billing identity at all, whose `study_id` coincides with a different study of the
+ * same patient for the same test, is not distinguishable from its true owner and would be adopted.
+ *
+ * Exported because this is the step that decides which report becomes a DICOM object in the
+ * archive, and `archiveReportToPacs` cannot be exercised without launching Chromium and POSTing to
+ * Orthanc. Ambiguity returns null, which the caller handles as "no report row"; nothing is guessed.
  */
 export async function resolveArchiveReportRow(study: {
   id: number;
   patientId: number;
+  testId: number;
+  billId?: number | null;
+  orderId?: number | null;
+  orderTestId?: number | null;
 }): Promise<{ id: number } | null> {
-  const [worklistForStudy] = await db
+  // Every worklist row bound to this billed study, not an arbitrary one: duplicate intake can bind
+  // two rows to the same study, and a report may hang off either.
+  const boundWorklists = await db
     .select({ id: radiologyWorklistTable.id })
     .from(radiologyWorklistTable)
-    .where(eq(radiologyWorklistTable.studyId, study.id))
-    .limit(1);
-  const reportStudyIds = worklistForStudy?.id != null
-    ? [worklistForStudy.id, study.id]
-    : [study.id];
+    .where(eq(radiologyWorklistTable.studyId, study.id));
+  const worklistIds = boundWorklists.map((w) => w.id).filter((id) => id != null);
+
+  const legacySpelling = and(
+    eq(patientReportsTable.studyId, study.id),
+    eq(patientReportsTable.testId, study.testId),
+    study.billId != null
+      ? or(isNull(patientReportsTable.billId), eq(patientReportsTable.billId, study.billId))
+      : undefined,
+    study.orderId != null
+      ? or(isNull(patientReportsTable.orderId), eq(patientReportsTable.orderId, study.orderId))
+      : undefined,
+    study.orderTestId != null
+      ? or(isNull(patientReportsTable.orderTestId), eq(patientReportsTable.orderTestId, study.orderTestId))
+      : undefined,
+  );
+
   const [report] = await db
     .select({ id: patientReportsTable.id })
     .from(patientReportsTable)
     .where(
       and(
-        inArray(patientReportsTable.studyId, reportStudyIds),
-        // The scoping that makes the shared id space safe to search twice: a report may be
-        // rendered into this study's archive only if it belongs to this study's patient. Both
-        // columns are NOT NULL, so this cannot drop a legitimately-owned row.
         eq(patientReportsTable.patientId, study.patientId),
+        or(
+          worklistIds.length > 0 ? inArray(patientReportsTable.studyId, worklistIds) : undefined,
+          legacySpelling,
+        ),
       ),
     )
     // Deterministic, newest first. Without an ORDER BY the engine returns whichever row the heap
@@ -148,7 +185,14 @@ export async function archiveReportToPacs(
     // carries the superseded watermark baked into its HTML.
     let htmlContent = "";
     let artifact: ReportArtifact | null = null;
-    const report = await resolveArchiveReportRow({ id: studyId, patientId: study.patientId });
+    const report = await resolveArchiveReportRow({
+      id: studyId,
+      patientId: study.patientId,
+      testId: study.testId,
+      billId: study.billId,
+      orderId: study.orderId,
+      orderTestId: study.orderTestId,
+    });
     if (report) {
       artifact = await buildReportArtifact(report.id, { surface: "pacs", versionMode: opts.versionMode });
       htmlContent = artifact?.html || "";
