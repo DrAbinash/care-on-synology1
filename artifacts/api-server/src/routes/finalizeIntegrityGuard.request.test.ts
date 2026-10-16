@@ -25,6 +25,15 @@
  * unbilled soft-final, and (see signatureWithdrawalReopensStudy.request.test.ts)
  * withdrawal → correction → re-signing, which passes an explicit reportId.
  *
+ * Which case is the red one: only the first — a billed study with no report row
+ * behind the flip — behaves differently from main. The two refusal cases that
+ * name a reportId are already answered 409 by the route's shared
+ * `assertReportBelongsToWorklist` (via `resolveWorklistFromStudyRef`, which is
+ * what untangles the worklist-row-id vs billed-study-id collision), and they are
+ * pinned here so that stay true: they were written against an earlier version of
+ * this guard that re-implemented that check locally, and deleting the duplicate
+ * must not silently delete the refusal.
+ *
  * Every assertion is an HTTP status plus a re-read of the stored rows.
  * Skipped without DATABASE_URL; in CI it runs against the postgres:16 service.
  */
@@ -264,6 +273,7 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
       actor: SIGNER,
     });
     expect(res.status, `cross-study flip: ${res.status} ${res.text}`).toBe(409);
+    expect(res.body?.code, `refused for the wrong reason: ${res.text}`).toBe("REPORT_WORKLIST_MISMATCH");
     const afterB = await wl(b.worklist.id);
     expect(afterB.status).not.toBe("REPORT_FINAL");
     expect(afterB.reportId).toBeNull();
@@ -355,11 +365,39 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
   it("repeated and concurrent flips leave one consistent finalization state", async () => {
     const { worklist } = await billedStudy();
     const { reportId } = await signedReportFor(worklist.id, worklist.id, `${marker}-conc`);
-    const [first, second] = await Promise.all([
-      flip({ worklistId: worklist.id, status: "REPORT_FINAL", deliveryStatus: "READY_TO_SEND", reportId, actor: SIGNER }),
-      flip({ worklistId: worklist.id, status: "REPORT_FINAL", deliveryStatus: "READY_TO_SEND", reportId, actor: SIGNER }),
-    ]);
-    expect([first.status, second.status]).toEqual([200, 200]);
+    const body = {
+      worklistId: worklist.id,
+      status: "REPORT_FINAL",
+      deliveryStatus: "READY_TO_SEND",
+      reportId,
+      actor: SIGNER,
+    };
+
+    // Two simultaneous flips are settled by the route's own compare-and-set, not
+    // by anything added here: the UPDATE only writes rows whose status IS
+    // DISTINCT FROM 'REPORT_FINAL', and the request that loses that race is
+    // answered 409 ALREADY_FINAL (internal-radiology.ts:1420-1439), while a flip
+    // that observes the already-committed state is answered 200 with
+    // idempotent:true (:1379-1390). Which of the two the loser sees depends on
+    // how Postgres interleaves them, so what is pinned here is the invariant
+    // that must hold either way — one successful finalization, no refusal
+    // invented by the ownership guard dressed up as the concurrency answer, and
+    // no second report row.
+    const [first, second] = await Promise.all([flip(body), flip(body)]);
+    for (const res of [first, second]) {
+      if (res.status === 200) continue;
+      expect(res.status, `unexpected refusal: ${res.text}`).toBe(409);
+      expect(res.body?.code, `409 without ALREADY_FINAL: ${res.text}`).toBe("ALREADY_FINAL");
+    }
+    expect([first, second].filter((r) => r.status === 200).length, `no flip succeeded: ${first.text} / ${second.text}`).toBeGreaterThanOrEqual(1);
+
+    // A flip that arrives after the state is committed is idempotent, not a
+    // conflict — this is the retry path the workspace takes when its own
+    // response is lost.
+    const again = await flip(body);
+    expect(again.status, `repeat after commit: ${again.text}`).toBe(200);
+    expect(again.body?.idempotent, `repeat was not treated as idempotent: ${again.text}`).toBe(true);
+
     const after = await wl(worklist.id);
     expect(after.status).toBe("REPORT_FINAL");
     expect(after.reportId).toBe(reportId);
@@ -415,6 +453,7 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
       actor: SIGNER,
     });
     expect(res.status, `colliding-id report: ${res.status} ${res.text}`).toBe(409);
+    expect(res.body?.code, `refused for the wrong reason: ${res.text}`).toBe("REPORT_PATIENT_MISMATCH");
     const after = await wl(worklist.id);
     expect(after.status, "a refused flip must leave the study open").not.toBe("REPORT_FINAL");
     expect(after.reportId).toBeNull();
