@@ -156,19 +156,30 @@ export function revealNeedKey(need: readonly ReportSectionId[]): string {
  * Returns `null` when:
  * - nothing needs reveal, or
  * - this need set was already auto-revealed (user may navigate away / collapse), or
- * - the user is already viewing one of the sections that need attention.
+ * - the user is already viewing one of the sections that need attention, or
+ * - the caret is inside the section that opening the target would close.
  *
  * Collapsed sections still surface blockers via `collapsedWarning` — auto-reveal
  * must not fight progressive accordion clicks.
+ *
+ * The caret rule is a clinical-data rule, not a layout preference: revealing a
+ * section collapses the open one, and a collapsed body is `display:none`, which
+ * makes the browser blur the editor inside it. Every keystroke after that blur
+ * was discarded — the radiologist's hand-typed Findings silently truncated
+ * ~4 characters into a sentence. A deferred reveal is not a consumed one: the
+ * caller leaves the need key unrecorded, so the blocker still opens as soon as
+ * the caret leaves the pane.
  */
 export function nextAutoRevealSection(opts: {
   need: readonly ReportSectionId[];
   currentActive: ReportSectionId | null;
   alreadyRevealedKey: string;
+  sectionWithCaret?: ReportSectionId | null;
 }): ReportSectionId | null {
   const key = revealNeedKey(opts.need);
   if (!key) return null;
   if (key === opts.alreadyRevealedKey) return null;
   if (opts.currentActive && opts.need.includes(opts.currentActive)) return null;
+  if (opts.sectionWithCaret && opts.sectionWithCaret === opts.currentActive) return null;
   return opts.need.includes("impression") ? "impression" : opts.need[0]!;
 }

@@ -593,6 +593,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     startingCanvasExpanded, setStartingCanvasExpanded,
     lastClinicalTarget, setLastClinicalTarget,
     activeFindingsTool, activeFindingsAnatomy, setActiveFindingsAnatomy,
+    sectionWithCaret,
     activateReportSection, selectFindingsTool,
     focusClinicalEditor, focusReportField,
     enterReportingFocusModeRef, enterClinicalEditorFocusRef, exclusiveReportSectionsRef,
@@ -3171,12 +3172,23 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
       need,
       currentActive: activeReportSectionRef.current,
       alreadyRevealedKey: autoRevealKeyRef.current,
+      sectionWithCaret,
     });
-    // Mark this need set as handled even when already viewing the section, so a
-    // later click away is not snapped back.
+    if (!target) {
+      // A need that was already revealed, or one the radiologist is already
+      // looking at, is handled: revealing it again would fight their clicks. A
+      // need suppressed only because the caret is in the section that would
+      // close is NOT handled — it stays pending so this same effect reveals it
+      // the moment the caret leaves, and no stale Impression hides silently.
+      const caretIsEditingTheOpenSection =
+        !!sectionWithCaret && sectionWithCaret === activeReportSectionRef.current && !need.includes(sectionWithCaret);
+      if (!caretIsEditingTheOpenSection) autoRevealKeyRef.current = key;
+      return;
+    }
+
     autoRevealKeyRef.current = key;
-    if (target) setActiveReportSection(target);
-  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical]);
+    setActiveReportSection(target);
+  }, [impressionNeedsRefresh, impressionContradictionWarnings.length, isCritical, sectionWithCaret]);
 
   // Clinical history needs BOTH directions visible, not just reachable. `canUndoLastAbnormal` above is
   // a narrower gate — it asks whether the last thing worth stepping back over is an abnormality — so a
