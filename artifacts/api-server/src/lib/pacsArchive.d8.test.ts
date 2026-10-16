@@ -25,15 +25,18 @@ vi.mock("@workspace/db", () => ({
   db: {
     select: () => ({
       from: (tbl: { __name?: string }) => ({
-        where: () => ({
-          limit: async () => {
+        // `limit` and `orderBy().limit` both terminate the chain — the real builder accepts
+        // either, and the archive's report pick uses the second to make its choice deterministic.
+        where: () => {
+          const limit = async () => {
             if (tbl?.__name === "radiology_studies") return studyRow ? [studyRow] : [];
             if (tbl?.__name === "radiology_worklist") return [{ id: 3629 }];
             if (tbl?.__name === "patients") return [{ id: 12, firstName: "Asha", lastName: "P", patientId: "PAT-1", gender: "F", dateOfBirth: null }];
             if (tbl?.__name === "patient_reports") return reportRow ? [reportRow] : [];
             return [];
-          },
-        }),
+          };
+          return { limit, orderBy: () => ({ limit }) };
+        },
       }),
     }),
     insert: (tbl: { __name?: string }) => ({

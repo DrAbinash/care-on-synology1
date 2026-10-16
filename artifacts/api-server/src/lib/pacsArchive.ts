@@ -7,7 +7,7 @@ import {
   radiologyAuditLogTable,
   radiologyPacsArchiveRevisionsTable,
 } from "@workspace/db/schema";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
@@ -42,6 +42,9 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
  * Exported because this is the step that decides which human's report becomes a DICOM object in
  * the archive, and `archiveReportToPacs` cannot be exercised without launching Chromium and
  * POSTing to Orthanc.
+ *
+ * The guarantee is the patient predicate below: of everything reachable through either id
+ * namespace, only a report owned by this study's patient may be rendered.
  */
 export async function resolveArchiveReportRow(study: {
   id: number;
@@ -58,7 +61,18 @@ export async function resolveArchiveReportRow(study: {
   const [report] = await db
     .select({ id: patientReportsTable.id })
     .from(patientReportsTable)
-    .where(inArray(patientReportsTable.studyId, reportStudyIds))
+    .where(
+      and(
+        inArray(patientReportsTable.studyId, reportStudyIds),
+        // The scoping that makes the shared id space safe to search twice: a report may be
+        // rendered into this study's archive only if it belongs to this study's patient. Both
+        // columns are NOT NULL, so this cannot drop a legitimately-owned row.
+        eq(patientReportsTable.patientId, study.patientId),
+      ),
+    )
+    // Deterministic, newest first. Without an ORDER BY the engine returns whichever row the heap
+    // reaches, and `versionMode: "specific"` archives exactly the row picked here.
+    .orderBy(desc(patientReportsTable.id))
     .limit(1);
   return report ?? null;
 }
