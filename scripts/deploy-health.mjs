@@ -190,7 +190,7 @@ export function evaluateProbe(name, path, expect, result) {
     return { name, path, ok: false, actual: "no status", why: "no HTTP status came back" };
   }
   if (expect === "nginx-ok") {
-    // nginx's health location is `return 200 "ok\n"` (docker/nginx.conf:296).
+    // nginx's health location is `return 200 "ok\n"` (docker/nginx.conf:300).
     // Requiring the body, not just a 2xx, is what stops a SPA fallback from
     // passing: measured against the Vite dev server, GET /nginx-health answers
     // 200 with index.html — a page being served is not the same proof as nginx
