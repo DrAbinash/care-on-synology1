@@ -180,7 +180,11 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
   }
 
   const printHtml = async (reportId: number) => {
-    const res = await request(app).get(`/api/patient-reports/${reportId}/print`).set(auth);
+    // ?preview=true renders the same artifact without the delivery
+    // bookkeeping (share log, delivered stamp, audit) — presentation only, so
+    // this is the document the clinic prints with no side effects written by the
+    // test itself.
+    const res = await request(app).get(`/api/patient-reports/${reportId}/print?preview=true`).set(auth);
     expect(res.status, `signed print: ${res.status}`).toBe(200);
     return res.text as string;
   };
