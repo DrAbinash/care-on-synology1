@@ -242,4 +242,18 @@ describe("the /api/ location stays a single proxied block", () => {
     const forwarded = [...directives.matchAll(/proxy_set_header\s+X-Forwarded-Proto\s+\$forwarded_proto;/g)];
     expect(forwarded.length).toBe(5);
   });
+
+  test("an insertion here is a line-number citation hazard, so re-check the one that exists", () => {
+    // Anything added above the health location shifts `scripts/deploy-health.mjs`,
+    // which cites a docker/nginx.conf line number in a comment (measured 2026-10-16:
+    // it said 203 when this rule moved the block from 203 to 271). No gate asserts
+    // that comment, so it goes stale silently — which is how a troubleshooting note
+    // ends up pointing at an unrelated directive. If this test fails, the config
+    // moved: fix the citation in deploy-health.mjs, do not pin a number here.
+    const living = conf.split("\n").findIndex((l) => l.includes("location = /nginx-health")) + 1;
+    const cited = readFileSync(join(REPO, "scripts", "deploy-health.mjs"), "utf8").match(
+      /docker\/nginx\.conf:(\d+)/,
+    )?.[1];
+    expect(cited ?? String(living), "deploy-health.mjs cites a stale docker/nginx.conf line").toBe(String(living));
+  });
 });
