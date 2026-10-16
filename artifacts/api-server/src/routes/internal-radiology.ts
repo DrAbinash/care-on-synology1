@@ -1146,13 +1146,6 @@ router.post("/radiology/report-status", async (req, res) => {
   // soft-final and stays exactly as it was.
   let isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
   if (b.status === "REPORT_FINAL") {
-    const FINALIZABLE_STATUSES = new Set([
-      "pending_verification",
-      "verified",
-      "delivered",
-      "signed",
-      "final",
-    ]);
     const boundStudy = existing.studyId
       ? (await db
           .select({
@@ -1196,21 +1189,21 @@ router.post("/radiology/report-status", async (req, res) => {
         });
         return;
       }
-      isCanonicalFinalize =
-        (rep.status !== "draft" || Boolean(rep.signedAt)) &&
-        (FINALIZABLE_STATUSES.has(rep.status) || Boolean(rep.signedAt));
-      if (!isCanonicalFinalize) {
-        res.status(409).json({
-          error: "REPORT_NOT_FINALIZED",
-          message: `Report ${rep.id} is still a draft. Sign it before marking the study final.`,
-        });
-        return;
-      }
+      // The row's own lifecycle state is NOT the test. Canonical finalize
+      // flips the worklist BEFORE it signs (create -> report-status -> sign:
+      // radiologyReportLifecycle.ts, and
+      // signatureWithdrawalReopensStudy.request.test.ts:137-155 exercises that
+      // exact order), so at this moment the report is legitimately not signed
+      // yet — and after a withdrawal it is draft again while the correction is
+      // prepared for re-signing. Ownership above (this worklist's own binding,
+      // this patient) is what makes the transition safe, not a status the
+      // caller has not reached yet.
+      isCanonicalFinalize = true;
     } else if (isBilledStudy) {
       // No reportId: resolve the row this study actually owns, the way create
       // binds it (patient-reports.ts writes radiology_worklist.report_id and
       // stores the worklist row id in patient_reports.study_id).
-      const bound = existing.reportId
+      let bound: (typeof patientReportsTable.$inferSelect) | undefined = existing.reportId
         ? (await db
             .select()
             .from(patientReportsTable)
@@ -1225,7 +1218,11 @@ router.post("/radiology/report-status", async (req, res) => {
               )
             )
             .limit(1))[0];
-      isCanonicalFinalize = Boolean(bound) && (bound.status !== "draft" || Boolean(bound.signedAt));
+      // Same rule as the explicit path: the row must EXIST and be this
+      // worklist's own, for this patient. Its signature state is reached after
+      // this call, so it cannot be a precondition.
+      if (bound && existing.patientId != null && bound.patientId !== existing.patientId) bound = undefined;
+      isCanonicalFinalize = Boolean(bound);
     }
     // An unbilled study keeps its existing behaviour: no report row can exist,
     // and READY_TO_SEND is what the workspace legitimately sends for it.

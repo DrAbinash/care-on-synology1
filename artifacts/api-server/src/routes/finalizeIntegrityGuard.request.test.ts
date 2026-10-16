@@ -311,7 +311,14 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
     expect((await wl(worklist.id)).status).toBe("REPORT_FINAL");
   });
 
-  it("refuses a draft report: an unsigned row is not a finalized report", async () => {
+  it("accepts the study's own not-yet-signed row, because signing happens after the flip", async () => {
+    // Not a concession: this is the order the product uses. Canonical finalize
+    // posts report-status and only then signs (radiologyReportLifecycle.ts;
+    // signatureWithdrawalReopensStudy.request.test.ts asserts the same order),
+    // so the row is unsigned at this instant — and after a withdrawal it is
+    // draft again while the correction is prepared for re-signing. What has to
+    // be true is that the row EXISTS and belongs to this worklist and patient,
+    // which is exactly what the two refusal tests above pin.
     const { worklist, tag } = await billedStudy();
     const created = await request(app)
       .post("/api/patient-reports")
@@ -323,12 +330,15 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
         studyId: worklist.id,
         worklistId: worklist.id,
         title: `MRI Brain ${tag}`,
-        body: `<p>UNSIGN ${tag}</p>`,
+        body: `<p>UNSIGNED AT FLIP TIME ${tag}</p>`,
         impression: `IMPRESSION ${tag}`,
       });
     expect([200, 201], created.text).toContain(created.status);
     const reportId = created.body.id as number;
     reportIds.push(reportId);
+    const row = (await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)))[0];
+    expect(row.patientId, "the row under test must be this patient's own").toBe(patientId);
+
     const res = await flip({
       worklistId: worklist.id,
       status: "REPORT_FINAL",
@@ -336,15 +346,10 @@ describe.skipIf(!dbReady)("finalization integrity — request level", () => {
       reportId,
       actor: SIGNER,
     });
-    const row = (await db.select().from(patientReportsTable).where(eq(patientReportsTable.id, reportId)))[0];
-    if (row.status === "draft") {
-      expect(res.status, `draft row: ${res.status} ${res.text}`).toBe(409);
-      expect((await wl(worklist.id)).status).not.toBe("REPORT_FINAL");
-    } else {
-      // create already advanced it past draft (pending_verification); that is a
-      // reportable state, so the flip is legitimate and must succeed.
-      expect(res.status, `${res.status} ${res.text}`).toBe(200);
-    }
+    expect(res.status, `own row at flip time: ${res.status} ${res.text}`).toBe(200);
+    const after = await wl(worklist.id);
+    expect(after.status).toBe("REPORT_FINAL");
+    expect(after.reportId).toBe(reportId);
   });
 
   it("repeated and concurrent flips leave one consistent finalization state", async () => {
