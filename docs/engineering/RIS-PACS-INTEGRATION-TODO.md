@@ -514,11 +514,12 @@ amendment supersede sweep) and five gaps as MEASURED (double object from the can
 the retry route, two archives overlapping because the `pending` write is not a lock, an unsigned draft
 archived with only a label, a placeholder archived with no revision row), corrects this section's earlier
 claim that the archive resolves to "latest signed by default" (the mode is flag-gated), and leaves exactly
-one item unmeasured — the Orthanc-accepted-but-status-write-failed path. **CI as measured at 2026-10-16
-21:49Z: #1048 green (all three jobs on `3905b8d3`), #1046 green (all three on `a6395b61`), #1047 green
-(all three on `0d784e98`).** Re-read them before acting — these were the live verdicts at the end of this
-pass, not a standing guarantee. Nothing was merged or deployed by this session; no production row,
-container or Orthanc instance was touched._
+one item unmeasured — the Orthanc-accepted-but-status-write-failed path. **CI measured 2026-10-16 21:49Z
+and 22:03Z: #1048 green on `3905b8d3` (all three jobs), #1047 green on `0d784e98` (all three jobs); this
+file's own PR #1046 is docs-only and every one of its runs today was green, so the number that carries
+risk is the code PRs, whose heads are named above.** Re-read them before acting — a verdict recorded here
+is a measurement of a moment, not a guarantee. Nothing was merged or deployed by this session; no
+production row, container or Orthanc instance was touched._
 
 _Previous pass, 2026-10-17 — the owner's examination-ownership ruling was recorded as a standing rule
 and implemented: **RIS-012** (an authorized combined report could not finish its second study — refused
