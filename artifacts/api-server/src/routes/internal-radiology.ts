@@ -20,6 +20,7 @@ import {
   patientsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  patientReportsTable,
   radiologyAuditLogTable,
   dicomNodesTable,
   dicomPullJobsTable,
@@ -1132,7 +1133,67 @@ router.post("/radiology/report-status", async (req, res) => {
   // flip to REPORT_FINAL with no signed row is now AI-review guarded for every
   // caller — see the unreviewed-AI block below this one.
   const ADMIN_SOFT_FINAL_ROLES = new Set(["admin", "super_admin", "owner"]);
-  const isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  // A study becomes REPORT_FINAL through three doors and this is the one that
+  // can be reached without any report row existing. Until now the only evidence
+  // that a report was behind the flip was `deliveryStatus` — a field the CALLER
+  // sets — so naming READY_TO_SEND alone closed billed studies that had no
+  // report at all (measured 2026-10-16 on an isolated database: HTTP 200 for a
+  // billed worklist whose study had zero patient_reports rows, leaving
+  // report_id NULL, and because the workspace's signing gate reads that same
+  // status the study could then never be signed).
+  //
+  // The door with no reportId is the open one. When a caller does name a report,
+  // assertReportBelongsToWorklist() below already proves it exists, is this
+  // patient's, and resolves to THIS worklist through
+  // resolveWorklistFromStudyRef() — the shared helper that knows
+  // patient_reports.study_id may hold either a worklist row id or a billed
+  // radiology_studies.id, the two sequences that overlap by design. Re-checking
+  // ownership here would only give one refusal two vocabularies, so what is
+  // decided from the stored rows is canonicality for the id-less call: a row
+  // bound to this worklist for this patient, or no billable test behind it.
+  let isCanonicalFinalize = b.deliveryStatus === "READY_TO_SEND";
+  if (b.status === "REPORT_FINAL" && !b.reportId) {
+    const boundStudy = existing.studyId
+      ? (await db
+          .select({
+            orderTestId: radiologyStudiesTable.orderTestId,
+            billId: radiologyStudiesTable.billId,
+          })
+          .from(radiologyStudiesTable)
+          .where(eq(radiologyStudiesTable.id, existing.studyId)))[0]
+      : undefined;
+    const isBilledStudy = Boolean(boundStudy?.orderTestId || boundStudy?.billId);
+
+    if (isBilledStudy) {
+      // Resolve the row this study actually owns, the way create binds it
+      // (patient-reports.ts writes radiology_worklist.report_id and stores the
+      // worklist row id in patient_reports.study_id). The row's lifecycle state
+      // is not the test: canonical finalize flips the worklist before it signs
+      // (create -> report-status -> sign, radiologyReportLifecycle.ts, and
+      // signatureWithdrawalReopensStudy.request.test.ts exercises that exact
+      // order), so the row is legitimately unsigned at this instant — and after
+      // a withdrawal it is draft again while the correction is prepared.
+      let bound: (typeof patientReportsTable.$inferSelect) | undefined = existing.reportId
+        ? (await db
+            .select()
+            .from(patientReportsTable)
+            .where(eq(patientReportsTable.id, existing.reportId)))[0]
+        : (await db
+            .select()
+            .from(patientReportsTable)
+            .where(
+              and(
+                eq(patientReportsTable.studyId, existing.id),
+                existing.patientId != null ? eq(patientReportsTable.patientId, existing.patientId) : undefined,
+              )
+            )
+            .limit(1))[0];
+      if (bound && existing.patientId != null && bound.patientId !== existing.patientId) bound = undefined;
+      isCanonicalFinalize = Boolean(bound);
+    }
+    // An unbilled study keeps its existing behaviour: no report row can exist,
+    // and READY_TO_SEND is what the workspace legitimately sends for it.
+  }
   if (
     b.status === "REPORT_FINAL" &&
     !b.reportId &&

@@ -474,7 +474,15 @@ export async function finalizeRadiologyReport(
   // write a second REPORT_STATUS_UPDATED audit row describing a transition that
   // did not happen, so on the resume path it is only sent when the study is
   // genuinely still open.
-  if (!(resumed && boundWorklistAlreadyFinal)) {
+  //
+  // A flip must also never be sent when no report row was created for a study
+  // that has a patient behind it: REPORT_FINAL is what the workspace's own
+  // signing gate reads (`workflow.currentRow?.status === "REPORT_FINAL"`,
+  // ReportCanvas.tsx:2119), so closing the study without a report leaves a
+  // radiologist a study that shows as final, prints nothing, and can never be
+  // signed. The documented unbilled path (no patient linked, so no report row
+  // is possible by design) keeps flipping exactly as before.
+  if (!(resumed && boundWorklistAlreadyFinal) && (reportId || !study.patientId)) {
     await api.post("/api/internal/radiology/report-status", {
       worklistId: study.worklistId ?? undefined,
       accessionNumber: study.accessionNumber,
