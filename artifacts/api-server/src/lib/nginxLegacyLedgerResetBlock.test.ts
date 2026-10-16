@@ -48,9 +48,15 @@ import { dirname, join } from "node:path";
 //      It is legal in `if` context, so it belongs next to the `return`.
 //
 // NOT PROVABLE HERE: that nginx really answers 410. There is no nginx on this
-// machine and CI has none, so this file checks the rule's shape and replays the
-// map's own regex against request cases. `nginx -t` on the NAS plus the activation
-// checklist in the PR are what prove the wire behaviour.
+// machine and CI has none — checked 2026-10-16: no docker CLI, no nginx.exe under
+// Program Files/AppData/scoop, and the WSL Ubuntu distro has neither nginx nor
+// passwordless sudo to install one. So this file checks the rule's shape and
+// replays the map's own regex against request cases. The wire behaviour is proven
+// at activation instead, and the PR says which command proves which half: a
+// disposable `nginx -t` on this file, `nginx -T` on the running container to show
+// the rebuilt image really carries the rule (this config is COPYed into the image,
+// so `nginx -s reload` alone would validate the previous one), then the 410 for
+// POST /api/ledgers/2/reset against the non-410 for the pen-drive path.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, "..", "..", "..", "..");
