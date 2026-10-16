@@ -351,3 +351,104 @@ describe("billed lumbosacral radiograph → Study Tab (live catalog shape)", () 
     expect(matchStudyRegionByCoreAnatomy("cr chest x-ray", tabs)).toBe("X-Ray Chest PA");
   });
 });
+
+/**
+ * The primary examination must decide the reporting format. A screening clause
+ * names a SUPPLEMENTARY region, and "longest region name wins" alone let that
+ * supplementary region outrank the examination the patient was actually booked
+ * for: an MRI LS Spine with whole-spine screening resolved to "Whole Spine",
+ * and the workspace then opened the whole-spine report — documenting cervical
+ * and dorsal levels that were never the question asked.
+ *
+ * Region names below are the bare names as `radiology_study_tabs` is actually
+ * seeded (migrations use 'LS Spine', 'Cervical Spine', 'Dorsal Spine',
+ * 'Whole Spine', 'Whole Spine Screening'), and the hints are the real billed
+ * names from the centre's test catalogue (MRI038, MRICEWSS, MRI037, MRI021,
+ * MRI062) prefixed with the modality exactly as the workspace composes them.
+ */
+const SPINE_REGIONS = [
+  "Brain",
+  "LS Spine",
+  "Cervical Spine",
+  "Dorsal Spine",
+  "Whole Spine",
+  "Whole Spine Screening",
+];
+
+describe("matchStudyRegion — the primary examination wins over a screening region", () => {
+  it("keeps LS Spine primary for 'MRI LS SPINE WITH SCREENING WHOLE SPINE'", () => {
+    expect(matchStudyRegion("MR MRI LS SPINE WITH SCREENING WHOLE SPINE", SPINE_REGIONS)).toBe("LS Spine");
+  });
+
+  it("keeps Cervical Spine primary for 'MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING'", () => {
+    expect(matchStudyRegion("MR MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING", SPINE_REGIONS)).toBe("Cervical Spine");
+  });
+
+  it("keeps Brain primary when the screening clause names the cervical spine", () => {
+    expect(matchStudyRegion("MR MRI BRAIN WITH CERVICAL SPINE SCREENING", SPINE_REGIONS)).toBe("Brain");
+  });
+
+  it("still resolves a genuine whole-spine examination, screening variant included", () => {
+    // No supplementary clause here: the whole spine IS the examination.
+    expect(matchStudyRegion("MR MRI WHOLE SPINE", SPINE_REGIONS)).toBe("Whole Spine");
+    expect(matchStudyRegion("MR MRI WHOLE SPINE SCREENING", SPINE_REGIONS)).toBe("Whole Spine Screening");
+  });
+
+  it("resolves a region-only screening examination to that region, not to the whole spine", () => {
+    expect(matchStudyRegion("MR MRI LS SPINE SCREENING", SPINE_REGIONS)).toBe("LS Spine");
+    expect(matchStudyRegion("MR MRI DORSAL SPINE SCREENING", SPINE_REGIONS)).toBe("Dorsal Spine");
+    expect(matchStudyRegion("MR MRI CERVICAL SPINE SCREENING", SPINE_REGIONS)).toBe("Cervical Spine");
+  });
+
+  it("falls back to the whole examination name when the primary clause names no region", () => {
+    // Nothing before the connective is an anatomy, so the screening rule must
+    // not turn a resolvable study into an unresolved one.
+    expect(matchStudyRegion("MR MRI WITH LS SPINE", SPINE_REGIONS)).toBe("LS Spine");
+    expect(matchStudyRegion("MR MRI WITH WHOLE SPINE SCREENING", SPINE_REGIONS)).toBe("Whole Spine Screening");
+    // A generic region in the primary clause still wins over the longer
+    // supplementary tab: "of the spine" IS what was booked.
+    expect(matchStudyRegion("MR MRI OF THE SPINE WITH WHOLE SPINE SCREENING", ["Spine", ...SPINE_REGIONS])).toBe("Spine");
+  });
+
+  it("does not change modality dispatch, which is why longest-wins exists", () => {
+    expect(matchStudyRegion("CT CT Brain Plain", REGIONS)).toBe("CT Brain Plain");
+    expect(matchStudyRegion("CT CT Whole Abdomen", REGIONS)).toBe("CT Whole Abdomen");
+  });
+});
+
+describe("matchStudyRegionByCoreAnatomy — the same primary rule on the token fallback", () => {
+  it("does not let a screening tab outrank the primary region", () => {
+    // "Whole Spine Screening" scores a projection-word bonus (screening), which
+    // is exactly how the fallback promoted the supplementary region today.
+    expect(matchStudyRegionByCoreAnatomy("mri ls spine with whole spine screening", SPINE_REGIONS)).toBe("LS Spine");
+    expect(matchStudyRegionByCoreAnatomy("mri brain with cervical spine screening", SPINE_REGIONS)).toBe("Brain");
+  });
+
+  it("keeps resolving a whole-spine screening study when that IS the examination", () => {
+    expect(matchStudyRegionByCoreAnatomy("mri whole spine screening", SPINE_REGIONS)).toBe("Whole Spine Screening");
+  });
+});
+
+describe("resolveAutoStudyRegion — the workspace entry point", () => {
+  it("resolves the billed LS examination to LS Spine, not Whole Spine", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MR LSPINE SCREENING WHOLE SPINE",
+      billedTestName: "MRI LS SPINE WITH SCREENING WHOLE SPINE",
+      orderedRegionNames: SPINE_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+    expect(match.source).toBe("billed");
+  });
+
+  it("keeps the billed-over-DICOM precedence intact", () => {
+    const match = resolveAutoStudyRegion({
+      modality: "MR",
+      studyDescription: "MR WHOLE SPINE",
+      billedTestName: "MRI LS SPINE",
+      orderedRegionNames: SPINE_REGIONS,
+    });
+    expect(match.region).toBe("LS Spine");
+    expect(match.dicomRegion).toBe("Whole Spine Screening");
+  });
+});
