@@ -18,10 +18,16 @@ import { dirname, join } from "node:path";
 // book's bill-number sequence the portal's UI promises to reset.
 //
 // The pen-drive route deletes the same data safely, so blocking this one loses
-// no capability. It has no caller: the ERP only ever GETs /api/ledgers, the
-// portal calls the books path, the built superadmin-ui.js contains exactly one
-// reset URL (the books one), and cron, the integrations and the test suite never
-// address it.
+// no capability. It has no caller: the ERP screens only ever GET /api/ledgers,
+// the portal calls the books path (__super_admin_quarantine/super-admin-portal/
+// src/pages/Books.tsx:138), the built pen-drive bundle contains exactly one reset
+// URL (the books one), and cron, the integrations and the test suite never
+// address it. The generated client does export `resetLedger`
+// (lib/api-client-react/src/generated/api.ts:8400) because the spec still lists
+// the operation — but every occurrence of that symbol is inside the generated
+// file and nothing imports it. Which is also why the refusal is a legible 410
+// with a code rather than a bare 403: the next person to reach for that helper is
+// told where the reset actually lives.
 //
 // THE FOUR WAYS THIS RULE CAN BE WRONG THAT ARE WORTH PINNING.
 //   1. MATCHING $request_uri INSTEAD OF $uri. $request_uri is still
