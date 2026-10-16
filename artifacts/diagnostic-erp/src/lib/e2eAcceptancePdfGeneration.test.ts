@@ -70,7 +70,9 @@ describe("E2E acceptance — Phase 7: PDF generation (CORRECTED FORMAT)", () => 
         comparison: "",
         measurements: testCase.measurements.map((m: any) => ({
           label: `${m.level} Canal AP`,
-          value: `${m.canalAP} ${m.unit}`,
+          // One decimal throughout: a bare 14 next to 15.2 reads as a different
+          // precision of the same caliper measurement.
+          value: `${Number(m.canalAP).toFixed(1)} ${m.unit}`,
         })),
         keyImages: [], // No actual images
         reportTitle: testCase.exam,
