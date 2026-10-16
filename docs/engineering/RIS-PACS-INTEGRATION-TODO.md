@@ -33,11 +33,11 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-002 | Viewer must reset its state per study | P0 | Another patient's image on screen | MERGED | `c2b81046` | #1040 | green | yes | **no** |
 | RIS-003 | Auto-link must not replace an APPROVED association | P0 | Wrong patient on a signed report | MERGED → verifying (lanes green on current main) | `67fbf901`; 5/5 `approvedPatientAssociationAutoLink.request.test.ts` on `2c8bdccd` | #1041 | green | yes | **no** |
 | RIS-004 | PACS archive report pick must be patient-scoped | P0 | Another patient's report in the image archive | MERGED | `2c8bdccd` | #1042 | green | yes | **no** |
-| **RIS-005** | **Correct patient is not yet correct examination in the archive** | **P0** | **Right patient, wrong exam filed into the study series** | **CONFIRMED → PR OPEN** | 7/13 cases red at `2c8bdccd` (Brain study returned report **637** = the LS Spine row, not **636**); 13/13 green at `b2ecdef9`; mutation battery A–F all killed | **#1044** (Draft) | 2/3 jobs green, `Tests + migration smoke` running | **no** | no |
+| **RIS-005** | **Correct patient is not yet correct examination in the archive** | **P0** | **Right patient, wrong exam filed into the study series** | **MERGED — not deployed, not clinically verified** | 7/13 cases red at `2c8bdccd` (Brain study returned report **637** = the LS Spine row, not **636**); 13/13 green at `b2ecdef9`; mutation battery A–F all killed; on `origin/main` as `877701f9` (tree-verified) | **#1044** (merged by the owner 2026-10-16 20:18Z) | **green** — see the CI note below | yes | **no** |
 | **RIS-006** | **Null `patient_reports.study_id` ownership** | **P0** | **Report claimed onto a second exam of the same patient** | **BLOCKED** (evidence named below) | code census re-measured on `2c8bdccd`; production count unreadable | none | — | no | no |
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
-| RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | TODO | — | — | — | no | no |
-| RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | TODO | — | — | — | no | no |
+| RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
+| RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
 | RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | TODO | — | — | — | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize may be refused by the ownership guard | P1 | Second study of a linked pair never marked final | INVESTIGATING (code trace only, unverified) | `radiologyReportLifecycle.ts:505` posts the same `reportId` against a **different** `worklistId`, which `radiologyIdentity.ts:250-259` refuses with `REPORT_WORKLIST_MISMATCH` | none | — | no | no |
@@ -48,6 +48,16 @@ workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:804
 CARE stack is currently unreachable from here and **no deployment state can be confirmed**. The
 clinic is rebuilding that deployment; until `deploy-synology.sh` is run against a known commit,
 every row stays `MERGED`, not `DEPLOYED`.
+
+**CI flake already paid for (do not re-diagnose).** PR #1044's first `Tests + migration smoke (real
+Postgres)` run failed in `artifacts/api-server/src/services/integration/reconcileFairProgress.db.test.ts`
+with two FK violations inside that file's own `clearAll` (`external_result_links_referral_id_fkey`,
+`external_result_links_emitted_outbox_id_fkey`) plus `Test timed out in 5000ms` at its line 246. The
+file is untouched by this queue, it passes locally against the scratch PostgreSQL 18 with all 193
+migrations applied, and the same job on `origin/main` was green minutes earlier. `POST
+/actions/runs/38957784294/rerun-failed-jobs` returned **all three jobs success** on attempt 2, which is
+the whole of the evidence that it was order/timing dependent rather than caused by the archive change.
+`origin/main` at that moment was `1066065b`; `main` is now `877701f9`.
 
 ---
 
@@ -74,7 +84,8 @@ accident the two independent sequences produce by themselves. Archiving the Brai
 report **637**, the LS Spine report, instead of **636**. 7 of the 13 cases in
 `pacsArchive.reportScope.request.test.ts` were red there; all 13 are green at `b2ecdef9`.
 
-**Correction made (`b2ecdef9`, Draft PR #1044).** The legacy spelling must name the examination:
+**Correction made (`b2ecdef9`, PR #1044 — merged into `877701f9`, not yet deployed).** The legacy
+spelling must name the examination:
 
 * `test_id` must equal the study's (NOT NULL on both `patient_reports` and `radiology_studies`, so no
   row can claim to be exempt);
@@ -304,9 +315,9 @@ a guessed identity for an approved one.
 
 1. Read `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` (this file) and `GET /pulls` — do not assume
    the statuses below survived the night.
-2. **RIS-005 / PR #1044**: confirm the `Tests + migration smoke` job went green, then hand it to the
-   owner to merge. Do not merge it yourself. After a merge, re-check whether #1042's and #1044's rows
-   are both on `main` before touching `pacsArchive.ts` again.
+2. **RIS-005 / PR #1044: DONE — merged by the owner into `877701f9`, CI green on the rerun.** It is
+   **not deployed**, so the clinic still files the wrong examination's report until someone deploys.
+   Nothing further is owed on `pacsArchive.ts` unless RIS-010 finds a transaction defect.
 3. **RIS-012**: the one-request-level-test measurement — it is cheap and it unblocks RIS-006.
 4. **RIS-006**: needs the NAS reachable for the null-`study_id` count, plus the owner's ruling on
    one-report-two-rows.
@@ -322,6 +333,8 @@ a guessed identity for an approved one.
 prints `No report body text entered.` into the DICOM object (RIS-005 case 9); (c) when the rebuilt NAS
 deployment is available, which commit to deploy and with which verified backup.
 
-_Last updated: 2026-10-16 late session — RIS-005 reproduced on PostgreSQL, corrected, mutation-checked
-and opened as Draft PR #1044; RIS-003's guard re-verified green on current main; RIS-006 closed out as
-BLOCKED with the exact missing evidence; RIS-012 opened from the same enumeration. Nothing deployed._
+_Last updated: 2026-10-16 end of session — RIS-005 reproduced on PostgreSQL, corrected,
+mutation-checked, CI green and **merged by the owner as `877701f9`** (still not deployed, still not
+clinically verified); RIS-003's guard and RIS-001's/RIS-002's suites re-verified green on the current
+head; RIS-006 closed out as BLOCKED with the exact measurements it needs; RIS-012 opened from the same
+enumeration. PR #1043 merged as `1066065b`; this follow-up is PR #1045._
