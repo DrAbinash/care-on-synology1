@@ -400,6 +400,129 @@ async function main() {
       fs.readFileSync(path.join(FEATURE_DIR, NEW_MIGRATION), "utf8").replace(/^﻿/, "")
     ).then(() => "ok").catch((e) => String(e.message));
     assert("§4 re-applying the new migration is a no-op", "ok", rerunNew);
+
+    // ── §5 QUICK SELECT FACTORY BOX ADOPTION ──────────────────────────────
+    // The factory seed is the only thing that puts the shipped Quick Select
+    // boxes into radiology_quick_findings, and a feature migration is applied
+    // exactly once — so what the adopt rule does to a clinic's existing row on
+    // the deploy is what that row keeps forever.
+    //
+    // Three shipped boxes collide with rows older CARE migrations already
+    // seeded: Hydrocephalus and Cerebral Atrophy from
+    // z_add_radiology_smart_findings_engine.sql, Midline shift from
+    // add_radiology_smart_reporting.sql, all study_type 'Brain'. Each words the
+    // finding differently from the shipped tile, so rule 1 adopts the row and
+    // stamps customized_at — and rule 2 then refuses to touch it forever.
+    //
+    // This pins what that must and must not mean. It must not mean the shipped
+    // wording wins (that is a clinic's own sentence dying on a deploy), and it
+    // must not mean the seed quietly attaches the shipped box's clinical
+    // metadata to wording nobody verified: baseline_replaces is a normal-
+    // suppression rule and category drives the critical-result workflow, so
+    // copying either onto a sentence the factory never wrote is a clinical claim
+    // invented by a build script. The remedy for a box the owner does want
+    // factory-identical already exists and is asserted here too — factory_
+    // definition is exactly what POST /findings/:id/restore-defaults reads back.
+    console.log(`\n${YEL}§5 QUICK SELECT FACTORY BOX ADOPTION (identity vs clinical meaning)${NC}`);
+
+    const SEED_FILE_RE = /^zzzzzzzzzzzzzzzzzzzzz_quick_select_factory_boxes_r(\d{3})_([0-9a-f]{12})\.sql$/;
+    const seedFiles = fs
+      .readdirSync(FEATURE_DIR)
+      .filter((f) => SEED_FILE_RE.test(f))
+      .sort((a, b) => Number(SEED_FILE_RE.exec(a)[1]) - Number(SEED_FILE_RE.exec(b)[1]));
+    assert("§5 factory box seed revisions found", true, seedFiles.length > 0);
+    const newestSeed = seedFiles[seedFiles.length - 1];
+
+    const catalogueHash = () =>
+      db.query(
+        `SELECT md5(string_agg(id::text||factory_key||coalesce(concept,'')||coalesce(conflict_group,'')||
+                coalesce(anatomical_section,'')||coalesce(baseline_replaces,'')||coalesce(properties,'')||
+                coalesce(category,'')||coalesce(mnemonic,'')||coalesce(scope_modality,'')||finding_text||
+                impression_text||coalesce(customized_at::text,'')||updated_at::text, ',' ORDER BY id)) AS h
+           FROM radiology_quick_findings`);
+
+    // Label match is case-insensitive because the clinic's row is spelled
+    // 'Cerebral Atrophy' while the shipped box is 'Cerebral atrophy', and the
+    // adopt rule matches on lower(trim(...)). An exact-match lookup here would
+    // find nothing and every assertion below it would pass vacuously.
+    const ADOPTED_LABELS = ["Hydrocephalus", "Cerebral atrophy", "Midline shift"];
+    const adoptedBox = async (label) =>
+      (await db.query(
+        `SELECT id, study_type, label, factory_key, factory_definition, concept, anatomical_section,
+                conflict_group, baseline_replaces, properties, category, mnemonic, scope_modality,
+                customized_at, finding_text,
+                md5(coalesce(finding_text,'')||'|'||coalesce(impression_text,'')||'|'||
+                    coalesce(technique_text,'')||'|'||coalesce(recommendation_text,'')) AS prose
+           FROM radiology_quick_findings
+          WHERE lower(trim(label)) = lower(trim($1)) AND factory_key <> ''
+          ORDER BY id LIMIT 1`, [label])).rows[0];
+
+    const adopted = [];
+    for (const label of ADOPTED_LABELS) {
+      const box = await adoptedBox(label);
+      assert(`§5 a deploy adopts the clinic's "${label}" row instead of duplicating it`, true, Boolean(box?.factory_key));
+      if (box) adopted.push(box);
+    }
+    const adoptedKeys = adopted.map((b) => b.factory_key);
+    assert("§5 adoption left exactly one row per factory key", ADOPTED_LABELS.length,
+      (await db.query(`SELECT count(*)::int AS c FROM radiology_quick_findings WHERE factory_key = ANY($1::text[])`,
+        [adoptedKeys])).rows[0].c);
+
+    for (const box of adopted) {
+      // The snapshot is the shipped tile's own wording, so comparing against it
+      // compares against the catalogue without restating any of it here.
+      const snapshot = JSON.parse(box.factory_definition);
+      assert(`§5 ${box.label} kept the clinic's sentence, not the shipped tile's`, true,
+        box.finding_text !== snapshot.findingText && box.finding_text.trim().length > 0);
+      // Divergent wording is what stamps the box, and the stamp is what stops
+      // every later revision from reverting it.
+      assert(`§5 ${box.label} is stamped customized, so no deploy can revert it`, true, box.customized_at !== null);
+      // And the snapshot survived, which is what makes Restore defaults a real
+      // button rather than a 409. This is the owner's one-click path to the
+      // shipped box's full clinical metadata, so it has to keep working.
+      assert(`§5 ${box.label} carries the snapshot Restore defaults reads back`, box.label.toLowerCase(),
+        String(snapshot.label ?? "").toLowerCase());
+
+      // No clinical metadata invented. These four are what normal suppression,
+      // mutual exclusion, impression-worthiness and the laterality chips derive
+      // from; the seed leaves every one of them to the radiologist.
+      for (const col of ["concept", "conflict_group", "baseline_replaces", "properties"]) {
+        assert(`§5 ${box.label} was not given the shipped ${col}`, "", String(box[col] ?? ""));
+      }
+      assert(`§5 ${box.label} was not given the shipped category`, "null", box.category);
+      assert(`§5 ${box.label} was not given the shipped mnemonic`, "", box.mnemonic);
+      assert(`§5 ${box.label} was not given the shipped scope_modality`, "", box.scope_modality);
+    }
+
+    // anatomical_section is the one ownership column these rows already had,
+    // from the older CARE seed, and the shipped tile's is '' for all three — so
+    // a non-blank value here proves the seed did not overwrite it either.
+    assert("§5 the ownership the older seed gave them was not overwritten", ADOPTED_LABELS.length,
+      (await db.query(
+        `SELECT count(*)::int AS c FROM radiology_quick_findings
+          WHERE factory_key = ANY($1::text[]) AND anatomical_section <> ''`, [adoptedKeys])).rows[0].c);
+
+    // A box the clinic wrote itself, with no shipped twin: nothing may touch it.
+    const clinicOnlyId = (await db.query(
+      `INSERT INTO radiology_quick_findings (study_type, label, field, finding_text, sort_order)
+       VALUES ('Brain', 'CARE-SMOKE clinic-only box', 'findings', 'CARE-SMOKE clinic-only sentence.', 99999)
+       RETURNING id`)).rows[0].id;
+
+    const hashBefore = (await catalogueHash()).rows[0].h;
+    const rerunSeed = await db
+      .query(fs.readFileSync(path.join(FEATURE_DIR, newestSeed), "utf8").replace(/^\uFEFF/, ""))
+      .then(() => "ok").catch((e) => String(e.message).split("\n")[0]);
+    assert("§5 re-applying the newest seed revision succeeds", "ok", rerunSeed);
+    assert("§5 re-applying changes no box and churns no updated_at", hashBefore, (await catalogueHash()).rows[0].h);
+
+    const clinicOnly = (await db.query(
+      `SELECT factory_key, factory_definition, concept, customized_at, finding_text
+         FROM radiology_quick_findings WHERE id = $1`, [clinicOnlyId])).rows[0];
+    assert("§5 a clinic box with no shipped twin was not adopted", "", clinicOnly.factory_key);
+    assert("§5 a clinic box was not given a snapshot it never had", "", clinicOnly.factory_definition);
+    assert("§5 a clinic box was not given a concept", "", clinicOnly.concept);
+    assert("§5 a clinic box was not stamped customized", "null", clinicOnly.customized_at);
+    assert("§5 a clinic box kept its own sentence", "CARE-SMOKE clinic-only sentence.", clinicOnly.finding_text);
   } finally {
     await db.end();
     const cleanup = new Client({ connectionString: adminUrl });

@@ -158,6 +158,39 @@ describe("the SQL keeps the promises in its own header", () => {
     expect(adopt).not.toMatch(/\bis_active\b/);
   });
 
+  it("adopts identity only, never the shipped clinical meaning", () => {
+    // Measured against a real bootstrap: the three boxes r001 adopts
+    // (Hydrocephalus, Cerebral Atrophy, Midline shift) come out stamped
+    // customized_at with concept '', conflict_group '', baseline_replaces '',
+    // properties '' and category NULL. That is deliberate, not an omission to
+    // be "fixed" by a later revision. Their stored sentence is not the shipped
+    // one, so the seed cannot know whether the shipped concept, normal
+    // suppression or critical-result category still describes what the doctor
+    // actually wrote — and baseline_replaces/category would hang suppression
+    // and a critical-result workflow off clinical meaning nobody verified.
+    // The doctor's own one-click path to the full shipped metadata is
+    // POST /findings/:id/restore-defaults, which reads factory_definition —
+    // the very column this rule stamps.
+    const adopt = sql.slice(sql.indexOf("adopted AS ("), sql.indexOf("refreshed AS ("));
+    const setCols = [...adopt.matchAll(/^\s*(?:SET\s+)?(\w+)\s*=/gm)].map((m) => m[1]);
+    expect(setCols).toEqual(["factory_key", "factory_definition", "customized_at", "updated_at"]);
+
+    // Named individually as well, because an exact-list assertion does not say
+    // which columns were the temptation. finding_text is the trap here: it does
+    // appear in this slice, inside the wording-divergence CASE, so a loose
+    // /\bfinding_text\b/ assertion would false-red on correct SQL.
+    for (const col of [
+      "concept", "anatomical_section", "conflict_group", "baseline_replaces",
+      "properties", "category", "mnemonic", "scope_modality",
+      "finding_text", "impression_text", "technique_text", "recommendation_text",
+    ]) {
+      expect(
+        adopt.match(new RegExp(`^\\s*(?:SET\\s+)?${col}\\s*=`, "m")),
+        `adoption wrote ${col}, attaching shipped clinical meaning to a sentence the clinic wrote`,
+      ).toBeNull();
+    }
+  });
+
   it("refreshes exactly the columns its change-guard compares", () => {
     // A column in the SET but not the guard churns updated_at every deploy; a
     // column in the guard but not the SET silently never refreshes.
