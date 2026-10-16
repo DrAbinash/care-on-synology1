@@ -3086,7 +3086,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     if (!impressionNeedsRefresh) return;
     const live = useWorkspace.getState().fieldProvenance.impression;
     if (impressionProvenanceIsRadiologistManual(live)) return;
-    useWorkspace.getState().refreshImpressionFromLedger();
+    useWorkspace.getState().refreshImpressionFromLedger({ automatic: true });
     // §37: spine impressions are re-sorted by clinical priority, but a hand
     // -built Impression (impressionOrderFrozen) is left exactly as written.
     if (spineFamily) useWorkspace.getState().orderImpressionByPriority();
@@ -3102,7 +3102,12 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
         protectedLine: (line) => contributionProtected(line, state.fieldProvenance.impression),
       }),
     );
-  }, [impressionNeedsRefresh, spineFamily]);
+  // `findingsText` is a dependency because a refusal leaves the flag armed rather
+  // than clearing it: the next sentence typed has to be looked at again, or an
+  // abnormality dictated after one CARE cannot name would never reach the
+  // Conclusion on its own. The body still opens with `if (!impressionNeedsRefresh)
+  // return`, so an edit that arms nothing costs nothing.
+  }, [impressionNeedsRefresh, findingsText, spineFamily]);
 
   // §23: on study open (and when the billed exam / protocol changes) propose
   // each spine region's role from the catalog. Billing never asserts a sequence.
