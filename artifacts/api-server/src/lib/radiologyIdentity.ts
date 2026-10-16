@@ -268,7 +268,80 @@ export async function assertReportBelongsToWorklist(reportId: number, worklist: 
         );
       }
     }
+    return;
   }
+
+  // No study reference at all. Patient equality alone cannot answer "which examination", so the
+  // linkage has to come from the database rather than from a guess.
+  const linked = await hasAuthoritativeLinkageToWorklist(
+    { id: report.id, orderTestId: report.orderTestId },
+    { id: worklist.id, reportId: worklist.reportId },
+  );
+  if (!linked) {
+    throw new RadiologyIdentityError(
+      409,
+      "REPORT_STUDY_UNATTRIBUTED",
+      "This report carries no study, and no draft, worklist link or billed examination ties it to this study. Open the report from the study it belongs to, or link the study in Match Center — do not finalize it from a second study of the same patient.",
+    );
+  }
+}
+
+/**
+ * Does something already recorded in the database name this worklist row as this report's study?
+ *
+ * A report can legitimately arrive with `patient_reports.study_id` NULL: the study-less create path is
+ * kept on purpose (`routes/patient-reports.ts:1980-1985`), and amendments and legacy free-text rows
+ * are never re-keyed. That is a reason to look for a linkage, not a licence to fall back on the
+ * patient — one patient with two studies satisfies "same patient" for both of them.
+ *
+ * Three linkages are authoritative because a person or a bill already wrote them:
+ *  1. the worklist row itself names the report (`radiology_worklist.report_id`, set at
+ *     `routes/patient-reports.ts:2208` / `:2275`) — finalizing it again claims no new association;
+ *  2. a draft promoted to this report (`radiology_report_drafts.final_report_id`, written at
+ *     `:1208`) carries the row it was written for in `worklist_id`, or a study reference that
+ *     `resolveWorklistFromStudyRef` already knows how to untangle;
+ *  3. the report's own `order_test_id`, which is UNIQUE on `radiology_studies` and therefore names one
+ *     examination; that study may answer for any worklist row bound to it, because duplicate modality
+ *     intake binds two rows to the same examination and both of them ARE that examination.
+ *
+ * The study side is unique-or-refuse (an `order_test_id` reaching two studies is a data violation, not
+ * a choice), and ambiguity there returns false rather than picking one. Nothing here writes, back-fills
+ * or re-keys a historical report.
+ */
+export async function hasAuthoritativeLinkageToWorklist(
+  report: { id: number; orderTestId: number | null },
+  worklist: { id: number; reportId: number | null },
+): Promise<boolean> {
+  if (worklist.reportId === report.id) return true;
+
+  const drafts = await db
+    .select({ worklistId: radiologyReportDraftsTable.worklistId, studyId: radiologyReportDraftsTable.studyId })
+    .from(radiologyReportDraftsTable)
+    .where(eq(radiologyReportDraftsTable.finalReportId, report.id));
+  for (const draft of drafts) {
+    if (draft.worklistId === worklist.id) return true;
+    if (draft.studyId != null) {
+      const resolved = await resolveWorklistFromStudyRef(draft.studyId);
+      if (resolved?.id === worklist.id) return true;
+    }
+  }
+
+  if (report.orderTestId != null) {
+    const studies = await db
+      .select({ id: radiologyStudiesTable.id })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.orderTestId, report.orderTestId));
+    const studyPick = pickUniqueRow(studies);
+    if (studyPick.status === "unique") {
+      const rows = await db
+        .select({ id: radiologyWorklistTable.id })
+        .from(radiologyWorklistTable)
+        .where(eq(radiologyWorklistTable.studyId, studyPick.row.id));
+      if (rows.some((row) => row.id === worklist.id)) return true;
+    }
+  }
+
+  return false;
 }
 
 /**
