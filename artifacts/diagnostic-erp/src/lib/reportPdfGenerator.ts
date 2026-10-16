@@ -50,6 +50,8 @@ export type PrintSettings = {
   watermark: string;
   watermarkOpacity: number;
   layout: Array<"patientBox" | "clinicalHistory" | "technique" | "comparison" | "measurements" | "findings" | "keyImages" | "impression" | "recommendation">;
+  /** Defaults to `numbered`, the layout this generator has always printed. */
+  impressionStyle?: "bulleted" | "numbered" | "plain";
   show: {
     patientBox: boolean;
     clinicalHistory: boolean;
@@ -100,6 +102,7 @@ export const DEFAULT_PRINT_SETTINGS: PrintSettings = {
   watermark: "",
   watermarkOpacity: 0.1,
   layout: ["patientBox", "clinicalHistory", "technique", "comparison", "measurements", "findings", "impression", "recommendation", "keyImages"],
+  impressionStyle: "numbered",
   show: {
     patientBox: true,
     clinicalHistory: true,
@@ -619,14 +622,39 @@ function drawNumberedImpression(
   lineH: number,
   contentBottom?: number,
   ensureSpace?: (currentY: number, needed: number) => number,
+  /**
+   * Which marker the clinic asked for. `numbered` is the default so a caller that
+   * has no preference keeps the paper layout it has always printed; the reporting
+   * workspace passes its saved preference so the PDF matches the screen and print.
+   */
+  style: "bulleted" | "numbered" | "plain" = "numbered",
 ): number {
   const rawLines = impression.split(/\n+/).map((l) => l.trim()).filter(Boolean);
   const items = rawLines.map((l, i) => {
     if (/^\d+[.)]\s*/.test(l)) return l.replace(/^\d+[.)]\s*/, "");
     return l;
   });
+  if (items.length === 0) return y;
+
+  // A plain impression is one paragraph, exactly as the HTML preview renders it.
+  if (style === "plain") {
+    const paragraph = items.join("; ");
+    doc.setFont(font, "bold");
+    doc.setFontSize(bodySize);
+    const lines = doc.splitTextToSize(paragraph, maxW) as string[];
+    if (contentBottom !== undefined && ensureSpace) {
+      y = ensureSpace(y, lines.length * lineH + lineH * 0.25);
+    }
+    for (const line of lines) {
+      if (contentBottom !== undefined && ensureSpace) y = ensureSpace(y, lineH);
+      doc.text(line, x, y);
+      y += lineH;
+    }
+    return y + lineH * 0.25;
+  }
+
   items.forEach((item, i) => {
-    const prefix = `${i + 1}. `;
+    const prefix = style === "numbered" ? `${i + 1}. ` : "• ";
     // The impression is the clinical bottom line of the report, so it is set in
     // bold on the letter pad as well as on screen and in Word.
     doc.setFont(font, "bold");
@@ -1278,7 +1306,7 @@ export function generateReportPDF(
         if (!report.impression?.trim()) break;
         y = ensureSpace(y, 14);
         y = drawSectionHeading(doc, "IMPRESSION:", m.left, y, font, fs.heading);
-        y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace);
+        y = drawNumberedImpression(doc, normalizeReportPlainText(report.impression.trim()), m.left, y, colW(), font, fs.body, lineH, contentBottom, ensureSpace, settings.impressionStyle ?? "numbered");
         y += lineH * 0.4;
         break;
       }
