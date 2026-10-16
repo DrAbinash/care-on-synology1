@@ -34,9 +34,9 @@
  * SPINE" contains an 8-character primary and an 11-character supplementary, and
  * the supplementary won: a lumbar examination opened the whole-spine report.
  * "MRI BRAIN WITH CERVICAL SPINE SCREENING" lost Brain to Cervical Spine the same
- * way. The outcome depended on tab-name length, which is why it looked
- * intermittent — "MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING" resolves
- * correctly only because cervical is the longer of those two names.
+ * way, and "MRI CERVICAL SPINE WITH WHOLE SPINE SCREENING" loses cervical to the
+ * 21-character 'Whole Spine Screening' tab. Which examination mis-resolves is
+ * decided by tab-name length and word order, not by anything clinical.
  */
 
 /** Classify a study-tab name into a modality family for Study Setup filtering. */
