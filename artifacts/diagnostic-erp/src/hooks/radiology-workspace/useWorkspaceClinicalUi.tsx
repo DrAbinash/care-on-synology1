@@ -265,11 +265,6 @@ import {
   proposeComposerFromTranscript,
 } from "@/lib/findingComposerModel";
 import { defaultCoverageMarks } from "@/lib/coverageMarks";
-import {
-  canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
-} from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";

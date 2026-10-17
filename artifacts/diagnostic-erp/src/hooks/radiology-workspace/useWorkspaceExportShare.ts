@@ -33,9 +33,10 @@ import {
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
+  canalApLevelsFromCanonicalRecord,
   canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
+  mergeCanalApLevels,
+  normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
 import { useWorkspace } from "@/lib/zai-workspace/store";
@@ -290,22 +291,27 @@ const handleExportPdf = useCallback(async () => {
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
       try {
+        // Two stores, one answer — the same fold the signed body prints from. This
+        // call used to read only `spinal_measurements`, the legacy generator's rows,
+        // so a number typed into the reporting workspace's grid was absent from the
+        // PDF the radiologist exported even though the printed page carried it. Then
+        // it picked ONE segment by study hint, which dropped the other half of a
+        // Dorso-Lumbar study. Both stores are folded through the canonical record,
+        // and the level list comes from the shared print plan, so the export cannot
+        // disagree with the signed report about which number a level carries (owner
+        // DECISIONS 1 and 2, 2026-10-17).
         const rows = await api.get<Array<{ vertebraLevel: string; canalAP: string | null }>>(
           `/api/radiology/report-generator/spinal-measurements?studyId=${spinalKey}`,
         );
-        const values: Record<string, string> = {};
+        const legacy = new Map<string, string>();
         for (const r of rows) {
-          if (r.canalAP?.trim()) values[r.vertebraLevel] = r.canalAP.trim();
+          const value = r.canalAP?.trim();
+          if (value) legacy.set(normalizeDiscLevel(r.vertebraLevel) ?? r.vertebraLevel, value);
         }
-        const hint = [
-          studySetup.matchedStudyRegion,
-          workflow.currentRow?.studyDescription,
-        ].filter(Boolean).join(" ");
-        const segment =
-          canalSegmentFromSpine(useWorkspace.getState().reportingContext.spineSegment)
-          ?? resolveCanalSegment(hint)
-          ?? (Object.keys(values).some((k) => k.startsWith("C")) ? "cervical" : "lumbar");
-        measurements = canalApToPdfRows(segment, values);
+        measurements = canalApToPdfRows(mergeCanalApLevels(
+          legacy,
+          canalApLevelsFromCanonicalRecord(useWorkspace.getState().canalApProvenance),
+        ));
       } catch { /* omit measurements section */ }
     }
     const frozenForPdf = frozenKeyImages
