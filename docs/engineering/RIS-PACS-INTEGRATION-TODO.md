@@ -38,7 +38,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **IMPLEMENTING → TESTING — the six owner decisions are now code**, evidence pass MERGED, correction pass in review | `pacsArchive.transaction.request.test.ts` **13/13** on real PostgreSQL; consolidated **229 tests / 13 files green**; battery **20 mutants = 15 DETECTED with named attribution + 5 survived-by-design, 0 unexplained**; Command Center refusal wording **4/4 in real Chromium** (control: 2/4 on the pre-correction JSX); typecheck unchanged (api-server 58 pre-existing, 0 in touched files) | evidence **#1048 → MERGED `1394ab79`**; corrections **#1050** (head `7ac9662a`, base `main`) | #1050 **pending at the time of writing** — see the stage table below; nothing is DEPLOYED | no | no |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on a Draft follow-up. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **20 / 20** on real PostgreSQL; neighbours **243 tests / 13 files**; battery **26 mutants = 21 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up `audit/ris010-post-merge-compatibility` head `52434abb` | #1050 **green** (measured from the Actions log); the follow-up is **pending** — see the stage table below | **yes** for #1050 | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 | **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
@@ -244,15 +244,17 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 |---|---|---|
 | CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
 | RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
-| IMPLEMENTED | yes, in review | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag |
-| TESTED | yes, locally | 13/13 request-level cases + 229 tests across the 13 affected files + 20-mutant battery + real-Chromium UI probe |
+| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, on `audit/ris010-post-merge-compatibility` head `52434abb` |
+| TESTED | yes, locally | **20/20** request-level cases (13 enforcement + 7 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
 | CI GREEN | **yes, on #1050** — measured 2026-10-17 02:56Z on head `7ac9662a` | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3 |
-| MERGED | **no** — only the evidence pass is | #1048 merged as `1394ab79` ("measured, no fix"). #1050 is open. The PR was created as Ready by the operator's own tooling; both `PATCH {draft:true}` and `convert-to-draft` were refused with this token, so it is **not** marked draft despite the standing instruction — it must not be merged without the owner's review of the two visible behaviour changes below |
+| MERGED | **yes for the enforcement pass** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as a Draft**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
 | DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
 | CLINICALLY VERIFIED | no | nothing has been observed in the clinic |
 
 **MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
-still the one described in the "What #1048 measured" section below until #1050 merges **and** deploys.
+still the one described in the "What #1048 measured" section below until #1050 **and** the audit
+follow-up deploy — which also means the two regressions recorded below are **not** live at the clinic
+today; they were introduced and corrected between merges, entirely inside `main`.
 
 ### What the owner ruled, and the smallest change that implements it
 
@@ -434,6 +436,87 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
 | Real-Chromium UI probe | **4/4** as expected (`tmp/ris010-ui/A-refused.png` … `D-archived.png`); **control run against the pre-correction JSX: 2/4** — a `refused` study rendered no badge and no Retry button at all, and an already-archived revision toasted "Report successfully archived to PACS!". Scratch probe files deleted; `git status` shows only the eight shipped files |
 | Typecheck | `api-server` **58 errors — the pre-existing baseline, none in a touched file**. `diagnostic-erp` **61 before this change and 61 after** (measured by swapping in `HEAD~1`'s copy of the same file), i.e. zero added; the failures are the duplicate-`@types/react` class AGENTS.md describes and none is in `RadiologyCommandCenter.tsx` |
 | One failure is NOT attributable to this work | `aiQueryContract.test.ts` fails on this box because it compares a **Windows absolute path** against `"lib/aiReportingClient.ts"` (`:52-54`), so the exclusion never matches and the allowed file reports as an offender. It runs no code this PR touches; left alone rather than widened into this PR |
+
+> These are the **correction-pass** numbers, kept as measured at the time. The post-merge compatibility
+> audit below supersedes them: the same file now runs **20** cases, the battery has **26** mutants, the
+> browser probe has **8** cases, and the typecheck baseline was re-measured against `main`'s own copies
+> (98 before / 98 after — the earlier "58" was main before #1049 landed).
+
+### Post-merge compatibility audit of the policy #1050 enforced (the owner's eight points, measured on `main` at `1a93e4e4`, 2026-10-17)
+
+Every point below was answered by **running** the real-PostgreSQL request suite against `main`, not by
+reading the diff. Six points were already sound — their cases pass on `main` with no source change, so
+they are recorded as verification, not as work. **Two were demonstrated regressions**, and only those
+two got code.
+
+| Owner's question | Verdict | Measured how |
+|---|---|---|
+| 1. A missing `StudyInstanceUID` must prevent an unsafe PACS association but must **not** block ordinary signing or printing | **SOUND** (case V1) | the real `POST /api/patient-reports/:id/sign` returns 200 and leaves `status='pending_verification'` with `signedAt` set, and the read surface the reporting screen and the print path use (`GET /api/patient-reports/:id`) returns 200 for that report. Nulling the UID afterwards changes **no** byte of the report row and only the archive refuses, with `no_study_uid` and zero POSTs. Stated exactly: printing is untouched **by construction** — the gate lives inside `archiveReportToPacs`, which no print or read path calls — and no browser print was performed, because nothing is deployed |
+| 2. Obstetric Form-F restrictions use the existing statutory compliance policy | **SOUND** (case V2) | the archive calls the same `checkPcpndtFormFCompliance` the USG return service calls — no second policy. An **MRI with zero Form-F rows archives** (the restriction cannot reach a non-obstetric study); an obstetric USG is blocked on a `pcpndt*` reason and unblocks as soon as one compliant `form_f_records` row exists, uploading then, not before |
+| 3. A refused archive displays the actual reason for refusal | **REGRESSION → fixed** (case V3) | see below |
+| 4. Superseded reports cannot replace the current official signed report | **SOUND** (cases V4, 8b) | the refusal writes status/response only — `pacs_instance_id` survives it (mutant **N15**, which nulls it, is killed by V4); a retired revision is refused outright; and because the pick is newest-first this entrypoint cannot reach a superseded root row at all |
+| 5. Signed amendments remain archivable as new legitimate revisions | **SOUND** (case V5, with 7+8) | after a `superseded_report` refusal, the study's **current** signed amendment still archives: a new revision row at `sequenceNumber 2`, labelled `v2/2 (amended)`, the root keeping its own instance id |
+| 6. Legacy free-text signed reports retain their existing supported workflows | **REGRESSION → fixed** (case V6), **one limitation kept** | see below. Kept, not smoothed: a legacy free-text final has **no revision identity**, so the duplicate guard cannot key on it and re-archiving one uploads again. Giving it an identity means changing the revision table's key, which is an architectural decision, not a correction inside RIS-010 |
+| 7. Restore / Re-archive cannot silently create duplicate DICOM objects | **SOUND** (cases V7, DECISION 4) | only `restore_archived_report` bypasses the duplicate guard, and only with `requireAdminRole`, dry-run by default, `confirmToken` and a reason ≥ 10 chars (no token → 400). Each object it accepts gets its own `ORTHANC_UPLOAD_SUCCESS` id, the audit row names the administrator (mutant **N16**, which writes `actor:'system'`, is killed). Honest limit: a **second** authorized restore leaves the earlier instance id named only in the audit log, not in the study row |
+| 8. Accepted-but-unrecorded uploads remain visible for administrator reconciliation | **SOUND as far as it can be measured** (case V8) | an abandoned archive job appears in `GET /api/radiology-ops/jobs/dead-letter` carrying the refusal sentence — no SQL. Two limits stated rather than hidden: `listDeadLetterJobs` projects **no `status` column**, so the row is identified by `operationType` + `failureReason`; and DECISION 6's *runtime* half still cannot be forced (mutant **N10** survives by construction, as recorded above) |
+
+**Regression 1 — every refusal said the same thing (owner point 3).** `planUsgPacsReturn` distinguishes
+seven blockers; `pacsArchive.ts:462/477/479` on `main` collapsed all seven into
+`NO_ELIGIBLE_REPORT_MESSAGE`. Clinically: a study refused because it has no Study Instance UID, or
+because PCPNDT Form-F has not been evaluated, was told *"No finalized signed report available for this
+examination"* — staff sent to sign a report that is already signed, while the real blocker (an
+unregistered UID, an incomplete statutory record) stayed unfixed and the study stayed out of PACS.
+Demonstrated byte-exactly by re-installing main's line and running the suite
+(`tmp/ris010-control-failures.mjs`, gitignored):
+
+```
+FAIL … > V3 — a refusal names the blocker it actually found, not one sentence for every cause
+AssertionError: refusal said: No finalized signed report available for this examination.:
+expected 'No finalized signed report available …' not to be 'No finalized signed report available …'
+Tests  1 failed | 19 passed (20)
+```
+
+Fixed by a refusal sentence per `PacsReturnBlockReason`, held **in the archive module** and keyed by the
+policy's own codes — the shared statutory policy was deliberately **not** widened (an earlier attempt to
+add `reasonMessages` there was reverted as unjustified scope). The stored refusal keeps `blockReasons`
+and gains `reasons`; the no-report case keeps the owner's exact sentence; `PACS_ARCHIVE_REFUSED:` — the
+prefix `decideFailure` reads to make a refusal terminal for the queue — is unchanged. The Command
+Center badge now names the cause (No Study Instance UID / Form-F Hold / No Patient Record / No Signed
+Report) and falls back to "See Retry" when the stored response cannot be parsed, with the full sentence
+on hover; proved in real Chromium, **8/8**, control against `main`'s component **4/8** (it rendered
+"No Signed Report" for a missing-UID refusal — the misdirection itself).
+
+**Regression 2 — a federated-bridge legacy final stopped being eligible (owner point 6).** #1050 keyed
+the legacy free-text branch on `study.status === "reported_final"` (`pacsArchive.ts:226`), one spelling
+of one status. The bridge writes its final through `routes/boundary.ts:369-372`, which stores
+`status === "reported_final" ? "reported_final" : study.status` — the caller's `status` is unvalidated and
+the study is **not** promoted unless the caller happens to send that exact word. A service that posts a
+signed, attributed, dated final without it leaves the study `acquired`, so the report was refused, and
+refused with the *missing signature* sentence on top. Same demonstration:
+
+```
+FAIL … > V6 — an attributed legacy final delivered by the federated bridge keeps archiving
+AssertionError: bridge-delivered legacy final was refused: {"success":false,"refused":true,
+"reason":"NO_ELIGIBLE_REPORT","message":"No finalized signed report available for this examination.",
+"blockReasons":["no_report"],…}: expected true to be falsy
+Tests  1 failed | 19 passed (20)
+```
+
+Fixed by keying on what the bridge actually writes — non-empty trimmed `final_report` **and**
+`finalReportedBy` **and** `finalReportedAt` — instead of on a status word, with a cancelled examination
+still refused (mutant **N11**, which drops that clause, is killed by V6; **N12**, which re-installs
+main's status key, is killed by V6 too). Case V6 drives the real
+`POST /api/boundary/studies/:accession/report` with `x-boundary-key`, so it is the bridge's own code path,
+not a hand-made payload.
+
+**Numbers for the audit pass** (scratch PostgreSQL 18 at `127.0.0.1:5445`, `TZ=UTC`, `--maxWorkers=1`):
+enforcement suite **20/20**; neighbours **243 tests / 13 files** (api-server 120/11, ERP contract
+123/2); mutation battery **26 mutants, each anchor preflighted unique and byte-verified**: **21 DETECTED
+with the owning case named + 5 EXPECTED-SURVIVE (M5, M7, M8, M10, N10), 0 unexplained**; browser probe
+**8/8**, control **4/8**; typecheck `api-server` **98 before and 98 after** — measured by swapping
+`main`'s copies of the two changed files back in, so zero added (the figure this file previously quoted,
+58, was main **before #1049** landed; 10 of the 98 are that PR's own `radiologyQuickSelectBoxes.request.test.ts`),
+and `diagnostic-erp` **61 = the recorded baseline**, none in `RadiologyCommandCenter.tsx`.
 
 ### What #1050 changes that a reviewer or the owner must actually look at
 
@@ -818,7 +901,29 @@ also fail-closes a study with no `StudyInstanceUID`, a non-compliant obstetric F
 revision — states the archive used to accept; and the legacy free-text final, which stays eligible,
 cannot be idempotency-keyed because the revision table's key is a `patient_reports` id.
 
-_Last updated: 2026-10-17 (third pass) — **RIS-010 moved from measurement to correction.** The owner
+_Last updated: 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
+as `1a93e4e4`**, so the six rulings are on `main`; the audit then asked the owner's eight compatibility
+questions of the merged code by **running** the request suite on `main`. Six were already sound (a missing
+UID blocks only the association, signing and printing unaffected; the obstetric restriction is the existing
+statutory engine and lifts when Form-F is satisfied; a refusal leaves the object PACS holds intact; a
+signed amendment still archives as a new revision; only the token-bearing admin restore bypasses the
+duplicate guard; a terminal failure reaches an operator through `/api/radiology-ops/jobs/dead-letter`).
+**Two were demonstrated regressions**, each reproduced byte-for-byte by re-installing `main`'s line and
+each fixed minimally: every refusal collapsed to one sentence that named a missing signature when the real
+blocker was an unregistered `StudyInstanceUID` or an unevaluated PCPNDT Form-F, and the legacy free-text
+branch was keyed on the single status spelling `reported_final`, which the federated boundary bridge never
+writes — so a delivered, attributed legacy final stopped archiving and was refused with the wrong reason.
+Evidence for the follow-up (`audit/ris010-post-merge-compatibility`, head `52434abb`): **20/20** request
+cases, **243/243** neighbours across 13 files, **26 mutants → 21 detected with the owning case named + 5
+surviving by documented reason + 0 unexplained**, browser **8/8** against a **4/8 control on `main`'s
+component**, typecheck **98 before / 98 after** on api-server and 61 on the ERP (both unchanged, measured
+by swapping `main`'s copies back in). No migration, no new column, no new flag, no production row, container
+or Orthanc instance touched; nothing deployed; nothing clinically verified. The shared statutory policy was
+**not** widened — the refusal wording lives in the archive module and is keyed by the policy's own codes.
+Two limits are recorded rather than fixed: a legacy free-text final still has no revision identity to key
+idempotency on, and a second authorized restore leaves the first instance id in the audit log only._
+
+_Previous pass, 2026-10-17 (third pass) — **RIS-010 moved from measurement to correction.** The owner
 ruled on all six questions; PR **#1050** (head `7ac9662a`, base `main`) implements those rulings in 8
 files with no migration and no new subsystem: eligibility through the clinic's own `planUsgPacsReturn`
 before any render or POST, the placeholder and `prelim_report` removed, per-revision idempotency on the
