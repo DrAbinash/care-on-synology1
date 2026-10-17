@@ -151,7 +151,7 @@ describe("readStructuredReport — real signed document (end-to-end with the D5 
     expect(r.diagnostics.hashVerified).toBe(true);
     expect(r.diagnostics.validationErrors).toEqual([]);
     expect(r.diagnostics.renderMs).toBeGreaterThanOrEqual(0);
-    expect(r.diagnostics.currentRendererVersion).toBe("d4-structured-1.0.0");
+    expect(r.diagnostics.currentRendererVersion).toBe("d4-structured-1.1.0");
     expect(r.diagnostics.catalogVersion).toBe("0");
   });
 

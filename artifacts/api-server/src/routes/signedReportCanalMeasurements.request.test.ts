@@ -56,6 +56,7 @@ import {
   orderTestsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  radiologyReportDraftsTable,
   patientReportsTable,
   spinalMeasurementsTable,
   signaturesTable,
@@ -78,6 +79,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
   const worklistIds: number[] = [];
   const studyIds: number[] = [];
   const reportIds: number[] = [];
+  const draftIds: number[] = [];
   const measurementKeys = new Set<number>();
 
   const LEVELS = [
@@ -100,9 +102,18 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
       .replace(/&amp;/g, "&")
       .replace(/\s+/g, " ");
 
-  /** A study exactly as the product leaves it: worklist linked to a billed
-   *  study, canal rows keyed by the billed id (what the reporting rail writes). */
-  async function studyWithCanalRows(levels = LEVELS, key: "billed" | "worklist-row" = "billed") {
+  /** Create a study exactly as the product leaves it: worklist linked to a billed study,
+   *  canal rows keyed as the reporting workspace keys them, and — when `draftEnvelope`
+   *  is given — the study's own draft holding the canonical measurement record the
+   *  Reporting Workspace grid writes. Passing that envelope is what makes these cases
+   *  measure the join instead of one side of it: every case above seeds
+   *  `spinal_measurements` directly, which is why entry was tested, print was tested,
+   *  and nothing tested that a number the radiologist can see reaches the paper. */
+  async function studyWithCanalRows(
+    levels = LEVELS,
+    key: "billed" | "worklist-row" = "billed",
+    draftEnvelope?: unknown,
+  ) {
     seq += 1;
     const tag = `${marker}-${seq}`;
     const [orderTest] = await db
@@ -150,7 +161,29 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
         .insert(spinalMeasurementsTable)
         .values({ studyId: measurementKey, worklistId: worklist.id, vertebraLevel: l.vertebraLevel, canalAP: l.canalAP, measuredBy: marker });
     }
-    return { study, worklist, tag, measurementKey };
+
+    let draftId: number | null = null;
+    if (draftEnvelope !== undefined) {
+      // save-draft stores the worklist ROW id here, which is why the signing route
+      // reads both ids — and why this row is keyed the way the product keys it.
+      const [draft] = await db
+        .insert(radiologyReportDraftsTable)
+        .values({
+          status: "DRAFT",
+          worklistId: worklist.id,
+          studyId: worklist.id,
+          patientId: null,
+          modality: "MR",
+          studyName: "MRI LUMBAR SPINE",
+          rawFindings: `Lumbar canal assessed at three levels. ${tag}`,
+          impression: "[]",
+          structuredJson: draftEnvelope,
+        })
+        .returning();
+      draftId = draft.id;
+      draftIds.push(draft.id);
+    }
+    return { study, worklist, tag, measurementKey, draftId };
   }
 
   /** Create and sign the way the workspace does, then return the report id. */
@@ -263,6 +296,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
         .catch(() => {});
     }
     for (const id of worklistIds) await db.delete(radiologyWorklistTable).where(eq(radiologyWorklistTable.id, id)).catch(() => {});
+    for (const id of draftIds) await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id)).catch(() => {});
     for (const id of studyIds) await db.delete(radiologyStudiesTable).where(eq(radiologyStudiesTable.id, id)).catch(() => {});
     await db.delete(orderTestsTable).where(eq(orderTestsTable.orderId, orderId)).catch(() => {});
     await db.delete(ordersTable).where(eq(ordersTable.id, orderId)).catch(() => {});
@@ -275,17 +309,28 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
   it("prints the measured canal table on the signed report, between Findings and Impression", async () => {
     const { worklist, tag } = await studyWithCanalRows();
     const reportId = await signedReportFor(worklist, tag);
-    const text = visibleText(await printHtml(reportId));
+    const html = await printHtml(reportId);
+    const text = visibleText(html);
 
     expect(text).toMatch(/LUMBAR CANAL AP DIAMETER/);
     expect(text).toContain("AP (mm)");
-    // The measured values, not a heading with empty cells.
-    for (const { canalAP } of LEVELS) expect(text, `missing ${canalAP}`).toContain(canalAP);
-    // Level order and value order are the rail's, not Postgres' row order.
-    expect(text.indexOf("L3-L4")).toBeLessThan(text.indexOf("L4-L5"));
-    expect(text.indexOf("L4-L5")).toBeLessThan(text.indexOf("L5-S1"));
-    expect(text.indexOf("15.2")).toBeLessThan(text.indexOf("6.4"));
-    expect(text.indexOf("6.4")).toBeLessThan(text.indexOf("8.1"));
+    // Each measured value paired with the level it belongs to, in the rail's
+    // order rather than Postgres' row order, with the segment's unmeasured levels
+    // printed as an em-dash (never blank, never a 0).
+    //
+    // Measured on the table's own cells, not the flattened page: the section title
+    // names both endpoint levels ("AT L1-L2 TO L5-S1 LEVELS"), so a page-wide
+    // indexOf finds L5-S1 in the heading BEFORE the first cell and reports a level
+    // order the printed table does not have.
+    const { headers, values } = canalCells(html);
+    expect(headers).toEqual(["LEVEL", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
+    expect(Object.fromEntries(headers.slice(1).map((level, i) => [level, values[i + 1]]))).toEqual({
+      "L1-L2": "—",
+      "L2-L3": "—",
+      "L3-L4": "15.2",
+      "L4-L5": "6.4",
+      "L5-S1": "8.1",
+    });
     // Where the draft preview puts it: after Findings, before Impression.
     expect(text.indexOf("Lumbar canal assessed")).toBeLessThan(text.indexOf("CANAL AP DIAMETER"));
     expect(text.indexOf("CANAL AP DIAMETER")).toBeLessThan(text.lastIndexOf("Impression"));
@@ -354,5 +399,113 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
     const text = visibleText(await printHtml(reportId));
     expect(text).toMatch(/LUMBAR CANAL AP DIAMETER/);
     expect(text).toContain("7.9");
+  });
+
+  // ── The store the radiologist can reach must be the one that signs ───────────
+  const canalRec = (level: string, over: Record<string, unknown> = {}) => ({
+    level,
+    measurementId: "CANAL_AP",
+    unit: "mm",
+    region: "lumbar",
+    viewerValue: null,
+    reportValue: null,
+    manualOverride: false,
+    annotationId: null,
+    viewerMeasurementRowId: null,
+    studyInstanceUID: null,
+    seriesInstanceUID: null,
+    sopInstanceUID: null,
+    frameNumber: null,
+    viewerName: null,
+    capturedAt: null,
+    verifiedAt: null,
+    staleReason: null,
+    aliasConflict: null,
+    ...over,
+  });
+  const envelope = (records: Record<string, unknown>) => ({ careCanalApProvenance: records });
+  /** Only the table itself, so a digit elsewhere on the page cannot pass as a measurement. */
+  const canalRegion = (html: string) => html.match(/CANAL AP DIAMETER[\s\S]*?<\/table>/i)?.[0] ?? "";
+  /** The printed header row and value row, as text, in the order they appear. */
+  const canalCells = (html: string) => {
+    const table = canalRegion(html).match(/<table[\s\S]*?<\/table>/i)?.[0] ?? "";
+    const cells = (tag: string) =>
+      [...table.matchAll(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "gi"))].map((m) =>
+        m[1].replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim(),
+      );
+    return { headers: cells("th"), values: cells("td") };
+  };
+
+  it("signs the number typed into the workspace grid, with no spinal_measurements row in existence", async () => {
+    const { worklist, tag } = await studyWithCanalRows([], "billed", envelope({
+      "L4-L5": canalRec("L4-L5", { reportValue: 8.5, manualOverride: true }),
+      "L5-S1": canalRec("L5-S1", { reportValue: 9.1, manualOverride: true }),
+    }));
+    const reportId = await signedReportFor(worklist, tag);
+    const html = await printHtml(reportId);
+    expect(canalRegion(html)).toContain("8.5");
+    expect(canalRegion(html)).toContain("9.1");
+    const text = visibleText(html);
+    expect(text.indexOf("Lumbar canal assessed")).toBeLessThan(text.indexOf("CANAL AP DIAMETER"));
+    expect(text.indexOf("CANAL AP DIAMETER")).toBeLessThan(text.lastIndexOf("Impression"));
+  });
+
+  it("signs the radiologist's override rather than the caliper row stored beside it", async () => {
+    const { worklist, tag } = await studyWithCanalRows(
+      [{ vertebraLevel: "L4-L5", canalAP: "7.2" }],
+      "billed",
+      envelope({ "L4-L5": canalRec("L4-L5", { viewerValue: 7.2, reportValue: 8.5, manualOverride: true }) }),
+    );
+    const reportId = await signedReportFor(worklist, tag);
+    const region = canalRegion(await printHtml(reportId));
+    expect(region).toContain("8.5");
+    expect(region, "the overridden caliper number must not sign").not.toContain("7.2");
+  });
+
+  it("freezes the record too: editing the draft's measurement after signing does not rewrite the signed document", async () => {
+    // The signed side stores the table for exactly this reason. The record is now an
+    // input to signing, so the freeze has to hold against it as well as against
+    // spinal_measurements (case 4 above), because the canal route reopens with the
+    // study after a withdrawal and a later measurement must not rewrite a document
+    // that may already have been delivered.
+    const { worklist, tag, draftId } = await studyWithCanalRows(
+      [],
+      "billed",
+      envelope({ "L4-L5": canalRec("L4-L5", { reportValue: 8.5, manualOverride: true }) }),
+    );
+    const reportId = await signedReportFor(worklist, tag);
+    expect(canalRegion(await printHtml(reportId))).toContain("8.5");
+
+    await db
+      .update(radiologyReportDraftsTable)
+      .set({ structuredJson: envelope({ "L4-L5": canalRec("L4-L5", { reportValue: 99.9, manualOverride: true }) }) })
+      .where(eq(radiologyReportDraftsTable.id, draftId!));
+
+    const after = canalRegion(await printHtml(reportId));
+    expect(after, "a signed report must not print a measurement taken after it was signed").not.toContain("99.9");
+    expect(after).toContain("8.5");
+  });
+
+  it("signs nothing for a level the record declines, even when the measurement table holds it", async () => {
+    const { worklist, tag } = await studyWithCanalRows(
+      [{ vertebraLevel: "L4-L5", canalAP: "7.2" }],
+      "billed",
+      envelope({
+        "L4-5": canalRec("L4-5", { reportValue: 8.5, manualOverride: true }),
+        "L4-L5": canalRec("L4-L5", { reportValue: 9.4, manualOverride: true }),
+      }),
+    );
+    const reportId = await signedReportFor(worklist, tag);
+    const html = await printHtml(reportId);
+    expect(canalRegion(html)).toBe("");
+    expect(visibleText(html)).not.toMatch(/CANAL AP DIAMETER/);
+  });
+
+  it("signs a transitional level that no fixed vocabulary can express", async () => {
+    const { worklist, tag } = await studyWithCanalRows([], "billed", envelope({
+      "L5-T": canalRec("L5-T", { reportValue: 8.4, manualOverride: true }),
+    }));
+    const reportId = await signedReportFor(worklist, tag);
+    expect(canalRegion(await printHtml(reportId))).toContain("8.4");
   });
 });

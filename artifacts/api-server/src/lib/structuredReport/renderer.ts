@@ -30,8 +30,16 @@ import type {
  *  structured-finalize path when THIS renderer produced the signed body —
  *  distinct from the legacy frontend engine's RENDER_ENGINE_VERSION ("1.0.0"
  *  in diagnostic-erp/src/lib/renderEngine.ts). Bump on any output-affecting
- *  change (the byte-for-byte golden tests pin the output for each version). */
-export const STRUCTURED_RENDERER_VERSION = "d4-structured-1.0.0";
+ *  change (the byte-for-byte golden tests pin the output for each version).
+ *
+ *  1.1.0 — the body now carries the spinal canal AP diameter section when the
+ *  document pins one (extensions.x_care_canal_ap). Documents without that member
+ *  render byte-identically to 1.0.0, which is why the §17 golden digests still
+ *  hold; the version moves because for a spine report the produced body differs
+ *  from what 1.0.0 would have produced, and an auditor comparing
+ *  storedRenderEngineVersion against currentRendererVersion must be able to see
+ *  that the two engines were not the same engine. */
+export const STRUCTURED_RENDERER_VERSION = "d4-structured-1.1.0";
 
 // ── Options / template snapshot ──────────────────────────────────────────────
 
@@ -61,7 +69,7 @@ const DEFAULT_OPTIONS: Required<RenderOptions> = {
 
 // ── Output shapes ────────────────────────────────────────────────────────────
 
-export type RenderSection = "technique" | "findings" | "impression" | "recommendation";
+export type RenderSection = "technique" | "findings" | "canal_ap" | "impression" | "recommendation";
 
 export type ImpressionTier = "critical" | "significant" | "routine";
 
@@ -121,6 +129,19 @@ export interface RenderResult {
 
 function heading(label: string, opts: Required<RenderOptions>): string {
   return opts.headingCase === "upper" ? label.toUpperCase() : label;
+}
+
+/** The canal AP block pinned on the document at signing, or "" when it has none.
+ *  Written by `radiologyD1DraftWriter` from the shared builder; D1 leaves extension
+ *  contents unvalidated, so this reads defensively and prints nothing rather than
+ *  something it had to invent. Exported because the amendment route asks the same
+ *  question of the report it is amending — one reader, not two that could disagree. */
+export function pinnedCanalApBlock(document: unknown): string {
+  if (!document || typeof document !== "object") return "";
+  const ext = (document as { extensions?: Record<string, unknown> }).extensions?.x_care_canal_ap;
+  if (!ext || typeof ext !== "object" || Array.isArray(ext)) return "";
+  const rendered = (ext as Record<string, unknown>).rendered;
+  return typeof rendered === "string" ? rendered.trim() : "";
 }
 
 /** D1 §3.2 `order` is the meaningful display order. Stable sort by it, falling
@@ -302,6 +323,26 @@ export function renderStructuredReport(
         sourceType: "pinned_sentence", findingLid: l.findingLid, definitionRef: l.definitionRef,
         recommendationRef: null, impressionSource: l.sentenceSource,
       });
+    });
+  }
+
+  // ── Spinal canal AP diameter (pinned at signing, between Findings and Impression) ──
+  // The block was built by lib/spinalCanalApTable.ts from the measurement record and
+  // stored ON the document (extensions.x_care_canal_ap), because D6 re-renders this
+  // function and compares the result to the body that was signed
+  // (radiologyStructuredRead.ts `compareStoredVsRendered`): anything the renderer
+  // cannot reproduce from the stored document reads as a clinical divergence on every
+  // spine report, forever. Emitters must therefore never be smarter than this reader.
+  //
+  // Not emitted when the findings prose already carries a canal table: a body that
+  // names one level twice with two numbers is the defect this whole path exists to kill.
+  const canalBlock = pinnedCanalApBlock(doc);
+  if (canalBlock && !findingLines.some((l) => /CANAL AP DIAMETER/i.test(l.text))) {
+    parts.push(canalBlock);
+    trace.push({
+      section: "canal_ap", order: 1, text: canalBlock,
+      sourceType: "canal_ap_section", findingLid: null, definitionRef: null,
+      recommendationRef: null, impressionSource: null,
     });
   }
 

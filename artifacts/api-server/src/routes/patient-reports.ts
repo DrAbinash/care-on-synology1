@@ -28,7 +28,14 @@ import { sendReportEmail } from "../email";
 import { requireStaffAuth, FULL_ACCESS_ROLES, type StaffAuthRequest } from "../middleware/requireStaffAuth";
 import { hookConsumeOnReportVerified } from "../lib/inventoryConsumption";
 import { renderHtmlToPdf } from "../lib/htmlToPdf";
-import { buildSpinalCanalApTableHtml, insertCanalTableIntoBody } from "../lib/spinalCanalApTable";
+import {
+  buildSpinalCanalApTableHtml,
+  buildSpinalCanalApTextBlock,
+  insertCanalTableIntoBody,
+  loadCanalApProvenanceForStudy,
+} from "../lib/spinalCanalApTable";
+import { extractCareCanalApProvenance } from "../lib/structuredJsonColumn";
+import { pinnedCanalApBlock } from "../lib/structuredReport/renderer";
 import { isObstetricUsgStudy } from "../lib/usgModality";
 import {
   ACCESSION_ROW_LABEL,
@@ -1002,11 +1009,26 @@ async function structuredFinalizeTransaction(
       // 4) Materialize truthful D1 findings via the catalog (D3.5). Without
       //    the catalog there is nothing to sign structurally — prepare will
       //    return render_empty and this transaction rolls back to legacy.
-      const source = buildFinalD1Source(
-        draft,
-        worklist,
-        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
-      );
+      //
+      // The canal AP table rides in as a source field, not as a body splice: the D4
+      // renderer puts it into the body (structuredReport/renderer.ts) from the pinned
+      // document, so the stored signed body and every later re-render of this
+      // document produce the same section. A route-level splice would have made
+      // D6's stored-vs-rendered comparison report a clinical difference on every
+      // spine report — and left the structured finalize printing nothing at all,
+      // which is the gap this closes (audit 2026-10-17 §6.1).
+      const canalApKeys = [worklist?.studyId ?? null, draft.worklistId ?? args.studyId ?? null];
+      const source = {
+        ...buildFinalD1Source(
+          draft,
+          worklist,
+          instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+        ),
+        canalApBlock: await buildSpinalCanalApTextBlock(
+          canalApKeys,
+          extractCareCanalApProvenance(draft.structuredJson),
+        ),
+      };
       let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
       let catalogPort = noFindingsCatalogPort;
       if (await isFeatureEnabledServer("ff_radiology_catalog")) {
@@ -1641,12 +1663,23 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         worklist = (w as FinalWorklistRow | undefined) ?? null;
       }
 
-      const source = buildFinalD1Source(
-        draft,
-        worklist,
-        instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+      const canalApKeys = [worklist?.studyId ?? null, draft.worklistId ?? parent.studyId ?? null];
+      const canalApFromDraft = await buildSpinalCanalApTextBlock(
+        canalApKeys,
+        extractCareCanalApProvenance(draft.structuredJson),
       );
-      let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
+      // An amendment is a NEW signed document; the parent row is left byte-untouched.
+      // If the amended draft carries no canal record of its own, the table the report
+      // was signed with is carried forward rather than silently dropped — a correction
+      // to the impression must not be a way to lose a measured disc level.
+      const source = {
+        ...buildFinalD1Source(
+          draft,
+          worklist,
+          instances.map((r) => ({ findingId: r.findingId, structuredJson: r.structuredJson, source: r.source })),
+        ),
+        canalApBlock: canalApFromDraft || pinnedCanalApBlock(parent.structuredJson),
+      };
       let catalogPort = noFindingsCatalogPort;
       if (await isFeatureEnabledServer("ff_radiology_catalog")) {
         const catalogStore = new DrizzleCatalogStore();
@@ -2235,12 +2268,19 @@ patientReportsRouter.post("/", async (req, res) => {
   // when it was signed and a measurement entered afterwards cannot rewrite it.
   // The two keys are the two the preview reads, billed study first: a report's
   // own study_id holds the WORKLIST ROW id on this path.
+  //
+  // The draft's canonical record is passed as the authority, because that is the
+  // store the Reporting Workspace grid writes; `spinal_measurements` remains the
+  // per-level fallback for rows written elsewhere. Without it, a number typed into
+  // the grid and never pushed to the other store signed a report that did not
+  // contain it (audit 2026-10-17 §6, measured: 8.5 mm on screen, table printed empty).
+  const canalStudyKeys = [
+    bound?.worklist?.studyId ?? null,
+    bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
+  ];
   const canalTableHtml =
     type === "radiology"
-      ? await buildSpinalCanalApTableHtml([
-          bound?.worklist?.studyId ?? null,
-          bound?.worklistId ?? (b.studyId ? Number(b.studyId) : null),
-        ])
+      ? await buildSpinalCanalApTableHtml(canalStudyKeys, await loadCanalApProvenanceForStudy(canalStudyKeys))
       : "";
 
   // Retry on UNIQUE collision for the report number.
