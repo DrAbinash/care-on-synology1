@@ -44,7 +44,8 @@ import {
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type WorklistEntry = {  id: number;
+type WorklistEntry = {
+  id: number;
   studyId: number | null;
   patientId: number | null;
   dicomPatientId: string | null;
