@@ -58,6 +58,7 @@ export {
   applyCanalViewerValue,
   applyCanalManualValue,
   canonicalizeCanalMap,
+  canalApComposerReadings,
   type CanalSegment,
   type CanalLevelOptions,
   type CanalPrintPlan,
@@ -66,4 +67,6 @@ export {
   type CanalApStaleReason,
   type CanalAliasConflict,
   type CanalMapCanonicalization,
+  type CanalApComposerReading,
+  type CanalApComposerRecord,
 } from "./spineCanal";

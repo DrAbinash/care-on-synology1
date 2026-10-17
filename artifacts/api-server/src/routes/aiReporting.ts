@@ -101,6 +101,7 @@ import {
 } from "../lib/aiDraftStudyContext";
 import { validateComposerOutput } from "../lib/reportComposer/validateOutput";
 import { parseComposerSnapshot } from "../lib/reportComposer/types";
+import type { CanalApComposerRecord } from "@workspace/measurements";
 
 // ─── Prompt template presets ──────────────────────────────────────────────────
 export const AI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -911,6 +912,13 @@ function validateDraftGrounding(input: {
   draftFindings: string;
   draftImpression: string;
   imagesSentToModel: number;
+  /**
+   * The draft's canonical canal AP record, resolved by the caller. The interactive
+   * path writes into the same report the canal table prints, so a diameter this
+   * draft restates wrongly is not a composer-only hazard. Absent for a study with
+   * no record, which is every non-spine examination.
+   */
+  canalAp?: CanalApComposerRecord | null;
 }): AiDraftValidation {
   const snapshot = parseComposerSnapshot({
     worklistId: input.worklistId ?? null,
@@ -923,13 +931,17 @@ function validateDraftGrounding(input: {
     recommendation: "",
     observations: [],
   });
-  const result = validateComposerOutput(snapshot, {
-    findings: input.draftFindings,
-    impression: input.draftImpression,
-    recommendation: "",
-    unresolvedQuestions: [],
-    warnings: [],
-  });
+  const result = validateComposerOutput(
+    snapshot,
+    {
+      findings: input.draftFindings,
+      impression: input.draftImpression,
+      recommendation: "",
+      unresolvedQuestions: [],
+      warnings: [],
+    },
+    { canalAp: input.canalAp ?? null },
+  );
   return {
     ok: result.ok,
     blocking: false,
@@ -1394,6 +1406,16 @@ router.post("/draft", async (req, res): Promise<void> => {
   // Grounding verdict from the composer's own validator. Advisory — nothing here
   // withholds the draft; it labels it, so ungrounded model prose cannot arrive
   // looking identical to prose the radiologist's own findings support.
+  //
+  // The canal AP record comes from this study's own draft row, through the same
+  // one-draft resolution rule every other reader uses. The interactive draft lands
+  // in the same report the canal table prints, so a diameter this answer changed or
+  // invented is the identical hazard the composer job is checked for — and a study
+  // with no record (every non-spine examination) is checked exactly as before.
+  const { loadCanonicalCanalApForWorklist } = await import(
+    "../lib/reportComposer/resolveComposeDraft"
+  );
+  const canalAp = await loadCanonicalCanalApForWorklist(worklistId ?? null);
   const validation = validateDraftGrounding({
     worklistId: worklistId ?? null,
     modality,
@@ -1404,6 +1426,7 @@ router.post("/draft", async (req, res): Promise<void> => {
     draftFindings,
     draftImpression,
     imagesSentToModel: images.length,
+    canalAp,
   });
 
   const diag = buildAiReportingDraftDiagnostics({

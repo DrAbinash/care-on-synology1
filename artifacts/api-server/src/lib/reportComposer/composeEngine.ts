@@ -20,6 +20,7 @@ import {
   buildRadiologistDraftContext,
   renderRadiologistDraftContextPrompt,
 } from "./buildRadiologistDraftContext";
+import { canalApPromptFields } from "./canonicalCanalAp";
 import { resolveSelectedKeyImagesForCompose } from "./resolveSelectedKeyImages";
 import { assertVisionCapableModel } from "./visionCapability";
 import {
@@ -29,6 +30,7 @@ import {
   composerPromptTextTokens,
 } from "./composerContextBudget";
 import type { KeyImageOwnershipContext } from "./keyImageOwnership";
+import type { CanalApComposerRecord } from "@workspace/measurements";
 import {
   resolveComposerProvider,
   assertComposerProviderPolicy,
@@ -93,6 +95,7 @@ void buildSystemPrompt;
 function buildPreserveContextPrompt(
   kind: AiComposeJobKind,
   snapshot: ComposerInputSnapshot,
+  canalAp?: CanalApComposerRecord | null,
 ): string {
   const id = buildRadiologistDraftContext(snapshot).studyIdentity;
   const reports = (snapshot.additionalReports ?? []).map((r) => ({
@@ -127,6 +130,10 @@ function buildPreserveContextPrompt(
       groundingRecommendation: snapshot.recommendation ?? "",
       observations: snapshot.observations ?? [],
       observationCount: (snapshot.observations ?? []).length,
+      // The canonical canal record, as DATA. A refine job's contract is the text it
+      // was handed, and a grid measurement is not in that text — so without this the
+      // rewrite would have no way to know the numbers the table is going to print.
+      ...canalApPromptFields(canalAp),
       ...(reports.length ? { additionalReports: reports } : {}),
       conservationRule:
         "Every measurement, vertebral level, laterality and abnormality present in the supplied "
@@ -226,15 +233,28 @@ function buildObservationExtractionPrompt(snapshot: ComposerInputSnapshot): stri
   );
 }
 
-export function buildUserPrompt(kind: AiComposeJobKind, snapshot: ComposerInputSnapshot): string {
+/**
+ * The user prompt for one compose run.
+ *
+ * `canalAp` is the server-resolved read of the draft's canonical canal AP record
+ * (see `canonicalCanalAp.ts`). It is an argument, not a snapshot field, so the
+ * frozen client snapshot and its freshness hashes are unchanged, and a
+ * workstation cannot send its own version of a patient's measurements. Omitted or
+ * empty renders exactly the prompt this function produced before.
+ */
+export function buildUserPrompt(
+  kind: AiComposeJobKind,
+  snapshot: ComposerInputSnapshot,
+  canalAp?: CanalApComposerRecord | null,
+): string {
   if (kind === "OBSERVATIONS") {
     return buildObservationExtractionPrompt(snapshot);
   }
   if (isPreservingComposeKind(kind)) {
-    return buildPreserveContextPrompt(kind, snapshot);
+    return buildPreserveContextPrompt(kind, snapshot, canalAp);
   }
 
-  const draftCtx = buildRadiologistDraftContext(snapshot);
+  const draftCtx = buildRadiologistDraftContext(snapshot, canalAp);
   let prompt = renderRadiologistDraftContextPrompt(draftCtx, kind);
 
   if ((snapshot.aiMode ?? "TEXT_ONLY") === "SELECTED_IMAGES") {
@@ -311,6 +331,11 @@ export async function runReportComposer(opts: {
   cloudVisionAllowed?: boolean;
   /** Optional model override (test lab / workspace session / task route). */
   modelOverride?: string | null;
+  /**
+   * The draft's canonical canal AP record, resolved server-side from the draft row.
+   * Read-only: this run can quote the numbers, never write them (owner DECISION 4).
+   */
+  canalAp?: CanalApComposerRecord | null;
 }): Promise<ComposeRunResult> {
   const started = Date.now();
   const aiMode = effectiveAiMode(opts.kind, opts.snapshot);
@@ -625,7 +650,7 @@ export async function runReportComposer(opts: {
     };
 
     const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
-    const user = buildUserPrompt(opts.kind, opts.snapshot);
+    const user = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
 
     // Images cost context on top of the clinical truth. Size num_ctx for THIS
     // request from CARE's existing empirical estimator rather than trusting the
@@ -727,7 +752,7 @@ export async function runReportComposer(opts: {
 
   // ── TEXT_ONLY path (existing behaviour) ──────────────────────────────
   const system = buildCareSystemPrompt(opts.kind, opts.snapshot);
-  const user = buildUserPrompt(opts.kind, opts.snapshot);
+  const user = buildUserPrompt(opts.kind, opts.snapshot, opts.canalAp);
 
   // Same rule the selected-image path already follows, now applied to text: the
   // request is sized for the window it will actually get, and a request that
