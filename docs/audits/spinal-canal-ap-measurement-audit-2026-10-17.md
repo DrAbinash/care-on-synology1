@@ -104,6 +104,7 @@ to *each other* through a table the reachable grid never writes. That gap is the
   never printed twice, and resolving rows stored under the **worklist row id** as well as the billed id
   (`signedReportCanalMeasurements.request.test.ts` 6/6 and
   `radiologyReportPrint.canalMeasurements.request.test.ts` 7/7 against real PostgreSQL at `877701f9`).
+  This holds on the **legacy finalize path only** — see §6.1 for the structured and amendment paths.
   The signed **PDF itself in a browser was NOT re-run** here.
 * **Screening and whole-spine deliberately suppress the detailed level canvases**
   (`mriLumbarRegions.ts:305-307`, `mriSpineCanvasRegions.ts:228-229, :271-272`).
@@ -178,6 +179,20 @@ into it."* (`lib/measurements/src/spineCanal.ts:12-15`). No third store should b
 
 ---
 
+## 6.1 A second gap, inside the printed store itself
+
+Even a measurement that *is* in `spinal_measurements` prints on only **one** of the three signed paths:
+
+| Signed path | Body written by | Canal table |
+|---|---|---|
+| legacy finalize (`patient-reports.ts:2260`) | `insertCanalTableIntoBody(b.body, canalTableHtml)` at `:2238-2244` | **present** — 6 request tests |
+| structured finalize `ff_radiology_structured_final` (`:1165`) | `body: prepared.renderedBody`, composed in `lib/radiologyD1FinalWriter.ts:345` | **absent** — no splice, no test names it |
+| amendment `POST /:id/amend` (`:1822`) | `body: prepared.renderedBody` from `lib/radiologyD1AmendmentWriter.ts:267` | **absent** — so an amendment can *drop* a table the original carried |
+
+The flag defaults `false` (`lib/radiologyFeatureFlagRegistry.ts:55-56`), so the clinic is on the splicing
+path today; the exposure is when it is enabled and on every correction of a spine report that has canal
+measurements. Verified by grep: `insertCanalTableIntoBody` has exactly one call site in the whole server.
+
 ## 7. Not established
 
 * **Dorso-Lumbar, Whole-Spine-Screening and Lumbar-Screening fixtures were inconclusive.** My synthetic
@@ -251,6 +266,9 @@ Make the two print callers read the **canonical record** first and fall back to 
   `renderCanalApTable` in `lib/spinalCanalApTable.ts`, which already takes a `Map<level, value>`.
 * Keep reading `spinal_measurements` for rows that exist only there (legacy page, the AI-tab box, older
   drafts) so nothing that prints today stops printing.
+* Carry the same table into the D1 preparer **once** — `radiologyD1FinalWriter.ts:345` and
+  `radiologyD1AmendmentWriter.ts:267` — so the structured finalize path and every amendment stop dropping
+  it (§6.1), instead of adding a third splice at some route.
 * Do not duplicate the table generator: `spinalCanalApTable.ts` stays the one builder for both surfaces.
 * Then the grid's values print, the AI-tab box becomes redundant (retiring it is a separate owner
   decision — it is a live write path with existing rows), and no data contract changes.
