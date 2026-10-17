@@ -10,9 +10,11 @@ import { normalizeWorkspaceStudies } from "./normalizeWorkspaceStudy";
 import { announceSignedMutationRefusal } from "./signedMutationRefusalNotice";
 import {
   announceQuickSelectParameterRefusal,
+  announceQuickSelectPlaceholderRefusal,
   isQuickSelectSource,
   resolvedQuickSelectSeverity,
   unresolvedQuickSelectParameters,
+  unresolvedQuickSelectPlaceholders,
 } from "./quickSelectParameterContract";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTiles } from "./quick-select-library";
 import {
@@ -2327,6 +2329,28 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
 
     const incoming = applySideToIncoming(templates, sideForWrite, severityForWrite);
+
+    // The side/severity guard above refuses the two tokens this boundary can
+    // resolve from a chip. `applySideToIncoming` → `fillTemplate` also drops the
+    // three tokens it knows but has no value for (`{chronicity} {level} {value}`).
+    // A `{name}` that survives substitution is neither: it is a parameter this
+    // boundary was never given and no chip offers — `{size}`, `{location}`,
+    // `{grade}`, `{vessel}` — and writing it would print the literal brace into
+    // Findings/Impression/Recommendation. Refusing here is the property the audit
+    // brief asked for — no unresolved `{token}` reaches a report section, whatever
+    // its name — and it sits behind the dialog fix, so a box resolved through
+    // `fillStructuredTemplate` has no brace left to trip it. Still a refusal, so
+    // nothing below runs: no ledger row, no prose, no provenance, no undo frame.
+    if (isQuickSelectSource(opts.source)) {
+      const leaked = unresolvedQuickSelectPlaceholders(incoming);
+      if (leaked.length > 0) {
+        console.warn(
+          `[care] applyPathologyOverlay refused: "${opts.label ?? opts.id}" has unresolved {${leaked.join("}, {")}}`,
+        );
+        announceQuickSelectPlaceholderRefusal(leaked);
+        return "refused";
+      }
+    }
 
     // PR #662 §2 — System normal auto-yield.
     //

@@ -12,6 +12,7 @@ import {
   quickSelectBoxSentence,
   quickSelectBoxWrittenText,
 } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
+import { parseQuestions } from "@/lib/structuredFindings";
 import type { QuickSelectField } from "@/lib/zai-workspace/types";
 import type { Side } from "@/lib/sideSwap";
 import { useMemo, useState, useRef, useEffect } from "react";
@@ -107,6 +108,7 @@ export function QuickSelectStrip({
   anatomyFilter,
   onToggle,
   onAfterPick,
+  onStructuredPick,
   disabled = false,
 }: {
   field: QuickSelectField;
@@ -136,6 +138,25 @@ export function QuickSelectStrip({
   ) => QuickToggleOutcome;
   /** Fired after a box is written into the report (e.g. silent draft save). */
   onAfterPick?: (field: QuickSelectField) => void;
+  /**
+   * Opens the workspace's existing structured-details dialog for a box whose
+   * `questions_json` declares parameters the side/severity chips cannot supply
+   * — `{size}`, `{location}`, `{volume}`, `{swelling}`, `{grade}`, `{vessel}`
+   * and every other name outside the five `fillTemplate` tokens.
+   *
+   * A declared parameter is not a *resolved* one. The strip's own write path
+   * (`onToggle` → `quickFindingPatch` → `applySideToIncoming`) substitutes only
+   * side and severity, so a box clicked here with a `{size}` still in its prose
+   * prints the literal brace into Findings. Routing the click to the same router
+   * the rail and the Clinic panel already use (`studySetup.handleFindingClick`)
+   * hands the box to `fillStructuredTemplate`, which fills every declared key
+   * and drops any `[optional clause]` whose key is unanswered — so the text that
+   * reaches the report is brace-free before it is ever written.
+   *
+   * Optional: a strip whose host has no dialog leaves every box on the chip
+   * path, exactly as before. Favouriting, adding and editing never route here.
+   */
+  onStructuredPick?: (box: QuickFinding) => void;
   /**
    * Dim the boxes and stop a pick, for a report that cannot be written.
    *
@@ -265,6 +286,17 @@ export function QuickSelectStrip({
   });
 
   const pick = (box: QuickSelectStripBox) => {
+    // A box that declares parameters beyond side/severity is written by the
+    // dialog, not here. Opening the dialog has written nothing yet, so it is
+    // deliberately NOT a use and does NOT fire `onAfterPick` (the findings
+    // feedback and the silent draft save) — a click that only raised a form is
+    // not a report change, and cancelling it must leave the report untouched.
+    // `handleFindingClick` falls through to the plain toggle for a box with no
+    // declared questions, so this guard is the same predicate the router uses.
+    if (onStructuredPick && parseQuestions(box.questionsJson).length > 0) {
+      onStructuredPick(box);
+      return;
+    }
     const outcome = onToggle(box, true, { side: qsSide, severity: qsSeverity });
     if (outcome === "refused") return;
     // Skipped on a refusal, and it matters twice over: `onAfterPick` is
