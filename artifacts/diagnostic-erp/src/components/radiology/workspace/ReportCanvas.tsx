@@ -1679,6 +1679,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             externalSearch={qsExternalSearch}
                             selectedStudyTabId={studySetup.selectedStudyTabId}
                             selectedStudyTabName={studySetup.matchedStudyRegion}
+                            clinicalHistoryText={clinicalHistoryText}
                           />
                         </div>
                       </FindingsToolDrawer>

@@ -606,6 +606,7 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                 externalSearch={qsExternalSearch}
                                 selectedStudyTabId={studySetup.selectedStudyTabId}
                                 selectedStudyTabName={studySetup.matchedStudyRegion}
+                                clinicalHistoryText={clinicalHistoryText}
                               />
                             ) : null}
                             {quickInsertSource === "macros" ? (

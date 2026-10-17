@@ -10,8 +10,9 @@
  * be tested and the save handler silently dropped the sentences it had no input
  * for.
  */
-import type { PendingPathologyPatch } from "./store";
+import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
 import type { PathologyIncoming } from "../pathologyPatch";
+import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 
 const opt = (v: string | null | undefined) => (v ?? "").trim() || undefined;
@@ -40,7 +41,28 @@ export type ClinicalQuickFindingBox = {
   conflictGroup?: string;
   baselineReplaces?: string;
   properties?: string;
+  /**
+   * The report section the box was AUTHORED for — the column that decides where
+   * a click sends its sentence. `NOT NULL` on `radiology_quick_findings` and
+   * always on the wire; optional here only so a hand-built fixture may omit it.
+   */
+  field?: string | null;
 };
+
+/**
+ * True when this box's own section is Clinical History rather than the report body.
+ *
+ * `radiology_quick_findings` has no history column, so the factory seed files a
+ * history box's sentence in `finding_text` alongside every other box. Reading
+ * that column as a finding is how "Known case of glioma post-resection" ends up
+ * in Findings as though it were an observation of the scan. The comparison is
+ * trimmed and case-folded because a clinic row can be spelled any way its editor
+ * typed it, and the cost of missing one is a clinical sentence in the wrong
+ * section — not the other way round.
+ */
+export function isClinicalHistoryBox(box: { field?: string | null }): boolean {
+  return (box.field ?? "").trim().toLowerCase() === "clinicalhistory";
+}
 
 /**
  * The ledger row one database box owns for one click.
@@ -93,8 +115,15 @@ export function quickFindingPatch(
   ctx: { region: string; studyType?: string },
   params: QuickSelectParameterValues = {},
 ): PendingPathologyPatch {
+  // A history box's sentence is the indication for the scan, not a finding on it.
+  // `radiology_quick_findings` has no history column, so the seed files it in
+  // `finding_text` with everything else, and reading that column as a finding
+  // reported "Right upper quadrant pain." as an observation of the liver. The
+  // section that exists for it has its own write, so `incoming` stays empty and
+  // the sentence travels as a contribution.
+  const history = isClinicalHistoryBox(box);
   const templates: PathologyIncoming = {
-    findings: box.findingText,
+    findings: history ? "" : box.findingText,
     impression: box.impressionText,
     technique: box.techniqueText,
     recommendation: box.recommendationText,
@@ -105,6 +134,9 @@ export function quickFindingPatch(
   return {
     incoming: templates,
     templates,
+    ...(history
+      ? { clinicalHistory: (box.findingText ?? "").trim() || undefined }
+      : {}),
     ownership: {
       anatomicalSection: opt(box.anatomicalSection),
       conflictGroup: opt(box.conflictGroup),
@@ -121,11 +153,82 @@ export function quickFindingPatch(
     label: box.label,
     catalogId: box.id,
     properties: box.properties,
-    findingsText: box.findingText,
+    findingsText: history ? "" : box.findingText,
     supportsLaterality: sided,
     ...(sided && params.side ? { side: params.side } : {}),
     ...(opt(params.severity) ? { severity: opt(params.severity) } : {}),
   };
+}
+
+/**
+ * The first decision one click makes: what it contributes to Clinical History,
+ * and whether it also writes the report body.
+ *
+ * Extracted because the click handler is a React hook and this package has no
+ * renderer, so a routing rule that lived only inside it could only ever be
+ * pinned by reading the file — a mutant that turned the branch into
+ * `if (false && …)` survived exactly that. Deciding here instead means the whole
+ * shipped catalogue can be driven through the rule, and the handler is left with
+ * one call to make.
+ *
+ * A box that is history AND carries body prose returns both, because dropping
+ * either half would lose a sentence the radiologist clicked for.
+ */
+export function quickFindingClickRoute(patch: PendingPathologyPatch): {
+  clinicalHistory: string | null;
+  writesBody: boolean;
+} {
+  return {
+    clinicalHistory: opt(patch.clinicalHistory) ?? null,
+    writesBody: Object.values(patch.incoming).some((v) => (v ?? "").trim().length > 0),
+  };
+}
+
+/** The four sections of the report body a box can write. */
+const BODY_SECTIONS = ["findings", "impression", "technique", "recommendation"] as const;
+type BodySection = (typeof BODY_SECTIONS)[number];
+
+/** The sentences one section's contribution actually says, comparable across sections. */
+const sentencesOf = (text: string | undefined): string[] =>
+  splitToSentences(text ?? "").map(normalizeForDedupe).filter(Boolean);
+
+/**
+ * A sentence this click would write that the report already carries in ANOTHER
+ * section, contributed by a row from the deleted tile strip.
+ *
+ * Saved drafts and signed reports hold Quick Select rows whose id is `qs-…` and
+ * whose `source` is `quick-select` — written by the strip this branch removed.
+ * Those rows stay exactly as they are: their text is not moved, and nothing
+ * rewrites them, because a legacy tile id was minted at module load and cannot be
+ * matched to a database box without guessing at the radiologist's document. But
+ * the section each box belongs to changed when `quickFindingPatch` became the only
+ * builder: an advice box that used to write Impression now writes Recommendation,
+ * so a draft that already carries the advice in Impression gets a SECOND copy when
+ * the radiologist clicks the box again — the chip cannot light for a `qs-` row, so
+ * nothing told them it was already there.
+ *
+ * Refusing the duplicate is the smallest thing that cannot lose clinical text: it
+ * writes nothing, and the message names where the wording already sits. Only the
+ * strip's own rows are consulted — a live row can be clicked off, and a wording
+ * repeat the engine already handles within one section is not this defect.
+ */
+export function quickFindingCrossSectionClash(
+  rows: ReadonlyArray<Pick<AppliedPathologyPatch, "id" | "source" | "lastRendered">>,
+  patch: PendingPathologyPatch,
+): { section: BodySection; sentence: string } | null {
+  const wanted = BODY_SECTIONS
+    .flatMap((section) => sentencesOf(patch.incoming[section]).map((sentence) => ({ section, sentence })));
+  if (!wanted.length) return null;
+  for (const row of rows) {
+    if (row.source !== "quick-select") continue;
+    for (const section of BODY_SECTIONS) {
+      const held = new Set(sentencesOf(row.lastRendered[section]));
+      if (!held.size) continue;
+      const clash = wanted.find((w) => w.section !== section && held.has(w.sentence));
+      if (clash) return { section, sentence: clash.sentence };
+    }
+  }
+  return null;
 }
 
 /**
