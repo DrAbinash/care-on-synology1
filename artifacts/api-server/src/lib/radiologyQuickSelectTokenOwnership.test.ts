@@ -7,6 +7,19 @@
  * the sentence arrives at the page as a fluent, unfounded claim with the
  * question and the answer both missing).
  *
+ * WHAT THIS FILE PROVES, AND WHAT IT DOES NOT. This is the DECLARATION audit: it
+ * establishes that every `{token}` has a control that can answer it. It is a
+ * necessary precondition, not the whole guarantee — a declared parameter is only
+ * a RESOLVED one on the write path that actually substitutes it. The canvas Quick
+ * Select strip resolves only side/severity, so a `{size}` that this file would
+ * call "covered by `questions_json`" used to reach Findings verbatim. The
+ * rendered-text proof lives in
+ * `artifacts/diagnostic-erp/src/lib/quickSelectStructuredSubstitution.test.ts`
+ * (the real structured-dialog renderer over the real catalogue), the strip's
+ * routing to that dialog in `quickSelectStripStructuredRouting.test.ts`, and the
+ * property backstop in `quickSelectParameterSafety.hardening.test.ts` (T8/T9) and
+ * `signedReportContentGuard.ts`. Read those before concluding a parameter is safe.
+ *
  * WHY READ THE DB RATHER THAN THE .sql FILE.
  * Two appliers can leave the file and the row disagreeing.
  * `care-db-patch-v2` consults `public.schema_migrations_log` and runs a feature

@@ -164,3 +164,57 @@ export function announceQuickSelectParameterRefusal(
     duration: 8000,
   });
 }
+
+/**
+ * The token grammar the catalogue and the ownership audit already agree on: a
+ * letter-initial identifier inside a single pair of braces. It deliberately does
+ * NOT match a radiologist's ordinary braces — `{ }`, `{1, 2}`, `{ see note }`,
+ * `{"a": 1}`, `{L4-` with punctuation — none of which are identifier-shaped, so
+ * legitimate clinical text is never mistaken for an unfilled template token.
+ */
+const OUT_OF_BAND_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * `{token}` names that survive substitution with no value to fill them.
+ *
+ * `unresolvedQuickSelectParameters` above answers the two parameters this
+ * boundary resolves from a chip (side, severity). This is the complement, and it
+ * is the property the audit brief demanded — *no* unresolved placeholder reaches
+ * a report section, whatever its name — so it keys off the shape of the text, not
+ * a name in a union. Run it AFTER `applySideToIncoming`: `fillTemplate` has
+ * already substituted the side/severity it was given and dropped the three
+ * tokens it knows (`{chronicity} {level} {value}`), so any `{identifier}` still
+ * standing is one the Quick Select path cannot supply and would print verbatim.
+ *
+ * Deliberately returns the surviving tokens (deduplicated, source order) rather
+ * than a boolean, so the caller names in the refusal exactly which word leaked —
+ * the same "say out loud why it did not land" rule `announceQuickSelectParameterRefusal`
+ * follows.
+ */
+export function unresolvedQuickSelectPlaceholders(
+  sections: Record<string, string | undefined> | PathologyIncoming,
+): string[] {
+  const found = new Set<string>();
+  for (const text of Object.values(sections as Record<string, unknown>)) {
+    if (typeof text !== "string" || !text) continue;
+    for (const match of text.matchAll(OUT_OF_BAND_PLACEHOLDER)) found.add(match[1]);
+  }
+  return Array.from(found);
+}
+
+/**
+ * Names the box that a Quick Select click refused because its prose still asked
+ * for a parameter no control could answer. A declared-but-unfilled `{size}` is
+ * invisible to the side/severity chips, so without this the radiologist clicks,
+ * nothing lands, and the only trace is a console line.
+ */
+export function announceQuickSelectPlaceholderRefusal(tokens: string[]): void {
+  if (tokens.length === 0) return;
+  const list = tokens.map((t) => `{${t}}`).join(", ");
+  toast({
+    title: "Nothing was applied — this box has unfilled placeholders",
+    description: `This Quick Select sentence still contains ${list} with no value to fill it, so nothing was written to the report. Fill it in Settings → Radiology → Quick Select, or choose a box that supplies those parameters. No part of the report was changed.`,
+    variant: "destructive",
+    duration: 8000,
+  });
+}
