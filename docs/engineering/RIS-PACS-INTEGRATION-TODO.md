@@ -41,7 +41,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both fixed and **MERGED through PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 → MERGED `9664a967`**, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. and **#1053 merged green** on its final head `00fe117e` (21 tests executed on CI's Postgres 16) | **yes** — #1050 `1a93e4e4`, #1053 `9664a967` | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
-| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
+| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → MERGED (#1054, `3d54c552`)** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | **MERGED** `main` `3d54c552` (squash of `ad90a59a`; parent `71f68479`) | **green** — all 3 jobs on `ad90a59a`, 14,656 passed / 49 skipped over 1,089 files; merged tree `b84b5926` byte-equal to that head | no | **no** |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -656,7 +656,19 @@ which keys the allowance on *a* combine rather than *this* row and is caught by 
 ERP's own error swallowing (`linkedMarkError`) is unchanged by this PR, so a future sibling-flip failure
 would still be quiet; worth a follow-up if the owner wants it surfaced to the radiologist.
 
-## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, branch `clinical/canal-ap-one-authority`)
+## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, **merged into `main` as `3d54c552` — NOT deployed**)
+
+**Status (2026-10-17, after the owner's four rulings).** PR **#1054** was squash-merged into `main` as
+`3d54c552`, parent `71f68479`, from head `ad90a59a`. All three CI jobs were green on that head first —
+Static checks, Tests + migration smoke on real PostgreSQL (**14,656 passed / 49 skipped over 1,089
+files, 0 failed**; the Vitest run itself took 710.49 s), Build identity — and the merged tree is the tested tree:
+`git rev-parse ad90a59a^{tree}` and `git rev-parse 3d54c552^{tree}` are both `b84b5926`, with
+`git diff --stat ad90a59a 3d54c552` empty. The merge changed 31 files, +3,074/-309. `main` was then re-run
+green on its own (`3d54c552`: static checks, tests + migration smoke on real PostgreSQL, build identity
+all `success`, the tests job completing 09:47:15Z). **Nothing is
+deployed**: the clinic keeps running whatever
+`deploy-synology.sh` last installed, so no radiologist sees any of this until someone deploys `main`.
+The five remaining gaps at the end of this section are the open part of the work.
 
 **What was wrong (measured, `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md`).** Two
 stores held canal AP diameters and neither wrote the other. The Reporting Workspace grid saves
@@ -717,7 +729,8 @@ order-dependent against the shared scratch database — the same three files fai
 an absolute: the worktree's `lib/*` packages are unbuilt, so 2,179 of 2,180 diagnostics are the
 TS6305/TS7006 cascade; only the errors named above sit in touched files.
 
-**Owner decisions (2026-10-17) — all four ruled, all four implemented on this branch.**
+**Owner decisions (2026-10-17) — all four ruled, all four implemented, and merged in `3d54c552` (31
+files, +3,074/-309).**
 
 **DECISION 1 — one combined Dorso-Lumbar table.** *"Fix the existing renderer so that every valid
 measured dorsal and lumbar level appears in the signed report. Use one combined table. Do not select
@@ -771,8 +784,9 @@ not empty.
 
 **DECISION 4 — Composer: interface handed over, code untouched.** *"Do not modify Composer code.
 Provide Qwen-Max with the exact canonical measurement interface and recommended read-only projection.
-Do not allow Composer to write back into the measurement authority."* Verified: `git diff
-origin/main..HEAD -- artifacts/api-server/src/lib/reportComposer` is **empty**.
+Do not allow Composer to write back into the measurement authority."* Verified at merge time: `git diff
+71f68479 3d54c552 --name-only -- artifacts/api-server/src/lib/reportComposer` is **empty**, and no
+Composer file appears among the 31 files the merge changed.
 
 The canonical interface, exactly as it exists today:
 - **Where**: `radiology_report_drafts.structured_json.careCanalApProvenance` — an object keyed by
@@ -849,16 +863,25 @@ a delivered document (`:355` for `spinal_measurements`, `:467` for the canonical
 1. **V4 in a browser is still unproven.** This local database has no dorso-lumbar reporting format, so
    the DL canvas and DL table never mount locally; V4 is proven at the request/rendered-artifact level
    and by the ERP's own plan test, not by a click. The clinic books "Dorsolumbar Spine" (35 rows) while
-   the local fixture names it "MRI Dorso Lumbar Spine".
+   the local fixture names it "MRI Dorso Lumbar Spine". **Deployed `main` is the first place a radiologist
+   can click it** — until someone runs `deploy-synology.sh`, `3d54c552` is not what the clinic is printing.
 2. **OHIF caliper → level capture was NOT RUN** (no PACS reachable). The code path exists and is
    exercised by unit tests only.
 3. **The Composer still reads measurements from prose** — see DECISION 4; the projection is a handoff,
-   not this branch's code.
+   and the owner ruled it stays recorded in this register rather than as a separate handoff file, so no
+   Composer work is scheduled by it.
 4. **Two stores are still two stores at entry time.** Print folds them with one rule; the AI-tab box
    still writes both. Closing that needs viewer capture moved into the rail grid first (DECISION 3
    census above), which is an owner call about UI, not a defect.
-5. **Full-suite parity is delegated to CI**: these signing request suites are order-dependent against
-   the shared scratch database locally, and each file is green in isolation.
+5. **`mriBrainCanvasPlacement.test.ts` is still a source-text guard over UI that renders zero
+   elements.** DECISION 3 keeps the `{false && (` block disabled, so the merge did not make this worse —
+   but the test cannot see a control that stops mounting, which is exactly the failure class that made
+   this audit necessary. Turning it into a render check is the natural next unit of work and needs no
+   clinical ruling.
+
+*Closed by the merge:* full-suite parity, which this section previously delegated to CI. All three jobs
+are green on `ad90a59a` (14,656 passed / 49 skipped over 1,089 files, 0 failed), and the merged tree is
+that same tree, so the number is the branch's own and not an inference from per-file local runs.
 
 
 ---
@@ -936,22 +959,29 @@ a guessed identity for an approved one.
 4. **RIS-009**: the Chromium multi-navigation re-probe (Next / Previous / Park / deep link) is the only
    unfinished verification left from the P1 list. `studyRegion.test.ts` was re-run green.
 5. **RIS-010: the evidence pass is MERGED (#1048 → `1394ab79`) and the corrections are in review
-   (#1050, head `7ac9662a`, open as Ready — not by choice: this token cannot convert a PR to draft).**
+   (#1050, head `7ac9662a`, open as Ready — not by choice: this token cannot convert a PR to draft.
+   Measured 2026-10-17 while merging #1054: the opposite direction **does** work, over GraphQL
+   `markPullRequestReadyForReview` with the `PR_kw…` node id from
+   `repository.pullRequest(number:){id}`; every REST path for it — `POST /pulls/{n}/mark_as_ready`,
+   `POST …/mark_ready_for_review`, `PATCH {draft:false}` — answers 404 or a 200 that silently keeps the
+   PR in draft.)**
    Do not rebuild the mechanisms it records as VERIFIED, and **do not re-measure the five gaps as if they
    were still open** — each one now has a status line in its own paragraph. Read #1050's CI result, put
    it in the stage table above, then hand the two visible behaviour changes (section "What #1050 changes")
    to the owner. Nothing is deployed.
 6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
-7. **RIS-013: all four owner decisions are implemented on `clinical/canal-ap-one-authority` (PR #1054) —
-   do not re-derive the two authorities, and do not add a second table builder.** Read §RIS-013 first:
+7. **RIS-013: all four owner decisions are implemented and MERGED (#1054 → `main` `3d54c552`, CI green on
+   the tested tree `b84b5926`) — not deployed. Do not re-derive the two authorities, and do not add a
+   second table builder.** Read §RIS-013 first:
    DECISION 1 is one print plan over the measured levels, DECISION 2 is structural table identity with
    Generate no longer writing a grid, DECISION 3 is the rail Measure tab alone with the AI-tab box
    kept because the census proves it is load-bearing, DECISION 4 is a Composer handoff with the
-   interface and the read-only projection spelled out and no Composer file touched. Five gaps remain
-   and are listed in that section — the Dorso-Lumbar case is proven at the rendered-artifact level but
-   not yet clicked in a browser (this database has no dorso-lumbar reporting format), OHIF caliper
-   capture was not run (no PACS reachable), the Composer still reads measurements from prose, the
-   AI-tab box still writes both stores, and full-suite parity is delegated to CI.
+   interface and the read-only projection spelled out and no Composer file touched. The work that is
+   left is the five gaps listed at the end of that section — clicking a Dorso-Lumbar study in a browser
+   (needs a deployed `main`, or a local database that carries the clinic's "Dorsolumbar Spine" format),
+   OHIF caliper → level capture with a reachable PACS, wiring the Composer projection §RIS-013 defines,
+   the owner's ruling on collapsing the AI-tab box's two writes, and turning
+   `mriBrainCanvasPlacement.test.ts` into a render check.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
