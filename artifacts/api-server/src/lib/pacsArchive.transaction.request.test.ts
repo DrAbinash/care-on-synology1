@@ -1132,7 +1132,7 @@ describe.skipIf(!dbReady)("RIS-010 — the archive's approved transaction rules"
     return reporterToken;
   }
 
-  it("V1 — a missing StudyInstanceUID blocks the PACS association and nothing else: the same report signs, reads and renders", async () => {
+  it("V1 — a missing StudyInstanceUID blocks the PACS association and nothing else: the same report still signs and still reads", async () => {
     const token = await reporter();
     const f = await fixture("v1-nouid");
     const reportId = await reportRow(f, {
