@@ -982,9 +982,13 @@ the run were HOPE/OHIF/DICOMweb paths this scratch stack does not serve (`send-r
    over real HTTP, and the row comes back signed. Two claims in the paragraph this replaces were wrong,
    and are corrected here rather than left standing: the `DRAFT_WORKLIST_MISMATCH` belongs to study **890**
    (the log shows the queue auto-advanced — `worklist-lock/890/claim`, `drafts/241/print-preview` — before
-   that autosave), so it was never evidence about the study being finalized; and the scratch database that
-   run used no longer exists (no `*.request.test.ts` cluster on `5445` holds rows 889–893), so *which* of
-   the two decline arms fired is unrecoverable — which is why both are pinned as tests instead:
+   that autosave), so it was never evidence about the study being finalized; and the database that run used
+   is NOT gone — it is `care_qs_c3` on the scratch cluster, the shared database the other session's API on
+   8097 serves and the one `tmp/vite.p1.ts` proxies to. Its marker cleanup deleted the run's rows (no
+   `radiology_worklist` row above 840 survives while `radiology_worklist_id_seq` reads `last_value = 893`),
+   and its `signatures` table now holds exactly one row — **with `id = 12`**, i.e. eleven blocks were
+   created and deleted. So the exact set of blocks the decline saw is unrecoverable, which is why both arms
+   are pinned as tests instead:
    `radiologyReportLifecycle.test.ts` adds the arm that was missing, a retired block chosen in the dialog,
    and dropping `isActive` from the filter kills it plus the pre-existing retired-only arm.
    **No DEF-D PR is owed.** What is owed, and deliberately not taken here: (a) `useStudyFinalize.ts:337`
