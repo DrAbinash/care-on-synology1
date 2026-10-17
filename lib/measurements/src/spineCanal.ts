@@ -127,6 +127,56 @@ export function canalSegmentForLevel(level: string | null | undefined): CanalSeg
   return null;
 }
 
+/** The number as printed. Whitespace-trimmed text in, text out — never a parse
+ *  that could turn an unmeasured cell into a `0`. */
+export function printCanalApValue(raw: number | string | null | undefined): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (typeof raw === "number" && !Number.isFinite(raw)) return null;
+  return s;
+}
+
+/**
+ * The same examination's canonical record, level by level.
+ *
+ * `null` is an answer, not an absence: it means the draft HAS a record for that
+ * level and the record refuses to report a number (two aliases disagreeing, or a
+ * vertebra that moved under it). Callers must not treat it as "no opinion" and
+ * fall back to the other store — that is how a declined measurement would end up
+ * printed anyway.
+ */
+export function canalApLevelsFromCanonicalRecord(raw: unknown): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const { records } = canonicalizeCanalMap(raw as Record<string, unknown>);
+  for (const [level, rec] of Object.entries(records)) {
+    out.set(level, printCanalApValue(canalApValue(rec)));
+  }
+  return out;
+}
+
+/**
+ * Fold the two stores into the one map the table prints from.
+ *
+ * The canonical record wins; a `null` from it deletes the level (the record
+ * declined, so nothing prints); a level only the legacy store knows keeps its row.
+ * Pure, so the print renderer, the draft preview, the structured (D1) preparers and
+ * the workspace's own PDF export all fold identically — one fold, not two that
+ * could disagree about which number a signed report carries.
+ */
+export function mergeCanalApLevels(
+  serverByLevel: ReadonlyMap<string, string>,
+  canonicalByLevel: ReadonlyMap<string, string | null>,
+): Map<string, string> {
+  const merged = new Map<string, string>(serverByLevel);
+  for (const [level, value] of canonicalByLevel) {
+    if (value === null) merged.delete(level);
+    else merged.set(level, value);
+  }
+  return merged;
+}
+
 // ── The printed table: which columns, in which order, under which title ──────
 //
 // ONE plan for every surface that prints canal numbers — the draft preview, the

@@ -32,12 +32,8 @@
  *     mention of one.
  */
 import { describe, expect, it } from "vitest";
-import {
-  canalApLevelsFromCanonicalRecord,
-  mergeCanalApLevels,
-  renderCanalApTable,
-  insertCanalTableIntoBody,
-} from "./spinalCanalApTable";
+import { canalApLevelsFromCanonicalRecord, mergeCanalApLevels } from "@workspace/measurements";
+import { renderCanalApTable, insertCanalTableIntoBody } from "./spinalCanalApTable";
 
 /** A canonical record entry as the draft stores it: the caliper's number, the radiologist's
  *  number, and which one the report is to carry. */

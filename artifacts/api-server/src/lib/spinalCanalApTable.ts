@@ -27,9 +27,11 @@
  * rather than the other store's older guess. Levels that exist only in
  * `spinal_measurements` still print, so nothing that printed before stops.
  *
- * The level vocabulary and the column plan come from `@workspace/measurements` —
- * the same list the reporting workspace renders, shared with every other printed
- * surface. This used to carry its own copy, which is how the printed sheet kept
+ * The level vocabulary, the column plan and the fold of those two stores come from
+ * `@workspace/measurements` — the same list and the same fold the reporting workspace
+ * renders and prints from, shared rather
+ * than reimplemented, because a second answer to "which number does a signed report
+ * carry" is exactly the defect this branch was opened to remove. This used to carry its own copy, which is how the printed sheet kept
  * offering a C1-C2 column that no table upstream could ever fill. The fixed lists
  * are the ROUTINE levels; a transitional vertebra offers more (`L5-T`, `L5-L6`,
  * `L6-S1`) and those keys are printed too, because a measurement the grid accepts,
@@ -47,24 +49,15 @@ import { db } from "@workspace/db";
 import { radiologyReportDraftsTable, spinalMeasurementsTable } from "@workspace/db/schema";
 import {
   canalPrintPlan,
+  canalApLevelsFromCanonicalRecord,
   canonicalizeCanalLevel,
-  canonicalizeCanalMap,
-  canalApValue,
   hasRenderedCanalApTable,
+  mergeCanalApLevels,
+  printCanalApValue,
   stripUnmeasuredCanalScaffold,
 } from "@workspace/measurements";
 import { escapeHtml } from "./reportPresentation";
 import { extractCareCanalApProvenance } from "./structuredJsonColumn";
-
-/** The number as printed. Whitespace-trimmed text in, text out — never a parse
- *  that could turn an unmeasured cell into a `0`. */
-function printValue(raw: number | string | null | undefined): string | null {
-  if (raw == null) return null;
-  const s = String(raw).trim();
-  if (!s) return null;
-  if (typeof raw === "number" && !Number.isFinite(raw)) return null;
-  return s;
-}
 
 /**
  * Reads the canal rows for one examination.
@@ -98,7 +91,7 @@ export async function loadCanalApLevelsByLevel(studyKeys: readonly (number | nul
   };
   const orderedRows = [...rows].sort((a, b) => rankOf(b.studyId) - rankOf(a.studyId));
   for (const r of orderedRows) {
-    const value = printValue(r.canalAP);
+    const value = printCanalApValue(r.canalAP);
     if (!value) continue;
     byLevel.set(canonOf(r.vertebraLevel ?? ""), value);
   }
@@ -135,46 +128,7 @@ export async function loadCanalApProvenanceForStudy(
 }
 
 /**
- * The same examination's canonical record, level by level.
- *
- * `null` is an answer, not an absence: it means the draft HAS a record for that
- * level and the record refuses to report a number (two aliases disagreeing, or a
- * vertebra that moved under it). Callers must not treat it as "no opinion" and
- * fall back to the other store — that is how a declined measurement would end up
- * printed anyway.
- */
-export function canalApLevelsFromCanonicalRecord(raw: unknown): Map<string, string | null> {
-  const out = new Map<string, string | null>();
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
-  const { records } = canonicalizeCanalMap(raw as Record<string, unknown>);
-  for (const [level, rec] of Object.entries(records)) {
-    out.set(level, printValue(canalApValue(rec)));
-  }
-  return out;
-}
-
-/**
- * Fold the two stores into the one map the table prints from.
- *
- * The canonical record wins; a `null` from it deletes the level (the record
- * declined, so nothing prints); a level only `spinal_measurements` knows keeps
- * its row. Pure, so the same fold is available to the preview, the legacy
- * finalize and the D1 preparers without a second implementation.
- */
-export function mergeCanalApLevels(
-  serverByLevel: ReadonlyMap<string, string>,
-  canonicalByLevel: ReadonlyMap<string, string | null>,
-): Map<string, string> {
-  const merged = new Map<string, string>(serverByLevel);
-  for (const [level, value] of canonicalByLevel) {
-    if (value === null) merged.delete(level);
-    else merged.set(level, value);
-  }
-  return merged;
-}
-
-/**
- * Lays out and prints the canal table for one examination.
+ * Lay out the printed canal table for one examination.
  *
  * The columns come from `canalPrintPlan` in `@workspace/measurements` — the same plan
  * every surface uses — so a study that measured levels in more than one segment prints
