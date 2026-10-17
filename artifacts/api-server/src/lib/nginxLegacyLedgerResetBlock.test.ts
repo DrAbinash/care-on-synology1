@@ -54,10 +54,20 @@ import { dirname, join } from "node:path";
 //   5. CATCHING THE PEN-DRIVE ROUTE. /api/super-admin/books/<id>/reset must keep
 //      working; it is the safe one, and blocking it would leave the clinic with
 //      no way to empty a book at all.
-//   6. `default_type` AT SERVER OR LOCATION LEVEL. It would then also apply to
-//      every response nginx generates in that scope — including a 502 from a
-//      recreated api container — announcing JSON while sending nginx's HTML page.
-//      It is legal in `if` context, so it belongs next to the `return`.
+//   6. WHERE `default_type` MAY GO. It is NOT allowed in `if` context — nginx
+//      refuses to load the config ("the \"default_type\" directive is not allowed
+//      here"), which is the crash commit 0bca78ca fixed. It must therefore sit at
+//      location level, and the only occurrence allowed in this file is the one in
+//      `location /api/`: a second one at server{} or http{} scope would widen the
+//      type to every location that inherits it. What it does NOT do is mislabel an
+//      nginx-generated error page — read from the nginx source, not assumed:
+//      `ngx_http_special_response_handler()` sets
+//      `r->headers_out.content_type` to \"text/html\" itself and never consults
+//      `clcf->default_type`, so the 502 page from a recreated api container stays
+//      text/html. `default_type` reaches a response only through
+//      `ngx_http_send_response()` (which is what `return` calls) and through static
+//      file handlers, both of which fall back to `clcf->default_type`. That is
+//      exactly why the 410 body below is announced as JSON.
 //
 // NOT PROVABLE HERE: that nginx really answers 410. There is no nginx on this
 // machine and CI has none — checked 2026-10-16: no docker CLI, no nginx.exe under
@@ -271,22 +281,32 @@ describe("the /api/ location stays a single proxied block", () => {
     expect(block.match(/return\s+4\d\d/g)?.length).toBe(1);
   });
 
-  test("default_type is scoped inside the if, so proxied 502s keep their own type", () => {
+  test("default_type sits at location level and nowhere else, which is the only placement nginx accepts", () => {
     const block = apiLocationBlock();
     const at = block.indexOf("default_type");
-    expect(at).toBeGreaterThan(-1);
+    expect(at, "the refusal's JSON type must be declared in this location").toBeGreaterThan(-1);
     const ifAt = block.search(/^\s*if\s*\(\$legacy_ledger_reset_blocked\)/m);
-    expect(at, "default_type must live inside the if body").toBeGreaterThan(ifAt);
-    expect(block.slice(0, ifAt), "no default_type before the if").not.toContain("default_type");
-    // The block-local check alone is not enough: a `default_type` hoisted to
-    // server{} or file level is outside this location's text entirely, yet it
-    // then applies to every response nginx generates in that scope — including
-    // the 502 page from a recreated api container, which would be announced as
-    // JSON while still being nginx's HTML. One occurrence, in the if, file-wide.
+    expect(ifAt, "the refusal must still be an if + return in this location").toBeGreaterThan(-1);
+    // The crash this file now guards against: `default_type` is invalid in `if`
+    // context, so nginx refuses to load a config that puts it there. It must
+    // precede the if (location level) and must not reappear inside the if body —
+    // otherwise the container that carries the ledger-reset block will not start.
+    expect(at, "default_type must be at location level, before the if").toBeLessThan(ifAt);
+    expect(block.slice(ifAt), "default_type must not be inside the if body").not.toContain("default_type");
+    // One occurrence file-wide, and the check above places it inside
+    // `location /api/` — so it cannot be hoisted to server{} or http{} scope,
+    // where every location in that scope would inherit the JSON default.
     expect(
       [...directives.matchAll(/^\s*default_type\s/gm)].length,
-      "default_type must appear only inside the refusal, nowhere else in the file",
+      "default_type must appear exactly once in the file",
     ).toBe(1);
+    // And the type is what makes the refusal legible: `return` with a text body
+    // takes its Content-Type from the location's default_type, so removing the
+    // directive would silently turn a JSON 410 into a text/plain one that the ERP
+    // error reader cannot parse.
+    expect(block, "the refusal is a `return` with a text body, which is what default_type types").toMatch(
+      /return\s+410\s+'\{/,
+    );
   });
 
   test("the refusal explains itself to an operator, in the shape the ERP reads", () => {
