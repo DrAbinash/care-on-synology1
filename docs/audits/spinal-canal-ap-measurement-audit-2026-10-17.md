@@ -5,6 +5,14 @@
 PostgreSQL on `127.0.0.1:5445`, plus the repo's own request-level tests at this commit.
 Audit only: **no clinical code was changed**, nothing was merged, deployed, signed or finalized.
 
+**Status after this audit (same day).** §10 is now implemented on
+`clinical/canal-ap-one-authority` — one builder folds both stores with the canonical record as the
+authority, all three signed paths carry the table, and the four grids mount once on the Measure tab.
+Read the sections below as the measured *as-was* state; the current status and the four decisions still
+outstanding (including one this audit did not anticipate: a Dorso-Lumbar study prints only its
+most-filled segment, so a measured dorsal level can be absent) are in
+`docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013.
+
 ---
 
 ## 1. Answer in plain language

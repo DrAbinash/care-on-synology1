@@ -41,6 +41,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **IMPLEMENTING → TESTING — the six owner decisions are now code**, evidence pass MERGED, correction pass in review | `pacsArchive.transaction.request.test.ts` **13/13** on real PostgreSQL; consolidated **229 tests / 13 files green**; battery **20 mutants = 15 DETECTED with named attribution + 5 survived-by-design, 0 unexplained**; Command Center refusal wording **4/4 in real Chromium** (control: 2/4 on the pre-correction JSX); typecheck unchanged (api-server 58 pre-existing, 0 in touched files) | evidence **#1048 → MERGED `1394ab79`**; corrections **#1050** (head `7ac9662a`, base `main`) | #1050 **pending at the time of writing** — see the stage table below; nothing is DEPLOYED | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
+| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **CORRECTED → DRAFT PR** (one builder folds both stores, the canonical record wins, all three signed paths covered, one entry point on the Measure tab) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md`; 285 tests / 16 api-server files green on real PostgreSQL; ERP canal suites 62/62; Chromium: 5/6/11 inputs for LS/cervical/dorsal typed → Saved → reloaded with the value; signed PDF bytes (681,166 B) extracted with `pdftotext` carry the table; mutants M1a **13 named failures**, M1b **6**, M2 red | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -500,6 +501,92 @@ which keys the allowance on *a* combine rather than *this* row and is caught by 
 ERP's own error swallowing (`linkedMarkError`) is unchanged by this PR, so a future sibling-flip failure
 would still be quiet; worth a follow-up if the owner wants it surfaced to the radiologist.
 
+## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, branch `clinical/canal-ap-one-authority`)
+
+**What was wrong (measured, `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md`).** Two
+stores held canal AP diameters and neither wrote the other. The Reporting Workspace grid saves
+`structured_json.careCanalApProvenance`; every printed table was built from `spinal_measurements`.
+One study showed **8.5 mm** in the grid and an empty table on the sheet. The 13 green canal request
+tests all inserted `spinal_measurements` rows directly, so entry was tested and print was tested and
+the join — which did not exist — was not.
+
+**Correction.** One builder (`spinalCanalApTable.ts`) reads both stores and the canonical record
+decides: `canalApLevelsFromCanonicalRecord` (:148) answers through `canalApValue`, and
+`mergeCanalApLevels` (:166) lets the record win, deletes a level the record **declines** (two aliases
+disagreeing, or a vertebra that moved under it) instead of falling back to the other store's older
+guess, and keeps a level only `spinal_measurements` knows so nothing that printed before stops. All
+three signed paths now take it: the create/finalize splice
+(`patient-reports.ts:2284`, `:2301`), the structured finalize (`:1027`) and the amendment (`:1681`).
+For the two D1 paths the table is pinned in the sanctioned `extensions.x_care_canal_ap`
+(`radiologyD1DraftWriter.ts:282`) and emitted by the D4 renderer as its own section
+(`structuredReport/renderer.ts:139`, `:339-344`), so the stored signed body stays byte-identical to a
+re-render (`compareStoredVsRendered` → IDENTICAL) rather than becoming an unexplained clinical
+difference; `STRUCTURED_RENDERER_VERSION` → `d4-structured-1.1.0` (:42), and the five §17 golden
+digests are untouched because the extension is omitted when there is no measurement. Transitional
+levels (`L5-T`, `L5-L6`, `L6-S1`) print in anatomical order. The draft preview passes the same record
+(`radiology-report-generator.ts:2357`).
+
+**One entry point (UI).** The lumbar grid was mounted twice in the same rail — Structure pane and
+Measure pane — while cervical and dorsal were Structure-pane only. All four tables now mount once
+inside a collapsed **AP Canal Measurements (mm)** panel on the Measure tab
+(`ReportingToolsRail.tsx:982-1003`), gated on the same four predicates with the same full argument set
+the canvases use (`:508-519`) and the same content lock; a study that earns no table says so instead of
+showing an empty grid. The false comment claiming Brain's palette renders in the report body is
+replaced with what is measured: those mounts live only inside the retired `{false && (` block
+(`ReportCanvas.tsx:1044-1433`), which is why `mriBrainCanvasPlacement.test.ts` can be green over UI
+that renders zero elements.
+
+**Measured.** 285 tests / 16 api-server files green on real PostgreSQL (canal + `structuredReport` +
+D5/D6/D7/D9); ERP canal suites 62/62. Chromium against the running app: the panel is reachable on the
+Measure tab for LS (5 inputs), cervical (6) and dorsal (11), collapsed by default, and a typed value
+survives Save Draft + reload; switching examinations does not mix values (11.1 lumbar / 22.2 cervical
+each kept their own, and the other study's field is not present). The signed **PDF bytes** were taken
+from `GET /api/patient-reports/:id/pdf` (681,166 B) and extracted with `pdftotext`: the heading, the
+level row `L1-L2 … L5-S1` and `AP (mm) -- -- 15.2 6.4 8.1` are all in the printed page. Mutants: M1a
+canonical override removed → **13 named failures**; M1b the D1 pin removed → **6 named failures**; M2
+one canal gate disconnected → the mount-once guard red. `tsc` caught two things the tests could not:
+the amendment transaction had lost its `let materialized` declaration (every
+`POST /:id/amend` would have thrown), and `FinalWorklistRow` had no `studyId` to read the rows with.
+
+**NOT RUN / limitations.** The **Dorso-Lumbar** entry point is unproven in a browser: this local
+database has no dorso-lumbar reporting format, so neither the DL canvas nor the DL table mounted —
+identical before and after the change, and the local worklist fixture names the exam
+"MRI Dorso Lumbar Spine" while the clinic books "Dorsolumbar Spine" (35 such rows). Whole-spine and
+screening bookings resolve no disc-level table at all, which is the reporting-context predicates'
+existing decision, not a new one. OHIF caliper → level capture was NOT RUN (no PACS reachable).
+Full-suite parity is **delegated to CI**: on this workstation the radiology signing request suites are
+order-dependent against the shared scratch database — the same three files failed 20 tests at
+`origin/main` and 13 at this branch with different membership, while each file is green in isolation
+(`finalizeIntegrityGuard` 7/7 twice on both, `linkedSiblingReportFinalize` 6/6,
+`signedArtifactTrust` 24/24, D5 17/17, D9 24/24). The local typecheck number is likewise unusable as
+an absolute: the worktree's `lib/*` packages are unbuilt, so 2,179 of 2,180 diagnostics are the
+TS6305/TS7006 cascade; only the errors named above sit in touched files.
+
+**Owner decisions outstanding.**
+1. **Mixed-segment studies lose a segment.** `renderCanalApTable` prints only the most-filled segment
+   (`spinalCanalApTable.ts:218`), so a Dorso-Lumbar report with three lumbar and one dorsal level
+   prints the lumbar rows under a `LUMBAR …` title and **drops the dorsal measurement**. Measured, not
+   inferred: `renderCanalApTable(new Map([["D8-D9","10.1"],["L1-L2","12.0"],["L3-L4","11.4"],
+   ["L4-L5","9.8"]]))` returns the title `LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS` and no
+   `D8-D9` anywhere in the block. Fixing it changes the shape and title of a printed clinical table,
+   which is the owner's call, not a bug-fix side effect.
+2. **A measurement taken after "Generate professional report" cannot reach the signed table.** The
+   dedupe guard fires on any body containing "canal AP diameter" (`:279`), and the ERP writes exactly
+   that phrase into Findings prose (`professionalReport.ts:272`, `spineCanalAp.ts:239`), so the server
+   adds nothing. Values measured after that prose was composed stay off the paper.
+3. **Composer (handoff to its owner, nothing changed here).** The Composer never reads the canonical
+   record: `buildRadiologistDraftContext.ts:60` scrapes unit-bearing numbers out of prose and
+   `:82` `extractMeasurements` returns that bag, so a level the grid holds but no sentence states is
+   invisible to Generate/Refine — and invisible to `validateOutput`'s measurement-loss rules, which
+   compare against the same scraped input. A projection that wants measurements must read
+   `careCanalApProvenance` through `canalApValue` and never write back into it
+   (`lib/measurements/src/spineCanal.ts:12-15`).
+4. Whether the retired report-body block (`ReportCanvas.tsx:1044-1433`) and the AI-tab
+   `SpineCanalApBox` get deleted or re-lit, and whether `mriBrainCanvasPlacement.test.ts` must become
+   a render check before anything is rebuilt inside that block.
+
+---
+
 ## Standing constraints for anyone working this queue
 
 **Owner's examination-ownership ruling (2026-10-17), which settles what RIS-006 and RIS-012 were
@@ -579,6 +666,11 @@ a guessed identity for an approved one.
    it in the stage table above, then hand the two visible behaviour changes (section "What #1050 changes")
    to the owner. Nothing is deployed.
 6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
+7. **RIS-013: corrected on `clinical/canal-ap-one-authority`, Draft PR open — do not re-derive the two
+   authorities, and do not add a second table builder.** Four owner decisions in that section are open,
+   of which the first (a Dorso-Lumbar report currently drops its dorsal levels because only the
+   most-filled segment prints) changes the shape of a printed clinical table and is therefore not
+   something an engineer may decide. The Composer-side gap is a handoff, not this branch's code.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
