@@ -239,12 +239,8 @@ describe("D7 amendment — a correction must not lose a signed measurement", () 
 });
 
 describe("D4 renderer — the section is emitted once", () => {
-  it("does not print a second table when the findings prose already carries one", async () => {
-    // Generate Professional Report writes "Spinal canal AP diameter (mm):" into
-    // Findings from the client side. A body naming one level twice, from two stores,
-    // with two numbers is the defect this path exists to remove — so the pinned
-    // section yields to prose that is already there.
-    const doc = {
+  const docWithFindingSentence = (sentence: string) =>
+    ({
       findings: [
         {
           lid: "f1",
@@ -257,7 +253,7 @@ describe("D4 renderer — the section is emitted once", () => {
           interval_change: null,
           parameters: [],
           measurement_refs: [],
-          sentence: "Spinal canal AP diameter (mm): L4-L5 8.5.",
+          sentence,
           impression_fragment: "Disc herniation.",
           sentence_source: "content_pack_default",
           status_flags: { is_significant: false, is_critical: false, is_incidental: false },
@@ -272,11 +268,44 @@ describe("D4 renderer — the section is emitted once", () => {
       critical_flags: [],
       impression: { rendered: "IMPRESSION:\nDisc herniation." },
       extensions: { x_care_canal_ap: { rendered: CANAL_BLOCK } },
-    } as unknown as StructuredReportDocument;
+    }) as unknown as StructuredReportDocument;
 
-    const r = renderStructuredReport(doc);
-    expect((r.body.match(/CANAL AP DIAMETER/gi) ?? [])).toHaveLength(1);
+  it("emits the section when the findings only MENTION the canal diameter in prose", () => {
+    // DECISION 2 (owner, 2026-10-17). This case used to be the opposite: the guard
+    // matched the phrase "CANAL AP DIAMETER" in any finding sentence, so a report
+    // whose Findings said the number in prose signed with no table — and a level
+    // measured after that prose was written never reached the document at all.
+    // A sentence is not a table, and cannot block one.
+    const r = renderStructuredReport(
+      docWithFindingSentence("Spinal canal AP diameter (mm): L4-L5 8.5."),
+    );
+    expect(r.trace.some((t) => t.section === "canal_ap")).toBe(true);
+    expect((r.body.match(/CANAL AP DIAMETER AT/gi) ?? [])).toHaveLength(1);
+    expect(r.body).toContain("L4-L5: 8.5");
+  });
+
+  it("does not print a second table when the findings already render one", () => {
+    // A body naming one level twice, from two stores, with two numbers is still the
+    // defect this path exists to remove. Identity is the table itself: the printed
+    // heading on a line of its own, not the words around it.
+    const r = renderStructuredReport(
+      docWithFindingSentence(`Findings:\n${CANAL_BLOCK}`),
+    );
     expect(r.trace.some((t) => t.section === "canal_ap")).toBe(false);
+    expect((r.body.match(/CANAL AP DIAMETER AT/gi) ?? [])).toHaveLength(1);
+  });
+
+  it("emits the section beside a grid that carries no measurement", () => {
+    // The clinic's own LS-Spine template ships a canal grid full of dashes. A blank
+    // placeholder is not evidence that a number has been printed, so it must never
+    // hold the study's measurements out of the signed document.
+    const r = renderStructuredReport(
+      docWithFindingSentence(
+        "Canal Diameter:\n| Level | AP Canal (mm) |\n| L1-L2 | — |\n| L4-L5 | — |",
+      ),
+    );
+    expect(r.trace.some((t) => t.section === "canal_ap")).toBe(true);
+    expect(r.body).toContain("L4-L5: 8.5");
   });
 
   it("emits the section exactly once with a trace entry naming its source", async () => {

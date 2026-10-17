@@ -19,6 +19,7 @@
 // makes this the report producer, and patient_reports persistence.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { hasRenderedCanalApTable } from "@workspace/measurements";
 import type {
   StructuredReportDocument,
   Finding,
@@ -334,10 +335,13 @@ export function renderStructuredReport(
   // cannot reproduce from the stored document reads as a clinical divergence on every
   // spine report, forever. Emitters must therefore never be smarter than this reader.
   //
-  // Not emitted when the findings prose already carries a canal table: a body that
-  // names one level twice with two numbers is the defect this whole path exists to kill.
+  // Not emitted when the findings already carry a RENDERED canal table: a body that
+  // names one level twice with two numbers is the defect this whole path exists to
+  // kill. The test is the table's own structure, not a phrase — findings prose that
+  // merely says "Canal AP diameter 8 mm." is not a table, and used to hold the whole
+  // section out of the signed report (owner DECISION 2, 2026-10-17).
   const canalBlock = pinnedCanalApBlock(doc);
-  if (canalBlock && !findingLines.some((l) => /CANAL AP DIAMETER/i.test(l.text))) {
+  if (canalBlock && !hasRenderedCanalApTable(findingLines.map((l) => l.text).join("\n"))) {
     parts.push(canalBlock);
     trace.push({
       section: "canal_ap", order: 1, text: canalBlock,

@@ -127,6 +127,262 @@ export function canalSegmentForLevel(level: string | null | undefined): CanalSeg
   return null;
 }
 
+// ── The printed table: which columns, in which order, under which title ──────
+//
+// ONE plan for every surface that prints canal numbers — the draft preview, the
+// legacy signed body, the structured (D1) final and amendment, and the workspace's
+// own PDF — so no surface can invent its own column list. It replaced a per-surface
+// habit of choosing the segment with the most filled cells, which silently dropped
+// every level of the other segment: a Dorso-Lumbar study with three lumbar and one
+// dorsal measurement printed a LUMBAR table, and the dorsal disc was simply absent
+// from the signed report (owner DECISION 1, 2026-10-17).
+
+/** Head to tail. The order a printed table lays its segments out in. */
+const CANAL_PRINT_SEGMENT_ORDER: CanalSegment[] = ["cervical", "dorsal", "lumbar"];
+
+/** Sorts a level key anatomically within its segment: upper vertebra, then the
+ *  lower one — with a transitional key that names no lower vertebra (`L5-T`, a
+ *  sacralised L5) after every numbered one. */
+function canalLevelOrderKey(level: string): [number, number, number] {
+  const segment = canalSegmentForLevel(level);
+  const segRank = segment === null ? 999 : CANAL_PRINT_SEGMENT_ORDER.indexOf(segment);
+  const m = level.match(/^([CDLS])(\d{1,2})-([CDLS])(\d{1,2})?/);
+  if (!m) return [segRank < 0 ? 999 : segRank, 999, 999];
+  const upper = Number(m[2]);
+  const lowerPrefix = m[3];
+  const lowerNumber = m[4] ? Number(m[4]) : null;
+  const lower = lowerNumber ?? (lowerPrefix === "S" ? 101 : 201);
+  return [segRank, upper, lower];
+}
+
+export type CanalPrintPlan = {
+  /** The segments the study actually measured, in head-to-tail order. */
+  segments: CanalSegment[];
+  /** Every column the table prints: each measured segment's full level list, in order. */
+  levels: string[];
+  /** The printed heading, derived from the columns rather than written by hand. */
+  title: string;
+};
+
+/**
+ * Lay out the printed canal table for the levels a study carries numbers for.
+ *
+ * A segment joins the table when at least one of its levels is measured, and it
+ * joins with its FULL level list: the unmeasured discs print blank (`—`), which is
+ * what the interactive grid shows and what the clinic's reports have always shown.
+ * Nothing is ever invented — a blank cell is the absence of a measurement, not a
+ * number. The thoracolumbar junction (`D12-L1`) is the deliberate exception: it is
+ * offered only when it was measured, because it exists only when the acquired
+ * coverage actually reaches the conus.
+ *
+ * `null` means there is nothing to print at all.
+ */
+export function canalPrintPlan(measuredLevels: Iterable<string>): CanalPrintPlan | null {
+  const keys = new Set<string>();
+  for (const raw of measuredLevels) {
+    // A stored level that is not a canonical key (`"L4"`, an OHIF label nobody
+    // normalised) still belongs to a segment and still carries a number, so it is
+    // kept as written rather than dropped for failing to parse. Dropping it is how
+    // a measured disc disappears from a signed report.
+    const key = (canonicalizeCanalLevel(raw) ?? String(raw ?? "").trim()).toUpperCase();
+    if (key) keys.add(key);
+  }
+  if (keys.size === 0) return null;
+
+  const sortedKeys = [...keys].sort((a, b) => {
+    const ka = canalLevelOrderKey(a);
+    const kb = canalLevelOrderKey(b);
+    return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
+  });
+  const segments = CANAL_PRINT_SEGMENT_ORDER.filter((s) =>
+    sortedKeys.some((k) => canalSegmentForLevel(k) === s),
+  );
+
+  const levels: string[] = [];
+  for (const segment of segments) {
+    const column = [...canalLevelsForSegment(segment)];
+    if (segment === "dorsal" && keys.has(DORSAL_JUNCTION_LEVEL)) column.push(DORSAL_JUNCTION_LEVEL);
+    // A transitional vertebra offers keys no routine list contains (`L5-T`, `L5-L6`,
+    // `L6-S1`). They are accepted, saved and restored by the grid, so they print.
+    for (const key of sortedKeys) {
+      if (canalSegmentForLevel(key) === segment && !column.includes(key)) column.push(key);
+    }
+    levels.push(...column);
+  }
+
+  return { segments, levels, title: canalPrintTitle(segments, levels[0], levels[levels.length - 1]) };
+}
+
+/** The heading for the span a table covers. Dorso-Lumbar is the examination the
+ *  clinic books, so it gets its own name; any other multi-segment span is called
+ *  what it demonstrably is — more than one segment of the spine — rather than a
+ *  compound examination name nobody booked. */
+export function canalPrintTitle(
+  segments: readonly CanalSegment[],
+  firstLevel: string,
+  lastLevel: string,
+): string {
+  const span =
+    segments.length === 1
+      ? segments[0].toUpperCase()
+      : segments.length === 2 && segments[0] === "dorsal" && segments[1] === "lumbar"
+        ? "DORSO-LUMBAR"
+        : "SPINAL";
+  return `${span} CANAL AP DIAMETER AT ${firstLevel} TO ${lastLevel} LEVELS`;
+}
+
+// ── Has this body already RENDERED a canal table? ────────────────────────────
+//
+// The signed body used to answer this by looking for the PHRASE "CANAL AP
+// DIAMETER" anywhere in it. Radiologists write that phrase in prose —
+// "Canal AP diameter 8 mm." — and the phrase match then suppressed the whole
+// table, including a measurement taken after the prose was generated (owner
+// DECISION 2, 2026-10-17). So identity is the table's own structure.
+//
+// A second distinction turned out to matter just as much, and is measured rather
+// than assumed: the clinic's own LS-Spine template carries a canal grid whose
+// every cell is a dash (`| L1-L2 | — |`, structuredReportTemplates.ts:188), and
+// the report the radiologist signs must still print the numbers. A scaffold with
+// nothing in it is a placeholder for exactly those numbers, so it is not evidence
+// that a measurement has already been printed — and it is removed when the real
+// table takes its place, so the report carries one grid, not two.
+
+/** A level key as it appears in a column heading or a row label: `L1-L2`,
+ *  `D12-L1`, `C7-T1`, and the transitional `L5-T`. Removed before asking whether a
+ *  table carries a measurement, because the level names themselves are digits. */
+const CANAL_LEVEL_TOKEN = /\b[CDLS]\d{1,2}(?:-[CDLS]?\d{1,2}|-T)\b/g;
+
+/** Words that name the canal column, however the author spelled them. */
+const CANAL_COLUMN_WORDS = /\b(?:AP\s*canal|canal\s*AP|AP\s*\(mm\))\b/i;
+
+/** The printed heading is uppercase, names both ends of the table, and occupies a
+ *  line of its own — or, in an HTML body, a markup element of its own
+ *  (`<div class="section-heading">…LEVELS</div>`). Prose cannot produce either: a
+ *  sentence that mentions the canal diameter does not end the line after "LEVELS". */
+const CANAL_TABLE_TITLE = /(?:^|>)[ \t]*[A-Z][A-Z \-]*CANAL AP DIAMETER AT \S+ TO \S+ LEVELS[ \t]*(?:$|<)/gim;
+
+/** The value row the AI-tab table writes: a whole line beginning `AP (mm)`, then
+ *  one tab-separated cell per level. A bare `LEVEL` row is NOT enough — a grading
+ *  table starts the same way, and a false "there is already a table here" is
+ *  exactly how a measurement goes missing. */
+const CANAL_TABLE_AP_ROW = /^[ \t]*AP \(mm\)[^\n]*$/gim;
+
+export type CanalTableRegion = {
+  /** Offset of the region's first character, heading line included when it has one. */
+  start: number;
+  /** Offset just past the region's last character. */
+  end: number;
+  /** True when some cell of this table carries a measurement number. */
+  valued: boolean;
+};
+
+/** Does this text hold a measurement, once the level names have been taken out? */
+function carriesMeasurement(text: string): boolean {
+  return /\d/.test(text.replace(CANAL_LEVEL_TOKEN, " "));
+}
+
+/** `<th>`/`<td>` text of one HTML table, tags gone. */
+function htmlCellText(tableHtml: string): string {
+  return [...tableHtml.matchAll(/<(?:th|td)(?:\s[^>]*)?>([\s\S]*?)<\/(?:th|td)>/gi)]
+    .map((m) => m[1].replace(/<[^>]*>/g, ""))
+    .join(" ");
+}
+
+function tableTextRegion(m: string, start: number, valued: boolean): CanalTableRegion {
+  return { start, end: start + m.length, valued };
+}
+
+/** A markdown run: consecutive lines that start with `|`, plus the heading line
+ *  immediately above it when that line ends with `:` (`Canal Diameter:`). */
+function markdownTableSpans(body: string): Array<{ start: number; end: number; text: string }> {
+  const spans: Array<{ start: number; end: number; text: string }> = [];
+  let offset = 0;
+  let run: { start: number; end: number; lines: string[] } | null = null;
+  for (const line of body.split("\n")) {
+    const isRow = /^[ \t]*\|/.test(line);
+    if (isRow) {
+      if (!run) run = { start: offset, end: offset + line.length, lines: [] };
+      else run.end = offset + line.length;
+      run.lines.push(line);
+    } else if (run) {
+      spans.push({ start: run.start, end: run.end, text: run.lines.join("\n") });
+      run = null;
+    }
+    offset += line.length + 1;
+  }
+  if (run) spans.push({ start: run.start, end: run.end, text: run.lines.join("\n") });
+  return spans.map((s) => {
+    const before = body.slice(0, s.start);
+    const headingMatch = before.match(/(^|\n)([ \t]*[^\n|:]{1,60}:[ \t]*)\n$/);
+    const heading = headingMatch?.[2];
+    const startWithHeading = heading ? s.start - heading.length - 1 : s.start;
+    return { start: Math.max(0, startWithHeading), end: s.end, text: s.text };
+  });
+}
+
+/**
+ * Every rendered canal AP table in this body, with whether it carries a number.
+ *
+ * Recognises the four shapes a real canal table arrives in — the printed HTML table,
+ * the printed plain-text block, a markdown pipe table whose column names the canal
+ * AP diameter, and an HTML `<table>` with that column — and nothing else. Prose that
+ * merely mentions a canal diameter matches no shape, which is the point: it used to
+ * hold the measurement out of the signed report.
+ */
+export function findCanalApTables(body: string | null | undefined): CanalTableRegion[] {
+  if (!body) return [];
+  const found: CanalTableRegion[] = [];
+
+  // The builder's own output, HTML or text. It is only ever produced when the study
+  // has a measurement, so a table carrying this heading is always a valued one.
+  for (const m of body.matchAll(CANAL_TABLE_TITLE)) {
+    found.push(tableTextRegion(m[0], m.index ?? 0, true));
+  }
+  for (const m of body.matchAll(CANAL_TABLE_AP_ROW)) {
+    found.push(tableTextRegion(m[0], m.index ?? 0, carriesMeasurement(m[0])));
+  }
+  for (const table of body.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    const cells = htmlCellText(table[0]);
+    if (!CANAL_COLUMN_WORDS.test(cells)) continue;
+    found.push(tableTextRegion(table[0], table.index ?? 0, carriesMeasurement(cells)));
+  }
+  for (const span of markdownTableSpans(body)) {
+    if (!CANAL_COLUMN_WORDS.test(span.text)) continue;
+    found.push({ start: span.start, end: span.end, valued: carriesMeasurement(span.text) });
+  }
+  return found.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * True when the body already carries a canal table that REPORTS a measurement.
+ *
+ * A blank scaffold is deliberately not enough: the clinic's own LS-Spine template
+ * ships a canal grid full of dashes, and treating it as "already printed" would
+ * drop every real number out of the signed report.
+ */
+export function hasRenderedCanalApTable(body: string | null | undefined): boolean {
+  return findCanalApTables(body).some((t) => t.valued);
+}
+
+/**
+ * Remove canal grids that carry no measurement, so the authoritative table takes
+ * the placeholder's place instead of sitting beside it. A table that reports a
+ * number is left exactly as it is — it may be the radiologist's own words.
+ */
+export function stripUnmeasuredCanalScaffold(body: string): string {
+  const blanks = findCanalApTables(body).filter((t) => !t.valued);
+  if (blanks.length === 0) return body;
+  let out = "";
+  let cursor = 0;
+  for (const blank of blanks) {
+    if (blank.start < cursor) continue;
+    out += body.slice(cursor, blank.start);
+    cursor = blank.end;
+  }
+  out += body.slice(cursor);
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
 /** What the viewer said, what the radiologist chose, and how they are linked. */
 export interface CanalApMeasurement {
   /** Canonical persisted key. Never an alias. */

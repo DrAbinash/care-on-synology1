@@ -27,13 +27,15 @@
  * rather than the other store's older guess. Levels that exist only in
  * `spinal_measurements` still print, so nothing that printed before stops.
  *
- * The level vocabulary comes from `@workspace/measurements` — the same list the
- * reporting workspace renders. This used to carry its own copy, which is how the
- * printed sheet kept offering a C1-C2 column that no table upstream could ever
- * fill. The fixed lists are the ROUTINE levels; a transitional vertebra offers
- * more (`L5-T`, `L5-L6`, `L6-S1`), and those keys are printed too, because a
- * measurement the grid accepts, saves and restores must not be silently absent
- * from the report.
+ * The level vocabulary and the column plan come from `@workspace/measurements` —
+ * the same list the reporting workspace renders, shared with every other printed
+ * surface. This used to carry its own copy, which is how the printed sheet kept
+ * offering a C1-C2 column that no table upstream could ever fill. The fixed lists
+ * are the ROUTINE levels; a transitional vertebra offers more (`L5-T`, `L5-L6`,
+ * `L6-S1`) and those keys are printed too, because a measurement the grid accepts,
+ * saves and restores must not be silently absent from the report. And a study that
+ * measured more than one segment prints ONE table covering every segment it
+ * measured — the table no longer picks a favourite and drops the rest.
  *
  * Two output formats, one set of numbers: HTML for the legacy composed body and
  * the preview, plain text for the D1 body, which is text by contract
@@ -44,19 +46,15 @@ import { desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { radiologyReportDraftsTable, spinalMeasurementsTable } from "@workspace/db/schema";
 import {
-  DORSAL_JUNCTION_LEVEL,
-  canalLevelsForSegment,
-  canalSegmentForLevel,
+  canalPrintPlan,
   canonicalizeCanalLevel,
   canonicalizeCanalMap,
   canalApValue,
-  type CanalSegment,
+  hasRenderedCanalApTable,
+  stripUnmeasuredCanalScaffold,
 } from "@workspace/measurements";
 import { escapeHtml } from "./reportPresentation";
 import { extractCareCanalApProvenance } from "./structuredJsonColumn";
-
-const SEGMENTS = ["lumbar", "cervical", "dorsal"] as const;
-type Segment = (typeof SEGMENTS)[number];
 
 /** The number as printed. Whitespace-trimmed text in, text out — never a parse
  *  that could turn an unmeasured cell into a `0`. */
@@ -175,54 +173,23 @@ export function mergeCanalApLevels(
   return merged;
 }
 
-/** Sorts a level key anatomically, head to tail: segment, then upper vertebra,
- *  then the lower one — with a transitional key that names no lower vertebra
- *  (`L5-T`, a sacralised L5) after every numbered one. */
-function levelOrderKey(level: string): [number, number, number] {
-  const segRank = level.startsWith("C") ? 0 : level.startsWith("D") ? 1 : 2;
-  const m = level.match(/^([CDLS])(\d{1,2})-([CDLS])(\d{1,2})?/);
-  if (!m) return [segRank, 999, 999];
-  const upper = Number(m[2]);
-  const lowerPrefix = m[3];
-  const lowerNumber = m[4] ? Number(m[4]) : null;
-  const lower = lowerNumber ?? (lowerPrefix === "S" ? 101 : 201);
-  return [segRank, upper, lower];
-}
-
 /**
- * Picks the segment to print and lays its levels out in the catalogue's order,
- * so the printed order is the rail's, not the database's.
+ * Lays out and prints the canal table for one examination.
+ *
+ * The columns come from `canalPrintPlan` in `@workspace/measurements` — the same plan
+ * every surface uses — so a study that measured levels in more than one segment prints
+ * ONE combined table carrying all of them. This replaces the old habit of picking the
+ * most-filled segment, which silently dropped every level of the other segment: a
+ * Dorso-Lumbar study with three lumbar and one dorsal measurement printed a LUMBAR
+ * table with no dorsal row at all (owner DECISION 1, 2026-10-17).
  */
-export function renderCanalApTable(byLevel: ReadonlyMap<string, string>): { title: string; html: string; text: string } | null {
-  const routineLevelsFor = (segment: Segment) => {
-    const base = [...canalLevelsForSegment(segment)];
-    if (segment === "dorsal" && byLevel.has(DORSAL_JUNCTION_LEVEL)) {
-      base.push(DORSAL_JUNCTION_LEVEL);
-    }
-    return base;
-  };
-  /** Levels a transitional numbering offered that the routine list does not contain. */
-  const transitionalLevelsFor = (segment: Segment) => {
-    const routine = new Set(routineLevelsFor(segment));
-    return [...byLevel.keys()]
-      .filter((level) => !routine.has(level) && canalSegmentForLevel(level) === segment)
-      .sort((a, b) => {
-        const ka = levelOrderKey(a);
-        const kb = levelOrderKey(b);
-        return ka[0] - kb[0] || ka[1] - kb[1] || ka[2] - kb[2];
-      });
-  };
-  const levelsFor = (segment: Segment) => [...routineLevelsFor(segment), ...transitionalLevelsFor(segment)];
-  const filled = (segment: Segment) => levelsFor(segment).filter((l) => byLevel.has(l)).length;
-  const counts = SEGMENTS.map(filled);
-  const best = SEGMENTS[counts.indexOf(Math.max(...counts))];
-  // The most-filled segment is the one to print. This used to index `counts`
-  // with the largest COUNT instead of asking whether it is above zero, so a
-  // lumbar report's [n,0,0] read `counts[n]` — a dorsal slot, always 0 — and
-  // the table was dropped however many levels had been measured.
-  const levels = Math.max(...counts) > 0 ? levelsFor(best) : [];
-  if (!levels.some((l) => byLevel.has(l))) return null;
-  const title = `${best.toUpperCase()} CANAL AP DIAMETER AT ${levels[0]} TO ${levels[levels.length - 1]} LEVELS`;
+export function renderCanalApTable(
+  byLevel: ReadonlyMap<string, string>,
+): { title: string; html: string; text: string } | null {
+  const plan = canalPrintPlan(byLevel.keys());
+  if (!plan) return null;
+  const levels = plan.levels;
+  const { title } = plan;
   const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${escapeHtml(l)}</th>`).join("");
   const td = levels
     .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${escapeHtml(byLevel.get(l) || "—")}</td>`)
@@ -276,16 +243,28 @@ async function canalApRender(
   }
 }
 
-const CANAL_TABLE_IN_BODY = /CANAL AP DIAMETER/i;
 const IMPRESSION_HEADING = /<div class="section-heading">\s*Impression\s*<\/div>/i;
 /** The D1 body's heading: `IMPRESSION:` / `Impression:` at the start of a line. */
 const IMPRESSION_TEXT_HEADING = /(^|\n)[ \t]*IMPRESSION[ \t]*:/i;
 
 /**
  * Splices the table into a composed clinical body where the draft preview puts
- * it — after Findings, before Impression — and never twice. A body that already
- * carries the table (a client that composes one, or a re-created row) is
- * returned untouched.
+ * it — after Findings, before Impression — and never twice.
+ *
+ * Three cases, and the middle one is why this function exists:
+ *
+ *  - the body already carries a canal table that REPORTS a measurement (an
+ *    AI-tab table the radiologist inserted, a hand-composed grid, or a body this
+ *    route already spliced) → returned byte-untouched, because two grids naming
+ *    one level with two numbers is the defect the whole path exists to kill;
+ *  - the body carries a canal grid with nothing in it — the clinic's own
+ *    LS-Spine template ships `Canal Diameter:` over a grid of dashes — → that
+ *    placeholder is replaced by the real table rather than left beside it;
+ *  - the body only MENTIONS a canal diameter in prose → the table is added. It
+ *    used not to be: the old guard matched the PHRASE `CANAL AP DIAMETER`
+ *    anywhere in the body, so a report whose Findings said "Canal AP diameter
+ *    8 mm." signed with no table at all, including for a level measured after the
+ *    prose was generated (owner DECISION 2, 2026-10-17).
  *
  * Handles both body formats the clinic signs: the legacy HTML body and the
  * plain-text D1 body. `insertCanalTableIntoBody("")` is inert, so a study with no
@@ -293,16 +272,17 @@ const IMPRESSION_TEXT_HEADING = /(^|\n)[ \t]*IMPRESSION[ \t]*:/i;
  */
 export function insertCanalTableIntoBody(bodyHtml: string, tableHtml: string): string {
   if (!tableHtml) return bodyHtml;
-  if (CANAL_TABLE_IN_BODY.test(bodyHtml)) return bodyHtml;
+  const withoutPlaceholder = stripUnmeasuredCanalScaffold(bodyHtml);
+  if (hasRenderedCanalApTable(withoutPlaceholder)) return bodyHtml;
   // HTML first: a composed body can mention "impression:" in prose, and a prose
   // match must not mis-place the table in a body that has real headings.
-  if (IMPRESSION_HEADING.test(bodyHtml)) {
-    return bodyHtml.replace(IMPRESSION_HEADING, (heading) => `${tableHtml}\n${heading}`);
+  if (IMPRESSION_HEADING.test(withoutPlaceholder)) {
+    return withoutPlaceholder.replace(IMPRESSION_HEADING, (heading) => `${tableHtml}\n${heading}`);
   }
-  const textHeading = bodyHtml.match(IMPRESSION_TEXT_HEADING);
+  const textHeading = withoutPlaceholder.match(IMPRESSION_TEXT_HEADING);
   if (textHeading) {
     const at = textHeading.index ?? 0;
-    return `${bodyHtml.slice(0, at)}\n${tableHtml}\n${bodyHtml.slice(at).replace(/^\n/, "")}`;
+    return `${withoutPlaceholder.slice(0, at)}\n${tableHtml}\n${withoutPlaceholder.slice(at).replace(/^\n/, "")}`;
   }
-  return bodyHtml ? `${bodyHtml}\n${tableHtml}` : tableHtml;
+  return withoutPlaceholder ? `${withoutPlaceholder}\n${tableHtml}` : tableHtml;
 }
