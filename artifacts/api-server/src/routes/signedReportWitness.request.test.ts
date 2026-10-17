@@ -19,6 +19,11 @@
  *      can a signing role put one there? (both doors are pinned: the refusal
  *      that closes the fabricated one, the read from the legitimate one);
  *   7. do two patients' reports keep their own witnesses when both are open?
+ *   8. does a draft the workspace wrote itself — through the autosave route the
+ *      reporting screen uses — finalize and sign? (#134: the one Chromium run
+ *      that completed a finalize left the row unsigned, and the draft it used
+ *      was hand-written, so the cause was never split between that fixture and
+ *      the app's own draft writer.)
  *
  * The parity between `isSignedArtifact` (the ONE server authority) and the
  * client's classifier is pinned in
@@ -30,10 +35,12 @@
  * "Missing signature configuration" is split honestly: a clinic with no active
  * signature block is a CLIENT-side decision (`autoSignReport` declines rather
  * than invent an author — pinned in radiologyReportLifecycle.test.ts, which
- * mocks GET /api/signatures as an empty list). A request-level test cannot make
- * a shared table empty, so this file pins the wire-observable equivalent: the
- * sign route refuses a signature block that is not there and leaves the row
- * unsigned, which is the state the UI must then show as "not signed".
+ * drives both decline arms from mocked `/api/signatures` rows: every block
+ * retired, and a retired block chosen in the dialog). A request-level test
+ * cannot make a shared table empty, so this file pins the wire-observable
+ * equivalent: the sign route refuses a signature block that is not there and
+ * leaves the row unsigned, which is the state the UI must then show as "not
+ * signed".
  *
  * Skipped without DATABASE_URL (see testSupport/apiTestApp.ts).
  */
@@ -52,6 +59,7 @@ import {
   orderTestsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
+  radiologyReportDraftsTable,
   patientReportsTable,
   signaturesTable,
 } from "@workspace/db/schema";
@@ -76,6 +84,7 @@ describe.skipIf(!dbReady)("signed-report witness — request level", () => {
   const worklistIds: number[] = [];
   const studyIds: number[] = [];
   const signatureIds: number[] = [];
+  const draftIds: number[] = [];
 
   let patientA = 0;
   let patientB = 0;
@@ -270,6 +279,9 @@ describe.skipIf(!dbReady)("signed-report witness — request level", () => {
   }, 90_000);
 
   afterAll(async () => {
+    for (const id of draftIds) {
+      await db.delete(radiologyReportDraftsTable).where(eq(radiologyReportDraftsTable.id, id)).catch(() => {});
+    }
     for (const id of reportIds) {
       await db.delete(patientReportsTable).where(eq(patientReportsTable.id, id)).catch(() => {});
     }
@@ -458,5 +470,54 @@ describe.skipIf(!dbReady)("signed-report witness — request level", () => {
     // the study's own row is what keeps them apart, and each points at its own.
     expect(aRow.studyId).toBe(aRowId);
     expect(bRow.studyId).toBe(bRowId);
+  });
+
+  it("8. a draft the app wrote itself finalizes and signs — provenance is not the cause", async () => {
+    // #134. The one Chromium run that reached a completed finalize left the
+    // study REPORT_FINAL with the report unsigned, and the only unusual thing
+    // about it was the fixture: a draft row written by hand with `worklist_id`
+    // set and `study_id` NULL. The workspace's own autosave derives BOTH columns
+    // from the resolved worklist row, so the two drafts differ in exactly one
+    // column — which is why this had to be measured through the writer instead
+    // of argued from the row.
+    const rowId = await freshStudyRow("T8");
+
+    const draftRes = await request(app)
+      .post("/api/radiology/report-generator/save-draft")
+      .set(auth)
+      .send({
+        worklistId: rowId,
+        modality: "CT",
+        studyName: "CT Brain",
+        rawFindings: "No acute intracranial abnormality. No mass effect.",
+        impression: ["No acute intracranial pathology."],
+      });
+    expect(draftRes.status, JSON.stringify(draftRes.body)).toBe(200);
+    expect(draftRes.body.success).toBe(true);
+    const draftId = Number(draftRes.body.draft?.id);
+    expect(Number.isInteger(draftId) && draftId > 0).toBe(true);
+    draftIds.push(draftId);
+
+    const [savedDraft] = await db
+      .select()
+      .from(radiologyReportDraftsTable)
+      .where(eq(radiologyReportDraftsTable.id, draftId));
+    // The identity the app writes — both keys, the hand-written row had one.
+    expect(savedDraft.worklistId).toBe(rowId);
+    expect(savedDraft.studyId).toBe(rowId);
+    expect(savedDraft.patientId).toBe(patientA);
+
+    // The finalize the lifecycle performs on top of that draft: create the
+    // report row, sign it, flip the study.
+    const id = await createdReport(rowId);
+    const signed = await sign(id, { signatureId: sigOne });
+    expect(signed.status, JSON.stringify(signed.body)).toBe(200);
+    const flip = await finalizeToStudy(rowId, id);
+    expect(flip.status, JSON.stringify(flip.body)).toBeLessThan(400);
+
+    const row = await readBack(id);
+    expect(isSignedArtifact(row)).toBe(true);
+    expect(row.signedAt).not.toBeNull();
+    expect((await worklist(rowId)).status).toBe("REPORT_FINAL");
   });
 });

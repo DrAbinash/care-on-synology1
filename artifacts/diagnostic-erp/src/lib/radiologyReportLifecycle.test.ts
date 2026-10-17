@@ -107,8 +107,27 @@ describe("finalizeRadiologyReport — auto-sign identity safety", () => {
     expect(mockPost).not.toHaveBeenCalledWith(expect.stringMatching(/\/sign$/), expect.anything());
   });
 
-  it("marks the linked worklist row REPORT_FINAL as well as the primary study", async () => {
-    mockSignatures = [{ id: 1, name: "Dr. Sugandha", isActive: true }];
+  // #134 — the arm that was missing when a Chromium finalize closed a study
+  // without signing it: the signer the dialog was shown is not filtered by
+  // `isActive` (`GET /api/signatures` answers retired blocks because the admin
+  // screen needs them), so a retired block can be the one chosen. The decline
+  // must name that, and must not post a signature for it.
+  it("declines when the signer chosen in the dialog is not an active block", async () => {
+    mockSignatures = [
+      { id: 1, name: "Dr. Sugandha Priyadarshini", isActive: true },
+      { id: 2, name: "Dr. Retired Locum", isActive: false },
+    ];
+    mockHappyReportCreation();
+    const result = await finalizeRadiologyReport(
+      { patientId: 2, studyId: 1, worklistId: 1 },
+      { ...CONTENT, signatureId: 2 },
+    );
+    expect(result.signed).toBe(false);
+    expect(result.signError).toMatch(/selected signature is not active/i);
+    expect(mockPost).not.toHaveBeenCalledWith(expect.stringMatching(/\/sign$/), expect.anything());
+  });
+
+  it("marks the linked worklist row REPORT_FINAL as well as the primary study", async () => {    mockSignatures = [{ id: 1, name: "Dr. Sugandha", isActive: true }];
     mockHappyReportCreation();
     const result = await finalizeRadiologyReport(
       {
