@@ -7,12 +7,14 @@
  */
 import { db } from "@workspace/db";
 import {
+  orderTestsTable,
+  ordersTable,
   patientReportsTable,
   radiologyReportDraftsTable,
   radiologyStudiesTable,
   radiologyWorklistTable,
 } from "@workspace/db/schema";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { extractCareLinkedStudy } from "./structuredJsonColumn";
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -218,6 +220,53 @@ export async function bindRadiologyReportIdentity(input: {
       "TEST_REQUIRED",
       "No billed radiology test is linked to this study. Link the billed study in Match Center before creating a patient report.",
     );
+  }
+
+  // No billed study row exists to compare against, which leaves the caller's own
+  // `testId` / `orderId` as the only evidence of what is being reported — and an
+  // unverified claim here is how patient A's report gets billed against patient
+  // B's test. The Reporting Workspace reads its prefill from
+  // `GET /api/patient-reports/from-study/:id`, which is keyed on
+  // `radiology_studies.id`; when it passes the worklist ROW id, whichever study
+  // happens to share that number answers, with ITS patient, test, order and bill.
+  // Nothing in this file could see that, because every comparison it makes needs
+  // a billed study and this branch is the one that has none.
+  //
+  // So prove the claim against the order it cites, using the same two typed
+  // refusals the billed-study branch already uses. A caller that cites no order
+  // is left exactly as before: this refuses only pairings that are demonstrably
+  // not this patient's, and never a legitimately unbilled study.
+  if (input.orderId && Number.isFinite(Number(input.orderId))) {
+    const orderId = Math.trunc(Number(input.orderId));
+    const [order] = await db
+      .select()
+      .from(ordersTable)
+      .where(eq(ordersTable.id, orderId))
+      .limit(1);
+    if (!order || (order.patientId != null && order.patientId !== worklist.patientId)) {
+      throw new RadiologyIdentityError(
+        409,
+        "ORDER_MISMATCH",
+        "Submitted order does not belong to this study's patient.",
+      );
+    }
+    const [pairing] = await db
+      .select({ id: orderTestsTable.id })
+      .from(orderTestsTable)
+      .where(
+        and(
+          eq(orderTestsTable.orderId, orderId),
+          eq(orderTestsTable.testId, Math.trunc(Number(input.testId))),
+        ),
+      )
+      .limit(1);
+    if (!pairing) {
+      throw new RadiologyIdentityError(
+        409,
+        "TEST_MISMATCH",
+        "Submitted test is not on the order cited for this study.",
+      );
+    }
   }
 
   return {

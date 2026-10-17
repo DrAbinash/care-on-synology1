@@ -27,7 +27,13 @@ export interface FinalizeStudyContext {
   patientId?: number | null;
   /** radiology_studies id — the billing/test linkage. Used to resolve the
    *  study's REAL testId via GET /api/patient-reports/from-study/:id
-   *  (patient_reports.test_id is NOT NULL, so a report row requires it). */
+   *  (patient_reports.test_id is NOT NULL, so a report row requires it).
+   *
+   *  NOT the page's study key. The two sequences overlap by design, so a
+   *  worklist ROW id passed here does not 404 — it answers with whichever
+   *  billed study happens to share that number, and that study's patient,
+   *  test, order and bill. Use `finalizeContextForWorkspaceStudy()` rather
+   *  than setting this by hand from a route param. */
   studyId?: number | null;
   /** M1.4 — the worklist row id, i.e. the canonical page's study key. Drafts
    *  are saved under this key, and D5's structured finalize looks the draft
@@ -43,6 +49,68 @@ export interface FinalizeStudyContext {
   linkedStudyId?: number | string | null;
   linkedAccessionNumber?: string | null;
   linkedStudyInstanceUID?: string | null;
+}
+
+/**
+ * The ONE place the Reporting Workspace's study key becomes a finalize
+ * context.
+ *
+ * The workspace is addressed by `radiology_worklist.id` — the route param, the
+ * draft key, the lock key, the queue key. `FinalizeStudyContext.studyId` is a
+ * different table's id (`radiology_studies.id`, the billed study) and is looked
+ * up by `GET /api/patient-reports/from-study/:id`, which is keyed purely on
+ * that column. The two sequences overlap by design, so handing the row id to
+ * both fields is not a 404 on a bad day — it is an answer from somebody else's
+ * study, carrying that study's patient, test, order and bill, which the create
+ * POST then writes into this report. That is how one study's signature ends up
+ * billed against another patient's test.
+ *
+ * So the mapping is stated once, here, and is a plain function so a test can
+ * drive it directly:
+ *   - `worklistId`  ← the route param (row id). Draft lookup and the status
+ *     flip both key on it.
+ *   - `studyId`     ← the queue row's `studyId` FK, and only that. Null when
+ *     the row is unbilled, which is a real state: the lifecycle then attempts
+ *     `auto-link-billed-study` and, if nothing is found, reports the skip
+ *     instead of guessing.
+ */
+export function finalizeContextForWorkspaceStudy(args: {
+  /** The workspace route param: radiology_worklist.id. */
+  worklistRowId: number;
+  /** The open Reading Queue row for that same study. */
+  row: {
+    patientId?: number | null;
+    /** radiology_studies.id — null while the row is unbilled. */
+    studyId?: number | string | null;
+    modality?: string | null;
+    studyDescription?: string | null;
+    accessionNumber?: string | null;
+    studyInstanceUID?: string | null;
+  } | null | undefined;
+  /** Second worklist row of an authorized combined report. */
+  linked?: {
+    studyId?: number | string | null;
+    accessionNumber?: string | null;
+    studyInstanceUID?: string | null;
+  } | null;
+}): FinalizeStudyContext {
+  const row = args.row ?? {};
+  const billedStudyId = Number(row.studyId);
+  return {
+    // The row id is the study key everything else in the workspace uses, and it
+    // is what the create POST carries as `studyId` (patient_reports.study_id is
+    // documented as the worklist row id — see `draftStudyKey` below).
+    worklistId: args.worklistRowId,
+    studyId: Number.isInteger(billedStudyId) && billedStudyId > 0 ? billedStudyId : null,
+    patientId: row.patientId ?? null,
+    modality: row.modality ?? "",
+    studyDescription: row.studyDescription ?? "",
+    accessionNumber: row.accessionNumber ?? "",
+    studyInstanceUID: row.studyInstanceUID ?? "",
+    linkedStudyId: args.linked?.studyId ?? null,
+    linkedAccessionNumber: args.linked?.accessionNumber ?? null,
+    linkedStudyInstanceUID: args.linked?.studyInstanceUID ?? null,
+  };
 }
 
 export interface FinalizeReportContent {
@@ -82,9 +150,24 @@ export interface FinalizeResult {
   structuredFinal: Record<string, unknown> | null;
   /** M1.4 — truthful reason when NO patient-facing report row was created
    *  (patient_reports.test_id is NOT NULL; an unbilled study has no test to
-   *  attach). The worklist status flip below still happens. null = a report
-   *  row was created, or the study has no patient to report against. */
+   *  attach). null = a report row was created, or the study has no patient to
+   *  report against. Whether the worklist status flip still happened is NOT
+   *  implied by this field — read `reportStatusSent`: a skipped row for a study
+   *  that DOES have a patient sends no flip at all (see the guard above the
+   *  report-status POST), and treating that as a completion is what told a
+   *  radiologist a study was final when the database still said STUDY_RECEIVED. */
   reportCreationSkipped: string | null;
+  /**
+   * Whether POST /api/internal/radiology/report-status was actually sent and
+   * answered for THIS finalize — i.e. whether the study is REPORT_FINAL in the
+   * database, as opposed to merely looking that way on screen. The flip is
+   * withheld when no report row was created for a study that has a patient
+   * (`finalizeRadiologyReport`, the guard above the report-status POST), so a
+   * skipped creation answers with this false. Callers must not mark the study
+   * completed, clear the draft backups, lock the editors or advance the queue
+   * on a finalize that sent nothing.
+   */
+  reportStatusSent: boolean;
   /** R1.4 — whether the legacy (non-D5) report row was actually signed via
    *  POST /:id/sign as part of THIS finalize call. When D5 already signed
    *  the row (structuredFinal.signed === true) this is false — the row is
@@ -137,6 +220,40 @@ export interface FinalizeResult {
    * signer a signed report was not signed.
    */
   alreadySignedOnServer?: boolean;
+}
+
+/**
+ * Whether this finalize left the study COMPLETED — i.e. the worklist row is
+ * REPORT_FINAL in the database and what is on screen is what the server holds.
+ *
+ * The workspace used to treat "did not throw" as completion, which is how a
+ * study with no report and no status change ended up locked, cleared of its
+ * local backups, removed from the reading queue and auto-advanced to the next
+ * row: `finalizeRadiologyReport` returns normally for a skipped report creation
+ * (an explicit reason in `reportCreationSkipped`, no exception), so the caller's
+ * only `false` case was `idempotent`. A skipped creation for a study that HAS a
+ * patient sends no status flip at all (see the guard above the report-status
+ * POST), so the row stays STUDY_RECEIVED while the screen says final — measured
+ * on the synthetic fixture as `GET /api/patient-reports/from-study/4 → 404`, no
+ * create and no flip, with the editors locked and
+ * `{status: "STUDY_RECEIVED", reportId: null}` in the queue response.
+ *
+ * Everything a caller does AFTER the finalize — markCompleted, clearing the
+ * draft backups, `completeFinalize()`, crediting the reading session,
+ * auto-advancing to the next study — must be gated on this predicate, because
+ * every one of those is irreversible from the radiologist's side: the backup is
+ * the only surviving copy of the discarded text, and the auto-advance moves the
+ * route underneath the still-open gauntlet.
+ */
+export function isFinalizeCompletion(result: FinalizeResult): boolean {
+  // The server handed back the study's existing row and wrote nothing this call.
+  if (result.idempotent) return false;
+  if (result.reportStatusSent) return true;
+  // D-5 resume of a study the server already reports REPORT_FINAL: this call
+  // deliberately skipped the flip because the transition had already happened,
+  // and the bound row was proved to hold exactly this content. Nothing to undo,
+  // nothing to keep open — the study IS finished.
+  return Boolean(result.resumedAfterLostResponse && result.reportId);
 }
 
 /** GET /api/patient-reports/from-study/:studyId prefill shape (subset). */
@@ -482,6 +599,7 @@ export async function finalizeRadiologyReport(
   // radiologist a study that shows as final, prints nothing, and can never be
   // signed. The documented unbilled path (no patient linked, so no report row
   // is possible by design) keeps flipping exactly as before.
+  let reportStatusSent = false;
   if (!(resumed && boundWorklistAlreadyFinal) && (reportId || !study.patientId)) {
     await api.post("/api/internal/radiology/report-status", {
       worklistId: study.worklistId ?? undefined,
@@ -493,6 +611,7 @@ export async function finalizeRadiologyReport(
       actor: content.actor,
       ...(content.auditDetails !== undefined ? { auditDetails: content.auditDetails } : {}),
     });
+    reportStatusSent = true;
   }
 
   const primaryKey = String(study.worklistId ?? study.studyId ?? "");
@@ -525,6 +644,7 @@ export async function finalizeRadiologyReport(
         ? (reportRow.structuredFinal as Record<string, unknown>)
         : null,
     reportCreationSkipped,
+    reportStatusSent,
     signed: signed || alreadySignedByD5,
     signError,
     linkedMarkedFinal,
