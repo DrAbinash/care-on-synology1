@@ -230,9 +230,18 @@ measurements. Verified by grep: `insertCanalTableIntoBody` has exactly one call 
 
 > **Status (2026-10-17, owner DECISIONS 1-2 and 4): the final bullet below describes the audit head and
 > is now superseded.** Generate no longer writes a canal grid into Findings, so the
-> prose/table contradiction and the phrase-based dedupe are both gone (§12). The Composer still reads
-> prose only — the canonical interface and the recommended read-only projection are spelled out in
-> `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013, DECISION 4. No Composer file was changed.
+> prose/table contradiction and the phrase-based dedupe are both gone (§12).
+>
+> **Status (2026-10-18): "the Composer still reads prose only" is superseded too.** The canonical
+> projection DECISION 4 specified is implemented — `canalApComposerReadings`
+> (`lib/measurements/src/spineCanal.ts:840`) feeds Generate, Refine and the output validator, and the
+> draft is now refused if it changes or invents a diameter (`canal_measurement_mutation` /
+> `canal_measurement_invented`). It is a **DRAFT PR** (`clinical/composer-canal-measurements`, head
+> `e8945af0`): not merged, not deployed, no live-model run, and deliberately read-only — the column is
+> byte-identical across the read. The boundary that survives it is that the projection reads the canonical
+> record alone, so a measurement held only in `spinal_measurements` prints and is not offered to the model.
+> Interface, projection and both departures: `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013,
+> DECISION 4.
 
 * The Composer's context builder collects measurements by **regex over prose and ledger rows**
   (`buildRadiologistDraftContext.ts:61`, `:142`, `:223-227`). It does not read `canalApProvenance` and
