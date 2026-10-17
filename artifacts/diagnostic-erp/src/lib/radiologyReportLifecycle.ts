@@ -427,6 +427,136 @@ function rowAlreadySigned(report: Record<string, unknown> | null): boolean {
 }
 
 /**
+ * What the workspace may claim about the report behind the open study.
+ *
+ * `signed` and `not-signed` come from the report ROW — the same three witnesses
+ * the server itself uses (`isSignedArtifact`), read off the row the existing
+ * `workspace-final-report` query already fetches. Nothing here infers a
+ * signature from `reportId` / `finalReportId` being present: a finalize that
+ * created the row and could not sign it leaves a bound, unsigned row behind —
+ * measured in the browser as patient_reports 171, `status = 'draft'`,
+ * `signed_at IS NULL`, while the overlay read "Report signed".
+ *
+ * `unknown` is deliberately not folded into `signed`. The row is fetched
+ * asynchronously and re-fetched whenever the finalize outcome changes it, so
+ * between those two events there is a real window in which the id is known and
+ * the signature is not yet. Showing "signed" there would be the same
+ * fabrication in a new place; the caller shows a neutral chip instead.
+ */
+export type SignedReportDisplayState = "signed" | "not-signed" | "no-signed-report" | "unknown";
+
+export function signedReportDisplayState(args: {
+  /** The report the study is bound to, as `linkedReportId` resolves it. */
+  reportId: number | null | undefined;
+  /** The authoritative row from GET /api/patient-reports/:id, or null until it lands. */
+  report: Record<string, unknown> | null | undefined;
+  /** Study finalization, which is a DIFFERENT question from signing. */
+  studyFinal: boolean;
+}): { state: SignedReportDisplayState; signedByName: string | null } {
+  if (!args.reportId) {
+    // A study marked final with nothing behind it: there is no report to sign,
+    // so no signature to claim. This is the state the red banner already names.
+    return { state: args.studyFinal ? "no-signed-report" : "unknown", signedByName: null };
+  }
+  const row = args.report ?? null;
+  if (!row || row.id == null) return { state: "unknown", signedByName: null };
+  if (!rowAlreadySigned(row)) return { state: "not-signed", signedByName: null };
+  const name = typeof row.signedByName === "string" && row.signedByName.trim() ? row.signedByName.trim() : null;
+  return { state: "signed", signedByName: name };
+}
+
+export type SignedReportTone = "success" | "warning" | "danger" | "neutral";
+
+/**
+ * The words the workspace is allowed to use about that state.
+ *
+ * Kept as a pure function rather than JSX so the claims are testable — the
+ * overlay file is `@ts-nocheck` and a string typed there would be checked by
+ * nothing but a browser. Same reasoning as `hopeDeliveryToast()`: the outcome
+ * classification lives in the lib, the colour classes live in the view.
+ */
+export function signedReportBadge(
+  state: SignedReportDisplayState,
+  signedByName: string | null,
+): { label: string; tone: SignedReportTone; lock: string; lockTitle: string } {
+  switch (state) {
+    case "signed":
+      return {
+        label: signedByName ? `Report signed — ${signedByName}` : "Report signed",
+        tone: "success",
+        lock: "Locked — corrections need an administrator",
+        lockTitle: "The signed text is locked. Nothing typed here can change it.",
+      };
+    case "not-signed":
+      // The row is bound and the study is final, so the editors ARE locked —
+      // but what is locked is an UNSIGNED document, and the remedy is a
+      // signature, not an administrator.
+      return {
+        label: "Report saved — NOT signed",
+        tone: "warning",
+        lock: "Locked — sign this report in Report Hub",
+        lockTitle:
+          "The study is final, so nothing typed here is saved. The report exists but carries no signature; the signer or an administrator signs it in Report Hub.",
+      };
+    case "no-signed-report":
+      return {
+        label: "Study marked final — NO report exists",
+        tone: "danger",
+        lock: "No report to sign — link and bill the study, then finalize again",
+        lockTitle:
+          "The study was closed without a patient report behind it, so there is nothing to print, send or withdraw.",
+      };
+    case "unknown":
+      // Deliberately not "Report signed" and not "NOT signed": the row has not
+      // been read back yet, and a chip that guesses is how this bug came to be.
+      return {
+        label: "Report saved — signature status not confirmed",
+        tone: "neutral",
+        lock: "Checking the report's signature",
+        lockTitle:
+          "The report row has not been read back from the server yet, so the workspace will not claim it is signed.",
+      };
+  }
+}
+
+/**
+ * The finalize control's own caption, and the one place that decides it.
+ *
+ * `isFinalized` is client state: it says a gauntlet ran, not that a signature
+ * exists. Keying the caption on it made a bound-but-unsigned study read
+ * "Signed", and — the mirror image, on reopening a study that WAS signed —
+ * left a finished signed report offering "Confirm & Sign" on a disabled button.
+ *
+ * The signature states only describe a CLOSED study. A withdrawn signature
+ * reverts the worklist row to REPORT_IN_PROGRESS and clears its reportId, but
+ * the draft can still point at the row, so an unsigned report exists while the
+ * study is perfectly editable — and the caption must say "Confirm & Sign", not
+ * "Not signed", or the radiologist is told to go sign somewhere else while the
+ * button in front of them does exactly that.
+ */
+export function finalizeActionLabel(args: {
+  allowEditSigned: boolean;
+  isFinalized: boolean;
+  studyFinal: boolean;
+  signatureState: SignedReportDisplayState;
+}): string {
+  if (args.allowEditSigned) return "Re-finalize";
+  if (!(args.isFinalized || args.studyFinal)) return "Confirm & Sign";
+  switch (args.signatureState) {
+    case "signed":
+      return "Signed";
+    case "not-signed":
+      return "Not signed";
+    case "no-signed-report":
+      return "No report";
+    default:
+      // Closed, and the row has not been read back yet: say the study is closed
+      // without borrowing the word "signed".
+      return "Finalized";
+  }
+}
+
+/**
  * Canonical finalize: create the patient-facing report row (when the study
  * is linked to a patient AND a billed test can be resolved), then flip the
  * worklist entry to REPORT_FINAL / READY_TO_SEND referencing that row.
@@ -594,8 +724,8 @@ export async function finalizeRadiologyReport(
   //
   // A flip must also never be sent when no report row was created for a study
   // that has a patient behind it: REPORT_FINAL is what the workspace's own
-  // signing gate reads (`workflow.currentRow?.status === "REPORT_FINAL"`,
-  // ReportCanvas.tsx:2119), so closing the study without a report leaves a
+  // signing gate reads (`workflow.currentRow?.status === "REPORT_FINAL"` in
+  // ReportCanvas's `finalizeDisabled`), so closing the study without a report leaves a
   // radiologist a study that shows as final, prints nothing, and can never be
   // signed. The documented unbilled path (no patient linked, so no report row
   // is possible by design) keeps flipping exactly as before.

@@ -476,8 +476,11 @@ export async function assertDraftWritable(opts: {
     // A final study still pointing at a report CAN be, from Report Hub, which is
     // the loop #847/#852 built and the single generic sentence below never
     // named. And a study marked final with no reportId has no report behind it,
-    // so there is no signature to withdraw — WorkspaceOverlays.tsx:700 renders
-    // exactly that state as "Study marked final — NO report exists".
+    // so there is no signature to withdraw — the workspace renders exactly that
+    // state as "Study marked final — NO report exists"
+    // (`signedReportBadge("no-signed-report")` in
+    // diagnostic-erp/src/lib/radiologyReportLifecycle.ts, shown by
+    // WorkspaceOverlays' completion chip).
     //
     // One message covering all three had to be vague enough to be true of each,
     // which is how it came to promise only "a separate, attributed action" — a

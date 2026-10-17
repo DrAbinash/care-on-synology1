@@ -115,18 +115,31 @@ describe("USG — one open-report path (unchanged since B-10 #884)", () => {
 
   it("nothing outside the workspace hooks and the canonical transport saves or finalizes", () => {
     // File names, not line numbers: the invariant is that no NEW surface grew a
-    // path to the lifecycle module. RadiologyReportGenerator.tsx is in this list
-    // and is dealt with by the next test — it is unreachable, not authoritative.
+    // path to a WRITE. It was previously measured by who imported the module at
+    // all, which stopped meaning "can write" the moment the module also exported
+    // something to read — #1058's signed-report witness is read by the canvas,
+    // the overlays and the export hook, and none of them can save or finalize
+    // anything. So the roster now counts the two exports that actually reach the
+    // server, and a component importing one of them still lands here.
+    // RadiologyReportGenerator.tsx is in this list and is dealt with by the next
+    // test — it is unreachable, not authoritative.
+    const WRITERS = ["finalizeRadiologyReport", "saveRadiologyDraft"];
     const importers = readdirRec("pages")
       .concat(readdirRec("hooks"), readdirRec("components"))
-      .filter((f) => read(f).includes('from "@/lib/radiologyReportLifecycle"'))
+      .filter((f) => read(f).includes('from "@/lib/radiologyReportLifecycle"'));
+    const writers = importers
+      .filter((f) => WRITERS.some((w) => read(f).includes(w)))
       .sort();
-    expect(importers).toEqual([
+    expect(writers).toEqual([
       "hooks/radiology-workspace/useDraftPersistence.ts",
       "hooks/radiology-workspace/useStudyFinalize.ts",
       "hooks/radiology-workspace/useWorkspaceClinicalUi.tsx",
       "pages/RadiologyReportGenerator.tsx",
     ]);
+    // Both names must still exist, or the filter above would pass by deleting
+    // the writes rather than by moving them.
+    const lifecycle = read("lib/radiologyReportLifecycle.ts");
+    for (const w of WRITERS) expect(lifecycle).toContain(`function ${w}`);
   });
 
   it("RadiologyReportGenerator.tsx is unreachable: its routes redirect and nothing renders it", () => {

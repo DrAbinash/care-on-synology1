@@ -697,6 +697,12 @@ const runFinalizeGauntlet = useCallback(async () => {
     // workspace locks on; without this the lock keeps reading the pre-sign row
     // until its 60 s staleTime expires.
     qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });
+    // And the row itself, because the completion chip now reads its claim off
+    // the report's signature witnesses rather than off `reportId`. This runs for
+    // the refusal outcomes too: on a finalize that created the row but could not
+    // sign it, the cached row — if there is one at all — says something else, and
+    // leaving it would let a stale entry justify the wrong badge.
+    qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
 
     // 10. RIS throughput — auto-advance to the next eligible study.
     // goNextStudy handles the transition lock + wrong-patient arrival
