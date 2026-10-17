@@ -38,7 +38,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **TESTING — evidence committed, behaviour deliberately unchanged** (protections recorded VERIFIED, five gaps MEASURED, one still unmeasured) | `pacsArchive.transaction.request.test.ts` **8/8** green on `origin/main` `877701f9`; mutation battery M1–M10 = **8 DETECTED with named attribution + 2 survived-as-designed**; neighbours 83/83 across 10 files; typecheck unchanged (58 pre-existing, 0 in the new file) | **#1048** (Draft, head `3905b8d3`) | **green** — all 3 jobs on `3905b8d3` (measured 2026-10-16 21:49Z) | no | no |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **IMPLEMENTING → TESTING — the six owner decisions are now code**, evidence pass MERGED, correction pass in review | `pacsArchive.transaction.request.test.ts` **13/13** on real PostgreSQL; consolidated **229 tests / 13 files green**; battery **20 mutants = 15 DETECTED with named attribution + 5 survived-by-design, 0 unexplained**; Command Center refusal wording **4/4 in real Chromium** (control: 2/4 on the pre-correction JSX); typecheck unchanged (api-server 58 pre-existing, 0 in touched files) | evidence **#1048 → MERGED `1394ab79`**; corrections **#1050** (head `7ac9662a`, base `main`) | #1050 **pending at the time of writing** — see the stage table below; nothing is DEPLOYED | no | no |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 
@@ -235,13 +235,40 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 
 ---
 
-## RIS-010 — archive transaction and retry safety (P1, evidence committed in #1048)
+## RIS-010 — archive transaction and retry safety (P1)
 
-Read from `877701f9` before proposing anything, as instructed. The investigation is now a **committed
-test file**, not a probe: `artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts`
-(8 request-level cases, real PostgreSQL, Draft PR **#1048**, head `3905b8d3`). It is deliberately
-**tests only — no archive behaviour was changed**, because three of the findings below are the owner's
-clinical/architectural calls, not mine.
+### Stage — recorded separately, because they are not the same claim
+
+| Stage | Status | Evidence |
+|---|---|---|
+| CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
+| RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
+| IMPLEMENTED | yes, in review | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag |
+| TESTED | yes, locally | 13/13 request-level cases + 229 tests across the 13 affected files + 20-mutant battery + real-Chromium UI probe |
+| CI GREEN | **yes, on #1050** — measured 2026-10-17 02:56Z on head `7ac9662a` | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3 |
+| MERGED | **no** — only the evidence pass is | #1048 merged as `1394ab79` ("measured, no fix"). #1050 is open. The PR was created as Ready by the operator's own tooling; both `PATCH {draft:true}` and `convert-to-draft` were refused with this token, so it is **not** marked draft despite the standing instruction — it must not be merged without the owner's review of the two visible behaviour changes below |
+| DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
+| CLINICALLY VERIFIED | no | nothing has been observed in the clinic |
+
+**MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
+still the one described in the "What #1048 measured" section below until #1050 merges **and** deploys.
+
+### What the owner ruled, and the smallest change that implements it
+
+| Decision | Ruling | Implementation | Mechanism reused |
+|---|---|---|---|
+| 1 | only a finalized **signed** report may be archived | `evaluateArchiveEligibility()` runs before the PDF is rendered and before any POST; a draft, a superseded revision, a missing `StudyInstanceUID` or a non-compliant obstetric Form-F all refuse | the product's own `planUsgPacsReturn` + `isObstetricUsgStudy` + `checkPcpndtFormFCompliance` — **no second policy** |
+| 2 | nothing is filed when there is no eligible report | `"No report body text entered."` and the `prelim_report` fallback are gone; a refusal writes `pacs_archive_status='refused'`, the reason and block list into the response, and `PACS_ARCHIVE_REFUSED` to the audit log, and deliberately keeps `pacs_instance_id` (an earlier accepted object still exists) | existing columns + existing audit log |
+| 3 | ordinary Retry must not create a second copy | the guard keys on `radiology_pacs_archive_revisions` for the revision actually being served: already-`success` ⇒ no render, no POST, existing instance id returned, `idempotent:true`, and the study summary rebuilt **from the revision row** so status/audit/record/job result agree; a failed attempt still uploads; an amendment still archives | the existing per-revision record as the idempotency key |
+| 4 | a separately authorized restore, only if safe | one more action on the existing admin `/repair` route: `restore_archived_report` — `requireAdminRole`, dry-run by default, `confirmToken`, reason ≥ 10 chars, `affected` preview stating `willBypassDuplicateGuard`, and it deletes no history. It is the **only** bypass of the duplicate guard | the existing repair-route convention |
+| 5 | two concurrent runs cannot both upload | `withStudyArchiveLock()` — `pg_try_advisory_lock(hashtext('care_pacs_archive_study_<id>'))` for the whole run; the loser writes an `ARCHIVE_IN_PROGRESS` refusal and nothing else | the exact shape `emergencyNasClient.ts:99-117` already uses, on the `pool` `@workspace/db` already exports |
+| 6 | Orthanc accepted + ERP write failed must not invite a duplicate | write order reversed: revision row first, then the supersede sweep (logged, not fatal), then the study summary; a failure in either record returns `ARCHIVE_ACCEPTED_BUT_UNRECORDED` **carrying the instance id** instead of a plain `failed` | the existing revision table + `decideFailure`'s permanent-failure class so the durable queue stops retrying it |
+
+The signature detail that decides whether any of this works: `POST /api/patient-reports/:id/sign` sets
+`signedAt` and leaves `status` at `pending_verification` (`patient-reports.ts:2569-2574`), which is **not**
+in `planUsgPacsReturn`'s `FINAL_STATUSES`. The archive therefore maps `signedAt ? "signed" : status`.
+Feeding the raw status would have refused every freshly signed report in the clinic — the reuse the owner
+asked for, applied naively, would have stopped archiving altogether.
 
 **Why this file had to exist.** One successful `archiveReportToPacs()` run writes four records that
 must agree about the same object — (1) `radiology_studies.pacsArchiveStatus` / `_Response` /
@@ -263,7 +290,7 @@ and the durable job queue's claim/execute cycle.
 | The four records agree on a successful archive; the object carries this study's `StudyInstanceUID`, accession and `PatientID` | case 1 |
 | An Orthanc **rejection** is recorded as `failed` everywhere — status, response, revision row (`status='failed'` + error detail) and an `ORTHANC_UPLOAD_FAILURE` audit row with **no** success row | case 2 |
 | An **unconfigured endpoint** posts nothing at all and never claims success | case 2 |
-| The durable re-archive job is restart-safe: an already-archived revision is a **no-op** (`radiologyJobHandlers.ts:197-205`), verified by enqueueing a real `radiology_pacs_rearchive` job and running a real `runRadiologyJobTick` — job outcome `success`, zero extra DICOM POSTs | case 3 |
+| The durable re-archive job is restart-safe: an already-archived revision is a **no-op** (`radiologyJobHandlers.ts`, the `pacsRearchiveHandler`'s DUPLICATE-EFFECT GUARD — line 197-205 at `877701f9`, 217 after #1050), verified by enqueueing a real `radiology_pacs_rearchive` job and running a real `runRadiologyJobTick` — job outcome `success`, zero extra DICOM POSTs | case 3 |
 | An amendment after an archive **marks the earlier revision `superseded`** rather than overwriting its row: two revision rows, the root keeping its own `orthancInstanceId`, the amendment recorded `success` at `sequenceNumber 2`, and the second object labelled `Radiology Report PDF v2/2 (amended)` | case 4 |
 | `UNIQUE(report_id)` on `radiology_pacs_archive_revisions` means retries cannot duplicate the *record* even when they duplicate the *object* | cases 3, 4 |
 
@@ -278,7 +305,13 @@ this entrypoint at all — the archived object for a study can never silently be
 it also cannot be re-issued as a labelled historical copy without a different entrypoint. Cases that
 make a claim about which revision was delivered pass `versionMode` explicitly.
 
-### Gaps — MEASURED, asserted as today's truth, nothing changed
+### The five gaps — what was MEASURED at `877701f9`, and what #1050 does with each
+
+> The wording below is the measurement record: each item states what the code did **before** #1050, so
+> the audit trail stays readable. Each ends with its present status. The suite no longer asserts these
+> as today's truth — it now asserts the rule, with the positive controls (a signed report archives, a
+> failed upload really retries, an amendment really files a new object, legacy finals really stay
+> eligible) still archiving for real.
 
 1. **A second run on one revision writes a second DICOM object that nothing treats as a duplicate.**
    The duplicate-effect guard lives in the **job handler**, not in `archiveReportToPacs`, so every
@@ -287,6 +320,10 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
    **second** instance while PACS holds two. The first instance is remembered only in
    `radiology_audit_log` (two success rows, two distinct `instanceId`s — asserted, so the audit trail
    is genuinely the surviving record). Case 3.
+   **After #1050: closed.** DECISION 3's guard is in `archiveReportToPacs` itself, so every caller gets
+   it, and the study summary is rebuilt from the revision row rather than overwritten by a second
+   object. Case 4 now asserts one POST, one revision row, one success audit row, and an
+   `PACS_ARCHIVE_IDEMPOTENT_NOOP` entry.
 2. **Two archives started together overlap instead of excluding each other — MEASURED (case 8).** The
    finalize trigger fires `archiveReportToPacs` **un-awaited** the moment the worklist row flips to
    `REPORT_FINAL` (`internal-radiology.ts:1425-1431`), so a staff Retry can be in flight at the same
@@ -300,10 +337,20 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
    reuse already exist (`claimWorklistForFinalize`'s `SELECT … FOR UPDATE` at
    `radiologyIdentity.ts:263`, the advisory-lock style of the outbox and ledger writers). Reuse; do not
    invent a queue or a state machine.
+   **After #1050: closed.** A study-scoped `pg_try_advisory_lock` now spans the whole run; case 6 makes
+   the render take 150 ms so both runs are genuinely inside it, and asserts exactly **one** POST, the
+   loser's `ARCHIVE_IN_PROGRESS` refusal, that the refusal stays *retryable* in `decideFailure` (unlike a
+   no-report refusal — that difference is why there are two codes), and that a third run after the
+   winner finishes gets the idempotent answer. Mutant **N3** (lock always grants) is detected by that
+   case; **M10** still survives, which is the point: the `pending` write excludes nothing, the lock does.
 3. **Reachable from the ERP over HTTP.** `POST /api/radiology/studies/:id/archive-retry` answers
    `200 {success: true}` and performs that second upload, with no finality, eligibility or
    duplicate-effect check in the route; the mount's only gate is
    `requireStaffPermission("/radiology")` (`routes/index.ts:888`). Case 7.
+   **After #1050: closed at the route, because the route forwards the outcome object unchanged** — case 4
+   drives `POST /api/radiology/studies/:id/archive-retry` over HTTP and asserts
+   `{success:true, idempotent:true, instanceId}` with zero additional POSTs, so the button cannot reach
+   the duplicate any more than the direct call can. The gate is the canonical function, not the route.
 4. **An unsigned report is archived, and the only safeguard is a label.** `resolveArchiveReportRow`
    applies no finality filter, so a study whose newest row is `status='draft'` with no signature gets
    that row; `buildReportArtifact` does **not** refuse it — the render carries
@@ -320,6 +367,14 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
    chain** (`radiologyReportVersion.ts:333-343`) and an unchained draft has none — mutant **M8** survived
    exactly as designed, which is why it is kept in the battery. If the owner rules that unsigned reports
    must not be archived, the authority to reuse is `usgPacsReturnPolicy`, not the version resolver.
+   **After #1050: closed, and this is the item that needed the owner's ruling rather than a cleverer
+   filter.** Case 2 refuses a draft before anything is rendered — zero POSTs, zero revision rows, a
+   `PACS_ARCHIVE_REFUSED` audit row, and the durable job for the same study ends `abandoned` because
+   `PACS_ARCHIVE_REFUSED` is now a permanent failure class; signing the same report then archives it.
+   Case 8b refuses a **retired** revision in the one shape that entrypoint can actually reach (the bound
+   row superseded by an amendment whose own `study_id` is in the other half of the shared id space), with
+   the version mode named rather than flag-defaulted; mutants **N1, N7 and N8** are detected by those two
+   cases.
 5. **A study with no report row files the placeholder and leaves no revision record.** The fallback HTML
    puts `No report body text entered.` into the DICOM object, the run records
    `ORTHANC_UPLOAD_SUCCESS`, and `radiology_pacs_archive_revisions` has **zero rows** for that study —
@@ -327,40 +382,75 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
    that answers "what did we file for this study?" is empty while PACS holds an object, and the success
    audit row carries no `deliveredReportId`. This is the owner-decision-(b) case, now with its exact
    behaviour pinned. Case 6.
+   **After #1050: closed, and the placeholder no longer exists in the file.** Case 3 asserts a
+   `no_report` refusal, no render, no POST, no revision row, and — because the stubbed rasteriser records
+   what it was handed — that the forbidden sentence reaches **no** document the study ever rendered.
+   Decision 4's restore cannot archive around it either: a restore of an empty study is still refused.
+   **One consequence kept honest rather than smoothed over:** a legacy free-text final
+   (`radiology_studies.final_report` with no `patient_reports` row) is still eligible — case 12 proves it
+   archives and that its text is what was rendered — but it has **no revision identity** to key the
+   duplicate guard on, so re-archiving one uploads again. The case asserts the missing revision row
+   rather than pretending otherwise. Giving it an identity is an architectural decision (the revision
+   table's key is a `patient_reports` id), not a correction inside RIS-010.
 
 ### Still not measured (stated as such in the test file header, so nobody reads them as proven)
 
-* **Orthanc accepted, ERP write failed.** The success `UPDATE` (`:317-324`) is not in a transaction with
-  the revision writes, so a throw there lands in the catch branch and records `failed` for a study whose
-  object **does** exist — and the next attempt adds a second one. The ordering is readable in the source;
-  no test reaches it without injecting a fault between two statements, which on this repo means a
-  temporary trigger on `radiology_studies` — a table every other suite shares. Not done. This is now the
-  **only** unmeasured item in the original gap list; the concurrency question above was answered in the
-  same pass.
-* **Revision/audit writes swallow their own errors** — `.catch(() => undefined)` at `:346`, `:354`,
-  `:407`, so a study can read `success` with no per-revision row behind it. Case 4's "no revision row for
-  the placeholder path" is adjacent evidence that the record can be absent, but the swallowed-error
-  branch itself is not exercised.
+* **Orthanc accepted, ERP write failed — the runtime half is STILL unmeasured after #1050.** The order is
+  now provably right by reading (revision first, then summary) and the recovery from that state is
+  asserted (case 11: a revision recorded `success` with a lost study summary is repaired from the revision
+  row and never re-uploaded, and `ARCHIVE_ACCEPTED_BUT_UNRECORDED` is classified permanent so the queue
+  will not blindly retry). What is NOT asserted is the throw itself: no test can make either write fail
+  after acceptance. All the columns involved are unbounded `text`, so there is no data-shape fault to
+  induce, and the only remaining lever is a temporary trigger on `radiology_studies` — a table every other
+  suite in this repo shares, and the repo runs table censuses. Mutant **N10** (replace the accepted-but-
+  unrecorded branch with a plain failure) survives, and that survivor IS the evidence for this sentence.
+  If the owner wants this closed, the honest route is a narrow `__forTesting` seam in the archive module,
+  not a trigger.
+* **The job handler's own early-exit guard is now untested.** Mutant **M7** (delete it) survives because
+  the archive-level guard covers the same case: what remains of that line is a cheaper no-op, not a
+  second safety property. Kept, but nobody should read it as tested.
+* **`DRAFT (not signed)` is asserted by nothing.** The label is produced at
+  `patient-reports.ts:3288-3290`; the only two places a test mentions it are
+  `reportPresentation.test.ts:98` and `reportPresentation.reportingScope.test.ts:43`, and both pass their
+  **own** stamp fixture rather than reading that source. Mutant **M5** (rename it) therefore survives.
+  Since DECISION 1 makes a draft unreachable from the archive, this cannot be covered from here — it is a
+  presentation-layer gap, recorded rather than fixed inside RIS-010.
+* **Revision/audit writes no longer swallow their own errors on the archive path** — the revision insert's
+  `.catch(() => undefined)` became a real failure return under DECISION 6; the success audit row is still
+  best-effort by design, and the supersede sweep logs and continues because a failed sweep does not mean
+  the object was lost.
 
-### Verification of the evidence itself
+### Verification numbers for the correction pass (measured 2026-10-17, scratch PostgreSQL 18 at
+### 127.0.0.1:5445, `TZ=UTC`, `--maxWorkers=1`)
 
-Baseline **8/8** green, re-run on this branch's own base (`origin/main` `877701f9`) rather than the branch
-it was written on. Mutation battery **M1–M10** (`tmp/ris010-mutation-check.mjs`, gitignored), each mutant
-requiring its own named failing test: 8 **DETECTED** (supersede sweep, revision `success` status,
-requested-vs-delivered audit key, placeholder text, the `DRAFT` label string, a finality filter *added*
-to the pick, the job guard, study status), 2 **EXPECTED-SURVIVE** — **M8** (`deliverableStatuses` cannot
-gate an unchained draft) and **M10** (deleting the `pending` status write changes nothing observable,
-which is what makes the claim "the pending write is not a lock" a measurement rather than an opinion).
-Neighbours **83/83** across
-10 files (`pacsArchive.d8`, `pacsArchive.reportScope`, `radiologyJobRules`, `radiologyJobs.claim`,
-`radiologyReportVersion`, `usgPacsReturnPolicy`, `usgPacsReturnService.integration`,
-`routes/usgPacsReturn`, `finalizeIntegrityGuard.request`, plus this file). `api-server` typecheck
-unchanged at 58 pre-existing worktree `TS6305` errors, none in the new file.
+| Check | Result |
+|---|---|
+| The enforcement suite | `pacsArchive.transaction.request.test.ts` **13 / 13** |
+| Consolidated run over every file the change can reach | **229 tests / 13 files, 0 failed** — `pacsArchive.d8`, `pacsArchive.reportScope.request`, `radiologyJobRules`, `radiologyJobs.claim.request`, `radiologyReportVersion`, `usgPacsReturnPolicy`, `usgPacsReturnService.integration`, `routes/usgPacsReturn`, `legacyReportAuthority.test`, `legacyReportAuthority.request`, `authoritativeReportingSurface.contract`, `canonicalWorkspaceRouting` |
+| Mutation battery (`tmp/ris010-mutation-check.mjs`, gitignored) | baseline green **13/13** first, then **20 mutants, each byte-verified as applied**: **15 DETECTED with the owning case named**, **5 EXPECTED-SURVIVE** (M5, M7, M8, M10, N10 — each explained above), **0 unexplained**, `ALL MUTANTS ATTRIBUTED` |
+| Two existing tests changed | `pacsArchive.d8.test.ts`: the case that asserted a historical archive *succeeds and is labelled SUPERSEDED* now asserts it is **refused**. `authoritativeReportingSurface.contract.test.ts`: the archive reader is pinned as `String(study.finalReport ?? "")` **and** `.not.toContain("study.prelimReport")` — strictly stronger than the assertion it replaced. Both are recorded in the PR, not silent |
+| ERP source-contract tests that read this component's text | `canonicalWorkspaceRouting` 32/32, `authoritativeReportingSurface` 91/91 |
+| Real-Chromium UI probe | **4/4** as expected (`tmp/ris010-ui/A-refused.png` … `D-archived.png`); **control run against the pre-correction JSX: 2/4** — a `refused` study rendered no badge and no Retry button at all, and an already-archived revision toasted "Report successfully archived to PACS!". Scratch probe files deleted; `git status` shows only the eight shipped files |
+| Typecheck | `api-server` **58 errors — the pre-existing baseline, none in a touched file**. `diagnostic-erp` **61 before this change and 61 after** (measured by swapping in `HEAD~1`'s copy of the same file), i.e. zero added; the failures are the duplicate-`@types/react` class AGENTS.md describes and none is in `RadiologyCommandCenter.tsx` |
+| One failure is NOT attributable to this work | `aiQueryContract.test.ts` fails on this box because it compares a **Windows absolute path** against `"lib/aiReportingClient.ts"` (`:52-54`), so the exclusion never matches and the allowed file reports as an offender. It runs no code this PR touches; left alone rather than widened into this PR |
 
-**No queue, revision engine or state machine is proposed.** The remaining engineering questions are (i)
-whether the job handler's duplicate-effect rule should move into the canonical function, and (ii) whether
-the eligibility authority should gate the direct paths — both are owner decisions below, not code
-decisions.
+### What #1050 changes that a reviewer or the owner must actually look at
+
+Two of these are visible in the clinic, which is why the PR is not merged on this session's own
+authority:
+
+1. **Preliminary and placeholder documents stop arriving in PACS**, and an unsigned draft is refused with
+   "No finalized signed report available for this examination." (DECISION 1/2 — as ruled.)
+2. **Fail-closed on three states the archive used to accept**: no `StudyInstanceUID`, a non-compliant
+   obstetric Form-F, and a study whose only bound row has been superseded. These are consequences of
+   reusing `planUsgPacsReturn`, which is what the owner asked for — but he has not seen the list.
+3. Retry on an unchanged revision no longer creates a second object, and the badge/toast say so instead
+   of claiming a fresh archive.
+4. Two staff, or a staff Retry and the finalize trigger, can no both fire on one study: one wins, the
+   other is told to try again and the job keeps it retryable.
+5. A refusal is terminal for the durable queue; an in-progress refusal is not.
+6. No migration, no new column, no new env var, no new flag. Rollback is a revert — the revision table
+   this design reads and writes already exists on `main` and is already written there.
 
 
 
@@ -482,31 +572,54 @@ a guessed identity for an approved one.
    whether the null-study refusal needs a Match-Center-visible presentation as well.
 4. **RIS-009**: the Chromium multi-navigation re-probe (Next / Previous / Park / deep link) is the only
    unfinished verification left from the P1 list. `studyRegion.test.ts` was re-run green.
-5. **RIS-010: evidence committed — Draft PR #1048 (head `3905b8d3`), tests only, no behaviour changed.** Do
-   not rebuild the mechanisms it records as VERIFIED. What remains is (a) the owner rulings (b), (e) and
-   (f) below, (b) one unmeasured item — the Orthanc-accepted-but-status-write-failed path, which needs a
-   fault injected between two statements and has no safe harness on a shared table, and (c) only *then*,
-   reusing the existing eligibility policy or the existing `FOR UPDATE`/advisory-lock patterns rather
-   than a new queue.
+5. **RIS-010: the evidence pass is MERGED (#1048 → `1394ab79`) and the corrections are in review
+   (#1050, head `7ac9662a`, open as Ready — not by choice: this token cannot convert a PR to draft).**
+   Do not rebuild the mechanisms it records as VERIFIED, and **do not re-measure the five gaps as if they
+   were still open** — each one now has a status line in its own paragraph. Read #1050's CI result, put
+   it in the stage table above, then hand the two visible behaviour changes (section "What #1050 changes")
+   to the owner. Nothing is deployed.
 6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
-(b) should a study with no authoritative report archive at all — measured in #1048: it currently files
-the placeholder text `No report body text entered.` **and** records `ORTHANC_UPLOAD_SUCCESS`, while
-`radiology_pacs_archive_revisions` gets **no row at all**, so the archive's own history table cannot say
-what was filed; (c) once the NAS is reachable, the null-`study_id` census — if a large number of
-historical signed reports carry no linkage, does the refusal need a visible warning path instead of a
-hard block; (d) when the rebuilt NAS deployment is available, which commit to deploy and with which
-verified backup; (e) **new, from #1048** — should a re-archive of an *unchanged* revision be a no-op
-everywhere (the durable job's rule), or must the manual Retry button stay able to force a fresh object,
-e.g. after Orthanc data loss? Today the direct path posts a second object and only the audit log
-remembers the first; (f) **new, from #1048** — should the general archive honour the eligibility
-authority the product already states for PACS return (*"only a finalized/verified/signed report is
-eligible (never a draft)"*)? Today an unsigned draft reaches Orthanc carrying only the rendered
-`DRAFT (not signed)` label, and the ERP records it as archived successfully.
+(b) — **ANSWERED 2026-10-17 and implemented in #1050: nothing is archived.** DECISION 2 in his own words
+was "if an examination has no authoritative eligible report, DO NOT ARCHIVE ANY DOCUMENT", with an
+explicit understandable reason. The placeholder is deleted from the source, a no-report study ends in
+`refused` with "No finalized signed report available for this examination.", and case 3 asserts the
+forbidden sentence reaches no document; (c) once the NAS is reachable, the null-`study_id` census — if a
+large number of historical signed reports carry no linkage, does the refusal need a visible warning path
+instead of a hard block; (d) when the rebuilt NAS deployment is available, which commit to deploy and
+with which verified backup; (e) — **ANSWERED and implemented in #1050**: DECISION 3 made an ordinary Retry
+of an unchanged revision a no-op **everywhere**, including the button, and DECISION 4 gave the
+force-a-fresh-object case its own authorized path (`POST /api/radiology-ops/repair`
+`restore_archived_report`, admin + token + written reason) rather than leaving it to the Retry button;
+(f) — **ANSWERED and implemented in #1050**: DECISION 1 said the general archive must honour the
+eligibility authority, and it now calls `planUsgPacsReturn` before rendering. **Two rulings he has NOT
+given, discovered while implementing (f)**, both recorded under "What #1050 changes": the reused policy
+also fail-closes a study with no `StudyInstanceUID`, a non-compliant obstetric Form-F, or only a retired
+revision — states the archive used to accept; and the legacy free-text final, which stays eligible,
+cannot be idempotency-keyed because the revision table's key is a `patient_reports` id.
 
-_Last updated: 2026-10-17 (second pass) — **RIS-010** investigation closed as measurement: a committed
+_Last updated: 2026-10-17 (third pass) — **RIS-010 moved from measurement to correction.** The owner
+ruled on all six questions; PR **#1050** (head `7ac9662a`, base `main`) implements those rulings in 8
+files with no migration and no new subsystem: eligibility through the clinic's own `planUsgPacsReturn`
+before any render or POST, the placeholder and `prelim_report` removed, per-revision idempotency on the
+existing `radiology_pacs_archive_revisions` row, a study-scoped `pg_try_advisory_lock` copied from
+`emergencyNasClient.ts`, the revision write moved **before** the study summary with
+`ARCHIVE_ACCEPTED_BUT_UNRECORDED` carrying the instance id, both refusal codes permanent in
+`decideFailure`, and DECISION 4 as one admin `/repair` action. Local evidence: **13/13** request-level
+cases, **229/229** across the 13 affected files, a **20-mutant** battery with **15 detected (each naming
+its own case) + 5 surviving by documented reason + 0 unexplained**, and the refusal wording proven in
+**real Chromium 4/4** against a **2/4 control on the pre-correction JSX**. Measured on main at the time
+of writing: `638fc2b9`, **and neither `49bdb856` nor `7ac9662a` is an ancestor of it** — #1050 is open,
+not merged, not deployed, not clinically verified. Two things this pass did NOT get to decide: the reused
+policy fail-closes three states the archive used to accept (no `StudyInstanceUID`, non-compliant
+obstetric Form-F, only a retired revision), and the legacy free-text final stays eligible but cannot be
+idempotency-keyed. #1050 was created Ready by the operator's tooling and this token cannot convert a PR
+to draft (`PATCH {draft:true}` accepted and ignored; `convert-to-draft` and GraphQL both refused) — so
+**review it before merging**, which was the intention anyway._
+
+_Previous pass, 2026-10-17 (second pass) — **RIS-010** investigation closed as measurement: a committed
 request-level file (Draft **PR #1048**, head `3905b8d3`) reads all four records one archive run writes
 together — 8/8 green on `origin/main`, mutation battery M1–M10 = 8 detected + 2 survived-as-designed. It
 records six protections as VERIFIED (including the durable job's duplicate-effect guard and the
