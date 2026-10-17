@@ -263,9 +263,28 @@ neither file. The crash fix moved `default_type application/json;` from inside t
 `if ($legacy_ledger_reset_blocked)` body up to location level — which is what nginx accepts — while the
 guard test still pins the old placement **and** the property that placement bought: with `default_type` at
 location level, an nginx-generated 502 (a recreated api container) is announced as JSON while its body is
-HTML. That is a decision for the owner, not a test to delete: either the guard is re-pinned to the new shape
-and the 502 mislabelling is accepted, or the refusal finds a third form (its own `error_page` / named
-location) that keeps both properties. **Until main is green, #1053 stays a Draft and is not merged** — its
+HTML. That is a decision for the owner, not a test to delete. **How it resolved:** main was fixed by **#1059**
+(`71f68479`), which re-pinned the guard to the placement nginx actually accepts — location level, proven
+outside the `if`, one occurrence file-wide, plus the exact directive text — and CI is green on main again.
+A parallel branch here (`fix/nginx-default-type-placement`, PR **#1060**) reached the same structural
+conclusion independently; #1059 landed first, so **#1060 was closed superseded rather than merged** and
+`docker/nginx.conf` was left untouched.
+
+One claim from that exchange is recorded because it will otherwise be re-litigated: `default_type` does
+**not** apply to nginx's built-in error pages. Read from the source,
+`ngx_http_special_response_handler()` clears the type and `ngx_http_send_special_response()` assigns
+`text/html` explicitly, and `ngx_http_special_response.c` contains no reference to `clcf->default_type`
+anywhere. `default_type` reaches a response through `ngx_http_send_response()` — what `return` with a text
+body calls, which is why the 410 refusal is JSON — and through static-file handlers, i.e. the path a
+*custom* `error_page` file would take. So the crash fix cost no 502 property. **This is a source read, not
+a measurement** — there is no nginx or docker on this box or in CI — and it is checkable in two commands on
+a disposable container: `curl -si -X POST …/api/ledgers/2/reset` expecting 410 + `application/json`, and
+the same against any `/api/` path with the api container stopped expecting 502 + `text/html`. If the second
+prints JSON, this paragraph is wrong and the guard's comment is right.
+
+**#1053's own content was verified green twice** (`c1d868a1`, `376153a2`), and it was rebased onto the green
+main for the closeout: that rebase pulled in #1059's test file only, leaving this PR's four files
+byte-identical.
 
 **MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
 still the one described in the "What #1048 measured" section below until #1050 **and** the audit
