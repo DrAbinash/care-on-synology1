@@ -15,6 +15,7 @@ import { Router, type Response } from "express";
 import { db } from "@workspace/db";
 import {
   radiologyOpsChecksTable, radiologyRedeliveryObligationsTable, radiologyWorklistTable,
+  radiologyStudiesTable,
   featureFlagsTable,
 } from "@workspace/db/schema";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
@@ -171,12 +172,13 @@ const REPAIR_ACTIONS = new Set([
   "clear_duplicate_obligation",
   "reconcile_amendment_obligations",
   "regenerate_draft_structured_cache",
+  "restore_archived_report",
 ]);
 
 radiologyOpsRouter.post("/repair", requireAdminRole, async (req: StaffAuthRequest, res: Response) => {
   const body = (req.body ?? {}) as {
     action?: string; dryRun?: boolean; confirmToken?: string;
-    jobId?: number; obligationId?: number; draftId?: number;
+    jobId?: number; obligationId?: number; draftId?: number; studyId?: number; reason?: string;
   };
   const action = String(body.action ?? "");
   if (!REPAIR_ACTIONS.has(action)) {
@@ -263,6 +265,42 @@ radiologyOpsRouter.post("/repair", requireAdminRole, async (req: StaffAuthReques
       if (!dryRun) {
         await regenerateDraftStructuredJson(draftId);
         outcome.executed = true;
+      }
+    } else if (action === "restore_archived_report") {
+      // RIS-010 DECISION 4 — re-file the study's CURRENT signed revision in PACS after confirmed
+      // Orthanc data loss. Deliberately NOT the ordinary Retry action: it is only reachable here,
+      // behind requireAdminRole, dry-run by default, a confirmToken that names the action, a written
+      // reason, and the route's own audit of the actor. It bypasses the duplicate guard and nothing
+      // else — eligibility, examination identity and the amendment chain are still enforced by the
+      // canonical archive, so a restore cannot file a draft, another examination's report, or an
+      // older revision, and it deletes no history (the prior instance id stays in radiology_audit_log
+      // and the revision row keeps its own record).
+      const studyId = Number(body.studyId);
+      if (!Number.isInteger(studyId) || studyId <= 0) { res.status(400).json({ error: "studyId required" }); return; }
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (reason.length < 10) {
+        res.status(400).json({ error: "reason is required — what was lost, and how it was confirmed" });
+        return;
+      }
+      const [study] = await db
+        .select({
+          accessionNumber: radiologyStudiesTable.accessionNumber,
+          patientId: radiologyStudiesTable.patientId,
+          pacsArchiveStatus: radiologyStudiesTable.pacsArchiveStatus,
+          pacsInstanceId: radiologyStudiesTable.pacsInstanceId,
+        })
+        .from(radiologyStudiesTable)
+        .where(eq(radiologyStudiesTable.id, studyId))
+        .limit(1);
+      if (!study) { res.status(404).json({ error: "study_not_found" }); return; }
+      outcome.affected = [{ studyId, ...study, willBypassDuplicateGuard: true, reason }];
+      if (!dryRun) {
+        const { archiveReportToPacs } = await import("../lib/pacsArchive");
+        const result = await archiveReportToPacs(studyId, {
+          restore: { reason, actor: actorOf(req).userName },
+        });
+        outcome.executed = result.success === true && result.idempotent !== true;
+        outcome.affected = [{ studyId, ...study, result }];
       }
     }
 

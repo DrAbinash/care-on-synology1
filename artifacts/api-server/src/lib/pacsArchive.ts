@@ -1,4 +1,4 @@
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
 import {
   radiologyStudiesTable,
   radiologyWorklistTable,
@@ -11,6 +11,9 @@ import { and, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { chromium } from "playwright";
 import { buildReportArtifact, type ReportArtifact } from "../routes/patient-reports.js";
 import { logger } from "./logger.js";
+import { isObstetricUsgStudy } from "./usgModality";
+import { checkPcpndtFormFCompliance } from "./pcpndtCompliance";
+import { planUsgPacsReturn } from "./usgPacsReturnPolicy";
 
 import { getRadiologyConfig } from "./pacs/pacsConfig";
 
@@ -28,6 +31,70 @@ function orthancHeaders(user: string, pass: string): Record<string, string> {
     headers["Authorization"] = "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
   }
   return headers;
+}
+
+/** DECISION 2, in the owner's own words — the sentence staff and the audit trail must see. */
+export const NO_ELIGIBLE_REPORT_MESSAGE = "No finalized signed report available for this examination.";
+/** DECISION 5 — the study lock is held by another run, so this one must not touch the records. */
+export const ARCHIVE_IN_PROGRESS_MESSAGE =
+  "An archive for this study is already running. Try again once it finishes.";
+
+/**
+ * The outcome of one archive run. Every field exists because a caller must be able to tell
+ * "archived", "already archived — nothing uploaded", "refused before any upload" and "Orthanc took it
+ * but we could not record it" apart. They are four different clinical states, and a plain boolean
+ * conflated them (RIS-010).
+ */
+export interface ArchiveOutcome {
+  success: boolean;
+  instanceId?: string;
+  /** Prefixed with the reason CODE so the durable job's failure rules can classify it. */
+  error?: string;
+  reason?: string;
+  /** Plain-language sentence for staff (same text lands in radiology_audit_log). */
+  message?: string;
+  /** DECISION 3 — this revision was already archived; the existing object is returned, no copy made. */
+  idempotent?: boolean;
+  /** DECISIONS 1/2/5 — nothing was uploaded and nothing was filed. */
+  refused?: boolean;
+  /** DECISION 5 — another run holds this study's lock. */
+  inProgress?: boolean;
+  /** DECISION 6 — Orthanc accepted the object; the ERP could not record it. Never auto-retried. */
+  accepted?: boolean;
+  /** The reused policy's own vocabulary, so a refusal can be explained without re-deriving it. */
+  blockReasons?: string[];
+}
+
+/**
+ * DECISION 5 — one archive per study at a time, enforced in PostgreSQL.
+ *
+ * `pacsArchiveStatus: "pending"` never excluded anything: mutant M10 of the RIS-010 battery deleted the
+ * write and every archive still passed. A session-scoped advisory lock does exclude, and the repo
+ * already runs this exact shape for another cross-process writer
+ * (`emergencyNasClient.ts:99-117`): take a pooled client, `pg_try_advisory_lock`, run, unlock, release.
+ * A lock — not a queue and not a state machine — also covers the two shapes a status column cannot:
+ * a manual Retry while the finalize trigger's un-awaited run is still in flight, and two workers that
+ * both claimed work for the same study.
+ */
+async function withStudyArchiveLock<T>(studyId: number, fn: (locked: boolean) => Promise<T>): Promise<T> {
+  const key = `care_pacs_archive_study_${studyId}`;
+  const client = await pool.connect();
+  try {
+    const r = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+      [key],
+    );
+    const locked = !!r.rows[0]?.locked;
+    try {
+      return await fn(locked);
+    } finally {
+      if (locked) {
+        await client.query("SELECT pg_advisory_unlock(hashtext($1))", [key]).catch(() => undefined);
+      }
+    }
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -72,7 +139,7 @@ export async function resolveArchiveReportRow(study: {
   billId?: number | null;
   orderId?: number | null;
   orderTestId?: number | null;
-}): Promise<{ id: number } | null> {
+}): Promise<{ id: number; status: string | null; signedAt: Date | null } | null> {
   // Every worklist row bound to this billed study, not an arbitrary one: duplicate intake can bind
   // two rows to the same study, and a report may hang off either.
   const boundWorklists = await db
@@ -96,7 +163,13 @@ export async function resolveArchiveReportRow(study: {
   );
 
   const [report] = await db
-    .select({ id: patientReportsTable.id })
+    .select({
+      id: patientReportsTable.id,
+      // DECISION 1 needs the row's own finality facts. `resolveReportVersion` will still decide WHICH
+      // revision is served; these say whether that revision may be served to PACS at all.
+      status: patientReportsTable.status,
+      signedAt: patientReportsTable.signedAt,
+    })
     .from(patientReportsTable)
     .where(
       and(
@@ -114,15 +187,178 @@ export async function resolveArchiveReportRow(study: {
   return report ?? null;
 }
 
+/**
+ * DECISIONS 1 and 2 — may anything at all be filed for this study, and if not, why.
+ *
+ * The clinic's rule already lives in exactly one place: `usgPacsReturnPolicy.planUsgPacsReturn`, whose
+ * header states it as "only a finalized/verified/signed report is eligible (never a draft)", never a
+ * superseded version, never without StudyInstanceUID or patient, and fail-closed on PCPNDT for an
+ * obstetric study. This function calls THAT policy — it does not restate it — so the archive and the
+ * scheduled USG return path cannot drift into two different eligibility meanings.
+ *
+ * One input needs a mapping rather than a guess. `patient_reports.status` is not a signature: the sign
+ * route writes `status = "pending_verification"` at the same instant it records `signedAt`
+ * (`routes/patient-reports.ts:2569-2574`), which is why the patient-facing surfaces treat
+ * `pending_verification` as deliverable (`:3570`, `:3633`). Feeding the raw column to the policy would
+ * refuse every freshly signed report and silently stop the clinic archiving, so the fact the policy is
+ * asking about — is this report signed? — is answered with the schema's own authority, `signed_at`,
+ * mapped onto the policy's existing `signed` vocabulary. A draft with no signature keeps its own
+ * `draft` status and is refused, which is the defect this decision closes.
+ *
+ * The legacy free-text shape (`radiology_studies.final_report`, written by `peerReview.finalizeReport`
+ * with `status = "reported_final"` and a radiologist id) has no `patient_reports` row, so the policy's
+ * two report-derived blocks are answered from the study row instead: attributed, finalized, non-empty.
+ * Its structural conditions (UID, patient, obstetric PCPNDT) still come from the policy, so the
+ * placeholder case — no text at all — is refused. That mapping is the only exception, and it is a
+ * substitution of the same two facts, not a second policy.
+ */
+async function evaluateArchiveEligibility(args: {
+  study: typeof radiologyStudiesTable.$inferSelect;
+  patientName: string;
+  patientDisplayId: string;
+  reportRow: { id: number; status: string | null; signedAt: Date | null } | null;
+  delivered: { reportId: number; sequenceNumber: number; superseded: boolean; latestReportId: number } | null;
+}): Promise<{ eligible: true; blockReasons: [] } | { eligible: false; blockReasons: string[] }> {
+  const { study, reportRow, delivered } = args;
+
+  const legacyFinalText =
+    !reportRow &&
+    study.status === "reported_final" &&
+    typeof study.finalReport === "string" &&
+    study.finalReport.trim().length > 0 &&
+    !!study.finalReportedBy;
+
+  const isObstetric = isObstetricUsgStudy(study.modality, study.studyDescription ?? "");
+  const pcpndt = isObstetric ? await checkPcpndtFormFCompliance(study.patientId) : null;
+
+  const decision = planUsgPacsReturn(
+    {
+      studyId: study.id,
+      studyInstanceUid: study.studyInstanceUid ?? null,
+      accessionNumber: study.accessionNumber ?? null,
+      patientId: study.patientId,
+      patientName: args.patientName,
+      patientDisplayId: args.patientDisplayId,
+      modality: study.modality,
+      isObstetric,
+      studyDate: study.studyDate ? String(study.studyDate) : null,
+      referringDoctor: study.referringDoctor ?? null,
+    },
+    delivered && reportRow
+      ? {
+          reportId: delivered.reportId,
+          status: reportRow.signedAt ? "signed" : reportRow.status,
+          sequenceNumber: delivered.sequenceNumber,
+          supersededByReportId: delivered.superseded ? delivered.latestReportId : null,
+        }
+      : { reportId: reportRow?.id ?? null, status: reportRow?.status ?? null },
+    pcpndt ? { compliant: pcpndt.compliant, errors: pcpndt.errors } : null,
+  );
+
+  const blockReasons = legacyFinalText
+    ? decision.blockReasons.filter((r) => r !== "no_report" && r !== "not_finalized")
+    : decision.blockReasons;
+
+  return blockReasons.length === 0
+    ? { eligible: true, blockReasons: [] }
+    : { eligible: false, blockReasons };
+}
+
+/** Append the refusal to the archive's own audit history. Best-effort by design: an audit write must
+ *  never turn a refusal into an exception. */
+async function auditArchiveRefusal(
+  accessionNumber: string | null,
+  reason: string,
+  details: Record<string, unknown>,
+): Promise<void> {
+  await db
+    .insert(radiologyAuditLogTable)
+    .values({
+      accessionNumber: accessionNumber ?? undefined,
+      action: "PACS_ARCHIVE_REFUSED",
+      actor: "system",
+      details: JSON.stringify({ reason, ...details }),
+    })
+    .catch(() => undefined);
+}
+
+/** DECISION 6 outcome builder: Orthanc has the object, the ERP could not finish recording it. */
+async function acceptedButUnrecorded(
+  study: typeof radiologyStudiesTable.$inferSelect,
+  studyId: number,
+  instanceId: string,
+  err: unknown,
+  extra: Record<string, unknown> = {},
+): Promise<ArchiveOutcome> {
+  const errorMsg = err instanceof Error ? err.message : String(err);
+  const message =
+    `Orthanc accepted the report as ${instanceId || "an unnamed instance"}, but the ERP could not ` +
+    `record it (${errorMsg}). Do not retry blindly — verify the object in PACS first.`;
+  logger.error({ studyId, instanceId, err }, "[pacs-archive] ACCEPTED BUT UNRECORDED");
+  await db
+    .insert(radiologyAuditLogTable)
+    .values({
+      accessionNumber: study.accessionNumber,
+      action: "PACS_ARCHIVE_RECORDING_FAILED",
+      actor: "system",
+      details: JSON.stringify({ studyId, instanceId, error: errorMsg.slice(0, 500), ...extra }),
+    })
+    .catch(() => undefined);
+  return {
+    success: false,
+    accepted: true,
+    instanceId,
+    reason: "ARCHIVE_ACCEPTED_BUT_UNRECORDED",
+    message,
+    error: `ARCHIVE_ACCEPTED_BUT_UNRECORDED: ${message}`,
+  } satisfies ArchiveOutcome;
+}
+
+export interface ArchiveReportOptions {
+  /** D8 — PACS archives the LATEST signed version by default; pass
+   *  "specific" to explicitly archive the historical row as-is (it renders
+   *  with the superseded watermark). */
+  versionMode?: "latest" | "specific";
+  /** DECISION 4 — the ONLY way an already-archived revision may be uploaded a second time.
+   *  Reachable solely through the admin-gated `/api/radiology-ops/repair` action, which demands a
+   *  reason and a confirmation token and audits the actor. Ordinary Retry never sets this. */
+  restore?: { reason: string; actor: string };
+}
+
 export async function archiveReportToPacs(
   studyId: number,
-  opts: {
-    /** D8 — PACS archives the LATEST signed version by default; pass
-     *  "specific" to explicitly archive the historical row as-is (it renders
-     *  with the superseded watermark). */
-    versionMode?: "latest" | "specific";
-  } = {},
-): Promise<{ success: boolean; instanceId?: string; error?: string }> {
+  opts: ArchiveReportOptions = {},
+): Promise<ArchiveOutcome> {
+  return withStudyArchiveLock(studyId, async (locked) => {
+    if (locked) return runArchiveReportToPacs(studyId, opts);
+
+    // DECISION 5 — the loser of the lock writes nothing to the study row: the run that holds it owns
+    // `pending`/`success`/`failed`, so the records stay consistent with the one upload that happened.
+    const [study] = await db
+      .select({ accessionNumber: radiologyStudiesTable.accessionNumber })
+      .from(radiologyStudiesTable)
+      .where(eq(radiologyStudiesTable.id, studyId))
+      .limit(1);
+    await auditArchiveRefusal(study?.accessionNumber ?? null, "ARCHIVE_IN_PROGRESS", {
+      studyId,
+      message: ARCHIVE_IN_PROGRESS_MESSAGE,
+    });
+    logger.warn({ studyId }, "[pacs-archive] Another archive holds this study's lock; nothing uploaded");
+    return {
+      success: false,
+      refused: true,
+      inProgress: true,
+      reason: "ARCHIVE_IN_PROGRESS",
+      message: ARCHIVE_IN_PROGRESS_MESSAGE,
+      error: `ARCHIVE_IN_PROGRESS: ${ARCHIVE_IN_PROGRESS_MESSAGE}`,
+    } satisfies ArchiveOutcome;
+  });
+}
+
+async function runArchiveReportToPacs(
+  studyId: number,
+  opts: ArchiveReportOptions,
+): Promise<ArchiveOutcome> {
   logger.info({ studyId }, "[pacs-archive] Starting report archival to Orthanc");
 
   // 1. Fetch study
@@ -153,6 +389,9 @@ export async function archiveReportToPacs(
   // BEND-1 — which revision this run is archiving, visible to the catch
   // block so per-revision failures are attributable.
   let archivedRevision: { resolvedReportId: number; rootReportId: number; sequenceNumber: number } | null = null;
+  // DECISION 6 — once Orthanc has answered, the catch block must not record this run as a plain
+  // failure: an object exists in the archive, and `failed` is the status that invites a duplicate.
+  let acceptedInstanceId: string | null = null;
 
   try {
     // 2. Fetch patient demographics
@@ -198,16 +437,61 @@ export async function archiveReportToPacs(
       htmlContent = artifact?.html || "";
     }
 
+    // DECISIONS 1 and 2 — the clinic's own eligibility policy decides whether anything may be filed
+    // for this study, and it is asked BEFORE a PDF is rasterised or a byte is posted. No report row, an
+    // unsigned draft, a superseded revision, a missing StudyInstanceUID or a non-compliant obstetric
+    // Form-F all refuse here, and the study ends in `refused` with the reason in the audit history.
+    const eligibility = await evaluateArchiveEligibility({
+      study,
+      patientName,
+      patientDisplayId: patientIdStr,
+      reportRow: report,
+      delivered: artifact
+        ? {
+            reportId: artifact.version.resolvedReportId,
+            sequenceNumber: artifact.version.sequenceNumber,
+            superseded: artifact.version.resolvedSuperseded,
+            latestReportId: artifact.version.latestReportId,
+          }
+        : null,
+    });
+    if (!eligibility.eligible) {
+      const refusal = {
+        reason: "NO_ELIGIBLE_REPORT",
+        blockReasons: eligibility.blockReasons,
+        message: NO_ELIGIBLE_REPORT_MESSAGE,
+        at: new Date().toISOString(),
+      };
+      // `pacsInstanceId` is deliberately NOT cleared: an earlier accepted object still exists in PACS,
+      // and a refusal must not destroy the pointer to it.
+      await db
+        .update(radiologyStudiesTable)
+        .set({ pacsArchiveStatus: "refused", pacsArchiveResponse: JSON.stringify(refusal) })
+        .where(eq(radiologyStudiesTable.id, studyId));
+      await auditArchiveRefusal(study.accessionNumber, refusal.reason, { studyId, ...refusal });
+      logger.warn({ studyId, blockReasons: eligibility.blockReasons }, "[pacs-archive] Refused — nothing uploaded");
+      return {
+        success: false,
+        refused: true,
+        reason: refusal.reason,
+        message: NO_ELIGIBLE_REPORT_MESSAGE,
+        blockReasons: eligibility.blockReasons,
+        error: `PACS_ARCHIVE_REFUSED: ${NO_ELIGIBLE_REPORT_MESSAGE}`,
+      } satisfies ArchiveOutcome;
+    }
+
     if (!htmlContent) {
-      // Fallback HTML layout for a study with no patient_reports row (legacy
-      // free-text-only studies using radiology_studies.finalReport/
-      // prelimReport directly, never promoted through the modern report
-      // pipeline) — an edge case distinct from the primary buildReportArtifact
-      // path above. R1.4: every field here is patient/study data, not
-      // markup, and MUST be escaped — it previously was not.
+      // Legacy free-text-only study (`peerReview.finalizeReport` wrote final_report,
+      // final_reported_by and status reported_final without ever promoting a patient_reports row).
+      // Reaching this line at all means evaluateArchiveEligibility accepted it: attributed, finalized
+      // and non-empty. The placeholder document this branch used to render when there was no text —
+      // "No report body text entered." — no longer exists, and `prelim_report` is no longer accepted
+      // either (DECISION 1: never an incomplete or working report).
+      // R1.4: every field here is patient/study data, not markup, and MUST be escaped — it previously
+      // was not.
       const esc = (v: unknown) => String(v ?? "")
         .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-      const finalReportText = study.finalReport || study.prelimReport || "No report body text entered.";
+      const finalReportText = String(study.finalReport ?? "");
       htmlContent = `
         <!doctype html>
         <html>
@@ -244,6 +528,70 @@ export async function archiveReportToPacs(
         </body>
         </html>
       `;
+    }
+
+    // DECISION 3 — ordinary Retry never uploads a second copy of a revision PACS already holds. The
+    // check is keyed on the revision that is actually being served (the version resolver's own answer,
+    // not the pick), which is what makes an amendment still archive: a new revision id has no success
+    // record, so it proceeds. `opts.restore` is the only bypass, and it is reachable only from the
+    // admin-gated repair action.
+    //
+    // Limitation, stated rather than hidden: the legacy free-text shape has no report row and therefore
+    // no revision identity to key on (radiology_pacs_archive_revisions.report_id is a patient_reports
+    // id). A re-archive of a legacy free-text study still uploads. It is refused, not faked, when the
+    // text is missing, and re-finalizing that study does legitimately produce a new document.
+    const deliveredReportId = artifact?.version.resolvedReportId ?? null;
+    if (deliveredReportId != null && !opts.restore) {
+      const [prior] = await db
+        .select({
+          status: radiologyPacsArchiveRevisionsTable.status,
+          orthancInstanceId: radiologyPacsArchiveRevisionsTable.orthancInstanceId,
+        })
+        .from(radiologyPacsArchiveRevisionsTable)
+        .where(eq(radiologyPacsArchiveRevisionsTable.reportId, deliveredReportId))
+        .limit(1);
+      if (prior?.status === "success" && prior.orthancInstanceId) {
+        // The run opened by writing `pending`. A no-op must not leave the study sitting there: the
+        // owner's rule is that database state, audit history, archive status and the job result all
+        // describe the same object, and `pending` on a study whose report has been in PACS the whole
+        // time invites exactly the duplicate Retry this guard exists to prevent. This write is also the
+        // recovery from an accepted-but-unrecorded earlier run — the revision row holds the truth, so
+        // the summary is rebuilt from it rather than re-uploaded.
+        await db
+          .update(radiologyStudiesTable)
+          .set({
+            pacsArchiveStatus: "success",
+            pacsInstanceId: prior.orthancInstanceId,
+            pacsArchiveResponse: JSON.stringify({
+              idempotent: true,
+              instanceId: prior.orthancInstanceId,
+              reportId: deliveredReportId,
+              message: "Already archived in PACS; no second copy uploaded.",
+            }),
+          })
+          .where(eq(radiologyStudiesTable.id, studyId));
+        await db
+          .insert(radiologyAuditLogTable)
+          .values({
+            accessionNumber: study.accessionNumber,
+            action: "PACS_ARCHIVE_IDEMPOTENT_NOOP",
+            actor: "system",
+            details: JSON.stringify({
+              studyId,
+              reportId: deliveredReportId,
+              instanceId: prior.orthancInstanceId,
+              message: "Already archived in PACS; no second copy uploaded.",
+            }),
+          })
+          .catch(() => undefined);
+        logger.info({ studyId, instanceId: prior.orthancInstanceId }, "[pacs-archive] Already archived — no duplicate uploaded");
+        return {
+          success: true,
+          instanceId: prior.orthancInstanceId,
+          idempotent: true,
+          message: "This report version is already archived in PACS; no second copy was uploaded.",
+        } satisfies ArchiveOutcome;
+      }
     }
 
     // 4. Generate PDF using Playwright
@@ -312,46 +660,81 @@ export async function archiveReportToPacs(
 
     const result = await response.json() as { ID?: string; Path?: string };
     const instanceId = result.ID || "";
+    acceptedInstanceId = instanceId;
+
+    // DECISION 6 — write the per-REVISION record FIRST, and stop swallowing its errors.
+    //
+    // The order used to be study-summary → revision → audit, each of the last two ending in
+    // `.catch(() => undefined)`. That ordering is what made a partial failure dangerous: an object PACS
+    // had already accepted could leave the study row reading `failed` with no revision record at all,
+    // and the duplicate guard reads the revision record. Now the revision row is the first thing made
+    // durable, so any later failure still leaves the guard able to refuse a second copy. If the
+    // revision row itself cannot be written, the study summary is deliberately NOT touched and the run
+    // returns `accepted` — the last thing this path should do is publish a success the guard cannot
+    // honour.
+    if (v) {
+      try {
+        await db.insert(radiologyPacsArchiveRevisionsTable)
+          .values({
+            studyId,
+            reportId: v.resolvedReportId,
+            rootReportId: v.rootReportId,
+            sequenceNumber: v.sequenceNumber,
+            status: "success",
+            orthancInstanceId: instanceId,
+            detail: JSON.stringify({ path: result.Path ?? null, restore: opts.restore ?? null }),
+            attemptedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: radiologyPacsArchiveRevisionsTable.reportId,
+            set: { status: "success", orthancInstanceId: instanceId, attemptedAt: new Date(), updatedAt: new Date() },
+          });
+      } catch (err: unknown) {
+        return acceptedButUnrecorded(study, studyId, instanceId, err, { reportId: v.resolvedReportId });
+      }
+      // BEND-1 — older archived revisions of this study are flagged superseded rather than silently
+      // keeping a success status. Derived state: if only this write fails, the object is still correctly
+      // recorded, so the failure is reported and not treated as a lost archive.
+      try {
+        await db.update(radiologyPacsArchiveRevisionsTable)
+          .set({ status: "superseded", updatedAt: new Date() })
+          .where(and(
+            eq(radiologyPacsArchiveRevisionsTable.studyId, studyId),
+            ne(radiologyPacsArchiveRevisionsTable.reportId, v.resolvedReportId),
+            eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+          ));
+      } catch (err: unknown) {
+        logger.error({ studyId, err }, "[pacs-archive] supersede sweep failed — archived object still recorded");
+      }
+    }
 
     // 6. Persist status success
-    await db
-      .update(radiologyStudiesTable)
-      .set({
-        pacsArchiveStatus: "success",
-        pacsArchiveResponse: JSON.stringify(result),
-        pacsInstanceId: instanceId,
-      })
-      .where(eq(radiologyStudiesTable.id, studyId));
+    try {
+      await db
+        .update(radiologyStudiesTable)
+        .set({
+          pacsArchiveStatus: "success",
+          pacsArchiveResponse: JSON.stringify(result),
+          pacsInstanceId: instanceId,
+        })
+        .where(eq(radiologyStudiesTable.id, studyId));
+    } catch (err: unknown) {
+      return acceptedButUnrecorded(study, studyId, instanceId, err, { revisionRecorded: !!v });
+    }
 
-    // BEND-1 — per-REVISION archive record: the study columns above keep only
-    // the latest attempt and overwrite pacsInstanceId; this preserves each
-    // revision's Orthanc instance and flags older archived revisions as
-    // superseded instead of silently losing their references.
-    if (v) {
-      await db.insert(radiologyPacsArchiveRevisionsTable)
-        .values({
+    if (opts.restore) {
+      await db.insert(radiologyAuditLogTable).values({
+        accessionNumber: study.accessionNumber,
+        action: "PACS_ARCHIVE_RESTORE_FORCED",
+        actor: opts.restore.actor,
+        details: JSON.stringify({
           studyId,
-          reportId: v.resolvedReportId,
-          rootReportId: v.rootReportId,
-          sequenceNumber: v.sequenceNumber,
-          status: "success",
-          orthancInstanceId: instanceId,
-          detail: JSON.stringify({ path: result.Path ?? null }),
-          attemptedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: radiologyPacsArchiveRevisionsTable.reportId,
-          set: { status: "success", orthancInstanceId: instanceId, attemptedAt: new Date(), updatedAt: new Date() },
-        })
-        .catch(() => undefined);
-      await db.update(radiologyPacsArchiveRevisionsTable)
-        .set({ status: "superseded", updatedAt: new Date() })
-        .where(and(
-          eq(radiologyPacsArchiveRevisionsTable.studyId, studyId),
-          ne(radiologyPacsArchiveRevisionsTable.reportId, v.resolvedReportId),
-          eq(radiologyPacsArchiveRevisionsTable.status, "success"),
-        ))
-        .catch(() => undefined);
+          reportId: v?.resolvedReportId ?? null,
+          instanceId,
+          reason: opts.restore.reason,
+          note: "Authorized re-upload of the current signed revision after confirmed Orthanc data loss.",
+        }),
+      }).catch(() => undefined);
     }
 
     await db.insert(radiologyAuditLogTable).values({
@@ -376,6 +759,17 @@ export async function archiveReportToPacs(
     return { success: true, instanceId };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
+
+    // DECISION 6 — Orthanc accepted the document and something after that threw. Recording `failed`
+    // here would tell the queue and the staff that nothing was archived, and the next Retry would
+    // upload a second copy of the same revision. Return the truth instead, and leave the records as
+    // far as they got: the duplicate guard reads the revision row, which is written first.
+    if (acceptedInstanceId) {
+      return acceptedButUnrecorded(study, studyId, acceptedInstanceId, err, {
+        revisionRecorded: !!archivedRevision,
+      });
+    }
+
     logger.error({ studyId, err }, "[pacs-archive] Report archival failed");
 
     // Persist status failure

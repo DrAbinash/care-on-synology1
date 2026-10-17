@@ -21,7 +21,15 @@ vi.mock("@workspace/db/schema", () => ({
   radiologyPacsArchiveRevisionsTable: { __name: "radiology_pacs_archive_revisions", reportId: "report_id" },
 }));
 
+// DECISION 5 — the archive now takes a PostgreSQL advisory lock before it does anything. This mocked
+// file grants the lock so its version-resolution cases can still reach the upload.
 vi.mock("@workspace/db", () => ({
+  pool: {
+    connect: async () => ({
+      query: async () => ({ rows: [{ locked: true }] }),
+      release: () => undefined,
+    }),
+  },
   db: {
     select: () => ({
       from: (tbl: { __name?: string }) => ({
@@ -111,7 +119,15 @@ beforeEach(() => {
     studyInstanceUid: "1.2.3", studyDate: "2026-07-10", referringDoctor: "Dr. M",
     finalReport: null, prelimReport: null,
   };
-  reportRow = { id: 900, reportNumber: "RPT-ROOT" };
+  reportRow = {
+    id: 900,
+    reportNumber: "RPT-ROOT",
+    // DECISION 1 reads the row's finality facts, so the mock carries what the schema has. Without
+    // these two columns every archive in this file would correctly refuse, and the cases below would
+    // prove nothing about version resolution.
+    status: "final",
+    signedAt: new Date(),
+  };
   auditInserts = [];
   studyUpdates = [];
   revisionInserts = [];
@@ -145,18 +161,23 @@ describe("D8 — PACS archives the latest signed version", () => {
     expect(details).toMatchObject({ requestedReportId: 900, deliveredReportId: 909, reportVersion: "2/2", superseded: false });
   });
 
-  test("explicit historical archive is labeled SUPERSEDED", async () => {
+  test("an explicitly historical (superseded) revision is refused, never filed as current", async () => {
+    // DECISION 1, reusing usgPacsReturnPolicy's own `superseded_report` block. Before it, `specific`
+    // mode archived a superseded row with a SUPERSEDED series label; a labelled wrong-version document
+    // in the image archive is still a wrong-version document in the image archive. Nothing in the
+    // product passes versionMode today — every caller uses the default — so this refusal closes a
+    // reachable-only-by-code path, and the label it replaces is still asserted where the row IS the
+    // delivered revision (the case above).
     buildReportArtifactMock.mockResolvedValue({
       html: "<html>OLD</html>",
       version: versionResult({ resolvedReportId: 900, sequenceNumber: 1, resolvedSuperseded: true, resolutionReason: "explicit_specific", resolvedReport: { id: 900, reportNumber: "RPT-ROOT" } }),
     });
     const result = await archiveReportToPacs(55, { versionMode: "specific" });
-    expect(result.success).toBe(true);
-    expect(buildReportArtifactMock).toHaveBeenCalledWith(900, { surface: "pacs", versionMode: "specific" });
-    const tags = (fetchCalls[0].body as { Tags: Record<string, string> }).Tags;
-    expect(tags.SeriesDescription).toBe("Radiology Report PDF v1/2 SUPERSEDED");
-    const details = JSON.parse(String(auditInserts.find((a) => a.action === "ORTHANC_UPLOAD_SUCCESS")!.details));
-    expect(details.superseded).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.refused).toBe(true);
+    expect(result.blockReasons).toContain("superseded_report");
+    expect(fetchCalls).toHaveLength(0);
+    expect(revisionInserts).toHaveLength(0);
   });
 
   test("single-version report keeps the plain series description", async () => {

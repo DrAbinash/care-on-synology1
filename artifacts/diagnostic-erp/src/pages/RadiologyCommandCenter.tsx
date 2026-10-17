@@ -472,13 +472,20 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               Archive Failed
                             </Badge>
                           )}
+                          {/* RIS-010 DECISION 2 — nothing was filed because this examination has no
+                              finalized signed report. It is not a failure, so it must not read as one. */}
+                          {study.pacsArchiveStatus === "refused" && (
+                            <Badge className="bg-slate-500/10 text-slate-300 border border-slate-500/25">
+                              Not Archived — No Signed Report
+                            </Badge>
+                          )}
                           {(!study.pacsArchiveStatus || study.pacsArchiveStatus === "none") && (
                             <Badge variant="outline" className="text-slate-400 border-slate-800">
                               Not Archived
                             </Badge>
                           )}
                           
-                          {(study.pacsArchiveStatus === "failed" || study.pacsArchiveStatus === "none" || !study.pacsArchiveStatus) && (
+                          {(study.pacsArchiveStatus === "failed" || study.pacsArchiveStatus === "refused" || study.pacsArchiveStatus === "none" || !study.pacsArchiveStatus) && (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -486,14 +493,21 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               onClick={async () => {
                                 try {
                                   toast({ title: "Retrying archive...", description: "Uploading report to PACS..." });
-                                  const res = await api.post<{ success: boolean; error?: string }>(`/api/radiology/studies/${study.studyId}/archive-retry`, {});
-                                  if (res.success) {
+                                  const res = await api.post<{
+                                    success: boolean; error?: string; message?: string;
+                                    idempotent?: boolean; refused?: boolean;
+                                  }>(`/api/radiology/studies/${study.studyId}/archive-retry`, {});
+                                  if (res.success && res.idempotent) {
+                                    // DECISION 3 — this revision is already in PACS; no second copy was made.
+                                    toast({ title: "Already archived", description: res.message || "This report version is already in PACS." });
+                                  } else if (res.success) {
                                     toast({ title: "Archived", description: "Report successfully archived to PACS!" });
-                                    qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] });
+                                  } else if (res.refused) {
+                                    toast({ title: "Not archived", description: res.message || res.error || "No finalized signed report available for this examination." });
                                   } else {
                                     toast({ title: "Archive Failed", description: res.error || "Unknown error occurred", variant: "destructive" });
-                                    qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] });
                                   }
+                                  qc.invalidateQueries({ queryKey: ["workspace-entry", activeStudyId] });
                                 } catch (err: any) {
                                   toast({ title: "Error", description: err.message, variant: "destructive" });
                                 }
