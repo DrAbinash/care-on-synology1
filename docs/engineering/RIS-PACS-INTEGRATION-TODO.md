@@ -953,6 +953,23 @@ unsigned → UI-finalized → back to signed produced `signed / not-signed / not
 study fetching its own report row (`/api/patient-reports/1142`, `1141`, `1143`), and no study ever
 showed another's attribution.
 
+**The in-session chip after a *successful UI signing* — OBSERVED 2026-10-18** (`tmp/a1-ui-signing.mjs`,
+`screenshot tmp/badge/ui-signing-126.png`, evidence `tmp/badge/ui-signing-126.json`), on a study whose
+draft the app wrote itself: a scratch database seeded with one synthetic billed CT Brain (worklist row
+126) and exactly one ACTIVE signature block, workspace opened, text typed into
+`canonical-findings-editor`, Impression produced by the canvas's own `generate-local-impression`, the page
+left to autosave, then Confirm & Sign in the same session with **auto-advance switched off**
+(`care_auto_advance_after_finalize=false`) — the confound that destroyed the earlier read, which had
+already navigated to study 890 before it looked. Request chain: `from-study/122` 200 →
+`POST /api/patient-reports` 201 → `GET /api/signatures` 200 → **`POST /api/patient-reports/97/sign` 200** →
+`report-status` 200 → `GET /api/patient-reports/97` (the invalidation refetch, not a reload). Chip at 2, 3,
+5, 8 and 12 s: `signed` / emerald / "Report signed — Dr. Sole Verify (a1close)" with the lock line
+"Locked — corrections need an administrator" and the button re-labelled "Signed" and disabled. The row
+agrees: `radiology_worklist.status = REPORT_FINAL`, `report_id = 97`, `patient_reports.status =
+pending_verification`, `signed_at NOT NULL`, `signed_by_name = Dr. Sole Verify (a1close)`. The only 4xx in
+the run were HOPE/OHIF/DICOMweb paths this scratch stack does not serve (`send-report-to-hope` 409,
+`invalid StudyInstanceUID`), none of them on the signing chain.
+
 **Open, and not to be read as fixed:**
 1. **SPLIT 2026-10-18 — it was not the fixture draft, and it is not an app defect either.** That run's own
    request log ends the finalize at create 201 → `GET /api/signatures` 200 → flip 200 with **no**
@@ -977,11 +994,11 @@ showed another's attribution.
    `GET /api/signatures` must keep answering inactive rows because the admin screen needs them. (b) A
    finalize with no active block still closes the study `REPORT_FINAL`. #1058 makes that state *visible*
    ("Not signed", destructive toast) but blocking it is an owner workflow ruling, not a witness fix.
-2. The refusal was invisible to my toast selector a second time (the earlier P0 probe made the same
-   mistake and the lesson is already recorded); the request log, not the toast list, is what proved it.
-   Reading `onesig-889.json` again, the same read also found no outcome chip and no attribution at all —
-   the page had already moved off 889 — so that selector must be re-armed against the *advanced* study
-   before any conclusion is drawn from what it does not see.
+2. The refusal was again invisible to my toast selector, and the paragraph above is the second time the
+   same mistake was made: the selector has now been re-armed (auto-advance off, same page session) and the
+   signing chain reads correctly — so what the earlier run "saw" was the *next* study, not the one that
+   was refused. A UI check that pins one selector, or reads after the queue has moved, is not a UI check;
+   read rendered text, and pin the gesture that keeps the page where it is.
 3. `reports-v2/` stays untracked; the nginx guard repair is task **#128** and main has taken it; the
    `daily-summary` order-dependence above is a test-hygiene item, not a clinical one. Measured again on
    the 12 files this PR touches, and it is the same disease: run in parallel against one scratch database
@@ -1093,7 +1110,10 @@ a guessed identity for an approved one.
    is `rowAlreadySigned()` / `isSignedArtifact()`, and the display decision is
    `signedReportDisplayState()`. Task **#134 is SPLIT and closed** (2026-10-18, §RIS-014/015 item 1): the
    unsigned finalize was decided by the `signatures` table before any signing request existed, the app's
-   own draft writer is now measured signing end to end, and no DEF-D PR is owed. Two things are left,
+   own draft writer is now measured signing end to end, and no DEF-D PR is owed. The one UI claim that was
+   never observed — the in-session chip after a *successful* signing — is now observed on an app-written
+   draft, with auto-advance off and no reload (§RIS-014/015, the block above the open list). Two things
+   are left,
    neither of them a witness question: the sign dialog offers blocks it will then refuse
    (`useStudyFinalize.ts:337` + `FinalizeSignDialog.tsx:374`, unfiltered by `isActive`), and whether a
    finalize with no active block should close the study at all is an owner ruling. Test-hygiene warning
