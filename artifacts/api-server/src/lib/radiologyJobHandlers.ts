@@ -28,6 +28,9 @@ import { eq } from "drizzle-orm";
 import { resolveReportVersion } from "./radiologyReportVersion";
 import { recordObligationSendOutcome, completeObligationsForDelivery } from "./redeliveryObligations";
 import type { RadiologyJobHandler, RadiologyJobRow } from "./radiologyJobs";
+// Type-only: these handlers load pacsArchive lazily (it pulls in Playwright), so the outcome SHAPE is
+// imported for typing without adding a module-load edge to it.
+import type { ArchiveOutcome } from "./pacsArchive";
 import { AI_SHADOW_PIPELINE_JOB, makeAiShadowPipelineHandler } from "./ai/shadowPipeline";
 import { gatewayInferenceProvider } from "./ai/gatewayInferenceProvider";
 import { MWL_WL_CLEANUP_JOB, mwlWlCleanupHandler } from "./pacs/mwlWlCleanup";
@@ -188,6 +191,23 @@ const redeliverySendHandler: RadiologyJobHandler = async (job) => {
   return { ok: true, detail: `re-delivered ${obligation.channel} → ${obligation.recipientMasked}` };
 };
 
+/**
+ * RIS-010 DECISIONS 3 and 6 — the queue's record of an archive must agree with the archive's own.
+ * An idempotent no-op is a SUCCESS carrying the existing instance id, so a job requeued after a worker
+ * restart reports what it did without becoming a second DICOM object. Refusals and
+ * accepted-but-unrecorded results keep their reason CODE at the front of the detail, which is what
+ * `radiologyJobRules.decideFailure` anchors on to dead-letter them instead of retrying.
+ */
+function archiveJobOutcomeToResult(result: ArchiveOutcome): { ok: boolean; detail?: string } {
+  if (result.success && result.idempotent) {
+    return { ok: true, detail: `revision already archived — no second copy uploaded (instance ${result.instanceId ?? "?"})` };
+  }
+  if (result.success) {
+    return { ok: true, detail: `archived (instance ${result.instanceId ?? "?"})` };
+  }
+  return { ok: false, detail: result.error ?? "archive failed" };
+}
+
 const pacsRearchiveHandler: RadiologyJobHandler = async (job) => {
   const payload = (job.payload ?? {}) as { studyId?: number; reportId?: number };
   const studyId = Number(payload.studyId);
@@ -205,9 +225,7 @@ const pacsRearchiveHandler: RadiologyJobHandler = async (job) => {
   }
   const { archiveReportToPacs } = await import("./pacsArchive");
   const result = await archiveReportToPacs(studyId);
-  return result.success
-    ? { ok: true, detail: `archived (instance ${result.instanceId ?? "?"})` }
-    : { ok: false, detail: result.error ?? "archive failed" };
+  return archiveJobOutcomeToResult(result);
 };
 
 export const USG_PACS_RETURN_JOB = "usg_pacs_return";
@@ -238,7 +256,9 @@ const usgPacsReturnHandler: RadiologyJobHandler = async (job) => {
   const { archiveReportToPacs } = await import("./pacsArchive");
   const result = await archiveReportToPacs(studyId);
   return result.success
-    ? { ok: true, detail: `usg report returned to PACS (instance ${result.instanceId ?? "?"})` }
+    ? { ok: true, detail: result.idempotent
+        ? `usg report already in PACS — no second copy uploaded (instance ${result.instanceId ?? "?"})`
+        : `usg report returned to PACS (instance ${result.instanceId ?? "?"})` }
     : { ok: false, detail: result.error ?? "archive failed" };
 };
 

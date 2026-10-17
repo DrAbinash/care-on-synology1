@@ -537,8 +537,19 @@ describe("B10-18 — the write is closed at the route, not by hiding a button", 
     // what keeps old studies displayable and archivable.
     expect(readFileSync(join(SRC, "../../api-server/src/lib/priorStudies.ts"), "utf8"))
       .toContain("s.finalReport ?? s.prelimReport ?? report?.body ?? null");
+    // RIS-010 DECISION 1 (owner ruling, 2026-10-17) narrowed THIS one legitimately: the archive no
+    // longer reads `prelim_report`, because a preliminary working report is not a finalized signed
+    // report and must never be filed to PACS as one. The legacy FINAL free text is still read, so an
+    // attributed legacy finalized study stays archivable — the property this assertion existed to
+    // protect. `pacsArchive.transaction.request.test.ts` case 12 proves both halves against real
+    // PostgreSQL: the legacy final archives, a prelim-only study is refused. The other two readers
+    // still resolve prelim and are untouched.
     expect(readFileSync(join(SRC, "../../api-server/src/lib/pacsArchive.ts"), "utf8"))
-      .toContain("study.finalReport || study.prelimReport");
+      .toContain("String(study.finalReport ?? \"\")");
+    // Stricter than the assertion it replaces: the narrowing is pinned too, so `prelim_report` cannot
+    // creep back into the archive reader without this test failing.
+    expect(readFileSync(join(SRC, "../../api-server/src/lib/pacsArchive.ts"), "utf8"))
+      .not.toContain("study.prelimReport");
     expect(readFileSync(join(SRC, "../../api-server/src/routes/patient-reports.ts"), "utf8"))
       .toContain("study.finalReport ?? study.prelimReport ?? \"\"");
   });
