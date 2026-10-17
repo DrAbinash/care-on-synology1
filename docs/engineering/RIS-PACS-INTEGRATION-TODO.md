@@ -572,11 +572,13 @@ Done inside the existing builder — `renderCanalApTable` (`spinalCanalApTable.t
 columns from `canalPrintPlan` (`lib/measurements/src/spineCanal.ts:230`), and the most-filled-segment
 chooser is deleted from both sides (the server's chooser and the ERP's `pickPrintCanalSegment` /
 `canalApTableHtml` / `canalApReportTable`). A plan is built from the levels that were *measured*:
-columns in head-to-tail anatomical order, one section, and a title that names the span — a study with
-D8-D9 and L1-L2 through L5-S1 measures prints
-`DORSO-LUMBAR CANAL AP DIAMETER AT D8-D9 TO L5-S1 LEVELS` with all four rows. No column is emitted
-for a level nobody measured, transitional keys (`L5-T`, `L5-L6`, `L6-S1`) stay in the plan, and the
-junction level `D12-L1` appears only when measured. The workspace's own PDF uses the same plan
+columns in head-to-tail anatomical order, one section, and one title naming the span. Measured on the
+signed artifact: a Dorso-Lumbar study with D6-D7, D10-D11, L2-L3, L4-L5 and L5-S1 prints
+`DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS` with all five levels carrying their numbers —
+which is exactly the case that used to print a lumbar-only table and lose both dorsal discs. An
+unmeasured level keeps its column but no value (the printed em-dash is the pre-existing shape, asserted
+in V1). Transitional keys (`L5-T`, `L5-L6`, `L6-S1`) stay in the plan, and the junction level `D12-L1`
+appears only when measured. The workspace's own PDF uses the same plan
 (`canalApToPdfRows`, `spineCanalAp.ts:250`) instead of a segment of its own.
 
 **DECISION 2 — measurements entered after Generate must still print.** *"Remove the unsafe
