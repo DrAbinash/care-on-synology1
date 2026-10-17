@@ -1461,5 +1461,45 @@ describe.skipIf(!dbReady)("RIS-010 — the archive's approved transaction rules"
     expect((await readStudy(f.studyId)).pacsInstanceId).toBe(ok.instanceId);
     expect(reportId).toBeGreaterThan(0);
   }, 120_000);
+
+  it("V9 — the legacy free-text columns cannot route an archive around an unsigned structured report", async () => {
+    // The owner's closeout question for the legacy predicate: does its `!reportRow` term actually bite?
+    // A study whose structured report is still an unsigned DRAFT, while `radiology_studies` carries an
+    // attributed, dated final text from an earlier bridge push, must stay REFUSED. Once a report row
+    // exists the free-text columns are not consulted at all — stale legacy text cannot bypass DECISION 1,
+    // and it must never be the document that reaches PACS.
+    const f = await fixture("v9-draft-over-legacy");
+    await db
+      .update(radiologyStudiesTable)
+      .set({
+        finalReport: "AN EARLIER BRIDGE FINAL THAT IS NO LONGER THE REPORT OF RECORD",
+        finalReportedBy: "Dr Bridge",
+        finalReportedAt: new Date(),
+      })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+    await reportRow(f, { signed: false, body: "HALF-WRITTEN WORKING TEXT" });
+
+    const result = await archiveReportToPacs(f.studyId);
+    expect(result.success, JSON.stringify(result)).toBe(false);
+    expect(result.refused).toBe(true);
+    expect(result.blockReasons).toContain("not_finalized");
+    expect(result.message).toBe(NO_REPORT);
+    expect(edge.posts).toHaveLength(0);
+    expect(edge.rendered).toHaveLength(0);
+    expect(await readRevisions(f.studyId)).toHaveLength(0);
+
+    // Free text with no radiologist behind it is not a final either — the attribution columns are what
+    // the predicate keys on, so removing either one makes the same text ineligible.
+    const unattributed = await fixture("v9-unattributed");
+    await db
+      .update(radiologyStudiesTable)
+      .set({ finalReport: "FINAL TEXT WITH NOBODY BEHIND IT", finalReportedBy: null, finalReportedAt: new Date() })
+      .where(eq(radiologyStudiesTable.id, unattributed.studyId));
+    const noAuthor = await archiveReportToPacs(unattributed.studyId);
+    expect(noAuthor.refused, JSON.stringify(noAuthor)).toBe(true);
+    expect(noAuthor.blockReasons).toContain("no_report");
+    expect(noAuthor.message).toBe(NO_REPORT);
+    expect(edge.posts).toHaveLength(0);
+  }, 120_000);
 });
 

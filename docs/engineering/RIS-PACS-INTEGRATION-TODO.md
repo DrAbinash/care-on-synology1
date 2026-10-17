@@ -38,7 +38,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on Draft **PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **20 / 20** on real PostgreSQL; neighbours **243 tests / 13 files**; battery **26 mutants = 21 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 (Draft)**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away | **yes** for #1050 | **no** |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on Draft **PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 (Draft)**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away | **yes** for #1050 | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 | **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
@@ -245,7 +245,7 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 | CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
 | RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
 | IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, on **PR #1053 (Draft)**, code commit `52434abb` |
-| TESTED | yes, locally | **20/20** request-level cases (13 enforcement + 7 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
+| TESTED | yes, locally | **21/21** request-level cases (13 enforcement + 8 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
 | CI GREEN | **yes, on #1050** — measured 2026-10-17 02:56Z on head `7ac9662a` | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3. **#1053 (the audit follow-up) is green the same way** — 20 tests executed on `c1d868a1` |
 | MERGED | **yes for the enforcement pass** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
 | DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
@@ -513,9 +513,39 @@ main's status key, is killed by V6 too). Case V6 drives the real
 `POST /api/boundary/studies/:accession/report` with `x-boundary-key`, so it is the bridge's own code path,
 not a hand-made payload.
 
+**Does the legacy predicate fail closed? Confirmed before merge, and now mutation-proven (case V9).**
+Every writer of `radiology_studies.final_report` was enumerated rather than assumed —
+`lib/peerReview.ts:85-93` (`finalizeReport`, called from `routes/radiology.ts:2423`),
+`routes/internal-reporting-studio.ts:912-918` (writes a `patient_reports` row **and** mirrors the text onto
+the billed study), `routes/teleradiologyPortal.ts:224-236` (rejects an empty report at `:214`, attributes
+to the authenticated `user.name`), `routes/radiology.ts:1583-1592` (the legacy report-save route's
+`stage: "final"` arm, behind `decideLegacyReportWrite`; its `stage: "preliminary"` arm writes only
+`prelimReport`), and `routes/boundary.ts:369-372`. Each writes text + reporter + timestamp in the same
+statement, so the predicate's three terms are exactly what those writers guarantee. A grep's apparent
+sixth writer, `routes/aiReporting.ts:2717`, is a response body, not a write.
+
+Two properties a grep cannot establish were then forced to fail, because they are the ones that matter
+clinically:
+
+* **A structured report row wins, always.** `POST /:id/withdraw-signature` clears `signedAt` and sets the
+  row back to `draft` (`patient-reports.ts:2968-2970`) but does **not** clear the mirrored legacy text, so
+  a withdrawn signature leaves attributed final text sitting on the study. The predicate's first term is
+  `!reportRow`, so that text is never consulted while a report row exists: draft + stale legacy text is
+  refused with `not_finalized`, nothing renders, nothing posts, no revision row (case V9). Mutant **N17**
+  (drop `!reportRow`) is killed by exactly that case — without the guard a withdrawn or half-written report
+  could be re-archived from the text it left behind, which is DECISION 1 routed around.
+* **Attribution is required, not decorative.** Text with `finalReportedBy` null and a timestamp is refused
+  with `no_report` (case V9's second shape), and mutant **N18** (drop `!!study.finalReportedBy`) is killed
+  by it. `status !== "cancelled"` still bars a cancelled examination whatever its columns hold — mutant
+  **N11** is killed by V6.
+
+Relative to `main` the admitted set moved in one direction only: the word `reported_final` is no longer
+required, which is what re-admits the federated bridge's finals and a study already `delivered` to its
+patient. Every state `main` accepted still passes case 12.
+
 **Numbers for the audit pass** (scratch PostgreSQL 18 at `127.0.0.1:5445`, `TZ=UTC`, `--maxWorkers=1`):
-enforcement suite **20/20**; neighbours **243 tests / 13 files** (api-server 120/11, ERP contract
-123/2); mutation battery **26 mutants, each anchor preflighted unique and byte-verified**: **21 DETECTED
+enforcement suite **21/21**; neighbours **244 tests / 13 files** (api-server 120/11, ERP contract
+123/2); mutation battery **28 mutants, each anchor preflighted unique and byte-verified**: **23 DETECTED
 with the owning case named + 5 EXPECTED-SURVIVE (M5, M7, M8, M10, N10), 0 unexplained**; browser probe
 **8/8**, control **4/8**; typecheck `api-server` **98 before and 98 after** — measured by swapping
 `main`'s copies of the two changed files back in, so zero added (the figure this file previously quoted,
