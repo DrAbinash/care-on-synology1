@@ -1680,6 +1680,7 @@ patientReportsRouter.post("/:id/amend", async (req, res) => {
         ),
         canalApBlock: canalApFromDraft || pinnedCanalApBlock(parent.structuredJson),
       };
+      let materialized: MaterializationOutput = { findings: [], measurements: [], recommendations: [], skipped: [] };
       let catalogPort = noFindingsCatalogPort;
       if (await isFeatureEnabledServer("ff_radiology_catalog")) {
         const catalogStore = new DrizzleCatalogStore();
