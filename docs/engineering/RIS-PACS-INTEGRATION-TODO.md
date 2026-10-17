@@ -38,12 +38,12 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on Draft **PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 (Draft)**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. **After the closeout rebase onto main `0bca78ca` the Tests job is red — on main's own nginx guard test, which this PR does not touch** (see the CI note under the stage table) | **yes** for #1050 | **no** |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both fixed and **MERGED through PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 → MERGED `9664a967`**, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. and **#1053 merged green** on its final head `00fe117e` (21 tests executed on CI's Postgres 16) | **yes** — #1050 `1a93e4e4`, #1053 `9664a967` | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
-| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
-| **RIS-014** | **Finalize sent the queue row's id where a billed study id was keyed, and a flip that sent nothing was a "completion"** | **P0** | **Another patient's identity prefilled into the report being signed; the queue advanced on a study that was never written** | **CONFIRMED (runtime + request level) → PR #1058, owner approved** | `finalizeStudyIdAuthority.request.test.ts` 4/4 + `finalizeFalseSuccess.hardening.test.ts` 25/25 on real PostgreSQL; the row-id-as-billed-id collision measured on the fixture (`GET /from-study/4 -> 404` where the billed study is 306) | **#1058** (Draft, head `4327ce4f` + merge of main) | see §RIS-014/015 | no | no |
-| **RIS-015** | **The workspace said "Report signed" for a report with no signature** | **P1** | **A radiologist believes an unsigned document is signed, prints it and sends it** | **REPRODUCED IN CHROMIUM → CORRECTED → PR #1058, owner approved** | `signedReportWitness.request.test.ts` 7/7 on real PostgreSQL; `signedReportDisplayState` client suite 29/29; **mutation battery 15/15 killed** (clean-tree control green first); chip read in Chromium for all three states + in-app switching + withdrawal before/after | **#1058** | see §RIS-014/015 | no | no |
+| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → MERGED (#1054, `3d54c552`)** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | **MERGED** `main` `3d54c552` (squash of `ad90a59a`; parent `71f68479`) | **green** — all 3 jobs on `ad90a59a`, 14,656 passed / 49 skipped over 1,089 files; merged tree `b84b5926` byte-equal to that head | no | **no** |
+| **RIS-014** | **Finalize sent the queue row's id where a billed study id was keyed, and a flip that sent nothing was a "completion"** | **P0** | **Another patient's identity prefilled into the report being signed; the queue advanced on a study that was never written** | **CONFIRMED (runtime + request level) → PR #1058, owner approved** | `finalizeStudyIdAuthority.request.test.ts` 4/4 + `finalizeFalseSuccess.hardening.test.ts` 25/25 on real PostgreSQL; the row-id-as-billed-id collision measured on the fixture (`GET /from-study/4 -> 404` where the billed study is 306) | **#1058** (Draft, head `4327ce4f` + merge of main) | **green** — all 3 jobs on `8a72cd84` | no | no |
+| **RIS-015** | **The workspace said "Report signed" for a report with no signature** | **P1** | **A radiologist believes an unsigned document is signed, prints it and sends it** | **REPRODUCED IN CHROMIUM → CORRECTED → PR #1058, owner approved** | `signedReportWitness.request.test.ts` 7/7 on real PostgreSQL; `signedReportDisplayState` client suite 29/29; **mutation battery 15/15 killed** (clean-tree control green first); chip read in Chromium for all three states + in-app switching + withdrawal before/after | **#1058** | **green** — all 3 jobs on `8a72cd84` | no | no |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -246,10 +246,10 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 |---|---|---|
 | CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
 | RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
-| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, on **PR #1053 (Draft)**, code commit `52434abb` |
+| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, merged as **PR #1053 → `9664a967`** (code commit `52434abb`) |
 | TESTED | yes, locally | **21/21** request-level cases (13 enforcement + 8 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
 | CI GREEN | **yes for this queue's own work; #1053 is blocked by main, not by itself** — see the CI note under this table | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3. **#1053 (the audit follow-up) is green the same way** — 20 tests executed on `c1d868a1`, and again on `376153a2`. |
-| MERGED | **yes for the enforcement pass** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
+| MERGED | **yes for both passes** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
 | DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
 | CLINICALLY VERIFIED | no | nothing has been observed in the clinic |
 
@@ -284,9 +284,12 @@ a disposable container: `curl -si -X POST …/api/ledgers/2/reset` expecting 410
 the same against any `/api/` path with the api container stopped expecting 502 + `text/html`. If the second
 prints JSON, this paragraph is wrong and the guard's comment is right.
 
-**#1053's own content was verified green twice** (`c1d868a1`, `376153a2`), and it was rebased onto the green
-main for the closeout: that rebase pulled in #1059's test file only, leaving this PR's four files
-byte-identical.
+**#1053 was then closed out on a green main**: rebased onto `3d54c552` (which pulled in #1059's test file and
+#1054's canal-AP work only, leaving this PR's four files byte-identical), CI green on the final head
+`00fe117e` with `✓ pacsArchive.transaction.request.test.ts (21 tests) 5155ms` executed on
+`postgres:16-alpine`, marked ready, and **squash-merged as `9664a967`**. `git diff origin/main HEAD` after
+the merge is empty, so main's tree is exactly what was reviewed. **Still not deployed and not clinically
+verified** — the clinic's archive behaviour changes only when `deploy-synology.sh` runs.
 
 **MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
 still the one described in the "What #1048 measured" section below until #1050 **and** the audit
@@ -655,7 +658,19 @@ which keys the allowance on *a* combine rather than *this* row and is caught by 
 ERP's own error swallowing (`linkedMarkError`) is unchanged by this PR, so a future sibling-flip failure
 would still be quiet; worth a follow-up if the owner wants it surfaced to the radiologist.
 
-## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, branch `clinical/canal-ap-one-authority`)
+## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, **merged into `main` as `3d54c552` — NOT deployed**)
+
+**Status (2026-10-17, after the owner's four rulings).** PR **#1054** was squash-merged into `main` as
+`3d54c552`, parent `71f68479`, from head `ad90a59a`. All three CI jobs were green on that head first —
+Static checks, Tests + migration smoke on real PostgreSQL (**14,656 passed / 49 skipped over 1,089
+files, 0 failed**; the Vitest run itself took 710.49 s), Build identity — and the merged tree is the tested tree:
+`git rev-parse ad90a59a^{tree}` and `git rev-parse 3d54c552^{tree}` are both `b84b5926`, with
+`git diff --stat ad90a59a 3d54c552` empty. The merge changed 31 files, +3,074/-309. `main` was then re-run
+green on its own (`3d54c552`: static checks, tests + migration smoke on real PostgreSQL, build identity
+all `success`, the tests job completing 09:47:15Z). **Nothing is
+deployed**: the clinic keeps running whatever
+`deploy-synology.sh` last installed, so no radiologist sees any of this until someone deploys `main`.
+The five remaining gaps at the end of this section are the open part of the work.
 
 **What was wrong (measured, `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md`).** Two
 stores held canal AP diameters and neither wrote the other. The Reporting Workspace grid saves
@@ -716,7 +731,8 @@ order-dependent against the shared scratch database — the same three files fai
 an absolute: the worktree's `lib/*` packages are unbuilt, so 2,179 of 2,180 diagnostics are the
 TS6305/TS7006 cascade; only the errors named above sit in touched files.
 
-**Owner decisions (2026-10-17) — all four ruled, all four implemented on this branch.**
+**Owner decisions (2026-10-17) — all four ruled, all four implemented, and merged in `3d54c552` (31
+files, +3,074/-309).**
 
 **DECISION 1 — one combined Dorso-Lumbar table.** *"Fix the existing renderer so that every valid
 measured dorsal and lumbar level appears in the signed report. Use one combined table. Do not select
@@ -770,8 +786,9 @@ not empty.
 
 **DECISION 4 — Composer: interface handed over, code untouched.** *"Do not modify Composer code.
 Provide Qwen-Max with the exact canonical measurement interface and recommended read-only projection.
-Do not allow Composer to write back into the measurement authority."* Verified: `git diff
-origin/main..HEAD -- artifacts/api-server/src/lib/reportComposer` is **empty**.
+Do not allow Composer to write back into the measurement authority."* Verified at merge time: `git diff
+71f68479 3d54c552 --name-only -- artifacts/api-server/src/lib/reportComposer` is **empty**, and no
+Composer file appears among the 31 files the merge changed.
 
 The canonical interface, exactly as it exists today:
 - **Where**: `radiology_report_drafts.structured_json.careCanalApProvenance` — an object keyed by
@@ -848,16 +865,25 @@ a delivered document (`:355` for `spinal_measurements`, `:467` for the canonical
 1. **V4 in a browser is still unproven.** This local database has no dorso-lumbar reporting format, so
    the DL canvas and DL table never mount locally; V4 is proven at the request/rendered-artifact level
    and by the ERP's own plan test, not by a click. The clinic books "Dorsolumbar Spine" (35 rows) while
-   the local fixture names it "MRI Dorso Lumbar Spine".
+   the local fixture names it "MRI Dorso Lumbar Spine". **Deployed `main` is the first place a radiologist
+   can click it** — until someone runs `deploy-synology.sh`, `3d54c552` is not what the clinic is printing.
 2. **OHIF caliper → level capture was NOT RUN** (no PACS reachable). The code path exists and is
    exercised by unit tests only.
 3. **The Composer still reads measurements from prose** — see DECISION 4; the projection is a handoff,
-   not this branch's code.
+   and the owner ruled it stays recorded in this register rather than as a separate handoff file, so no
+   Composer work is scheduled by it.
 4. **Two stores are still two stores at entry time.** Print folds them with one rule; the AI-tab box
    still writes both. Closing that needs viewer capture moved into the rail grid first (DECISION 3
    census above), which is an owner call about UI, not a defect.
-5. **Full-suite parity is delegated to CI**: these signing request suites are order-dependent against
-   the shared scratch database locally, and each file is green in isolation.
+5. **`mriBrainCanvasPlacement.test.ts` is still a source-text guard over UI that renders zero
+   elements.** DECISION 3 keeps the `{false && (` block disabled, so the merge did not make this worse —
+   but the test cannot see a control that stops mounting, which is exactly the failure class that made
+   this audit necessary. Turning it into a render check is the natural next unit of work and needs no
+   clinical ruling.
+
+*Closed by the merge:* full-suite parity, which this section previously delegated to CI. All three jobs
+are green on `ad90a59a` (14,656 passed / 49 skipped over 1,089 files, 0 failed), and the merged tree is
+that same tree, so the number is the branch's own and not an inference from per-file local runs.
 
 
 ---
@@ -1015,22 +1041,29 @@ a guessed identity for an approved one.
 4. **RIS-009**: the Chromium multi-navigation re-probe (Next / Previous / Park / deep link) is the only
    unfinished verification left from the P1 list. `studyRegion.test.ts` was re-run green.
 5. **RIS-010: the evidence pass is MERGED (#1048 → `1394ab79`) and the corrections are in review
-   (#1050, head `7ac9662a`, open as Ready — not by choice: this token cannot convert a PR to draft).**
+   (#1050, head `7ac9662a`, open as Ready — not by choice: this token cannot convert a PR to draft.
+   Measured 2026-10-17 while merging #1054: the opposite direction **does** work, over GraphQL
+   `markPullRequestReadyForReview` with the `PR_kw…` node id from
+   `repository.pullRequest(number:){id}`; every REST path for it — `POST /pulls/{n}/mark_as_ready`,
+   `POST …/mark_ready_for_review`, `PATCH {draft:false}` — answers 404 or a 200 that silently keeps the
+   PR in draft.)**
    Do not rebuild the mechanisms it records as VERIFIED, and **do not re-measure the five gaps as if they
    were still open** — each one now has a status line in its own paragraph. Read #1050's CI result, put
    it in the stage table above, then hand the two visible behaviour changes (section "What #1050 changes")
    to the owner. Nothing is deployed.
 6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
-7. **RIS-013: all four owner decisions are implemented on `clinical/canal-ap-one-authority` (PR #1054) —
-   do not re-derive the two authorities, and do not add a second table builder.** Read §RIS-013 first:
+7. **RIS-013: all four owner decisions are implemented and MERGED (#1054 → `main` `3d54c552`, CI green on
+   the tested tree `b84b5926`) — not deployed. Do not re-derive the two authorities, and do not add a
+   second table builder.** Read §RIS-013 first:
    DECISION 1 is one print plan over the measured levels, DECISION 2 is structural table identity with
    Generate no longer writing a grid, DECISION 3 is the rail Measure tab alone with the AI-tab box
    kept because the census proves it is load-bearing, DECISION 4 is a Composer handoff with the
-   interface and the read-only projection spelled out and no Composer file touched. Five gaps remain
-   and are listed in that section — the Dorso-Lumbar case is proven at the rendered-artifact level but
-   not yet clicked in a browser (this database has no dorso-lumbar reporting format), OHIF caliper
-   capture was not run (no PACS reachable), the Composer still reads measurements from prose, the
-   AI-tab box still writes both stores, and full-suite parity is delegated to CI.
+   interface and the read-only projection spelled out and no Composer file touched. The work that is
+   left is the five gaps listed at the end of that section — clicking a Dorso-Lumbar study in a browser
+   (needs a deployed `main`, or a local database that carries the clinic's "Dorsolumbar Spine" format),
+   OHIF caliper → level capture with a reachable PACS, wiring the Composer projection §RIS-013 defines,
+   the owner's ruling on collapsing the AI-tab box's two writes, and turning
+   `mriBrainCanvasPlacement.test.ts` into a render check.
 8. **RIS-014 + RIS-015 / PR #1058 (Draft): both corrections are measured, mutation-killed 15/15 and
    read in Chromium — do not re-derive them, and do not add a second signature authority.** The witness
    is `rowAlreadySigned()` / `isSignedArtifact()`, and the display decision is
@@ -1062,7 +1095,23 @@ also fail-closes a study with no `StudyInstanceUID`, a non-compliant obstetric F
 revision — states the archive used to accept; and the legacy free-text final, which stays eligible,
 cannot be idempotency-keyed because the revision table's key is a `patient_reports` id.
 
-_Last updated: 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
+_Last updated: 2026-10-17 (fifth pass) — **the audit follow-up is merged.** The owner reviewed the two
+compatibility fixes, accepted the clinical direction of both, and set five behaviours as approved: a refusal
+must name the actual blocking condition; a missing `StudyInstanceUID` must not block ordinary signing; the
+Form-F restriction stays the existing statutory policy; attributed finals arriving through the boundary
+workflow remain archivable; a cancelled examination remains ineligible. Before merge he asked for the
+closeout checks — fetch main, check overlap, re-run if a rebase changes code, verify CI on the final head,
+**prove no unsigned or cancelled report can reach PACS through the legacy predicate**, and keep the legacy
+idempotency limitation in this file. All of it is above: case **V9** plus mutants **N17/N18** are what turn
+"the predicate checks `!reportRow`" from a reading into a measured property (a withdrawn signature leaves
+its legacy text behind, and that text cannot re-open an archive). #1053 merged as `9664a967` on a green CI
+run of its final head. Two side notes recorded where they belong: main's own red from `0bca78ca` was cleared
+by **#1059**, and the parallel branch written here (**#1060**) was closed superseded rather than merged, with
+the one factual disagreement it carried written up above. **Nothing is deployed and nothing is clinically
+verified** — until `deploy-synology.sh` runs on the NAS, the clinic still archives the way it did before
+#1050._
+
+_Previous pass, 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
 as `1a93e4e4`**, so the six rulings are on `main`; the audit then asked the owner's eight compatibility
 questions of the merged code by **running** the request suite on `main`. Six were already sound (a missing
 UID blocks only the association, signing and printing unaffected; the obstetric restriction is the existing

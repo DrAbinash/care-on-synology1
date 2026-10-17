@@ -5,12 +5,12 @@
 PostgreSQL on `127.0.0.1:5445`, plus the repo's own request-level tests at this commit.
 Audit only: **no clinical code was changed**, nothing was merged, deployed, signed or finalized.
 
-**Status after this audit (same day).** §10 is now implemented on
-`clinical/canal-ap-one-authority` — one builder folds both stores with the canonical record as the
-authority, all three signed paths carry the table, and the four grids mount once on the Measure tab.
-Read the sections below as the measured *as-was* state; the current status and the four decisions still
-outstanding (including one this audit did not anticipate: a Dorso-Lumbar study prints only its
-most-filled segment, so a measured dorsal level can be absent) are in
+**Status after this audit (same day).** §10 is implemented and **merged**: PR #1054 landed on `main` as
+`3d54c552` on 2026-10-17 — one builder folds both stores with the canonical record as the authority, all
+three signed paths carry the table, and the four grids mount once on the Measure tab. **Merged is not
+deployed:** the clinic still prints whatever `deploy-synology.sh` last installed.
+Read the sections below as the measured *as-was* state; the current status, the four owner rulings and
+the five remaining gaps are in
 `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013.
 
 ---
@@ -320,8 +320,8 @@ Make the two print callers read the **canonical record** first and fall back to 
 
 ## 12. What the owner ruled, and what is now measured
 
-The owner ruled on all four open questions on 2026-10-17. All four are implemented on
-`clinical/canal-ap-one-authority` (PR #1054); the clinical consequence of each, the ten required
+The owner ruled on all four open questions on 2026-10-17. All four are implemented and merged (PR #1054,
+`main` `3d54c552`, head `ad90a59a`); the clinical consequence of each, the ten required
 verifications and the five remaining gaps are in
 `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013 — read that section rather than re-deriving
 from this audit, whose §2-§10 describe the head this audit measured.
