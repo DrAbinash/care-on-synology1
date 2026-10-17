@@ -954,17 +954,41 @@ study fetching its own report row (`/api/patient-reports/1142`, `1141`, `1143`),
 showed another's attribution.
 
 **Open, and not to be read as fixed:**
-1. The in-session chip *after a successful UI signing* was not observed. The one browser finalize that
-   completed its create+flip left the row unsigned — `autoSignReport()` declined, and the autosave that
-   followed was refused with `DRAFT_WORKLIST_MISMATCH`. Both are consistent with my seeded draft row
-   (hand-written `worklist_id`, no `study_id`) rather than with the app's own draft creation, so the
-   split between "fixture artifact" and "real defect" is NOT measured. If it recurs on a draft the app
-   wrote itself, it is a genuine P1 — a Confirm & Sign that finalizes without signing — and belongs to
-   the DEF-D line, not to this PR.
+1. **SPLIT 2026-10-18 — it was not the fixture draft, and it is not an app defect either.** That run's own
+   request log ends the finalize at create 201 → `GET /api/signatures` 200 → flip 200 with **no**
+   `POST /api/patient-reports/:id/sign` anywhere in it, and `autoSignReport()` reaches "no sign request"
+   on exactly two conditions — no ACTIVE block, or 2+ active with no clinic-radiologist match and no id
+   chosen — both decided by the `signatures` table, which no draft row can influence. The app's own draft
+   writer is now measured too: scenario 8 of `signedReportWitness.request.test.ts` saves through
+   `/api/radiology/report-generator/save-draft` (it derives `worklist_id` **and** `study_id` from the
+   resolved worklist row — the one column the hand-written fixture lacked), then creates, signs and flips
+   over real HTTP, and the row comes back signed. Two claims in the paragraph this replaces were wrong,
+   and are corrected here rather than left standing: the `DRAFT_WORKLIST_MISMATCH` belongs to study **890**
+   (the log shows the queue auto-advanced — `worklist-lock/890/claim`, `drafts/241/print-preview` — before
+   that autosave), so it was never evidence about the study being finalized; and the scratch database that
+   run used no longer exists (no `*.request.test.ts` cluster on `5445` holds rows 889–893), so *which* of
+   the two decline arms fired is unrecoverable — which is why both are pinned as tests instead:
+   `radiologyReportLifecycle.test.ts` adds the arm that was missing, a retired block chosen in the dialog,
+   and dropping `isActive` from the filter kills it plus the pre-existing retired-only arm.
+   **No DEF-D PR is owed.** What is owed, and deliberately not taken here: (a) `useStudyFinalize.ts:337`
+   types the block list `{ id, name }[]` and never reads `isActive`, and `FinalizeSignDialog.tsx:374`
+   renders every block it is given, so a retired signer can be offered — or defaulted to, when the
+   remembered id is gone — and the signing then refuses; the picker should filter to active, and
+   `GET /api/signatures` must keep answering inactive rows because the admin screen needs them. (b) A
+   finalize with no active block still closes the study `REPORT_FINAL`. #1058 makes that state *visible*
+   ("Not signed", destructive toast) but blocking it is an owner workflow ruling, not a witness fix.
 2. The refusal was invisible to my toast selector a second time (the earlier P0 probe made the same
    mistake and the lesson is already recorded); the request log, not the toast list, is what proved it.
+   Reading `onesig-889.json` again, the same read also found no outcome chip and no attribution at all —
+   the page had already moved off 889 — so that selector must be re-armed against the *advanced* study
+   before any conclusion is drawn from what it does not see.
 3. `reports-v2/` stays untracked; the nginx guard repair is task **#128** and main has taken it; the
-   `daily-summary` order-dependence above is a test-hygiene item, not a clinical one.
+   `daily-summary` order-dependence above is a test-hygiene item, not a clinical one. Measured again on
+   the 12 files this PR touches, and it is the same disease: run in parallel against one scratch database
+   they red 23 tests with `{"error":"Failed to create report"}` on inserts that all succeed serialized
+   (184/184, 12/12 files); run with `--no-file-parallelism` they are green. Request-level files sharing a
+   database are not parallel-safe, full stop — main's own `bills.searchFilters.request.test.ts` reds for
+   the same reason in a full-suite run.
 
 ---
 
@@ -1067,13 +1091,14 @@ a guessed identity for an approved one.
 8. **RIS-014 + RIS-015 / PR #1058 (Draft): both corrections are measured, mutation-killed 15/15 and
    read in Chromium — do not re-derive them, and do not add a second signature authority.** The witness
    is `rowAlreadySigned()` / `isSignedArtifact()`, and the display decision is
-   `signedReportDisplayState()`. Three things are genuinely open, all spelled out in §RIS-014/015: the
-   in-session chip after a *successful UI signing* (the one browser run that got there left the row
-   unsigned through `autoSignReport`, cause not split between my hand-written draft row and the app's
-   own — if it reproduces on an app-written draft it is a new P1 in the DEF-D line); the toast
-   selector that has now twice failed to see a refusal the request log proves happened; and the
-   `daily-summary` request suite's order-dependence against a shared scratch database (it passes 3/3 on
-   an empty cloned schema — measure on a clean database before believing a red there).
+   `signedReportDisplayState()`. Task **#134 is SPLIT and closed** (2026-10-18, §RIS-014/015 item 1): the
+   unsigned finalize was decided by the `signatures` table before any signing request existed, the app's
+   own draft writer is now measured signing end to end, and no DEF-D PR is owed. Two things are left,
+   neither of them a witness question: the sign dialog offers blocks it will then refuse
+   (`useStudyFinalize.ts:337` + `FinalizeSignDialog.tsx:374`, unfiltered by `isActive`), and whether a
+   finalize with no active block should close the study at all is an owner ruling. Test-hygiene warning
+   for whoever runs this suite next: the PR's 12 files red 23 tests when run in parallel against one
+   scratch database and pass 184/184 with `--no-file-parallelism`.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
