@@ -118,6 +118,13 @@ export async function loadCanonicalCanalApForWorklist(
   worklistId: number | null | undefined,
 ): Promise<CanalApComposerRecord | null> {
   if (worklistId == null || !Number.isFinite(worklistId) || worklistId <= 0) return null;
-  const draft = await resolveAuthoritativeComposeDraft({ worklistId });
-  return loadCanonicalCanalApForDraft(draft?.draftId ?? null);
+  // Guarded as a whole, not just the row read: the draft resolution is on the same
+  // path, and a measurement record that cannot be reached must cost the canal data
+  // and nothing else — never the draft the radiologist asked for.
+  try {
+    const draft = await resolveAuthoritativeComposeDraft({ worklistId });
+    return await loadCanonicalCanalApForDraft(draft?.draftId ?? null);
+  } catch {
+    return null;
+  }
 }
