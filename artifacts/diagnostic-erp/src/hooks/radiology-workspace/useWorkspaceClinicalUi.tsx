@@ -2646,7 +2646,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     findingsProvenance,
     impressionProvenance,
     frozenKeyImages,
-    studySetup,
     doctorsCatalog: doctorsCatalogQ.data ?? [],
     session,
     sessionFresh,

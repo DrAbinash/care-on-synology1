@@ -106,7 +106,6 @@ export type UseWorkspaceExportShareOptions = {
     caption: string;
     sopInstanceUid?: string | null;
   }>;
-  studySetup: { matchedStudyRegion?: string | null };
   doctorsCatalog: { name: string; degree?: string | null }[];
   session: {
     user?: {
@@ -130,7 +129,7 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
     useStructured, findingsMap, impressionStyle, headingCase, sectionSpacing,
     showLetterpadHeader, signerLine, findingsProvenance, impressionProvenance,
-    frozenKeyImages, studySetup, doctorsCatalog, session, sessionFresh,
+    frozenKeyImages, doctorsCatalog, session, sessionFresh,
     canVerifyRef, verifyActionRef, linkedReportIdRef, setWhatsappShareOpen,
   } = opts;
 
@@ -399,7 +398,7 @@ const handleExportPdf = useCallback(async () => {
   impressionText, recommendationText, studyNameForExport, headingCase,
   imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
   useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-  studyId, studySetup.matchedStudyRegion, doctorsCatalogQ.data,
+  studyId, doctorsCatalogQ.data,
 ]);
 
 const handlePrintLikeFinal = useCallback(async () => {
