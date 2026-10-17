@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./zai-workspace/quick-select-library";
 import { DEFAULT_REPORT_FORMATS as FORMATS } from "./zai-workspace/report-formats-library";
-import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { quickFindingPatch, quickFindingRowBelongsTo } from "./zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "./zai-workspace/quickSelectTileFixture";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe } from "./reportFieldMerge";
 import { assertsNormalStatement } from "./generateLocalImpression";
@@ -369,5 +370,154 @@ describe("Stage C Phase 6 · reopening the stored column restores the report", (
     useWorkspace.setState({ impressionOrderFrozen: false });
     expect(useWorkspace.getState().orderImpressionByPriority(imposedOrder)).toBe(true);
     expect(useWorkspace.getState().impressionText).toBe(imposedOrder.join("\n"));
+  });
+});
+
+/**
+ * The same wire, for a box that comes out of PostgreSQL rather than out of the
+ * shipped tile catalogue.
+ *
+ * Quick Select is being consolidated into `radiology_quick_findings`, applied
+ * through `handleQuickToggle` → `quickFindingPatch`. Everything the tile suite
+ * above proves about the save/reopen contract has to hold for a box too, and two
+ * things about a box are unlike a tile: its row id can carry a side, so one box
+ * can own two observations at once; and its clinical metadata may be entirely
+ * absent, which is the state a deploy actually leaves a clinic's own row in
+ * (measured: the three boxes the factory seed adopts come back with concept '',
+ * conflict_group '', baseline_replaces '', properties '' and category NULL).
+ */
+const DB_FORAMINAL = {
+  id: 4101,
+  label: "Foraminal stenosis L5-S1",
+  studyType: "LS Spine",
+  findingText: "Severe {side} foraminal stenosis at L5-S1 with nerve root compression.",
+  impressionText: "Severe {side} L5-S1 foraminal stenosis.",
+  techniqueText: "",
+  recommendationText: "",
+  concept: "foraminal_stenosis",
+  anatomicalSection: "L5-S1",
+  conflictGroup: "foraminal_stenosis",
+  properties: "side",
+};
+
+/** A clinic box nobody ever gave a concept. Wording only — and still a real box. */
+const DB_CLINIC_PLAIN = {
+  id: 4102,
+  label: "Post-op changes",
+  studyType: "LS Spine",
+  findingText: "Post-operative changes are noted at the visualised levels.",
+  impressionText: "Post-operative appearance.",
+  techniqueText: "",
+  recommendationText: "",
+};
+
+/** The ledger key on its own, through the server's writer and the jsonb round trip. */
+function storedLedgerColumn() {
+  const body = { observationLedger: useWorkspace.getState().serializeObservationLedger() };
+  return JSON.parse(JSON.stringify(
+    composeStructuredJsonColumn({ existing: null, ...buildCareStructuredJsonPatch(body) }),
+  ));
+}
+
+function reportText() {
+  const s = useWorkspace.getState();
+  return {
+    findings: s.findingsText,
+    impression: s.impressionText,
+    recommendation: s.recommendationText,
+  };
+}
+
+function boxRowIds(boxId: number): string[] {
+  return useWorkspace.getState().appliedPathologyPatches
+    .map((p) => p.id)
+    .filter((id) => quickFindingRowBelongsTo(id, boxId));
+}
+
+/** Close and reopen on the stored column, the way useDraftPersistence.ts:273-330 does. */
+function reopenFrom(column: any, text: ReturnType<typeof reportText>) {
+  openNormalReport();
+  useWorkspace.getState().setEditorContent({
+    findings: text.findings,
+    impression: text.impression,
+    recommendation: text.recommendation,
+    technique: "",
+    clinicalHistory: "",
+  });
+  const hydrated = useWorkspace.getState().hydrateObservationLedger(
+    extractCareObservationLedger(column),
+  );
+  expect(hydrated.ok, `ledger hydration failed: ${JSON.stringify(hydrated)}`).toBe(true);
+  return hydrated;
+}
+
+function click(box: typeof DB_FORAMINAL, side?: "left" | "right") {
+  const outcome = useWorkspace.getState().applyPathologyOverlay(
+    quickFindingPatch(box, { region: "LS Spine" }, side ? { side } : {}),
+  );
+  expect(outcome, `"${box.label}"${side ? ` on the ${side}` : ""} was refused`).not.toBe("refused");
+}
+
+describe("Quick Select consolidation · a database box survives save and reopen", () => {
+  it("keeps left and right of one box as two observations, before and after the round trip", () => {
+    openNormalReport();
+    click(DB_FORAMINAL, "left");
+    click(DB_FORAMINAL, "right");
+    // Owner ruling: left and right coexist. They are two clinical facts about two
+    // different foramina, so the second click must not retire the first — which is
+    // what a shared conflict group would do if the slot key ignored the side.
+    expect(boxRowIds(DB_FORAMINAL.id).sort()).toEqual(["qf-4101:left", "qf-4101:right"]);
+    const text = reportText();
+    expect(text.findings).toContain("Severe left foraminal stenosis at L5-S1");
+    expect(text.findings).toContain("Severe right foraminal stenosis at L5-S1");
+
+    reopenFrom(storedLedgerColumn(), text);
+
+    expect(boxRowIds(DB_FORAMINAL.id).sort()).toEqual(["qf-4101:left", "qf-4101:right"]);
+    const after = useWorkspace.getState().findingsText;
+    expect(after).toContain("Severe left foraminal stenosis at L5-S1");
+    expect(after).toContain("Severe right foraminal stenosis at L5-S1");
+    // One sentence per side, not one per save: a reopen that re-applied the box on
+    // top of the restored prose would print the same finding twice.
+    expect(after.match(/Severe left foraminal stenosis at L5-S1/g)).toHaveLength(1);
+    expect(after.match(/Severe right foraminal stenosis at L5-S1/g)).toHaveLength(1);
+    expect(useWorkspace.getState().impressionText).toContain("Severe left L5-S1 foraminal stenosis.");
+    expect(useWorkspace.getState().impressionText).toContain("Severe right L5-S1 foraminal stenosis.");
+  });
+
+  it("keeps a concept-less clinic box usable, with its own wording and no invented ownership", () => {
+    openNormalReport();
+    click(DB_CLINIC_PLAIN);
+    expect(boxRowIds(DB_CLINIC_PLAIN.id)).toEqual(["qf-4102"]);
+    const text = reportText();
+    expect(text.findings).toContain("Post-operative changes are noted at the visualised levels.");
+
+    reopenFrom(storedLedgerColumn(), text);
+
+    expect(boxRowIds(DB_CLINIC_PLAIN.id)).toEqual(["qf-4102"]);
+    expect(useWorkspace.getState().findingsText)
+      .toContain("Post-operative changes are noted at the visualised levels.");
+    expect(useWorkspace.getState().impressionText).toContain("Post-operative appearance.");
+  });
+
+  it("reopens a box the radiologist can still withdraw", () => {
+    // Restoring the sentence is not the same as restoring the box. If hydration
+    // dropped the row id, `removeObservation` would answer "missing" and the chip
+    // would stay lit over a sentence no control can take back.
+    openNormalReport();
+    click(DB_FORAMINAL, "left");
+    const text = reportText();
+
+    reopenFrom(storedLedgerColumn(), text);
+
+    const owned = boxRowIds(DB_FORAMINAL.id);
+    expect(owned).toEqual(["qf-4101:left"]);
+    const outcomes = owned.map((id, i) => useWorkspace.getState().removeObservation(
+      id,
+      i > 0 ? { skipUndoSnapshot: true } : undefined,
+    ));
+    expect(outcomes, "the reopened row is not withdrawable").not.toContain("missing");
+    expect(useWorkspace.getState().findingsText)
+      .not.toContain("Severe left foraminal stenosis at L5-S1");
   });
 });

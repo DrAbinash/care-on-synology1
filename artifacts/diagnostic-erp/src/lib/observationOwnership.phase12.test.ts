@@ -17,6 +17,11 @@ import {
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_REPORT_FORMATS } from "./zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./zai-workspace/quick-select-library";
+import {
+  quickFindingPatch,
+  quickFindingRowBelongsTo,
+  quickFindingRowId,
+} from "./zai-workspace/quickSelectTilePayload";
 import { mergeTwoFormats } from "./zai-workspace/types";
 import { combinedFormatTitle } from "./formatSlotMerge";
 import { buildReportingStudyContext } from "./reportingStudyContext";
@@ -112,6 +117,14 @@ function previewHtml(s: { findingsText: string; impressionText: string; techniqu
     imageRefs: [],
   });
 }
+/**
+ * Drives the store through the real database-box builder, not through a
+ * hand-written copy of its output. This helper used to inline the patch, which
+ * quietly reproduced `handleQuickToggle`'s omissions — no concept, no declared
+ * laterality, one row id for both sides — so the suite below was passing against
+ * a fixture that no caller produced. Building through `quickFindingPatch` is what
+ * makes these assertions about the shipped pathway.
+ */
 function overlayQf(opts: {
   id: number;
   region: string;
@@ -123,31 +136,32 @@ function overlayQf(opts: {
   anatomicalSection?: string;
   side?: "left" | "right" | "";
   properties?: string;
+  concept?: string;
+  baselineReplaces?: string;
 }) {
-  return useWorkspace.getState().applyPathologyOverlay({
-    incoming: {
-      findings: opts.findings,
-      impression: opts.impression,
-      recommendation: opts.recommendation,
+  return useWorkspace.getState().applyPathologyOverlay(quickFindingPatch(
+    {
+      id: opts.id,
+      label: opts.label,
+      studyType: opts.region,
+      findingText: opts.findings,
+      impressionText: opts.impression ?? "",
+      techniqueText: "",
+      recommendationText: opts.recommendation ?? "",
+      anatomicalSection: opts.anatomicalSection ?? "",
+      conflictGroup: opts.conflictGroup ?? "",
+      baselineReplaces: opts.baselineReplaces ?? "",
+      properties: opts.properties ?? "",
+      concept: opts.concept ?? "",
     },
-    templates: {
-      findings: opts.findings,
-      impression: opts.impression,
-      recommendation: opts.recommendation,
-    },
-    ownership: {
-      anatomicalSection: opts.anatomicalSection,
-      conflictGroup: opts.conflictGroup,
-    },
-    source: "quick-findings",
-    id: `qf-${opts.id}`,
-    region: opts.region,
-    label: opts.label,
-    findingsText: opts.findings,
-    side: opts.side,
-    properties: opts.properties,
-    catalogId: opts.id,
-  });
+    { region: opts.region },
+    { side: opts.side },
+  ));
+}
+
+/** The row ids the ledger currently holds, in order. */
+function rowIds(): string[] {
+  return useWorkspace.getState().appliedPathologyPatches.map((p) => p.id);
 }
 
 describe("observationSlot identity", () => {
@@ -746,5 +760,133 @@ describe("impression refresh helper", () => {
     });
     expect(text).toContain("My typed line.");
     expect(text).toMatch(/Fazekas grade 1/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The clinical equivalence contract, for a box the database holds.
+//
+// Phase 3 of the owner's brief: a database box must give the radiologist the
+// same clinical intelligence the shipped tile gave. These drive the real store
+// through the real builder, so they fail when the metadata stops arriving rather
+// than when a source string changes.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("a database box clicked from the reporting desk", () => {
+  beforeEach(() => resetStore("Brain"));
+
+  /** The factory's Midline shift box, concept and all. */
+  const MIDLINE = {
+    id: 96,
+    region: "Brain",
+    label: "Midline shift",
+    concept: "midline",
+    findings: "Midline shift of ___ mm toward the {side}.",
+    impression: "Midline shift toward {side}.",
+    baselineReplaces: "No midline shift.",
+  };
+  /** The same box as a deploy actually leaves the clinic's own row: no metadata. */
+  const ADOPTED_MIDLINE = {
+    id: 97,
+    region: "Brain",
+    label: "Midline shift",
+    findings: "Midline shift is noted.",
+    impression: "Midline shift as described.",
+  };
+
+  function observation(id: string) {
+    return useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === id)?.observation;
+  }
+
+  it("records the concept the box declares instead of guessing one from its sentence", () => {
+    overlayQf({ ...MIDLINE, properties: "side", side: "left" });
+    const obs = observation(quickFindingRowId(96, "left"));
+    expect(obs?.concept).toBe("midline");
+    // "explicit" is the tier that means the box said so. Anything else — a
+    // conflict group, a CONCEPT_HINTS regex, an anatomical section — is a guess,
+    // and for Midline shift there is no hint rule at all, so the guess is empty.
+    expect(obs?.conceptSource).toBe("explicit");
+  });
+
+  it("leaves a concept-less box usable and invents no ownership for it", () => {
+    // Owner ruling: existing concept-less boxes stay usable through their
+    // established text-insertion behaviour, and nothing is manufactured for them.
+    const outcome = overlayQf(ADOPTED_MIDLINE);
+    expect(outcome).not.toBe("refused");
+    const obs = observation("qf-97");
+    expect(obs?.conceptSource, "no concept is invented from the sentence").not.toBe("explicit");
+    expect(useWorkspace.getState().findingsText).toContain("Midline shift is noted.");
+    expect(useWorkspace.getState().impressionText).toContain("Midline shift as described.");
+  });
+
+  it("keeps Left and Right as two observations with both sentences on the page", () => {
+    overlayQf({ ...MIDLINE, properties: "side", side: "left" });
+    overlayQf({ ...MIDLINE, properties: "side", side: "right" });
+    expect(rowIds()).toEqual([quickFindingRowId(96, "left"), quickFindingRowId(96, "right")]);
+    const findings = useWorkspace.getState().findingsText;
+    // Opposite laterality is never mutually exclusive, so the second click must
+    // add rather than replace. One row for both was the defect: the second click
+    // overwrote the first ledger row while the first sentence stayed printed.
+    expect(findings).toContain("toward the left");
+    expect(findings).toContain("toward the right");
+    expect(useWorkspace.getState().impressionText).toContain("toward left");
+    expect(useWorkspace.getState().impressionText).toContain("toward right");
+  });
+
+  it("withdraws both sides in one undo step", () => {
+    overlayQf({ ...MIDLINE, properties: "side", side: "left" });
+    overlayQf({ ...MIDLINE, properties: "side", side: "right" });
+    // What the toggle-off branch of handleQuickToggle does: every row the box
+    // owns, the first carrying the undo frame. Removing only the currently
+    // chosen side would leave the chip lit and the other sentence printed with no
+    // control left to withdraw it.
+    const owned = rowIds().filter((id) => quickFindingRowBelongsTo(id, 96));
+    expect(owned).toHaveLength(2);
+    owned.forEach((id, i) => {
+      useWorkspace.getState().removeObservation(id, i > 0 ? { skipUndoSnapshot: true } : undefined);
+    });
+    // Scoped to this box's rows, not to a bare ledger: withdrawing the only
+    // abnormality legitimately restores the study's system-normal row, so
+    // `rowIds()` is not empty after a correct removal.
+    expect(rowIds().filter((id) => quickFindingRowBelongsTo(id, 96))).toEqual([]);
+    expect(useWorkspace.getState().findingsText).not.toContain("toward the left");
+    expect(useWorkspace.getState().findingsText).not.toContain("toward the right");
+    // One click, one undo step: a single undo has to bring both sides back, or
+    // the radiologist who clicks Undo once is left with half a withdrawal.
+    expect(useWorkspace.getState().undoLastPatch()).toBe(true);
+    expect(rowIds().filter((id) => quickFindingRowBelongsTo(id, 96))).toHaveLength(2);
+    expect(useWorkspace.getState().findingsText).toContain("toward the left");
+    expect(useWorkspace.getState().findingsText).toContain("toward the right");
+  });
+
+  it("writes nothing at all when the side it asks for was never chosen", () => {
+    // Owner ruling: never insert an unresolved placeholder. Before this source
+    // was guarded, the box wrote "{side}" into Findings, Impression and the
+    // ledger, and still reported itself as applied.
+    const before = {
+      findings: useWorkspace.getState().findingsText,
+      impression: useWorkspace.getState().impressionText,
+      rows: rowIds().length,
+    };
+    const outcome = overlayQf({ ...MIDLINE, properties: "side", side: "" });
+    expect(outcome).toBe("refused");
+    expect(useWorkspace.getState().findingsText).toBe(before.findings);
+    expect(useWorkspace.getState().impressionText).toBe(before.impression);
+    expect(rowIds()).toHaveLength(before.rows);
+    expect(useWorkspace.getState().findingsText).not.toContain("{side}");
+  });
+
+  it("retires the normal sentence the box declares, and only that one", () => {
+    useWorkspace.getState().applyFormatById(BRAIN_NORMAL.id);
+    const normal = useWorkspace.getState().findingsText;
+    expect(normal).toContain("No midline shift.");
+    expect(normal).toContain("Cortical sulci normal for age.");
+    overlayQf({ ...MIDLINE, properties: "side", side: "right" });
+    const after = useWorkspace.getState().findingsText;
+    // An abnormality that leaves the normal it contradicts on the page prints a
+    // report that argues with itself.
+    expect(after).not.toContain("No midline shift.");
+    expect(after, "a sentence the box did not name is none of its business")
+      .toContain("Cortical sulci normal for age.");
+    expect(after).toContain("toward the right");
   });
 });

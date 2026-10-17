@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { QuickFinding, QuickStudyTab } from "./QuickFindingsPanel";
+import type { QuickSelectField } from "@/lib/zai-workspace/types";
 import {
   conflictGroupWordsMissingFromText,
   resolvedOwnershipMode,
@@ -66,10 +67,20 @@ interface Props {
   tabs: QuickStudyTab[];
   defaultStudyType: string;
   selectedStudyTabId?: number | null;
+  /**
+   * The section to file a NEW box under, when the caller is that section's own
+   * strip. Without it a box authored from the Impression strip is created with
+   * the column default `field = "findings"` and so never appears in the strip
+   * that just created it — the authoring dead end this editor exists to close.
+   *
+   * Only ever sent on create. An existing box keeps the `field` it was saved
+   * with, so editing one from a different surface can never move it.
+   */
+  defaultField?: QuickSelectField;
   onClose: () => void;
 }
 
-export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStudyType, selectedStudyTabId, onClose }: Props) {
+export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStudyType, selectedStudyTabId, defaultField, onClose }: Props) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Draft>(() => toDraft(finding, defaultStudyType));
@@ -84,6 +95,12 @@ export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStud
     mutationFn: async () => {
       const byName = tabs.find((t) => t.name === draft.studyType.trim());
       const studyTabId = selectedStudyTabId ?? finding?.studyTabId ?? byName?.id ?? undefined;
+      // Sent only when it is known. A create from a section's own strip files the
+      // box under that section; a create from anywhere else omits it and the
+      // column default applies, which is what every caller had before. An edit
+      // re-sends the box's own `field` unchanged, and a caller that somehow holds
+      // a box without one omits it — so the server preserves rather than moves it.
+      const fieldForSave = finding?.field ?? (isEdit ? undefined : defaultField);
       const body = {
         studyTabId,
         studyType: draft.studyType.trim(),
@@ -97,6 +114,7 @@ export default function WorkspaceQuickFindingEditor({ finding, tabs, defaultStud
         baselineReplaces: draft.baselineReplaces,
         tags: draft.tags,
         isActive: true,
+        ...(fieldForSave ? { field: fieldForSave } : {}),
       };
       if (!body.studyType || !body.label) throw new Error("Study type and label are required");
       if (isEdit) return api.patch(`/api/radiology/quick-select/findings/${draft.id}`, body);

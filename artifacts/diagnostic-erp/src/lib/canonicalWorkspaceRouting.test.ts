@@ -92,7 +92,7 @@ describe("M1.1 — no duplicate state/service copies reactivate", () => {
     expect(workspace).toContain('from "@/components/radiology/QuickFindingsPanel"');
     expect(workspace).toContain("<ReportingToolsPanel");
     expect(workspace).toContain('data-testid="quick-insert"');
-    expect(workspace).toContain("QuickSelectEditor");
+    expect(workspace).toContain("QuickSelectStrip");
     for (const rel of [
       "pages/RadiologyCommandCenter.tsx",
       "pages/RadiologyReportGenerator.tsx",

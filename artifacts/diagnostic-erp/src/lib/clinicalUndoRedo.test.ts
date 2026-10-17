@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { useWorkspace } from "./zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./zai-workspace/quick-select-library";
-import { quickSelectTilePatch } from "./zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch, tileRowId } from "./zai-workspace/quickSelectTileFixture";
 import type { QuickSelectTile } from "./zai-workspace/types";
 import { buildReportingStudyContext } from "./reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "./reportFieldMerge";
@@ -82,7 +82,7 @@ function select(...tiles: QuickSelectTile[]): void {
   }
 }
 
-const deselect = (t: QuickSelectTile) => useWorkspace.getState().removeObservation(`qs-${t.id}`);
+const deselect = (t: QuickSelectTile) => useWorkspace.getState().removeObservation(tileRowId(t));
 const holds = (sentence: string, field = useWorkspace.getState().findingsText): boolean =>
   splitToSentences(field).map(normalizeForDedupe).includes(normalizeForDedupe(sentence));
 
@@ -154,7 +154,7 @@ describe("Stage C-2 · redo restores what undo took away", () => {
     expect(clinicalMirror()).toEqual(beforeUndo);
     expect(useWorkspace.getState().undoLastPatch(),
       "the frame redo consumed is put back on the undo stack, so Undo is not one-way any more").toBe(true);
-    expect(clinicalMirror().ledger.map((l) => l.id)).toEqual([`qs-${BURST_C5.id}`]);
+    expect(clinicalMirror().ledger.map((l) => l.id)).toEqual([tileRowId(BURST_C5)]);
   });
 
   it("re-suppresses a shared normal that the undo had legitimately restored", () => {

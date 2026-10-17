@@ -683,7 +683,13 @@ export function liveContributionKeys(rows: readonly ContributionRow[]): Set<stri
 export function selectedQuickFindingIds(patchIds: string[]): number[] {
   const out: number[] = [];
   for (const id of patchIds) {
-    const m = /^qf-(\d+)$/.exec(id);
+    // The side suffix is optional and deliberately loose. `quickFindingRowId`
+    // gives Left and Right of one box their own row, and a chip has to read as
+    // selected whichever side is on the page — an exact-shape match here is what
+    // would silently un-light every sided box the moment it recorded its side.
+    // Duplicates are kept: both sides of one box push the same id, and the caller
+    // builds a Set.
+    const m = /^qf-(\d+)(?::[a-z]+)?$/.exec(id);
     if (m) out.push(Number(m[1]));
   }
   return out;

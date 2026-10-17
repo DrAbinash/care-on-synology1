@@ -11,7 +11,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
-import { quickSelectTilePatch } from "./quickSelectTilePayload";
+import { quickSelectTilePatch, tileRowId } from "./quickSelectTileFixture";
 import { useWorkspace } from "./store";
 import { MRI_CERVICAL_STANDARD_NORMAL_MANIFEST, MRI_LS_SPINE_STANDARD_NORMAL_MANIFEST } from "./fullReportBaseline";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
@@ -267,7 +267,7 @@ describe("the cervical Quick Select catalogue", () => {
     expect(useWorkspace.getState().findingsText).not.toContain(
       "C5-C6: No significant disc bulge or protrusion is seen.",
     );
-    expect(useWorkspace.getState().removeObservation(`qs-${tile.id}`)).toBe("removed");
+    expect(useWorkspace.getState().removeObservation(tileRowId(tile))).toBe("removed");
     expect(useWorkspace.getState().findingsText).toContain(
       "C5-C6: No significant disc bulge or protrusion is seen.",
     );

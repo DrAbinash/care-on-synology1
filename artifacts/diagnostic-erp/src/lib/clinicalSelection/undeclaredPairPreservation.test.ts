@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { useWorkspace } from "../zai-workspace/store";
 import { DEFAULT_QUICK_SELECT_TILES as TILES } from "../zai-workspace/quick-select-library";
-import { quickSelectTilePatch } from "../zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch, tileRowId } from "../zai-workspace/quickSelectTileFixture";
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "../reportFieldMerge";
 import { applyPathologyPatch } from "../pathologyPatch";
@@ -131,7 +131,7 @@ function findingSet(): string[] {
 }
 
 function rowOf(t: Tile) {
-  return useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === `qs-${t.id}`) ?? null;
+  return useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === tileRowId(t)) ?? null;
 }
 
 /** The four pairs the census measured. Nothing is chosen to pass. */
@@ -259,8 +259,8 @@ describe("Stage C Phase 5 · an undeclared pair coexists", () => {
     reset();
     const [a, b] = PAIRS[2];
     select(a, b);
-    useWorkspace.getState().removeObservation(`qs-${b.id}`);
-    useWorkspace.getState().removeObservation(`qs-${a.id}`);
+    useWorkspace.getState().removeObservation(tileRowId(b));
+    useWorkspace.getState().removeObservation(tileRowId(a));
     for (const sentence of splitToSentences(BASELINE).map(normalizeForDedupe)) {
       expect(field(), `${sentence} should be back with nothing selected`).toContain(sentence);
     }

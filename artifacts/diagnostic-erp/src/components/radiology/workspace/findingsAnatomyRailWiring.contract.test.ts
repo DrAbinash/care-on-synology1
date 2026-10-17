@@ -202,9 +202,12 @@ describe("an active anatomy chip keeps tiles that declare no anatomy", () => {
     expect(tileMatchesAnatomy("Cervical Spine", null)).toBe(true);
   });
 
-  it("the strip counts the tiles it offers, not the tiles the region holds", () => {
+  it("the strip counts the boxes it offers, not the boxes the region holds", () => {
     const strip = read(QUICK_STRIP);
-    expect(strip).toContain("{filtered.length} tiles");
-    expect(strip).not.toContain("{scoped.length} tiles");
+    // `filtered` is the chip- and search-narrowed set the list actually renders;
+    // `scoped` is everything the region holds. The header must print the first —
+    // the noun beside the number is not the property, so it is not pinned.
+    expect(strip).toMatch(/\{filtered\.length\} \w+/);
+    expect(strip).not.toMatch(/\{scoped\.length\} \w+/);
   });
 });

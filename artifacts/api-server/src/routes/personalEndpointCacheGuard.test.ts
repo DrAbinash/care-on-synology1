@@ -76,6 +76,7 @@ const KNOWN_PERSONAL_ENDPOINTS: KnownPersonalEndpoint[] = [
   { file: "radiologyMemory.ts", localPath: "/measurements", fullPath: "/api/radiology-memory/measurements" },
   { file: "radiologyMemory.ts", localPath: "/classifications", fullPath: "/api/radiology-memory/classifications" },
   { file: "radiologyQuickFindings.ts", localPath: "/favorites", fullPath: "/api/radiology/quick-select/favorites" },
+  { file: "radiologyQuickFindings.ts", localPath: "/usage", fullPath: "/api/radiology/quick-select/usage" },
   { file: "radiologyQuickFindings.ts", localPath: "/learned-patterns", fullPath: "/api/radiology/quick-select/learned-patterns" },
   { file: "portal.ts", localPath: "/me", fullPath: "/api/portal/me" },
   { file: "portal.ts", localPath: "/me/bills", fullPath: "/api/portal/me/bills" },

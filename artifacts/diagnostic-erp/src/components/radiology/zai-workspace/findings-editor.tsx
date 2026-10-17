@@ -13,8 +13,8 @@ import {
   type ProvenanceVisualKind,
 } from "@/lib/reportFieldMerge";
 import { formatProvenanceSummary, provenanceCounts } from "@/lib/reportSectionAccordion";
-import { QuickSelectStrip } from "./quick-select-strip";
 import { ClinicalTextTools } from "./clinical-text-tools";
+
 import {
   breakObservationsAtSentenceEnds,
   interceptDictationRunOnsWithCaret,
@@ -29,22 +29,20 @@ import {
 } from "@/lib/zai-workspace/startingCanvasHighlight";
 
 interface Props {
+  /**
+   * This editor does not host a Quick Select strip, and did for most of its
+   * life. Every section that wanted one already rendered `<QuickSelectStrip>`
+   * itself — region-scoped, with the silent draft save wired — so the copy in
+   * here was a second, blunter strip stacked directly under the first: no
+   * `bodyPart`, so it scored every region-scoped box out, and no `onAfterPick`,
+   * so a pick from it never saved. One control per section, rendered by the
+   * section.
+   */
   field: "findings" | "impression" | "recommendation" | "technique" | "clinicalHistory";
   label: string;
   placeholder?: string;
   minHeight?: string;
   showGhost?: boolean;
-  /**
-   * Renders the editor without its inline Quick Select tile wall. Used by the
-   * Findings section, which hosts the very same <QuickSelectStrip field="findings" />
-   * inside its "Quick Select" assistance drawer so the tiles are one click away
-   * instead of permanently occupying the editor's height.
-   */
-  hideQuickSelect?: boolean;
-  /** After a Quick Select tile is applied (e.g. silent draft persist). */
-  onQuickSelectPick?: (field: Props["field"]) => void;
-  /** Passed straight to the strip. See `QuickSelectStrip.disabled`. */
-  quickSelectDisabled?: boolean;
   /**
    * Transient display-only flash of an abnormal sentence after Quick Select /
    * Finding Composer. Never written into clinical text / PDF.
@@ -106,9 +104,6 @@ export function FindingsEditor({
   placeholder,
   minHeight = "200px",
   showGhost = false,
-  hideQuickSelect = false,
-  onQuickSelectPick,
-  quickSelectDisabled = false,
   transientHighlight = null,
   onClinicalFocus,
   enableDictationBreaks = false,
@@ -274,7 +269,6 @@ export function FindingsEditor({
           onClear={() => setField(field, "")}
         />
       )}
-      {!hideQuickSelect && <QuickSelectStrip field={field} onAfterPick={onQuickSelectPick} disabled={quickSelectDisabled} />}
       <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold uppercase tracking-wide text-emerald-600/80">{label}</label>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">

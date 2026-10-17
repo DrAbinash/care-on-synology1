@@ -40,7 +40,6 @@ import {
 } from "@/lib/multiStudyReport";
 import { InterruptChannelCard } from "@/components/radiology/zai-workspace/interrupt-card";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
-import { QuickSelectEditor } from "@/components/radiology/zai-workspace/quick-select-editor";
 import { MergePreviewDialog } from "@/components/radiology/zai-workspace/merge-preview-dialog";
 import { ConfirmOverwriteDialog } from "@/components/radiology/zai-workspace/confirm-overwrite-dialog";
 import { SaveAsFormatDialog } from "@/components/radiology/zai-workspace/save-as-format-dialog";
@@ -669,7 +668,6 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
           ff_radiology_critical_result_comms is off; this gate also covers a
           card that was on screen when an admin turned the flag off. */}
       {criticalCommsEnabled() && <InterruptChannelCard />}
-      <QuickSelectEditor />
 
       {studyLocalEdit && (
         <StudyLocalFindingEditDialog

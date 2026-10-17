@@ -93,7 +93,7 @@ import {
 import { analyzeCopilot } from "@/lib/copilotOrchestrator";
 import { parseCopilotAiResponse } from "@/lib/copilotAiModule";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
-import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTileFixture";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -765,6 +765,6 @@ describe("neighbouring paths — already correct, and still correct", () => {
     expect(stated(s.impressionText)).toEqual(expect.arrayContaining(stated(tile.impressionSentence!)));
     expect(s.impressionNeedsRefresh).toBe(false);
     expect(s.fieldProvenance.impression?.[normalizeForDedupe(tile.impressionSentence!)])
-      .toEqual(["quick-select"]);
+      .toEqual(["quick-findings"]);
   });
 });

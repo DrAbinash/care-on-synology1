@@ -80,9 +80,9 @@ const MODALITIES = [
 const CAPABILITY_ANCHORS: Record<string, RegExp> = {
   "Workspace opens (reads ?modality=)": /get\("modality"\)|useReportingWorkflow|selectStudy/,
   "Study loads (region-resolved)": /matchStudyRegion|studyRegion|selectStudy/,
-  "Protocol resolves": /availableProtocols|requestProtocolChange|QuickSelectEditor|report-formats/,
+  "Protocol resolves": /availableProtocols|requestProtocolChange|report-formats/,
   "Clinical History resolves": /clinicalHistory/,
-  "Quick Findings resolve": /QuickFindingsPanel|QuickSelectEditor|QuickSelectStrip/,
+  "Quick Findings resolve": /QuickFindingsPanel|QuickSelectStrip/,
   "Structured Findings resolve": /useStructured|FindingsEditor|useWorkspace/,
   "Measurements resolve": /MeasurementAssistantPanel|MeasurementRow|copilotMeasurementModule/,
   "Copilot initializes": /CareCopilotPanel|observeReportText|CopilotRail|copilotOrchestrator/,

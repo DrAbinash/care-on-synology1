@@ -51,6 +51,25 @@ export type QuickFinding = {
   anatomicalSection: string;
   conflictGroup: string;
   baselineReplaces: string;
+  /**
+   * The clinical concept this box owns, from the concept registry. Empty for a
+   * box nobody has assigned one — which is a permanent, legitimate state, not a
+   * gap to paper over: the boxes a clinic already had keep working through their
+   * text, and no concept is inferred for them behind the radiologist's back.
+   */
+  concept: string;
+  /**
+   * The report section this box writes its own sentence into, the mnemonic the
+   * chip shows and the modality it is scoped to. All three are `NOT NULL` on
+   * `radiology_quick_findings` and `toWireBox` spreads every column, so they are
+   * always present on the wire — optional here only because a hand-built fixture
+   * in a test is allowed to omit them, and because a reader that could not name
+   * them is how a box's own `field` came to be ignored and its sentence offered
+   * under the wrong section.
+   */
+  field?: string | null;
+  mnemonic?: string | null;
+  scopeModality?: string | null;
   // Phase 6.2 Structured Finding Assistant: JSON question definitions. Non-empty
   // → clicking opens a dialog to collect values before generating the text.
   questionsJson: string;

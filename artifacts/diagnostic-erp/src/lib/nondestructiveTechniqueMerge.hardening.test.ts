@@ -77,7 +77,7 @@ import {
 } from "@/lib/draftTechniqueRoundTrip";
 import { DEFAULT_REPORT_FORMATS } from "@/lib/zai-workspace/report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "@/lib/zai-workspace/quick-select-library";
-import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectTilePatch } from "@/lib/zai-workspace/quickSelectTileFixture";
 import { deriveTechniqueFragments, mergeTwoFormatsBySlot } from "@/lib/formatSlotMerge";
 import { deriveSpineSequencesAvailable } from "@/lib/mriSpineSequences";
 import { emptyClinicalState } from "@/lib/zai-workspace/clinicalStateReset";
