@@ -228,6 +228,12 @@ measurements. Verified by grep: `insertCanalTableIntoBody` has exactly one call 
 
 ## 8. AI Composer — read-only notes for Qwen-Max (no Composer code touched)
 
+> **Status (2026-10-17, owner DECISIONS 1-2 and 4): the final bullet below describes the audit head and
+> is now superseded.** Generate no longer writes a canal grid into Findings, so the
+> prose/table contradiction and the phrase-based dedupe are both gone (§12). The Composer still reads
+> prose only — the canonical interface and the recommended read-only projection are spelled out in
+> `docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013, DECISION 4. No Composer file was changed.
+
 * The Composer's context builder collects measurements by **regex over prose and ledger rows**
   (`buildRadiologistDraftContext.ts:61`, `:142`, `:223-227`). It does not read `canalApProvenance` and
   does not read `spinal_measurements`.
@@ -309,3 +315,47 @@ Make the two print callers read the **canonical record** first and fall back to 
 | brain reachability probe | `tmp/pw-brain-reach.mjs` (all zeros) |
 | print-path tests at `877701f9` | `radiologyReportPrint.canalMeasurements.request.test.ts` 7/7, `signedReportCanalMeasurements.request.test.ts` 6/6, `spineCanalAp.test.ts` 11/11, `canalApDerivation.test.ts` 20/20, `mriSpineSegmentConsumers.test.ts` 9/9, `mriDorsoLumbar*.test.ts` 33/33, `mriCervicalDorsalCanvas.test.ts` 28/28 |
 | synthetic fixtures | `tmp/make-spine-studies.mjs`, `tmp/canal-cases.json` (patients `CANAL-*`, accessions `ACC-CANAL-*`) |
+
+---
+
+## 12. What the owner ruled, and what is now measured
+
+The owner ruled on all four open questions on 2026-10-17. All four are implemented on
+`clinical/canal-ap-one-authority` (PR #1054); the clinical consequence of each, the ten required
+verifications and the five remaining gaps are in
+`docs/engineering/RIS-PACS-INTEGRATION-TODO.md` §RIS-013 — read that section rather than re-deriving
+from this audit, whose §2-§10 describe the head this audit measured.
+
+Two of this audit's own measurements needed correcting while implementing the rulings, and both are
+now owned by tests rather than by prose:
+
+* **The retired block's span.** §5 and §10 recorded `1047 → 1436` from `tmp/jsx-span.mjs`; at the
+  current head the legacy inline-assistance block is `{false && (` at `ReportCanvas.tsx:1044` closing
+  at `:1433`. The difference is which line the span tool anchored on, and it is exactly the kind of
+  number that goes stale. `workspace/canalApEntryPoints.contract.test.ts` now derives the span at run
+  time and asserts both canal grids fall inside it, with a mutation control that flips the verdict if
+  `false` becomes a flag.
+* **"Both grids are dead UI" was a reading of JSX, not a measurement.** It held — the lumbar and
+  cervical grids mounted in the canvas render nothing — but nothing proved it, which is how the same
+  block came to be described as the feature's home in the placement test. The contract test is now the
+  evidence.
+
+The DECISION 3 census, which is what decided the AI-tab box's fate:
+
+| Control | Mounted | Writes | Ruling |
+|---|---|---|---|
+| Rail → **Measure** → AP Canal Measurements (mm) | `ReportingToolsRail.tsx:982-999`, four tables gated at `:508-520` | canonical record only | **the one entry point** |
+| `ReportCanvas.tsx:1168`, `:1232` | inside `{false && (` at `:1044-1433` | would be canonical | **kept disabled, as ruled** |
+| AI tab → CopilotRail measure stage → `SpineCanalApBox` | `copilot-rail.tsx:67`, `ReportingToolsRail.tsx:1119` | canonical (`recordCanalApViewerValue`, sole caller) **and** legacy `spinal_measurements` (`:258`) | **kept** — removal condition unproven |
+| Legacy generator page panel | `RadiologyReportGenerator.tsx:1903` → `SpinalMeasurementPanel.tsx:103` | legacy rows | out of scope; why the legacy store is not empty |
+
+New evidence on this branch: `signedReportCanalMeasurements.request.test.ts` 20/20 on real PostgreSQL
+(the V1-V10 matrix, asserting the printed artifact's headers, cells, title, insertion point and a
+structural duplicate-table count), `canalApEntryPoints.contract.test.ts` 11/11,
+`generateProfessionalReport.test.ts` 33/33 including the combined Dorso-Lumbar print plan,
+`lib/measurements` canal suite green, and the D1 section suite green including the byte-identical
+re-render and the two amendment cases. Mutants: M1 single-segment plan → V4 red (`DORSAL …` instead of
+`DORSO-LUMBAR …`); M2a phrase guard restored → V7 and both DECISION-2 cases red; M2b valued/blank
+distinction dropped → package + D1 renderer red; M2c scaffold strip no-op → V10-blank + package +
+canonical red. All reverted.
+
