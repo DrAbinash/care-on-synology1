@@ -62,6 +62,7 @@ import {
   signaturesTable,
 } from "@workspace/db/schema";
 import { createTestApp, hasDatabaseUrl } from "../testSupport/apiTestApp";
+import { findCanalApTables } from "@workspace/measurements";
 
 const dbReady = hasDatabaseUrl();
 
@@ -113,6 +114,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
     levels = LEVELS,
     key: "billed" | "worklist-row" = "billed",
     draftEnvelope?: unknown,
+    examName = "MRI LUMBAR SPINE",
   ) {
     seq += 1;
     const tag = `${marker}-${seq}`;
@@ -130,7 +132,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
         testId,
         modality: "MR",
         department: "MRI",
-        studyDescription: "MRI LUMBAR SPINE",
+        studyDescription: examName,
         studyDate: "2026-10-16",
         status: "completed",
       })
@@ -143,7 +145,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
         patientId,
         studyId: study.id,
         modality: "MR",
-        studyDescription: "MRI LUMBAR SPINE",
+        studyDescription: examName,
         studyDate: "2026-10-16",
         accessionNumber: `ACC-${tag}`,
         studyInstanceUID: `1.2.840.signedcanal.${seq}.${marker}`,
@@ -174,7 +176,7 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
           studyId: worklist.id,
           patientId: null,
           modality: "MR",
-          studyName: "MRI LUMBAR SPINE",
+          studyName: examName,
           rawFindings: `Lumbar canal assessed at three levels. ${tag}`,
           impression: "[]",
           structuredJson: draftEnvelope,
@@ -507,5 +509,248 @@ describe.skipIf(!dbReady)("canal AP measurements on the signed report", () => {
     }));
     const reportId = await signedReportFor(worklist, tag);
     expect(canalRegion(await printHtml(reportId))).toContain("8.4");
+  });
+
+  // ── REQUIRED VERIFICATION (owner, 2026-10-17) ─────────────────────────────────
+  //
+  // DECISION 1 removed the rule that picked ONE segment to print, so what the signed
+  // report holds is decided by the levels that carry measurements, not by the
+  // examination the front desk booked. Each case below is asserted on the rendered
+  // print artifact of a real signed study — the document the clinic hands out — and
+  // counts the table's own headings, so a second grid cannot pass as the same answer.
+  const bodyFor = (label: string, tag: string) =>
+    `<div class="section-heading">Findings</div><p>${label} assessed at the levels measured. ${tag}</p>` +
+    `<div class="section-heading">Impression</div><p>No significant canal stenosis. ${tag}</p>`;
+  const printedCanal = (html: string) => {
+    const { headers, values } = canalCells(html);
+    return {
+      headers,
+      cells: Object.fromEntries(headers.slice(1).map((level, i) => [level, values[i + 1]])),
+      // The heading is read from the page, not from `canalRegion`: that region starts
+      // at "CANAL AP DIAMETER", so it cannot carry the segment word in front of it.
+      title: (html.match(/([A-Z][A-Z \-]*)CANAL AP DIAMETER AT \S+ TO \S+ LEVELS/)?.[0] ?? "").trim(),
+      tables: (html.match(/CANAL AP DIAMETER AT/gi) ?? []).length,
+      apRows: (html.match(/AP \(mm\)/g) ?? []).length,
+      // Verification 10 counted structurally, not by heading: a canal grid the report
+      // did not write — the clinic template's grid of dashes, an AI-tab insertion —
+      // is a second measurement table whether or not it names itself the same way.
+      canalTables: findCanalApTables(html).length,
+    };
+  };
+
+  /** Sign one study as booked, and hand back what its printed canal table says. */
+  async function signedCanalOf(
+    exam: string,
+    label: string,
+    opts: { rows?: Array<{ vertebraLevel: string; canalAP: string }>; records?: Record<string, unknown> } = {},
+  ) {
+    const { worklist, tag } = await studyWithCanalRows(
+      opts.rows ?? [],
+      "billed",
+      opts.records === undefined ? undefined : envelope(opts.records),
+      exam,
+    );
+    const reportId = await signedReportFor(worklist, tag, bodyFor(label, tag));
+    const html = await printHtml(reportId);
+    return { reportId, html, printed: printedCanal(html), text: visibleText(html) };
+  }
+
+  const rec = (level: string, value: number, region: string) =>
+    canalRec(level, { region, reportValue: value, manualOverride: true });
+
+  it("V1 MRI LS Spine: every lumbar level measured prints, in one table", async () => {
+    const { printed, text } = await signedCanalOf("MRI LUMBAR SPINE", "Lumbar canal", {
+      rows: [{ vertebraLevel: "L2-L3", canalAP: "16.1" }, { vertebraLevel: "L4-L5", canalAP: "9.7" }],
+    });
+    expect(printed.title).toBe("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS");
+    expect(printed.headers).toEqual(["LEVEL", "L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
+    expect(printed.cells).toEqual({ "L1-L2": "—", "L2-L3": "16.1", "L3-L4": "—", "L4-L5": "9.7", "L5-S1": "—" });
+    expect(printed.tables).toBe(1);
+    expect(printed.canalTables).toBe(1);
+    expect(text).toContain("No significant canal stenosis");
+  });
+
+  it("V2 MRI Cervical Spine: the cervical grid prints, and C1-C2 is not invented", async () => {
+    const six = await signedCanalOf("MRI CERVICAL SPINE", "Cervical canal", {
+      rows: ["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"].map((level, i) => ({
+        vertebraLevel: level, canalAP: String(14.5 - i * 1.1),
+      })),
+    });
+    expect(six.printed.title).toBe("CERVICAL CANAL AP DIAMETER AT C2-C3 TO C7-T1 LEVELS");
+    expect(six.printed.headers.slice(1)).toEqual(["C2-C3", "C3-C4", "C4-C5", "C5-C6", "C6-C7", "C7-T1"]);
+    expect(six.printed.headers).not.toContain("C1-C2");
+    expect(six.printed.tables).toBe(1);
+    expect(six.printed.canalTables).toBe(1);
+
+    // Two cervical examinations are not the same examination: a single measured disc
+    // still prints its own table rather than being skipped as "not enough data".
+    const one = await signedCanalOf("MRI CERVICAL SPINE", "Cervical canal", {
+      rows: [{ vertebraLevel: "C5-C6", canalAP: "9.2" }],
+    });
+    expect(one.printed.cells["C5-C6"]).toBe("9.2");
+    expect(one.printed.cells["C4-C5"]).toBe("—");
+    expect(one.printed.tables).toBe(1);
+  });
+
+  it("V3 MRI Dorsal Spine: dorsal levels print on the dorsal grid, junction included when measured", async () => {
+    const multi = await signedCanalOf("MRI DORSAL SPINE", "Dorsal canal", {
+      rows: [{ vertebraLevel: "D3-D4", canalAP: "13.4" }, { vertebraLevel: "D6-D7", canalAP: "11.0" }, { vertebraLevel: "D9-D10", canalAP: "12.6" }],
+    });
+    expect(multi.printed.title).toBe("DORSAL CANAL AP DIAMETER AT D1-D2 TO D11-D12 LEVELS");
+    expect(multi.printed.headers.slice(1)).toHaveLength(11);
+    expect(multi.printed.cells["D3-D4"]).toBe("13.4");
+    expect(multi.printed.cells["D6-D7"]).toBe("11.0");
+    expect(multi.printed.cells["D9-D10"]).toBe("12.6");
+    expect(multi.printed.tables).toBe(1);
+
+    // D12-L1 exists only when the acquired coverage reaches the conus, so it is a
+    // column only when somebody measured it.
+    const junction = await signedCanalOf("MRI DORSAL SPINE", "Dorsal canal", {
+      rows: [{ vertebraLevel: "D11-D12", canalAP: "12.2" }, { vertebraLevel: "D12-L1", canalAP: "11.8" }],
+    });
+    expect(junction.printed.headers).toContain("D12-L1");
+    expect(junction.printed.cells["D12-L1"]).toBe("11.8");
+    expect(junction.printed.tables).toBe(1);
+    expect(multi.printed.headers).not.toContain("D12-L1");
+
+    // The OHIF calipers and older drafts spell dorsal levels T*.
+    const alias = await signedCanalOf("MRI DORSAL SPINE", "Dorsal canal", {
+      records: { "D8-D9": rec("D8-D9", 12.6, "dorsal") },
+    });
+    expect(alias.printed.cells["D8-D9"]).toBe("12.6");
+  });
+
+  it("V4 MRI Dorso-Lumbar Spine: one combined table, no segment dropped and no second grid", async () => {
+    const { printed, text } = await signedCanalOf("MRI DORSO-LUMBAR SPINE", "Dorso-lumbar canal", {
+      rows: [
+        { vertebraLevel: "D6-D7", canalAP: "11.0" },
+        { vertebraLevel: "D10-D11", canalAP: "12.9" },
+        { vertebraLevel: "L2-L3", canalAP: "16.1" },
+        { vertebraLevel: "L4-L5", canalAP: "9.7" },
+        { vertebraLevel: "L5-S1", canalAP: "10.4" },
+      ],
+    });
+    expect(printed.title).toBe("DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS");
+    // Every measured level of BOTH segments is on the page — this is the case that
+    // used to print a lumbar-only table and lose the dorsal discs entirely.
+    for (const level of ["D6-D7", "D10-D11", "L2-L3", "L4-L5", "L5-S1"]) {
+      expect(printed.headers, `${level} has no column`).toContain(level);
+    }
+    expect(printed.cells["D6-D7"]).toBe("11.0");
+    expect(printed.cells["D10-D11"]).toBe("12.9");
+    expect(printed.cells["L5-S1"]).toBe("10.4");
+    expect(printed.apRows, "the AP (mm) row printed more than once").toBe(1);
+    expect(printed.tables).toBe(1);
+    expect(printed.canalTables).toBe(1);
+    expect(text).toContain("No significant canal stenosis");
+  });
+
+  it("V5 transitional vertebrae: the extra levels the grid accepts are printed", async () => {
+    const { printed } = await signedCanalOf("MRI LUMBAR SPINE", "Lumbar canal with transitional anatomy", {
+      records: {
+        "L5-T": rec("L5-T", 8.4, "lumbar"),
+        "L5-L6": rec("L5-L6", 9.1, "lumbar"),
+        "L6-S1": rec("L6-S1", 10.2, "lumbar"),
+      },
+    });
+    expect(printed.headers).toContain("L5-T");
+    expect(printed.headers).toContain("L5-L6");
+    expect(printed.headers).toContain("L6-S1");
+    expect(printed.cells["L5-T"]).toBe("8.4");
+    expect(printed.cells["L6-S1"]).toBe("10.2");
+    expect(printed.tables).toBe(1);
+  });
+
+  /**
+   * V7 — DECISION 2 on the signed surface. Generate writes prose, and the radiologist
+   * measures after it. The Findings text here says "Canal AP diameter" in a sentence,
+   * which is exactly what the old phrase match read as "a table is already printed"
+   * and answered by signing no table at all.
+   */
+  it("V7 a measurement entered after the prose was written still signs, even when the prose names the canal", async () => {
+    const { worklist, tag } = await studyWithCanalRows(
+      [],
+      "billed",
+      envelope({
+        "L4-L5": rec("L4-L5", 8.5, "lumbar"),
+        "L3-L4": rec("L3-L4", 11.2, "lumbar"),
+      }),
+      "MRI LUMBAR SPINE",
+    );
+    const proseSaysCanal =
+      `<div class="section-heading">Findings</div><p>Canal AP diameter is 8.5 mm at L4-L5, measured after the report was written. ${tag}</p>` +
+      `<div class="section-heading">Impression</div><p>Mild canal stenosis at L4-L5. ${tag}</p>`;
+    const reportId = await signedReportFor(worklist, tag, proseSaysCanal);
+    const html = await printHtml(reportId);
+    const printed = printedCanal(html);
+    expect(printed.tables).toBe(1);
+    expect(printed.canalTables).toBe(1);
+    expect(printed.cells["L4-L5"]).toBe("8.5");
+    expect(printed.cells["L3-L4"]).toBe("11.2");
+  });
+
+  it("V10 the clinic's own blank canal grid is replaced by the measured table, not left beside it", async () => {
+    // structuredReportTemplates.ts ships the LS-Spine normal with `Canal Diameter:`
+    // over a grid of dashes. Treating that placeholder as an already-printed table
+    // would sign a report with no measurement in it at all.
+    const scaffold = `<div class="section-heading">Canal Diameter</div>`
+      + `<table><thead><tr><th>Level</th><th>AP Canal (mm)</th></tr></thead><tbody>`
+      + ["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]
+        .map((l) => `<tr><td>${l}</td><td>—</td></tr>`).join("")
+      + `</tbody></table>`;
+    const { worklist, tag } = await studyWithCanalRows(
+      [{ vertebraLevel: "L4-L5", canalAP: "9.7" }],
+      "billed",
+      undefined,
+      "MRI LUMBAR SPINE",
+    );
+    const reportId = await signedReportFor(worklist, tag, `${workspaceBody(tag)}${scaffold}`);
+    const html = await printHtml(reportId);
+    const printed = printedCanal(html);
+    expect(printed.tables).toBe(1);
+    expect(printed.cells["L4-L5"]).toBe("9.7");
+    expect(printed.apRows).toBe(1);
+    // Counted as grids, not as headings: the template's placeholder and the measured
+    // table must not both be on the page.
+    expect(printed.canalTables, "the blank template grid survived alongside the measured table").toBe(1);
+  });
+
+  it("V10 a body that already prints a valued canal table is not edited into a second one", async () => {
+    const { worklist, tag } = await studyWithCanalRows(
+      [{ vertebraLevel: "L4-L5", canalAP: "9.7" }],
+      "billed",
+      undefined,
+      "MRI LUMBAR SPINE",
+    );
+    const composed = workspaceBody(tag)
+      + `<div class="section-heading">LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS</div>`
+      + `<table><thead><tr><th>LEVEL</th><th>L1-L2</th><th>L4-L5</th></tr></thead>`
+      + `<tbody><tr><td>AP (mm)</td><td>16.0</td><td>9.7</td></tr></tbody></table>`;
+    const reportId = await signedReportFor(worklist, tag, composed);
+    const html = await printHtml(reportId);
+    expect(printedCanal(html).tables).toBe(1);
+    expect(printedCanal(html).canalTables).toBe(1);
+    expect(visibleText(await printHtml(reportId))).toContain("16.0");
+  });
+
+  /**
+   * V8 and V9 — the two surfaces that used to be produced from a body nobody had put
+   * a table into. The PDF is the signed artifact the clinic delivers, and the
+   * amendment is a new signed document, so each has to carry the same numbers the
+   * print page does.
+   */
+  it("V8 the signed PDF artifact carries the table the print page carries", async () => {
+    const { buildReportArtifact } = await import("../routes/patient-reports");
+    const { reportId, printed, text } = await signedCanalOf("MRI DORSO-LUMBAR SPINE", "Dorso-lumbar canal", {
+      rows: [{ vertebraLevel: "D7-D8", canalAP: "11.5" }, { vertebraLevel: "L4-L5", canalAP: "9.7" }],
+    });
+    expect(printed.cells["D7-D8"]).toBe("11.5");
+    const artifact = await buildReportArtifact(reportId, { surface: "pdf", versionMode: "specific" });
+    expect(artifact, "the durable PDF artifact must resolve").not.toBeNull();
+    const pdfText = visibleText(artifact!.html);
+    expect(pdfText).toContain("DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS");
+    expect(pdfText).toContain("9.7");
+    expect((artifact!.html.match(/CANAL AP DIAMETER AT/gi) ?? []).length).toBe(1);
+    expect(pdfText).toContain(text.slice(text.indexOf("Dorso-lumbar canal"), text.indexOf("Dorso-lumbar canal") + 40));
   });
 });
