@@ -508,7 +508,9 @@ would still be quiet; worth a follow-up if the owner wants it surfaced to the ra
 Static checks, Tests + migration smoke on real PostgreSQL (**14,656 passed / 49 skipped over 1,089
 files, 0 failed**; the Vitest run itself took 710.49 s), Build identity — and the merged tree is the tested tree:
 `git rev-parse ad90a59a^{tree}` and `git rev-parse 3d54c552^{tree}` are both `b84b5926`, with
-`git diff --stat ad90a59a 3d54c552` empty. The merge changed 31 files (+3,074/-309). **Nothing is
+`git diff --stat ad90a59a 3d54c552` empty. The merge changed 31 files, +3,074/-309. `main` was then re-run
+green on its own (`3d54c552`: static checks, tests + migration smoke on real PostgreSQL, build identity
+all `success`, the tests job completing 09:47:15Z). **Nothing is
 deployed**: the clinic keeps running whatever
 `deploy-synology.sh` last installed, so no radiologist sees any of this until someone deploys `main`.
 The five remaining gaps at the end of this section are the open part of the work.
