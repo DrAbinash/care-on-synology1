@@ -117,6 +117,17 @@ export interface DraftD1Source {
   contentPackVersions: Record<string, string>;
   aiRulesVersions: Record<string, string>;
   findingSelections: DraftD1FindingSelection[];
+  /**
+   * The spinal canal AP diameter table, already built by the ONE shared builder
+   * (`lib/spinalCanalApTable.ts`) from the draft's canonical measurement record, in
+   * the plain-text form this body format uses. Carried into
+   * `extensions.x_care_canal_ap` so the D4 renderer reproduces it on every re-render:
+   * D6 compares the stored signed body against a fresh render of the document, and a
+   * section only the writer knew about would read as a clinical divergence forever.
+   * Absent (or empty) means the study has no measured levels, and the document — and
+   * therefore its pinned content hash — is exactly what it was before.
+   */
+  canalApBlock?: string | null;
   /** Ticket D3.5 — when present, real D1 findings[]/measurements[]/
    *  recommendations[] (from the FindingMaterializer) are emitted, and only the
    *  UN-materialized (skipped) selections are preserved in extensions. When
@@ -260,7 +271,17 @@ export function buildDraftD1WriterInput(src: DraftD1Source): BuildWriterInputRes
     // the full raw selection (D3); with materialization it carries only the
     // skipped selections for audit (D3.5) — materialized findings live in
     // findings[] above.
-    extensions: { x_care_draft: draftExtension },
+    //
+    // The canal AP block is emitted ONLY when the study has measured levels. Omitting
+    // the member keeps every non-spine document byte-identical — including the five
+    // pinned §17 golden digests in writer.golden.test.ts, which this channel must not
+    // perturb.
+    extensions: {
+      x_care_draft: draftExtension,
+      ...(typeof src.canalApBlock === "string" && src.canalApBlock.trim()
+        ? { x_care_canal_ap: { rendered: src.canalApBlock.trim() } }
+        : {}),
+    },
   };
 
   return { ok: true, input };

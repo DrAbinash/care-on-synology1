@@ -7,6 +7,11 @@
  * prove the wiring and nothing about the wording.
  */
 import { describe, expect, it, beforeEach } from "vitest";
+import {
+  canalApLevelsFromCanonicalRecord,
+  canalPrintPlan,
+  mergeCanalApLevels,
+} from "@workspace/measurements";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { useWorkspace } from "./store";
@@ -14,8 +19,8 @@ import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import { resolveNormalBootstrapFormat } from "./normalBootstrap";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
+import { DORSAL_CANAL_LEVELS, LUMBAR_CANAL_LEVELS } from "@/lib/spineCanalAp";
 import {
-  canalApReportTable,
   radiologistObservations,
   reapplyInputFromPatch,
 } from "./professionalReport";
@@ -53,6 +58,22 @@ function narrative() {
 }
 function ledgerShape() {
   return useWorkspace.getState().appliedPathologyPatches.map((p) => p.id).sort();
+}
+
+/**
+ * What the print renderer would lay out from this store's measurement authority right
+ * now — the same fold and the same plan the signed body and this app's own PDF use.
+ * The tests below ask the question the radiologist's report actually answers: does
+ * the table carry every level, at the moment of printing, whatever order the work was
+ * done in?
+ */
+function printFold() {
+  const byLevel = mergeCanalApLevels(
+    new Map<string, string>(),
+    canalApLevelsFromCanonicalRecord(useWorkspace.getState().canalApProvenance),
+  );
+  const plan = canalPrintPlan(byLevel.keys());
+  return { byLevel, levels: plan?.levels ?? [], title: plan?.title ?? "" };
 }
 
 function reset(blank: Partial<ReturnType<typeof Object>> = {}) {
@@ -277,26 +298,54 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
     expect(useWorkspace.getState().appliedPathologyPatches.some((p) => p.id === "keep_me")).toBe(true);
   });
 
-  it("adds the measurement table only where a number was actually recorded", () => {
-    reset({ reportingContext: lsCtx() });
-    const measured = useWorkspace.getState().generateProfessionalReport(lsCtx());
-    expect(measured.status).toBe("generated");
-    if (measured.status !== "generated") return;
-    expect(measured.measurementTableIncluded).toBe(false);
-    expect(useWorkspace.getState().findingsText).not.toContain("Spinal canal AP diameter");
-
+  /**
+   * DECISION 2 (owner, 2026-10-17). The press used to append a canal grid to the
+   * Findings text for the segment the study resolved to. That grid is a snapshot of
+   * one moment, and a body that already carries a valued canal grid gets no printed
+   * one — so the normal order of work (Generate, then measure the levels the viewer
+   * shows you) signed a report whose table named only the levels measured BEFORE the
+   * press. Generate now writes no table; the print renderer draws the one table from
+   * the measurement authority at the moment of printing.
+   */
+  it("writes no canal table into Findings, so a later measurement still prints", () => {
     reset({ reportingContext: lsCtx() });
     useWorkspace.getState().recordCanalApManualValue("L4-L5", "11.5", "lumbar");
     useWorkspace.getState().recordCanalApManualValue("L5-S1", "12", "lumbar");
-    const withTable = useWorkspace.getState().generateProfessionalReport(lsCtx());
-    expect(withTable.status).toBe("generated");
-    if (withTable.status !== "generated") return;
-    expect(withTable.measurementTableIncluded).toBe(true);
+    const outcome = useWorkspace.getState().generateProfessionalReport(lsCtx());
+    expect(outcome.status).toBe("generated");
+
     const findings = useWorkspace.getState().findingsText;
-    expect(findings).toContain("| L4-L5 | 11.5 mm |");
-    expect(findings).toContain("| L5-S1 | 12 mm |");
-    // The five discs the radiologist never measured are not offered as blanks.
-    expect(findings).not.toContain("| L1-L2 |");
+    expect(findings).not.toMatch(/CANAL AP DIAMETER/i);
+    expect(findings).not.toContain("Spinal canal AP diameter");
+    expect(findings).not.toMatch(/\|\s*L\d/);
+
+    // The numbers are not lost — they are in the authority the renderer reads, and
+    // a level measured AFTER the press joins the same table it would have printed in.
+    const before = printFold();
+    expect(before.title).toBe("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS");
+    expect(before.byLevel.get("L4-L5")).toBe("11.5");
+    expect(before.byLevel.has("L3-L4")).toBe(false);
+    useWorkspace.getState().recordCanalApManualValue("L3-L4", "9.8", "lumbar");
+    const after = printFold();
+    expect(after.byLevel.get("L3-L4")).toBe("9.8");
+    expect(after.byLevel.get("L4-L5")).toBe("11.5");
+    expect(after.levels).toEqual(["L1-L2", "L2-L3", "L3-L4", "L4-L5", "L5-S1"]);
+  });
+
+  /**
+   * DECISION 1 (owner, 2026-10-17) on the surface this app controls: the Dorso-Lumbar
+   * study's measurements are one combined table, not the segment with more cells.
+   */
+  it("keeps dorsal and lumbar measurements as one combined print plan", () => {
+    reset({ reportingContext: lsCtx() });
+    useWorkspace.getState().recordCanalApManualValue("L4-L5", "11.5", "lumbar");
+    useWorkspace.getState().recordCanalApManualValue("D6-D7", "12.4", "dorsal");
+    useWorkspace.getState().generateProfessionalReport(lsCtx());
+    const plan = printFold();
+    expect(plan.title).toBe("DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS");
+    expect(plan.byLevel.get("D6-D7")).toBe("12.4");
+    expect(plan.levels).toEqual([...DORSAL_CANAL_LEVELS, ...LUMBAR_CANAL_LEVELS]);
+    expect(useWorkspace.getState().findingsText).not.toMatch(/CANAL AP DIAMETER/i);
   });
 
   it("rebuilds the impression from the ledger rather than trusting the format", () => {
@@ -394,29 +443,6 @@ describe("generateProfessionalReport — the deterministic one-click MRI report"
 });
 
 describe("professionalReport — the pure parts", () => {
-  it("offers no table when every level is unmeasured", () => {
-    expect(canalApReportTable({}, "lumbar")).toBe("");
-    expect(canalApReportTable(null, "lumbar")).toBe("");
-    expect(canalApReportTable({}, null)).toBe("");
-  });
-
-  it("prints only the levels that carry a number", () => {
-    const measured = canalApReportTable({
-      "L4-L5": {
-        level: "L4-L5", measurementId: "CANAL_AP", unit: "mm", region: "lumbar",
-        viewerValue: null, reportValue: 11.5, manualOverride: true,
-        annotationId: null, viewerMeasurementRowId: null, studyInstanceUID: null,
-        seriesInstanceUID: null, sopInstanceUID: null, frameNumber: null,
-        viewerName: null, capturedAt: null, verifiedAt: null, staleReason: null,
-      },
-    } as never, "lumbar");
-    expect(measured).toContain("11.5");
-    // A row for an unmeasured disc would read as "this level was measured and was
-    // blank", so the table carries only the levels that have a number.
-    expect(measured).not.toContain("—");
-    expect(measured).not.toContain("L1-L2");
-  });
-
   it("excludes the scaffold's own rows and rows with nothing to say", () => {
     const patch = (over: Record<string, unknown>) => ({
       id: "x", ownership: {}, templates: { findings: "Text." }, lastRendered: { findings: "Text." },

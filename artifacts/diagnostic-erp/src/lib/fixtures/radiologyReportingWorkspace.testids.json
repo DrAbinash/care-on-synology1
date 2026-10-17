@@ -3,7 +3,7 @@
   "phase": 1,
   "capturedAt": "2026-09-26",
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
-  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A).",
+  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A), and when the four AP canal tables were gathered into one expandable section on the Measure tab (canal-ap-measurements-section / -none; spinal-canal AP audit 2026-10-17).",
   "declaredInJsx": [
     "abnormal-pattern-apply",
     "abnormal-pattern-dismiss",
@@ -13,6 +13,8 @@
     "btn-start-report",
     "btn-workspace-print",
     "btn-workspace-whatsapp-share",
+    "canal-ap-measurements-none",
+    "canal-ap-measurements-section",
     "canonical-technique-editor",
     "clinic-quick-select",
     "compact-patient-picker",

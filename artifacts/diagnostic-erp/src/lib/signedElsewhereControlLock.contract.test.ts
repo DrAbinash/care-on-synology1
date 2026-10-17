@@ -133,10 +133,13 @@ const EXPECTED_CONTENT_LOCKED: Record<string, number> = {
   // three were already inside the 61. This is a duplicated forwarding removed,
   // not a gate weakened.
   [CANVAS]: 59,
-  // 35, not 34: the anatomy findings strip is a new clinical writer in the rail — a tile press
-  // adds or withdraws a Findings sentence — so it gates on the composed lock like every other
-  // writer there, and the count moves with it.
-  [RAIL]: 35,
+  // 34. The anatomy findings strip is a clinical writer in the rail — a tile press
+  // adds or withdraws a Findings sentence — so it gates on the composed lock and
+  // counted 35. Then the canal AP tables were gathered onto the Measure tab: the
+  // lumbar table had been mounted twice (Structure pane and Measure pane), and it
+  // now mounts once. All four canal tables still pass `disabled={contentLocked}`,
+  // so this is a duplicated gate argument removed, not a gate weakened.
+  [RAIL]: 34,
   [VIEWER]: 10,
 };
 
