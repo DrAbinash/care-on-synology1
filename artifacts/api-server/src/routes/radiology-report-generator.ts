@@ -131,6 +131,7 @@ import {
   buildCareStructuredJsonPatch,
   CARE_STRUCTURED_FORMAT_STATE_KIND,
   extractCareRegionTransitions,
+  extractCareCanalApProvenance,
 } from "../lib/structuredJsonColumn";
 // The printed page and the workspace PDF must state the same documented
 // reporting region, so the rule that decides it lives in the shared package
@@ -2343,15 +2344,20 @@ radiologyReportGeneratorRouter.get("/drafts/:id/print-preview", async (req: Requ
     impressionList = renderImpressionSectionHtml(impressionBullets, impressionStyle, esc);
   }
 
-  // Disc-level canal AP table from spinal_measurements (LS / cervical / dorsal).
-  // One builder shared with the signed report’s body (lib/spinalCanalApTable.ts),
-  // so the draft the radiologist approves and the document the patient receives
-  // cannot print different measurements. Both of the study’s ids are passed,
-  // billed first, because one examination legitimately has two.
-  const spinalTableHtml = await buildSpinalCanalApTableHtml([
-    worklist?.studyId ?? null,
-    draft.studyId ?? null,
-  ]);
+  // Disc-level canal AP table. One builder shared with the signed report’s body
+  // (lib/spinalCanalApTable.ts), so the draft the radiologist approves and the
+  // document the patient receives cannot print different measurements. Both of the
+  // study’s ids are passed, billed first, because one examination legitimately has two.
+  //
+  // The draft's own canonical record is the authority and `spinal_measurements` is the
+  // per-level fallback: the Reporting Workspace grid writes the record, and until this
+  // call passed it, every number typed into that grid printed only as prose produced by
+  // "Generate Professional Report" — the bordered table came from the other store, which
+  // the grid never writes (audit 2026-10-17 §6).
+  const spinalTableHtml = await buildSpinalCanalApTableHtml(
+    [worklist?.studyId ?? null, draft.studyId ?? null],
+    extractCareCanalApProvenance(draft.structuredJson),
+  );
 
   const bodyHtml = [
     draft.clinicalHistory?.trim() ? `<div class="section-heading">Clinical History</div><p>${esc(draft.clinicalHistory)}</p>` : "",

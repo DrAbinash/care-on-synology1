@@ -54,10 +54,14 @@ import { dirname, join } from "node:path";
 //   5. CATCHING THE PEN-DRIVE ROUTE. /api/super-admin/books/<id>/reset must keep
 //      working; it is the safe one, and blocking it would leave the clinic with
 //      no way to empty a book at all.
-//   6. `default_type` AT SERVER OR LOCATION LEVEL. It would then also apply to
-//      every response nginx generates in that scope — including a 502 from a
-//      recreated api container — announcing JSON while sending nginx's HTML page.
-//      It is legal in `if` context, so it belongs next to the `return`.
+//   6. `default_type` IN THE WRONG CONTEXT. It sets the type for responses nginx
+//      generates itself, so a copy at server level would also relabel a 502 from a
+//      recreated api container as JSON while it is still nginx's HTML. It CANNOT go
+//      next to the `return` either: `default_type` is valid in http/server/location
+//      only, and inside `if` nginx refuses to start — `[emerg] "default_type"
+//      directive is not allowed here`, which crash-looped care-web (39 restarts)
+//      until main 0bca78ca moved it to the location. So the pinned placement is
+//      location level, first directive in the block, one occurrence file-wide.
 //
 // NOT PROVABLE HERE: that nginx really answers 410. There is no nginx on this
 // machine and CI has none — checked 2026-10-16: no docker CLI, no nginx.exe under
@@ -118,6 +122,21 @@ function apiLocationBlock(): string {
     }
   }
   throw new Error("unterminated /api/ location");
+}
+
+/** The text between an `if (…)` at `ifAt` and its own closing brace. */
+function ifBodyOf(block: string, ifAt: number): string {
+  const open = block.indexOf("{", ifAt);
+  expect(open, "the if has no body").toBeGreaterThan(ifAt);
+  let depth = 0;
+  for (let i = open; i < block.length; i += 1) {
+    if (block[i] === "{") depth += 1;
+    else if (block[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return block.slice(open + 1, i);
+    }
+  }
+  throw new Error("unterminated if body");
 }
 
 describe("the legacy ledger reset map", () => {
@@ -271,22 +290,37 @@ describe("the /api/ location stays a single proxied block", () => {
     expect(block.match(/return\s+4\d\d/g)?.length).toBe(1);
   });
 
-  test("default_type is scoped inside the if, so proxied 502s keep their own type", () => {
+  test("default_type is at location level, outside the if, and once in the file", () => {
     const block = apiLocationBlock();
     const at = block.indexOf("default_type");
-    expect(at).toBeGreaterThan(-1);
+    expect(at, "the refusal has no content type — a 410 would be announced as text").toBeGreaterThan(-1);
+
+    // `default_type` is valid in http, server and location context. It is NOT valid
+    // inside `if`, and that is not a style preference: with the directive inside the
+    // if, care-web crash-looped on `nginx: [emerg] "default_type" directive is not
+    // allowed here` (39 restarts; fixed on main by 0bca78ca, which moved it here).
+    // So this test pins the legal placement AND, directly, the condition that took
+    // the clinic's web container down.
     const ifAt = block.search(/^\s*if\s*\(\$legacy_ledger_reset_blocked\)/m);
-    expect(at, "default_type must live inside the if body").toBeGreaterThan(ifAt);
-    expect(block.slice(0, ifAt), "no default_type before the if").not.toContain("default_type");
-    // The block-local check alone is not enough: a `default_type` hoisted to
-    // server{} or file level is outside this location's text entirely, yet it
-    // then applies to every response nginx generates in that scope — including
-    // the 502 page from a recreated api container, which would be announced as
-    // JSON while still being nginx's HTML. One occurrence, in the if, file-wide.
+    expect(ifAt, "the refusal lost its if").toBeGreaterThan(-1);
+    expect(at, "default_type must precede the if, not sit inside it").toBeLessThan(ifAt);
+    expect(ifBodyOf(block, ifAt), "default_type inside the if is an nginx config error").not.toContain("default_type");
+
+    // One occurrence, file-wide. A second copy hoisted to server{} would apply to
+    // every response nginx generates in that scope — a 502 from a recreated api
+    // container announced as JSON while still being nginx's HTML.
     expect(
       [...directives.matchAll(/^\s*default_type\s/gm)].length,
-      "default_type must appear only inside the refusal, nowhere else in the file",
+      "default_type must appear only in the /api/ location, nowhere else in the file",
     ).toBe(1);
+
+    // The consequence of the legal placement, stated rather than wished away: the
+    // type now covers the whole location, so any error nginx itself generates for an
+    // /api/ request carries application/json. A proxied upstream response is
+    // untouched — `default_type` applies only where no other source set the type.
+    expect(block.slice(at, ifAt), "the directive must be the location's own, not the map's").toMatch(
+      /^\s*default_type\s+application\/json\s*;/,
+    );
   });
 
   test("the refusal explains itself to an operator, in the shape the ERP reads", () => {

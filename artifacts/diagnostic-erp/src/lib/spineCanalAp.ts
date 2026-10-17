@@ -19,6 +19,7 @@ import {
   applyCanalViewerValue,
   canalApValue,
   canalLevelsForSegment,
+  canalPrintPlan,
   canonicalizeCanalLevel,
   type CanalApMeasurement,
 } from "@workspace/measurements";
@@ -29,12 +30,15 @@ export type CanalViewerValueWrite = Parameters<typeof applyCanalViewerValue>[1];
 export {
   applyCanalManualValue,
   applyCanalViewerValue,
+  canalApLevelsFromCanonicalRecord,
   canalApValue,
+  canalPrintPlan,
   canalSegmentForLevel,
   canonicalizeCanalLevel,
   canonicalizeCanalMap,
   displayCanalLevel,
   flagRenumberedCanalLevels,
+  mergeCanalApLevels,
   parseCanalApMeasurement,
 } from "@workspace/measurements";
 export type { CanalApMeasurement, CanalApStaleReason, CanalAliasConflict } from "@workspace/measurements";
@@ -206,23 +210,15 @@ export function isLevelInSegment(segment: CanalSegment, level: string): boolean 
 }
 
 /**
- * Pick which canal table to render for print when multiple segment values exist.
- * Prefers the segment with the most filled cells (ties: lumbar > cervical > dorsal).
+ * The AI-tab box's own "insert into Findings" text.
+ *
+ * Kept because the box is still the only editor for rows this study holds in
+ * `spinal_measurements` and the only capture path from an OHIF caliper into the
+ * canonical record (owner DECISION 3 asks for an audit, not a removal — see the
+ * RIS-013 record). It is one segment wide, and what it inserts is frozen at the
+ * moment of the click; the printed table is derived from the measurement authority
+ * at print time, which is why Generate no longer writes a grid of its own.
  */
-export function pickPrintCanalSegment(
-  byLevel: Map<string, string>,
-): CanalSegment | null {
-  const count = (seg: CanalSegment) =>
-    levelsForCanalSegment(seg).filter((l) => byLevel.has(l) && byLevel.get(l)!.trim()).length;
-  const lumbar = count("lumbar");
-  const cervical = count("cervical");
-  const dorsal = count("dorsal");
-  if (lumbar === 0 && cervical === 0 && dorsal === 0) return null;
-  if (lumbar >= cervical && lumbar >= dorsal) return "lumbar";
-  if (cervical >= dorsal) return "cervical";
-  return "dorsal";
-}
-
 export function formatCanalApTableText(
   segment: CanalSegment,
   values: Record<string, string>,
@@ -240,34 +236,25 @@ export function formatCanalApTableText(
   return lines.join("\n");
 }
 
+/**
+ * The rows this app's own PDF prints, one per measured level, in the printed
+ * table's order.
+ *
+ * The level list comes from `canalPrintPlan` — the same plan the server's signed
+ * body prints from — so a Dorso-Lumbar study that measured discs in both segments
+ * lists both here instead of listing whichever segment had more cells filled. Rows
+ * for levels nobody measured are not offered: a `—` in a list of measurements reads
+ * as a measurement that came back blank. The caller folds the two stores before
+ * calling, so the numbers are the ones the report carries (`mergeCanalApLevels`).
+ */
 export function canalApToPdfRows(
-  segment: CanalSegment,
-  values: Record<string, string>,
+  byLevel: ReadonlyMap<string, string>,
 ): Array<{ label: string; value: string }> {
-  const levels = levelsForCanalSegment(segment);
-  return levels
-    .filter((l) => values[l]?.trim())
-    .map((l) => ({ label: `Canal AP ${l}`, value: `${values[l].trim()} mm` }));
-}
-
-/** HTML table for print / letter-pad (black-on-white bordered grid). */
-export function canalApTableHtml(
-  segment: CanalSegment,
-  values: Record<string, string>,
-  esc: (s: string) => string = (s) => s,
-): string {
-  const levels = levelsForCanalSegment(segment);
-  const filled = levels.some((l) => values[l]?.trim());
-  if (!filled) return "";
-  const th = levels.map((l) => `<th style="border:1px solid #000;padding:2px 6px;font-size:11px;">${esc(l)}</th>`).join("");
-  const td = levels
-    .map((l) => `<td style="border:1px solid #000;padding:2px 6px;text-align:center;font-size:11px;">${esc(values[l]?.trim() || "—")}</td>`)
-    .join("");
-  return `<div class="section-heading" style="margin:8px 0 4px;">${esc(canalTableTitle(segment))}</div>
-<table style="border-collapse:collapse;margin:0 0 8px;width:auto;">
-  <thead><tr><th style="border:1px solid #000;padding:2px 6px;font-size:11px;">LEVEL</th>${th}</tr></thead>
-  <tbody><tr><td style="border:1px solid #000;padding:2px 6px;font-size:11px;">AP (mm)</td>${td}</tr></tbody>
-</table>`;
+  const plan = canalPrintPlan(byLevel.keys());
+  if (!plan) return [];
+  return plan.levels
+    .filter((l) => byLevel.get(l)?.trim())
+    .map((l) => ({ label: `Canal AP ${l}`, value: `${byLevel.get(l)!.trim()} mm` }));
 }
 
 export function parseCanalApNumber(raw: string | null | undefined): string {

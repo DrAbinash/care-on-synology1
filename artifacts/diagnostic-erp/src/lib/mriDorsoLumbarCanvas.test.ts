@@ -159,23 +159,96 @@ describe("the AP table (spec §13)", () => {
 });
 
 describe("rail mount and billing initialization (spec §24, §31)", () => {
-  it("mounts the Dorso-Lumbar trio behind its own predicate only", () => {
+  it("mounts the Dorso-Lumbar canvas and panel behind its own predicate only", () => {
     const src = read(RAIL);
     const gate = src.indexOf("isMriDorsoLumbarReportingContext({");
-    expect(gate, "the rail must gate the trio on the Dorso-Lumbar predicate").toBeGreaterThan(-1);
+    expect(gate, "the rail must gate the composition on the Dorso-Lumbar predicate").toBeGreaterThan(-1);
     const block = src.slice(gate, gate + 2000);
-    const order = [
-      "<MriDorsoLumbarCanvas",
-      "<MriDorsoLumbarSubMasterPanel",
-      "<DorsoLumbarApCanalMeasurements",
-    ].map((needle) => block.indexOf(needle));
+    const order = ["<MriDorsoLumbarCanvas", "<MriDorsoLumbarSubMasterPanel"].map((needle) => block.indexOf(needle));
     for (const [i, needle] of order.entries()) {
       expect(needle, `${needle} must be rendered by the Dorso-Lumbar gate`).toBeGreaterThanOrEqual(0);
-      if (i > 0) expect(needle, "and in canvas → panel → measurement order").toBeGreaterThan(order[i - 1]);
+      if (i > 0) expect(needle, "and in canvas → panel order").toBeGreaterThan(order[i - 1]);
     }
-    // the dorsal trio stays gated on the dorsal predicate
+    // the dorsal canvas/panel pair stays gated on the dorsal predicate
     expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,900}?<MriDorsalSubMasterPanel/);
-    expect(src).toMatch(/isMriDorsalReportingContext\(\{[\s\S]{0,1400}?segment="dorsal"/);
+  });
+
+  it("mounts every canal AP table once, in the Measure pane and not in Structure", () => {
+    // ONE authoritative entry point. The four canal AP tables live on the tab a
+    // radiologist already expects ("Measure"), inside one expandable section, and
+    // they are gone from the "Structure" pane — a grid mounted in two panes can
+    // fall out of step on `disabled` and shows the doctor two halves of one task.
+    const src = read(RAIL).replace(/\r\n/g, "\n");
+    const countIn = (hay: string, needle: string) => hay.split(needle).length - 1;
+    const paneOf = (open: string, close: string) => {
+      const start = src.indexOf(open);
+      const end = src.indexOf(close, start);
+      expect(start, `the rail must still declare the ${open} pane`).toBeGreaterThanOrEqual(0);
+      expect(end, `${close} must close after ${open}`).toBeGreaterThan(start);
+      return src.slice(start, end);
+    };
+    const structured = paneOf("structured: (", "measurements: (");
+    const measurements = paneOf("measurements: (", "priors: ");
+
+    // Positive control that the two pane slices are real and mutually exclusive.
+    // Without it, "not in Structure" could pass vacuously on a mis-sliced region.
+    expect(structured).toContain("<MriDorsoLumbarCanvas");
+    expect(structured).toContain("<MriDorsalSubMasterPanel");
+    expect(structured).not.toContain("<ReportImagePicker");
+    expect(measurements).toContain("<ReportImagePicker");
+    expect(measurements).not.toContain("<MriDorsoLumbarCanvas");
+
+    // The one section the doctor has to find, on the Measure pane only, exactly once.
+    expect(structured).not.toContain("AP Canal Measurements (mm)");
+    expect(measurements).toContain("AP Canal Measurements (mm)");
+    expect(countIn(src, 'data-testid="canal-ap-measurements-section"')).toBe(1);
+    // and an honest line instead of an empty panel when the study earns no table
+    expect(measurements).toContain("no disc-level canal AP table");
+
+    for (const { gateVar, mount, gated } of [
+      {
+        gateVar: "canalApLumbar",
+        mount: '<SpineApCanalMeasurements segment="lumbar"',
+        gated: /canalApLumbar \? <SpineApCanalMeasurements segment="lumbar" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApCervical",
+        mount: '<SpineApCanalMeasurements segment="cervical"',
+        gated: /canalApCervical \? <SpineApCanalMeasurements segment="cervical" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApDorsal",
+        mount: '<SpineApCanalMeasurements segment="dorsal"',
+        gated: /canalApDorsal \? <SpineApCanalMeasurements segment="dorsal" disabled=\{contentLocked\} \/> : null/,
+      },
+      {
+        gateVar: "canalApDorsoLumbar",
+        mount: "<DorsoLumbarApCanalMeasurements",
+        gated: /canalApDorsoLumbar \? <DorsoLumbarApCanalMeasurements disabled=\{contentLocked\} \/> : null/,
+      },
+    ]) {
+      expect(structured, `${mount} must not stay mounted in the Structure pane`).not.toContain(mount);
+      expect(measurements, `${mount} must mount in the Measure pane`).toContain(mount);
+      expect(countIn(src, mount), `${mount} must mount exactly once across all tabs`).toBe(1);
+      expect(measurements, `${mount} must stay behind ${gateVar} and the content lock`).toMatch(gated);
+    }
+
+    // The Measure-pane gates reuse the same four predicates as the Structure-pane
+    // canvases, with the FULL argument set — protocolName and studyDescription are
+    // what let a screening / Dorso-Lumbar booking resolve the right table.
+    const args = src.slice(src.indexOf("const canalApGateArgs = {"), src.indexOf("const canalApLumbar ="));
+    expect(args, "the shared canal gate argument set must exist").not.toBe("");
+    for (const key of ["modality:", "region:", "family:", "spineSegment:", "protocolName:", "studyDescription:"]) {
+      expect(args, `the canal gate must pass ${key}`).toContain(key);
+    }
+    for (const [predicate, gateVar] of [
+      ["isMriLumbarReportingContext(canalApGateArgs)", "canalApLumbar"],
+      ["isMriCervicalReportingContext(canalApGateArgs)", "canalApCervical"],
+      ["isMriDorsalReportingContext(canalApGateArgs)", "canalApDorsal"],
+      ["isMriDorsoLumbarReportingContext(canalApGateArgs)", "canalApDorsoLumbar"],
+    ] as const) {
+      expect(src, `${gateVar} must come from ${predicate}`).toContain(`const ${gateVar} = ${predicate};`);
+    }
   });
 
   it("initialises the composition from billing without overriding the radiologist", () => {

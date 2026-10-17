@@ -38,9 +38,10 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **IMPLEMENTING → TESTING — the six owner decisions are now code**, evidence pass MERGED, correction pass in review | `pacsArchive.transaction.request.test.ts` **13/13** on real PostgreSQL; consolidated **229 tests / 13 files green**; battery **20 mutants = 15 DETECTED with named attribution + 5 survived-by-design, 0 unexplained**; Command Center refusal wording **4/4 in real Chromium** (control: 2/4 on the pre-correction JSX); typecheck unchanged (api-server 58 pre-existing, 0 in touched files) | evidence **#1048 → MERGED `1394ab79`**; corrections **#1050** (head `7ac9662a`, base `main`) | #1050 **pending at the time of writing** — see the stage table below; nothing is DEPLOYED | no | no |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on Draft **PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 (Draft)**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. **After the closeout rebase onto main `0bca78ca` the Tests job is red — on main's own nginx guard test, which this PR does not touch** (see the CI note under the stage table) | **yes** for #1050 | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
+| **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -243,15 +244,52 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 |---|---|---|
 | CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
 | RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
-| IMPLEMENTED | yes, in review | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag |
-| TESTED | yes, locally | 13/13 request-level cases + 229 tests across the 13 affected files + 20-mutant battery + real-Chromium UI probe |
-| CI GREEN | **yes, on #1050** — measured 2026-10-17 02:56Z on head `7ac9662a` | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3 |
-| MERGED | **no** — only the evidence pass is | #1048 merged as `1394ab79` ("measured, no fix"). #1050 is open. The PR was created as Ready by the operator's own tooling; both `PATCH {draft:true}` and `convert-to-draft` were refused with this token, so it is **not** marked draft despite the standing instruction — it must not be merged without the owner's review of the two visible behaviour changes below |
+| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, on **PR #1053 (Draft)**, code commit `52434abb` |
+| TESTED | yes, locally | **21/21** request-level cases (13 enforcement + 8 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
+| CI GREEN | **yes for this queue's own work; #1053 is blocked by main, not by itself** — see the CI note under this table | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3. **#1053 (the audit follow-up) is green the same way** — 20 tests executed on `c1d868a1`, and again on `376153a2`. |
+| MERGED | **yes for the enforcement pass** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
 | DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
 | CLINICALLY VERIFIED | no | nothing has been observed in the clinic |
 
+**Then main went red, and it is not this queue's red.** #1053 was rebased onto `origin/main` for the
+owner's closeout check (main had moved by exactly one commit, `0bca78ca` *"Fix nginx crash: default_type not
+allowed in if context"*, touching only `docker/nginx.conf`). After that rebase the `Tests + migration smoke`
+job fails on **one** case: `nginxLegacyLedgerResetBlock.test.ts > default_type is scoped inside the if, so
+proxied 502s keep their own type` (1 failed / 13 passed in that file; the job reports
+`Tests 1 failed | 14576 passed | 49 skipped`). Measured, not inferred: **main itself is red at `0bca78ca`**
+and green at its parent `14109b8d`, and `git diff origin/main -- docker/nginx.conf
+artifacts/api-server/src/lib/nginxLegacyLedgerResetBlock.test.ts` is empty in this branch, so #1053 touches
+neither file. The crash fix moved `default_type application/json;` from inside the
+`if ($legacy_ledger_reset_blocked)` body up to location level — which is what nginx accepts — while the
+guard test still pins the old placement **and** the property that placement bought: with `default_type` at
+location level, an nginx-generated 502 (a recreated api container) is announced as JSON while its body is
+HTML. That is a decision for the owner, not a test to delete. **How it resolved:** main was fixed by **#1059**
+(`71f68479`), which re-pinned the guard to the placement nginx actually accepts — location level, proven
+outside the `if`, one occurrence file-wide, plus the exact directive text — and CI is green on main again.
+A parallel branch here (`fix/nginx-default-type-placement`, PR **#1060**) reached the same structural
+conclusion independently; #1059 landed first, so **#1060 was closed superseded rather than merged** and
+`docker/nginx.conf` was left untouched.
+
+One claim from that exchange is recorded because it will otherwise be re-litigated: `default_type` does
+**not** apply to nginx's built-in error pages. Read from the source,
+`ngx_http_special_response_handler()` clears the type and `ngx_http_send_special_response()` assigns
+`text/html` explicitly, and `ngx_http_special_response.c` contains no reference to `clcf->default_type`
+anywhere. `default_type` reaches a response through `ngx_http_send_response()` — what `return` with a text
+body calls, which is why the 410 refusal is JSON — and through static-file handlers, i.e. the path a
+*custom* `error_page` file would take. So the crash fix cost no 502 property. **This is a source read, not
+a measurement** — there is no nginx or docker on this box or in CI — and it is checkable in two commands on
+a disposable container: `curl -si -X POST …/api/ledgers/2/reset` expecting 410 + `application/json`, and
+the same against any `/api/` path with the api container stopped expecting 502 + `text/html`. If the second
+prints JSON, this paragraph is wrong and the guard's comment is right.
+
+**#1053's own content was verified green twice** (`c1d868a1`, `376153a2`), and it was rebased onto the green
+main for the closeout: that rebase pulled in #1059's test file only, leaving this PR's four files
+byte-identical.
+
 **MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
-still the one described in the "What #1048 measured" section below until #1050 merges **and** deploys.
+still the one described in the "What #1048 measured" section below until #1050 **and** the audit
+follow-up deploy — which also means the two regressions recorded below are **not** live at the clinic
+today; they were introduced and corrected between merges, entirely inside `main`.
 
 ### What the owner ruled, and the smallest change that implements it
 
@@ -434,6 +472,121 @@ make a claim about which revision was delivered pass `versionMode` explicitly.
 | Typecheck | `api-server` **58 errors — the pre-existing baseline, none in a touched file**. `diagnostic-erp` **61 before this change and 61 after** (measured by swapping in `HEAD~1`'s copy of the same file), i.e. zero added; the failures are the duplicate-`@types/react` class AGENTS.md describes and none is in `RadiologyCommandCenter.tsx` |
 | One failure is NOT attributable to this work | `aiQueryContract.test.ts` fails on this box because it compares a **Windows absolute path** against `"lib/aiReportingClient.ts"` (`:52-54`), so the exclusion never matches and the allowed file reports as an offender. It runs no code this PR touches; left alone rather than widened into this PR |
 
+> These are the **correction-pass** numbers, kept as measured at the time. The post-merge compatibility
+> audit below supersedes them: the same file now runs **20** cases, the battery has **26** mutants, the
+> browser probe has **8** cases, and the typecheck baseline was re-measured against `main`'s own copies
+> (98 before / 98 after — the earlier "58" was main before #1049 landed).
+
+### Post-merge compatibility audit of the policy #1050 enforced (the owner's eight points, measured on `main` at `1a93e4e4`, 2026-10-17)
+
+Every point below was answered by **running** the real-PostgreSQL request suite against `main`, not by
+reading the diff. Six points were already sound — their cases pass on `main` with no source change, so
+they are recorded as verification, not as work. **Two were demonstrated regressions**, and only those
+two got code.
+
+| Owner's question | Verdict | Measured how |
+|---|---|---|
+| 1. A missing `StudyInstanceUID` must prevent an unsafe PACS association but must **not** block ordinary signing or printing | **SOUND** (case V1) | the real `POST /api/patient-reports/:id/sign` returns 200 and leaves `status='pending_verification'` with `signedAt` set, and the read surface the reporting screen and the print path use (`GET /api/patient-reports/:id`) returns 200 for that report. Nulling the UID afterwards changes **no** byte of the report row and only the archive refuses, with `no_study_uid` and zero POSTs. Stated exactly: printing is untouched **by construction** — the gate lives inside `archiveReportToPacs`, which no print or read path calls — and no browser print was performed, because nothing is deployed |
+| 2. Obstetric Form-F restrictions use the existing statutory compliance policy | **SOUND** (case V2) | the archive calls the same `checkPcpndtFormFCompliance` the USG return service calls — no second policy. An **MRI with zero Form-F rows archives** (the restriction cannot reach a non-obstetric study); an obstetric USG is blocked on a `pcpndt*` reason and unblocks as soon as one compliant `form_f_records` row exists, uploading then, not before |
+| 3. A refused archive displays the actual reason for refusal | **REGRESSION → fixed** (case V3) | see below |
+| 4. Superseded reports cannot replace the current official signed report | **SOUND** (cases V4, 8b) | the refusal writes status/response only — `pacs_instance_id` survives it (mutant **N15**, which nulls it, is killed by V4); a retired revision is refused outright; and because the pick is newest-first this entrypoint cannot reach a superseded root row at all |
+| 5. Signed amendments remain archivable as new legitimate revisions | **SOUND** (case V5, with 7+8) | after a `superseded_report` refusal, the study's **current** signed amendment still archives: a new revision row at `sequenceNumber 2`, labelled `v2/2 (amended)`, the root keeping its own instance id |
+| 6. Legacy free-text signed reports retain their existing supported workflows | **REGRESSION → fixed** (case V6), **one limitation kept** | see below. Kept, not smoothed: a legacy free-text final has **no revision identity**, so the duplicate guard cannot key on it and re-archiving one uploads again. Giving it an identity means changing the revision table's key, which is an architectural decision, not a correction inside RIS-010 |
+| 7. Restore / Re-archive cannot silently create duplicate DICOM objects | **SOUND** (cases V7, DECISION 4) | only `restore_archived_report` bypasses the duplicate guard, and only with `requireAdminRole`, dry-run by default, `confirmToken` and a reason ≥ 10 chars (no token → 400). Each object it accepts gets its own `ORTHANC_UPLOAD_SUCCESS` id, the audit row names the administrator (mutant **N16**, which writes `actor:'system'`, is killed). Honest limit: a **second** authorized restore leaves the earlier instance id named only in the audit log, not in the study row |
+| 8. Accepted-but-unrecorded uploads remain visible for administrator reconciliation | **SOUND as far as it can be measured** (case V8) | an abandoned archive job appears in `GET /api/radiology-ops/jobs/dead-letter` carrying the refusal sentence — no SQL. Two limits stated rather than hidden: `listDeadLetterJobs` projects **no `status` column**, so the row is identified by `operationType` + `failureReason`; and DECISION 6's *runtime* half still cannot be forced (mutant **N10** survives by construction, as recorded above) |
+
+**Regression 1 — every refusal said the same thing (owner point 3).** `planUsgPacsReturn` distinguishes
+seven blockers; `pacsArchive.ts:462/477/479` on `main` collapsed all seven into
+`NO_ELIGIBLE_REPORT_MESSAGE`. Clinically: a study refused because it has no Study Instance UID, or
+because PCPNDT Form-F has not been evaluated, was told *"No finalized signed report available for this
+examination"* — staff sent to sign a report that is already signed, while the real blocker (an
+unregistered UID, an incomplete statutory record) stayed unfixed and the study stayed out of PACS.
+Demonstrated byte-exactly by re-installing main's line and running the suite
+(`tmp/ris010-control-failures.mjs`, gitignored):
+
+```
+FAIL … > V3 — a refusal names the blocker it actually found, not one sentence for every cause
+AssertionError: refusal said: No finalized signed report available for this examination.:
+expected 'No finalized signed report available …' not to be 'No finalized signed report available …'
+Tests  1 failed | 19 passed (20)
+```
+
+Fixed by a refusal sentence per `PacsReturnBlockReason`, held **in the archive module** and keyed by the
+policy's own codes — the shared statutory policy was deliberately **not** widened (an earlier attempt to
+add `reasonMessages` there was reverted as unjustified scope). The stored refusal keeps `blockReasons`
+and gains `reasons`; the no-report case keeps the owner's exact sentence; `PACS_ARCHIVE_REFUSED:` — the
+prefix `decideFailure` reads to make a refusal terminal for the queue — is unchanged. The Command
+Center badge now names the cause (No Study Instance UID / Form-F Hold / No Patient Record / No Signed
+Report) and falls back to "See Retry" when the stored response cannot be parsed, with the full sentence
+on hover; proved in real Chromium, **8/8**, control against `main`'s component **4/8** (it rendered
+"No Signed Report" for a missing-UID refusal — the misdirection itself). The badge's data is **not** a
+probe fiction: the panel reads the *detail* query (`RadiologyCommandCenter.tsx:146` →
+`GET /api/internal/radiology/worklist/:id`), and that handler already selects `pacsArchiveResponse`
+(`internal-radiology.ts:2039`, returned at `:2074`), so the codes the archive stored are what the browser
+receives — the stub only stands in for the server, not for a field the server never sent.
+
+**Regression 2 — a federated-bridge legacy final stopped being eligible (owner point 6).** #1050 keyed
+the legacy free-text branch on `study.status === "reported_final"` (`pacsArchive.ts:226`), one spelling
+of one status. The bridge writes its final through `routes/boundary.ts:369-372`, which stores
+`status === "reported_final" ? "reported_final" : study.status` — the caller's `status` is unvalidated and
+the study is **not** promoted unless the caller happens to send that exact word. A service that posts a
+signed, attributed, dated final without it leaves the study `acquired`, so the report was refused, and
+refused with the *missing signature* sentence on top. Same demonstration:
+
+```
+FAIL … > V6 — an attributed legacy final delivered by the federated bridge keeps archiving
+AssertionError: bridge-delivered legacy final was refused: {"success":false,"refused":true,
+"reason":"NO_ELIGIBLE_REPORT","message":"No finalized signed report available for this examination.",
+"blockReasons":["no_report"],…}: expected true to be falsy
+Tests  1 failed | 19 passed (20)
+```
+
+Fixed by keying on what the bridge actually writes — non-empty trimmed `final_report` **and**
+`finalReportedBy` **and** `finalReportedAt` — instead of on a status word, with a cancelled examination
+still refused (mutant **N11**, which drops that clause, is killed by V6; **N12**, which re-installs
+main's status key, is killed by V6 too). Case V6 drives the real
+`POST /api/boundary/studies/:accession/report` with `x-boundary-key`, so it is the bridge's own code path,
+not a hand-made payload.
+
+**Does the legacy predicate fail closed? Confirmed before merge, and now mutation-proven (case V9).**
+Every writer of `radiology_studies.final_report` was enumerated rather than assumed —
+`lib/peerReview.ts:85-93` (`finalizeReport`, called from `routes/radiology.ts:2423`),
+`routes/internal-reporting-studio.ts:912-918` (writes a `patient_reports` row **and** mirrors the text onto
+the billed study), `routes/teleradiologyPortal.ts:224-236` (rejects an empty report at `:214`, attributes
+to the authenticated `user.name`), `routes/radiology.ts:1583-1592` (the legacy report-save route's
+`stage: "final"` arm, behind `decideLegacyReportWrite`; its `stage: "preliminary"` arm writes only
+`prelimReport`), and `routes/boundary.ts:369-372`. Each writes text + reporter + timestamp in the same
+statement, so the predicate's three terms are exactly what those writers guarantee. A grep's apparent
+sixth writer, `routes/aiReporting.ts:2717`, is a response body, not a write.
+
+Two properties a grep cannot establish were then forced to fail, because they are the ones that matter
+clinically:
+
+* **A structured report row wins, always.** `POST /:id/withdraw-signature` clears `signedAt` and sets the
+  row back to `draft` (`patient-reports.ts:2968-2970`) but does **not** clear the mirrored legacy text, so
+  a withdrawn signature leaves attributed final text sitting on the study. The predicate's first term is
+  `!reportRow`, so that text is never consulted while a report row exists: draft + stale legacy text is
+  refused with `not_finalized`, nothing renders, nothing posts, no revision row (case V9). Mutant **N17**
+  (drop `!reportRow`) is killed by exactly that case — without the guard a withdrawn or half-written report
+  could be re-archived from the text it left behind, which is DECISION 1 routed around.
+* **Attribution is required, not decorative.** Text with `finalReportedBy` null and a timestamp is refused
+  with `no_report` (case V9's second shape), and mutant **N18** (drop `!!study.finalReportedBy`) is killed
+  by it. `status !== "cancelled"` still bars a cancelled examination whatever its columns hold — mutant
+  **N11** is killed by V6.
+
+Relative to `main` the admitted set moved in one direction only: the word `reported_final` is no longer
+required, which is what re-admits the federated bridge's finals and a study already `delivered` to its
+patient. Every state `main` accepted still passes case 12.
+
+**Numbers for the audit pass** (scratch PostgreSQL 18 at `127.0.0.1:5445`, `TZ=UTC`, `--maxWorkers=1`):
+enforcement suite **21/21**; neighbours **244 tests / 13 files** (api-server 120/11, ERP contract
+123/2); mutation battery **28 mutants, each anchor preflighted unique and byte-verified**: **23 DETECTED
+with the owning case named + 5 EXPECTED-SURVIVE (M5, M7, M8, M10, N10), 0 unexplained**; browser probe
+**8/8**, control **4/8**; typecheck `api-server` **98 before and 98 after** — measured by swapping
+`main`'s copies of the two changed files back in, so zero added (the figure this file previously quoted,
+58, was main **before #1049** landed; 10 of the 98 are that PR's own `radiologyQuickSelectBoxes.request.test.ts`),
+and `diagnostic-erp` **61 = the recorded baseline**, none in `RadiologyCommandCenter.tsx`.
+
 ### What #1050 changes that a reviewer or the owner must actually look at
 
 Two of these are visible in the clinic, which is why the PR is not merged on this session's own
@@ -499,6 +652,213 @@ which keys the allowance on *a* combine rather than *this* row and is caught by 
 **Not yet observed:** no browser has run a real combined report end to end on a deployed build. The
 ERP's own error swallowing (`linkedMarkError`) is unchanged by this PR, so a future sibling-flip failure
 would still be quiet; worth a follow-up if the owner wants it surfaced to the radiologist.
+
+## RIS-013 — Canal AP diameter: the measurement the radiologist can reach now prints (P1, branch `clinical/canal-ap-one-authority`)
+
+**What was wrong (measured, `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md`).** Two
+stores held canal AP diameters and neither wrote the other. The Reporting Workspace grid saves
+`structured_json.careCanalApProvenance`; every printed table was built from `spinal_measurements`.
+One study showed **8.5 mm** in the grid and an empty table on the sheet. The 13 green canal request
+tests all inserted `spinal_measurements` rows directly, so entry was tested and print was tested and
+the join — which did not exist — was not.
+
+**Correction.** One builder (`spinalCanalApTable.ts`) reads both stores and the canonical record
+decides: `canalApLevelsFromCanonicalRecord` (:148) answers through `canalApValue`, and
+`mergeCanalApLevels` (:166) lets the record win, deletes a level the record **declines** (two aliases
+disagreeing, or a vertebra that moved under it) instead of falling back to the other store's older
+guess, and keeps a level only `spinal_measurements` knows so nothing that printed before stops. All
+three signed paths now take it: the create/finalize splice
+(`patient-reports.ts:2284`, `:2301`), the structured finalize (`:1027`) and the amendment (`:1681`).
+For the two D1 paths the table is pinned in the sanctioned `extensions.x_care_canal_ap`
+(`radiologyD1DraftWriter.ts:282`) and emitted by the D4 renderer as its own section
+(`structuredReport/renderer.ts:139`, `:339-344`), so the stored signed body stays byte-identical to a
+re-render (`compareStoredVsRendered` → IDENTICAL) rather than becoming an unexplained clinical
+difference; `STRUCTURED_RENDERER_VERSION` → `d4-structured-1.1.0` (:42), and the five §17 golden
+digests are untouched because the extension is omitted when there is no measurement. Transitional
+levels (`L5-T`, `L5-L6`, `L6-S1`) print in anatomical order. The draft preview passes the same record
+(`radiology-report-generator.ts:2357`).
+
+**One entry point (UI).** The lumbar grid was mounted twice in the same rail — Structure pane and
+Measure pane — while cervical and dorsal were Structure-pane only. All four tables now mount once
+inside a collapsed **AP Canal Measurements (mm)** panel on the Measure tab
+(`ReportingToolsRail.tsx:982-1003`), gated on the same four predicates with the same full argument set
+the canvases use (`:508-519`) and the same content lock; a study that earns no table says so instead of
+showing an empty grid. The false comment claiming Brain's palette renders in the report body is
+replaced with what is measured: those mounts live only inside the retired `{false && (` block
+(`ReportCanvas.tsx:1044-1433`), which is why `mriBrainCanvasPlacement.test.ts` can be green over UI
+that renders zero elements.
+
+**Measured.** 285 tests / 16 api-server files green on real PostgreSQL (canal + `structuredReport` +
+D5/D6/D7/D9); ERP canal suites 62/62. Chromium against the running app: the panel is reachable on the
+Measure tab for LS (5 inputs), cervical (6) and dorsal (11), collapsed by default, and a typed value
+survives Save Draft + reload; switching examinations does not mix values (11.1 lumbar / 22.2 cervical
+each kept their own, and the other study's field is not present). The signed **PDF bytes** were taken
+from `GET /api/patient-reports/:id/pdf` (681,166 B) and extracted with `pdftotext`: the heading, the
+level row `L1-L2 … L5-S1` and `AP (mm) -- -- 15.2 6.4 8.1` are all in the printed page. Mutants: M1a
+canonical override removed → **13 named failures**; M1b the D1 pin removed → **6 named failures**; M2
+one canal gate disconnected → the mount-once guard red. `tsc` caught two things the tests could not:
+the amendment transaction had lost its `let materialized` declaration (every
+`POST /:id/amend` would have thrown), and `FinalWorklistRow` had no `studyId` to read the rows with.
+
+**NOT RUN / limitations.** The **Dorso-Lumbar** entry point is unproven in a browser: this local
+database has no dorso-lumbar reporting format, so neither the DL canvas nor the DL table mounted —
+identical before and after the change, and the local worklist fixture names the exam
+"MRI Dorso Lumbar Spine" while the clinic books "Dorsolumbar Spine" (35 such rows). Whole-spine and
+screening bookings resolve no disc-level table at all, which is the reporting-context predicates'
+existing decision, not a new one. OHIF caliper → level capture was NOT RUN (no PACS reachable).
+Full-suite parity is **delegated to CI**: on this workstation the radiology signing request suites are
+order-dependent against the shared scratch database — the same three files failed 20 tests at
+`origin/main` and 13 at this branch with different membership, while each file is green in isolation
+(`finalizeIntegrityGuard` 7/7 twice on both, `linkedSiblingReportFinalize` 6/6,
+`signedArtifactTrust` 24/24, D5 17/17, D9 24/24). The local typecheck number is likewise unusable as
+an absolute: the worktree's `lib/*` packages are unbuilt, so 2,179 of 2,180 diagnostics are the
+TS6305/TS7006 cascade; only the errors named above sit in touched files.
+
+**Owner decisions (2026-10-17) — all four ruled, all four implemented on this branch.**
+
+**DECISION 1 — one combined Dorso-Lumbar table.** *"Fix the existing renderer so that every valid
+measured dorsal and lumbar level appears in the signed report. Use one combined table. Do not select
+only the most-filled segment. Do not invent values for unmeasured levels. Preserve canonical
+vertebral numbering, including transitional anatomy. Do not create another table generator."*
+Done inside the existing builder — `renderCanalApTable` (`spinalCanalApTable.ts:140`) now draws the
+columns from `canalPrintPlan` (`lib/measurements/src/spineCanal.ts:230`), and the most-filled-segment
+chooser is deleted from both sides (the server's chooser and the ERP's `pickPrintCanalSegment` /
+`canalApTableHtml` / `canalApReportTable`). A plan is built from the levels that were *measured*:
+columns in head-to-tail anatomical order, one section, and one title naming the span. Measured on the
+signed artifact: a Dorso-Lumbar study with D6-D7, D10-D11, L2-L3, L4-L5 and L5-S1 prints
+`DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS` with all five levels carrying their numbers —
+which is exactly the case that used to print a lumbar-only table and lose both dorsal discs. An
+unmeasured level keeps its column but no value (the printed em-dash is the pre-existing shape, asserted
+in V1). Transitional keys (`L5-T`, `L5-L6`, `L6-S1`) stay in the plan, and the junction level `D12-L1`
+appears only when measured. The workspace's own PDF uses the same plan
+(`canalApToPdfRows`, `spineCanalAp.ts:250`) instead of a segment of its own.
+
+**DECISION 2 — measurements entered after Generate must still print.** *"Remove the unsafe
+phrase-based deduplication condition. Use exact structured-table identity or the existing rendering
+mechanism."* Two mechanisms were removed, and nothing was added in their place:
+- the server's phrase rule (`if (body.includes("canal AP diameter")) return body;`) is gone from
+  `insertCanalTableIntoBody` (`spinalCanalApTable.ts:227`); dedupe is now structural —
+  `hasRenderedCanalApTable` (`spineCanal.ts:413`) says a body that already prints a canal table
+  *carrying a number* is left alone, and `stripUnmeasuredCanalScaffold` (`:422`) removes a blank grid
+  so the authoritative table replaces the placeholder instead of sitting beside it;
+- Generate no longer writes a canal grid into Findings at all (`store.ts:1958-1964`), which was the
+  actual blocker: the grid it appended read as an already-printed table, so the print renderer
+  correctly declined to touch the body and every measurement taken after that press was locked out.
+The canal table is now the print renderer's job on all four surfaces the owner named — Preview,
+Finalized report, Signed PDF, Amendment — and one entry point can no longer silence another.
+
+**DECISION 3 — one measurement entry point, and an audit before anything is removed.** The live
+control is **Measure → AP Canal Measurements (mm)** (`ReportingToolsRail.tsx:982-999`), one section,
+four tables gated by the same predicates the canvases use (`:508-520`). The old ReportCanvas grids are
+**kept disabled, as ruled**: both `<SpineApCanalMeasurements>` mounts (`ReportCanvas.tsx:1168`, `:1232`)
+sit inside the `{false && (` legacy-assistance block (`:1044-1433`) and render nothing. That is a
+claim about JSX, so it is now a test with a false-positive control —
+`workspace/canalApEntryPoints.contract.test.ts` (11 tests) proves the slice really is the retired
+block, and proves that swapping `{false && (` for a flag flips the verdict to two live grids.
+**The AI-tab measurement box is NOT a duplicate and stays.** Censused from the tree: it is the only
+file that calls `recordCanalApViewerValue(` — the sole path by which an OHIF caliper number enters the
+canonical record the signed report prints from — and the only writer of the legacy
+`spinal_measurements` rows reachable while reporting (`SpineCanalApBox.tsx:258`), rows the print fold
+still reads (`useWorkspaceExportShare.ts:303`). The owner's condition ("only after proving no existing
+saved measurement or reporting workflow depends on them") is therefore **not met**; deleting the box
+today would cost viewer capture and leave stored legacy numbers uncorrectable. Note the legacy
+generator page keeps its own unrelated panel (`SpinalMeasurementPanel.tsx:103`, mounted at
+`RadiologyReportGenerator.tsx:1903`) — outside this ruling's scope, and the reason the legacy store is
+not empty.
+
+**DECISION 4 — Composer: interface handed over, code untouched.** *"Do not modify Composer code.
+Provide Qwen-Max with the exact canonical measurement interface and recommended read-only projection.
+Do not allow Composer to write back into the measurement authority."* Verified: `git diff
+origin/main..HEAD -- artifacts/api-server/src/lib/reportComposer` is **empty**.
+
+The canonical interface, exactly as it exists today:
+- **Where**: `radiology_report_drafts.structured_json.careCanalApProvenance` — an object keyed by
+  **canonical** level, one `CanalApMeasurement` per level (`lib/measurements/src/spineCanal.ts:437`).
+  Fields that matter to a reader: `level`, `measurementId: "CANAL_AP"`, `unit: "mm"`,
+  `region` (lumbar | cervical | dorsal), `viewerValue`, `reportValue`, `manualOverride`,
+  `staleReason`, `aliasConflict`, plus the DICOM anchor
+  (`studyInstanceUID`/`seriesInstanceUID`/`sopInstanceUID`/`frameNumber`) and `capturedAt`.
+- **The only permitted read of a value** is `canalApValue(rec)` (`:488`): `reportValue` if the
+  radiologist chose one, else `viewerValue`; **`null` when `aliasConflict` is set or
+  `staleReason === "level_renumbered"`**. `null` is an answer — the record *declines* — and a reader
+  must not fall back to another store or to its own guess. `printCanalApValue` (`:132`) renders it
+  without turning an empty cell into `0`.
+- **Level-by-level, no hand-rolling**: `canalApLevelsFromCanonicalRecord(raw)` (`:149`) returns
+  `Map<canonicalLevel, string | null>`; `mergeCanalApLevels(serverByLevel, canonicalByLevel)` (`:168`)
+  is the fold every print surface uses; `canalPrintPlan(measuredLevels)` (`:230`) gives the columns,
+  their order and the section title.
+- **Vocabulary**: `LUMBAR_CANAL_LEVELS` (:20, 5), `CERVICAL_CANAL_LEVELS` (:30, 6 — no C1-C2, there is
+  no disc there), `DORSAL_CANAL_LEVELS` (:39, 11 in **D** form) plus `DORSAL_JUNCTION_LEVEL = "D12-L1"`
+  (:49) only when measured, and the transitional keys above. `T8-T9` and `L4-5` are accepted *inputs*
+  only; `canonicalizeCanalLevel` (:76) decides, and only canonical keys may be persisted or displayed.
+- **No write-back** (`:11-15` states the rule). The only writers are the workspace store's
+  `recordCanalApViewerValue` / `recordCanalApManualValue` (`store.ts:3183`, `:3194`) and the draft
+  writer; both refuse when the content is locked (`refuseSignedMutation`).
+
+Recommended read-only projection for the Composer — additive, and the only shape that cannot fabricate:
+```jsonc
+"canalAp": [                                  // omit the key entirely when nothing was measured
+  { "level": "L4-L5", "valueMm": "6.4", "segment": "lumbar", "source": "radiologist-entered" },
+  { "level": "L5-S1", "valueMm": "8.1", "segment": "lumbar", "source": "viewer-caliper" },
+  { "level": "L3-L4", "valueMm": null,  "segment": "lumbar", "declined": "level_renumbered" }
+]
+```
+`valueMm` is `printCanalApValue(canalApValue(rec))` — string, never re-parsed; `source` is
+`rec.reportValue != null ? "radiologist-entered" : "viewer-caliper"`, because `applyCanalManualValue`
+(`:656`) is the only thing that sets `reportValue`, and clearing a cell resets both it and
+`manualOverride` back to the viewer's answer; a declined
+level is listed with `valueMm: null` and its `declined` reason so the model is told to say nothing
+about that disc, rather than being silently handed a record it might paraphrase into a number. The
+prompt must be given the printed order from `canalPrintPlan`, and the model must be told the table is
+already rendered by the report — it should not restate every level in prose (that is how a canal
+number ends up in two places with two spellings).
+**What this replaces, and the gap it leaves**: today the Composer scrapes unit-bearing numbers out of
+prose (`buildRadiologistDraftContext.ts:60` `MEASUREMENT_RE`, `:82` `extractMeasurements`, surfaced at
+`:287` as `measurements`), and `validateOutput`'s measurement rules (`:617`, `:661`, `:1106`) compare
+against that same scraped bag. Since DECISION 2, canal numbers are *not* in the prose Generate writes,
+so until the projection above is wired, a grid measurement is invisible to Generate/Refine and to the
+measurement-loss validators — clinically safe (the pinned table `extensions.x_care_canal_ap` prints it
+regardless, and the model cannot rewrite it), but the Composer cannot yet *use* the number it used to
+copy. Handoff to the Composer owner; nothing on this branch changes it.
+
+**The ten required verifications, run against rendered output.** Cases 1-5, 7, 8 and 10 are in
+`artifacts/api-server/src/routes/signedReportCanalMeasurements.request.test.ts` on real PostgreSQL
+(20 tests), and every one reads the **printed artifact** — headers, value cells, title, insertion
+point and a structural duplicate-table count from `findCanalApTables` — not a database row.
+
+| # | Case | Where proven |
+| --- | --- | --- |
+| 1 | MRI LS Spine | `:561` "V1 MRI LS Spine: every lumbar level measured prints, in one table" |
+| 2 | MRI Cervical Spine | `:573` "V2 … the cervical grid prints, and C1-C2 is not invented" |
+| 3 | MRI Dorsal Spine | `:595` "V3 … dorsal levels print on the dorsal grid, junction included when measured" |
+| 4 | MRI Dorso-Lumbar Spine | `:623` "V4 … one combined table, no segment dropped and no second grid" + ERP `generateProfessionalReport.test.ts` (title `DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS`, columns `[...DORSAL, ...LUMBAR]`) |
+| 5 | Transitional vertebrae | `:648` "V5 …" and `:506` "signs a transitional level that no fixed vocabulary can express" |
+| 6 | Save and reopen | `radiologyWorkspaceDraftRoundTrip.request.test.ts:295` "R4. measurements, canal provenance … all land" |
+| 7 | Measurement entered after Generate | `:670` "V7 … still signs, even when the prose names the canal" + ERP "writes no canal table into Findings, so a later measurement still prints" |
+| 8 | Final signed PDF | `:343` artifact test + `:742` "V8 the signed PDF artifact carries the table the print page carries" |
+| 9 | Amendment | `radiologyD1CanalApSection.test.ts:211` "carries the amended draft's measurements and stays reproducible", `:220` keeps the signed section when only prose changes, `:233` leaves the parent byte-untouched |
+| 10 | No duplicate tables | `:373` composed body already carrying a table, `:692` blank clinic scaffold replaced, `:718` a valued table is not edited into a second one — each counting `AP (mm)` rows and `CANAL AP DIAMETER` headings, plus `:287`/`:298` on the D1 renderer |
+
+Freeze is a separate property and is still proven: a measurement taken *after signing* must not rewrite
+a delivered document (`:355` for `spinal_measurements`, `:467` for the canonical record).
+
+**Remaining gaps (nothing here is a claim of completeness).**
+1. **V4 in a browser is still unproven.** This local database has no dorso-lumbar reporting format, so
+   the DL canvas and DL table never mount locally; V4 is proven at the request/rendered-artifact level
+   and by the ERP's own plan test, not by a click. The clinic books "Dorsolumbar Spine" (35 rows) while
+   the local fixture names it "MRI Dorso Lumbar Spine".
+2. **OHIF caliper → level capture was NOT RUN** (no PACS reachable). The code path exists and is
+   exercised by unit tests only.
+3. **The Composer still reads measurements from prose** — see DECISION 4; the projection is a handoff,
+   not this branch's code.
+4. **Two stores are still two stores at entry time.** Print folds them with one rule; the AI-tab box
+   still writes both. Closing that needs viewer capture moved into the rail grid first (DECISION 3
+   census above), which is an owner call about UI, not a defect.
+5. **Full-suite parity is delegated to CI**: these signing request suites are order-dependent against
+   the shared scratch database locally, and each file is green in isolation.
+
+
+---
 
 ## Standing constraints for anyone working this queue
 
@@ -579,6 +939,16 @@ a guessed identity for an approved one.
    it in the stage table above, then hand the two visible behaviour changes (section "What #1050 changes")
    to the owner. Nothing is deployed.
 6. **RIS-007**, **RIS-011**: read-only evidence only; no scanner changes, no production C-FIND/C-MOVE.
+7. **RIS-013: all four owner decisions are implemented on `clinical/canal-ap-one-authority` (PR #1054) —
+   do not re-derive the two authorities, and do not add a second table builder.** Read §RIS-013 first:
+   DECISION 1 is one print plan over the measured levels, DECISION 2 is structural table identity with
+   Generate no longer writing a grid, DECISION 3 is the rail Measure tab alone with the AI-tab box
+   kept because the census proves it is load-bearing, DECISION 4 is a Composer handoff with the
+   interface and the read-only projection spelled out and no Composer file touched. Five gaps remain
+   and are listed in that section — the Dorso-Lumbar case is proven at the rendered-artifact level but
+   not yet clicked in a browser (this database has no dorso-lumbar reporting format), OHIF caliper
+   capture was not run (no PACS reachable), the Composer still reads measurements from prose, the
+   AI-tab box still writes both stores, and full-suite parity is delegated to CI.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
@@ -600,7 +970,29 @@ also fail-closes a study with no `StudyInstanceUID`, a non-compliant obstetric F
 revision — states the archive used to accept; and the legacy free-text final, which stays eligible,
 cannot be idempotency-keyed because the revision table's key is a `patient_reports` id.
 
-_Last updated: 2026-10-17 (third pass) — **RIS-010 moved from measurement to correction.** The owner
+_Last updated: 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
+as `1a93e4e4`**, so the six rulings are on `main`; the audit then asked the owner's eight compatibility
+questions of the merged code by **running** the request suite on `main`. Six were already sound (a missing
+UID blocks only the association, signing and printing unaffected; the obstetric restriction is the existing
+statutory engine and lifts when Form-F is satisfied; a refusal leaves the object PACS holds intact; a
+signed amendment still archives as a new revision; only the token-bearing admin restore bypasses the
+duplicate guard; a terminal failure reaches an operator through `/api/radiology-ops/jobs/dead-letter`).
+**Two were demonstrated regressions**, each reproduced byte-for-byte by re-installing `main`'s line and
+each fixed minimally: every refusal collapsed to one sentence that named a missing signature when the real
+blocker was an unregistered `StudyInstanceUID` or an unevaluated PCPNDT Form-F, and the legacy free-text
+branch was keyed on the single status spelling `reported_final`, which the federated boundary bridge never
+writes — so a delivered, attributed legacy final stopped archiving and was refused with the wrong reason.
+Evidence for the follow-up (**PR #1053**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb`): **20/20** request
+cases, **243/243** neighbours across 13 files, **26 mutants → 21 detected with the owning case named + 5
+surviving by documented reason + 0 unexplained**, browser **8/8** against a **4/8 control on `main`'s
+component**, typecheck **98 before / 98 after** on api-server and 61 on the ERP (both unchanged, measured
+by swapping `main`'s copies back in). No migration, no new column, no new flag, no production row, container
+or Orthanc instance touched; nothing deployed; nothing clinically verified. The shared statutory policy was
+**not** widened — the refusal wording lives in the archive module and is keyed by the policy's own codes.
+Two limits are recorded rather than fixed: a legacy free-text final still has no revision identity to key
+idempotency on, and a second authorized restore leaves the first instance id in the audit log only._
+
+_Previous pass, 2026-10-17 (third pass) — **RIS-010 moved from measurement to correction.** The owner
 ruled on all six questions; PR **#1050** (head `7ac9662a`, base `main`) implements those rulings in 8
 files with no migration and no new subsystem: eligibility through the clinic's own `planUsgPacsReturn`
 before any render or POST, the placeholder and `prelim_report` removed, per-revision idempotency on the
