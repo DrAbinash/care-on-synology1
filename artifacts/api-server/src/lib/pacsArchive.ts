@@ -13,7 +13,7 @@ import { buildReportArtifact, type ReportArtifact } from "../routes/patient-repo
 import { logger } from "./logger.js";
 import { isObstetricUsgStudy } from "./usgModality";
 import { checkPcpndtFormFCompliance } from "./pcpndtCompliance";
-import { planUsgPacsReturn } from "./usgPacsReturnPolicy";
+import { planUsgPacsReturn, type PacsReturnBlockReason } from "./usgPacsReturnPolicy";
 
 import { getRadiologyConfig } from "./pacs/pacsConfig";
 
@@ -38,6 +38,30 @@ export const NO_ELIGIBLE_REPORT_MESSAGE = "No finalized signed report available 
 /** DECISION 5 — the study lock is held by another run, so this one must not touch the records. */
 export const ARCHIVE_IN_PROGRESS_MESSAGE =
   "An archive for this study is already running. Try again once it finishes.";
+
+/**
+ * One sentence per blocker the reused eligibility policy can report, keyed by ITS reason codes — the
+ * decision of whether to archive stays entirely with `planUsgPacsReturn`; this is presentation only.
+ *
+ * The three report-derived codes keep the owner's sentence, which is what he wrote it for. The others
+ * must not: a study whose report is signed and finalized but cannot be LINKED to a PACS study, or an
+ * obstetric study on a statutory hold, is not a study without a signed report. Saying so sent staff to
+ * look for a signature that was already there while the real blocker stayed invisible — the post-merge
+ * compatibility audit of 2026-10-17, point 3.
+ */
+const ARCHIVE_REFUSAL_SENTENCE: Record<PacsReturnBlockReason, string> = {
+  no_report: NO_ELIGIBLE_REPORT_MESSAGE,
+  not_finalized: NO_ELIGIBLE_REPORT_MESSAGE,
+  superseded_report: NO_ELIGIBLE_REPORT_MESSAGE,
+  no_study_uid:
+    "This study has no Study Instance UID, so the report cannot be linked to it in PACS. Nothing was uploaded — register or re-link the study, then archive.",
+  no_patient:
+    "This study has no patient record to attribute the report to, so nothing was uploaded.",
+  pcpndt_missing:
+    "PCPNDT Form-F has not been evaluated for this obstetric study, so nothing was uploaded. Complete the Form-F verification first.",
+  pcpndt_not_compliant:
+    "PCPNDT Form-F is not compliant for this patient, so nothing was uploaded. Correct the statutory record first.",
+};
 
 /**
  * The outcome of one archive run. Every field exists because a caller must be able to tell
@@ -218,15 +242,28 @@ async function evaluateArchiveEligibility(args: {
   patientDisplayId: string;
   reportRow: { id: number; status: string | null; signedAt: Date | null } | null;
   delivered: { reportId: number; sequenceNumber: number; superseded: boolean; latestReportId: number } | null;
-}): Promise<{ eligible: true; blockReasons: [] } | { eligible: false; blockReasons: string[] }> {
+}): Promise<
+  | { eligible: true; blockReasons: []; reasons: [] }
+  | { eligible: false; blockReasons: PacsReturnBlockReason[]; reasons: string[] }
+> {
   const { study, reportRow, delivered } = args;
 
+  // A legacy free-text final is authoritative when the finalization writers' own attribution columns
+  // are set — the text, the radiologist it is attributed to, and the instant it was reported. It is NOT
+  // keyed on `radiology_studies.status === "reported_final"`: of the four writers of that text, three set
+  // the status (peerReview.finalizeReport, internal-reporting-studio, the teleradiology submit) and one
+  // does not — POST /api/boundary/studies/:accession/report stores an attributed, dated final and only
+  // flips the status when the caller's payload happens to say "reported_final" (boundary.ts:372, and
+  // `status` is unvalidated there). Keying on the status silently stopped federated finals archiving,
+  // and a study already `delivered` to the patient could never be re-archived. Cancellation is the one
+  // status that must refuse: a cancelled examination has no report to file, whatever its columns hold.
   const legacyFinalText =
     !reportRow &&
-    study.status === "reported_final" &&
+    study.status !== "cancelled" &&
     typeof study.finalReport === "string" &&
     study.finalReport.trim().length > 0 &&
-    !!study.finalReportedBy;
+    !!study.finalReportedBy &&
+    !!study.finalReportedAt;
 
   const isObstetric = isObstetricUsgStudy(study.modality, study.studyDescription ?? "");
   const pcpndt = isObstetric ? await checkPcpndtFormFCompliance(study.patientId) : null;
@@ -259,9 +296,13 @@ async function evaluateArchiveEligibility(args: {
     ? decision.blockReasons.filter((r) => r !== "no_report" && r !== "not_finalized")
     : decision.blockReasons;
 
-  return blockReasons.length === 0
-    ? { eligible: true, blockReasons: [] }
-    : { eligible: false, blockReasons };
+  if (blockReasons.length === 0) return { eligible: true, blockReasons: [], reasons: [] as [] };
+
+  // Sentence order follows the policy's own reason order, so the most fundamental blocker is the one
+  // staff are shown: a study with no report stays on the owner's DECISION 2 sentence even if it also
+  // lacks a UID. `reasons` carries every blocker's own sentence for the record and the audit trail.
+  const reasons = [...new Set(blockReasons.map((r) => ARCHIVE_REFUSAL_SENTENCE[r]))];
+  return { eligible: false, blockReasons, reasons };
 }
 
 /** Append the refusal to the archive's own audit history. Best-effort by design: an audit write must
@@ -459,7 +500,8 @@ async function runArchiveReportToPacs(
       const refusal = {
         reason: "NO_ELIGIBLE_REPORT",
         blockReasons: eligibility.blockReasons,
-        message: NO_ELIGIBLE_REPORT_MESSAGE,
+        message: eligibility.reasons[0] ?? NO_ELIGIBLE_REPORT_MESSAGE,
+        reasons: eligibility.reasons,
         at: new Date().toISOString(),
       };
       // `pacsInstanceId` is deliberately NOT cleared: an earlier accepted object still exists in PACS,
@@ -474,9 +516,9 @@ async function runArchiveReportToPacs(
         success: false,
         refused: true,
         reason: refusal.reason,
-        message: NO_ELIGIBLE_REPORT_MESSAGE,
+        message: refusal.message,
         blockReasons: eligibility.blockReasons,
-        error: `PACS_ARCHIVE_REFUSED: ${NO_ELIGIBLE_REPORT_MESSAGE}`,
+        error: `PACS_ARCHIVE_REFUSED: ${refusal.message}`,
       } satisfies ArchiveOutcome;
     }
 

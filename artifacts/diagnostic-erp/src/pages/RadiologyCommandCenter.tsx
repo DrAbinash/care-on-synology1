@@ -44,8 +44,7 @@ import {
 import EmbeddedWadoViewer from "@/components/EmbeddedWadoViewer";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type WorklistEntry = {
-  id: number;
+type WorklistEntry = {  id: number;
   studyId: number | null;
   patientId: number | null;
   dicomPatientId: string | null;
@@ -73,6 +72,42 @@ type WorklistEntry = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * RIS-010 V3 (post-merge compatibility audit) — the archive can refuse for reasons that have nothing to
+ * do with a missing signature: no Study Instance UID to link the object to, no patient record, or a
+ * PCPNDT Form-F hold. `pacs_archive_response.blockReasons` is written by the server, so the badge names
+ * the blocker it was given. An unreadable or absent payload falls back to the neutral wording — never to
+ * a claim about signatures that the data does not support.
+ */
+function refusalBlockReasons(entry: { pacsArchiveResponse?: string | null }): string[] {
+  try {
+    const parsed = JSON.parse(String(entry.pacsArchiveResponse ?? "{}")) as { blockReasons?: unknown };
+    return Array.isArray(parsed.blockReasons) ? parsed.blockReasons.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function refusalLabel(entry: { pacsArchiveResponse?: string | null }): string {
+  const codes = refusalBlockReasons(entry);
+  if (codes.includes("no_study_uid")) return "Not Archived — No Study Instance UID";
+  if (codes.some((c) => c.startsWith("pcpndt"))) return "Not Archived — Form-F Hold";
+  if (codes.includes("no_patient")) return "Not Archived — No Patient Record";
+  if (codes.some((c) => c === "no_report" || c === "not_finalized" || c === "superseded_report")) {
+    return "Not Archived — No Signed Report";
+  }
+  return "Not Archived — See Retry";
+}
+
+function refusalDetail(entry: { pacsArchiveResponse?: string | null }): string {
+  try {
+    const parsed = JSON.parse(String(entry.pacsArchiveResponse ?? "{}")) as { message?: unknown };
+    return typeof parsed.message === "string" && parsed.message.trim() ? parsed.message : "No reason recorded.";
+  } catch {
+    return "No reason recorded.";
+  }
+}
 
 export default function RadiologyCommandCenter({ studyId }: { studyId?: number }) {
   const { studyId: routeStudyId } = useParams<{ studyId?: string }>();
@@ -472,11 +507,15 @@ export default function RadiologyCommandCenter({ studyId }: { studyId?: number }
                               Archive Failed
                             </Badge>
                           )}
-                          {/* RIS-010 DECISION 2 — nothing was filed because this examination has no
-                              finalized signed report. It is not a failure, so it must not read as one. */}
+                          {/* RIS-010 DECISION 2 — nothing was filed, and it is not a failure, so it must
+                              not read as one. RIS-010 V3 (post-merge audit) — the label names the blocker
+                              the archive actually reported instead of asserting a missing signature. */}
                           {study.pacsArchiveStatus === "refused" && (
-                            <Badge className="bg-slate-500/10 text-slate-300 border border-slate-500/25">
-                              Not Archived — No Signed Report
+                            <Badge
+                              className="bg-slate-500/10 text-slate-300 border border-slate-500/25"
+                              title={refusalDetail(study)}
+                            >
+                              {refusalLabel(study)}
                             </Badge>
                           )}
                           {(!study.pacsArchiveStatus || study.pacsArchiveStatus === "none") && (

@@ -74,11 +74,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import type { Express } from "express";
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray, and } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   billsTable,
   dicomRetryQueueTable,
+  formFRecordsTable,
   orderTestsTable,
   ordersTable,
   patientReportAmendmentsTable,
@@ -108,6 +109,14 @@ const edge = vi.hoisted(() => ({
   renderDelayMs: 0,
   seq: 0,
 }));
+
+// V6 drives the federated bridge's REAL route. `boundary.ts:47` captures the key at module load, so the
+// environment has to carry it before this file's import graph runs — a hoisted block is the only place
+// that is guaranteed to happen first.
+vi.hoisted(() => {
+  process.env.BOUNDARY_API_KEY = "ris10-boundary-key-for-tests";
+});
+const BOUNDARY_KEY = String(process.env.BOUNDARY_API_KEY);
 
 vi.mock("playwright", () => ({
   chromium: {
@@ -175,7 +184,7 @@ async function person(tag: string): Promise<{ id: number; displayId: string }> {
 /** A billed radiology study with a matched worklist row — the archive entrypoint's argument. */
 async function fixture(
   tag: string,
-  opts: { modality?: string; description?: string } = {},
+  opts: { modality?: string; description?: string; status?: string } = {},
 ): Promise<Fixture> {
   const suffix = `${RUN}-${tag}`;
   const [test] = await db
@@ -227,7 +236,7 @@ async function fixture(
       studyDescription: opts.description ?? "MRI Brain",
       studyInstanceUid: studyUid,
       referringDoctor: "Dr. Refer",
-      status: "acquired",
+      status: opts.status ?? "acquired",
     })
     .returning();
   const [worklist] = await db
@@ -1085,4 +1094,372 @@ describe.skipIf(!dbReady)("RIS-010 — the archive's approved transaction rules"
     expect(refusedRestore.body.affected[0].result).toMatchObject({ refused: true });
     expect(edge.posts).toHaveLength(2);
   }, 150_000);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // POST-MERGE COMPATIBILITY AUDIT — the owner's eight verification points of
+  // 2026-10-17, measured against main at `1a93e4e4` (the squash of #1050). These
+  // cases do NOT re-assert the six rules; they ask what the newly enforced gate
+  // does to work that was already working. V3 and V6 are written to FAIL on that
+  // commit: a refusal that names the wrong blocker, and a legacy final delivered
+  // by the federated bridge that the new predicate refuses, are both regressions
+  // the brief said to demonstrate before changing anything.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** One staff session that may read and sign reports (the suite's own staff token is /radiology only). */
+  let reporterToken = "";
+  async function reporter(): Promise<string> {
+    if (reporterToken) return reporterToken;
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name: `Dr Signatory ${RUN}`,
+        email: `ris10-reporter-${RUN}@vitest.invalid`,
+        username: `ris10-reporter-${RUN}`,
+        role: "radiologist",
+        permissions: JSON.stringify(["/reports", "/reports:sign", "/radiology"]),
+        pin: "0000",
+        isActive: true,
+      })
+      .returning();
+    reporterToken = `ris10-reporter-sess-${RUN}`;
+    await db.insert(portalSessionsTable).values({
+      token: reporterToken,
+      scope: "staff",
+      subjectId: user.id,
+      subjectName: user.name,
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    return reporterToken;
+  }
+
+  it("V1 — a missing StudyInstanceUID blocks the PACS association and nothing else: the same report signs, reads and renders", async () => {
+    const token = await reporter();
+    const f = await fixture("v1-nouid");
+    const reportId = await reportRow(f, {
+      signed: false,
+      body: "No acute intracranial haemorrhage. Ventricles are normal in calibre and configuration.",
+    });
+
+    // Signing is untouched by the archive's gate. Driven through the real route, not the column.
+    const signed = await request(app)
+      .post(`/api/patient-reports/${reportId}/sign`)
+      .set(auth(token))
+      .send({ signedByName: "Dr Signatory" });
+    expect(signed.status, `sign: ${signed.text}`).toBe(200);
+    const [row] = await db
+      .select({ signedAt: patientReportsTable.signedAt, status: patientReportsTable.status })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportId));
+    expect(row.signedAt).toBeTruthy();
+    expect(row.status).toBe("pending_verification");
+
+    // The read surface the reporting screen and the print path use, for the same report.
+    const read = await request(app).get(`/api/patient-reports/${reportId}`).set(auth(token));
+    expect(read.status, read.text).toBe(200);
+
+    // Now remove the association key only — the report is signed and unchanged.
+    await db
+      .update(radiologyStudiesTable)
+      .set({ studyInstanceUid: null })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+
+    const result = await archiveReportToPacs(f.studyId);
+    expect(result.success).toBe(false);
+    expect(result.refused).toBe(true);
+    expect(result.blockReasons).toContain("no_study_uid");
+    expect(edge.posts).toHaveLength(0);
+    expect(await readRevisions(f.studyId)).toHaveLength(0);
+
+    // The signed report itself is untouched by the refusal — same status, same signature instant.
+    const signedRow = await db
+      .select({ signedAt: patientReportsTable.signedAt, status: patientReportsTable.status })
+      .from(patientReportsTable)
+      .where(eq(patientReportsTable.id, reportId));
+    expect(signedRow).toEqual([row]);
+  }, 90_000);
+
+  it("V2 — the obstetric restriction IS the existing statutory Form-F engine: it never reaches a non-obstetric study, and it lifts when Form-F becomes compliant", async () => {
+    // Control: an MRI for a patient with NO Form-F record at all. PCPNDT is obstetric-only, so the
+    // archive must proceed — this is the proof the gate did not grow a second, broader compliance rule.
+    const mri = await fixture("v2-mri-no-formf");
+    await reportRow(mri, { signed: true, body: "MILD GLOBAL ATROPHYPERIOR CORTEX. NO FOCAL LESION." });
+    const mriResult = await archiveReportToPacs(mri.studyId);
+    expect(mriResult.success, JSON.stringify(mriResult)).toBe(true);
+    expect(edge.posts).toHaveLength(1);
+    expect(await db.select({ id: formFRecordsTable.id }).from(formFRecordsTable).where(eq(formFRecordsTable.patientId, mri.patientId))).toHaveLength(0);
+
+    // Same patient population, obstetric study: the statutory engine blocks it.
+    const usg = await fixture("v2-usg-obstetric", { modality: "US", description: "ULTRASOUND OBSTETRIC ANOMALY SCAN" });
+    await reportRow(usg, { signed: true, body: "FETAL ANATOMY AS DESCRIBED. PLACENTA POSTERIOR." });
+    const blocked = await archiveReportToPacs(usg.studyId);
+    expect(blocked.success).toBe(false);
+    expect(blocked.blockReasons?.some((r) => String(r).startsWith("pcpndt"))).toBe(true);
+    expect(edge.posts).toHaveLength(1); // only the MRI's object
+    expect(await readRevisions(usg.studyId)).toHaveLength(0);
+
+    // The engine's own verdict is what gated: satisfy the four statutory fields and it archives.
+    await db.insert(formFRecordsTable).values({
+      patientId: usg.patientId,
+      patientName: `Archive v2-usg-obstetric ${RUN}`,
+      husbandFatherName: "Ramesh K",
+      address: "12 MG Road, Pune",
+      consentDate: "2026-09-15",
+      idCardVerified: true,
+    });
+    const allowed = await archiveReportToPacs(usg.studyId);
+    expect(allowed.success, JSON.stringify(allowed)).toBe(true);
+    expect(edge.posts).toHaveLength(2);
+    expect((await readStudy(usg.studyId)).pacsArchiveStatus).toBe("success");
+  }, 120_000);
+
+  it("V3 — a refusal names the blocker it actually found, not one sentence for every cause", async () => {
+    // (a) The owner's sentence is correct where he wrote it: there is no report at all.
+    const none = await fixture("v3-no-report");
+    const empty = await archiveReportToPacs(none.studyId);
+    expect(empty.message).toBe(NO_REPORT);
+
+    // (b) A study whose report is signed and finalized but cannot be ASSOCIATED with a PACS study must
+    // not be described as lacking a signed report. Telling staff "no finalized signed report" sends them
+    // looking for a signature that is already there, while the missing DICOM UID stays invisible.
+    const f = await fixture("v3-signed-nouid");
+    await reportRow(f, { signed: true, body: "CAVUM SEPTI INTERVENTIUM INTACT. NO MASS." });
+    await db
+      .update(radiologyStudiesTable)
+      .set({ studyInstanceUid: null })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+    const uid = await archiveReportToPacs(f.studyId);
+    expect(uid.refused).toBe(true);
+    expect(uid.blockReasons).toContain("no_study_uid");
+    expect(uid.message, `refusal said: ${uid.message}`).not.toBe(NO_REPORT);
+    expect(uid.message).toMatch(/Study Instance UID/i);
+    // The blocker must survive into the record and the audit trail, not only into the returned object.
+    const study = await readStudy(f.studyId);
+    const stored = JSON.parse(String(study.pacsArchiveResponse)) as { message: string; reasons?: string[]; blockReasons?: string[] };
+    expect(stored.message).toMatch(/Study Instance UID/i);
+    expect(stored.blockReasons).toContain("no_study_uid");
+    expect((stored.reasons ?? []).join(" ")).toMatch(/Study Instance UID/i);
+    const audit = await auditDetails(f.accession, "PACS_ARCHIVE_REFUSED");
+    expect(JSON.stringify(audit[0].reasons)).toMatch(/Study Instance UID/i);
+    expect(audit[0].message).toMatch(/Study Instance UID/i);
+
+    // (c) A statutory hold must read as a statutory hold.
+    const usg = await fixture("v3-usg-blocked", { modality: "US", description: "OBSTETRIC GROWTH SCAN" });
+    await reportRow(usg, { signed: true, body: "FETAL WEIGHT BELOW 5TH CENTILE. AMNIOTIC FLUID REDUCED." });
+    const pcp = await archiveReportToPacs(usg.studyId);
+    expect(pcp.refused).toBe(true);
+    expect(pcp.message).not.toBe(NO_REPORT);
+    expect(pcp.message).toMatch(/Form-F|PCPNDT/i);
+  }, 120_000);
+
+  it("V4 + V5 — a refusal never damages the object PACS holds, and a signed amendment after it still archives as a new revision", async () => {
+    const f = await fixture("v4-v5-preserve");
+    const rootId = await reportRow(f, { signed: true, body: "TWO SMALL EXTRA-AXIAL LESIONS, LARGEST 8 MM LEFT FRONTAL." });
+    const first = await archiveReportToPacs(f.studyId);
+    expect(first.success).toBe(true);
+    const heldId = (await readStudy(f.studyId)).pacsInstanceId;
+    expect(heldId).toBe(first.instanceId);
+
+    // A refusal caused by a temporary association gap must not lose or repoint the archived object.
+    await db
+      .update(radiologyStudiesTable)
+      .set({ studyInstanceUid: null })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+    const refused = await archiveReportToPacs(f.studyId);
+    expect(refused.refused).toBe(true);
+    const during = await readStudy(f.studyId);
+    expect(during.pacsArchiveStatus).toBe("refused");
+    expect(during.pacsInstanceId, "a refusal destroyed the pointer to an object that still exists in PACS")
+      .toBe(heldId);
+    const still = await readRevisions(f.studyId);
+    expect(still).toHaveLength(1);
+    expect(still[0]).toMatchObject({ status: "success", reportId: rootId, orthancInstanceId: heldId });
+
+    // Re-associated: the unchanged revision is idempotent, so the gap costs nothing but the hold.
+    await db
+      .update(radiologyStudiesTable)
+      .set({ studyInstanceUid: f.studyUid })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+    const again = await archiveReportToPacs(f.studyId);
+    expect(again).toMatchObject({ success: true, idempotent: true, instanceId: heldId });
+    expect(edge.posts).toHaveLength(1);
+
+    // V5 — and a signed amendment is still a legitimate new revision, not a blocked one.
+    const amendedId = await reportRow(f, { signed: true, body: "THREE LESIONS NOW; LARGEST 11 MM. LEFT FRONTAL." });
+    await linkAmendment(rootId, amendedId);
+    const next = await archiveReportToPacs(f.studyId);
+    expect(next.success, JSON.stringify(next)).toBe(true);
+    expect(next.instanceId).not.toBe(heldId);
+    expect(edge.posts).toHaveLength(2);
+    const revisions = await readRevisions(f.studyId);
+    expect(revisions).toHaveLength(2);
+    const byReport = new Map(revisions.map((r) => [r.reportId, r]));
+    expect(byReport.get(rootId)).toMatchObject({ status: "superseded", orthancInstanceId: heldId });
+    expect(byReport.get(amendedId)).toMatchObject({ status: "success" });
+    expect((await readStudy(f.studyId)).pacsInstanceId).toBe(next.instanceId);
+  }, 150_000);
+
+  it("V6 — an attributed legacy final delivered by the federated bridge keeps archiving (the bridge does not flip the study status)", async () => {
+    const f = await fixture("v6-bridge", { status: "acquired" });
+    const reportedAt = new Date(Date.now() - 60_000).toISOString();
+
+    // The supported workflow, driven for real: POST /api/boundary/studies/:accession/report. The route
+    // stores `status: status === "reported_final" ? "reported_final" : study.status` (boundary.ts:372) —
+    // `status` is caller-supplied and unvalidated, so a service that omits it leaves the study as
+    // `acquired` while storing an attributed, dated final report and auditing REPORT_FINAL.
+    const pushed = await request(app)
+      .post(`/api/boundary/studies/${f.accession}/report`)
+      .set({ "x-boundary-key": BOUNDARY_KEY })
+      .send({ finalReportText: "DIFFUSE HEPATIC STEATOSIS. NO FOCAL LESION. GALLBLADDER NORMAL.", reportedBy: "Dr Bridge", reportedAt });
+    expect(pushed.status, pushed.text).toBe(200);
+
+    const legacy = await readStudy(f.studyId);
+    expect(legacy.finalReport).toContain("DIFFUSE HEPATIC STEATOSIS");
+    expect(legacy.finalReportedBy).toBe("Dr Bridge");
+    expect(legacy.finalReportedAt).toBeTruthy();
+    expect(legacy.status).toBe("acquired"); // the bridge left it alone — that is its documented behaviour
+    expect((await auditDetails(f.accession, "REPORT_FINAL"))).toHaveLength(1);
+    expect(await db.select({ id: patientReportsTable.id }).from(patientReportsTable).where(eq(patientReportsTable.studyId, f.worklistId))).toHaveLength(0);
+
+    // DECISION 1's own test of this shape is about the TEXT being authored, attributed and final — not
+    // about one status spelling that only two of the four finalization writers are guaranteed to set.
+    const result = await archiveReportToPacs(f.studyId);
+    expect(result.refused, `bridge-delivered legacy final was refused: ${JSON.stringify(result)}`).toBeFalsy();
+    expect(result.success).toBe(true);
+    expect(edge.posts).toHaveLength(1);
+    expect(edge.rendered[0]).toContain("DIFFUSE HEPATIC STEATOSIS");
+    expect(edge.posts[0].tags.AccessionNumber).toBe(f.accession);
+
+    // …and the DECISION 1 property still holds where it should: a preliminary-only legacy study has no
+    // final text, so nothing is filed. Removing the status equality must not reopen the placeholder.
+    const prelim = await fixture("v6-prelim-only", { status: "prelim_ready" });
+    await db
+      .update(radiologyStudiesTable)
+      .set({ prelimReport: "Preliminary read only: correlate clinically.", finalReport: null, finalReportedBy: null, finalReportedAt: null })
+      .where(eq(radiologyStudiesTable.id, prelim.studyId));
+    const held = await archiveReportToPacs(prelim.studyId);
+    expect(held.refused).toBe(true);
+    expect(edge.posts).toHaveLength(1);
+    for (const html of edge.rendered) expect(html).not.toContain("Preliminary read only");
+
+    // Widening the legacy predicate to the attribution columns makes the examination's own state the one
+    // thing that has to stay a bar: a CANCELLED study can carry an attributed final text from before the
+    // cancellation, and that text must not reach PACS under a withdrawn examination.
+    const cancelled = await fixture("v6-cancelled", { status: "cancelled" });
+    await db
+      .update(radiologyStudiesTable)
+      .set({
+        finalReport: "TEXT WRITTEN BEFORE THE EXAMINATION WAS CANCELLED",
+        finalReportedBy: "Dr Bridge",
+        finalReportedAt: new Date(),
+      })
+      .where(eq(radiologyStudiesTable.id, cancelled.studyId));
+    const voided = await archiveReportToPacs(cancelled.studyId);
+    expect(voided.refused, JSON.stringify(voided)).toBe(true);
+    expect(voided.blockReasons).toContain("no_report");
+    expect(edge.posts).toHaveLength(1);
+  }, 120_000);
+
+  it("V7 — only the authorized restore bypasses the duplicate guard, and every object it puts in PACS stays findable", async () => {
+    const f = await fixture("v7-restore-visible");
+    await reportRow(f, { signed: true, body: "RIGHT MCA TERRITORY INFARCT, SUBACUTE." });
+    const first = await archiveReportToPacs(f.studyId);
+    expect(first.success).toBe(true);
+
+    // Ordinary Retry cannot produce a second object, from any entrypoint.
+    expect((await archiveReportToPacs(f.studyId)).idempotent).toBe(true);
+    expect(edge.posts).toHaveLength(1);
+
+    // The authorized restore does — and it is the only thing that can.
+    const restore = await request(app)
+      .post("/api/radiology-ops/repair")
+      .set(auth(adminToken))
+      .send({ action: "restore_archived_report", dryRun: false, confirmToken: RESTORE_TOKEN, studyId: f.studyId, reason: RESTORE_REASON });
+    expect(restore.status).toBe(200);
+    expect(restore.body.executed).toBe(true);
+    expect(edge.posts).toHaveLength(2);
+
+    // Nothing is silent: both accepted objects are named in the audit history, and the restore itself
+    // is attributed to the admin who asked for it with the reason he gave.
+    const successes = await auditDetails(f.accession, "ORTHANC_UPLOAD_SUCCESS");
+    const instances = new Set(successes.map((s) => s.instanceId ?? s.InstanceId));
+    expect(successes).toHaveLength(2);
+    expect(instances.size).toBe(2);
+    const forced = await auditDetails(f.accession, "PACS_ARCHIVE_RESTORE_FORCED");
+    expect(forced).toHaveLength(1);
+    expect(forced[0]).toMatchObject({ reason: RESTORE_REASON });
+    const [forcedRow] = await db
+      .select({ actor: radiologyAuditLogTable.actor })
+      .from(radiologyAuditLogTable)
+      .where(and(
+        eq(radiologyAuditLogTable.accessionNumber, f.accession),
+        eq(radiologyAuditLogTable.action, "PACS_ARCHIVE_RESTORE_FORCED"),
+      ));
+    expect(String(forcedRow.actor)).toContain("Ops Admin");
+
+    // A second restore is still deliberate, still audited, and the guard is re-armed afterwards.
+    const again = await request(app)
+      .post("/api/radiology-ops/repair")
+      .set(auth(adminToken))
+      .send({ action: "restore_archived_report", dryRun: false, confirmToken: RESTORE_TOKEN, studyId: f.studyId, reason: RESTORE_REASON });
+    expect(again.body.executed).toBe(true);
+    expect(edge.posts).toHaveLength(3);
+    expect((await auditDetails(f.accession, "ORTHANC_UPLOAD_SUCCESS"))).toHaveLength(3);
+    const settled = await archiveReportToPacs(f.studyId);
+    expect(settled).toMatchObject({ success: true, idempotent: true });
+    expect(edge.posts).toHaveLength(3);
+
+    // Without the token or the reason it is not available at all, so no caller can duplicate by accident.
+    const noToken = await request(app)
+      .post("/api/radiology-ops/repair")
+      .set(auth(adminToken))
+      .send({ action: "restore_archived_report", dryRun: false, studyId: f.studyId, reason: RESTORE_REASON });
+    expect(noToken.status).toBe(400);
+    expect(edge.posts).toHaveLength(3);
+  }, 180_000);
+
+  it("V8 — a terminal archive failure is visible to an administrator without writing SQL", async () => {
+    const f = await fixture("v8-dead-letter");
+    await reportRow(f, { signed: false, body: "EQUIVOCAL STUDY, NO SIGNATURE YET." });
+    const job = await runRearchiveJob(f, f.reportIds[0]);
+    expect(job.ok).toBe(false);
+    expect(job.status).toBe("abandoned");
+
+    const list = await request(app).get("/api/radiology-ops/jobs/dead-letter").set(auth(adminToken));
+    expect(list.status).toBe(200);
+    // `listDeadLetterJobs` projects id/operationType/entityType/entityId/retryCount/maxRetries/
+    // failureReason/createdAt/lastAttemptedAt — no `status`, because the query is already
+    // `WHERE status = 'abandoned'` (radiologyJobs.ts:353-367). The reason text is what an admin reads.
+    const forStudy = (list.body.jobs as Array<{ entityId: number; failureReason: string | null }>)
+      .filter((r) => r.entityId === f.studyId);
+    expect(forStudy.length, "the abandoned archive job is not in the dead-letter view").toBeGreaterThan(0);
+    expect(forStudy[0].failureReason).toContain(NO_REPORT);
+
+    // The divergence DECISION 6 can leave is detectable from the records alone: a revision that says the
+    // object is in PACS while the study summary says otherwise.
+    const reportId = await reportRow(f, { signed: true, body: "SIGNED AFTER THE FIRST REFUSAL." });
+    const ok = await archiveReportToPacs(f.studyId);
+    expect(ok.success).toBe(true);
+    await db
+      .update(radiologyStudiesTable)
+      .set({ pacsArchiveStatus: "failed", pacsInstanceId: null, pacsArchiveResponse: JSON.stringify({ error: "simulated lost write" }) })
+      .where(eq(radiologyStudiesTable.id, f.studyId));
+    const divergent = await db
+      .select({ reportId: radiologyPacsArchiveRevisionsTable.reportId, instanceId: radiologyPacsArchiveRevisionsTable.orthancInstanceId })
+      .from(radiologyPacsArchiveRevisionsTable)
+      .where(and(
+        eq(radiologyPacsArchiveRevisionsTable.studyId, f.studyId),
+        eq(radiologyPacsArchiveRevisionsTable.status, "success"),
+      ));
+    expect(divergent).toHaveLength(1);
+    expect(divergent[0].instanceId).toBe(ok.instanceId);
+    const audit = await auditDetails(f.accession, "ORTHANC_UPLOAD_SUCCESS");
+    expect(audit.length).toBeGreaterThan(0);
+
+    // Recovery from that state uploads nothing.
+    const repaired = await archiveReportToPacs(f.studyId);
+    expect(repaired).toMatchObject({ success: true, idempotent: true, instanceId: ok.instanceId });
+    expect((await readStudy(f.studyId)).pacsInstanceId).toBe(ok.instanceId);
+    expect(reportId).toBeGreaterThan(0);
+  }, 120_000);
 });
+
