@@ -38,7 +38,7 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-007 | CT/DICOM pull: "success" without received instances | P1 | A study believed acquired but never arrived | CONFIRMED (code) / NOT REPRODUCIBLE live | `dimse-agent.ts:363`, `:488` | none yet | — | no | n/a |
 | RIS-008 | Re-verify RIS-001's matrix after the merges on main | P1 | Regression in format selection | RE-RUN GREEN (`studyRegion.test.ts` 39/39 at `b2ecdef9`, which is current main plus the archive fix only) | `tmp/ris008-009.log` (gitignored) | — | — | n/a | no |
 | RIS-009 | Re-verify RIS-002 across Next / Previous / Park / deep link | P1 | Regression in viewer identity | PARTIAL — the two source-contract guards are green; the Chromium multi-navigation re-probe was **not** re-run this session | `viewerStudyScopedReset.contract.test.ts` 2/2 | — | — | n/a | no |
-| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both now fixed on Draft **PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 (Draft)**, branch `audit/ris010-post-merge-compatibility`, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. **After the closeout rebase onto main `0bca78ca` the Tests job is red — on main's own nginx guard test, which this PR does not touch** (see the CI note under the stage table) | **yes** for #1050 | **no** |
+| RIS-010 | PACS archive transaction safety (races, double archive, amend-after-archive) | P1 | Duplicate or superseded report filed as current | **MERGED, then post-merge compatibility audited**: the enforcement pass is on `main`; the audit found **2 demonstrated regressions**, both fixed and **MERGED through PR #1053**. Nothing deployed, nothing clinically verified | enforcement suite `pacsArchive.transaction.request.test.ts` **21 / 21** on real PostgreSQL; neighbours **244 tests / 13 files**; battery **28 mutants = 23 DETECTED with the owning case named + 5 EXPECTED-SURVIVE, 0 unexplained**; Command Center refusal badge **8/8 in real Chromium — control on `main`'s component 4/8**; typecheck adds nothing (see the audit numbers below) | evidence **#1048 → MERGED `1394ab79`**; enforcement **#1050 → MERGED `1a93e4e4`**; audit follow-up **PR #1053 → MERGED `9664a967`**, code commit `52434abb` | #1050 **green** (measured from the Actions log); **#1053 green** on `c1d868a1` (all three jobs, measured 2026-10-17 04:29Z from the Actions log, not from the tick): `Test Files 1086 passed | 5 skipped (1091)`, `Tests 14576 passed | 49 skipped (14625)`, and the line that matters — `✓ pacsArchive.transaction.request.test.ts (20 tests) 5562ms`, i.e. the suite **executed** on CI's `postgres:16-alpine` instead of `describe.skipIf`-ing away. and **#1053 merged green** on its final head `00fe117e` (21 tests executed on CI's Postgres 16) | **yes** — #1050 `1a93e4e4`, #1053 `9664a967` | **no** |
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 | **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → PR #1054** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | branch `clinical/canal-ap-one-authority` | pending — see §RIS-013 | no | **no** |
@@ -244,10 +244,10 @@ viewer behaviour is proven by mounting the shipped component in a scratch Vite p
 |---|---|---|
 | CONFIRMED | yes | five behaviours measured against real PostgreSQL in `pacsArchive.transaction.request.test.ts` at `877701f9`, not inferred from source |
 | RULED | yes | the owner's six approved decisions, 2026-10-17 (transcribed below) |
-| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, on **PR #1053 (Draft)**, code commit `52434abb` |
+| IMPLEMENTED | yes, on `main` | `fix/ris010-archive-transaction-rules`, commit `7ac9662a`, **PR #1050** — 8 files, no migration, no new table, no new flag. The post-merge compatibility audit then needed **two more corrections**, merged as **PR #1053 → `9664a967`** (code commit `52434abb`) |
 | TESTED | yes, locally | **21/21** request-level cases (13 enforcement + 8 compatibility) + **243** tests across the 13 affected files + **26**-mutant battery + real-Chromium UI probe **8/8** |
 | CI GREEN | **yes for this queue's own work; #1053 is blocked by main, not by itself** — see the CI note under this table | All three jobs success. The suite line, read out of the Actions log rather than taken from the green tick: `Test Files 1086 passed \| 5 skipped (1091)`, `Tests 14569 passed \| 49 skipped (14618)`, and the specific line `✓ artifacts/api-server/src/lib/pacsArchive.transaction.request.test.ts (13 tests) 2501ms` — **13 executed, not skipped**, on CI's `postgres:16-alpine`, with `DATABASE_URL: ***localhost:5432/care_test` printed by the job. `pacsArchive.reportScope.request.test.ts (13 tests)` and `pacsArchive.d8.test.ts (3 tests)` also ran green there, so the enforcement suite is proven on the CI version too, not only on this box's 18.3. **#1053 (the audit follow-up) is green the same way** — 20 tests executed on `c1d868a1`, and again on `376153a2`. |
-| MERGED | **yes for the enforcement pass** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
+| MERGED | **yes for both passes** | #1048 merged as `1394ab79` ("measured, no fix"); **#1050 merged as `1a93e4e4`**, closed by the owner 2026-10-17 03:00Z. It was created Ready by the operator's own tooling — `PATCH {draft:true}` and `convert-to-draft` are both refused with this token, so the standing "Draft" instruction could not be honoured on that PR. The **audit follow-up is open as Draft PR #1053**, and is the first thing the owner should read below, because it changes two of the sentences #1050 shipped |
 | DEPLOYED | no | the NAS is not reachable from this session; `deploy-synology.sh` was not run |
 | CLINICALLY VERIFIED | no | nothing has been observed in the clinic |
 
@@ -282,9 +282,12 @@ a disposable container: `curl -si -X POST …/api/ledgers/2/reset` expecting 410
 the same against any `/api/` path with the api container stopped expecting 502 + `text/html`. If the second
 prints JSON, this paragraph is wrong and the guard's comment is right.
 
-**#1053's own content was verified green twice** (`c1d868a1`, `376153a2`), and it was rebased onto the green
-main for the closeout: that rebase pulled in #1059's test file only, leaving this PR's four files
-byte-identical.
+**#1053 was then closed out on a green main**: rebased onto `3d54c552` (which pulled in #1059's test file and
+#1054's canal-AP work only, leaving this PR's four files byte-identical), CI green on the final head
+`00fe117e` with `✓ pacsArchive.transaction.request.test.ts (21 tests) 5155ms` executed on
+`postgres:16-alpine`, marked ready, and **squash-merged as `9664a967`**. `git diff origin/main HEAD` after
+the merge is empty, so main's tree is exactly what was reviewed. **Still not deployed and not clinically
+verified** — the clinic's archive behaviour changes only when `deploy-synology.sh` runs.
 
 **MERGED is not DEPLOYED. DEPLOYED is not CLINICALLY VERIFIED.** The clinic's archive behaviour is
 still the one described in the "What #1048 measured" section below until #1050 **and** the audit
@@ -970,7 +973,23 @@ also fail-closes a study with no `StudyInstanceUID`, a non-compliant obstetric F
 revision — states the archive used to accept; and the legacy free-text final, which stays eligible,
 cannot be idempotency-keyed because the revision table's key is a `patient_reports` id.
 
-_Last updated: 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
+_Last updated: 2026-10-17 (fifth pass) — **the audit follow-up is merged.** The owner reviewed the two
+compatibility fixes, accepted the clinical direction of both, and set five behaviours as approved: a refusal
+must name the actual blocking condition; a missing `StudyInstanceUID` must not block ordinary signing; the
+Form-F restriction stays the existing statutory policy; attributed finals arriving through the boundary
+workflow remain archivable; a cancelled examination remains ineligible. Before merge he asked for the
+closeout checks — fetch main, check overlap, re-run if a rebase changes code, verify CI on the final head,
+**prove no unsigned or cancelled report can reach PACS through the legacy predicate**, and keep the legacy
+idempotency limitation in this file. All of it is above: case **V9** plus mutants **N17/N18** are what turn
+"the predicate checks `!reportRow`" from a reading into a measured property (a withdrawn signature leaves
+its legacy text behind, and that text cannot re-open an archive). #1053 merged as `9664a967` on a green CI
+run of its final head. Two side notes recorded where they belong: main's own red from `0bca78ca` was cleared
+by **#1059**, and the parallel branch written here (**#1060**) was closed superseded rather than merged, with
+the one factual disagreement it carried written up above. **Nothing is deployed and nothing is clinically
+verified** — until `deploy-synology.sh` runs on the NAS, the clinic still archives the way it did before
+#1050._
+
+_Previous pass, 2026-10-17 (fourth pass) — **RIS-010 post-merge compatibility audit.** PR **#1050 merged
 as `1a93e4e4`**, so the six rulings are on `main`; the audit then asked the owner's eight compatibility
 questions of the merged code by **running** the request suite on `main`. Six were already sound (a missing
 UID blocks only the association, signing and printing unaffected; the obstetric restriction is the existing
