@@ -150,10 +150,38 @@ export const IMPRESSION_PRIORITY: ImpressionPriorityRule[] = [
   },
   {
     /**
-     * The owner's ruling of 2026-10-18: a protrusion that reaches the sac is a
-     * significant structural problem and belongs with spondylolisthesis, not with
-     * the bulges. Ranked 8 to sit in the same tier, so within it the order is
-     * anatomical rather than whatever the mouse produced.
+     * The owner's ruling of 2026-10-18, first clause: significant neural compression
+     * outranks an uncomplicated spondylolisthesis. A disc that says what it does to the
+     * sac or a root states that compression, so it is a compressive statement, not a
+     * structural one, and it leaves the structural tier.
+     *
+     * Rank 6 is the whole of the decision, and it is deliberately not 4. The shipped
+     * table already ranks definite nerve-root compression at 4 and any canal or foraminal
+     * stenosis at 3/5, and the owner has not ruled that sac indentation outranks a
+     * moderate central stenosis or a definite root compression — only that it outranks an
+     * uncomplicated slip. Promoting it to 4 would have re-sequenced stenosis reports on
+     * an inference; 6 moves it exactly as far as the ruling goes, into the tier the focal
+     * extrusion already occupies.
+     *
+     * It matches at the same earliest position as `disc-protrusion-herniation` (both
+     * start on "disc …"), and `rankImpressionLine` breaks an equal-position tie on the
+     * lower rank, so this rule wins precisely when the sentence carries the compression
+     * verb and loses precisely when it does not. No compression clause, no promotion.
+     */
+    id: "disc-compressing-neural-elements",
+    label: "disc pathology compressing neural elements",
+    rank: 6,
+    re: /\bdisc (?:protrusion|herniation|prolapse|extrusion)\b[^.]*\b(?:compress\w*|imping\w*|indent\w*|effac\w*|flattening)\b[^.]*\b(?:thecal sac|dural sac|spinal cord|cauda equina|nerve root|root)\b|\b(?:thecal|dural) sac (?:compression|flattening|indentation)\b/i,
+  },
+  {
+    /**
+     * The owner's ruling of 2026-10-18, second clause: a disc herniation that says only
+     * that it herniated does NOT automatically outrank a spondylolisthesis. It stays in
+     * this structural tier, tied with the slip at rank 8, and the comparator resolves the
+     * tie on anatomy then the stable rule id — never on the mouse. The earlier note here
+     * read the same ruling as putting a sac-reaching protrusion *with* the slip; the
+     * ruling is about a non-compressive herniation, and a protrusion that reaches the sac
+     * is compressive, so it is classified by `disc-compressing-neural-elements` above.
      */
     id: "disc-protrusion-herniation",
     label: "disc protrusion / herniation",
