@@ -444,33 +444,45 @@ describe("A4 — the switch is the radiologist's, and defaults on", () => {
 });
 
 describe("A5 — an unpressed pass never deletes the Conclusion", () => {
-  const lsCtx = buildReportingStudyContext({
-    modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
-  });
-
+  // These four guards ran on MRI LS Spine until 2026-10-19, because that is the report
+  // the clinic presses most. The lumbar conclusion set (#1067) made that impossible to
+  // test here: every abnormal lumbar box now ships an approved conclusion, so the
+  // premise these guards need — a shipped box that writes Findings and concludes
+  // nothing — no longer exists on a lumbar report (measured: 20 LS findings tiles, 19
+  // conclude, and the only one that does not is `Normal LS spine`). The assertions are
+  // unchanged; they moved to Cervical Spine, which still ships nine Findings-only
+  // abnormal boxes.
+  //
+  // What that costs, stated rather than hidden: on a lumbar report the
+  // "impression-undecided" hold is now unreachable. Pressing no box leaves the approved
+  // normal standing, so there is nothing to hold; pressing any abnormal box writes a
+  // conclusion, so the Impression is answered. These four tests are the only place that
+  // code path is asserted (measured: every `impression-undecided` assertion in the repo
+  // is in this describe), and they now assert it on cervical prose. If a lumbar box is
+  // ever shipped again without a conclusion, the guard is here for it.
   beforeEach(() => {
-    resetWorkspace(lsCtx);
+    resetWorkspace(cervicalCtx);
     networkSpy();
   });
 
   it("keeps a Conclusion when the box the radiologist clicked writes Findings only", () => {
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const approvedNormal = useWorkspace.getState().impressionText;
     expect(approvedNormal).toMatch(/Normal MRI/i);
 
     // Shipped catalogue content, not a hand-made payload: this box is abnormal, it
     // carries a concept so it retires the scaffold's disc normal, and it has no
     // `impressionSentence` — so nothing in the ledger concludes for it.
-    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc bulge L3-L4");
-    if (!box) throw new Error("the shipped LS Spine catalogue no longer has Disc bulge L3-L4");
+    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
+    if (!box) throw new Error("the shipped Cervical Spine catalogue no longer has Disc desiccation C5-C6");
     expect((box.impressionSentence ?? "").trim()).toBe("");
     expect(useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box, "findings")))
       .not.toBe("refused");
 
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const state = useWorkspace.getState();
     // The Findings half of Mode A is the wanted half.
-    expect(state.findingsText).toContain("Disc bulge at L3-L4");
+    expect(state.findingsText).toContain("Loss of T2 signal (desiccation) of the C5-C6 disc.");
     // The unpressed pass may not answer "what is the impression?" with nothing. An
     // empty Impression is not a judgement the engine is entitled to make: it is a
     // silent clinical mutation, and the report the radiologist is reading now makes
@@ -480,28 +492,30 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     // already render, plus the canvas reason naming what has to be written.
     expect(state.impressionNeedsRefresh).toBe(true);
     expect(state.instantReportHold?.code).toBe("impression-undecided");
-    // Measured residual, recorded rather than fixed here: the generator's own merge
-    // had already dropped the "Normal MRI of the lumbosacral spine." line, so the
-    // sentence left standing ("No significant disc, canal, foraminal or neural
-    // compressive abnormality.") still contradicts the bulge in the Findings. That
-    // merge is the pressed path's own and predates Mode A — see the second test
-    // below and the control at 8d14b121 — and which normal sentence a box falsifies
-    // is authored clinical content, not something this engine may decide.
+    // Measured residual, recorded rather than fixed here (re-measured on this cervical
+    // report, same shape as the lumbar one it was written on): the generator's own merge
+    // had already dropped the "Normal MRI of the cervical spine." line, so the sentence
+    // left standing ("No significant disc, canal, foraminal or cord compressive
+    // abnormality.") still contradicts the desiccation in the Findings. That merge is the
+    // pressed path's own and predates Mode A — see the second test below — and which
+    // normal sentence a box falsifies is authored clinical content, not something this
+    // engine may decide.
   });
 
   it("a press still rebuilds the Conclusion down to nothing", () => {
     // The guard is about nobody having asked. Pressing Generate is the radiologist
     // commanding the whole report be rebuilt from the ledger, and the ledger says
     // what it says; a rule that silenced their own press would be Mode A claiming
-    // authority over the doctor. Measured at 8d14b121 on the pristine control: the
-    // same box, pressed, leaves "" there too — this is inherited behaviour, and this
-    // test is the control that keeps the automatic guard from quietly widening.
-    resetWorkspace(lsCtx);
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
-    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc bulge L3-L4");
+    // authority over the doctor. Re-measured on this cervical box after the move:
+    // pressed, the Impression is "" — the ledger holds no conclusion for a desiccation
+    // finding — so the press path is unchanged and this test stays the control that
+    // keeps the automatic guard from quietly widening.
+    resetWorkspace(cervicalCtx);
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
+    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
     useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
-    useWorkspace.getState().generateProfessionalReport(lsCtx);
-    expect(useWorkspace.getState().findingsText).toContain("Disc bulge at L3-L4");
+    useWorkspace.getState().generateProfessionalReport(cervicalCtx);
+    expect(useWorkspace.getState().findingsText).toContain("Loss of T2 signal (desiccation) of the C5-C6 disc.");
     expect(useWorkspace.getState().impressionText).toBe("");
   });
 
@@ -511,13 +525,13 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     // pass still answers with the same code — including the ones that write no prose
     // at all, which is where an unreported hold would otherwise go silent while the
     // amber "needs refresh" flag stayed on screen.
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
-    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc bulge L3-L4");
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
+    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
     useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     const impression = useWorkspace.getState().impressionText;
     for (let i = 0; i < 5; i += 1) {
-      const again = useWorkspace.getState().composeInstantReport(lsCtx, false);
+      const again = useWorkspace.getState().composeInstantReport(cervicalCtx, false);
       expect(again.action === "hold" && again.code).toBe("impression-undecided");
       expect(useWorkspace.getState().instantReportHold?.code).toBe("impression-undecided");
       expect(useWorkspace.getState().impressionText).toBe(impression);
@@ -528,18 +542,18 @@ describe("A5 — an unpressed pass never deletes the Conclusion", () => {
     // "write it; this pass will not overwrite what you type" is a promise, so it is
     // tested: the radiologist types a Conclusion over a held pass, another finding
     // arrives, and the hand-written line is still the Impression.
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
-    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc bulge L3-L4");
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
+    const box = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Disc desiccation C5-C6");
     useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(box!, "findings"));
-    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     expect(useWorkspace.getState().instantReportHold?.code).toBe("impression-undecided");
 
-    const written = "L3-L4 disc bulge, no nerve root compression.";
+    const written = "C5-C6 disc desiccation without canal compromise.";
     useWorkspace.getState().setField("impression", written, { source: "manual" });
-    const other = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Facet arthropathy L4-L5");
+    const other = DEFAULT_QUICK_SELECT_TILES.find((t) => t.label === "Modic change C5-C6");
     expect(other).toBeTruthy();
     useWorkspace.getState().applyPathologyOverlay(quickSelectTilePatch(other!, "findings"));
-    const outcome = useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const outcome = useWorkspace.getState().composeInstantReport(cervicalCtx, false);
     expect(outcome.action === "hold" && outcome.code).toBe("manual-impression");
     expect(useWorkspace.getState().impressionText).toBe(written);
   });
