@@ -46,6 +46,23 @@ export function escapeHtml(s: string | null | undefined): string {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+/**
+ * `**emphasis**` / `__emphasis__` in a plain-text report field, folded into the
+ * bold the printed page already uses. The two patterns are exactly the ones the
+ * in-app PDF applies (`reportPdfGenerator.parseInlineMarkdown`), so one report
+ * cannot print bold on the PDF and a literal `**` on the paper.
+ *
+ * Takes ALREADY-ESCAPED text: the only markup this introduces is the tag it writes
+ * itself, which is why every call site escapes first rather than after.
+ */
+export function inlineEmphasisHtml(escaped: string): string {
+  return escaped.replace(
+    /\*\*([^*]+)\*\*|__([^_]+)__/g,
+    (_whole, starRun: string | undefined, underscoreRun: string | undefined) =>
+      `<strong>${starRun ?? underscoreRun}</strong>`,
+  );
+}
+
 // ── Document model (Phase 9 — slot-separated content) ───────────────────────
 
 export interface ReportClinicHeader {
@@ -616,17 +633,21 @@ export function renderReportDocument(
 
   /** A radiology impression is the clinical bottom line, so the sentence itself
    *  is bold, not just the label. Pathology reports keep the existing shape —
-   *  their impression block carries structured sub-headings. */
+   *  their impression block carries structured sub-headings.
+   *
+   *  MODE A presentation contract: the impression and the plain-text body are the
+   *  two fields a radiologist (or an accepted draft) can type markdown into, so
+   *  emphasis is folded into the page's own bold rather than printed as `**`. */
   const impressionBlockHtml = model.impression
     ? model.typeLabel === "RADIOLOGY"
-      ? `<div class="impression"><strong>Impression: ${escapeHtml(model.impression)}</strong></div>`
-      : `<div class="impression"><strong>Impression:</strong> ${escapeHtml(model.impression)}</div>`
+      ? `<div class="impression"><strong>Impression: ${inlineEmphasisHtml(escapeHtml(model.impression))}</strong></div>`
+      : `<div class="impression"><strong>Impression:</strong> ${inlineEmphasisHtml(escapeHtml(model.impression))}</div>`
     : "";
 
   const bodyHtml = model.bodyHtml
     ? `<div class="body">${model.bodyHtml}</div>`
     : model.bodyText
-      ? `<div class="body">${escapeHtml(model.bodyText)}</div>`
+      ? `<div class="body">${inlineEmphasisHtml(escapeHtml(model.bodyText))}</div>`
       : "";
 
   const qrHtml = qrVisible ? `
