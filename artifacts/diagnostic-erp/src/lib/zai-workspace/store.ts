@@ -212,6 +212,9 @@ import {
 } from "@/lib/conceptCanon/normalImpression";
 import { isImpressionworthyAbnormal } from "@/lib/conceptCanon/contentPacks";
 import { withheldMergedImpression } from "./mergeImpressionGuard";
+import {
+  claimRetiredBaselines, mergedFindingsWithdrawal, retainedNormalReviewWarnings, withdrawSupersededNormals,
+} from "./withdrawSupersededNormals";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
 import {
@@ -2460,9 +2463,33 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         get().appliedPathologyPatches,
         { findings: get().findingsText, impression: get().impressionText },
       );
+      // RULING 3 (#174) — the baseline is materialized BEFORE this door writes any text,
+      // because the slots it is about to declare are exactly the ones the report's live
+      // abnormality may already have retired. Measured on the shipped catalogue before
+      // this, applying "MRI LS Spine — Standard Normal" over a clicked L4-L5 herniation
+      // put "L4-L5: No significant disc bulge or protrusion is seen." back on the page
+      // AND back on the ledger (39/39 normal lines, both rows live), so the Findings
+      // section asserted the disc was normal three lines above the disc that is not.
+      const baselineRegion = pendingRegion || get().reportingContext.region || f.bodyPart;
+      const formatBaselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
+        id: p.id,
+        ownership: ownershipFromObservation(p.observation),
+        templates: p.templates,
+        lastRendered: p.lastRendered,
+        source: p.source,
+        observation: p.observation,
+        replacedBaseline: p.replacedBaseline,
+        protected: p.protected,
+      }));
+      const normals = withdrawSupersededNormals({
+        incoming: clinical.findings,
+        baselineRows: formatBaselinePatches,
+        livePatches: get().appliedPathologyPatches,
+        assertsAbnormality,
+      });
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
       if (assertsAbnormality) {
-        get().mergeField("findings", clinical.findings, "template");
+        get().mergeField("findings", normals.incoming, "template");
       } else {
         get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
       }
@@ -2493,31 +2520,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // report's clinical content now, and a stale row is dropped by the next rebuild
       // — so the saved-and-reopened report would come back normal under an abnormal
       // Findings section.
+      const priorObservations = get().appliedPathologyPatches.filter(
+        (p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p),
+      );
+      // RULING 3 — record on each abnormal observation's own record which normal sentence
+      // this door withdrew for its sake. A deselection restores what the removed
+      // observation declares, and it declares only `replacedBaseline` plus its canonical
+      // claim; a door that withheld a sentence without saying so left the ledger holding a
+      // live baseline row with no prose on the page.
       const stalePatches = assertsAbnormality
-        ? get().appliedPathologyPatches.filter(
-            (p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p),
-          )
-        : get().appliedPathologyPatches
-            .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
-            .map((p) => ({ ...p, stale: true as const }));
-      const baselineRegion = pendingRegion || get().reportingContext.region || f.bodyPart;
-      const formatBaselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
-        id: p.id,
-        ownership: ownershipFromObservation(p.observation),
-        templates: p.templates,
-        lastRendered: p.lastRendered,
-        source: p.source,
-        observation: p.observation,
-        replacedBaseline: p.replacedBaseline,
-        protected: p.protected,
-      }));
-      const baselinePatches = assertsAbnormality
-        ? formatBaselinePatches.map((p) =>
-            isSystemNormalPatch(p)
-              ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
-              : p,
-          )
-        : formatBaselinePatches;
+        ? claimRetiredBaselines(priorObservations, normals.suspended)
+        : priorObservations.map((p) => ({ ...p, stale: true as const }));
+      // A retired slot is SUSPENDED, not dropped: it goes stale with an empty
+      // `lastRendered` and keeps its `templates`, which is the shape
+      // `removeObservation` restores from (`stale` + baseline role + mutual exclusion).
+      // Deselecting the herniation therefore returns this exact sentence, on this door
+      // too, and nothing is invented on the way back.
+      const retiredIds = new Set(normals.suspended.map((r) => r.id));
+      const baselinePatches = formatBaselinePatches.map((p) => {
+        if (retiredIds.has(p.id)) {
+          return { ...p, stale: true as const, lastRendered: { ...p.lastRendered, findings: "", impression: "" } };
+        }
+        return assertsAbnormality && isSystemNormalPatch(p)
+          ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+          : p;
+      });
       set({
         reportFormats: nf,
         confirmOverwriteOpen: false,
@@ -2526,6 +2553,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         pendingFormatRegion: null,
         reportFormatPickerOpen: false,
         appliedPathologyPatches: [...stalePatches, ...baselinePatches],
+        ownershipReviewWarnings: retainedNormalReviewWarnings(
+          get().ownershipReviewWarnings,
+          normals.retained,
+        ),
         ...withPushedClinicalUndo(get(), formatSnapshot),
         appliedFormatReportTitle: clinical.reportTitle || null,
         appliedFormatName: f.name || null,
@@ -2546,6 +2577,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         kind: "ledger",
         text: baselinePatches.length > 0
           ? `Full normal report applied with ${baselinePatches.length} owned baseline concepts.`
+            + (normals.withheld.length > 0
+              ? ` Withheld ${normals.withheld.length} normal ${normals.withheld.length === 1 ? "statement" : "statements"} that the abnormality already on this report contradicts; deselecting that finding brings ${normals.withheld.length === 1 ? "it" : "them"} back.`
+              : "")
           : "Full report applied as legacy narrative. Prior structured contributions marked stale for review.",
       });
       void bumpReportFormatUsage(f.id);
@@ -4703,7 +4737,27 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // claim it.
       ? { text: r.technique, provenance: attributeMerge(EMPTY_FIELD_PROVENANCE, r.techniqueSentences ?? []) }
       : mergeInto("technique", pre.techniqueText, r.technique, r.techniqueSentences ?? []);
-    const findingsNext = mergeInto("findings", pre.findingsText, r.findings, r.findingsMerged.sentences);
+    // RULING 3 (#174) — the Findings half of the decision the block above already makes for
+    // the Conclusion, from the same live state and the same shipped slot rule. Before it,
+    // `mergeTwoFormats` compared the two TEMPLATES against each other and never consulted
+    // the ledger the page is built from, so a merged normal for a slot this report already
+    // states as abnormal arrived as unowned prose: merging "MRI LS Spine — Standard Normal"
+    // with "MRI Whole Spine — Screening" over a clicked L4-L5 herniation wrote
+    // "L4-L5: No significant disc bulge or protrusion is seen." back onto the page (39/39
+    // normal lines against 1 ledger row) and it survived save/reload.
+    const mergedNormals = mergedFindingsWithdrawal({
+      merged: r.findings,
+      formats: [pre.lastMergeFormats?.a, pre.lastMergeFormats?.b].filter(Boolean) as ReportFormat[],
+      region: get().reportingContext.region || "",
+      livePatches: pre.appliedPathologyPatches,
+      fields: { findings: pre.findingsText, impression: pre.impressionText },
+    });
+    // A withheld sentence is not attributed: provenance for prose that never reaches the
+    // page is how a later re-select comes back to claim a contribution it did not make.
+    const withheldFindings = new Set(mergedNormals.withheld.map((s) => normalizeForDedupe(s)));
+    const contributedFindings = r.findingsMerged.sentences
+      .filter((s) => !withheldFindings.has(normalizeForDedupe(s.text)));
+    const findingsNext = mergeInto("findings", pre.findingsText, mergedNormals.incoming, contributedFindings);
     const impressionNext = mergeInto(
       "impression",
       pre.impressionText,
@@ -4741,11 +4795,35 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Leaving a patch live when its prose IS gone would have it claim ownership of
     // sentences the merge overwrote, so the next tile re-select would strip prose that is
     // no longer his.
-    const reconciledPatches = get().appliedPathologyPatches.map((p) => (
-      reconcilePatchAgainstNarrative(toLedgerPatch(p), mergedNarrative).stale
+    const retiredRowIds = new Set(mergedNormals.suspended.map((row) => row.id));
+    const reconciledPatches = claimRetiredBaselines(get().appliedPathologyPatches.map((p) => {
+      // A slot this door withdrew is SUSPENDED, not deleted: `removeObservation` restores a
+      // stale baseline row that is mutually exclusive with the finding being deselected, so
+      // the normal sentence comes back on the same representation the click door uses.
+      if (retiredRowIds.has(p.id)) {
+        return { ...p, stale: true as const, lastRendered: { ...p.lastRendered, findings: "", impression: "" } };
+      }
+      return reconcilePatchAgainstNarrative(toLedgerPatch(p), mergedNarrative).stale
         ? { ...p, stale: true }
-        : p
-    ));
+        : p;
+    }), mergedNormals.suspended);
+    // A merged normal that had no row on this ledger yet arrives carrying one, suspended.
+    // Before this the merge door wrote those sentences as prose nobody owned, which left
+    // them both unrecoverable when the abnormality was deselected and invisible to every
+    // later supersession decision — including this ruling's own.
+    const carriedRows = mergedNormals.suspended
+      .filter((row) => !get().appliedPathologyPatches.some((p) => p.id === row.id))
+      .map((row) => ({
+        id: row.id,
+        ownership: row.ownership ?? {},
+        templates: row.templates,
+        lastRendered: row.lastRendered ?? { findings: "", impression: "" },
+        source: row.source ?? ("template" as const),
+        observation: row.observation!,
+        replacedBaseline: row.replacedBaseline,
+        protected: row.protected,
+        stale: true as const,
+      }));
     const mergeSnapshot = captureClinicalSnapshot(get());
     set({
       techniqueText: techniqueNext.text,
@@ -4765,7 +4843,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastMergeResult: null,
       lastMergeFormats: null,
       reportFormatPickerOpen: false,
-      appliedPathologyPatches: reconciledPatches,
+      appliedPathologyPatches: [...reconciledPatches, ...carriedRows],
+      ownershipReviewWarnings: retainedNormalReviewWarnings(
+        get().ownershipReviewWarnings,
+        mergedNormals.retained,
+      ),
       ...withPushedClinicalUndo(get(), mergeSnapshot),
       appliedFormatReportTitle:
         r.combinedReportTitle

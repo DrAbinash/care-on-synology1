@@ -260,6 +260,65 @@ export interface ManualKeptSentences {
   impression: string[];
 }
 
+/**
+ * RULING 3 (#174) — the click door's supersession test, readable on its own.
+ *
+ * `applyPathologyPatch` below already answers "which existing sentence does this
+ * observation retire" for a Quick Select click. A whole-report door (Full Normal
+ * Format, two-format merge) has to answer the same question in the other direction:
+ * the report already asserts an abnormality, and the incoming prose is a normal
+ * statement of that same slot. Both doors must reach the same verdict from the same
+ * rule, so this is that rule extracted — `sentenceOwnedBySlot` for the structured
+ * slot match, the same compound-finding widening, the same coverage fence, and no
+ * keyword arm. It is deliberately NOT a second contradiction engine: it reads the
+ * observation's declared concept, level, laterality and baseline contract, and it
+ * refuses to run at all without one.
+ */
+export type NormalSupersessionOwner = {
+  concept: string | null;
+  level: string;
+  laterality: string;
+  anatomicalSection?: string;
+  baselineReplaces?: string;
+  /** The owner's own wording, which supplies the compound-finding concepts. */
+  ownText?: string;
+};
+
+export function normalClaimSupersededBy(probe: string, owner: NormalSupersessionOwner): boolean {
+  if (!owner.concept) return false;
+  // A compound finding falsifies more than its own concept. Hemorrhage retired
+  // "No intracranial hemorrhage is seen." and left "Basal ganglia and thalami are
+  // normal in signal intensity." standing in the same paragraph — the signed report
+  // asserted both. The extra concepts come from the owner's own words through the
+  // same oracle the catalogue tests use.
+  //
+  // Level-bearing slots are deliberately excluded: spinal ownership is level-scoped
+  // by design, and "Disc herniation L4-L5" already widened to every level once and
+  // deleted all five normals. Cranial statements carry no level.
+  const alsoOwns = !normalizeLevel(owner.level)
+    ? conceptsAssertedIn(owner.ownText ?? "", owner.concept).filter((c) => c !== owner.concept)
+    : [];
+  const claimedConcepts = new Set([owner.concept, ...alsoOwns] as string[]);
+  return sentenceOwnedBySlot(probe, {
+    concept: owner.concept,
+    level: owner.level,
+    laterality: owner.laterality,
+    anatomicalSection: owner.anatomicalSection,
+    baselineReplaces: owner.baselineReplaces,
+    alsoOwns,
+    supersedesGlobals: globalNormalsSupersededBy(owner.concept),
+  })
+  // A statement may overwrite an existing ABNORMAL statement only when it says at
+  // least everything that statement says. "Cerebral edema" shares the word edema with
+  // "right mass lesion with surrounding edema and mass effect", and on the concept
+  // test alone it owned that sentence — so clicking the edema box after the mass box
+  // deleted the tumour from the report. Requiring the existing claim to be covered
+  // keeps a grade-2 Fazekas replacing a grade-1 one while a second, different
+  // abnormality can only ever be added beside it. A NORMAL sentence needs no such test.
+  && (!assertsAbnormality(probe)
+    || conceptsAssertedIn(probe, owner.concept).every((c) => claimedConcepts.has(c)));
+}
+
 export interface PathologyPatchResult {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
@@ -376,31 +435,9 @@ export function applyPathologyPatch(opts: {
   // Structured replace only when a concept resolved. A slotKey of `region|*|*|*`
   // is identity, not ownership — unowned findings keep the legacy pathology path.
   const structured = hasStructuredOwnership(slotObs);
-  // A compound finding falsifies more than its own concept. The baseline walk
-  // below only had the tile's single declared concept to test with, so a basal
-  // ganglia hemorrhage retired "No intracranial hemorrhage is seen." and left
-  // "Basal ganglia and thalami are normal in signal intensity." standing in the
-  // same paragraph — the signed report asserted both. The extra concepts come
-  // from the tile's own words through the same oracle the catalogue tests use.
-  //
-  // Level-bearing tiles are deliberately excluded: spinal ownership is
-  // level-scoped by design, and "Disc herniation L4-L5" already widened to every
-  // level once and deleted all five normals. Cranial statements carry no level.
-  const alsoOwns = structured && !slotObs.level
-    ? conceptsAssertedIn(incomingHay, slotObs.concept).filter((c) => c !== slotObs.concept)
-    : [];
-  const claimedConcepts = new Set([slotObs.concept, ...alsoOwns].filter(Boolean) as string[]);
-  // A new statement may overwrite an existing ABNORMAL statement only when it
-  // says at least everything that statement says. "Cerebral edema" shares the
-  // word edema with "right mass lesion with surrounding edema and mass effect",
-  // and on the concept test alone it owned that sentence — so clicking the edema
-  // box after the mass box deleted the tumour from the report. Requiring the
-  // existing claim to be covered keeps a grade-2 Fazekas replacing a grade-1 one
-  // (same concepts, higher grade) while a second, different abnormality can only
-  // ever be added beside it.
-  const overwritesAbnormalClaim = (probe: string): boolean =>
-    !assertsAbnormality(probe)
-    || conceptsAssertedIn(probe, slotObs.concept).every((c) => claimedConcepts.has(c));
+  // The structured supersession rule lives in `normalClaimSupersededBy` above, next to
+  // the compound-finding and coverage fences it derives, so the click door and the
+  // whole-report doors cannot drift apart.
   const keys = anatomyKeys(opts.ownership, incomingHay);
   const asserted = assertedPathology(incomingHay);
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
@@ -433,15 +470,14 @@ export function applyPathologyPatch(opts: {
       if (protectedKeys?.has(normalizeForDedupe(unit))
         || protectedKeys?.has(normalizeForDedupe(probe))) return false;
       return structured
-        ? sentenceOwnedBySlot(probe, {
+        ? normalClaimSupersededBy(probe, {
           concept: slotObs.concept ?? opts.ownership.concept ?? null,
           level: slotObs.level || opts.ownership.level || "",
           laterality: slotObs.laterality || opts.ownership.laterality || "",
           anatomicalSection: slotObs.anatomicalSection,
           baselineReplaces: baseline,
-          alsoOwns,
-          supersedesGlobals: globalNormalsSupersededBy(slotObs.concept ?? opts.ownership.concept ?? null),
-        }) && overwritesAbnormalClaim(probe)
+          ownText: incomingHay,
+        })
         : Boolean(
           (baseline && probe.includes(baseline))
           || sentenceMentions(probe, keys)

@@ -1,6 +1,8 @@
 import { useWorkspace, useWorkspaceSelector } from "@/lib/zai-workspace/store";
-import type { MergeSentence } from "@/lib/zai-workspace/types";
+import type { MergeSentence, ReportFormat } from "@/lib/zai-workspace/types";
 import { withheldMergedImpression } from "@/lib/zai-workspace/mergeImpressionGuard";
+import { mergedFindingsWithdrawal } from "@/lib/zai-workspace/withdrawSupersededNormals";
+import { normalizeForDedupe } from "@/lib/reportFieldMerge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Check, X, GitMerge, Minus, ShieldAlert } from "lucide-react";
@@ -15,14 +17,21 @@ export function MergePreviewDialog() {
   const currentFindings = useWorkspaceSelector(s => s.findingsText);
   const currentImpression = useWorkspaceSelector(s => s.impressionText);
   const decision = withheldMergedImpression(r?.impressionMerged.sentences ?? [], patches, { findings: currentFindings, impression: currentImpression });
+  // Ruling 3 (#174): the same shared call for the Findings half, so a merged normal that
+  // Apply will withhold for a slot this report already states abnormal is shown struck
+  // through here rather than arriving as a surprise on the page.
+  const region = useWorkspaceSelector(s => s.reportingContext.region || "");
+  const findingsDecision = mergedFindingsWithdrawal({ merged: r?.findings ?? "", formats: [f?.a, f?.b].filter(Boolean) as ReportFormat[], region, livePatches: patches, fields: { findings: currentFindings, impression: currentImpression } });
+  const withheldFindings = new Set(findingsDecision.withheld.map((w) => normalizeForDedupe(w)));
+  const findingsSentences = (r?.findingsMerged.sentences ?? []).filter((s) => !withheldFindings.has(normalizeForDedupe(s.text)));
   return <Dialog open={open} onOpenChange={o => !o && cancel()}><DialogContent className="max-w-3xl max-h-[90vh] flex flex-col"><DialogHeader><DialogTitle className="flex items-center gap-2"><GitMerge className="h-4 w-4 text-emerald-600" /> Merge Preview</DialogTitle><DialogDescription>Merged by region and clinical slot. Common kept once; pathology replaces matching normals.</DialogDescription></DialogHeader>
     <div className="flex flex-wrap gap-2 mb-2"><Legend tone="common" count={r?.stats.commonSentencesDiscarded ?? 0} /><Legend tone="from-a" count={r?.stats.addedFromA ?? 0} name={f?.a.name} /><Legend tone="from-b" count={r?.stats.addedFromB ?? 0} name={f?.b?.name} /></div>
     {r && <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-2 text-[11px] text-emerald-800 mb-2">
       Slot-aware merge: pathology beats normal for the same slot; screening stays in its own section.
-      {decision.withheld.length > 0 && <div className="mt-1 font-semibold text-rose-700" data-testid="merge-preview-withholding">Your report already states an abnormality, so {decision.withheld.length} merged normal statement{decision.withheld.length > 1 ? "s" : ""} will not be written.</div>}
+      {decision.withheld.length + findingsDecision.withheld.length > 0 && <div className="mt-1 font-semibold text-rose-700" data-testid="merge-preview-withholding">Your report already states an abnormality, so {decision.withheld.length + findingsDecision.withheld.length} merged normal statement{decision.withheld.length + findingsDecision.withheld.length > 1 ? "s" : ""} will not be written.</div>}
       {r.combinedReportTitle && <div className="mt-1 font-semibold">{r.combinedReportTitle}</div>}
     </div>}
-    {r && <div className="flex-1 overflow-y-auto space-y-3 pr-1"><Field label="Clinical History" sentences={r.clinicalHistorySentences ?? []} discarded={[]} /><Field label="Technique" sentences={r.techniqueSentences} discarded={[]} /><Field label="Findings" sentences={r.findingsMerged.sentences} discarded={r.findingsMerged.discarded} /><Field label="Impression" sentences={decision.contributed} discarded={r.impressionMerged.discarded} withheld={decision.withheld.map(s => s.text)} /><Field label="Recommendation" sentences={r.recommendationMerged.sentences} discarded={r.recommendationMerged.discarded} /></div>}
+    {r && <div className="flex-1 overflow-y-auto space-y-3 pr-1"><Field label="Clinical History" sentences={r.clinicalHistorySentences ?? []} discarded={[]} /><Field label="Technique" sentences={r.techniqueSentences} discarded={[]} /><Field label="Findings" sentences={findingsSentences} discarded={r.findingsMerged.discarded} withheld={findingsDecision.withheld} /><Field label="Impression" sentences={decision.contributed} discarded={r.impressionMerged.discarded} withheld={decision.withheld.map(s => s.text)} /><Field label="Recommendation" sentences={r.recommendationMerged.sentences} discarded={r.recommendationMerged.discarded} /></div>}
     <DialogFooter><Button variant="ghost" onClick={cancel}><X className="h-3.5 w-3.5 mr-1" /> Cancel</Button><Button onClick={apply} className="bg-emerald-600 hover:bg-emerald-700"><Check className="h-3.5 w-3.5 mr-1" /> Apply</Button></DialogFooter></DialogContent></Dialog>;
 }
 function Legend({ tone, count, name }: { tone: string; count: number; name?: string }) { const t = T[tone]; return <div className={cn("inline-flex items-center gap-1 rounded-md border-l-2 px-2 py-0.5 text-[10px] font-semibold", t.bg, t.text, t.border)}><span className={cn("h-2 w-2 rounded-full", tone === "common" ? "bg-slate-500" : tone === "from-a" ? "bg-emerald-600" : "bg-sky-600")} />{name && <span className="font-normal opacity-70 truncate max-w-[100px]">({name})</span>}<span className="font-mono">×{count}</span></div>; }
