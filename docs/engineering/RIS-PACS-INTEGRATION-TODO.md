@@ -790,6 +790,12 @@ Do not allow Composer to write back into the measurement authority."* Verified a
 71f68479 3d54c552 --name-only -- artifacts/api-server/src/lib/reportComposer` is **empty**, and no
 Composer file appears among the 31 files the merge changed.
 
+**→ The Composer owner has since implemented this projection, as a DRAFT PR** (branch
+`clinical/composer-canal-measurements`, head `e8945af0`, 16 files: 8 source, 8 test). Not merged, not
+deployed, and nothing in it touches a stored report. The interface below is what that PR reads; the
+paragraph after the projection block records the two places it deliberately differs from the shape
+recommended here.
+
 The canonical interface, exactly as it exists today:
 - **Where**: `radiology_report_drafts.structured_json.careCanalApProvenance` — an object keyed by
   **canonical** level, one `CanalApMeasurement` per level (`lib/measurements/src/spineCanal.ts:437`).
@@ -831,14 +837,33 @@ about that disc, rather than being silently handed a record it might paraphrase 
 prompt must be given the printed order from `canalPrintPlan`, and the model must be told the table is
 already rendered by the report — it should not restate every level in prose (that is how a canal
 number ends up in two places with two spellings).
-**What this replaces, and the gap it leaves**: today the Composer scrapes unit-bearing numbers out of
-prose (`buildRadiologistDraftContext.ts:60` `MEASUREMENT_RE`, `:82` `extractMeasurements`, surfaced at
-`:287` as `measurements`), and `validateOutput`'s measurement rules (`:617`, `:661`, `:1106`) compare
-against that same scraped bag. Since DECISION 2, canal numbers are *not* in the prose Generate writes,
-so until the projection above is wired, a grid measurement is invisible to Generate/Refine and to the
-measurement-loss validators — clinically safe (the pinned table `extensions.x_care_canal_ap` prints it
-regardless, and the model cannot rewrite it), but the Composer cannot yet *use* the number it used to
-copy. Handoff to the Composer owner; nothing on this branch changes it.
+**What the Composer reads now.** The prose scrape is still there (`buildRadiologistDraftContext.ts:68`
+`MEASUREMENT_RE`, `:90` `extractMeasurements`, surfaced at `:349`) — a measurement dictated into Findings
+and never entered in the grid still has to survive — but a canal diameter no longer depends on having been
+written twice. The draft PR adds one read-only projection of the canonical record:
+`canalApComposerReadings` (`lib/measurements/src/spineCanal.ts:840`) → `{readings[], declinedLevels[],
+ambiguousLevels[]}` with level, `valueMm` as a string, unit, segment, source and manual override, in
+`canalPrintPlan` order; `reportComposer/canonicalCanalAp.ts:39` reads the draft column and `:55` renders it
+as prompt data; Generate gets a READ-ONLY block, Refine gets `canalApDiametersMm` /
+`canalApDeclinedLevels` / `canalApRule` (`composeEngine.ts:136`); and `validateOutput.ts:551`
+`detectCanonicalCanalDivergences` judges the answer against the record instead of against prose, with
+`canal_measurement_mutation` and `canal_measurement_invented` as hard refusals and an unmentioned canonical
+diameter as an advisory warning.
+
+Two deliberate departures from the shape recommended above. A declined level is **named without a value**
+(`canalApDeclinedLevels`) rather than listed as `valueMm: null`, because a null sitting in the same list as
+real numbers invites a model to fill it in. And the projection reads the **canonical record alone**, not the
+`mergeCanalApLevels` fold, so a measurement that exists only in `spinal_measurements` prints and is not
+offered to the model — that boundary is a test (`canalAp.signedTable.test.ts`, "a measurement held only in
+the legacy store prints without reaching the Composer"), not a comment, and closing it needs the legacy
+store moved first (DECISION 3), which is an owner call about UI.
+
+Read-only is proved, not promised: the only new query is a `SELECT`, and the column is byte-identical
+before and after the read (`canalAp.resolve.request.test.ts`). Still true of the surface: the Test Lab
+(`routes/reportComposer.ts`) builds its snapshot from a request body with no draft row, so it has no
+canonical record and behaves exactly as before; `deterministicCompose.ts` is untouched; and `/draft`'s
+verdict remains advisory (`blocking: false`) — it labels a changed diameter instead of withholding a draft
+a radiologist asked for.
 
 **The ten required verifications, run against rendered output.** Cases 1-5, 7, 8 and 10 are in
 `artifacts/api-server/src/routes/signedReportCanalMeasurements.request.test.ts` on real PostgreSQL
@@ -869,9 +894,13 @@ a delivered document (`:355` for `spinal_measurements`, `:467` for the canonical
    can click it** — until someone runs `deploy-synology.sh`, `3d54c552` is not what the clinic is printing.
 2. **OHIF caliper → level capture was NOT RUN** (no PACS reachable). The code path exists and is
    exercised by unit tests only.
-3. **The Composer still reads measurements from prose** — see DECISION 4; the projection is a handoff,
-   and the owner ruled it stays recorded in this register rather than as a separate handoff file, so no
-   Composer work is scheduled by it.
+3. **The Composer now reads the canonical record, not prose** — DECISION 4's projection is implemented, as a
+   **DRAFT PR** (`clinical/composer-canal-measurements`, head `e8945af0`): unmerged, undeployed, and never
+   run against a live model. What still remains open in it: a measurement that exists only in
+   `spinal_measurements` is not offered (the legacy-store boundary above, which is a DECISION 3 owner call),
+   the Test Lab composes from a request body with no draft row so it has no record to read, and `/draft`'s
+   verdict stays advisory rather than withholding. The owner ruled this stays recorded in this register
+   rather than as a separate handoff file.
 4. **Two stores are still two stores at entry time.** Print folds them with one rule; the AI-tab box
    still writes both. Closing that needs viewer capture moved into the rail grid first (DECISION 3
    census above), which is an owner call about UI, not a defect.

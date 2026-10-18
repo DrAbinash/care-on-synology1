@@ -26,6 +26,25 @@ const { masterAiFlagState } = vi.hoisted(() => ({
   masterAiFlagState: { enabled: true },
 }));
 
+// The one draft row the canonical canal read resolves for a numeric `worklistId`.
+// Shared object identity because the module under test imports the table from
+// `@workspace/db/schema` while the fake query dispatcher lives in the `@workspace/db`
+// mock — two different objects would silently mean "no draft", i.e. no canal data.
+const { canalDraftState } = vi.hoisted(() => ({
+  canalDraftState: {
+    table: {
+      id: "id",
+      studyId: "study_id",
+      worklistId: "worklist_id",
+      patientId: "patient_id",
+      updatedAt: "updated_at",
+      structuredJson: "structured_json",
+    } as Record<string, string>,
+    rows: [] as Record<string, unknown>[],
+    fails: false,
+  },
+}));
+
 vi.mock("../lib/featureFlags", () => ({
   isFeatureEnabledServer: async (key: string) =>
     key === "ff_radiology_ai" ? masterAiFlagState.enabled : false,
@@ -47,6 +66,10 @@ vi.mock("@workspace/db", () => {
           if (table === aiProviderSettingsTable) return [{ settingsJson }];
           if (table === aiPromptTemplatesTable) return templateRows;
           if (table === pacsSettingsTable) return [];
+          if (table === canalDraftState.table) {
+            if (canalDraftState.fails) throw new Error("vitest: radiology_report_drafts is unavailable");
+            return canalDraftState.rows;
+          }
           return [];
         };
         const limitChain = { limit: async () => resolve() };
@@ -107,6 +130,7 @@ vi.mock("@workspace/db", () => {
 
 vi.mock("@workspace/db/schema", () => ({
   radiologyWorklistTable: {},
+  radiologyReportDraftsTable: canalDraftState.table,
 }));
 
 vi.mock("../middleware/requireStaffAuth", () => ({
@@ -278,6 +302,7 @@ vi.mock("@workspace/ai-providers", () => ({
 }));
 
 import { aiReportingRouter as router } from "./aiReporting";
+import { STRUCTURED_JSON_ENVELOPE_KIND } from "../lib/structuredJsonColumn";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getRouteHandler(method: "get" | "post", path: string) {
@@ -333,6 +358,8 @@ beforeEach(() => {
   auditInserts = [];
   draftInserts = [];
   pacsSettingsQueries = 0;
+  canalDraftState.rows = [];
+  canalDraftState.fails = false;
   generateAiResponse.mockClear();
   generateAiForTask.mockClear();
 });
@@ -981,5 +1008,94 @@ describe("execution identity — the record follows the provider that answered (
     expect(res.body.failure).toMatchObject({ provider: "ollama" });
     expect(auditInserts[0]["provider"]).toBe("ollama");
     expect(auditInserts[0]["success"]).toBe(false);
+  });
+});
+
+describe("POST /api/ai-reporting/draft — the canonical canal record is checked as data, not as prose", () => {
+  // RIS-013 gap 3, interactive path. The measurement grid's numbers are what the
+  // signed report's canal table prints, and this draft lands in that same report —
+  // so a rewrite of 6.4 mm into 9.4 mm is the identical hazard the composer job is
+  // refused for. Until the record reached this route the validator could only ever
+  // see a diameter a sentence happened to repeat, and a number that appeared in
+  // neither place was invisible.
+
+  const COLUMN = {
+    kind: STRUCTURED_JSON_ENVELOPE_KIND,
+    careCanalApProvenance: {
+      // Radiologist overrode the caliper: the authority for this level is 6.4.
+      "L4-L5": { viewerValue: 8.9, reportValue: 6.4, manualOverride: true },
+      "L1-L2": { viewerValue: 12.6 },
+    },
+  };
+
+  // One row serving both reads the route makes: the worklist→draft resolution (so
+  // it needs the identity columns) and the draft→structured_json read (so it needs
+  // the record). The fake ignores WHERE clauses, so one fixture is the one draft,
+  // and it ignores the select's aliases too — which is why the resolution row
+  // carries `draftId` next to `id`: the real query projects `id AS draftId`.
+  const draftRow = (structuredJson: unknown) => [
+    { id: 555, draftId: 555, studyId: 12, worklistId: 77, patientId: 9, structuredJson },
+  ];
+
+  async function postDraft(draftText: string) {
+    nextAnswer(generateAiResponse, draftText);
+    const res = makeRes();
+    await draftHandler(
+      makeReq({
+        worklistId: 77,
+        reportBody: "L4-L5 mild disc bulge indenting the thecal sac.",
+        provider: "gemini",
+      }),
+      res,
+    );
+    return res;
+  }
+
+  test("a draft that restates a canonical diameter with a different number is named", async () => {
+    canalDraftState.rows = draftRow(COLUMN);
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge. The canal AP diameter at L4-L5 measures 9.4 mm.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.validation.errors).toContain("canal_measurement_mutation");
+  });
+
+  test("a draft that keeps the recorded value passes, and the record is still what was read", async () => {
+    canalDraftState.rows = draftRow(COLUMN);
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge indenting the thecal sac. The canal AP diameter at L4-L5 measures 6.4 mm.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.body.validation.errors).not.toContain("canal_measurement_mutation");
+    expect(res.body.validation.errors).not.toContain("canal_measurement_invented");
+    // Positive control, and not a vacuous one: L1-L2 is in this study's record and
+    // in no sentence of this draft, so the advisory can only name it if the route
+    // really validated against the grid. A dead canal path passes the two lines
+    // above for every draft.
+    expect(res.body.validation.warnings.join(" ")).toContain("L1-L2");
+  });
+
+  test("a study with no canal record is validated exactly as it was", async () => {
+    // The whole non-spine clinic must not acquire a new failure mode. No draft row
+    // at all — the same request must behave as it did before the record existed.
+    const res = await postDraft(
+      "FINDINGS: No acute intracranial abnormality.\nIMPRESSION: Normal study.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.validation.errors).toEqual([]);
+  });
+
+  test("an unreachable measurement record costs the canal data, never the draft", async () => {
+    canalDraftState.fails = true;
+    const res = await postDraft(
+      "FINDINGS: L4-L5 mild disc bulge indenting the thecal sac.\nIMPRESSION: Degenerative change at L4-L5.",
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(String(res.body.draft)).toContain("L4-L5");
+    expect(res.body.validation.errors).not.toContain("canal_measurement_mutation");
+    expect(generateAiResponse).toHaveBeenCalledTimes(1);
   });
 });

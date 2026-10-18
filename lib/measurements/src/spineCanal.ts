@@ -776,3 +776,121 @@ export function canonicalizeCanalMap(
     deduplicatedAliases,
   };
 }
+
+// ── The AI Composer's read-only projection ──────────────────────────────────
+//
+// A language model that writes a spine report must be handed the same numbers the
+// signed table prints, or the report carries two canal diameters for one disc. So
+// this projection answers through the identical authority as the print fold
+// (`canonicalizeCanalMap` → `canalApValue` → `printCanalApValue`) and in the
+// identical order (`canalPrintPlan`).
+//
+// It is deliberately STRICTER than print about one thing. `canalPrintPlan` keeps
+// a stored level it cannot canonicalise, because dropping it is how a measured
+// disc disappears from a signed report. A prose generator gets no such key: a
+// number attached to an anatomy the model cannot name is how a level gets invented
+// downstream. Those keys are reported as `ambiguousLevels` and withheld.
+//
+// Nothing here writes. The canonical record is the only store (owner DECISION 4,
+// RIS-013); this is a derived read of it, the same kind of projection the print
+// preparers are.
+
+export interface CanalApComposerReading {
+  /** Canonical persisted key — the same label the printed table puts in the column. */
+  level: string;
+  /** The number as text, exactly as `canalPrintPlan` would print it. Never re-parsed. */
+  valueMm: string;
+  unit: "mm";
+  /** Which canal table this level belongs to. */
+  segment: CanalSegment | null;
+  /** Whose number this is, so the prompt can say so. */
+  source: "radiologist-entered" | "viewer-caliper";
+  manualOverride: boolean;
+  /**
+   * Verbatim from the record. `measurement_changed` keeps its radiologist number
+   * (that is what the table prints), so the drift travels with the reading rather
+   * than being hidden from the reader.
+   */
+  staleReason: CanalApStaleReason | null;
+}
+
+export interface CanalApComposerRecord {
+  /** Reportable diameters, ordered exactly as the printed table lays its columns out. */
+  readings: CanalApComposerReading[];
+  /**
+   * Levels the authority REFUSES to answer for (`aliasConflict`, `level_renumbered`).
+   * The model must say nothing about these discs, so they are named rather than
+   * silently absent.
+   */
+  declinedLevels: string[];
+  /** Keys that resolve to no canonical level. Withheld from the clinical text. */
+  ambiguousLevels: string[];
+  /** True when the study carries no canal record at all. */
+  isEmpty: boolean;
+}
+
+/**
+ * The canal AP diameters a compose job may be told about, from the draft's
+ * `structured_json.careCanalApProvenance`.
+ *
+ * Accepts the raw persisted shape (an object keyed by level, whose entries may be
+ * full records or the older single-`value` form) and tolerates a missing or
+ * malformed one by carrying nothing — an absent measurement is never an error.
+ */
+export function canalApComposerReadings(raw: unknown): CanalApComposerRecord {
+  const source =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const { records } = canonicalizeCanalMap(source);
+
+  const readings: CanalApComposerReading[] = [];
+  const declinedLevels: string[] = [];
+  const ambiguousLevels: string[] = [];
+
+  for (const [storedKey, rec] of Object.entries(records)) {
+    // A key that is not its own canonical form names no anatomy the model can be
+    // trusted with. `canonicalizeCanalMap` already folded every alias it could
+    // resolve, so anything failing here is a genuinely unresolvable label.
+    if (canonicalizeCanalLevel(storedKey) !== storedKey) {
+      ambiguousLevels.push(storedKey);
+      continue;
+    }
+    const value = canalApValue(rec);
+    if (value === null) {
+      // Two ways the authority declines, and one way it simply has no number.
+      if (rec.aliasConflict || rec.staleReason === "level_renumbered") {
+        declinedLevels.push(storedKey);
+      }
+      continue;
+    }
+    const valueMm = printCanalApValue(value);
+    if (valueMm === null) continue;
+    readings.push({
+      level: storedKey,
+      valueMm,
+      unit: "mm",
+      segment: canalSegmentForLevel(storedKey) ?? rec.region,
+      source: rec.manualOverride || rec.reportValue != null ? "radiologist-entered" : "viewer-caliper",
+      manualOverride: rec.manualOverride,
+      staleReason: rec.staleReason,
+    });
+  }
+
+  const plan = readings.length > 0 ? canalPrintPlan(readings.map((r) => r.level)) : null;
+  const printOrder = plan?.levels ?? [];
+  readings.sort((a, b) => {
+    const ia = printOrder.indexOf(a.level);
+    const ib = printOrder.indexOf(b.level);
+    return (ia < 0 ? printOrder.length : ia) - (ib < 0 ? printOrder.length : ib);
+  });
+  declinedLevels.sort();
+  ambiguousLevels.sort();
+
+  return {
+    readings,
+    declinedLevels,
+    ambiguousLevels,
+    isEmpty: readings.length === 0 && declinedLevels.length === 0 && ambiguousLevels.length === 0,
+  };
+}

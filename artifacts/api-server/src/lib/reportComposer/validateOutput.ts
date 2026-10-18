@@ -14,6 +14,7 @@ import { isPreservingComposeKind } from "./types";
 // this validator cannot delete a sentence the quality engine is simultaneously asking
 // the radiologist to write back.
 import { isFillerAdvice } from "@workspace/report-quality";
+import { canonicalizeCanalLevel, type CanalApComposerRecord } from "@workspace/measurements";
 
 export type ComposeValidationResult = {
   ok: boolean;
@@ -464,6 +465,143 @@ export function detectDefiniteClinicalMutations(
   }
 
   return { errors, warnings };
+}
+
+/**
+ * ──────────────────── THE CANONICAL CANAL RECORD ────────────────────
+ *
+ * Every measurement rule above reads PROSE on both sides: the numbers the
+ * radiologist typed, against the numbers the answer contains. That is the whole
+ * story when the numbers live in the text, and no story at all when they do not.
+ * Since RIS-013 the canal AP diameters are recorded in a measurement grid and
+ * persisted in `structured_json.careCanalApProvenance`, and the signed report's
+ * canal table is printed FROM THAT RECORD — so a draft could restate a disc's
+ * diameter wrongly, or state one for a level the record refuses to answer for, and
+ * reach READY with the table underneath it saying something else. One patient, two
+ * diameters, and no check that could see it.
+ *
+ * These rules take the record as the input instead. The projection
+ * (`canalApComposerReadings`) is the same fold the print preparers answer through,
+ * so what is enforced here is what the report will actually print.
+ *
+ * The exemption that keeps an honest draft alive: a number the RADIOLOGIST already
+ * dictated is not the AI's invention. If the prose and the record disagreed before
+ * this job ran, the table wins in the printed report and the radiologist resolves
+ * the disagreement — refusing to professionalise their own sentence is not a
+ * remedy, it is an outage. So both hard rules compare against the input claims.
+ */
+
+/** A sentence about the canal, in whichever words CARE's templates use. */
+const CANAL_CLAIM_MENTION_RE =
+  /\b(?:spinal\s+)?canal\b|\bthecal\s+sac\b|\bAP\s+diamet\w*|\bAPD\b/i;
+
+/** One diameter stated in millimetres. */
+const CANAL_MM_RE = /\b\d+(?:\.\d+)?\s*mm\b/gi;
+
+function canalMmNumbers(text: string): Set<number> {
+  const out = new Set<number>();
+  for (const m of (text ?? "").matchAll(CANAL_MM_RE)) {
+    const n = Number((m[0] ?? "").match(/\d+(?:\.\d+)?/)?.[0]);
+    if (Number.isFinite(n)) out.add(n);
+  }
+  return out;
+}
+
+/**
+ * The canal diameters a text attributes to exactly ONE level.
+ *
+ * Deliberately that narrow. A sentence with two levels or two numbers ("the canal
+ * measures 12, 11 and 9 mm at L1-L2, L2-L3 and L3-L4") is normal dictation, and
+ * pairing them by position is how a validator starts firing on correct reports —
+ * the failure mode this file has been hardened against. Such a sentence is left to
+ * the rules that already read the numbers themselves.
+ */
+function canalClaimsByLevel(
+  text: string,
+): Array<{ level: string; mm: number; sentence: string }> {
+  const out: Array<{ level: string; mm: number; sentence: string }> = [];
+  for (const sentence of claimSentences(text)) {
+    if (!CANAL_CLAIM_MENTION_RE.test(sentence)) continue;
+    const numbers = [...canalMmNumbers(sentence)];
+    if (numbers.length !== 1) continue;
+    const levels = new Set<string>();
+    for (const token of extractConservationLevels(sentence)) {
+      const canonical = canonicalizeCanalLevel(token.canonical);
+      if (canonical) levels.add(canonical);
+    }
+    if (levels.size !== 1) continue;
+    out.push({ level: [...levels][0]!, mm: numbers[0]!, sentence });
+  }
+  return out;
+}
+
+export type CanonicalCanalFindings = {
+  errors: string[];
+  warnings: string[];
+  /** Canonical diameters the answer never states. Advisory by design. */
+  unstatedLevels: string[];
+};
+
+/**
+ * Compare a draft against the canonical canal record, independently of prose.
+ *
+ * `inputText` is everything the radiologist supplied (their report and their
+ * observations); `outputText` is what the model wrote.
+ */
+export function detectCanonicalCanalDivergences(
+  canalAp: CanalApComposerRecord,
+  inputText: string,
+  outputText: string,
+): CanonicalCanalFindings {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const unstatedLevels: string[] = [];
+  if (canalAp.isEmpty) return { errors, warnings, unstatedLevels };
+
+  const inputClaims = new Set(canalClaimsByLevel(inputText).map((c) => `${c.level}|${c.mm}`));
+
+  for (const claim of canalClaimsByLevel(outputText)) {
+    // The radiologist said it first, so the answer is not the thing that changed it.
+    if (inputClaims.has(`${claim.level}|${claim.mm}`)) continue;
+    const reading = canalAp.readings.find((r) => r.level === claim.level);
+    if (reading) {
+      if (Number(reading.valueMm) !== claim.mm) {
+        if (!errors.includes("canal_measurement_mutation")) errors.push("canal_measurement_mutation");
+        warnings.push(
+          `Canal AP diameter changed at ${claim.level}: the record holds ${reading.valueMm} mm, `
+            + `the draft states ${claim.mm} mm ("${claim.sentence.trim()}"). The signed table prints `
+            + "the record, so this report would carry two diameters for one disc.",
+        );
+      }
+      continue;
+    }
+    if (canalAp.declinedLevels.includes(claim.level)) {
+      if (!errors.includes("canal_measurement_invented")) errors.push("canal_measurement_invented");
+      warnings.push(
+        `Canal AP diameter stated for ${claim.level}, a level the canonical record refuses to `
+          + `answer for (${claim.mm} mm in "${claim.sentence.trim()}"). Nothing is measured there, `
+          + "so nothing may be reported there.",
+      );
+    }
+  }
+
+  // A canonical diameter the answer never mentions. Advisory, because the prompt
+  // explicitly tells the model NOT to restate every level — the table prints them —
+  // so silence is the instructed behaviour, not a fault. What was missing is that it
+  // used to be invisible; this names it for the radiologist.
+  const outputNumbers = canalMmNumbers(outputText);
+  for (const reading of canalAp.readings) {
+    if (outputNumbers.has(Number(reading.valueMm))) continue;
+    unstatedLevels.push(`${reading.level} (${reading.valueMm} mm)`);
+  }
+  if (unstatedLevels.length > 0) {
+    warnings.push(
+      "Canal AP diameters the report will print but this draft does not mention: "
+        + `${unstatedLevels.join(", ")}.`,
+    );
+  }
+
+  return { errors, warnings, unstatedLevels };
 }
 
 /**
@@ -1751,7 +1889,15 @@ function deniedFindingAssertions(corpus: string, texts: string[]): string[] {
 export function validateComposerOutput(
   snapshot: ComposerInputSnapshot,
   draft: ComposerDraftOutput,
-  opts?: { kind?: string | null },
+  opts?: {
+    kind?: string | null;
+    /**
+     * The draft's canonical canal AP record, resolved server-side. Omitted (or an
+     * empty record) means no canal checking happens, exactly as before — which is
+     * why every existing caller is unchanged by it.
+     */
+    canalAp?: CanalApComposerRecord | null;
+  },
 ): ComposeValidationResult {
   const warnings: string[] = [...(draft.warnings ?? [])];
   const errors: string[] = [];
@@ -1917,6 +2063,20 @@ export function validateComposerOutput(
       if (!errors.includes(e)) errors.push(e);
     }
     for (const w of definite.warnings) warnings.push(w);
+  }
+
+  // ── Canonical canal AP: the record, not the prose ───────────────────────
+  // The measurement grid's numbers reach the model as a read-only block, so the
+  // same record has to be what the answer is judged against — otherwise a draft
+  // that restates a diameter wrongly still reaches READY above a table that says
+  // something else. Skipped for an OBSERVATIONS answer, whose rows are already
+  // guarded measurement-by-measurement by `pruneUngroundedObservationRows`.
+  if (opts?.canalAp && !isObservationTask) {
+    const canal = detectCanonicalCanalDivergences(opts.canalAp, corpus, output);
+    for (const e of canal.errors) {
+      if (!errors.includes(e)) errors.push(e);
+    }
+    for (const w of canal.warnings) warnings.push(w);
   }
 
   // ── A drafting kind may restructure prose, not the examination ──────────

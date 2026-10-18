@@ -485,7 +485,8 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   }
 
   // Resolve authoritative draft for SELECTED_IMAGES ownership (never draftId: null).
-  const { resolveAuthoritativeComposeDraft } = await import("./resolveComposeDraft");
+  const { resolveAuthoritativeComposeDraft, loadCanonicalCanalApForDraft } =
+    await import("./resolveComposeDraft");
   const authDraft = await resolveAuthoritativeComposeDraft({
     worklistId: job.worklistId,
     studyId: job.studyId ?? snapshot.studyId ?? null,
@@ -500,11 +501,19 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
     draftPatientId: authDraft?.patientId ?? null,
   };
 
+  // The canal AP diameters of THIS draft, read server-side from the same row the
+  // ownership check above resolved. The measurement grid's numbers are what the
+  // signed report's canal table prints, and until now the composer only ever saw
+  // the ones a sentence happened to repeat (RIS-013 gap 3). Read-only: nothing in a
+  // compose job can write this record.
+  const canalAp = await loadCanonicalCanalApForDraft(authDraft?.draftId ?? null);
+
   const run = await runReportComposer({
     kind: job.jobKind as AiComposeJobKind,
     snapshot,
     allowDeterministicFallback: true,
     ownership,
+    canalAp,
   });
 
   if (!run.ok || !run.draft) {
@@ -550,7 +559,10 @@ export async function processComposeJob(composeJobId: number): Promise<{ ok: boo
   // professionalize/refine/combine answer must contain everything the
   // radiologist wrote, and a dropped measurement or level is now a failure
   // rather than a warning the report of record never sees.
-  const validation = validateComposerOutput(snapshot, run.draft, { kind: job.jobKind });
+  const validation = validateComposerOutput(snapshot, run.draft, {
+    kind: job.jobKind,
+    canalAp,
+  });
   if (!validation.ok) {
     await failJob(
       job.id,
