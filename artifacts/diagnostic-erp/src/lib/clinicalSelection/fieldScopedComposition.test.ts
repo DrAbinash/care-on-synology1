@@ -7,7 +7,7 @@ import { isQuickSelectSource } from "../zai-workspace/quickSelectParameterContra
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
-import { rankImpressionLine } from "../impressionPriority";
+import { orderImpressionLines, rankImpressionLine } from "../impressionPriority";
 import { stripContribution } from "../observationLedger";
 
 /**
@@ -279,12 +279,30 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
    * would silently re-sequence every lumbar report. This is an owner decision; when it is ruled
    * on, replace this block with the ranked assertion.
    */
-  it("leaves both shipped lumbar compressive statements unclassified, which is what lets the mouse decide", () => {
+  it("ranks both shipped lumbar compressive statements, which is what takes the order off the mouse", () => {
+    // The owner ruled the clinical priority order on 2026-10-18, so the two
+    // sentences this block used to leave unclassified now carry a rank: a
+    // moderate central stenosis is a compressive statement (tier 5) and a
+    // herniation that reaches the thecal sac is a significant protrusion (tier 8,
+    // with spondylolisthesis). `orderImpressionLines` therefore resolves this
+    // pair to one sequence instead of two.
     const h = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
     const s = rankImpressionLine(STENOSIS_IMPRESSION, 0, { spineSegment: "lumbar" });
-    expect(h.ruleId, `"${h.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(s.ruleId, `"${s.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(h.rank).toBe(s.rank);
+    expect(h.ruleId, "the herniation line is unclassified again — the tier table moved").toBe(
+      "disc-protrusion-herniation",
+    );
+    expect(s.ruleId, "the stenosis line is unclassified again — the tier table moved").toBe(
+      "moderate-canal-stenosis",
+    );
+    expect(s.rank).toBeLessThan(h.rank);
+    expect(orderImpressionLines([HERNIATION_IMPRESSION, STENOSIS_IMPRESSION])).toEqual([
+      STENOSIS_IMPRESSION,
+      HERNIATION_IMPRESSION,
+    ]);
+    // A hand-ordered Impression is never reshuffled by any of this.
+    expect(
+      orderImpressionLines([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION], { frozen: true }),
+    ).toEqual([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION]);
   });
 
   it("says the same clinical things in every click order, in two possible sequences", () => {
