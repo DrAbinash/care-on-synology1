@@ -1,0 +1,75 @@
+{
+  "source": "Open WebUI model export (see originals/)",
+  "model_id": "care-radiologist--report-composer",
+  "display_name": "CARE RADIOLOGIST- REPORT COMPOSER",
+  "base_model_id": "qwen3:14b",
+  "description": "CARE Diagnostics local radiology report composer.\nRadiologist observations are clinical truth; AI wording is presentation. BUT AI SHOULD ACT AND THINK LIKE RADIOLOGIST.",
+  "is_active": true,
+  "record_created": "2026-09-15T11:49:03.000Z",
+  "record_updated": "2026-09-19T19:04:30.000Z",
+  "sampling_parameters": {
+    "temperature": 0.15,
+    "top_p": 0.85,
+    "repeat_penalty": 1.05,
+    "think": false,
+    "seed": 42,
+    "max_tokens": 1800
+  },
+  "system_prompt": {
+    "chars": 32574,
+    "lines": 1390,
+    "sha256": "c8b18ca219310a1fa55653642753d5b791ca2dba19624ca15c0b782c765114cd",
+    "stored_in": "master-system-prompt-v4.md (single authoritative copy)"
+  },
+  "capabilities": {
+    "file_context": true,
+    "vision": false,
+    "file_upload": true,
+    "web_search": false,
+    "image_generation": false,
+    "code_interpreter": false,
+    "terminal": false,
+    "citations": false,
+    "status_updates": false,
+    "memory": false,
+    "builtin_tools": false
+  },
+  "knowledge_attachments": [
+    {
+      "name": "CARE MRI LS SPINE V1.2",
+      "type": "collection",
+      "open_webui_id": "9b752add-6514-4559-bd5b-a76ba9648867",
+      "export_text_chars": 23696,
+      "export_text_sha256": "b1172beaea9d2e8159e9ecc0ccb2f04ccbfc38d5692dc9a6c13757025d3274b0",
+      "authoritative": "mri-ls-spine-v1.2.md",
+      "note": "export text is byte-identical to the supplied ZIP"
+    },
+    {
+      "name": "CARE MRI BRAIN V1.txt",
+      "type": "file",
+      "open_webui_id": "dfd8b11b-99cc-49ba-9244-0d78e056a3a9",
+      "export_text_chars": 0,
+      "export_text_sha256": null,
+      "authoritative": null,
+      "note": "attachment pointer only — the export carries no content for it"
+    },
+    {
+      "name": "CARE MRI LS SPINE RULES V1.2.txt",
+      "type": "file",
+      "open_webui_id": "fb3284b6-9a48-48c8-a3fb-66630894b754",
+      "export_text_chars": 0,
+      "export_text_sha256": null,
+      "authoritative": null,
+      "note": "attachment pointer only — the export carries no content for it"
+    },
+    {
+      "name": "CARE MRI BRAIN V1",
+      "type": "collection",
+      "open_webui_id": "e0437210-eab7-4067-b668-837662d58058",
+      "export_text_chars": 38841,
+      "export_text_sha256": "18f2025fc7063c667f7cda96a522b0e0fe52dbb2e8153aa16be801ba21291f25",
+      "authoritative": "mri-brain-v1.md",
+      "benchmark_copy": "benchmarks/mri-brain-v1-openwebui-57-sections.md"
+    }
+  ]
+}
