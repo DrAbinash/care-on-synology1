@@ -267,30 +267,32 @@ describe("Stage C Phase 4 · the shipped lumbar boxes are ranked, so the click o
    * integration tree with the approved spondylolisthesis conclusion added (#1067): six
    * sequences without the sorter, one with it.
    *
-   * The herniation and the slip both rank 8. Their order inside that tier comes from the
-   * comparator's stable-rule-id term, not from the mouse, which is what makes one sequence
-   * rather than two.
+   * The herniation states compression, so it ranks 6; the slip is uncomplicated and
+   * ranks 8; the stenosis ranks 5. Their order therefore comes from the table, and where
+   * two statements share a tier it comes from the comparator's anatomical then stable-rule-id
+   * terms — never from the mouse.
    *
-   * OPEN OWNER DECISION, recorded rather than assumed: the clinic's own lumbar library ranks
-   * spondylolisthesis ABOVE severe foraminal stenosis and exiting-root compression
-   * (docs/clinical-libraries/mri-lumbar-clinical-content-library.md:204), while
-   * `IMPRESSION_PRIORITY` ranks stenosis 5 and spondylolisthesis 8. The approved order names
-   * spondylolisthesis and "significant protrusions" as separate rungs; the protrusion rule was
-   * placed in the slip's existing tier rather than shifting a rank the shipped table already
-   * uses. If the ruling means the slip leads a herniation, that is a rank change and needs the
-   * owner's word.
+   * RESOLVED by the owner on 2026-10-18 (the note this block used to carry): significant
+   * neural compression OUTRANKS an uncomplicated spondylolisthesis, and a non-compressive
+   * herniation does NOT automatically outrank one. The clinic's lumbar library
+   * (docs/clinical-libraries/mri-lumbar-clinical-content-library.md:204) ranks the slip above
+   * severe foraminal stenosis and exiting-root compression; the owner's ruling does not adopt
+   * that, and it does not ask for the slip to lead a compressive disc either. So a disc that
+   * names what it does to the sac or a root moved to tier 6 — as far as the ruling reaches, and
+   * no further: the owner has not ruled that sac indentation outranks a moderate central stenosis
+   * (5) or a definite root compression (4), so it is not promoted past them.
    */
   it("ranks both shipped lumbar compressive statements, which is what takes the order off the mouse", () => {
     // The owner ruled the clinical priority order on 2026-10-18, so the two
     // sentences this block used to leave unclassified now carry a rank: a
     // moderate central stenosis is a compressive statement (tier 5) and a
-    // herniation that reaches the thecal sac is a significant protrusion (tier 8,
-    // with spondylolisthesis). `orderImpressionLines` therefore resolves this
-    // pair to one sequence instead of two.
+    // herniation that reaches the thecal sac is neural compression (tier 6), above
+    // an uncomplicated slip (8) and below a definite root compression (4).
+    // `orderImpressionLines` therefore resolves this pair to one sequence instead of two.
     const h = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
     const s = rankImpressionLine(STENOSIS_IMPRESSION, 0, { spineSegment: "lumbar" });
     expect(h.ruleId, "the herniation line is unclassified again — the tier table moved").toBe(
-      "disc-protrusion-herniation",
+      "disc-compressing-neural-elements",
     );
     expect(s.ruleId, "the stenosis line is unclassified again — the tier table moved").toBe(
       "moderate-canal-stenosis",
@@ -304,6 +306,48 @@ describe("Stage C Phase 4 · the shipped lumbar boxes are ranked, so the click o
     expect(
       orderImpressionLines([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION], { frozen: true }),
     ).toEqual([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION]);
+  });
+
+  describe("the owner's 2026-10-18 ranking ruling, both clauses", () => {
+    const SLIP = "Grade 1 spondylolisthesis at L4-L5.";
+    const NON_COMPRESSIVE_HERNIATION = "Disc herniation at L4-L5.";
+
+    it("clause 1: significant neural compression outranks an uncomplicated spondylolisthesis", () => {
+      const compressive = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
+      const slip = rankImpressionLine(SLIP, 0, { spineSegment: "lumbar" });
+      expect(compressive.rank).toBeLessThan(slip.rank);
+      // Either click order, either input order: the compressive statement leads.
+      expect(orderImpressionLines([SLIP, HERNIATION_IMPRESSION])).toEqual([HERNIATION_IMPRESSION, SLIP]);
+      expect(orderImpressionLines([HERNIATION_IMPRESSION, SLIP])).toEqual([HERNIATION_IMPRESSION, SLIP]);
+      // A root compressed by the same disc is the same compressive statement, not a
+      // structural one: it leaves tier 8, which is where it used to tie the slip.
+      expect(
+        rankImpressionLine("Disc herniation at L4-L5 compresses the traversing left L5 root.", 0, {
+          spineSegment: "lumbar",
+        }).ruleId,
+      ).toBe("disc-compressing-neural-elements");
+    });
+
+    it("clause 2: a non-compressive herniation does not automatically outrank the slip", () => {
+      const h = rankImpressionLine(NON_COMPRESSIVE_HERNIATION, 0, { spineSegment: "lumbar" });
+      const slip = rankImpressionLine(SLIP, 0, { spineSegment: "lumbar" });
+      expect(h.ruleId).toBe("disc-protrusion-herniation");
+      expect(h.rank, "tied with the slip, exactly as the owner ruled — not promoted").toBe(slip.rank);
+      // Tied tier, same level, so the stable concept term decides, and it decides the
+      // same way whichever end the radiologist clicked first.
+      expect(orderImpressionLines([SLIP, NON_COMPRESSIVE_HERNIATION]))
+        .toEqual(orderImpressionLines([NON_COMPRESSIVE_HERNIATION, SLIP]));
+    });
+
+    it("does not promote a disc that names no compression target", () => {
+      // "…with thecal sac contact" carries no compression verb; a bare sac word must not
+      // move a structural statement up a tier.
+      expect(rankImpressionLine("Disc bulge at L4-L5.", 0, { spineSegment: "lumbar" }).ruleId)
+        .toBe("disc-bulge");
+      expect(rankImpressionLine("Disc protrusion at L4-L5 abuts the thecal sac without compression.", 0, {
+        spineSegment: "lumbar",
+      }).rank, "the ruling is about documented compression, not proximity").toBe(8);
+    });
   });
 
   it("says the same clinical things in the same order, whatever the click order", () => {

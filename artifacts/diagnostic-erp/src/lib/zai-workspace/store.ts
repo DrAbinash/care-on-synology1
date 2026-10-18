@@ -1407,6 +1407,48 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }),
       });
     }
+    // Owner ruling 1 (2026-10-18): a hand-written abnormal Conclusion and a
+    // system-generated whole-study normal may not both stand on the page. The system's
+    // own sentence withdraws — by recorded identity, so the only text it can reach is
+    // the text the system wrote — and the radiologist's never does. Where even that
+    // withdrawal is refused, the contradiction is flagged on the canvas rather than
+    // left silent.
+    let normalYieldRefusedByManual = false;
+    if (f === "impression" && (!opts?.source || opts.source === "manual")) {
+      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+      if (
+        systemNormal?.lastRendered.impression?.trim()
+        && reportAssertsAbnormality(get().appliedPathologyPatches, {
+          findings: get().findingsText,
+          impression: get().impressionText,
+        })
+      ) {
+        const yielded = removeLedgerObservation(
+          narrativeFromState(get()),
+          get().fieldProvenance,
+          toLedgerPatch(systemNormal),
+        );
+        if (yielded.outcome === "removed") {
+          set({
+            impressionText: yielded.narrative.impression,
+            findingsText: yielded.narrative.findings,
+            recommendationText: yielded.narrative.recommendation,
+            techniqueText: yielded.narrative.technique,
+            fieldProvenance: yielded.provenance,
+            // Suspended, not deleted, and the approved wording is left untouched on the
+            // row: ruling 3 restores a normal only where provenance and compatibility
+            // justify it, and that question cannot be answered once the text is gone.
+            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+              p.id === SYSTEM_NORMAL_PATCH_ID
+                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+                : p,
+            ),
+          });
+        } else if (yielded.preservedManual) {
+          normalYieldRefusedByManual = true;
+        }
+      }
+    }
     if (f === "findings" || f === "impression") {
       // Derived after the marking above, from the text as it now stands, so the
       // answer a keystroke produces is the answer the same report produces when it
@@ -1416,7 +1458,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // proves nothing about the findings behind it.
       const ownsBoth =
         f === "impression" && !!opts?.source && opts.source !== "manual" && opts.source !== "ai-draft";
-      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, { findingsJustChanged: f === "findings" }));
+      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, {
+        findingsJustChanged: f === "findings",
+        // The one case where the system normal stayed and the Conclusion now says two
+        // opposite things. Naming the reason is what puts the amber notice on the canvas;
+        // the alternative is a silent contradiction reaching signed paper.
+        arm: normalYieldRefusedByManual ? "impression-contradicts-findings" : undefined,
+      }));
     }
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(v, scopedSnippetMacros(get));
