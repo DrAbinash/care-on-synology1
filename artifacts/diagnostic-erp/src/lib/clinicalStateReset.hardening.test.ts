@@ -531,27 +531,39 @@ describe("re-finalize over an existing report — the discarded-edit path must n
     expect(end).toBeGreaterThan(start);
     const cleanup = src.slice(start, end);
 
-    const guardAt = cleanup.indexOf("if (finalizeResult.idempotent) {");
+    // P0 re-pinned, not weakened. The cleanup used to branch on `idempotent`
+    // alone, which was the only case where the lifecycle returned without
+    // writing; a skipped report creation for a patient-linked study also writes
+    // nothing (it sends no status flip at all) and was therefore treated as a
+    // completion. The gate is now `isFinalizeCompletion`, and the branch order
+    // flipped with it — the completion comes first, the refusal is the `else`.
+    // What this test defends is unchanged and still field-by-field: on a
+    // finalize that wrote nothing, both backups live, nothing is marked
+    // completed, and the editors are not locked.
+    const predicateAt = cleanup.indexOf("= isFinalizeCompletion(finalizeResult)");
+    const guardAt = cleanup.indexOf("if (completedFinalize) {");
     const elseAt = cleanup.indexOf("} else {");
-    expect(guardAt).toBeGreaterThan(-1);
+    expect(predicateAt).toBeGreaterThan(-1);
+    expect(guardAt).toBeGreaterThan(predicateAt);
     expect(elseAt).toBeGreaterThan(guardAt);
 
-    // The guard branch is asserted negatively, field by field: a lazy
+    // The refusal branch is asserted negatively, field by field: a lazy
     // `[\s\S]*?` across the whole block still matches when the destructive calls
     // are moved INTO the guard, because the copies in the else satisfy it.
     // (Mutation M7 proved that: it was not caught until this was split.)
-    const guardBranch = cleanup.slice(guardAt, elseAt);
-    expect(guardBranch).toMatch(/cancelFinalize\(\);/);
-    expect(guardBranch).not.toMatch(/draftBackup\.clear\(\)/);
-    expect(guardBranch).not.toMatch(/clearRescueDraft\(\)/);
-    expect(guardBranch).not.toMatch(/completeFinalize\(\)/);
-    expect(guardBranch).not.toMatch(/markCompleted\(/);
-    expect(guardBranch).not.toMatch(/bumpSessionCompleted\(/);
+    const refusalBranch = cleanup.slice(elseAt);
+    expect(refusalBranch).toMatch(/cancelFinalize\(\);/);
+    expect(refusalBranch).not.toMatch(/draftBackup\.clear\(\)/);
+    expect(refusalBranch).not.toMatch(/clearRescueDraft\(\)/);
+    expect(refusalBranch).not.toMatch(/completeFinalize\(\)/);
+    expect(refusalBranch).not.toMatch(/markCompleted\(/);
+    expect(refusalBranch).not.toMatch(/bumpSessionCompleted\(/);
 
-    const elseBranch = cleanup.slice(elseAt);
-    expect(elseBranch).toMatch(
+    const completionBranch = cleanup.slice(guardAt, elseAt);
+    expect(completionBranch).toMatch(
       /draftBackup\.clear\(\);[\s\S]*?clearRescueDraft\(\);[\s\S]*?completeFinalize\(\);/,
     );
+    expect(completionBranch).not.toMatch(/cancelFinalize\(\)/);
   });
 
   it("does not push a report to Hope that it just said was not saved", () => {

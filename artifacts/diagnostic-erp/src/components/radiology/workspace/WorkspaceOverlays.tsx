@@ -54,6 +54,18 @@ import {
   Maximize2, Columns2, Monitor, Archive, Keyboard, AppWindow, MessageCircle, Hospital,
   Trash2, MonitorPlay, Plus, Undo2, Link2,
 } from "lucide-react";
+import { signedReportBadge } from "@/lib/radiologyReportLifecycle";
+
+/** Colour only. What each signature state may CLAIM is decided by
+ *  `signedReportBadge()` in the lib, where the wording is testable. */
+const SIGNATURE_TONE_CLASS: Record<ReturnType<typeof signedReportBadge>["tone"], string> = {
+  success: "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-emerald-500/40 ring-emerald-300/50",
+  // Amber, not emerald: the report exists and the study is closed, but no
+  // signature backs it. Not rose either — that is reserved for having no report.
+  warning: "bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 shadow-amber-500/40 ring-amber-300/50",
+  danger: "bg-gradient-to-r from-rose-500 via-rose-600 to-rose-700 shadow-rose-500/40 ring-rose-300/50",
+  neutral: "bg-gradient-to-r from-slate-500 via-slate-600 to-slate-700 shadow-slate-500/40 ring-slate-300/50",
+};
 
 
 export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
@@ -232,6 +244,7 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     linkStudyOpen,
     linkedReportId,
     linkedReportIdRef,
+    signedReport,
     linkedStudy,
     liveDictationText,
     livePrintBodyHtml,
@@ -461,6 +474,23 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
     worklistDetailQ,
     workspaceEntry,
   } = vm;
+
+  // What the completion chip may SAY, from the report row's own signature
+  // witnesses — never from `linkedReportId` being set. A finalize that created
+  // the row and could not sign it leaves a bound, unsigned row behind, and the
+  // id-based test used to celebrate that as "Report signed" in green three
+  // seconds after the toast had said "Report saved but NOT signed". The words
+  // come from `signedReportBadge()` in the lib, where they are testable; only
+  // the colour classes live here.
+  //
+  // The lock chip stays for every state because the lock is real in each: POST
+  // /save-draft answers REPORT_LOCKED once the worklist row carries a reportId
+  // (radiologyIdentity.ts:498) and once the study is marked final at all (:506).
+  // What changes is what it promises — "an administrator" is the remedy for a
+  // signature, "sign it" is the remedy for a row that has none, and a study with
+  // no report behind it has neither to correct.
+  const signatureBadge = signedReportBadge(signedReport.state, signedReport.signedByName);
+  const SignatureIcon = signatureBadge.tone === "success" ? ShieldCheck : AlertTriangle;
 
   return (
     <>
@@ -694,18 +724,16 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
         />
       )}
 
-      {/* ─── Zero-Click Read Loop success toast ─── */}
+      {/* ─── Zero-Click Read Loop completion chip ─── */}
       {(isFinalized || workflow.currentRow?.status === "REPORT_FINAL") && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 animate-in slide-in-from-bottom-2">
-          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-white shadow-2xl ring-2 ${
-            linkedReportId
-              ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-emerald-700 shadow-emerald-500/40 ring-emerald-300/50"
-              // Green here would celebrate a study that has no report behind it.
-              : "bg-gradient-to-r from-rose-500 via-rose-600 to-rose-700 shadow-rose-500/40 ring-rose-300/50"
-          }`}>
-            <ShieldCheck className="h-4 w-4" />
+          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-white shadow-2xl ring-2 ${SIGNATURE_TONE_CLASS[signatureBadge.tone]}`}
+            data-testid="report-outcome-badge"
+            data-signature-state={signedReport.state}
+          >
+            <SignatureIcon className="h-4 w-4" />
             <span className="text-sm font-semibold">
-              {linkedReportId ? "Report signed" : "Study marked final — NO report exists"}
+              {signatureBadge.label}
             </span>
             {/* No "Edit report" button here. Unlocking the editors on a signed
                 study promised a trial mode in which the text could be edited,
@@ -719,12 +747,14 @@ export function WorkspaceOverlays({ vm }: { vm: RadiologyWorkspaceVm }) {
             <span
               className="ml-1 rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-medium text-white/90"
               data-testid="signed-report-lock"
-              title="The signed text is locked. Nothing typed here can change it."
+              title={signatureBadge.lockTitle}
             >
-              Locked — corrections need an administrator
+              {signatureBadge.lock}
             </span>
-            {readingSession.enabled && !allowEditSigned && <><span className="text-[10px] opacity-80">· auto-advancing...</span>
-            <ChevronRight className="h-4 w-4 animate-pulse" /></>}
+            {readingSession.enabled && !allowEditSigned && (
+              <><span className="text-[10px] opacity-80">· auto-advancing...</span>
+              <ChevronRight className="h-4 w-4 animate-pulse" /></>
+            )}
           </div>
         </div>
       )}

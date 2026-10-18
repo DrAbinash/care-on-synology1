@@ -265,11 +265,6 @@ import {
   proposeComposerFromTranscript,
 } from "@/lib/findingComposerModel";
 import { defaultCoverageMarks } from "@/lib/coverageMarks";
-import {
-  canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
-} from "@/lib/spineCanalAp";
 import LegacyBox, { type LegacyBoxTab } from "@/components/radiology/LegacyBox";
 import { PcpndtFormFFinalizeStep } from "@/components/radiology/PcpndtFormFFinalizeStep";
 import { ReportComposerAssistant } from "@/components/radiology/ReportComposerAssistant";
@@ -2646,6 +2641,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleSaveTeachingCase,
     handleShare,
     linkedReportId,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,
@@ -2681,7 +2677,6 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     findingsProvenance,
     impressionProvenance,
     frozenKeyImages,
-    studySetup,
     doctorsCatalog: doctorsCatalogQ.data ?? [],
     session,
     sessionFresh,
@@ -3665,6 +3660,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     showEmbeddedViewer,
     showFatigue,
     showLetterpadHeader,
+    signedReport,
     signOffProfiles,
     signerLine,
     stageAiProposal,

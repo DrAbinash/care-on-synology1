@@ -221,7 +221,6 @@ import {
   flagRenumberedCanalLevels,
   normalizeDiscLevel,
   parseCanalApNumber,
-  resolveActiveCanalSegment,
   type CanalApCellProvenance,
   type CanalApProvenanceMap,
   type CanalSegment,
@@ -233,7 +232,6 @@ import {
 } from "./normalBootstrap";
 import {
   alreadySaysThis,
-  canalApReportTable,
   levelsContradictedByUnexplainedLines,
   radiologistObservations,
   reportHasDeviation,
@@ -2014,20 +2012,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       }
     }
 
-    const segment = resolveActiveCanalSegment({
-      spineSegment: get().reportingContext.spineSegment,
-      regionHint: get().reportingContext.region,
-      reportingRegion: get().reportingContext.region,
-      studyDescription: ctx.studyDescription,
-      regions: ctx.regions,
-      forceDorsal: get().dorsalCanalForced,
-    });
-    const measurementTable = canalApReportTable(get().canalApProvenance, segment);
-    const measurementTableIncluded = Boolean(measurementTable);
-    if (measurementTableIncluded && !alreadySaysThis(get().findingsText, measurementTable)) {
-      get().mergeField("findings", measurementTable, "companion");
-    }
-
+    // No canal AP table is written into Findings here, on purpose. The press used to
+    // append one for the segment the study resolved to, and that grid then *suppressed*
+    // the printed table: a body carrying a valued canal grid is left exactly as it is,
+    // so a level measured after this press never reached the report, and a Dorso-Lumbar
+    // study printed only the segment the resolver favoured. The canal table is the print
+    // renderer's job — drawn from `canalApProvenance` at the moment of printing, over
+    // every segment the study measured (owner DECISIONS 1 and 2, 2026-10-17).
     // Re-derive the Impression — only over a report that deviates from its
     // approved normal, and only when this press (or the radiologist before it)
     // actually changed something.
@@ -2077,7 +2068,6 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       baselineConcepts: baselinePatches.length,
       observationsRetained: retained.length,
       observationsNeedingReview: needingReview,
-      measurementTableIncluded,
     };
   },
   toggleFormatFavorite: (id) => {
