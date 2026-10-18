@@ -1,6 +1,6 @@
 import { create, type StateCreator, type StoreApi, type UseBoundStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, Modality, LintIssue } from "./types";
+import type { Study, MeasurementRow, PriorStudy, CopilotItem, CriticalFinding, ReportFormat, SnippetMacro, SignOffProfile, MergeResult, MergeSentence, Modality, LintIssue } from "./types";
 import { runLintRules, runCopilotAnalysis, computeQualityScore, mergeTwoFormats, expandMacro, detectMacroTrigger, shouldPreloadNext } from "./types";
 // Single read point for ff_radiology_critical_result_comms. staffSession.ts has
 // no imports of its own and criticalResultCommsFlag.ts imports only that, so
@@ -53,6 +53,7 @@ import {
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
+  mergeReportFieldContent,
   mergeReportFieldContentWithProvenance,
   provenanceFromText,
   reconcileProvenanceAfterManualEdit,
@@ -210,6 +211,7 @@ import {
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
 import { isImpressionworthyAbnormal } from "@/lib/conceptCanon/contentPacks";
+import { withheldMergedImpression } from "./mergeImpressionGuard";
 import { anchorsEqual } from "@/lib/observationAnchor";
 import type { CoverageMark } from "@/lib/coverageMarks";
 import {
@@ -4617,40 +4619,109 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
     const r = get().lastMergeResult;
     if (!r) return;
-    // Build per-sentence provenance from the merge result so differential colors
-    // (Format A = emerald, Format B = sky, common = template/gray) persist in the editor.
-    const buildProv = (sentences: Array<{ text: string; source: "common" | "from-a" | "from-b" }>): FieldProvenanceMap => {
-      const out: FieldProvenanceMap = {};
-      for (const s of sentences) {
+    const pre = get();
+    // RULING 2 — a merged second format is a whole-report door, so it is asked the same
+    // question the Full Normal Format door is asked in `confirmOverwriteAndApply` above.
+    // Measured on the shipped catalogue before this, merging "MRI LS Spine — Normal" with
+    // "MRI Whole Spine — Screening" over a clicked L4-L5 herniation wrote "Normal MRI
+    // lumbo-sacral spine." and DELETED the conclusion he had pressed onto the page, because
+    // all five fields came from the two templates and nothing here looked at the report
+    // being merged into.
+    const impressionDecision = withheldMergedImpression(r.impressionMerged.sentences, pre.appliedPathologyPatches, {
+      findings: pre.findingsText,
+      impression: pre.impressionText,
+    });
+    // Per-sentence attribution is what gives the editor its differential colours (Format A
+    // = emerald, Format B = sky, common = slate; two sources on one sentence = amber
+    // "Merged"). It is built on top of the PROVENANCE THE REPORT ALREADY HAD rather than
+    // over a re-keyed map: re-stamping every sentence as template-authored is what stripped
+    // the manual protection off wording the merge never touched. A sentence he wrote that
+    // the merge also carries ends up with both sources, which is the same union the click
+    // door produces for that case.
+    const attributeMerge = (
+      existing: FieldProvenanceMap,
+      fromMerge: MergeSentence[],
+    ): FieldProvenanceMap => {
+      const out: FieldProvenanceMap = { ...existing };
+      for (const s of fromMerge) {
         const key = normalizeForDedupe(s.text);
         if (!key) continue;
         const src: InsertSource = s.source === "from-a" ? "template-a" : s.source === "from-b" ? "template-b" : "template";
-        out[key] = [src];
+        out[key] = [...new Set([...(out[key] ?? []), src])];
       }
       return out;
     };
-    const techniqueProv = provenanceFromText(r.technique, "template");
-    const findingsProv = buildProv(r.findingsMerged.sentences);
-    const impressionProv = buildProv(r.impressionMerged.sentences);
-    const recommendationProv = buildProv(r.recommendationMerged.sentences);
-    const historyText = (r.clinicalHistory ?? "").trim() ? r.clinicalHistory : get().clinicalHistoryText;
-    const historyProv = (r.clinicalHistory ?? "").trim()
-      ? buildProv(r.clinicalHistorySentences ?? [])
-      : (get().fieldProvenance.clinicalHistory ?? EMPTY_FIELD_PROVENANCE);
-    const mergedNarrative: ReportNarrative = {
-      clinicalHistory: historyText,
-      technique: r.technique,
-      findings: r.findings,
-      impression: r.impression,
-      recommendation: r.recommendation,
+    const priorProv = (field: ReportFieldKey): FieldProvenanceMap =>
+      pre.fieldProvenance[field] ?? EMPTY_FIELD_PROVENANCE;
+    // An empty field takes the merged prose exactly as the preview showed it — layout and
+    // attribution included, so a conclusion authored as one statement is not re-split into
+    // two numbered items. The provenance-aware merge runs only over a field that already
+    // carries text, because that is the text a merge must not delete.
+    const mergeInto = (
+      field: ReportFieldKey,
+      existing: string,
+      incoming: string,
+      fromMerge: MergeSentence[],
+    ): { text: string; provenance: FieldProvenanceMap } => {
+      const provenance = attributeMerge(priorProv(field), fromMerge);
+      if (!existing.trim()) return { text: incoming, provenance };
+      return {
+        text: mergeReportFieldContent({
+          field,
+          existing,
+          incoming,
+          source: "template",
+          existingProvenance: priorProv(field),
+        }),
+        provenance,
+      };
     };
-    // The merge replaces all five fields with template-derived prose, so an
-    // observation whose rendered contribution is no longer present is stale —
-    // the same judgement hydrateObservationLedger makes on reopen, using the
-    // same function. Stale is not deleted: the ledger panel shows NEEDS REFRESH
-    // and the radiologist can re-apply. Leaving a patch live instead would have
-    // it claim ownership of sentences the merge just overwrote, so the next tile
-    // re-select would strip prose that is no longer his.
+    // The withheld half lives in `withheldMergedImpression`, which the Merge Preview reads
+    // too — so what he is shown is what gets written. `statesAbnormalImpressionText` is the
+    // classifier the printed surfaces already use to decide what to bold, so no new
+    // vocabulary enters and nothing depends on the two formats' wording. What the second
+    // format genuinely adds still lands, and his own lines survive because the merge above
+    // never removes text.
+    const withheldNormalImpression = impressionDecision.withheld.length > 0;
+    const techniqueNext = mergeInto("technique", pre.techniqueText, r.technique, r.techniqueSentences ?? []);
+    const findingsNext = mergeInto("findings", pre.findingsText, r.findings, r.findingsMerged.sentences);
+    const impressionNext = mergeInto(
+      "impression",
+      pre.impressionText,
+      withheldNormalImpression
+        ? impressionDecision.contributed.map((s) => s.text).join("\n")
+        : r.impression,
+      impressionDecision.contributed,
+    );
+    const recommendationNext = mergeInto(
+      "recommendation", pre.recommendationText, r.recommendation, r.recommendationMerged.sentences,
+    );
+    // Patient/worklist/manual history wins: the merged phrase is appended when it says
+    // something new and nothing already written is replaced — the rule the single-format
+    // door applies to this section. Replacing it deleted what he had typed.
+    const historyPhrase = (r.clinicalHistory ?? "").trim();
+    const historyNext = historyPhrase
+      ? {
+        text: appendClinicalPhrase(pre.clinicalHistoryText, historyPhrase),
+        provenance: attributeMerge(priorProv("clinicalHistory"), r.clinicalHistorySentences ?? []),
+      }
+      : { text: pre.clinicalHistoryText, provenance: priorProv("clinicalHistory") };
+    const mergedNarrative: ReportNarrative = {
+      clinicalHistory: historyNext.text,
+      technique: techniqueNext.text,
+      findings: findingsNext.text,
+      impression: impressionNext.text,
+      recommendation: recommendationNext.text,
+    };
+    // An observation whose rendered contribution is no longer on the page is stale —
+    // the same judgement hydrateObservationLedger makes on reopen, using the same
+    // function, and now made against the text this door actually WROTE rather than against
+    // the two templates: an abnormal conclusion the merge preserved keeps its live row
+    // instead of being marked stale and dropped by the next rebuild. Stale is still not
+    // deleted: the ledger panel shows NEEDS REFRESH and the radiologist can re-apply.
+    // Leaving a patch live when its prose IS gone would have it claim ownership of
+    // sentences the merge overwrote, so the next tile re-select would strip prose that is
+    // no longer his.
     const reconciledPatches = get().appliedPathologyPatches.map((p) => (
       reconcilePatchAgainstNarrative(toLedgerPatch(p), mergedNarrative).stale
         ? { ...p, stale: true }
@@ -4658,17 +4729,17 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     ));
     const mergeSnapshot = captureClinicalSnapshot(get());
     set({
-      techniqueText: r.technique,
-      findingsText: r.findings,
-      impressionText: r.impression,
-      recommendationText: r.recommendation,
-      clinicalHistoryText: historyText,
+      techniqueText: techniqueNext.text,
+      findingsText: findingsNext.text,
+      impressionText: impressionNext.text,
+      recommendationText: recommendationNext.text,
+      clinicalHistoryText: historyNext.text,
       fieldProvenance: {
-        technique: techniqueProv,
-        findings: findingsProv,
-        impression: impressionProv,
-        recommendation: recommendationProv,
-        clinicalHistory: historyProv,
+        technique: techniqueNext.provenance,
+        findings: findingsNext.provenance,
+        impression: impressionNext.provenance,
+        recommendation: recommendationNext.provenance,
+        clinicalHistory: historyNext.provenance,
       },
       isDirty: true,
       mergePreviewOpen: false,
@@ -4683,12 +4754,21 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         || (get().lastMergeFormats?.b?.reportTitle ?? "").trim()
         || null,
     });
-    // A merged format rewrites all five fields from the template, so it owns both
-    // sides of the dependency and re-bases it — while still being read by the same
-    // predicate, which is the point: a template whose impression calls the study
-    // normal over the findings it just merged arms here exactly as it would after
-    // a reload.
-    set(deriveImpressionDependency(get(), { rebase: true }));
+    // A merged format speaks for both sides of the Findings→Impression dependency, so it
+    // re-bases the pair — while still being read by the same predicate, which is the
+    // point: a template whose impression calls the study normal over the findings it just
+    // merged arms here exactly as it would after a reload.
+    //
+    // A merge that WITHHELD its conclusion does not speak for the Impression at all. It
+    // changed the Findings and left the Conclusion as it found it, so re-basing would be a
+    // claim this door never earned: measured on the shipped catalogue, that is the one case
+    // where the Full Normal Format door flags "a conclusion is owed" over abnormal findings
+    // and the merge door stayed silent. Passing no ownership keeps the earlier basis, so the
+    // flag is derived from the same comparison every other surface uses — and it travels
+    // through the basis instead of living only in this session, which is what D-1 was.
+    set(withheldNormalImpression
+      ? deriveImpressionDependency(get(), undefined, { findingsJustChanged: true })
+      : deriveImpressionDependency(get(), { rebase: true }));
     // Increment usage count
     const ids = get().selectedFormatIds;
     const nf = get().reportFormats.map((x: ReportFormat) => ids.includes(x.id) ? { ...x, usageCount: (x.usageCount ?? 0) + 1 } : x);
