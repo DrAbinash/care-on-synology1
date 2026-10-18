@@ -228,6 +228,40 @@ describe("Ruling 2 · the merged second format answers to the report it joins", 
     expect(patches[0]!.stale).toBe(true);
   });
 
+  it("replaces machine-authored Technique with the format's own statement, and prints one account", () => {
+    // Found in review, not by the tests that shipped with the change: the setup half of
+    // Start Report writes the Study Tab's or protocol's acquisition sentence, so a purely
+    // additive merge printed it beside the format's approved statement — two accounts of one
+    // examination. The scaffold door already has `mayReplaceMachineTechniqueWithApproved` for
+    // exactly this, and the merge door now asks it too.
+    const MACHINE = "MRI lumbo-sacral spine was performed on the configured scanner using the routine protocol.";
+    useWorkspace.getState().setField("technique", MACHINE, { source: "protocol" });
+
+    const preview = mergeTheFormats([LS_NORMAL, WHOLE_SCREEN]);
+
+    const s = useWorkspace.getState();
+    expect(s.techniqueText, "the machine sentence is gone").not.toContain("configured scanner");
+    expect(s.techniqueText, "the examination is described once").toBe(preview.technique);
+    expect(
+      Object.keys(s.fieldProvenance.technique).some((k) => k.includes("configured scanner")),
+      "and no provenance key is left claiming prose that is no longer on the page",
+    ).toBe(false);
+  });
+
+  it("keeps Technique he wrote himself and adds the merged statement to it", () => {
+    const HIS_TECHNIQUE = "MRI performed on the retired 1.5T unit with an ad-hoc lumbar protocol.";
+    useWorkspace.getState().setField("technique", HIS_TECHNIQUE, { source: "manual" });
+
+    mergeTheFormats([LS_NORMAL, WHOLE_SCREEN]);
+
+    const s = useWorkspace.getState();
+    expect(s.techniqueText, "his account of the acquisition survives").toContain(HIS_TECHNIQUE);
+    expect(
+      s.fieldProvenance.technique[normalizeForDedupe(HIS_TECHNIQUE)],
+      "and stays his",
+    ).toContain("manual");
+  });
+
   it("flags that a conclusion is owed when the merged normal was withheld", () => {
     useWorkspace.getState().setField("findings", HIS_CONCLUSION, { source: "manual" });
 
@@ -255,6 +289,40 @@ describe("Ruling 2 · the merged second format answers to the report it joins", 
       "a conclusion authored as one statement is not re-split into numbered items",
     ).toBe(preview.impression.split("\n").length);
     expect(s.impressionNeedsRefresh, "nothing is owed: the door wrote both sides").toBe(false);
+  });
+
+  it("keeps the withheld normal off the page across an automatic pass and a save/reload", () => {
+    clickDiscHerniation();
+    mergeTheFormats([LS_NORMAL, WHOLE_SCREEN]);
+    const hisConclusion = report().impression;
+
+    useWorkspace.getState().composeInstantReport(
+      buildReportingStudyContext({ modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto" }),
+      false,
+    );
+    expect(report().impression, "the automatic pass does not reinstate the normal").toBe(hisConclusion);
+
+    const state = useWorkspace.getState();
+    const narrative = {
+      findings: state.findingsText, impression: state.impressionText, recommendation: state.recommendationText,
+      technique: state.techniqueText, clinicalHistory: state.clinicalHistoryText,
+    };
+    const saved = JSON.parse(JSON.stringify(state.serializeObservationLedger()));
+    useWorkspace.setState({
+      findingsText: "", impressionText: "", recommendationText: "", techniqueText: "",
+      clinicalHistoryText: "", fieldProvenance: {}, appliedPathologyPatches: [],
+      impressionNeedsRefresh: false, impressionBasis: null, impressionDependencyReasons: [],
+    } as never);
+    useWorkspace.getState().setEditorContent(narrative);
+    const res = useWorkspace.getState().hydrateObservationLedger(saved);
+
+    expect(res.ok, res.warning ?? "").toBe(true);
+    expect(res.mode).toBe("restored");
+    expect(report().impression, "the reopened report still carries his conclusion").toBe(hisConclusion);
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.some((p) => p.stale),
+      "and his observation comes back live, not stale",
+    ).toBe(false);
   });
 });
 

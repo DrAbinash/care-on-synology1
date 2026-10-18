@@ -4683,7 +4683,26 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // format genuinely adds still lands, and his own lines survive because the merge above
     // never removes text.
     const withheldNormalImpression = impressionDecision.withheld.length > 0;
-    const techniqueNext = mergeInto("technique", pre.techniqueText, r.technique, r.techniqueSentences ?? []);
+    // Technique takes the one exception the scaffold door already applies, with the same
+    // predicate: the setup half of Start Report writes this Study Tab's or protocol's own
+    // acquisition sentence, so merging the format's statement additively prints two accounts
+    // of one examination. When every sentence on the page is machine-authored the approved
+    // statement REPLACES them; anything a person typed, dictated or accepted stays on the
+    // page and the merged statement joins it.
+    const techniqueCtx = get().reportingContext;
+    const replacesMachineTechnique = pre.techniqueText.trim() !== "" && mayReplaceMachineTechniqueWithApproved({
+      techniqueText: pre.techniqueText,
+      provenance: priorProv("technique"),
+      regionCount: (techniqueCtx?.regions && techniqueCtx.regions.length
+        ? techniqueCtx.regions
+        : [techniqueCtx?.region]).filter(Boolean).length || 1,
+    });
+    const techniqueNext = !pre.techniqueText.trim() || replacesMachineTechnique
+      // The replaced machine sentences leave the text, so they leave the provenance map too:
+      // a key for prose that is no longer on the page is how a later re-select comes back to
+      // claim it.
+      ? { text: r.technique, provenance: attributeMerge(EMPTY_FIELD_PROVENANCE, r.techniqueSentences ?? []) }
+      : mergeInto("technique", pre.techniqueText, r.technique, r.techniqueSentences ?? []);
     const findingsNext = mergeInto("findings", pre.findingsText, r.findings, r.findingsMerged.sentences);
     const impressionNext = mergeInto(
       "impression",
