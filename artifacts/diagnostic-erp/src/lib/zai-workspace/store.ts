@@ -41,7 +41,13 @@ import {
 } from "./fullReportFormat";
 import { alignRecommendationToObservations } from "@/lib/impressionRecommendationWiring";
 import { getFormatApplyBridge } from "./formatApplyBridge";
-import { appendClinicalPhrase } from "@/lib/clinicalHistoryText";
+import {
+  appendClinicalPhrase,
+  historyPhraseVariants,
+  historyTemplateNeedsSide,
+  removeClinicalPhrase,
+  resolveHistoryPhrase,
+} from "@/lib/clinicalHistoryText";
 import { DEFAULT_SNIPPET_MACROS, lookupMacros, lookupMacrosForContext, loadMacros, saveMacros, createMacro } from "./snippet-macros-library";
 import { DEFAULT_SIGN_OFF_PROFILES, loadProfiles, saveProfiles, lookupProfile, formatSignOff, createProfile } from "./sign-off-profiles";
 import {
@@ -289,6 +295,15 @@ export type AppliedPathologyPatch = {
 
 export type PendingPathologyPatch = {
   incoming: PathologyIncoming;
+  /**
+   * The sentence a clinical-history box contributes to the Clinical History
+   * section. `PathologyIncoming` is the report BODY — Technique, Findings,
+   * Impression, Recommendation — and an indication is none of those, so a box
+   * authored as history carries its sentence here and nothing in `incoming`.
+   * `toggleClinicalHistoryContribution` is the only writer of the section, and
+   * it is the toggle the Clinical History chips already use.
+   */
+  clinicalHistory?: string;
   ownership: PathologyOwnership;
   source: InsertSource;
   side?: Side | "";
@@ -869,6 +884,23 @@ export type WorkspaceStore = S & {
    *  success. Widened from `void`, so every existing caller that discards it is
    *  unaffected. */
   mergeField: (f: EditorField, incoming: string, source: InsertSource) => "applied" | "refused";
+  /**
+   * Contribute a clinical-history sentence to the Clinical History section, or
+   * withdraw the exact one already there. This is `ClinicalHistoryChipStrip`'s
+   * toggle — the same append-if-absent, remove-if-exact, never-clobber-typed-text
+   * rules — reached from a Quick Select box instead than from a chip, so one
+   * section keeps one mechanism and no history text is stored twice.
+   *
+   * `"refused"` covers a signed report, an empty phrase, and a `{side}` template
+   * clicked with no side chosen; the second click is the deselect, which reports
+   * `"removed"`. One clinical undo frame per click that changed the section, so a
+   * history box steps back like any other Quick Select click.
+   */
+  toggleClinicalHistoryContribution: (
+    phrase: string,
+    selected: boolean,
+    side?: Side | "",
+  ) => "applied" | "removed" | "refused";
   /** Fill only when the field is empty; assigns provenance for the inserted block. */
   setFieldIfEmpty: (f: EditorField, v: string, source: InsertSource) => void;
   /** Wholesale replace with provenance for the new content. */
@@ -1395,6 +1427,31 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     if (f === "findings" && st && shouldPreloadNext(result.text, st.modality, get().preloadTriggered)) set({ preloadTriggered: true });
     setTimeout(() => get().recomputeCopilot(), 0);
     return "applied";
+  },
+  toggleClinicalHistoryContribution: (phrase, selected, side) => {
+    // The signed boundary is this section's own: a history box is a clinical
+    // write like any other, and `setField` below would refuse silently.
+    if (refuseSignedMutation(get(), "toggleClinicalHistoryContribution")) return "refused";
+    const template = (phrase ?? "").trim();
+    if (!template) return "refused";
+    const before = get().clinicalHistoryText;
+    let next = before;
+    if (selected) {
+      if (historyTemplateNeedsSide(template) && !(side ?? "").trim()) return "refused";
+      // Duplicate-safe: a section that already says this is left alone.
+      next = appendClinicalPhrase(before, resolveHistoryPhrase(template, side ?? ""));
+    } else {
+      // Only an exact contribution this action could have written is withdrawn, at
+      // any side it may have been written with. A sentence the radiologist edited
+      // is theirs and stays, which is the rule `removeClinicalPhrase` encodes.
+      const present = historyPhraseVariants(template).find((p) => before.includes(p));
+      if (present) next = removeClinicalPhrase(before, present);
+    }
+    if (next === before) return selected ? "applied" : "removed";
+    const snap = captureClinicalSnapshot(get());
+    get().setField("clinicalHistory", next, { source: "quick-findings" });
+    set(withPushedClinicalUndo(get(), snap));
+    return selected ? "applied" : "removed";
   },
   setFieldIfEmpty: (f, v, source) => {
     const existing = get()[fieldTextKey(f)];
