@@ -255,11 +255,22 @@ export function applySideToIncoming(
   };
 }
 
+export interface ManualKeptSentences {
+  findings: string[];
+  impression: string[];
+}
+
 export interface PathologyPatchResult {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
   /** True when a manually edited anatomy sentence would have been replaced. */
   ambiguous: boolean;
+  /**
+   * Which sentences those were, per field. `ambiguous` says a collision happened;
+   * this names the words at risk, so the confirm dialog can show the radiologist
+   * the line it is about to delete instead of only the slot that caused it.
+   */
+  manualKept: ManualKeptSentences;
   replacedSentences: string[];
 }
 
@@ -395,6 +406,7 @@ export function applyPathologyPatch(opts: {
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
     field: "findings" | "impression",
@@ -475,6 +487,7 @@ export function applyPathologyPatch(opts: {
           || (prefix && isProtectedManualSentence(probe, provenance, { baselineReplaces: baseline }));
         if (protectedManual && !opts.force) {
           ambiguous = true;
+          manualKept[field].push(probe);
           keep.push(u);
           continue;
         }
@@ -621,6 +634,7 @@ export function applyPathologyPatch(opts: {
       recommendation: recommendation.provenance,
     },
     ambiguous,
+    manualKept,
     replacedSentences,
   };
 }
