@@ -6,6 +6,7 @@ import {
   mergeSentences,
   normalizeForDedupe,
   reconcileProvenanceAfterManualEdit,
+  rejoinAuthoredStatement,
   fuzzySentenceSimilarity,
   formatProvenanceHover,
   provenanceVisualKind,
@@ -505,5 +506,59 @@ describe("fuzzy provenance for lightly edited owned blocks", () => {
     expect(result.ambiguous).toBe(false);
     expect(result.narrative.findings.toLowerCase()).toContain("hemorrhage");
     expect(result.narrative.findings).toContain("Ventricles are normal.");
+  });
+});
+
+/**
+ * CAT-P4 — an Impression authored as one statement must stay one statement.
+ *
+ * The four refusals are the point: this repairs a line structure a merge broke, and
+ * nothing else. Fusing two producers' sentences, or returning a sentence the
+ * radiologist deleted, would be a clinical edit dressed up as formatting.
+ */
+describe("rejoinAuthoredStatement", () => {
+  const AUTHORED = "Normal MRI of the lumbosacral spine. "
+    + "No significant disc, canal, foraminal or neural compressive abnormality.";
+
+  it("puts a statement the sentence-level merge split back on its line", () => {
+    const split = "Normal MRI of the lumbosacral spine.\n"
+      + "No significant disc, canal, foraminal or neural compressive abnormality.\n"
+      + "Facet arthropathy at L4-L5.";
+    expect(rejoinAuthoredStatement(split, AUTHORED)).toBe(`${AUTHORED}\nFacet arthropathy at L4-L5.`);
+  });
+
+  it("never fuses statements that came from different producers", () => {
+    // Same second sentence, different first one: the run is not the authored block,
+    // so the two lines belong to two rows and stay two lines.
+    const other = "Disc herniation at L4-L5 causing indentation on the thecal sac.\n"
+      + "No significant disc, canal, foraminal or neural compressive abnormality.";
+    expect(rejoinAuthoredStatement(other, AUTHORED)).toBe(other);
+  });
+
+  it("never puts back a sentence the radiologist deleted", () => {
+    const partial = "Normal MRI of the lumbosacral spine.\nFacet arthropathy at L4-L5.";
+    expect(rejoinAuthoredStatement(partial, AUTHORED)).toBe(partial);
+  });
+
+  it("leaves a single-sentence statement and a multi-line block exactly as authored", () => {
+    expect(rejoinAuthoredStatement("Facet arthropathy at L4-L5.", "Facet arthropathy at L4-L5."))
+      .toBe("Facet arthropathy at L4-L5.");
+    const block = "First statement.\nSecond statement is its own line.";
+    expect(rejoinAuthoredStatement("First statement.\nSecond statement is its own line.", block))
+      .toBe(block);
+  });
+
+  it("is what the merge itself produces, in the other direction", () => {
+    // The premise, not an assumption: the canonical merge really does write one
+    // sentence per line, which is why this function has to exist.
+    const merged = mergeReportFieldContentWithProvenance({
+      field: "impression",
+      existing: AUTHORED,
+      incoming: "Facet arthropathy at L4-L5.",
+      source: "quick-findings",
+      existingProvenance: provenanceFromText(AUTHORED, "template"),
+    });
+    expect(merged.text.split("\n")).toHaveLength(3);
+    expect(rejoinAuthoredStatement(merged.text, AUTHORED)).toBe(`${AUTHORED}\nFacet arthropathy at L4-L5.`);
   });
 });

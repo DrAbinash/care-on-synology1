@@ -305,7 +305,7 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
     ).toEqual([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION]);
   });
 
-  it("says the same clinical things in every click order, in two possible sequences", () => {
+  it("says the same clinical things in the same order, whatever the click order", () => {
     const sets = new Map<string, string>();
     const sequences = new Map<string, string[]>();
     for (const order of permutations()) {
@@ -317,7 +317,12 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
       sets.set(JSON.stringify([...seq].sort()), seq.join("\n"));
     }
     expect(sets.size, "click order changed WHICH Impression statements exist").toBe(1);
-    expect([...sequences.keys()]).toHaveLength(2);
+    // And the order is now part of the same guarantee. Measured before the
+    // 2026-10-18 ruling was wired in: TWO sequences for these three boxes, the
+    // herniation and the stenosis trading places depending on which was clicked
+    // first. The composition ends with the one clinical-priority sorter, so a
+    // press of "Refresh" answers with the same numbered Conclusion every time.
+    expect([...sequences.keys()]).toHaveLength(1);
   });
 });
 

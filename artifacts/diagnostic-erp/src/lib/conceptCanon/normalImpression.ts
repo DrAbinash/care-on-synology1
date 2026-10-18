@@ -16,10 +16,13 @@
  *    auto-yields to an impression-worthy abnormal observation. Manual
  *    / protected impression text is NEVER deleted by this mechanism.
  *
- * 2. Auto-yield decisions are made by inspecting patch CONCEPT and
- *    SOURCE — NOT by NLP / regex on the impression text. A manually
- *    typed "Normal study." sentence has source = "manual" or
- *    "radiologist-voice" and is therefore NOT the system patch.
+ * 2. Auto-yield decisions are made by inspecting patch CONCEPT and SOURCE, and —
+ *    for the conclusions whose concept the registry does not rank — by the one
+ *    shipped abnormality reading (`isAbnormalFindingsLine`), never by hunting the
+ *    Impression for a normal-looking phrase. WHAT is withdrawn is always this
+ *    patch's own recorded contribution; a manually typed "Normal study." sentence
+ *    has source = "manual" or "radiologist-voice" and is therefore NOT the system
+ *    patch, so nothing here can delete it (CAT-P5).
  *
  * 3. Auto-return happens ONLY when:
  *      (a) the last impression-worthy abnormal patch was removed, AND
@@ -31,7 +34,10 @@
  */
 
 import type { AppliedPathologyPatch } from "../zai-workspace/store";
+import type { ObservationRole } from "../observationSlot";
 import { isImpressionworthyAbnormal, isSystemOwnedBaseline } from "./contentPacks";
+import { assertsStudyNormal } from "@workspace/report-quality";
+import { isAbnormalFindingsLine } from "../abnormalEmphasis";
 
 /** Stable patch id for the system-owned Normal Study impression. */
 export const SYSTEM_NORMAL_PATCH_ID = "system-normal-study";
@@ -137,6 +143,82 @@ export function hasImpressionworthyAbnormal(
       role: p.observation?.role,
     });
   });
+}
+
+/**
+ * Does this sentence state an abnormality, rather than deny one?
+ *
+ * The concept registry cannot answer it alone, and the gap is not hypothetical:
+ * measured over the 22 lumbar spine Quick Select boxes, eight abnormal ones carry
+ * a concept the registry does not flag impression-worthy (`facet_joint`,
+ * `ligamentum_flavum`, `disc_height`, `disc_signal`, `endplate`, `schmorl`), so
+ * their conclusion left the study normal printed above it — a report asserting
+ * both. Reading only the concept goes the other way as well: the shipped "Normal
+ * LS spine" box carries concept `spondylolisthesis`, so a concept test alone would
+ * let a normal statement delete the normal.
+ *
+ * So the sentence is authoritative, and it is read by `isAbnormalFindingsLine` —
+ * the precision-first classifier every printed surface already uses to decide
+ * which lines to bold, not a new vocabulary. A whole-examination normal never
+ * qualifies: "Normal MRI of the lumbosacral spine. No significant disc, canal,
+ * foraminal or neural compressive abnormality." reads as a normal on both arms.
+ */
+export function statesAbnormalImpressionText(
+  contribution: string | undefined | null,
+): boolean {
+  const text = (contribution ?? "").trim();
+  if (!text) return false;
+  if (assertsStudyNormal(text)) return false;
+  return isAbnormalFindingsLine(text);
+}
+
+/**
+ * Whether one ledger row's OWN conclusion is what suppresses the system normal.
+ *
+ * Identity first: the system normal patch and the materialised baseline rows are
+ * never what withdraws a normal. Then the sentence. A row the radiologist has
+ * taken over (`protected`) still counts — their words are an abnormality on the
+ * page — but nothing here ever deletes those words; withdrawal is scoped to the
+ * system normal patch and `stripContribution` refuses protected text.
+ */
+export function statesAbnormalImpression(
+  patch: AppliedPathologyPatch,
+): boolean {
+  if (isSystemNormalPatch(patch)) return false;
+  if (patch.stale) return false;
+  // A baseline row states the examination's normal; it is never the abnormal that
+  // withdraws it. The exclusion stays on the row's kind rather than its wording
+  // because a baseline row also carries sentences that are not normal statements at
+  // all ("Routine six sequences were acquired."), which a wording test would read
+  // as anything.
+  if (patch.observation?.role === "baseline") return false;
+  return statesAbnormalImpressionText(patch.lastRendered.impression);
+}
+
+/**
+ * Is an abnormal conclusion live in the ledger right now?
+ *
+ * The union of the two readings, deliberately: the concept rule is the shipped
+ * behaviour for baseline-atom tiles whose own sentence names no cue, and the
+ * sentence rule is CAT-P5. Neither may be dropped or the other's reports change —
+ * deselecting an MRI Lumbar normal tile would stop restoring the normal, and a
+ * facet arthropathy would keep printing beneath "Normal MRI of the lumbosacral
+ * spine."
+ */
+export function suppressesSystemNormal(patches: ReadonlyArray<AppliedPathologyPatch>): boolean {
+  return hasImpressionworthyAbnormal(patches)
+    || patches.some((p) => statesAbnormalImpression(p));
+}
+
+/** The same question for a row that is not in the ledger yet — a click in flight. */
+export function incomingStatesAbnormalImpression(
+  concept: string | null | undefined,
+  role: ObservationRole | undefined,
+  contribution: string | undefined | null,
+): boolean {
+  if (role === "baseline") return false;
+  if (isImpressionworthyAbnormal(concept ?? null, { role })) return true;
+  return statesAbnormalImpressionText(contribution);
 }
 
 /**

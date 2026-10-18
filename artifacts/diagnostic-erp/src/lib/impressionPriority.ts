@@ -307,11 +307,15 @@ function rankFor(spineSegment?: SpineSegment | null) {
  * before `L1`. A line with no level in it sorts last within its tier, which is
  * where a summary sentence belongs.
  */
+/** Spine order, so a tier tie resolves L2 before L5 and cervical before lumbar. */
+const LEVEL_BASES = { c: 100, t: 200, l: 300, s: 400 } as const;
+
 export function levelSortKey(line: string): number {
   const m = /\b([ctls])\s*(\d{1,2})\b/i.exec((line ?? "").trim());
   if (!m) return Number.MAX_SAFE_INTEGER;
-  const base = { c: 100, t: 200, l: 300, s: 400 }[m[1]!.toLowerCase()];
-  return base + Number(m[2]);
+  // The character class above admits exactly these four letters.
+  const letter = m[1]!.toLowerCase() as keyof typeof LEVEL_BASES;
+  return LEVEL_BASES[letter] + Number(m[2]);
 }
 
 /**

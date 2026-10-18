@@ -56,6 +56,7 @@ import {
   mergeReportFieldContentWithProvenance,
   provenanceFromText,
   reconcileProvenanceAfterManualEdit,
+  rejoinAuthoredStatement,
   normalizeForDedupe,
   type FieldProvenanceMap,
   type InsertSource,
@@ -197,9 +198,11 @@ import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
   buildSystemNormalPatch,
   findSystemNormalPatch,
-  hasImpressionworthyAbnormal,
   impressionHasManualContribution,
+  incomingStatesAbnormalImpression,
   isSystemNormalPatch,
+  statesAbnormalImpression,
+  suppressesSystemNormal,
   SYSTEM_NORMAL_IMPRESSION_TEXT,
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
@@ -2677,12 +2680,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // impression text is NEVER touched — the system normal patch is the
     // only contribution that auto-yields.
     //
-    // This decision is based on the incoming patch's CONCEPT (identity),
-    // NOT on string matching of impressionText.
+    // This decision is based on the incoming patch's CONCEPT and, where the
+    // concept registry has no opinion, on its own conclusion sentence read by the
+    // same classifier the print surface uses to bold a finding — NOT on hunting the
+    // Impression field for normal-looking words. What is withdrawn stays scoped to
+    // the system normal patch's recorded contribution either way.
+    //
+    // The sentence arm exists because eight of the twenty-two shipped lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy, ligamentum
+    // flavum hypertrophy, reduced disc height, disc desiccation, Modic, Schmorl):
+    // with the concept test alone their conclusion printed BENEATH "Normal MRI of
+    // the lumbosacral spine." — one section asserting the study was normal and the
+    // next asserting it was not (CAT-P5).
+    let normalYieldRefusedByManual = false;
     if (
-      isImpressionworthyAbnormal(observation.concept, { role: observation.role })
+      opts.source !== "system"
       && (incoming.impression ?? "").trim()
-      && opts.source !== "system"
+      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
     ) {
       const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
       if (systemNormal) {
@@ -2709,6 +2723,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
                 : p,
             ),
           });
+        }
+        // The normal words on the page are the radiologist's own by then, so the
+        // yield refused and nothing was deleted. Deleting them is not an option
+        // this system ever has; leaving the contradiction silent is. Arming the
+        // dependency is what puts the amber "Impression needs refresh" and the
+        // named reason on the canvas, which is how the doctor is told the
+        // Conclusion still says normal above a finding that is not normal.
+        if (yieldResult.outcome === "preserved-manual") {
+          normalYieldRefusedByManual = true;
         }
       }
     }
@@ -2979,6 +3002,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const ownsImpressionSide = Boolean(
       (appliedPatch?.templates.impression ?? appliedPatch?.lastRendered.impression ?? "").trim(),
     );
+    // CAT-P5, refused: the normal wording this click could not delete is the
+    // radiologist's own, so it stays exactly where they left it. What must not stay
+    // is the silence — arming the named contradiction reason is what puts the review
+    // prompt on the canvas and into the sign dialog, which is how the doctor learns
+    // the Conclusion still calls the study normal above a finding that does not.
+    if (normalYieldRefusedByManual) {
+      set(deriveImpressionDependency(get(), undefined, {
+        arm: "impression-contradicts-findings",
+      }));
+      return "applied";
+    }
+    // The Conclusion this click composed is ordered by clinical priority rather
+    // than by the order the boxes were pressed, and each statement stays on the line
+    // it was authored on (§158, CAT-P4). A radiologist who has hand-ordered the field
+    // has frozen both, and this is a no-op for them.
+    get().orderImpressionByPriority();
     set(deriveImpressionDependency(get(), ownsImpressionSide ? { rebase: true } : undefined));
     return "applied";
   },
@@ -3288,6 +3327,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
       isDirty: true,
     });
+    // A composed Conclusion reads in clinical order, not in the order the
+    // contributions were collected — which is the ledger's insertion order, i.e. the
+    // order the boxes were clicked. One sorter for both the press and the automatic
+    // pass, and a hand-ordered field is frozen inside it (§158).
+    get().orderImpressionByPriority();
     // The radiologist pressed "Refresh": the summary was regenerated from the
     // findings, so this is the paired write and the basis moves with it. Recorded
     // as a refresh rather than an authored write, because the dependency history
@@ -3321,8 +3365,37 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // line-anchored pattern could not see.
     if (refuseSignedMutation(get(), "orderImpressionByPriority")) return false;
     if (get().impressionOrderFrozen) return false;
-    const before = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-    if (before.length < 2) return false;
+    const original = get().impressionText;
+    // CAT-P4 — one authored statement, one line — before anything is sorted.
+    //
+    // `mergeSentencesWithProvenance` reads a field sentence by sentence, because
+    // provenance is keyed per sentence, and writes it back one sentence per line, so
+    // a Conclusion authored as a single statement ("Normal MRI of the lumbosacral
+    // spine. No significant disc, canal, foraminal or neural compressive
+    // abnormality.") arrived from a click as two. On the numbered Impression the
+    // clinic prints that is two conclusions where the radiologist wrote one. This
+    // rejoins a live contribution's own sentences only when all of them are still on
+    // the page, adjacent, in the order they were authored — so a sentence the
+    // radiologist deleted stays deleted and two different producers' lines are never
+    // fused.
+    let laid = original;
+    if (!proposed) {
+      // A caller that hands in `proposed` owns both the order and the shape of the
+      // field it derived them from; re-splitting its lines would make the proposal no
+      // longer a permutation of what is on the page, and the guard below would —
+      // correctly — refuse the whole write.
+      for (const p of get().appliedPathologyPatches) {
+        if (p.stale) continue;
+        laid = rejoinAuthoredStatement(laid, (p.templates.impression ?? "").trim());
+      }
+    }
+    const before = laid.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (before.length < 2) {
+      // Nothing to sort, but the shape may still have moved.
+      if (laid === original) return false;
+      set({ impressionText: laid, isDirty: true });
+      return true;
+    }
     // One sorter and one freeze rule for every study; only the clinical category
     // table changes for a dedicated Dorso-Lumbar examination (spec §26).
     const ordered = isDorsoLumbarDedicated(get().studyComposition)
@@ -3331,7 +3404,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const next = (proposed ?? ordered)
       .map((s) => s.trim())
       .filter(Boolean);
-    if (before.join("\n") === next.join("\n")) return false;
+    if (before.join("\n") === next.join("\n") && laid === original) return false;
     // A reorder may only ever permute. Anything else is a rewrite, and this action is
     // never allowed to reword a clinical statement (§18, §37).
     if (!isImpressionReorderOf(before, next)) return false;
@@ -3339,13 +3412,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return true;
   },
   seedSystemNormalImpression: () => {
-    // Safety: never seed when impression-worthy abnormal observations exist.
-    if (hasImpressionworthyAbnormal(get().appliedPathologyPatches)) return;
+    // Safety: never seed while an abnormal conclusion is on the page.
+    if (suppressesSystemNormal(get().appliedPathologyPatches)) return;
     // Safety: never seed when the radiologist has manually owned impression.
     if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
     // Safety: never seed on a finalized study.
     if (get().isFinalized) return;
     const existing = findSystemNormalPatch(get().appliedPathologyPatches);
+    // A normal the radiologist deleted is not a gap to refill. That case cannot
+    // reach here: deleting the sentence leaves the row's own contribution recorded and
+    // non-empty, which the line below refuses on, and typing over the field marks the
+    // sentence manual, which `impressionHasManualContribution` above refuses on. Both
+    // are pinned in `impressionCompositionAdversarial.test.ts`.
     if (existing?.lastRendered.impression?.trim()) return;
     // A full-format normal impression may be suspended while abnormalities
     // exist. Restore its exact owned contribution after the last one is
@@ -3358,6 +3436,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         source: "system",
         existingProvenance: get().fieldProvenance.impression ?? {},
       });
+      // CAT-P4 — the merge below keys provenance per sentence, so it writes the
+      // restored normal as one sentence per line. A baseline Impression authored as
+      // a single statement comes back from that as two numbered items, which is a
+      // different report from the one the clinic approved. Rejoin it onto the line it
+      // was authored on; a sentence the radiologist deleted is not present, so it is
+      // not put back by this.
+      // CAT-P4 is settled by the one layout pass every composer ends with, not here:
+      // the merge above keys provenance per sentence and therefore writes the
+      // restored normal as one sentence per line, and `orderImpressionByPriority` is
+      // what puts an authored statement back on its own line.
       const restoredText = get().impressionText.trim()
         ? restored.text
         : existing.templates.impression;
@@ -3926,27 +4014,45 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     // PR #662 §2 — System normal auto-return.
     //
-    // After removing an impression-worthy abnormal observation, if NO other
-    // impression-worthy abnormal patches remain AND the radiologist has not
-    // manually owned the impression AND the workspace is not finalized,
-    // re-seed the system normal patch. The seed action itself is idempotent
-    // and re-checks every safety predicate before applying.
+    // After removing an abnormal observation, if NO other abnormal conclusion
+    // remains AND the radiologist has not manually owned the impression AND the
+    // workspace is not finalized, re-seed the system normal patch. The seed action
+    // itself is idempotent and re-checks every safety predicate before applying.
     //
-    // Identity is decided by patch concept/source, NOT by string heuristics.
+    // Identity is decided by patch concept/source and by the row's own recorded
+    // conclusion, NOT by hunting the Impression field for normal-looking words.
     //
-    // This first test asks the CONCEPT-ONLY question ("was the thing I removed
-    // an abnormal-typed concept?") and keeps its current-main answer, because a
-    // shipped MRI Lumbar normal tile carries `canal_stenosis` / `conus_medullaris`
-    // as baseline atoms and deselecting one has always restored the normal.
-    // Whether the normal may actually come back is still decided by the single
-    // authoritative rule, one call below in hasImpressionworthyAbnormal.
+    // This first question is "was the thing I removed one of the abnormalities the
+    // normal was standing behind?" and it is the UNION of the two readings, because
+    // dropping either one changes a shipped report. The concept-only arm is main's
+    // answer and is what restores the normal under a MRI Lumbar routine normal tile
+    // — those emit baseline atoms whose concepts (`canal_stenosis`,
+    // `conus_medullaris`, `bone_lesion`, `disc_contour`, `compression_fracture`,
+    // `foraminal_stenosis`, `cauda_equina`) are impression-worthy while their sentence
+    // names no cue. The sentence arm is CAT-P5: eight of the twenty-two lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy and the rest), so
+    // with the concept test alone their deselection would leave the normal suspended
+    // forever — withdrawn on the click and never brought back.
+    //
+    // The sentence arm is asked only of a study that HAS a system normal row, and that
+    // scoping is load-bearing. `seedSystemNormalImpression` falls through to writing
+    // the generic "Normal study." when no row exists, so on a report that never
+    // carried one — a hand-written cervical cord report with a C2 fracture tile —
+    // deselecting the tile answered "Normal study." underneath a fracture. Measured:
+    // `findingsImpressionDependency.test.ts` caught it as an Impression that now
+    // contradicts its own Findings. Nothing was ever suspended there, so nothing had
+    // to come back.
+    const suspendedNormal = findSystemNormalPatch(get().appliedPathologyPatches);
     if (
       !isSystemNormalPatch(patch)
-      && isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+      && (
+        isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+        || (suspendedNormal !== null && statesAbnormalImpression(patch))
+      )
       && !get().isFinalized
     ) {
       const remainingPatches = get().appliedPathologyPatches;
-      if (!hasImpressionworthyAbnormal(remainingPatches)) {
+      if (!suppressesSystemNormal(remainingPatches)) {
         get().seedSystemNormalImpression();
       }
     }
@@ -3968,9 +4074,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Rebasing is not silencing. `impression-write` does not clear the semantic
     // half of the predicate, and a removal whose generated sentence the radiologist
     // has already replaced is refused outright (`preserved-manual`) rather than
-    // re-paired — both pinned in `findingsImpressionDependency.test.ts`, along with
-    // the brain-vascular bundle's "withdraws the impression line when the linked
-    // finding is removed".
+    // re-paired — both pinned in `findingsImpressionDependency.test.ts`.
+    //
+    // Ordered first, then derived: the basis has to record the Conclusion as the
+    // radiologist will read it, which is the prioritised shape, not the residue of
+    // whichever box was clicked last.
+    get().orderImpressionByPriority();
     set(deriveImpressionDependency(
       get(),
       result.outcome === "removed" ? { rebase: true } : undefined,
