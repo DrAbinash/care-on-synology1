@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { finalizeRadiologyReport, SIGNED_REPORT_STATUSES } from "./radiologyReportLifecycle";
+import {
+  finalizeRadiologyReport,
+  isFinalizeCompletion,
+  SIGNED_REPORT_STATUSES,
+} from "./radiologyReportLifecycle";
 import { api, HttpError, NetworkError } from "./fetchApi";
 import {
   isSignedArtifact,
@@ -224,6 +228,12 @@ describe("finalizeRadiologyReport — recovery after a lost create response (D-5
     expect(result.resumedAfterLostResponse).toBe(true);
     expect(calls.status).toEqual([]);
     expect(calls.sign).toEqual(["/api/patient-reports/13/sign"]);
+    // P0 cross-check on the other side of the completion gate: the flip was
+    // withheld because the transition had ALREADY happened, so "did this call
+    // send it?" reads false here. A predicate that answered non-completion
+    // would keep this finished study in the queue with its backups live.
+    expect(result.reportStatusSent).toBe(false);
+    expect(isFinalizeCompletion(result)).toBe(true);
   });
 
   it("R9 still flips the status on a normal (non-resumed) finalize", async () => {
@@ -232,6 +242,8 @@ describe("finalizeRadiologyReport — recovery after a lost create response (D-5
     expect(result.resumedAfterLostResponse).toBe(false);
     expect(result.reportId).toBe(14);
     expect(calls.status).toHaveLength(1);
+    expect(result.reportStatusSent).toBe(true);
+    expect(isFinalizeCompletion(result)).toBe(true);
   });
 
   it("R10 keeps the radiologist's local drafts when the content cannot be proved", async () => {

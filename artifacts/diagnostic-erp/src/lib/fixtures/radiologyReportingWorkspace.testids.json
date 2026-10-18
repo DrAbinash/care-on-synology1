@@ -3,7 +3,7 @@
   "phase": 1,
   "capturedAt": "2026-09-26",
   "purpose": "Baseline inventory for Phase-3 JSX extraction data-testid parity gate.",
-  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A), and when the four AP canal tables were gathered into one expandable section on the Measure tab (canal-ap-measurements-section / -none; spinal-canal AP audit 2026-10-17).",
+  "note": "Updated when Generate Professional Report joined the Starting Canvas header (Vertical Integration M1, PR A); when the four AP canal tables were gathered into one expandable section on the Measure tab (canal-ap-measurements-section / -none; spinal-canal AP audit 2026-10-17); and when the signed-report witness gained report-outcome-badge (#1058: the completion chip now states WHICH outcome happened — signed, saved-unsigned, or no report at all — so the browser has one stable hook to read instead of a colour).",
   "declaredInJsx": [
     "abnormal-pattern-apply",
     "abnormal-pattern-dismiss",
@@ -51,6 +51,7 @@
     "ref-dr-block",
     "refresh-impression-from-finding",
     "report-format-primary-slot",
+    "report-outcome-badge",
     "reporting-canvas-r2",
     "right-panel-expand",
     "send-report-to-hope",

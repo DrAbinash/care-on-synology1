@@ -42,6 +42,8 @@ not `MERGED`/`DEPLOYED`/`VERIFIED` or explicitly `BLOCKED`; 5) do not restart a 
 | RIS-011 | MWL reality per modality (MRI / CT / USG / X-ray) | P2 | Scans arrive unidentifiable | TODO | — | — | — | no | no |
 | RIS-012 | Linked-sibling finalize refused by the ownership guard | P1 | Second study of an authorized combined pair never marked final | **CONFIRMED (runtime) → PR OPEN** | cases 2/5/6 of `linkedSiblingReportFinalize.request.test.ts` red at `877701f9` with 409 `REPORT_WORKLIST_MISMATCH`; 6/6 green after; mutants M1–M7 each killed | **#1047** | **green** — all 3 jobs on `0d784e98` | no | no |
 | **RIS-013** | **Canal AP diameter: two measurement authorities, and the reachable one did not print** | **P1** | **A canal diameter the radiologist measured never reached the signed report** | **OWNER DECISIONS 1-4 IMPLEMENTED → MERGED (#1054, `3d54c552`)** (one print plan across segments, phrase dedupe gone, Generate writes no table, one live entry point + audited, Composer untouched) | `docs/audits/spinal-canal-ap-measurement-audit-2026-10-17.md` §RIS-013; 20-test rendered-artifact matrix V1-V10 on real PostgreSQL; ERP canal suites + 11-test entry-point contract; mutants M1 single-segment plan, M2a phrase guard, M2b/M2c valued/blank — each killed | **MERGED** `main` `3d54c552` (squash of `ad90a59a`; parent `71f68479`) | **green** — all 3 jobs on `ad90a59a`, 14,656 passed / 49 skipped over 1,089 files; merged tree `b84b5926` byte-equal to that head | no | **no** |
+| **RIS-014** | **Finalize sent the queue row's id where a billed study id was keyed, and a flip that sent nothing was a "completion"** | **P0** | **Another patient's identity prefilled into the report being signed; the queue advanced on a study that was never written** | **CONFIRMED (runtime + request level) → PR #1058, owner approved** | `finalizeStudyIdAuthority.request.test.ts` 4/4 + `finalizeFalseSuccess.hardening.test.ts` 25/25 on real PostgreSQL; the row-id-as-billed-id collision measured on the fixture (`GET /from-study/4 -> 404` where the billed study is 306) | **#1058** (Draft, head `4327ce4f` + merge of main) | **green** — all 3 jobs on `8a72cd84` | no | no |
+| **RIS-015** | **The workspace said "Report signed" for a report with no signature** | **P1** | **A radiologist believes an unsigned document is signed, prints it and sends it** | **REPRODUCED IN CHROMIUM → CORRECTED → PR #1058, owner approved** | `signedReportWitness.request.test.ts` 7/7 on real PostgreSQL; `signedReportDisplayState` client suite 29/29; **mutation battery 15/15 killed** (clean-tree control green first); chip read in Chromium for all three states + in-app switching + withdrawal before/after | **#1058** | **green** — all 3 jobs on `8a72cd84` | no | no |
 
 **Deployment, all rows:** nothing above is deployed. Measured 2026-10-16 from the development
 workstation: `192.168.1.137` answers ping in 7 ms, but `:8888` (care-web), `:8042` (Orthanc),
@@ -886,6 +888,131 @@ that same tree, so the number is the branch's own and not an inference from per-
 
 ---
 
+## RIS-014 / RIS-015 — the finalize identity bind, and the badge that said "signed" without a signature (P0/P1, PR #1058 Draft)
+
+Both corrections are on `p0/finalize-study-id-authority`, measured against a scratch PostgreSQL 18 at
+`127.0.0.1:5445`, `TZ=UTC`, `--no-file-parallelism`, and against the real Reporting Workspace in
+headless Chromium (Vite from this tree on `:5181`, API on `:8097`, same database). Nothing merged or
+deployed; nothing on the clinic's server was touched.
+
+**RIS-014** — `useStudyFinalize` passed the workspace route param (a `radiology_worklist.id`) into
+`FinalizeStudyContext.studyId`, which every reader treats as a `radiology_studies.id`. The two
+sequences overlap by design, so the prefill returned whichever billed study happened to share the
+number: `GET /from-study/4 -> 404` on a row whose billed study is 306, and request-level a case where
+the colliding study belongs to a *different patient*, whose `testId`/`orderId` then arrived at the
+finalize of the patient on screen. The mapping is now one exported builder
+(`finalizeContextForWorkspaceStudy`: row id → `worklistId`, queue-row FK → `studyId`, null when
+unbilled so the existing auto-link attempt still runs) and the server refuses the mismatched pairing
+with typed `ORDER_MISMATCH` / `TEST_MISMATCH` instead of writing it.
+
+**RIS-015** — the completion chip tested `linkedReportId`, which answers "does a report exist", and
+wore the word "signed" on a row that was `status = 'draft'`, `signed_at IS NULL`. Reproduced as
+`patient_reports` 171 in the browser, with the same finalize's own toast three seconds earlier saying
+"Report saved but NOT signed". `signedReportDisplayState()` now decides the wording from the row the
+workspace already fetches, asking `rowAlreadySigned()` — the existing client mirror of the server's
+single authority `isSignedArtifact()`, so **no second signature authority was created**; the parity
+matrix runs the same witness rows through both predicates. Four states, each with its own colour and
+remedy: signed (emerald, attributed to the signer of record), saved-not-signed (amber, points at
+Report Hub signing), study-final-no-report (rose), and `unknown` for the window where the id is known
+and the row has not been read back — which refuses to guess in either direction. The finalize button's
+caption comes from the same decision, and every finalize outcome now invalidates
+`["workspace-final-report"]`, refusals included.
+
+Evidence: **7/7** request-level witness cases (draft-unsigned reads unsigned at the wire; a signature
+block that does not exist refuses and writes nothing; the signer of record is the CHOSEN block, never
+a body-supplied name; re-signing is refused with the original instant intact; withdrawal clears the
+witness and reopens the study; both doors into the no-report state — the status-only soft-final a
+signing role cannot pass, and the unbilled `READY_TO_SEND` finalize the workspace legitimately sends;
+two patients side by side keeping their own witnesses); **29/29** client classifier/badge/caption
+tests including the `unknown` fail-closed case and the switching sequence; **15/15 mutants killed**
+(M1 restore the defect, M2 guess while the row is in flight, M3–M6 mislabel or mis-colour, M7 let a
+client flag stand in for a signature, M8–M10 revert the wiring, M11 drop DELIVERED from the closed
+test, M11b compute the flag without returning it, M12 remove the invalidation, M13–M14 decouple the
+button) with the clean-tree control measured green before any mutant ran; the full `diagnostic-erp`
+package at **6900 passed / 1 failed** (`aiQueryContract.test.ts`, a pre-existing Windows path-separator
+artifact: its offender list returns absolute paths so the `!== "lib/aiReportingClient.ts"` filter can
+never match) and `api-server` at **5889 passed / 6 failed**, five environmental (backup/restore/mwl
+filesystem, and `nginxLegacyLedgerResetBlock` which main has since fixed in `0bca78ca`) and the sixth —
+`daily-summary.refundDetails.request.test.ts` — proven by control to be shared-database state, not
+this change: **it passes 3/3 on a freshly cloned empty schema** and drifts between identical runs on
+the shared scratch database, which is the order-dependence this file already records above.
+
+Chromium, from the DOM's own claim (`[data-testid='report-outcome-badge']` →
+`data-signature-state`, class, text):
+
+| study | how the state was reached | chip | colour | button |
+|---|---|---|---|---|
+| 891 | seeded bound draft row, study final | "Report saved — NOT signed" | amber | "Not signed" |
+| 889 | **the UI's own Confirm & Sign**: create 201, flip 200, signing declined | "Report saved — NOT signed" | amber | "Not signed" |
+| 892 | final with `report_id` NULL | "Study marked final — NO report exists" | rose | "No report" |
+| 893 | signed row | "Report signed — Dr. Sole …" | emerald | "Signed" |
+| 890 | created, signed and flipped through the API, then withdrawn | before: "Report signed — Dr. Badge …" emerald; after: no chip at all, page says no "Report signed" anywhere | → | after: "Confirm & Sign", enabled |
+
+In-app switching (the queue's own `select[data-testid='queue-jump']`, not a page reload): signed →
+unsigned → UI-finalized → back to signed produced `signed / not-signed / not-signed / signed`, each
+study fetching its own report row (`/api/patient-reports/1142`, `1141`, `1143`), and no study ever
+showed another's attribution.
+
+**The in-session chip after a *successful UI signing* — OBSERVED 2026-10-18** (`tmp/a1-ui-signing.mjs`,
+`screenshot tmp/badge/ui-signing-126.png`, evidence `tmp/badge/ui-signing-126.json`), on a study whose
+draft the app wrote itself: a scratch database seeded with one synthetic billed CT Brain (worklist row
+126) and exactly one ACTIVE signature block, workspace opened, text typed into
+`canonical-findings-editor`, Impression produced by the canvas's own `generate-local-impression`, the page
+left to autosave, then Confirm & Sign in the same session with **auto-advance switched off**
+(`care_auto_advance_after_finalize=false`) — the confound that destroyed the earlier read, which had
+already navigated to study 890 before it looked. Request chain: `from-study/122` 200 →
+`POST /api/patient-reports` 201 → `GET /api/signatures` 200 → **`POST /api/patient-reports/97/sign` 200** →
+`report-status` 200 → `GET /api/patient-reports/97` (the invalidation refetch, not a reload). Chip at 2, 3,
+5, 8 and 12 s: `signed` / emerald / "Report signed — Dr. Sole Verify (a1close)" with the lock line
+"Locked — corrections need an administrator" and the button re-labelled "Signed" and disabled. The row
+agrees: `radiology_worklist.status = REPORT_FINAL`, `report_id = 97`, `patient_reports.status =
+pending_verification`, `signed_at NOT NULL`, `signed_by_name = Dr. Sole Verify (a1close)`. The only 4xx in
+the run were HOPE/OHIF/DICOMweb paths this scratch stack does not serve (`send-report-to-hope` 409,
+`invalid StudyInstanceUID`), none of them on the signing chain.
+
+**Open, and not to be read as fixed:**
+1. **SPLIT 2026-10-18 — it was not the fixture draft, and it is not an app defect either.** That run's own
+   request log ends the finalize at create 201 → `GET /api/signatures` 200 → flip 200 with **no**
+   `POST /api/patient-reports/:id/sign` anywhere in it, and `autoSignReport()` reaches "no sign request"
+   on exactly two conditions — no ACTIVE block, or 2+ active with no clinic-radiologist match and no id
+   chosen — both decided by the `signatures` table, which no draft row can influence. The app's own draft
+   writer is now measured too: scenario 8 of `signedReportWitness.request.test.ts` saves through
+   `/api/radiology/report-generator/save-draft` (it derives `worklist_id` **and** `study_id` from the
+   resolved worklist row — the one column the hand-written fixture lacked), then creates, signs and flips
+   over real HTTP, and the row comes back signed. Two claims in the paragraph this replaces were wrong,
+   and are corrected here rather than left standing: the `DRAFT_WORKLIST_MISMATCH` belongs to study **890**
+   (the log shows the queue auto-advanced — `worklist-lock/890/claim`, `drafts/241/print-preview` — before
+   that autosave), so it was never evidence about the study being finalized; and the database that run used
+   is NOT gone — it is `care_qs_c3` on the scratch cluster, the shared database the other session's API on
+   8097 serves and the one `tmp/vite.p1.ts` proxies to. Its marker cleanup deleted the run's rows (no
+   `radiology_worklist` row above 840 survives while `radiology_worklist_id_seq` reads `last_value = 893`),
+   and its `signatures` table now holds exactly one row — **with `id = 12`**, i.e. eleven blocks were
+   created and deleted. So the exact set of blocks the decline saw is unrecoverable, which is why both arms
+   are pinned as tests instead:
+   `radiologyReportLifecycle.test.ts` adds the arm that was missing, a retired block chosen in the dialog,
+   and dropping `isActive` from the filter kills it plus the pre-existing retired-only arm.
+   **No DEF-D PR is owed.** What is owed, and deliberately not taken here: (a) `useStudyFinalize.ts:337`
+   types the block list `{ id, name }[]` and never reads `isActive`, and `FinalizeSignDialog.tsx:374`
+   renders every block it is given, so a retired signer can be offered — or defaulted to, when the
+   remembered id is gone — and the signing then refuses; the picker should filter to active, and
+   `GET /api/signatures` must keep answering inactive rows because the admin screen needs them. (b) A
+   finalize with no active block still closes the study `REPORT_FINAL`. #1058 makes that state *visible*
+   ("Not signed", destructive toast) but blocking it is an owner workflow ruling, not a witness fix.
+2. The refusal was again invisible to my toast selector, and the paragraph above is the second time the
+   same mistake was made: the selector has now been re-armed (auto-advance off, same page session) and the
+   signing chain reads correctly — so what the earlier run "saw" was the *next* study, not the one that
+   was refused. A UI check that pins one selector, or reads after the queue has moved, is not a UI check;
+   read rendered text, and pin the gesture that keeps the page where it is.
+3. `reports-v2/` stays untracked; the nginx guard repair is task **#128** and main has taken it; the
+   `daily-summary` order-dependence above is a test-hygiene item, not a clinical one. Measured again on
+   the 12 files this PR touches, and it is the same disease: run in parallel against one scratch database
+   they red 23 tests with `{"error":"Failed to create report"}` on inserts that all succeed serialized
+   (184/184, 12/12 files); run with `--no-file-parallelism` they are green. Request-level files sharing a
+   database are not parallel-safe, full stop — main's own `bills.searchFilters.request.test.ts` reds for
+   the same reason in a full-suite run.
+
+---
+
 ## Standing constraints for anyone working this queue
 
 **Owner's examination-ownership ruling (2026-10-17), which settles what RIS-006 and RIS-012 were
@@ -982,6 +1109,20 @@ a guessed identity for an approved one.
    OHIF caliper → level capture with a reachable PACS, wiring the Composer projection §RIS-013 defines,
    the owner's ruling on collapsing the AI-tab box's two writes, and turning
    `mriBrainCanvasPlacement.test.ts` into a render check.
+8. **RIS-014 + RIS-015 / PR #1058 (Draft): both corrections are measured, mutation-killed 15/15 and
+   read in Chromium — do not re-derive them, and do not add a second signature authority.** The witness
+   is `rowAlreadySigned()` / `isSignedArtifact()`, and the display decision is
+   `signedReportDisplayState()`. Task **#134 is SPLIT and closed** (2026-10-18, §RIS-014/015 item 1): the
+   unsigned finalize was decided by the `signatures` table before any signing request existed, the app's
+   own draft writer is now measured signing end to end, and no DEF-D PR is owed. The one UI claim that was
+   never observed — the in-session chip after a *successful* signing — is now observed on an app-written
+   draft, with auto-advance off and no reload (§RIS-014/015, the block above the open list). Two things
+   are left,
+   neither of them a witness question: the sign dialog offers blocks it will then refuse
+   (`useStudyFinalize.ts:337` + `FinalizeSignDialog.tsx:374`, unfiltered by `isActive`), and whether a
+   finalize with no active block should close the study at all is an owner ruling. Test-hygiene warning
+   for whoever runs this suite next: the PR's 12 files red 23 tests when run in parallel against one
+   scratch database and pass 184/184 with `--no-file-parallelism`.
 
 **Owner decisions outstanding:** (a) — *answered 2026-10-17* — one signed report may cover several
 examinations only when they are explicitly linked, and that ruling is now implemented in PR #1047;
