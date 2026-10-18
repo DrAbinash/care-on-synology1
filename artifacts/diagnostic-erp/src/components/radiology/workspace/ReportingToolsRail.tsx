@@ -592,6 +592,9 @@ export function ReportingToolsRail({ vm }: { vm: RadiologyWorkspaceVm }) {
                                   disabled={contentLocked}
                                   onToggle={handleQuickToggle}
                                   onAfterPick={() => feedbackAfterAbnormalApply()}
+                                  onStructuredPick={(b) =>
+                                    studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)
+                                  }
                                 />
                               </>
                             ) : null}

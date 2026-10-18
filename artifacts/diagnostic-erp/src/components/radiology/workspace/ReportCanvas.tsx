@@ -1638,6 +1638,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           anatomyFilter={activeFindingsAnatomy}
                           disabled={contentLocked}
                           onToggle={handleQuickToggle}
+                          onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                           onAfterPick={() => { feedbackAfterAbnormalApply(); }}
                         />
                       </FindingsToolDrawer>
@@ -1882,6 +1883,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             compact
                             disabled={contentLocked}
                             onToggle={handleQuickToggle}
+                            onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
@@ -1923,6 +1925,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             compact
                             disabled={contentLocked}
                             onToggle={handleQuickToggle}
+                            onStructuredPick={(b) => studySetup.handleFindingClick(b, selectedQuickIds, handleQuickToggle)}
                             onAfterPick={() => { void saveDraft({ silent: true }); }}
                           />
                         )}
