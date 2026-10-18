@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { signedReportBadge } from "@/lib/radiologyReportLifecycle";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const overlays = readFileSync(
@@ -30,6 +31,22 @@ const identity = readFileSync(
   join(here, "../../../api-server/src/lib/radiologyIdentity.ts"),
   "utf8",
 );
+
+/**
+ * Production source with its comments removed.
+ *
+ * #1058 moved the banner's wording into `radiologyReportLifecycle.ts` and left
+ * the reasoning here as prose, so a guard that greps the component for a claim
+ * would now be satisfied by a comment — and a comment is not something the
+ * radiologist reads. Claims about what the screen SAYS are made against the lib
+ * (a pure function, so the string is the rendered one); claims about what the
+ * component WIRES are made against this.
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+const overlaysCode = stripComments(overlays);
 
 /** The signed-study banner block, from its opening condition to its close. */
 function signedBanner(src: string): string {
@@ -84,19 +101,35 @@ describe("the signed-report banner does not fake an editor unlock", () => {
   });
 
   it("states that the signed text is locked", () => {
-    const banner = signedBanner(overlays);
+    // The chip's text comes from the lib now, so the claim is proved in two
+    // parts: the overlay renders whatever the lib decided, and what the lib
+    // decides for a signed row is a lock — not an unlock, and not a button.
+    // Asserting the word against the component source would pass on a JSX
+    // comment, which is prose nobody renders.
+    const banner = signedBanner(overlaysCode);
     expect(banner).toContain('data-testid="signed-report-lock"');
-    expect(/locked/i.test(banner)).toBe(true);
+    expect(banner).toContain("{signatureBadge.lock}");
+    expect(signedReportBadge("signed", "Dr. Sugandha Priyadarshini").lock).toMatch(/locked/i);
+    expect(signedReportBadge("signed", null).lockTitle).toMatch(/nothing typed here can change it/i);
   });
 
   it("does not call a study signed when no report row exists", () => {
     // A worklist row can reach REPORT_FINAL with reportCreationSkipped set —
     // no patient bill, no report. Emerald "Report signed" over that was the
     // calm-success face this PR removes.
-    const banner = signedBanner(overlays);
+    const banner = signedBanner(overlaysCode);
     expect(banner).not.toContain("Report signed & delivered");
-    expect(banner).toMatch(/NO report exists/);
-    expect(banner).toMatch(/from-rose-500/);
+    expect(banner).not.toMatch(/Report signed/);
+    // The label and the colour are both taken from the badge, so the only way
+    // the study reads as signed is if the witness says it is.
+    expect(banner).toContain("{signatureBadge.label}");
+    expect(banner).toMatch(/SIGNATURE_TONE_CLASS\[signatureBadge\.tone\]/);
+    const badge = signedReportBadge("no-signed-report", null);
+    expect(badge.label).toMatch(/NO report exists/);
+    expect(badge.tone).toBe("danger");
+    expect(badge.label).not.toMatch(/report signed/i);
+    // and danger really is the rose the banner used to hardcode.
+    expect(overlaysCode).toMatch(/danger:\s*"bg-gradient-to-r[^"]*from-rose-500/);
   });
 });
 
@@ -154,8 +187,9 @@ describe("the draft lock tells the truth about what it refuses", () => {
 
   it("does not send a study with no report to a signature that does not exist", () => {
     // A worklist row can reach REPORT_FINAL with reportId still null —
-    // WorkspaceOverlays.tsx:700 renders that state as "Study marked final — NO
-    // report exists". There is no patient_reports row, so nothing to un-sign.
+    // `signedReportBadge("no-signed-report")` in radiologyReportLifecycle.ts
+    // renders that state as "Study marked final — NO report exists". There is no
+    // patient_reports row, so nothing to un-sign.
     const unlinked = lockedMessages().filter((m) => /no report linked to it/i.test(m));
     expect(unlinked, `expected one unlinked refusal, got ${JSON.stringify(unlinked)}`).toHaveLength(1);
     expect(unlinked[0]).not.toMatch(/withdraw/i);

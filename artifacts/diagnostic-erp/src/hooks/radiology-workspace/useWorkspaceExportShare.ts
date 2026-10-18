@@ -39,6 +39,7 @@ import {
   normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
+import { signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -63,6 +64,8 @@ export type UseWorkspaceExportShareOptions = {
       studyDate?: string | null;
       referringDoctor?: string | null;
       reportId?: number | null;
+      /** radiology_worklist.status — finalization, which is not signing. */
+      status?: string | null;
       sex?: string | null;
       age?: string | null;
     } | null;
@@ -503,6 +506,12 @@ const handleShare = useCallback(() => {
 const { data: finalReport } = useQuery<{
   id?: number;
   signedByName?: string | null;
+  /** The three witnesses `isSignedArtifact` counts — signed_at, the status
+   *  list, and a D5 structured document whose audit signature is final. A
+   *  D5-signed row keeps the schema-default `status: "draft"`, so status alone
+   *  sees neither of the last two. */
+  signedAt?: string | Date | null;
+  structuredJson?: { audit?: { signature?: { state?: string } } } | null;
   status?: string | null;
   lifecycle?: { state?: string; superseded?: boolean };
   version?: { superseded?: boolean };
@@ -511,6 +520,34 @@ const { data: finalReport } = useQuery<{
   queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
   enabled: !!linkedReportId,
 });
+
+/**
+ * What the workspace is allowed to SAY about the report behind this study.
+ *
+ * Read from the server's own row, never inferred from `linkedReportId`: a
+ * report row can exist and be bound while the signature did not happen (no
+ * active signature on file, or 2+ and ambiguous — `autoSignReport` declines
+ * rather than guess an author). The badge and the finalize button used to key
+ * on the id alone, so an unsigned row read "Report signed" in green while the
+ * toast three seconds earlier had said "Report saved but NOT signed".
+ */
+const signedReport = useMemo(() => {
+  // One read of the queue row for the whole workspace. `signedElsewhereControlLock`
+  // keeps this count pinned because a second hand-rolled `REPORT_FINAL` check
+  // somewhere else can disagree with `contentLocked`, which prefers the detail
+  // query — so the caption is taken from here rather than recomputed in the
+  // canvas, and the badge and the button cannot tell two stories about one study.
+  const studyFinal =
+    workflow.currentRow?.status === "REPORT_FINAL" || workflow.currentRow?.status === "DELIVERED";
+  return {
+    ...signedReportDisplayState({
+      reportId: linkedReportId,
+      report: (finalReport as Record<string, unknown> | null | undefined) ?? null,
+      studyFinal,
+    }),
+    studyFinal,
+  };
+}, [linkedReportId, finalReport, workflow.currentRow]);
 
 const verifyGate = useMemo(
   () => canVerifyReport(
@@ -579,6 +616,7 @@ verifyActionRef.current = () => {
     linkedReportId,
     linkedReportIdRef,
     finalReport,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,

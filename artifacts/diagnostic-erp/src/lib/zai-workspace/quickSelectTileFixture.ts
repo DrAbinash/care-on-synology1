@@ -32,6 +32,14 @@ const assignedIds = new Map<string, number>();
  * Findings, Impression and Recommendation together; every other section's tile
  * carries only its own.
  *
+ * The column a sentence lands in is the seed's own rule, not a local guess:
+ * `primaryTextField(field)` in `generate-quick-select-factory-boxes.ts` files it
+ * under its section and anything unnamed — `clinicalHistory` — under
+ * `finding_text`. An adapter that filed a box differently made every suite below
+ * drive a box the clinic never receives, which is what it did to the eleven
+ * history boxes until the parity test in
+ * `quickSelectClinicalHistoryRouting.test.ts` said so.
+ *
  * `field` moves the sentence between columns. It does not get its own id: the
  * seed writes one row per tile, so a tile driven through a section other than
  * its own is the same box read differently, not a second box. Keying the id on
@@ -50,23 +58,22 @@ export function clinicalBoxForTile(
     id = assignedIds.size + 1;
     assignedIds.set(tile.id, id);
   }
-  const isFindings = section === "findings";
+  // `primaryTextField` from the seed generator, in one place: the section names
+  // the column, and an unnamed section falls to `findingText` because that is the
+  // column default the table gives it.
+  const primary = section === "impression" ? "impressionText"
+    : section === "technique" ? "techniqueText"
+      : section === "recommendation" ? "recommendationText"
+        : "findingText";
   return {
     id,
     label: tile.label,
     studyType: tile.scopeBodyPart ?? "",
-    findingText: isFindings ? tile.sentence : "",
-    impressionText: isFindings
-      ? tile.impressionSentence ?? ""
-      : section === "impression"
-        ? tile.sentence
-        : "",
-    techniqueText: section === "technique" ? tile.sentence : "",
-    recommendationText: isFindings
-      ? tile.recommendationSentence ?? ""
-      : section === "recommendation"
-        ? tile.sentence
-        : "",
+    field: section,
+    findingText: primary === "findingText" ? tile.sentence : "",
+    impressionText: primary === "impressionText" ? tile.sentence : (tile.impressionSentence ?? ""),
+    techniqueText: primary === "techniqueText" ? tile.sentence : "",
+    recommendationText: primary === "recommendationText" ? tile.sentence : (tile.recommendationSentence ?? ""),
     concept: tile.concept ?? null,
     anatomicalSection: tile.anatomicalSection,
     conflictGroup: tile.conflictGroup,

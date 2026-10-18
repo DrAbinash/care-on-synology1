@@ -21,19 +21,33 @@
  * Plus a coverage assertion, so a catalogue that lost its technique boxes could
  * not leave the first two passing over a population that no longer exercises
  * the property.
+ *
+ * Five sections, not four. Clinical History is one of the five a box's `field`
+ * can name, and a history box's sentence lives in the `finding_text` column
+ * because the table has no column for history — so reading that column as a
+ * finding reported an indication as an observation of the scan. The click
+ * measured here is the one the workspace makes, including the branch that hands
+ * a history box to the Clinical History toggle instead of the overlay.
  */
 import { describe, expect, it } from "vitest";
 import { useWorkspace } from "./store";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { clinicalBoxForTile } from "./quickSelectTileFixture";
-import { quickFindingPatch, type ClinicalQuickFindingBox } from "./quickSelectTilePayload";
+import {
+  isClinicalHistoryBox,
+  quickFindingClickRoute,
+  quickFindingPatch,
+  type ClinicalQuickFindingBox,
+} from "./quickSelectTilePayload";
+import { quickSelectBoxSentence } from "./quickSelectBoxCatalogue";
+import { resolveHistoryPhrase } from "@/lib/clinicalHistoryText";
 import { applySideToIncoming } from "@/lib/pathologyPatch";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import type { QuickSelectParameterValues } from "./quickSelectParameterContract";
 import type { QuickSelectTile } from "./types";
 
-const SECTIONS = ["findings", "impression", "technique", "recommendation"] as const;
+const SECTIONS = ["clinicalHistory", "findings", "impression", "technique", "recommendation"] as const;
 type Section = (typeof SECTIONS)[number];
 
 const TILES = DEFAULT_QUICK_SELECT_TILES as unknown as QuickSelectTile[];
@@ -43,6 +57,34 @@ const sents = (t: unknown) =>
     .map(normalizeForDedupe)
     .filter(Boolean)
     .sort();
+
+/** The workspace as a fresh study of this tile's own scope, nothing filled in. */
+function resetTo(tile: QuickSelectTile): void {
+  useWorkspace.setState({
+    findingsText: "",
+    impressionText: "",
+    recommendationText: "",
+    techniqueText: "",
+    clinicalHistoryText: "",
+    fieldProvenance: {},
+    appliedPathologyPatches: [],
+    impressionNeedsRefresh: false,
+    lastPatchSnapshot: null,
+    patchUndoStack: [],
+    patchRedoStack: [],
+    confirmOverwriteOpen: false,
+    pendingPathologyPatch: null,
+    startingCanvasBaseline: null,
+    appliedFormatReportTitle: null,
+    voiceComposerObservations: [],
+    reportingContext: buildReportingStudyContext({
+      modality: tile.scopeModality || "MR",
+      studyDescription: tile.scopeBodyPart ?? "",
+      regions: tile.scopeBodyPart ? [tile.scopeBodyPart] : [],
+      source: "auto",
+    }),
+  });
+}
 
 /**
  * The parameters the strip would have collected before this click. Resolving
@@ -61,43 +103,45 @@ function paramsFor(box: ClinicalQuickFindingBox): QuickSelectParameterValues {
 function click(tile: QuickSelectTile) {
   const box = clinicalBoxForTile(tile);
   const params = paramsFor(box);
-  useWorkspace.setState({
-    findingsText: "",
-    impressionText: "",
-    recommendationText: "",
-    techniqueText: "",
-    clinicalHistoryText: "",
-    fieldProvenance: {},
-    appliedPathologyPatches: [],
-    impressionNeedsRefresh: false,
-    lastPatchSnapshot: null,
-    confirmOverwriteOpen: false,
-    pendingPathologyPatch: null,
-    startingCanvasBaseline: null,
-    appliedFormatReportTitle: null,
-    voiceComposerObservations: [],
-    reportingContext: buildReportingStudyContext({
-      modality: tile.scopeModality || "MR",
-      studyDescription: tile.scopeBodyPart ?? "",
-      regions: tile.scopeBodyPart ? [tile.scopeBodyPart] : [],
-      source: "auto",
-    }),
-  });
-  const verdict = useWorkspace
-    .getState()
-    .applyPathologyOverlay(quickFindingPatch(box, { region: box.studyType }, params));
+  resetTo(tile);
+  const patch = quickFindingPatch(box, { region: box.studyType }, params);
+  const state = useWorkspace.getState();
+  // The click handler's own route decision, called rather than re-implemented:
+  // a clinical-history box contributes through the Clinical History toggle, and
+  // only a patch that also carries body prose reaches the overlay. Measuring one
+  // half of the click would not tell a sentence filed in the wrong section from a
+  // sentence that was never written at all.
+  const route = quickFindingClickRoute(patch);
+  let verdict: string;
+  if (route.clinicalHistory) {
+    verdict = state.toggleClinicalHistoryContribution(route.clinicalHistory, true, params.side);
+    if (!route.writesBody) return finish(verdict, box, params);
+  }
+  verdict = String(state.applyPathologyOverlay(patch));
+  return finish(verdict, box, params);
+}
+
+function finish(verdict: string, box: ClinicalQuickFindingBox, params: QuickSelectParameterValues) {
   const s = useWorkspace.getState();
   const text: Record<Section, string> = {
+    clinicalHistory: s.clinicalHistoryText,
     findings: s.findingsText,
     impression: s.impressionText,
     technique: s.techniqueText,
     recommendation: s.recommendationText,
   };
-  // The engine's own substitution, so the expectation cannot drift from the
-  // wording the report actually receives.
+  const historyBox = isClinicalHistoryBox(box);
+  const history = quickSelectBoxSentence(box, "clinicalHistory");
+  // The expectation is derived from the box's own columns and the rule that a
+  // history box's sentence belongs to Clinical History, never from the patch the
+  // builder returned. Reading the patch would make a misfiled sentence its own
+  // justification, which is the failure this census exists to catch.
+  //
+  // `applySideToIncoming` and `resolveHistoryPhrase` are the substitutions the
+  // two writes actually apply, so the wording compared is the wording received.
   const resolved = applySideToIncoming(
     {
-      findings: box.findingText,
+      findings: historyBox ? "" : box.findingText,
       impression: box.impressionText,
       technique: box.techniqueText,
       recommendation: box.recommendationText,
@@ -105,7 +149,14 @@ function click(tile: QuickSelectTile) {
     (params.side ?? "") as never,
     (params.severity ?? "") as never,
   );
-  return { verdict: String(verdict), text, resolved };
+  return {
+    verdict: String(verdict),
+    text,
+    resolved: {
+      ...resolved,
+      clinicalHistory: historyBox ? resolveHistoryPhrase(history, params.side ?? "") : "",
+    } as Record<Section, string>,
+  };
 }
 
 describe("the whole shipped catalogue, one box at a time", () => {
@@ -149,44 +200,25 @@ describe("the whole shipped catalogue, one box at a time", () => {
     for (const tile of TILES) {
       const box = clinicalBoxForTile(tile);
       if (!Object.keys(paramsFor(box)).length) continue;
-      useWorkspace.setState({
-        findingsText: "",
-        impressionText: "",
-        recommendationText: "",
-        techniqueText: "",
-        clinicalHistoryText: "",
-        fieldProvenance: {},
-        appliedPathologyPatches: [],
-        impressionNeedsRefresh: false,
-        lastPatchSnapshot: null,
-        confirmOverwriteOpen: false,
-        pendingPathologyPatch: null,
-        startingCanvasBaseline: null,
-        appliedFormatReportTitle: null,
-        voiceComposerObservations: [],
-        reportingContext: buildReportingStudyContext({
-          modality: tile.scopeModality || "MR",
-          studyDescription: tile.scopeBodyPart ?? "",
-          regions: tile.scopeBodyPart ? [tile.scopeBodyPart] : [],
-          source: "auto",
-        }),
-      });
+      resetTo(tile);
+      const patch = quickFindingPatch(box, { region: box.studyType });
+      const state = useWorkspace.getState();
       const verdict = String(
-        useWorkspace.getState().applyPathologyOverlay(quickFindingPatch(box, { region: box.studyType })),
+        patch.clinicalHistory
+          ? state.toggleClinicalHistoryContribution(patch.clinicalHistory, true)
+          : state.applyPathologyOverlay(patch),
       );
       if (verdict !== "refused") refused.push(`${tile.label}: ${verdict}`);
       const s = useWorkspace.getState();
+      const texts: Record<Section, string> = {
+        clinicalHistory: s.clinicalHistoryText,
+        findings: s.findingsText,
+        impression: s.impressionText,
+        technique: s.techniqueText,
+        recommendation: s.recommendationText,
+      };
       for (const section of SECTIONS) {
-        const text = String(
-          section === "findings"
-            ? s.findingsText
-            : section === "impression"
-              ? s.impressionText
-              : section === "technique"
-                ? s.techniqueText
-                : s.recommendationText,
-        );
-        if (/\{side\}|\{severity\}/i.test(text)) tokenLeaked.push(`${tile.label} → ${section}`);
+        if (/\{side\}|\{severity\}/i.test(texts[section])) tokenLeaked.push(`${tile.label} → ${section}`);
       }
     }
 

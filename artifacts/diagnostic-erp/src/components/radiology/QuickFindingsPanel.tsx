@@ -12,6 +12,9 @@ import { computeChecklistStatus, summarizeChecklist, parseChecklist } from "@/li
 import { filterRegionNamesForModality, matchStudyRegion } from "@/lib/studyRegion";
 import { contentStudyTypes } from "@/lib/reportingStudyContext";
 import { quickFindingsForStudyTab } from "@/lib/pickQuickProtocol";
+import { hasHistoryChipContribution } from "@/lib/clinicalHistoryText";
+import { isClinicalHistoryBox } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickSelectBoxSentence } from "@/lib/zai-workspace/quickSelectBoxCatalogue";
 import WorkspaceQuickFindingEditor from "./WorkspaceQuickFindingEditor";
 
 /**
@@ -193,6 +196,14 @@ interface Props {
   /** Authoritative Study Tab from Section 1 — scopes findings by study_tab_id. */
   selectedStudyTabId?: number | null;
   selectedStudyTabName?: string | null;
+  /**
+   * The Clinical History section's current text. A box authored for that section
+   * writes no ledger row — the section is its own state — so this is how such a
+   * box reads as selected. It is the same source the Clinical History chips
+   * already read, which is the only reason a box and a chip cannot disagree about
+   * what the report says.
+   */
+  clinicalHistoryText?: string;
 }
 
 const SIDES: Array<{ value: Side; label: string }> = [
@@ -206,7 +217,7 @@ export default function QuickFindingsPanel({
   instances, onUpdateInstance, onAutoTechnique, onInsertNormals,
   activeProtocolId, onProtocolChange, onChecklistChange, onAcceptLearnedSuggestion,
   onFindingsLoaded, externalSearch, selectedRegions, onRegionToggle, compactRegions = false,
-  selectedStudyTabId, selectedStudyTabName,
+  selectedStudyTabId, selectedStudyTabName, clinicalHistoryText = "",
 }: Props) {
   const qc = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -217,11 +228,25 @@ export default function QuickFindingsPanel({
 
   /** A finding declaring questions needs details before it renders. */
   const isStructured = (f: QuickFinding) => parseQuestions(f.questionsJson).length > 0;
+  /**
+   * Whether this box is already on the report.
+   *
+   * A body box is on the report when its ledger row is there, which is what
+   * `selectedIds` carries. A clinical-history box writes no ledger row — the
+   * Clinical History section is one free-text field with no per-box record — so
+   * it reads from the section's own text, by the same predicate
+   * `ClinicalHistoryChipStrip` uses. Without this the box would click, write its
+   * indication, and sit there looking unselected forever, inviting a second click
+   * that takes it back off.
+   */
+  const isFindingActive = (f: QuickFinding) => selectedIds.has(f.id)
+    || (isClinicalHistoryBox(f)
+      && hasHistoryChipContribution(clinicalHistoryText, quickSelectBoxSentence(f, "clinicalHistory")));
   /** Click intent: open the details dialog for structured findings (fewest
    *  clicks — only when needed), otherwise toggle immediately. */
   const activateFinding = (f: QuickFinding) => {
     if (isStructured(f) && onFindingClick) onFindingClick(f);
-    else onToggle(f, !selectedIds.has(f.id));
+    else onToggle(f, !isFindingActive(f));
   };
 
   /** Debounce single-click so double-click can open study-local edit instead. */
@@ -426,14 +451,14 @@ export default function QuickFindingsPanel({
         const pick =
           candidates.find((c) => c.studyType === f.studyType && c.isActive) ??
           candidates.find((c) => c.isActive);
-        if (pick && !selectedIds.has(pick.id) && !seen.has(pick.id)) {
+        if (pick && !isFindingActive(pick) && !seen.has(pick.id)) {
           seen.add(pick.id);
           out.push(pick);
         }
       }
     }
     return out;
-  }, [selectedIds, findingsById, findingsByLabel]);
+  }, [selectedIds, findingsById, findingsByLabel, clinicalHistoryText]);
 
   // Measurements for selected tabs (or all matching when searching).
   const visibleMeasurements = useMemo(() => {
@@ -588,7 +613,7 @@ export default function QuickFindingsPanel({
   }
 
   function FindingButton({ f, index }: { f: QuickFinding; index?: number }) {
-    const selected = selectedIds.has(f.id);
+    const selected = isFindingActive(f);
     const blocked = Boolean(selected && blockedIds?.has(f.id));
     const isFav = favoriteIds.has(f.id);
     const structured = isStructured(f);

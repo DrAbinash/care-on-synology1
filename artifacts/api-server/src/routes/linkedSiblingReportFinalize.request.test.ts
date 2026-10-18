@@ -5,7 +5,8 @@
  * The Reporting Workspace's "combine" action reports two studies in one document: the radiologist
  * writes one report for, say, an MRI Brain and an MRI LS Spine done in the same slot. On finalize the
  * ERP posts the SAME report twice — once for the study it was opened on
- * (`radiologyReportLifecycle.ts:486`) and once for the linked sibling (`:505`) — because both studies
+ * (`finalizeRadiologyReport()`'s own `POST /api/internal/radiology/report-status`)
+ * and once for the linked sibling (the second flip in the same function) — because both studies
  * must leave the worklist as REPORT_FINAL or the second one sits in the queue forever and the patient
  * is told to wait for a report that already exists.
  *

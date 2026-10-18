@@ -360,7 +360,7 @@ import {
 import { trackWorkspaceEvent } from "@/lib/reportingTelemetry";
 import { type PathologyIncoming } from "@/lib/pathologyPatch";
 import { contributionProtected, selectedQuickFindingIds } from "@/lib/observationSlot";
-import { quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
+import { quickFindingClickRoute, quickFindingCrossSectionClash, quickFindingPatch, quickFindingRowBelongsTo, type QuickToggleOutcome } from "@/lib/zai-workspace/quickSelectTilePayload";
 import type { QuickSelectParameterValues } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { collectCompositionFinalizeGate, extractCareObservationLedger, patchFindingsContributionBlocked } from "@/lib/observationLedger";
 import {
@@ -2073,11 +2073,41 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     params?: QuickSelectParameterValues,
   ): QuickToggleOutcome => {
     const state = useWorkspace.getState();
+    const chosen = params ?? { side: quickSide };
+    const patch = quickFindingPatch(finding, {
+      region: studySetup.matchedStudyRegion ?? finding.studyType,
+      studyType: finding.studyType,
+    }, chosen);
+    const route = quickFindingClickRoute(patch);
+    if (route.clinicalHistory) {
+      // A clinical-history box writes a section the body patch has no key for. It
+      // contributes through the Clinical History toggle the chips already use,
+      // whose state is the section's own text — there is no ledger row to
+      // withdraw and nothing for `removeObservation` to find. A box that ALSO
+      // declares a body sentence falls through and writes that too: dropping it
+      // would lose a sentence the radiologist clicked for.
+      const verdict = state.toggleClinicalHistoryContribution(
+        route.clinicalHistory, nowSelected, chosen.side,
+      );
+      if (!route.writesBody) return verdict;
+    }
     if (nowSelected) {
-      const patch = quickFindingPatch(finding, {
-        region: studySetup.matchedStudyRegion ?? finding.studyType,
-        studyType: finding.studyType,
-      }, params ?? { side: quickSide });
+      const clash = quickFindingCrossSectionClash(state.appliedPathologyPatches, patch);
+      if (clash) {
+        // The wording is on the page from a row this box cannot reach — the strip
+        // that wrote it is gone and its `qs-` id names no database box. Writing it
+        // again would print the same clinical sentence twice, in two sections, so
+        // nothing is written and the radiologist is told where it already sits.
+        const name = clash.section.charAt(0).toUpperCase() + clash.section.slice(1);
+        toast({
+          title: "Already in the report",
+          description:
+            `"${clash.sentence}" is already in ${name}, from a Quick Select choice saved before this catalogue. `
+            + "Edit or delete it in " + name + " — clicking this box again would only repeat it.",
+          duration: 8000,
+        });
+        return "refused";
+      }
       const patchId = patch.id!;
       const outcome = state.applyPathologyOverlay(patch);
       const applied = useWorkspace.getState().appliedPathologyPatches.find((p) => p.id === patchId);
@@ -2611,6 +2641,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleSaveTeachingCase,
     handleShare,
     linkedReportId,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,
@@ -3629,6 +3660,7 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     showEmbeddedViewer,
     showFatigue,
     showLetterpadHeader,
+    signedReport,
     signOffProfiles,
     signerLine,
     stageAiProposal,

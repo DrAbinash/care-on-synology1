@@ -15,7 +15,11 @@ import {
   hopeDeliveryToast,
   type HopeEmitSuccess,
 } from "@/lib/hopeDeliveryOutcome";
-import { finalizeRadiologyReport } from "@/lib/radiologyReportLifecycle";
+import {
+  finalizeContextForWorkspaceStudy,
+  finalizeRadiologyReport,
+  isFinalizeCompletion,
+} from "@/lib/radiologyReportLifecycle";
 import { validateReport } from "@/lib/reportValidator";
 import { formatQualityAdvisoryForDialog } from "@/lib/reportQualityFinalize";
 import {
@@ -72,6 +76,10 @@ export type UseStudyFinalizeOptions = {
     currentRow: {
       patientId?: number | null;
       patientName?: string;
+      /** radiology_studies.id for this worklist row — null while unbilled.
+       *  Read by `finalizeContextForWorkspaceStudy`, which keeps it out of the
+       *  row-id slot; see the two-id-space note there. */
+      studyId?: number | string | null;
       studyDescription?: string | null;
       modality?: string | null;
       accessionNumber?: string | null;
@@ -473,18 +481,16 @@ const runFinalizeGauntlet = useCallback(async () => {
 
   try {
     const finalizeResult = await finalizeRadiologyReport(
-      ({
-        studyId,
-        worklistId: studyId,
-        patientId: workflow.currentRow.patientId,
-        accessionNumber: workflow.currentRow.accessionNumber ?? "",
-        studyInstanceUID: workflow.currentRow.studyInstanceUID ?? "",
-        studyDescription: workflow.currentRow?.studyDescription ?? "",
-        modality: workflow.currentRow.modality ?? "",
-        linkedStudyId: linkedForFinalize?.studyId ?? null,
-        linkedAccessionNumber: linkedForFinalize?.accessionNumber ?? null,
-        linkedStudyInstanceUID: linkedForFinalize?.studyInstanceUID ?? null,
-      } as any),
+      // `studyId` here is the ROUTE param — radiology_worklist.id, the key the
+      // whole workspace uses. It is NOT a billed study id, and the lifecycle's
+      // `studyId` field is; `finalizeContextForWorkspaceStudy` keeps the two
+      // apart so the from-study prefill cannot answer with the study that
+      // happens to share this row's number.
+      finalizeContextForWorkspaceStudy({
+        worklistRowId: studyId,
+        row: workflow.currentRow,
+        linked: linkedForFinalize,
+      }),
       {
         title: combinedTitle,
         htmlBody: signedBodyHtml,
@@ -545,16 +551,27 @@ const runFinalizeGauntlet = useCallback(async () => {
     } else if (finalizeResult.signed) {
       toast({ title: "Report finalized & signed", description: `Report #${finalizeResult.reportId}` });
     } else if (finalizeResult.reportCreationSkipped) {
-      // Not a success path. The worklist row is marked final while no report
-      // exists — nothing to print, nothing to send, nothing in Report Hub. The
-      // old wording ("Worklist marked final") read as completion in a calm voice,
-      // so a radiologist who believed it walked away from a study that has no
-      // report behind it. Destructive, and the fix named.
+      // Not a success path either way — but there are two different failures
+      // here and the old wording claimed the louder one for both.
+      //
+      // When the status flip WAS sent, the row really is REPORT_FINAL with no
+      // report behind it: nothing to print, nothing to send, nothing in Report
+      // Hub. When the flip was WITHHELD — which is what the lifecycle does for a
+      // study that HAS a patient but no resolvable billed test, precisely
+      // because closing a study over no report is how a radiologist ends up with
+      // one that shows as final and can never be signed — the row is still
+      // STUDY_RECEIVED and nothing changed at all. Telling the radiologist the
+      // study was "marked final" in that case would be a second false statement
+      // sitting on top of the first.
       toast({
-        title: "Study marked final — but NO report was created",
+        title: finalizeResult.reportStatusSent
+          ? "Study marked final — but NO report was created"
+          : "NOT signed and NOT finalized — no report was created",
         description: finalizeResult.reportCreationSkipped.includes("no patient")
           ? "No patient is linked to this study, so there is no billable patient to attach a report to. Nothing has been printed or sent. Link the study to its patient and bill in Match Center, then finalize again."
-          : `No patient report row created: ${finalizeResult.reportCreationSkipped}`,
+          : finalizeResult.reportStatusSent
+            ? `No patient report row created: ${finalizeResult.reportCreationSkipped}`
+            : `Nothing was written: ${finalizeResult.reportCreationSkipped}. The study stays open and stays in your queue, and your draft is still saved on this device. If this study is billed, its test could not be resolved — check the bill in Match Center, then finalize again.`,
         variant: "destructive",
         duration: 15000,
       });
@@ -641,15 +658,17 @@ const runFinalizeGauntlet = useCallback(async () => {
     }
 
     // 8. Post-finalize cleanup
-    if (finalizeResult.idempotent) {
-      // Nothing was written, so nothing was completed: the study stays in the
-      // queue, the reading session is not credited, and both local backups are
-      // kept because they are the only surviving copy of the discarded text.
-      // `cancelFinalize` rather than no call at all — otherwise `isFinalizing`
-      // stays true and the workspace is left showing a permanent finalizing
-      // state over a report that never changed.
-      useWorkspace.getState().cancelFinalize();
-    } else {
+    //
+    // Gated on what the server ACTUALLY ended up holding, not on "the call did
+    // not throw". `finalizeRadiologyReport` returns normally when it skips the
+    // report row, so `!idempotent` was the only false case and everything below
+    // ran on a finalize that wrote nothing: the study left the queue, both local
+    // backups were deleted, the editors locked, the reading session was credited
+    // and the queue advanced. Measured on the synthetic CT: `from-study/4 → 404`,
+    // no create, no status flip, editors locked, while the queue response for the
+    // same row still read `{status: "STUDY_RECEIVED", reportId: null}`.
+    const completedFinalize = isFinalizeCompletion(finalizeResult);
+    if (completedFinalize) {
       workflow.markCompleted(studyId);
       if (linkedForFinalize?.studyId) {
         const linkedId = Number(linkedForFinalize.studyId);
@@ -659,6 +678,16 @@ const runFinalizeGauntlet = useCallback(async () => {
       clearRescueDraft();
       useWorkspace.getState().completeFinalize();
       setReadingSession(prev => bumpSessionCompleted(prev));
+    } else {
+      // Nothing was written — by the idempotent refusal (the server returned the
+      // existing row and discarded this body) or by a skipped creation for a
+      // study whose billed test could not be resolved. Either way the study stays
+      // open, stays in the queue and keeps both local backups, because they are
+      // the only surviving copy of what was just not saved.
+      // `cancelFinalize` rather than no call at all — otherwise `isFinalizing`
+      // stays true and the workspace is left showing a permanent finalizing
+      // state over a report that never changed.
+      useWorkspace.getState().cancelFinalize();
     }
 
     // 9. Invalidate queries
@@ -668,13 +697,30 @@ const runFinalizeGauntlet = useCallback(async () => {
     // workspace locks on; without this the lock keeps reading the pre-sign row
     // until its 60 s staleTime expires.
     qc.invalidateQueries({ queryKey: ["pacs-worklist-detail", studyId] });
+    // And the row itself, because the completion chip now reads its claim off
+    // the report's signature witnesses rather than off `reportId`. This runs for
+    // the refusal outcomes too: on a finalize that created the row but could not
+    // sign it, the cached row — if there is one at all — says something else, and
+    // leaving it would let a stale entry justify the wrong badge.
+    qc.invalidateQueries({ queryKey: ["workspace-final-report"] });
 
     // 10. RIS throughput — auto-advance to the next eligible study.
     // goNextStudy handles the transition lock + wrong-patient arrival
     // cross-check and toasts "End of queue" when nothing eligible remains.
     // The just-finalized study is excluded by identity (currentId), so the
     // not-yet-rendered completedIds update cannot cause a self-advance.
-    if (result.advanceToNext) {
+    //
+    // Only after a finalize that actually completed. Advancing is what turned
+    // "nothing was written" into the three symptoms that made this a P0: the
+    // study left the queue on the strength of a completion that had not
+    // happened, `goNextStudy()` moved the ROUTE underneath the still-open
+    // gauntlet, `useStudyLock` then claimed the next row for a study the
+    // radiologist never opened, and the autosave that was still carrying the
+    // previous study's captured id hit `save-draft` with two different studies
+    // in one request — DRAFT_WORKLIST_MISMATCH, with the patient header
+    // changing underneath the text being saved. A study that was not finalized
+    // is still the study the radiologist is reading.
+    if (result.advanceToNext && completedFinalize) {
       goNextStudy();
     }
   } catch (err) {
