@@ -256,19 +256,22 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
   });
 });
 
-describe("Stage C Phase 4 · the measured residual: two unclassified lines keep the click order", () => {
+describe("Stage C Phase 4 · the measured residual: three unclassified lines keep the click order", () => {
   /**
    * Tripwire, not an endorsement.
    *
    * MEASURED: with the three shipped lumbar boxes on the shipped "MRI LS Spine — Standard
-   * Normal" document, all six click orders produce ONE set of Impression statements and TWO
-   * Impression sequences — herniation leads in orders HSP/HPS/PHS, stenosis leads in
-   * SHP/SPH/PSH. Findings has the same split. The content is deterministic; the sequence is not.
+   * Normal" document, all six click orders produce ONE set of Impression statements — the
+   * clinical content never depends on the mouse. Since the owner approved a conclusion for
+   * Grade 1 spondylolisthesis (2026-10-18) all three of them write an Impression line, so all
+   * six click orders now give six Impression SEQUENCES; before it was two, because the slip box
+   * wrote a Findings sentence and no conclusion. Findings has the same split. The content is
+   * deterministic; the sequence is not.
    *
    * The cause is a gap in the shipped category table, not in the composer: `orderImpressionLines`
-   * sorts by (rank, index) and documents "stable for equal ranks", and both of these statements
-   * classify as UNCLASSIFIED_RANK, so their index — the order the boxes were clicked — decides.
-   * These assertions hold while that is true and fail the moment anyone ranks one of them.
+   * sorts by (rank, index) and documents "stable for equal ranks", and all three of these
+   * statements classify as UNCLASSIFIED_RANK, so their index — the order the boxes were clicked —
+   * decides. These assertions hold while that is true and fail the moment anyone ranks one of them.
    *
    * WHY NO ORDER WAS CHOSEN HERE: which of a disc herniation and a moderate canal stenosis leads
    * a lumbar Impression is a clinical judgement, and the clinic's own lumbar library disagrees
@@ -287,7 +290,7 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
     expect(h.rank).toBe(s.rank);
   });
 
-  it("says the same clinical things in every click order, in two possible sequences", () => {
+  it("says the same clinical things in every click order, in six possible sequences", () => {
     const sets = new Map<string, string>();
     const sequences = new Map<string, string[]>();
     for (const order of permutations()) {
@@ -299,7 +302,10 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
       sets.set(JSON.stringify([...seq].sort()), seq.join("\n"));
     }
     expect(sets.size, "click order changed WHICH Impression statements exist").toBe(1);
-    expect([...sequences.keys()]).toHaveLength(2);
+    expect(
+      [...sequences.keys()],
+      "fewer than six sequences means one of the three lumbar boxes has been ranked — that is the owner decision, and this block should be replaced with the ranked assertion",
+    ).toHaveLength(6);
   });
 });
 
