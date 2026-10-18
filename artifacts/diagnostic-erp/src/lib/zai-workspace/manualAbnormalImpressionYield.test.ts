@@ -107,9 +107,10 @@ function openNormalLsSpine() {
     .toBeTruthy();
 }
 
-function click(box: ClinicalQuickFindingBox) {
+function click(box: ClinicalQuickFindingBox, expectOutcome: "applied" | "pending" | "refused" = "applied") {
   const patch = quickFindingPatch(box, CLICK_CTX);
-  expect(useWorkspace.getState().applyPathologyOverlay(patch)).toBe("applied");
+  const outcome = useWorkspace.getState().applyPathologyOverlay(patch);
+  expect(outcome, `the click ${outcome}, expected ${expectOutcome}`).toBe(expectOutcome);
   return patch.id!;
 }
 
@@ -177,16 +178,13 @@ describe("Ruling 1 · the typing door withdraws the system normal, by identity",
     type(`${MRI_LS_SPINE_STANDARD_NORMAL_IMPRESSION}\n${HIS_HEMNATION}`);
     expect(saysNormalStudy(), "the typing door withdrew it").toBe(false);
 
-    click({ ...HERNIATION, impressionText: HIS_STENOSIS });
+    // "pending", not "applied": this tile occupies the L4-L5 disc-contour slot, which is
+    // the slot his hand-written sentence describes, so the click asks before replacing it.
+    click({ ...HERNIATION, impressionText: HIS_STENOSIS }, "pending");
 
     expect(impression(), "the box's conclusion lands").toContain(HIS_STENOSIS);
+    expect(impression(), "and the sentence he wrote is not the price of it").toContain(HIS_HEMNATION);
     expect(saysNormalStudy(), "and the suspended normal did not come back").toBe(false);
-    // Deliberately not asserted here: whether HIS_HEMNATION survives the click. It does
-    // not, and that is a separate pre-existing defect on the box door, not on this one.
-    // Measured by control: with the system row suspended by direct setState — so this
-    // ruling-1 block provably never runs — clicking a box still replaces a hand-written
-    // Impression line with the box's own. With no system row on the ledger at all, the
-    // same click preserves it. Recorded as #180; fixing it belongs to its own change.
   });
 
   it("does nothing when what he typed states no abnormality", () => {

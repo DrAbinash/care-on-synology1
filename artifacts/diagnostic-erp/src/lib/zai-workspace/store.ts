@@ -81,6 +81,7 @@ import {
   applySideToIncoming,
   inferOwnership,
   relateralizeOwnedText,
+  type ManualKeptSentences,
   type PathologyIncoming,
   type PathologyOwnership,
   type ReportNarrative,
@@ -336,6 +337,12 @@ export type PendingPathologyPatch = {
   properties?: string;
   supportsLaterality?: boolean;
   findingsText?: string;
+  /**
+   * The radiologist's own sentences this patch would have replaced if he confirmed.
+   * Filled only on the pending path, and read by the overwrite dialog so the
+   * warning names the words at risk rather than only the slot that collided.
+   */
+  manualKept?: ManualKeptSentences;
   /** Chip study-tab / region used only to route multi-study findings sub-sections. */
   studyType?: string;
   /** Explicit findings sub-section. When omitted, overlay routes from chip metadata then active focus. */
@@ -2957,7 +2964,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       ownership,
       provenance,
       source: opts.source,
-      force: opts.force || (plan.action === "update" && !needsSlotConfirm),
+      // `plan.action === "update"` authorises taking over the ROW this slot points
+      // at, which the same-slot machinery below already does. It is not authority
+      // over the radiologist's prose: `force` is the single flag that lets
+      // `applyPathologyPatch` evict a provenance-protected sentence, so implying it
+      // here deleted a hand-typed Impression line whenever a tile's own slot claimed
+      // that sentence (#180). The collision now takes the path built for it —
+      // `ambiguous` → the overwrite dialog — so the replacement stays his decision.
+      force: opts.force,
       // Phase 5 — the sentence fence. `patches` is already the ledger with this
       // observation and its mutex siblings removed, so what is left is exactly the
       // other live findings whose words must survive this click.
@@ -3098,6 +3112,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
               findingsText: incoming.findings,
             }
             : {}),
+          manualKept: result.manualKept,
         },
         selectedObservationId: stableId,
         ...(routedSectionId ? { activeFindingsSectionId: routedSectionId } : {}),
