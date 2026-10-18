@@ -381,7 +381,10 @@ describe("both writers of the report ask the same rule", () => {
   }
 
   it("the generator refuses before it resolves a format, so nothing is picked let alone written", () => {
-    const body = window(STORE, "generateProfessionalReport: (ctx) => {", "const format = decision.format;", "generate");
+    // The window is over the generator's body; `opts` arrived with MODE A's
+    // automatic pass and is the only thing the start marker had to track. Every
+    // assertion below it is the ordering it was written for.
+    const body = window(STORE, "generateProfessionalReport: (ctx, opts) => {", "const format = decision.format;", "generate");
     expect(body).toContain("regionIdentityConflictMessage({");
     expect(body).toContain('code: "region-transition"');
     expect(body.indexOf("regionIdentityConflictMessage({")).toBeLessThan(body.indexOf("resolveNormalBootstrapFormat("));

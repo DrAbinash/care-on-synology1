@@ -111,6 +111,14 @@ export const CLINICAL_RESET_FIELDS = [
   "patchRedoStack",
   "lastPatchSnapshot",
   "startingCanvasBaseline",
+  // MODE A — why the instant report is not rebuilding THIS study's canvas. It names
+  // this examination's identity problem, so on the next study it would be a diagnosis
+  // of a report that was never examined.
+  "instantReportHold",
+  // MODE A — the normal sentences the radiologist deleted from a canvas the engine
+  // wrote. Left behind, the NEXT study's automatic pass would refuse to merge lines
+  // that study's doctor never removed, and a press is the only thing that clears it.
+  "normalLinesRemovedByRadiologist",
   "impressionNeedsRefresh",
   "impressionBasis",
   "impressionDependencyReasons",
@@ -200,6 +208,8 @@ export function emptyClinicalState(): ClinicalResetState {
     patchRedoStack: [],
     lastPatchSnapshot: null,
     startingCanvasBaseline: null,
+    instantReportHold: null,
+    normalLinesRemovedByRadiologist: [],
     impressionNeedsRefresh: false,
     impressionBasis: null,
     impressionDependencyReasons: [],

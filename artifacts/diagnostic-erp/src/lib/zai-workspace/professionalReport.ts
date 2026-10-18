@@ -10,6 +10,7 @@
  */
 
 import type { AppliedPathologyPatch, PendingPathologyPatch } from "./store";
+import { FULL_REPORT_BASELINE_KIND } from "./baselineKind";
 import { isSystemNormalPatch } from "@/lib/conceptCanon/normalImpression";
 import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
@@ -25,6 +26,10 @@ export type ProfessionalReportRefusalCode =
   | "library-loading"
   | "identity-unresolved"
   | "no-normal-format"
+  /** Resolved a format, but not one the clinic OWNS as this examination's approved
+   *  normal. Only reachable when the caller asked for that rule (`requireOwnedApprovedNormal`)
+   *  — a press does not, because the radiologist chose the format themselves. */
+  | "no-owned-normal"
   | "ambiguous";
 
 export type ProfessionalReportOutcome =
@@ -37,6 +42,12 @@ export type ProfessionalReportOutcome =
     observationsRetained: number;
     /** Retained observations the overlay engine wrote but put up for confirmation. */
     observationsNeedingReview: number;
+    /**
+     * The Findings were rebuilt; the Conclusion was not, because rebuilding it would
+     * have left the report with NO conclusion at all. Only an unpressed pass reports
+     * this — a press is the radiologist commanding the rebuild, and it still does it.
+     */
+    impressionHeld?: boolean;
   }
   | {
     status: "refused";
@@ -192,6 +203,42 @@ export function rowLevelKey(level: string | null | undefined): string {
 }
 
 /**
+ * Scaffold sentences the radiologist took out of a canvas this engine wrote.
+ *
+ * `lastStamped` is the Findings as the engine left them at the end of its previous
+ * pass, `current` is what is on the page now, and `scaffold` is what this
+ * examination's approved normal is made of. A line in the scaffold and in the last
+ * stamp but NOT on the page is a deletion, and nothing else removed it — a normal the
+ * findings contradict is already excluded by `supersededBaselineTexts` above, and a
+ * sentence the radiologist wrote is not the engine's to re-add in the first place.
+ *
+ * Comparing whole normalised lines, not substring or fuzzy matches, is deliberate:
+ * this is a claim about what a person removed, and a near-miss here either resurrects
+ * clinical prose they rejected or silently swallows a sentence they meant to keep.
+ */
+export function deletedScaffoldLines(opts: {
+  lastStamped: string;
+  current: string;
+  scaffold: readonly string[];
+}): Set<string> {
+  const present = new Set(
+    opts.current.split("\n").map((l) => normalizeForDedupe(l)).filter(Boolean),
+  );
+  const owned = new Set(
+    opts.scaffold.map((l) => normalizeForDedupe(l)).filter(Boolean),
+  );
+  const out = new Set<string>();
+  if (owned.size === 0) return out;
+  for (const line of opts.lastStamped.split("\n")) {
+    const key = normalizeForDedupe(line);
+    if (!key || !owned.has(key) || present.has(key)) continue;
+    const text = line.trim();
+    if (text) out.add(text);
+  }
+  return out;
+}
+
+/**
  * The baseline sentences the scaffold must not write, because the radiologist has
  * described those levels themselves.
  *
@@ -236,6 +283,35 @@ export function reportHasDeviation(
   return patches.some((p) => !p.stale
     && p.observation?.role !== "baseline"
     && !isSystemNormalPatch(p));
+}
+
+/**
+ * Is this format the clinic's OWNED approved normal for the examination?
+ *
+ * The same test `normalBootstrap.ts` uses to stop an un-owned Templates row
+ * outranking the curated copy — one rule, applied in both directions. A format with
+ * prose but no `care.full_report_baseline.v1` manifest is somebody's wording, not a
+ * baseline the department signed off, and the name on it does not change that.
+ */
+export function hasOwnedApprovedNormal(
+  manifest: { kind?: string } | null | undefined,
+): boolean {
+  return manifest?.kind === FULL_REPORT_BASELINE_KIND;
+}
+
+/**
+ * A fingerprint of the ledger that answers one question only: did this pass move it?
+ *
+ * Identity, not content — the id, whether the row is superseded, and its slot. A
+ * rebuild that re-derives the same sentences has to come back identical, or the
+ * automatic pass that wrote nothing would look like an edit and take an undo frame
+ * for it. `lastRendered` is deliberately excluded: it is the text the row wrote into
+ * the prose, and the prose is compared separately.
+ */
+export function ledgerIdentity(patches: readonly AppliedPathologyPatch[]): string {
+  return patches
+    .map((p) => `${p.id}\u0001${p.stale ? 1 : 0}\u0001${p.observation?.role ?? ""}`)
+    .join("\u0002");
 }
 
 /**
