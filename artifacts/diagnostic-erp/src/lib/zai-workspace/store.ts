@@ -201,6 +201,7 @@ import {
   impressionHasManualContribution,
   incomingStatesAbnormalImpression,
   isSystemNormalPatch,
+  reportAssertsAbnormality,
   statesAbnormalImpression,
   suppressesSystemNormal,
   SYSTEM_NORMAL_IMPRESSION_TEXT,
@@ -2386,10 +2387,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       const f = fs[0]!;
       const clinical = clinicalFieldsFromFormat(f);
       const formatSnapshot = captureClinicalSnapshot(get());
-      // Content first, then region — format technique wins over region protocol sync.
+      // CAT-P5, applied to this door (#168). A Full Normal Format carries a
+      // whole-examination Conclusion. Writing it over a report that already asserts
+      // an abnormality produces a report answering itself — "Moderate canal stenosis
+      // at L4-L5." above "Normal MRI of the lumbosacral spine." — and the wholesale
+      // replace here also DELETED the abnormal Conclusion the radiologist had
+      // clicked, which the confirmation gate never warned him about because a
+      // Quick Select sentence classifies as "generated", not as his own text. So
+      // when the report asserts abnormality, this door reconciles instead of
+      // replacing: his observations stay live, the format's anatomy merges in
+      // additively, and the format's normal Conclusion is withheld — the same
+      // outcome the click door reaches, from the same predicate.
+      const assertsAbnormality = reportAssertsAbnormality(
+        get().appliedPathologyPatches,
+        { findings: get().findingsText, impression: get().impressionText },
+      );
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
-      get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
-      get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      if (assertsAbnormality) {
+        get().mergeField("findings", clinical.findings, "template");
+      } else {
+        get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
+      }
+      if (!assertsAbnormality) {
+        get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      }
       get().setField("recommendation", clinical.recommendation, { source: "template", replaceProvenance: true });
       if (clinical.clinicalHistory.trim()) {
         // Patient/worklist/manual Hx wins: merge format phrase (no duplicate), never replace.
@@ -2409,11 +2430,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // A full report establishes a new baseline. Keep prior non-baseline
       // observations as stale audit context, then materialize only explicitly
       // curated baseline slots. Legacy prose formats safely produce no patches.
-      const stalePatches = get().appliedPathologyPatches
-        .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
-        .map((p) => ({ ...p, stale: true as const }));
+      //
+      // In reconcile mode nothing is marked stale: the abnormal observations are the
+      // report's clinical content now, and a stale row is dropped by the next rebuild
+      // — so the saved-and-reopened report would come back normal under an abnormal
+      // Findings section.
+      const stalePatches = assertsAbnormality
+        ? get().appliedPathologyPatches.filter(
+            (p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p),
+          )
+        : get().appliedPathologyPatches
+            .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
+            .map((p) => ({ ...p, stale: true as const }));
       const baselineRegion = pendingRegion || get().reportingContext.region || f.bodyPart;
-      const baselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
+      const formatBaselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
         id: p.id,
         ownership: ownershipFromObservation(p.observation),
         templates: p.templates,
@@ -2423,6 +2453,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
       }));
+      const baselinePatches = assertsAbnormality
+        ? formatBaselinePatches.map((p) =>
+            isSystemNormalPatch(p)
+              ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+              : p,
+          )
+        : formatBaselinePatches;
       set({
         reportFormats: nf,
         confirmOverwriteOpen: false,

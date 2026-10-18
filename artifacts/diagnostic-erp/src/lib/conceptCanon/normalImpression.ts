@@ -37,6 +37,7 @@ import type { AppliedPathologyPatch } from "../zai-workspace/store";
 import type { ObservationRole } from "../observationSlot";
 import { isImpressionworthyAbnormal, isSystemOwnedBaseline } from "./contentPacks";
 import { assertsStudyNormal } from "@workspace/report-quality";
+import { splitToSentences } from "../reportFieldMerge";
 import { isAbnormalFindingsLine } from "../abnormalEmphasis";
 
 /** Stable patch id for the system-owned Normal Study impression. */
@@ -193,6 +194,31 @@ export function statesAbnormalImpression(
   // as anything.
   if (patch.observation?.role === "baseline") return false;
   return statesAbnormalImpressionText(patch.lastRendered.impression);
+}
+
+/**
+ * Does this report, as it stands, assert an abnormality?
+ *
+ * CAT-P5 answers that question for the Quick Select door. This is the same question
+ * for the doors that open a whole report — a Full Normal Format, the deterministic
+ * generator, a dictation bootstrap — where the abnormality is already on the page and
+ * the ledger may hold rows the format is about to re-base. Both readings are needed and
+ * neither is sufficient: a clicked box whose concept the registry does not flag, and a
+ * conclusion the radiologist retyped himself, are the two ways an abnormality stands on
+ * a report while the ledger says nothing to a concept test.
+ *
+ * Normal prose is not mistaken for abnormality. The sentences a normal report carries
+ * ("No significant disc bulge or protrusion is seen.", "Normal lumbar lordosis is
+ * maintained.") are denials and normality predicates, and `statesAbnormalImpressionText`
+ * rejects both — the same classifier the print surface uses to decide what to bold.
+ */
+export function reportAssertsAbnormality(
+  patches: ReadonlyArray<AppliedPathologyPatch>,
+  fields: { findings?: string; impression?: string } = {},
+): boolean {
+  if (suppressesSystemNormal(patches)) return true;
+  return [fields.findings, fields.impression]
+    .some((text) => splitToSentences(text ?? "").some(statesAbnormalImpressionText));
 }
 
 /**
