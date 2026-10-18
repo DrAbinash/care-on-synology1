@@ -37,12 +37,21 @@
  *   (`___`) or as their own shorthand. Refusing those would be the defect the
  *   spec calls "blocking legitimate radiologist braces".
  *
- * Out of scope, with evidence, reported rather than quietly fixed: other
- * template-carrying sources reach the same boundary with unresolved tokens
- * (`structured-template` writes `{level}`/`{effect}` literally; `macro`/chocolate
- * box tiles inherit the `{side}` hole). Widening the guard to those surfaces
- * changes what Structured Reporting writes, which is a different contract and a
- * different PR.
+ * Out of scope, with evidence: `structured-template` writes reach the same
+ * boundary with `{level}`/`{effect}` and are NOT a Quick Select source
+ * (`isQuickSelectSource` is false for them), so this guard deliberately leaves
+ * what Structured Reporting writes untouched — a different contract.
+ *
+ * What this PR ADDS on top of the original B-09 scope (T8/T9): the out-of-band
+ * placeholder hole the declaration-only audit missed. A `{size}`, `{location}`,
+ * `{volume}`, `{swelling}`, `{grade}` or `{vessel}` — a token the side/severity
+ * chips never offer and `fillTemplate` never substitutes — is now refused at the
+ * boundary for every Quick Select source (`quick-select`, `macro`,
+ * `quick-findings`), rather than printed. The canvas strip routes the boxes that
+ * declare such a token to the existing structured dialog (which substitutes them)
+ * so a real box still applies; a box that carries one it cannot answer is refused,
+ * not leaked. See quickSelectStructuredSubstitution.test.ts and
+ * quickSelectStripStructuredRouting.test.ts.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -64,6 +73,7 @@ import {
   QUICK_SELECT_PARAMETER_SOURCES,
   quickSelectParametersIn,
   unresolvedQuickSelectParameters,
+  unresolvedQuickSelectPlaceholders,
 } from "@/lib/zai-workspace/quickSelectParameterContract";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
@@ -693,5 +703,104 @@ describe("wiring — the parameter reaches the boundary from the surface that co
     expect(guard).toBeGreaterThan(-1);
     expect(firstWrite).toBeGreaterThan(-1);
     expect(storeCode.slice(guard, guard + firstWrite)).toMatch(/return "refused"/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T8 — the out-of-band property guard: NO unresolved `{token}` reaches a report
+// section, whatever its name. Task A's whole-catalogue requirement, enforced at
+// the shared write boundary AFTER side/severity substitution, so the leak the
+// declaration test missed (a `{size}` the side/severity chips never offer) is
+// refused rather than printed. This is the backstop behind the strip's new
+// structured-dialog routing: a box that carries an unfilled out-of-band token
+// and never reaches the dialog cannot write.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("T8 — out-of-band placeholders are refused at the boundary, not printed", () => {
+  function dbBox(overrides: Record<string, unknown>) {
+    return {
+      id: 900001,
+      studyType: "Whole Abdomen",
+      label: "Leaky gall bladder box",
+      findingText: "Gallbladder contains a {size} calculus.",
+      impressionText: "Cholelithiasis, {size}.",
+      techniqueText: "",
+      recommendationText: "",
+      anatomicalSection: "",
+      conflictGroup: "",
+      baselineReplaces: "",
+      concept: "",
+      questionsJson: "[]",
+      properties: "",
+      ...overrides,
+    } as never;
+  }
+
+  function apply(box: never, params: { side?: Side | ""; severity?: string } = {}) {
+    return useWorkspace.getState().applyPathologyOverlay(
+      quickFindingPatch(box, { region: "Whole Abdomen", studyType: "Whole Abdomen" }, params),
+    );
+  }
+
+  it("refuses a box whose prose carries an unfillable {size}, and changes nothing", () => {
+    const before = clinicalState();
+    expect(apply(dbBox({}))).toBe("refused");
+    const s = useWorkspace.getState();
+    expect(s.findingsText).toBe("");
+    expect(s.impressionText).toBe("");
+    expect(s.appliedPathologyPatches).toEqual([]);
+    expect(clinicalState()).toEqual(before);
+  });
+
+  it("names the leaked token in the refusal, not a generic message", () => {
+    apply(dbBox({ findingText: "A {size} lesion in the {location}." }));
+    expect(toastMock).toHaveBeenCalled();
+    const shown = toastMock.mock.calls.at(-1)![0] as { title: string; description: string };
+    const all = `${shown.title} ${shown.description}`;
+    expect(all).toMatch(/nothing was applied/i);
+    expect(all).toMatch(/size/);
+    expect(all).toMatch(/location/);
+  });
+
+  it("does NOT refuse a box already resolved through the structured dialog (no brace left)", () => {
+    // The substitute for `applyStructuredDialog`'s output: the same sentence with
+    // the answered value, brace-free. It must apply exactly as an ordinary box.
+    expect(apply(dbBox({ findingText: "Gallbladder contains a 6 mm calculus.", impressionText: "Cholelithiasis, 6 mm." })))
+      .toBe("applied");
+    expect(useWorkspace.getState().findingsText).toContain("6 mm calculus");
+  });
+
+  it("still refuses an unresolved {side} with its dedicated side message (guards are complementary)", () => {
+    // A box asking only `{side}` is caught by the EARLIER side/severity guard,
+    // before the out-of-band check — the new code must not swallow that wording.
+    apply(dbBox({ findingText: "Restricted diffusion in the {side} MCA territory.", impressionText: "" }));
+    const shown = toastMock.mock.calls.at(-1)![0] as { description: string };
+    expect(shown.description).toMatch(/side/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T9 — the pure placeholder detector: identifier-shaped only, so a radiologist's
+// own braces survive; and it reads every section a one-click write commits.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("T9 — unresolvedQuickSelectPlaceholders is a token scanner, not a brace ban", () => {
+  it("finds every distinct out-of-band token across the four sections", () => {
+    expect(
+      unresolvedQuickSelectPlaceholders({
+        findings: "A {size} mass with {swelling}.",
+        impression: "{grade} appearances.",
+        technique: "",
+        recommendation: "{size} again.",
+      }),
+    ).toEqual(expect.arrayContaining(["size", "swelling", "grade"]));
+  });
+
+  it("ignores braces that are not template tokens (legitimate clinical text)", () => {
+    expect(unresolvedQuickSelectPlaceholders({ findings: "Calcifications ({ }) scattered.", impression: "{1, 2}, {'a': 1}, { see note }", technique: "", recommendation: "" }))
+      .toEqual([]);
+  });
+
+  it("sees a token already resolved to a value as none", () => {
+    expect(unresolvedQuickSelectPlaceholders({ findings: "left MCA territory infarct.", impression: "", technique: "", recommendation: "" }))
+      .toEqual([]);
   });
 });

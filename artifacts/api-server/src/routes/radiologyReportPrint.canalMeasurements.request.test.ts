@@ -91,7 +91,11 @@ describe.skipIf(!dbReady)("canal AP table on the draft print preview", () => {
   async function scenario(
     levels: Level[],
     measurementKey: "billed" | "worklist-row",
-    extraRows: { rows: Level[]; under: "billed" | "worklist-row" } = { rows: [], under: "billed" }
+    extraRows: { rows: Level[]; under: "billed" | "worklist-row" } = { rows: [], under: "billed" },
+    /** The draft's `structured_json` envelope, exactly as save-draft stores it. The
+     *  Reporting Workspace grid writes the canonical canal record HERE, not into
+     *  `spinal_measurements` — pass it to exercise the store the radiologist sees. */
+    draftEnvelope?: unknown,
   ) {
     const tag = randomUUID().slice(0, 8).toUpperCase();
     // Unique per scenario: both candidate keys are read, so a billed id reused
@@ -128,6 +132,7 @@ describe.skipIf(!dbReady)("canal AP table on the draft print preview", () => {
         studyName: "MRI LUMBAR SPINE",
         rawFindings: "Disc levels assessed.",
         impression: "[]",
+        ...(draftEnvelope !== undefined ? { structuredJson: draftEnvelope } : {}),
       })
       .returning();
     draftIds.push(draft.id);
@@ -233,5 +238,123 @@ describe.skipIf(!dbReady)("canal AP table on the draft print preview", () => {
     expect(titleOf(html)).toBeTruthy();
     expect(html).toContain("6.4");
     expect(html).not.toContain("9.9");
+  });
+
+  // ── The store the radiologist can reach must be the one that prints ──────────
+  // Audit 2026-10-17 §6, measured in Chromium on one study in one minute: the grid under
+  // Reporting Tools → Structure showed L4-L5 = 8.5 mm while the printed table was built
+  // from `spinal_measurements`, which that grid never writes (its only SPA writer is the
+  // box buried under the AI tab → Measure stage). Every case above seeds
+  // `spinal_measurements` DIRECTLY, so entry was tested, print was tested, and the join
+  // between them was tested by nobody — because it did not exist. These cases drive the
+  // same route through the draft envelope, which is what the workspace actually writes.
+  const canalRec = (level: string, over: Record<string, unknown> = {}) => ({
+    level,
+    measurementId: "CANAL_AP",
+    unit: "mm",
+    region: level.startsWith("L") ? "lumbar" : level.startsWith("C") ? "cervical" : "dorsal",
+    viewerValue: null,
+    reportValue: null,
+    manualOverride: false,
+    annotationId: null,
+    viewerMeasurementRowId: null,
+    studyInstanceUID: null,
+    seriesInstanceUID: null,
+    sopInstanceUID: null,
+    frameNumber: null,
+    viewerName: null,
+    capturedAt: null,
+    verifiedAt: null,
+    staleReason: null,
+    aliasConflict: null,
+    ...over,
+  });
+  const envelope = (records: Record<string, unknown>) => ({ careCanalApProvenance: records });
+
+  /** The printed table, read as pairs. Asserting `html.toContain("8.5")` over a whole
+   *  rendered page is not evidence — a CSS value or an accession can carry the digits —
+   *  and `indexOf("L4-L5")` matches the section title before it matches the column, so
+   *  both were measured against the cells themselves. */
+  const canalCells = (html: string): Array<{ level: string; value: string }> | null => {
+    const table = html.match(/CANAL AP DIAMETER[\s\S]*?<\/table>/i)?.[0];
+    if (!table) return null;
+    const heads = [...table.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]).slice(1);
+    const values = [...table.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]).slice(1);
+    return heads.map((level, i) => ({ level, value: values[i] ?? "" }));
+  };
+
+  it("prints the number typed into the workspace grid when the study has no spinal_measurements row", async () => {
+    const html = await scenario([], "billed", undefined, envelope({
+      "L4-L5": canalRec("L4-L5", { reportValue: 8.5, manualOverride: true }),
+      "L5-S1": canalRec("L5-S1", { reportValue: 9.1, manualOverride: true }),
+    }));
+    const cells = canalCells(html);
+    expect(cells, "the grid's numbers must reach the printed table").not.toBeNull();
+    expect(cells).toContainEqual({ level: "L4-L5", value: "8.5" });
+    expect(cells).toContainEqual({ level: "L5-S1", value: "9.1" });
+    expect(cells!.find((c) => c.level === "L1-L2")!.value).toBe("—"); // unmeasured stays unmeasured
+  });
+
+  it("prints the radiologist's override, not the caliper reading stored beside it", async () => {
+    // One record, two numbers: 7.2 from the viewer, 8.5 typed over it. The record's own
+    // rule answers 8.5, and the other store also held 7.2 — a fold that preferred the
+    // row would sign a measurement the radiologist had explicitly replaced.
+    const html = await scenario(
+      [{ vertebraLevel: "L4-L5", canalAP: "7.2" }],
+      "billed",
+      undefined,
+      envelope({ "L4-L5": canalRec("L4-L5", { viewerValue: 7.2, reportValue: 8.5, manualOverride: true }) }),
+    );
+    const cells = canalCells(html)!;
+    expect(cells.find((c) => c.level === "L4-L5")!.value).toBe("8.5");
+    expect(html.slice(html.search(/CANAL AP DIAMETER/i), html.search(/<\/table>/i) + 9)).not.toContain("7.2");
+  });
+
+  it("still prints levels that exist only in the measurement table", async () => {
+    // The legacy generator page and the AI-tab box write spinal_measurements directly,
+    // and drafts older than the canonical record hold nothing in their envelope. If
+    // those stopped printing it would be a second defect, not a fix.
+    const html = await scenario(
+      [{ vertebraLevel: "L3-L4", canalAP: "15.2" }],
+      "billed",
+      undefined,
+      envelope({ "L4-L5": canalRec("L4-L5", { reportValue: 8.5, manualOverride: true }) }),
+    );
+    const cells = canalCells(html)!;
+    expect(cells).toContainEqual({ level: "L3-L4", value: "15.2" });
+    expect(cells).toContainEqual({ level: "L4-L5", value: "8.5" });
+  });
+
+  it("prints nothing for a level the record declines, even when the table holds a value for it", async () => {
+    // "L4-5" and "L4-L5" are one disc spelled two ways with two numbers. Choosing
+    // between them is a clinical decision, so the record refuses and the grid shows the
+    // cell empty. Printing the older row would put a number on paper that the
+    // radiologist was told not to trust.
+    const html = await scenario(
+      [{ vertebraLevel: "L4-L5", canalAP: "7.2" }],
+      "billed",
+      undefined,
+      envelope({
+        "L4-5": canalRec("L4-5", { reportValue: 8.5, manualOverride: true }),
+        "L4-L5": canalRec("L4-L5", { reportValue: 9.4, manualOverride: true }),
+      }),
+    );
+    expect(canalCells(html), "a declined level must not print the other store's row").toBeNull();
+    expect(html).not.toMatch(/CANAL AP DIAMETER/);
+  });
+
+  it("prints a transitional level the fixed vocabulary cannot express", async () => {
+    // Sacralisation of L5 offers the row L5-T, the record stores it, the grid saves and
+    // restores it — and every print path iterated the fixed five, so the measurement
+    // appeared on no paper at all. Not a mis-assignment: a silent omission, the same
+    // class of defect the numbering question was raised for.
+    const html = await scenario([], "billed", undefined, envelope({
+      "L4-L5": canalRec("L4-L5", { reportValue: 10.2, manualOverride: true }),
+      "L5-T": canalRec("L5-T", { reportValue: 8.4, manualOverride: true }),
+    }));
+    const cells = canalCells(html)!;
+    expect(cells).toContainEqual({ level: "L5-T", value: "8.4" });
+    const order = cells.map((c) => c.level);
+    expect(order.indexOf("L4-L5")).toBeLessThan(order.indexOf("L5-T"));
   });
 });

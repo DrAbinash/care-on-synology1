@@ -33,11 +33,13 @@ import {
 import type { ReportImageRef } from "@/lib/reportImageRefs";
 import { BROWSER_DICOMWEB_BASE } from "@/lib/browserDicomWeb";
 import {
+  canalApLevelsFromCanonicalRecord,
   canalApToPdfRows,
-  canalSegmentFromSpine,
-  resolveCanalSegment,
+  mergeCanalApLevels,
+  normalizeDiscLevel,
 } from "@/lib/spineCanalAp";
 import { canVerifyReport } from "@/lib/workspaceReportState";
+import { signedReportDisplayState } from "@/lib/radiologyReportLifecycle";
 import { useWorkspace } from "@/lib/zai-workspace/store";
 import { readWorkspaceClinicalTexts } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import type { ReportDemography } from "@/lib/reportDemography";
@@ -62,6 +64,8 @@ export type UseWorkspaceExportShareOptions = {
       studyDate?: string | null;
       referringDoctor?: string | null;
       reportId?: number | null;
+      /** radiology_worklist.status — finalization, which is not signing. */
+      status?: string | null;
       sex?: string | null;
       age?: string | null;
     } | null;
@@ -105,7 +109,6 @@ export type UseWorkspaceExportShareOptions = {
     caption: string;
     sopInstanceUid?: string | null;
   }>;
-  studySetup: { matchedStudyRegion?: string | null };
   doctorsCatalog: { name: string; degree?: string | null }[];
   session: {
     user?: {
@@ -129,7 +132,7 @@ export function useWorkspaceExportShare(opts: UseWorkspaceExportShareOptions) {
     clinicalHistoryText, techniqueText, findingsText, impressionText, recommendationText,
     useStructured, findingsMap, impressionStyle, headingCase, sectionSpacing,
     showLetterpadHeader, signerLine, findingsProvenance, impressionProvenance,
-    frozenKeyImages, studySetup, doctorsCatalog, session, sessionFresh,
+    frozenKeyImages, doctorsCatalog, session, sessionFresh,
     canVerifyRef, verifyActionRef, linkedReportIdRef, setWhatsappShareOpen,
   } = opts;
 
@@ -290,22 +293,27 @@ const handleExportPdf = useCallback(async () => {
     const spinalKey = workflow.currentRow?.studyId ?? studyId;
     if (spinalKey) {
       try {
+        // Two stores, one answer — the same fold the signed body prints from. This
+        // call used to read only `spinal_measurements`, the legacy generator's rows,
+        // so a number typed into the reporting workspace's grid was absent from the
+        // PDF the radiologist exported even though the printed page carried it. Then
+        // it picked ONE segment by study hint, which dropped the other half of a
+        // Dorso-Lumbar study. Both stores are folded through the canonical record,
+        // and the level list comes from the shared print plan, so the export cannot
+        // disagree with the signed report about which number a level carries (owner
+        // DECISIONS 1 and 2, 2026-10-17).
         const rows = await api.get<Array<{ vertebraLevel: string; canalAP: string | null }>>(
           `/api/radiology/report-generator/spinal-measurements?studyId=${spinalKey}`,
         );
-        const values: Record<string, string> = {};
+        const legacy = new Map<string, string>();
         for (const r of rows) {
-          if (r.canalAP?.trim()) values[r.vertebraLevel] = r.canalAP.trim();
+          const value = r.canalAP?.trim();
+          if (value) legacy.set(normalizeDiscLevel(r.vertebraLevel) ?? r.vertebraLevel, value);
         }
-        const hint = [
-          studySetup.matchedStudyRegion,
-          workflow.currentRow?.studyDescription,
-        ].filter(Boolean).join(" ");
-        const segment =
-          canalSegmentFromSpine(useWorkspace.getState().reportingContext.spineSegment)
-          ?? resolveCanalSegment(hint)
-          ?? (Object.keys(values).some((k) => k.startsWith("C")) ? "cervical" : "lumbar");
-        measurements = canalApToPdfRows(segment, values);
+        measurements = canalApToPdfRows(mergeCanalApLevels(
+          legacy,
+          canalApLevelsFromCanonicalRecord(useWorkspace.getState().canalApProvenance),
+        ));
       } catch { /* omit measurements section */ }
     }
     const frozenForPdf = frozenKeyImages
@@ -393,7 +401,7 @@ const handleExportPdf = useCallback(async () => {
   impressionText, recommendationText, studyNameForExport, headingCase,
   imageRefs, frozenKeyImages, clinicSettings, toast, workflow.currentRow,
   useStructured, findingsMap, presentationTemplates, showLetterpadHeader,
-  studyId, studySetup.matchedStudyRegion, doctorsCatalogQ.data,
+  studyId, doctorsCatalogQ.data,
 ]);
 
 const handlePrintLikeFinal = useCallback(async () => {
@@ -498,6 +506,12 @@ const handleShare = useCallback(() => {
 const { data: finalReport } = useQuery<{
   id?: number;
   signedByName?: string | null;
+  /** The three witnesses `isSignedArtifact` counts — signed_at, the status
+   *  list, and a D5 structured document whose audit signature is final. A
+   *  D5-signed row keeps the schema-default `status: "draft"`, so status alone
+   *  sees neither of the last two. */
+  signedAt?: string | Date | null;
+  structuredJson?: { audit?: { signature?: { state?: string } } } | null;
   status?: string | null;
   lifecycle?: { state?: string; superseded?: boolean };
   version?: { superseded?: boolean };
@@ -506,6 +520,34 @@ const { data: finalReport } = useQuery<{
   queryFn: () => api.get(`/api/patient-reports/${linkedReportId}`),
   enabled: !!linkedReportId,
 });
+
+/**
+ * What the workspace is allowed to SAY about the report behind this study.
+ *
+ * Read from the server's own row, never inferred from `linkedReportId`: a
+ * report row can exist and be bound while the signature did not happen (no
+ * active signature on file, or 2+ and ambiguous — `autoSignReport` declines
+ * rather than guess an author). The badge and the finalize button used to key
+ * on the id alone, so an unsigned row read "Report signed" in green while the
+ * toast three seconds earlier had said "Report saved but NOT signed".
+ */
+const signedReport = useMemo(() => {
+  // One read of the queue row for the whole workspace. `signedElsewhereControlLock`
+  // keeps this count pinned because a second hand-rolled `REPORT_FINAL` check
+  // somewhere else can disagree with `contentLocked`, which prefers the detail
+  // query — so the caption is taken from here rather than recomputed in the
+  // canvas, and the badge and the button cannot tell two stories about one study.
+  const studyFinal =
+    workflow.currentRow?.status === "REPORT_FINAL" || workflow.currentRow?.status === "DELIVERED";
+  return {
+    ...signedReportDisplayState({
+      reportId: linkedReportId,
+      report: (finalReport as Record<string, unknown> | null | undefined) ?? null,
+      studyFinal,
+    }),
+    studyFinal,
+  };
+}, [linkedReportId, finalReport, workflow.currentRow]);
 
 const verifyGate = useMemo(
   () => canVerifyReport(
@@ -574,6 +616,7 @@ verifyActionRef.current = () => {
     linkedReportId,
     linkedReportIdRef,
     finalReport,
+    signedReport,
     verifyGate,
     canShowVerify,
     handleVerifyReport,

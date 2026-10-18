@@ -14,10 +14,11 @@
  * `deliveryStatus === "READY_TO_SEND"` (internal-radiology.ts:1131). So naming a
  * delivery status is treated as proof that a report exists. The Reporting
  * Workspace always names it — including when its own create leg was skipped
- * (`radiologyReportLifecycle.ts:474`, which posts the flip with
+ * (`finalizeRadiologyReport()`, which posts the flip with
  * `reportId: reportId ?? undefined`), which is how a study ends up final with
  * nothing to show the patient and, because the signing gate reads that same
- * status (ReportCanvas.tsx:2119 `workflow.currentRow?.status === "REPORT_FINAL"`),
+ * status (ReportCanvas's `finalizeDisabled`,
+ * `workflow.currentRow?.status === "REPORT_FINAL"`),
  * permanently unable to be signed.
  *
  * What must keep working, and is asserted here: a normal signed finalize, a

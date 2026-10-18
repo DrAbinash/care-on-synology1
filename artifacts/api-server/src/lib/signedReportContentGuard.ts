@@ -240,6 +240,33 @@ function classifyLines(clinicalText: string): { lines: string[]; placeholders: s
 }
 
 /**
+ * Unresolved template placeholders — a `{name}` that survived every substitution.
+ *
+ * By the time a report reaches signature the workspace has already run
+ * `fillStructuredTemplate` (which answers every `questions_json` key or drops the
+ * `[optional clause]`) and `fillTemplate` (which resolves the five tokens it knows
+ * and deletes an unfilled one). A brace that is still standing is therefore a
+ * parameter no control ever answered — the `{size}` / `{location}` / `{volume}` /
+ * `{swelling}` / `{grade}` / `{vessel}` leak the Quick Select audit measured, now
+ * caught at the last door before a signature.
+ *
+ * The grammar is the disambiguation the brief asked for: only a letter-initial
+ * identifier inside one pair of braces counts, and `{{…}}` is left to its own
+ * existing line pattern. So ordinary clinical text a radiologist typed — `{ }`,
+ * `{1, 2}`, `{'a': 1}`, `{ see note }`, `(L4)` — is never mistaken for a token.
+ * It runs on the authored text (headings and fixed labels already stripped), so
+ * template chrome cannot be read as a leak either.
+ */
+const UNRESOLVED_TEMPLATE_TOKEN = /(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})/g;
+
+export function findUnresolvedTemplateTokens(text: string): string[] {
+  if (!text) return [];
+  const found = new Set<string>();
+  for (const match of text.matchAll(UNRESOLVED_TEMPLATE_TOKEN)) found.add(match[1]);
+  return Array.from(found);
+}
+
+/**
  * Judge a report body at signature time.
  *
  * `body` is typed `unknown` because it comes off a database `text` column read
@@ -258,6 +285,25 @@ export function classifySignedReportBody(body: unknown): SignedReportContentClas
 
   const clinicalText = extractAuthoredText(body);
   const { lines, placeholders } = classifyLines(clinicalText);
+
+  // Unresolved placeholders block a signature regardless of how much other
+  // content the report has — one `{size}` stranded in an otherwise-complete
+  // Findings is exactly as unsignable as a body of nothing but braces. Reported
+  // at the `placeholder` level so the existing refusal, the
+  // `report_content_placeholder` code, the audit's `placeholders` array and the
+  // attributed override all apply without any new plumbing.
+  const leaked = findUnresolvedTemplateTokens(clinicalText);
+  if (leaked.length > 0) {
+    const listed = leaked.map((t) => `{${t}}`).join(", ");
+    return {
+      level: "placeholder",
+      clinicalText: lines.join("\n"),
+      reasons: [
+        `The report still contains unresolved template placeholder${leaked.length === 1 ? "" : "s"} — ${listed} — with no value filled in. Resolve ${leaked.length === 1 ? "it" : "them"} before signing.`,
+      ],
+      placeholders: [...new Set([...placeholders, ...leaked.map((t) => `{${t}}`)])],
+    };
+  }
 
   if (lines.length === 0) {
     if (placeholders.length > 0) {

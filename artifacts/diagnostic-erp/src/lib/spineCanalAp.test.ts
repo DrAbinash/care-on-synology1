@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   applyCanalManualValue,
   applyCanalViewerValue,
-  canalApTableHtml,
   canalApToPdfRows,
   canalApValue,
   canalSegmentFromSpine,
@@ -14,7 +13,6 @@ import {
   levelsForCanalSegment,
   normalizeDiscLevel,
   parseCanalApNumber,
-  pickPrintCanalSegment,
   resolveActiveCanalSegment,
   resolveCanalSegment,
 } from "./spineCanalAp";
@@ -68,36 +66,34 @@ describe("spineCanalAp — common engine", () => {
     expect(isLevelInSegment("dorsal", "D6-D7")).toBe(true);
   });
 
-  it("formats findings table and PDF rows; blank levels stay blank", () => {
+  it("formats the AI-tab box's findings text; blank levels stay blank", () => {
     const values = { "L1-L2": "17.1", "L4-L5": "10.2", "L5-S1": "14.0" };
     const text = formatCanalApTableText("lumbar", values);
     expect(text).toContain("LUMBAR CANAL AP DIAMETER");
     expect(text).toContain("L1-L2");
     expect(text).toContain("17.1");
-    expect(canalApToPdfRows("lumbar", values)).toEqual([
-      { label: "Canal AP L1-L2", value: "17.1 mm" },
-      { label: "Canal AP L4-L5", value: "10.2 mm" },
-      { label: "Canal AP L5-S1", value: "14.0 mm" },
-    ]);
-    expect(canalApTableHtml("lumbar", values, (s) => s)).toContain("<table");
-    expect(canalApTableHtml("lumbar", {}, (s) => s)).toBe("");
-    // Dorsal: unmeasured levels do not invent values
-    const dorsalHtml = canalApTableHtml("dorsal", { "D6-D7": "12.0" }, (s) => s);
-    expect(dorsalHtml).toContain("D6-D7");
-    expect(dorsalHtml).toContain("12.0");
-    expect(dorsalHtml).not.toMatch(/>0</);
-    expect(dorsalHtml).not.toMatch(/normal/i);
   });
 
-  it("pickPrintCanalSegment prefers filled segment", () => {
-    const by = new Map<string, string>([
-      ["L4-L5", "6.7"],
-      ["C5-C6", "11"],
-      ["C6-C7", "12"],
+  /**
+   * DECISION 1 (owner, 2026-10-17): this app's own PDF lists every measured level in
+   * every segment the study measured, in the printed table's order, from the shared
+   * `canalPrintPlan`. It used to take a single segment chosen by study hint, so a
+   * Dorso-Lumbar study exported the lumbar discs and lost the dorsal ones — the same
+   * defect the signed body had, on the other surface.
+   */
+  it("lists the PDF rows across segments, in the print plan's order", () => {
+    expect(canalApToPdfRows(new Map([["L4-L5", "10.2"], ["D6-D7", "12.0"], ["L1-L2", "17.1"]]))).toEqual([
+      { label: "Canal AP D6-D7", value: "12.0 mm" },
+      { label: "Canal AP L1-L2", value: "17.1 mm" },
+      { label: "Canal AP L4-L5", value: "10.2 mm" },
     ]);
-    expect(pickPrintCanalSegment(by)).toBe("cervical");
-    expect(pickPrintCanalSegment(new Map([["D4-D5", "10"]]))).toBe("dorsal");
-    expect(pickPrintCanalSegment(new Map())).toBeNull();
+    // Nothing is invented: an empty cell prints no row rather than a 0 or a normal.
+    expect(canalApToPdfRows(new Map([["L4-L5", "   "]]))).toEqual([]);
+    expect(canalApToPdfRows(new Map())).toEqual([]);
+    // Cervical is its own span, and a cervical + dorsal study is not forced to pick.
+    expect(canalApToPdfRows(new Map([["C5-C6", "11.4"], ["D3-D4", "13.9"]])).map((r) => r.label)).toEqual([
+      "Canal AP C5-C6", "Canal AP D3-D4",
+    ]);
   });
 
   it("parses numeric AP values", () => {

@@ -15,12 +15,6 @@ import { assertsAbnormality } from "@/lib/generateLocalImpression";
 import { normalizeForDedupe, splitToSentences } from "@/lib/reportFieldMerge";
 import { extractLevel } from "@/lib/observationSlot";
 import type { Side } from "@/lib/sideSwap";
-import {
-  canalApValueAt,
-  levelsForCanalSegment,
-  type CanalApProvenanceMap,
-  type CanalSegment,
-} from "@/lib/spineCanalAp";
 
 /** Why nothing was written. `code` is what tests and telemetry read; `reason` is
  *  the sentence the radiologist sees, and it always names an action. */
@@ -43,7 +37,6 @@ export type ProfessionalReportOutcome =
     observationsRetained: number;
     /** Retained observations the overlay engine wrote but put up for confirmation. */
     observationsNeedingReview: number;
-    measurementTableIncluded: boolean;
   }
   | {
     status: "refused";
@@ -246,32 +239,19 @@ export function reportHasDeviation(
 }
 
 /**
- * The canal AP measurements as report text, or `""` when there is nothing to print.
+ * The canal AP measurements are NOT written into Findings here.
  *
- * Only recorded numbers appear, and only for the levels they were recorded on. The
- * interactive box deliberately shows every disc with an em-dash in the empty cells —
- * that is a data-entry grid, and it is telling the radiologist which levels are still
- * open. The same grid inside a signed report would read as "these levels were
- * measured", which is a claim about the examination. CARE's findings document already
- * turns a `Label:` line into a section heading and `|` rows into a real table, so this
- * is the existing renderer, not a second one.
+ * Generate used to append a markdown canal grid to the Findings text, which broke
+ * the one rule this branch exists to enforce: that grid is a snapshot taken at the
+ * moment of the press, and it then *suppressed* the printed table, because a body
+ * that already carries a valued canal table gets no second one. A radiologist who
+ * measured a level after pressing Generate — the normal order of work, since the
+ * calipers come out of the viewer and the prose comes out of the format — signed a
+ * report whose table named the levels measured before the press and never the ones
+ * measured after it. The printed table is drawn by the report renderer
+ * (`lib/spinalCanalApTable.ts` on the server, `canalApToPdfRows` in this app's own
+ * PDF) from the measurement authority at the moment of printing, so it always
+ * carries every level, in every segment the study measured. Writing one into the
+ * editable prose would be a second table generator with a stale opinion (owner
+ * DECISION 2, 2026-10-17).
  */
-export function canalApReportTable(
-  records: CanalApProvenanceMap | null | undefined,
-  segment: CanalSegment | null | undefined,
-): string {
-  if (!segment || !records) return "";
-  const rows: string[] = [];
-  for (const level of levelsForCanalSegment(segment)) {
-    const value = canalApValueAt(records, level);
-    if (value == null) continue;
-    rows.push(`| ${level} | ${value} mm |`);
-  }
-  if (rows.length === 0) return "";
-  return [
-    "Spinal canal AP diameter (mm):",
-    "| Level | AP canal |",
-    "| --- | --- |",
-    ...rows,
-  ].join("\n");
-}

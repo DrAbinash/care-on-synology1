@@ -1,4 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
+import { STRUCTURED_RENDERER_VERSION } from "../lib/structuredReport/renderer";
 
 // Ticket D7 route-integration coverage — POST /:id/amend (single transaction,
 // no partial amendments, parent row never written) and the GET /:id amendment
@@ -307,7 +308,11 @@ describe("D7 — POST /:id/amend happy path", () => {
     expect(v.body).toContain("Corrected finding.");
     expect(v.createdBy).toBe("Dr. Sen");     // session-derived signer
     expect(v.signedByName).toBe("Dr. Sen");
-    expect(v.renderEngineVersion).toBe("d4-structured-1.0.0");
+    // The version the ROUTE recorded must be the version the renderer exports.
+    // Pinned to the constant, not to a literal: an earlier revision of this assertion
+    // spelled "d4-structured-1.0.0" and every output-affecting renderer change had to
+    // edit two test files to say the same thing.
+    expect(v.renderEngineVersion).toBe(STRUCTURED_RENDERER_VERSION);
     expect(v.patientId).toBe(12);             // carried from the parent
 
     // finalize audit row at the reserved audit id, carrying the amendment linkage + reason
