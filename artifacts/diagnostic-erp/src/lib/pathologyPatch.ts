@@ -255,11 +255,22 @@ export function applySideToIncoming(
   };
 }
 
+export interface ManualKeptSentences {
+  findings: string[];
+  impression: string[];
+}
+
 export interface PathologyPatchResult {
   narrative: ReportNarrative;
   provenance: NarrativeProvenance;
   /** True when a manually edited anatomy sentence would have been replaced. */
   ambiguous: boolean;
+  /**
+   * Which sentences those were, per field. `ambiguous` says a collision happened;
+   * this names the words at risk, so the confirm dialog can show the radiologist
+   * the line it is about to delete instead of only the slot that caused it.
+   */
+  manualKept: ManualKeptSentences;
   replacedSentences: string[];
 }
 
@@ -395,6 +406,7 @@ export function applyPathologyPatch(opts: {
   const baseline = (opts.ownership.baselineReplaces ?? "").trim();
   let ambiguous = false;
   const replacedSentences: string[] = [];
+  const manualKept: ManualKeptSentences = { findings: [], impression: [] };
 
   const patchField = (
     field: "findings" | "impression",
@@ -402,6 +414,9 @@ export function applyPathologyPatch(opts: {
     incoming: string | undefined,
     provenance: FieldProvenanceMap | undefined,
   ): { text: string; provenance: FieldProvenanceMap } => {
+    const incomingKeys = new Set(
+      splitToSentences(incoming ?? "").map((s) => normalizeForDedupe(s)).filter(Boolean),
+    );
     const incomingOrgans = new Set<string>();
     if (!structured) {
       for (const a of ANATOMY_ALIASES) {
@@ -473,8 +488,15 @@ export function applyPathologyPatch(opts: {
         const protectedManual =
           isProtectedManualSentence(u, provenance, { baselineReplaces: baseline })
           || (prefix && isProtectedManualSentence(probe, provenance, { baselineReplaces: baseline }));
-        if (protectedManual && !opts.force) {
+        // His sentence, word for word the sentence this tile writes, is not at risk:
+        // the "replacement" puts the same words back. Asking about that would interrupt
+        // the commonest way the field gets filled — conclusion typed first, tile pressed
+        // to bring its Findings and advice in beside it.
+        const writesTheSameSentence = incomingKeys.has(normalizeForDedupe(u))
+          || incomingKeys.has(normalizeForDedupe(probe));
+        if (protectedManual && !opts.force && !writesTheSameSentence) {
           ambiguous = true;
+          manualKept[field].push(probe);
           keep.push(u);
           continue;
         }
@@ -621,6 +643,7 @@ export function applyPathologyPatch(opts: {
       recommendation: recommendation.provenance,
     },
     ambiguous,
+    manualKept,
     replacedSentences,
   };
 }

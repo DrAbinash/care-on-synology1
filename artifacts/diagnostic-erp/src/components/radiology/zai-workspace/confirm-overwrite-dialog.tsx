@@ -109,6 +109,31 @@ export function ConfirmOverwriteDialog() {
                 )}
             </div>
           )}
+          {pendingPatch?.manualKept
+            && (pendingPatch.manualKept.impression.length > 0 || pendingPatch.manualKept.findings.length > 0) ? (
+            <div
+              className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-900 space-y-2"
+              data-testid="manual-kept-conflict"
+            >
+              {(["impression", "findings"] as const)
+                .filter((f) => (pendingPatch.manualKept?.[f].length ?? 0) > 0)
+                .map((f) => (
+                  <div key={f} data-testid={`manual-kept-${f}`}>
+                    <div className="font-semibold text-[10px] uppercase tracking-wider text-amber-800/80">
+                      {SECTION_LABEL[f]} — written by you
+                    </div>
+                    {pendingPatch.manualKept?.[f].map((sentence) => (
+                      <div key={sentence} className="mt-0.5">{sentence}</div>
+                    ))}
+                    {(pendingPatch.incoming[f] ?? "").trim() ? (
+                      <div className="mt-1 text-[10px] text-amber-800/90">
+                        Replacing writes: {(pendingPatch.incoming[f] ?? "").trim()}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+            </div>
+          ) : null}
           {formats.length > 0 && !pendingPatch && (
             <div className="rounded-md border border-border bg-muted/30 p-2">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">About to apply:</div>
