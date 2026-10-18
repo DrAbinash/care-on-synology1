@@ -56,7 +56,9 @@ import {
   mergeReportFieldContentWithProvenance,
   provenanceFromText,
   reconcileProvenanceAfterManualEdit,
+  rejoinAuthoredStatement,
   normalizeForDedupe,
+  splitToSentences,
   type FieldProvenanceMap,
   type InsertSource,
   type ReportFieldKey,
@@ -197,9 +199,12 @@ import type { ObservationAnchor } from "@/lib/observationAnchor";
 import {
   buildSystemNormalPatch,
   findSystemNormalPatch,
-  hasImpressionworthyAbnormal,
   impressionHasManualContribution,
+  incomingStatesAbnormalImpression,
   isSystemNormalPatch,
+  reportAssertsAbnormality,
+  statesAbnormalImpression,
+  suppressesSystemNormal,
   SYSTEM_NORMAL_IMPRESSION_TEXT,
   SYSTEM_NORMAL_PATCH_ID,
 } from "@/lib/conceptCanon/normalImpression";
@@ -234,14 +239,25 @@ import {
 } from "./normalBootstrap";
 import {
   alreadySaysThis,
+  hasOwnedApprovedNormal,
+  ledgerIdentity,
   levelsContradictedByUnexplainedLines,
   radiologistObservations,
   reportHasDeviation,
   rowLevelKey,
   supersededBaselineTexts,
+  deletedScaffoldLines,
   unexplainedFindingLines,
   type ProfessionalReportOutcome,
 } from "./professionalReport";
+import {
+  decideInstantReport,
+  holdFromRefusal,
+  holdIsReportable,
+  readInstantReportEnabled,
+  IMPRESSION_UNDECIDED_HOLD,
+} from "./instantReport";
+import type { InstantReportDecision, InstantReportHoldCode } from "./instantReport";
 import {
   defaultVascularTechnique,
   markVascularTechniqueManual,
@@ -755,6 +771,14 @@ interface S {
   /** Starting Canvas reference for workspace-only change highlighting. */
   startingCanvasBaseline: StartingCanvasBaseline | null;
   appliedPathologyPatches: AppliedPathologyPatch[];
+  /**
+   * Approved-normal sentences the radiologist deleted from a canvas this engine wrote.
+   * MODE A only: an unpressed pass merges the normal in, so without this record a
+   * deleted line walks back on the NEXT pass, overwriting an edit nobody asked it to
+   * make. Cleared by a press — that is the radiologist asking for the whole normal
+   * again — and by a study change.
+   */
+  normalLinesRemovedByRadiologist: string[];
   impressionNeedsRefresh: boolean;
   /** Why it is stale, named — so the sign dialog can say which fact moved. */
   impressionDependencyReasons: ImpressionDependencyReason[];
@@ -948,7 +972,25 @@ export type WorkspaceStore = S & {
    * than filled with a guess. Never replaces a field: the radiologist's own text
    * is merged in, so nothing typed is lost by pressing it.
    */
-  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">) => ProfessionalReportOutcome;
+  generateProfessionalReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">, opts?: {
+    /** Run by the instant report, not pressed by the radiologist. */
+    automatic?: boolean;
+    /** MODE A only: refuse unless the resolved format is the clinic's OWNED approved
+     *  normal for this examination. A normal nobody approved is not a fact, and an
+     *  unpressed pass may not add one. */
+    requireOwnedApprovedNormal?: boolean;
+  }) => ProfessionalReportOutcome;
+  /**
+   * MODE A — the debounced automatic pass. Decides from `instantReport.ts` whether
+   * an unpressed rebuild is allowed here, runs the one deterministic engine when it
+   * is, and records the reason when it is not, so the canvas can say it out loud
+   * instead of failing silently. Returns the decision so a test can assert the hold
+   * without a screen.
+   */
+  composeInstantReport: (ctx: Pick<ReportingStudyContext, "modality" | "region" | "regions" | "source" | "protocolName" | "studyDescription">, contentLocked: boolean) => InstantReportDecision;
+  /** Why the instant report is not rebuilding itself, or null when it is. */
+  instantReportHold: { code: InstantReportHoldCode; message: string } | null;
+  setInstantReportHold: (hold: { code: InstantReportHoldCode; message: string } | null) => void;
   ingestStructuredNormalFormats: (rows: StructuredNormalRow[]) => void;
   toggleFormatFavorite: (id: string) => void;
   /** `"refused"` is the signed-report boundary declining the write. Distinct from
@@ -1029,11 +1071,19 @@ export type WorkspaceStore = S & {
    * wrote by hand is left exactly as they wrote it. The controls the doctor presses
    * — Generate Impression, Refresh from Findings, the sign dialog's refresh,
    * Generate Professional Report — pass nothing and behave as they always have.
+   *
+   * The result says whether the Conclusion moved. `undefined` is "it was rewritten";
+   * `"held-protected"` is "it was not, because what is there is somebody's clinical
+   * claim"; `"held-empty"` is MODE A's case — not rewritten because rewriting it would
+   * have left the report stating nothing. A caller that treats "refused" and "did the
+   * work" as the same outcome is how a silently emptied Impression stayed invisible.
+   * (A refusal by the SIGNED boundary is not one of these: it reports itself through
+   * `refuseSignedMutation`, which is the witness every signed writer is tested against.)
    */
   refreshImpressionFromLedger: (opts?: {
     excludeBaselineObservations?: boolean;
     automatic?: boolean;
-  }) => void;
+  }) => "held-empty" | "held-protected" | undefined;
   /**
    * The radiologist has read the Impression against the Findings and says it
    * stands as written. Records that against the current clinical content, so the
@@ -1215,6 +1265,8 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
   saveAsFormatDialogOpen: false, mergePreviewOpen: false, lastMergeResult: null, lastMergeFormats: null, confirmOverwriteOpen: false, pendingFormatIds: [],
   pendingFormatOverwrite: null, pendingFormatRegion: null,
   pendingPathologyPatch: null, lastPatchSnapshot: null, patchUndoStack: [], patchRedoStack: [], startingCanvasBaseline: null, appliedPathologyPatches: [], impressionNeedsRefresh: false,
+  normalLinesRemovedByRadiologist: [],
+  instantReportHold: null,
   impressionDependencyReasons: [], impressionBasis: null,
   activeAnchor: null, selectedObservationId: null,
   measurementIntent: null, canalIntentLevel: null,
@@ -1355,6 +1407,48 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         }),
       });
     }
+    // Owner ruling 1 (2026-10-18): a hand-written abnormal Conclusion and a
+    // system-generated whole-study normal may not both stand on the page. The system's
+    // own sentence withdraws — by recorded identity, so the only text it can reach is
+    // the text the system wrote — and the radiologist's never does. Where even that
+    // withdrawal is refused, the contradiction is flagged on the canvas rather than
+    // left silent.
+    let normalYieldRefusedByManual = false;
+    if (f === "impression" && (!opts?.source || opts.source === "manual")) {
+      const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
+      if (
+        systemNormal?.lastRendered.impression?.trim()
+        && reportAssertsAbnormality(get().appliedPathologyPatches, {
+          findings: get().findingsText,
+          impression: get().impressionText,
+        })
+      ) {
+        const yielded = removeLedgerObservation(
+          narrativeFromState(get()),
+          get().fieldProvenance,
+          toLedgerPatch(systemNormal),
+        );
+        if (yielded.outcome === "removed") {
+          set({
+            impressionText: yielded.narrative.impression,
+            findingsText: yielded.narrative.findings,
+            recommendationText: yielded.narrative.recommendation,
+            techniqueText: yielded.narrative.technique,
+            fieldProvenance: yielded.provenance,
+            // Suspended, not deleted, and the approved wording is left untouched on the
+            // row: ruling 3 restores a normal only where provenance and compatibility
+            // justify it, and that question cannot be answered once the text is gone.
+            appliedPathologyPatches: get().appliedPathologyPatches.map((p) =>
+              p.id === SYSTEM_NORMAL_PATCH_ID
+                ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+                : p,
+            ),
+          });
+        } else if (yielded.preservedManual) {
+          normalYieldRefusedByManual = true;
+        }
+      }
+    }
     if (f === "findings" || f === "impression") {
       // Derived after the marking above, from the text as it now stands, so the
       // answer a keystroke produces is the answer the same report produces when it
@@ -1364,7 +1458,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // proves nothing about the findings behind it.
       const ownsBoth =
         f === "impression" && !!opts?.source && opts.source !== "manual" && opts.source !== "ai-draft";
-      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, { findingsJustChanged: f === "findings" }));
+      set(deriveImpressionDependency(get(), ownsBoth ? { rebase: true } : undefined, {
+        findingsJustChanged: f === "findings",
+        // The one case where the system normal stayed and the Conclusion now says two
+        // opposite things. Naming the reason is what puts the amber notice on the canvas;
+        // the alternative is a silent contradiction reaching signed paper.
+        arm: normalYieldRefusedByManual ? "impression-contradicts-findings" : undefined,
+      }));
     }
     if (f === "findings" || f === "impression" || f === "recommendation") {
       const d = detectMacroTrigger(v, scopedSnippetMacros(get));
@@ -1799,7 +1899,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     set({ selectedFormatIds: [id] });
     get().applySelectedFormats(opts);
   },
-  generateProfessionalReport: (ctx) => {
+  generateProfessionalReport: (ctx, opts) => {
+    // MODE A: the same engine, run without a press. `automatic` is not a second
+    // code path for building the report — every string it writes is written the
+    // same way — it is the set of things a press is allowed to do that a pass the
+    // radiologist never asked for is not: claim a format use, notify, spend an undo
+    // frame, rebuild a Conclusion they wrote, or bring back a normal they retired.
+    const automatic = opts?.automatic === true;
+    // MODE A's "no normal inferred to fill space" rule, enforced HERE rather than by
+    // a second format lookup in the caller. Two lookups can disagree about which
+    // normal this study got, and the disagreement is invisible — one of them decides
+    // the report and the other decides whether to trust it.
+    const requireOwnedApprovedNormal = opts?.requireOwnedApprovedNormal === true;
     // The whole report from one press, with no model in the loop. Every string it
     // writes is one the clinic or the radiologist already supplied: the approved
     // Full Normal Format for this examination, the observations in the ledger, the
@@ -1868,11 +1979,35 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     }
 
     const format = decision.format;
+    // MODE A's rule, checked before the first write and here rather than in the
+    // caller: the format this examination resolved to must be one the clinic OWNS as
+    // its approved normal. A Templates row that happens to be called "MRI Brain
+    // Plain" is prose somebody typed, not a baseline the department signed off, and
+    // an automatic pass merging it is the "normal inferred to fill space" the
+    // requirement forbids. A press is exempt — the radiologist chose that format.
+    if (requireOwnedApprovedNormal && !hasOwnedApprovedNormal(format.baselineManifest)) {
+      return {
+        status: "refused",
+        code: "no-owned-normal",
+        reason: `“${format.name || "This format"}” is not this examination's approved normal, so the report will not rebuild itself onto it. Press Generate to build it anyway.`,
+      };
+    }
     const clinical = clinicalFieldsFromFormat(format);
     const undoSnap = captureClinicalSnapshot(get());
     const findingsBefore = get().findingsText;
     const patchCountBefore = get().appliedPathologyPatches.length;
     const flaggedBefore = get().impressionNeedsRefresh;
+    // The four prose fields, not just Findings: an automatic pass that wrote
+    // nothing must not look like a clinical edit to the undo stack, and a pass that
+    // only reordered the Conclusion did write something.
+    const proseBefore = [
+      get().clinicalHistoryText,
+      get().techniqueText,
+      get().findingsText,
+      get().impressionText,
+      get().recommendationText,
+    ].join("\u0000");
+    const ledgerBefore = ledgerIdentity(get().appliedPathologyPatches);
     // Read before anything is written: these are the statements the report must
     // still make when the action finishes.
     const retained = radiologistObservations(get().appliedPathologyPatches);
@@ -1882,19 +2017,83 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // questions below: whether the format's own conclusion may be used at all,
     // and whether the conclusion has to be re-derived.
     const deviates = reportHasDeviation(get().appliedPathologyPatches, freeTextBefore);
+    // Read before any write, because the pass itself changes provenance: once a
+    // template has merged into the Conclusion, "who wrote this line" is no longer the
+    // question the radiologist meant.
+    const manualImpression = impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression);
     // Which disc levels has the radiologist described in their own words? Those
     // are the levels the scaffold must stop describing for it: typing
     // "C5-C6: Disc herniation with cord compression." and pressing Generate used
     // to write the approved normal underneath it, including "C5-C6: No significant
     // disc bulge or protrusion is seen." — one report, both statements, nothing on
     // the page to say which the examination showed.
-    const contradictedLevels = levelsContradictedByUnexplainedLines(freeTextBefore);
+    //
+    // What is NOT the radiologist's own words: a sentence this workspace inserted from
+    // a structured tool. The canal AP grid merges a prose line naming the measured
+    // levels, and reading that as a clinical description retired those levels' normals
+    // — a number is a measurement, and "L3-L4: 11 mm" makes no claim about a disc.
+    // `mergeField` has already attributed every sentence it wrote, so this reads the
+    // provenance instead of guessing from the text.
+    const companionLines = new Set(
+      Object.entries(get().fieldProvenance.findings ?? {})
+        .filter(([, sources]) => sources.includes("companion"))
+        .map(([key]) => key),
+    );
+    const ownWordsBefore = freeTextBefore.filter(
+      (line) => !companionLines.has(normalizeForDedupe(line)),
+    );
+    const contradictedLevels = levelsContradictedByUnexplainedLines(ownWordsBefore);
     const supersededNormalSentences = supersededBaselineTexts(
       format.baselineManifest?.observations ?? [],
       contradictedLevels,
     );
     /** True for a scaffold sentence this examination has already contradicted. */
     const supersededNormal = (line: string) => supersededNormalSentences.has(line.trim());
+
+    // A normal the radiologist already retired must not walk back in.
+    //
+    // `supersededBaselineTexts` reads the manifest against the free text on the
+    // page right now. So when a press retired a normal — its ledger row went
+    // `stale`, its sentence left the Findings — and the contradicting sentence was
+    // then edited away, the next pass finds nothing contradicted and merges the
+    // normal straight back. Pressing Generate after doing that deliberately is the
+    // radiologist asking for a rebuild; an automatic pass resurrecting a normal the
+    // report had disowned is not, and it is invisible: one extra line in a block of
+    // twenty, on a study that says the level is abnormal. Only automatic passes get
+    // this guard, because only they have no press to attribute the rebuild to, and
+    // it reads the retired row's own text rather than re-deriving anything.
+    if (automatic) {
+      for (const p of get().appliedPathologyPatches) {
+        if (p.observation?.role !== "baseline" || !p.stale) continue;
+        for (const retired of [p.lastRendered.findings, p.templates.findings]) {
+          const text = (retired ?? "").trim();
+          if (text) supersededNormalSentences.add(text);
+        }
+      }
+      // And a normal the radiologist DELETED is theirs removed, not the format's to
+      // re-issue. Measured before this existed: taking "Normal lumbar lordosis is
+      // maintained." out of an auto-composed report put it back on the next pass,
+      // because the merge reads the FORMAT rather than the page.
+      //
+      // The comparison is against the stamp this engine left at the end of its previous
+      // pass — the only record of what it wrote — and the answer is REMEMBERED, because
+      // recomputing it on the pass after next would find the line already gone from the
+      // stamp too, and re-merge it. A press clears the list: that is the radiologist
+      // asking for the approved normal rebuilt, which is what the press has always done.
+      const removedNow = deletedScaffoldLines({
+        lastStamped: get().startingCanvasBaseline?.findings ?? "",
+        current: get().findingsText,
+        scaffold: clinical.findings.split("\n"),
+      });
+      const rememberedNow = [...new Set([
+        ...get().normalLinesRemovedByRadiologist,
+        ...removedNow,
+      ])];
+      if (removedNow.size > 0) set({ normalLinesRemovedByRadiologist: rememberedNow });
+      for (const text of rememberedNow) supersededNormalSentences.add(text);
+    } else if (get().normalLinesRemovedByRadiologist.length > 0) {
+      set({ normalLinesRemovedByRadiologist: [] });
+    }
 
     // The scaffold is merged in, never dropped on top of the report. An identical
     // sentence is not written twice, and no sentence the format does not contain
@@ -1937,7 +2136,14 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // "Acute infarct in the left MCA territory." A deviating report's conclusion
     // is derived from its own findings below, not borrowed from a normal one.
     if (!deviates && clinical.impression.trim()
-      && !alreadySaysThis(get().impressionText, clinical.impression)) {
+      && !alreadySaysThis(get().impressionText, clinical.impression)
+      // A pass nobody pressed may not add the clinic's "this examination is normal"
+      // sentence underneath a Conclusion the radiologist wrote. The findings scaffold
+      // is still merged, because that is what Mode A is for and each normal line it
+      // contradicts is retired on the way in; a conclusion is a claim about the whole
+      // study, and two of them in one section is the contradiction this branch exists
+      // to prevent. A press is exempt — the radiologist asked for the rebuild.
+      && !(automatic && manualImpression)) {
       get().mergeField("impression", clinical.impression, "template");
     }
     if (clinical.recommendation.trim() && !alreadySaysThis(get().recommendationText, clinical.recommendation)) {
@@ -2035,10 +2241,42 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     //    where the Findings and the ledger both stay exactly as they are.
     const changed = get().findingsText !== findingsBefore
       || get().appliedPathologyPatches.length !== patchCountBefore;
+    let impressionHeld = false;
     if (deviates && (changed || flaggedBefore)) {
-      get().refreshImpressionFromLedger({ excludeBaselineObservations: true });
+      // An automatic pass never rebuilds a Conclusion the radiologist wrote by hand.
+      // `refreshImpressionFromLedger` obeys that itself when told the write was not
+      // pressed, while a press still may — which is how the stale banner raised over
+      // a manual Impression gets cleared.
+      impressionHeld = get().refreshImpressionFromLedger({
+        excludeBaselineObservations: true, automatic,
+      }) === "held-empty";
     }
     get().orderImpressionByPriority();
+
+    // Did this pass write anything? `pushClinicalUndoSnapshot` does not dedupe, so an
+    // automatic pass over a report that already says everything it has to say would
+    // bury the radiologist's real edits under no-op undo frames — one Ctrl+Z doing
+    // nothing, twice over. A press always takes its frame, because a press is an
+    // event the radiologist can point at.
+    const wroteSomething = [
+      get().clinicalHistoryText,
+      get().techniqueText,
+      get().findingsText,
+      get().impressionText,
+      get().recommendationText,
+    ].join("\u0000") !== proseBefore
+      || ledgerIdentity(get().appliedPathologyPatches) !== ledgerBefore;
+    if (automatic && !wroteSomething) {
+      // Nothing moved, so nothing is claimed: no format usage, no notification, no
+      // canvas restamp, no undo frame. The report is already the report.
+      return {
+        status: "generated",
+        formatName: format.name || "",
+        baselineConcepts: 0,
+        observationsRetained: retained.length,
+        observationsNeedingReview: 0,
+      };
+    }
 
     set({
       ...withPushedClinicalUndo(get(), undoSnap),
@@ -2057,21 +2295,92 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // nothing change — which is exactly what pressing this twice does.
     });
     getFormatApplyBridge()?.invalidatePendingAutosave?.();
-    void bumpReportFormatUsage(format.id);
-    get().pushNotification({
-      kind: "ledger",
-      text: needingReview > 0
-        ? `Professional report built from “${format.name}”. ${needingReview} finding(s) need your review.`
-        : `Professional report built from “${format.name}”.`,
-    });
+    // An automatic pass claims nothing. The usage counter is how the clinic's
+    // format library ranks itself, so a debounced engine running sixty times an hour
+    // would report a radiologist preferring a format they never chose; and a
+    // notification per pass is a ledger that scrolls faster than anyone can read.
+    if (!automatic) {
+      void bumpReportFormatUsage(format.id);
+      get().pushNotification({
+        kind: "ledger",
+        text: needingReview > 0
+          ? `Professional report built from “${format.name}”. ${needingReview} finding(s) need your review.`
+          : `Professional report built from “${format.name}”.`,
+      });
+    }
     return {
       status: "generated",
       formatName: format.name || "",
       baselineConcepts: baselinePatches.length,
       observationsRetained: retained.length,
       observationsNeedingReview: needingReview,
+      ...(impressionHeld ? { impressionHeld: true } : {}),
     };
   },
+  /**
+   * MODE A — the instant report. This is the debounced pass the workspace runs when
+   * the observations move; it owns the decision and nothing else, delegating the
+   * whole build to `generateProfessionalReport`, so there is one report engine and
+   * one set of clinical rules, not two that can drift apart.
+   *
+   * `contentLocked` comes from the caller because the workspace's lock is wider than
+   * the store's signed flag: another surface holding the report, or a study signed
+   * elsewhere, never reaches the store as `isFinalized`. The generator's own signed
+   * refusal still runs underneath this as the second line of defence.
+   */
+  composeInstantReport: (ctx, contentLocked) => {
+    const state = get();
+    // Which format this study resolves to, and whether the clinic owns it, is
+    // decided inside the generator — never here. A second lookup would be a second
+    // authority on the same question, and the two could answer differently while both
+    // still looked correct in isolation: one decides the report, the other decides
+    // whether the report may be rebuilt without being asked.
+    const decision = decideInstantReport({
+      enabled: readInstantReportEnabled(),
+      contentLocked,
+      confirmationOpen: state.confirmOverwriteOpen
+        || !!state.pendingPathologyPatch
+        || state.mergePreviewOpen,
+      manualImpression: impressionProvenanceIsRadiologistManual(state.fieldProvenance.impression),
+      foreignFindingsLines: unexplainedFindingLines(
+        state.findingsText,
+        state.appliedPathologyPatches,
+      ).length,
+      engineOwnsCanvas: !!state.startingCanvasBaseline,
+    });
+    if (decision.action === "hold") {
+      set({
+        instantReportHold: holdIsReportable(decision.code)
+          ? { code: decision.code, message: decision.message }
+          : null,
+      });
+      return decision;
+    }
+    const outcome = get().generateProfessionalReport(ctx, {
+      automatic: true,
+      requireOwnedApprovedNormal: true,
+    });
+    if (outcome.status === "refused") {
+      const hold = holdFromRefusal(outcome);
+      set({ instantReportHold: hold.message ? hold : null });
+      return { action: "hold", code: hold.code, message: hold.message };
+    }
+    // The Findings were rebuilt and the Conclusion deliberately was not, because
+    // rebuilding it would have left the report with no conclusion at all. That is a
+    // result the radiologist has to see, not a log line: the reason is the same
+    // sentence the canvas chip and the store agree on.
+    if (outcome.impressionHeld) {
+      set({ instantReportHold: IMPRESSION_UNDECIDED_HOLD });
+      return {
+        action: "hold",
+        code: IMPRESSION_UNDECIDED_HOLD.code,
+        message: IMPRESSION_UNDECIDED_HOLD.message,
+      };
+    }
+    set({ instantReportHold: null });
+    return decision;
+  },
+  setInstantReportHold: (hold) => set({ instantReportHold: hold }),
   toggleFormatFavorite: (id) => {
     const nf = get().reportFormats.map((x: ReportFormat) => x.id === id ? { ...x, favorite: !x.favorite, updatedAt: new Date().toISOString() } : x);
     saveFormats(nf);
@@ -2127,10 +2436,30 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       const f = fs[0]!;
       const clinical = clinicalFieldsFromFormat(f);
       const formatSnapshot = captureClinicalSnapshot(get());
-      // Content first, then region — format technique wins over region protocol sync.
+      // CAT-P5, applied to this door (#168). A Full Normal Format carries a
+      // whole-examination Conclusion. Writing it over a report that already asserts
+      // an abnormality produces a report answering itself — "Moderate canal stenosis
+      // at L4-L5." above "Normal MRI of the lumbosacral spine." — and the wholesale
+      // replace here also DELETED the abnormal Conclusion the radiologist had
+      // clicked, which the confirmation gate never warned him about because a
+      // Quick Select sentence classifies as "generated", not as his own text. So
+      // when the report asserts abnormality, this door reconciles instead of
+      // replacing: his observations stay live, the format's anatomy merges in
+      // additively, and the format's normal Conclusion is withheld — the same
+      // outcome the click door reaches, from the same predicate.
+      const assertsAbnormality = reportAssertsAbnormality(
+        get().appliedPathologyPatches,
+        { findings: get().findingsText, impression: get().impressionText },
+      );
       get().setField("technique", clinical.technique, { source: "template", replaceProvenance: true });
-      get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
-      get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      if (assertsAbnormality) {
+        get().mergeField("findings", clinical.findings, "template");
+      } else {
+        get().setField("findings", clinical.findings, { source: "template", replaceProvenance: true });
+      }
+      if (!assertsAbnormality) {
+        get().setField("impression", clinical.impression, { source: "template", replaceProvenance: true });
+      }
       get().setField("recommendation", clinical.recommendation, { source: "template", replaceProvenance: true });
       if (clinical.clinicalHistory.trim()) {
         // Patient/worklist/manual Hx wins: merge format phrase (no duplicate), never replace.
@@ -2150,11 +2479,20 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       // A full report establishes a new baseline. Keep prior non-baseline
       // observations as stale audit context, then materialize only explicitly
       // curated baseline slots. Legacy prose formats safely produce no patches.
-      const stalePatches = get().appliedPathologyPatches
-        .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
-        .map((p) => ({ ...p, stale: true as const }));
+      //
+      // In reconcile mode nothing is marked stale: the abnormal observations are the
+      // report's clinical content now, and a stale row is dropped by the next rebuild
+      // — so the saved-and-reopened report would come back normal under an abnormal
+      // Findings section.
+      const stalePatches = assertsAbnormality
+        ? get().appliedPathologyPatches.filter(
+            (p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p),
+          )
+        : get().appliedPathologyPatches
+            .filter((p) => p.observation?.role !== "baseline" && !isSystemNormalPatch(p))
+            .map((p) => ({ ...p, stale: true as const }));
       const baselineRegion = pendingRegion || get().reportingContext.region || f.bodyPart;
-      const baselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
+      const formatBaselinePatches = materializeFormatBaseline(f, baselineRegion).map((p) => ({
         id: p.id,
         ownership: ownershipFromObservation(p.observation),
         templates: p.templates,
@@ -2164,6 +2502,13 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         replacedBaseline: p.replacedBaseline,
         protected: p.protected,
       }));
+      const baselinePatches = assertsAbnormality
+        ? formatBaselinePatches.map((p) =>
+            isSystemNormalPatch(p)
+              ? { ...p, lastRendered: { ...p.lastRendered, impression: "" } }
+              : p,
+          )
+        : formatBaselinePatches;
       set({
         reportFormats: nf,
         confirmOverwriteOpen: false,
@@ -2421,12 +2766,23 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // impression text is NEVER touched — the system normal patch is the
     // only contribution that auto-yields.
     //
-    // This decision is based on the incoming patch's CONCEPT (identity),
-    // NOT on string matching of impressionText.
+    // This decision is based on the incoming patch's CONCEPT and, where the
+    // concept registry has no opinion, on its own conclusion sentence read by the
+    // same classifier the print surface uses to bold a finding — NOT on hunting the
+    // Impression field for normal-looking words. What is withdrawn stays scoped to
+    // the system normal patch's recorded contribution either way.
+    //
+    // The sentence arm exists because eight of the twenty-two shipped lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy, ligamentum
+    // flavum hypertrophy, reduced disc height, disc desiccation, Modic, Schmorl):
+    // with the concept test alone their conclusion printed BENEATH "Normal MRI of
+    // the lumbosacral spine." — one section asserting the study was normal and the
+    // next asserting it was not (CAT-P5).
+    let normalYieldRefusedByManual = false;
     if (
-      isImpressionworthyAbnormal(observation.concept, { role: observation.role })
+      opts.source !== "system"
       && (incoming.impression ?? "").trim()
-      && opts.source !== "system"
+      && incomingStatesAbnormalImpression(observation.concept, observation.role, incoming.impression)
     ) {
       const systemNormal = findSystemNormalPatch(get().appliedPathologyPatches);
       if (systemNormal) {
@@ -2453,6 +2809,15 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
                 : p,
             ),
           });
+        }
+        // The normal words on the page are the radiologist's own by then, so the
+        // yield refused and nothing was deleted. Deleting them is not an option
+        // this system ever has; leaving the contradiction silent is. Arming the
+        // dependency is what puts the amber "Impression needs refresh" and the
+        // named reason on the canvas, which is how the doctor is told the
+        // Conclusion still says normal above a finding that is not normal.
+        if (yieldResult.outcome === "preserved-manual") {
+          normalYieldRefusedByManual = true;
         }
       }
     }
@@ -2617,6 +2982,56 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       };
     }
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
+    // A row can never be the baseline it replaced.
+    //
+    // Mode A's automatic pass replays the ledger through this same writer 700 ms after
+    // a click. By then the tile's own sentence is on the page, and the ownership walk in
+    // `overlayPathology` counts every sentence this tile owns — including the one it
+    // wrote — as replaced. The re-apply therefore recorded the tile's own wording as the
+    // normal it superseded and dropped the real claim, so the next deselection deleted
+    // the sentence and put it straight back: a Quick Select box that comes off the
+    // ledger but never comes off the report, in Findings and in the Impression (#167,
+    // measured on study 17 in the browser and reproduced against the store).
+    // The claim an earlier click recorded is carried forward instead, because a replay
+    // replaces nothing that the first click did not already replace.
+    const priorRow = get().appliedPathologyPatches.find((p) => p.id === stableId);
+    const ownWording = new Set<string>();
+    for (const text of [
+      incoming.findings, incoming.impression, incoming.technique, incoming.recommendation,
+      templates.findings, templates.impression, templates.technique, templates.recommendation,
+      priorRow?.lastRendered.findings, priorRow?.lastRendered.impression,
+      priorRow?.lastRendered.technique, priorRow?.lastRendered.recommendation,
+    ]) {
+      const trimmed = (text ?? "").trim();
+      if (!trimmed) continue;
+      for (const s of splitToSentences(trimmed)) {
+        const key = normalizeForDedupe(s);
+        if (key) ownWording.add(key);
+      }
+    }
+    const isNotItsOwnWording = (sentence: string): boolean => {
+      const key = normalizeForDedupe(sentence);
+      if (!key) return false;
+      // The probe may carry its line's level prefix ("L4-L5: …"), which the tile's own
+      // contribution does not, so both forms are compared before one is called self.
+      const unprefixed = key.replace(/^[a-z0-9]+(?:-[a-z0-9]+)?:\s+/, "");
+      return !ownWording.has(key) && !ownWording.has(unprefixed);
+    };
+    const claimBaseline = (carried: string[], fresh: string[]): string[] => {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const s of [...carried, ...fresh.filter(isNotItsOwnWording)]) {
+        const key = normalizeForDedupe(s);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(s);
+      }
+      return out;
+    };
+    const replacedBaseline = {
+      findings: claimBaseline(priorRow?.replacedBaseline?.findings ?? [], replaced.findings),
+      impression: claimBaseline(priorRow?.replacedBaseline?.impression ?? [], replaced.impression),
+    };
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
       impression: renderedInField(incoming.impression, result.narrative.impression) || incoming.impression,
@@ -2630,7 +3045,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastRendered,
       source: opts.source,
       observation: { ...observation, id: stableId },
-      replacedBaseline: replaced,
+      replacedBaseline,
       // Same-slot auto-update clears prior protected flag; confirm path may restore via undo.
       protected: false,
     };
@@ -2723,6 +3138,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const ownsImpressionSide = Boolean(
       (appliedPatch?.templates.impression ?? appliedPatch?.lastRendered.impression ?? "").trim(),
     );
+    // CAT-P5, refused: the normal wording this click could not delete is the
+    // radiologist's own, so it stays exactly where they left it. What must not stay
+    // is the silence — arming the named contradiction reason is what puts the review
+    // prompt on the canvas and into the sign dialog, which is how the doctor learns
+    // the Conclusion still calls the study normal above a finding that does not.
+    if (normalYieldRefusedByManual) {
+      set(deriveImpressionDependency(get(), undefined, {
+        arm: "impression-contradicts-findings",
+      }));
+      return "applied";
+    }
+    // The Conclusion this click composed is ordered by clinical priority rather
+    // than by the order the boxes were pressed, and each statement stays on the line
+    // it was authored on (§158, CAT-P4). A radiologist who has hand-ordered the field
+    // has frozen both, and this is a no-op for them.
+    get().orderImpressionByPriority();
     set(deriveImpressionDependency(get(), ownsImpressionSide ? { rebase: true } : undefined));
     return "applied";
   },
@@ -2947,6 +3378,9 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // left open across signing still reaches this, and so does the derived-
     // impression effect in useWorkspaceClinicalUi, which nothing gates at all.
     // Those two are what this refuses: a silent rewrite of a signed Impression.
+    // Its refusal is reported by `refuseSignedMutation` itself — the shared witness
+    // every signed writer is contract-tested against — so this arm returns nothing on
+    // purpose. `finalizedMutationBoundary.hardening.test.ts` pins that.
     if (refuseSignedMutation(get(), "refreshImpressionFromLedger")) return;
     // A silent refresh never touches a Conclusion the radiologist wrote. The
     // derived-impression effect checked this at its own call site, which made it a
@@ -2958,7 +3392,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // lines, the third one a finding the doctor had dictated and never concluded.
     // The controls the doctor presses are still allowed to rewrite it — that is how
     // they clear the stale banner a manual Impression raises.
-    if (opts?.automatic && impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression)) return;
+    if (opts?.automatic && impressionProvenanceIsRadiologistManual(get().fieldProvenance.impression)) return "held-protected";
     // `excludeBaselineObservations` is for a report that has already been judged
     // to deviate from its approved normal. The scaffold rows ARE the normal, and
     // their impression contributions — for the Brain format, "Normal MRI of the
@@ -2997,6 +3431,25 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       remainingAbnormalLines: remaining,
       provenance: get().fieldProvenance.impression,
     });
+    // An unpressed pass may not answer "what is the impression?" with nothing.
+    //
+    // Reaching this needs no contrivance: a Quick Select box that records an
+    // abnormality can carry Findings prose and no Impression prose, and the tile
+    // catalog has sixteen such boxes on the LS Spine strip alone. Once the approved
+    // normal that box falsifies is retired, the ledger concludes for nothing, the
+    // derived Conclusion is empty, and the old behaviour was to write the empty
+    // string over the clinic's normal and then `rebase` — certify that a report
+    // with no diagnosis in it matches its findings.
+    //
+    // A press still does it. Nobody pressed this.
+    if (opts?.automatic && !next.trim() && get().impressionText.trim()) {
+      // Nothing is written, so nothing is certified: arming the dependency is what
+      // raises the amber "Impression needs refresh" the pressed surfaces already
+      // render, and `IMPRESSION_UNDECIDED_HOLD` is the canvas reason that names the
+      // sentence the radiologist has to write.
+      set(deriveImpressionDependency(get(), undefined, { arm: "findings-changed" }));
+      return "held-empty";
+    }
     const nextProv = { ...(get().fieldProvenance.impression ?? EMPTY_FIELD_PROVENANCE) };
     for (const s of next.split(/\n+/).map((x) => x.trim()).filter(Boolean)) {
       const key = normalizeForDedupe(s);
@@ -3010,6 +3463,11 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       fieldProvenance: { ...get().fieldProvenance, impression: nextProv },
       isDirty: true,
     });
+    // A composed Conclusion reads in clinical order, not in the order the
+    // contributions were collected — which is the ledger's insertion order, i.e. the
+    // order the boxes were clicked. One sorter for both the press and the automatic
+    // pass, and a hand-ordered field is frozen inside it (§158).
+    get().orderImpressionByPriority();
     // The radiologist pressed "Refresh": the summary was regenerated from the
     // findings, so this is the paired write and the basis moves with it. Recorded
     // as a refresh rather than an authored write, because the dependency history
@@ -3023,9 +3481,10 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // it on reload too, which is the reason `unreconciled` exists.
     if (refused) {
       set(deriveImpressionDependency(get(), undefined, { arm: "findings-changed" }));
-      return;
+      return "held-protected";
     }
     set(deriveImpressionDependency(get(), { rebase: true, recordedBy: "refresh" }));
+    return undefined;
   },
   markImpressionReviewed: () => {
     // "I have read it and it stands." The only way to clear a dependency the
@@ -3042,8 +3501,37 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // line-anchored pattern could not see.
     if (refuseSignedMutation(get(), "orderImpressionByPriority")) return false;
     if (get().impressionOrderFrozen) return false;
-    const before = get().impressionText.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-    if (before.length < 2) return false;
+    const original = get().impressionText;
+    // CAT-P4 — one authored statement, one line — before anything is sorted.
+    //
+    // `mergeSentencesWithProvenance` reads a field sentence by sentence, because
+    // provenance is keyed per sentence, and writes it back one sentence per line, so
+    // a Conclusion authored as a single statement ("Normal MRI of the lumbosacral
+    // spine. No significant disc, canal, foraminal or neural compressive
+    // abnormality.") arrived from a click as two. On the numbered Impression the
+    // clinic prints that is two conclusions where the radiologist wrote one. This
+    // rejoins a live contribution's own sentences only when all of them are still on
+    // the page, adjacent, in the order they were authored — so a sentence the
+    // radiologist deleted stays deleted and two different producers' lines are never
+    // fused.
+    let laid = original;
+    if (!proposed) {
+      // A caller that hands in `proposed` owns both the order and the shape of the
+      // field it derived them from; re-splitting its lines would make the proposal no
+      // longer a permutation of what is on the page, and the guard below would —
+      // correctly — refuse the whole write.
+      for (const p of get().appliedPathologyPatches) {
+        if (p.stale) continue;
+        laid = rejoinAuthoredStatement(laid, (p.templates.impression ?? "").trim());
+      }
+    }
+    const before = laid.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    if (before.length < 2) {
+      // Nothing to sort, but the shape may still have moved.
+      if (laid === original) return false;
+      set({ impressionText: laid, isDirty: true });
+      return true;
+    }
     // One sorter and one freeze rule for every study; only the clinical category
     // table changes for a dedicated Dorso-Lumbar examination (spec §26).
     const ordered = isDorsoLumbarDedicated(get().studyComposition)
@@ -3052,7 +3540,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     const next = (proposed ?? ordered)
       .map((s) => s.trim())
       .filter(Boolean);
-    if (before.join("\n") === next.join("\n")) return false;
+    if (before.join("\n") === next.join("\n") && laid === original) return false;
     // A reorder may only ever permute. Anything else is a rewrite, and this action is
     // never allowed to reword a clinical statement (§18, §37).
     if (!isImpressionReorderOf(before, next)) return false;
@@ -3060,13 +3548,18 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     return true;
   },
   seedSystemNormalImpression: () => {
-    // Safety: never seed when impression-worthy abnormal observations exist.
-    if (hasImpressionworthyAbnormal(get().appliedPathologyPatches)) return;
+    // Safety: never seed while an abnormal conclusion is on the page.
+    if (suppressesSystemNormal(get().appliedPathologyPatches)) return;
     // Safety: never seed when the radiologist has manually owned impression.
     if (impressionHasManualContribution(get().fieldProvenance.impression)) return;
     // Safety: never seed on a finalized study.
     if (get().isFinalized) return;
     const existing = findSystemNormalPatch(get().appliedPathologyPatches);
+    // A normal the radiologist deleted is not a gap to refill. That case cannot
+    // reach here: deleting the sentence leaves the row's own contribution recorded and
+    // non-empty, which the line below refuses on, and typing over the field marks the
+    // sentence manual, which `impressionHasManualContribution` above refuses on. Both
+    // are pinned in `impressionCompositionAdversarial.test.ts`.
     if (existing?.lastRendered.impression?.trim()) return;
     // A full-format normal impression may be suspended while abnormalities
     // exist. Restore its exact owned contribution after the last one is
@@ -3079,6 +3572,16 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
         source: "system",
         existingProvenance: get().fieldProvenance.impression ?? {},
       });
+      // CAT-P4 — the merge below keys provenance per sentence, so it writes the
+      // restored normal as one sentence per line. A baseline Impression authored as
+      // a single statement comes back from that as two numbered items, which is a
+      // different report from the one the clinic approved. Rejoin it onto the line it
+      // was authored on; a sentence the radiologist deleted is not present, so it is
+      // not put back by this.
+      // CAT-P4 is settled by the one layout pass every composer ends with, not here:
+      // the merge above keys provenance per sentence and therefore writes the
+      // restored normal as one sentence per line, and `orderImpressionByPriority` is
+      // what puts an authored statement back on its own line.
       const restoredText = get().impressionText.trim()
         ? restored.text
         : existing.templates.impression;
@@ -3647,27 +4150,45 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
 
     // PR #662 §2 — System normal auto-return.
     //
-    // After removing an impression-worthy abnormal observation, if NO other
-    // impression-worthy abnormal patches remain AND the radiologist has not
-    // manually owned the impression AND the workspace is not finalized,
-    // re-seed the system normal patch. The seed action itself is idempotent
-    // and re-checks every safety predicate before applying.
+    // After removing an abnormal observation, if NO other abnormal conclusion
+    // remains AND the radiologist has not manually owned the impression AND the
+    // workspace is not finalized, re-seed the system normal patch. The seed action
+    // itself is idempotent and re-checks every safety predicate before applying.
     //
-    // Identity is decided by patch concept/source, NOT by string heuristics.
+    // Identity is decided by patch concept/source and by the row's own recorded
+    // conclusion, NOT by hunting the Impression field for normal-looking words.
     //
-    // This first test asks the CONCEPT-ONLY question ("was the thing I removed
-    // an abnormal-typed concept?") and keeps its current-main answer, because a
-    // shipped MRI Lumbar normal tile carries `canal_stenosis` / `conus_medullaris`
-    // as baseline atoms and deselecting one has always restored the normal.
-    // Whether the normal may actually come back is still decided by the single
-    // authoritative rule, one call below in hasImpressionworthyAbnormal.
+    // This first question is "was the thing I removed one of the abnormalities the
+    // normal was standing behind?" and it is the UNION of the two readings, because
+    // dropping either one changes a shipped report. The concept-only arm is main's
+    // answer and is what restores the normal under a MRI Lumbar routine normal tile
+    // — those emit baseline atoms whose concepts (`canal_stenosis`,
+    // `conus_medullaris`, `bone_lesion`, `disc_contour`, `compression_fracture`,
+    // `foraminal_stenosis`, `cauda_equina`) are impression-worthy while their sentence
+    // names no cue. The sentence arm is CAT-P5: eight of the twenty-two lumbar boxes
+    // carry a concept the registry does not flag (facet arthropathy and the rest), so
+    // with the concept test alone their deselection would leave the normal suspended
+    // forever — withdrawn on the click and never brought back.
+    //
+    // The sentence arm is asked only of a study that HAS a system normal row, and that
+    // scoping is load-bearing. `seedSystemNormalImpression` falls through to writing
+    // the generic "Normal study." when no row exists, so on a report that never
+    // carried one — a hand-written cervical cord report with a C2 fracture tile —
+    // deselecting the tile answered "Normal study." underneath a fracture. Measured:
+    // `findingsImpressionDependency.test.ts` caught it as an Impression that now
+    // contradicts its own Findings. Nothing was ever suspended there, so nothing had
+    // to come back.
+    const suspendedNormal = findSystemNormalPatch(get().appliedPathologyPatches);
     if (
       !isSystemNormalPatch(patch)
-      && isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+      && (
+        isImpressionworthyAbnormal(patch.observation?.concept ?? null)
+        || (suspendedNormal !== null && statesAbnormalImpression(patch))
+      )
       && !get().isFinalized
     ) {
       const remainingPatches = get().appliedPathologyPatches;
-      if (!hasImpressionworthyAbnormal(remainingPatches)) {
+      if (!suppressesSystemNormal(remainingPatches)) {
         get().seedSystemNormalImpression();
       }
     }
@@ -3689,9 +4210,12 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // Rebasing is not silencing. `impression-write` does not clear the semantic
     // half of the predicate, and a removal whose generated sentence the radiologist
     // has already replaced is refused outright (`preserved-manual`) rather than
-    // re-paired — both pinned in `findingsImpressionDependency.test.ts`, along with
-    // the brain-vascular bundle's "withdraws the impression line when the linked
-    // finding is removed".
+    // re-paired — both pinned in `findingsImpressionDependency.test.ts`.
+    //
+    // Ordered first, then derived: the basis has to record the Conclusion as the
+    // radiologist will read it, which is the prioritised shape, not the residue of
+    // whichever box was clicked last.
+    get().orderImpressionByPriority();
     set(deriveImpressionDependency(
       get(),
       result.outcome === "removed" ? { rebase: true } : undefined,

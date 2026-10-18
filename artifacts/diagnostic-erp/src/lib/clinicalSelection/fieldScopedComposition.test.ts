@@ -7,7 +7,7 @@ import { isQuickSelectSource } from "../zai-workspace/quickSelectParameterContra
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
-import { rankImpressionLine } from "../impressionPriority";
+import { orderImpressionLines, rankImpressionLine } from "../impressionPriority";
 import { stripContribution } from "../observationLedger";
 
 /**
@@ -256,41 +256,101 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
   });
 });
 
-describe("Stage C Phase 4 · the measured residual: three unclassified lines keep the click order", () => {
+describe("Stage C Phase 4 · the shipped lumbar boxes are ranked, so the click order decides nothing", () => {
   /**
-   * Tripwire, not an endorsement.
+   * MEASURED on this branch: with the shipped lumbar boxes on the shipped "MRI LS Spine —
+   * Standard Normal" document, all six click orders produce ONE set of Impression statements
+   * and ONE sequence. Before the 2026-10-18 priority ruling was wired in, the same six orders
+   * gave two sequences — herniation leading in HSP/HPS/PHS, stenosis leading in SHP/SPH/PSH —
+   * because `orderImpressionLines` sorted by (rank, index) and these statements sat on
+   * UNCLASSIFIED_RANK, so the index was the order the boxes were clicked. Measured on the
+   * integration tree with the approved spondylolisthesis conclusion added (#1067): six
+   * sequences without the sorter, one with it.
    *
-   * MEASURED: with the three shipped lumbar boxes on the shipped "MRI LS Spine — Standard
-   * Normal" document, all six click orders produce ONE set of Impression statements — the
-   * clinical content never depends on the mouse. Since the owner approved a conclusion for
-   * Grade 1 spondylolisthesis (2026-10-18) all three of them write an Impression line, so all
-   * six click orders now give six Impression SEQUENCES; before it was two, because the slip box
-   * wrote a Findings sentence and no conclusion. Findings has the same split. The content is
-   * deterministic; the sequence is not.
+   * The herniation states compression, so it ranks 6; the slip is uncomplicated and
+   * ranks 8; the stenosis ranks 5. Their order therefore comes from the table, and where
+   * two statements share a tier it comes from the comparator's anatomical then stable-rule-id
+   * terms — never from the mouse.
    *
-   * The cause is a gap in the shipped category table, not in the composer: `orderImpressionLines`
-   * sorts by (rank, index) and documents "stable for equal ranks", and all three of these
-   * statements classify as UNCLASSIFIED_RANK, so their index — the order the boxes were clicked —
-   * decides. These assertions hold while that is true and fail the moment anyone ranks one of them.
-   *
-   * WHY NO ORDER WAS CHOSEN HERE: which of a disc herniation and a moderate canal stenosis leads
-   * a lumbar Impression is a clinical judgement, and the clinic's own lumbar library disagrees
-   * with the shipped table on the neighbouring case (docs/clinical-libraries/
-   * mri-lumbar-clinical-content-library.md:204 ranks spondylolisthesis ABOVE severe foraminal
-   * stenosis and exiting-root compression, while `IMPRESSION_PRIORITY` ranks stenosis 5 and
-   * spondylolisthesis 8). Guessing a second row of ranks would be inventing clinical policy and
-   * would silently re-sequence every lumbar report. This is an owner decision; when it is ruled
-   * on, replace this block with the ranked assertion.
+   * RESOLVED by the owner on 2026-10-18 (the note this block used to carry): significant
+   * neural compression OUTRANKS an uncomplicated spondylolisthesis, and a non-compressive
+   * herniation does NOT automatically outrank one. The clinic's lumbar library
+   * (docs/clinical-libraries/mri-lumbar-clinical-content-library.md:204) ranks the slip above
+   * severe foraminal stenosis and exiting-root compression; the owner's ruling does not adopt
+   * that, and it does not ask for the slip to lead a compressive disc either. So a disc that
+   * names what it does to the sac or a root moved to tier 6 — as far as the ruling reaches, and
+   * no further: the owner has not ruled that sac indentation outranks a moderate central stenosis
+   * (5) or a definite root compression (4), so it is not promoted past them.
    */
-  it("leaves both shipped lumbar compressive statements unclassified, which is what lets the mouse decide", () => {
+  it("ranks both shipped lumbar compressive statements, which is what takes the order off the mouse", () => {
+    // The owner ruled the clinical priority order on 2026-10-18, so the two
+    // sentences this block used to leave unclassified now carry a rank: a
+    // moderate central stenosis is a compressive statement (tier 5) and a
+    // herniation that reaches the thecal sac is neural compression (tier 6), above
+    // an uncomplicated slip (8) and below a definite root compression (4).
+    // `orderImpressionLines` therefore resolves this pair to one sequence instead of two.
     const h = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
     const s = rankImpressionLine(STENOSIS_IMPRESSION, 0, { spineSegment: "lumbar" });
-    expect(h.ruleId, `"${h.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(s.ruleId, `"${s.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(h.rank).toBe(s.rank);
+    expect(h.ruleId, "the herniation line is unclassified again — the tier table moved").toBe(
+      "disc-compressing-neural-elements",
+    );
+    expect(s.ruleId, "the stenosis line is unclassified again — the tier table moved").toBe(
+      "moderate-canal-stenosis",
+    );
+    expect(s.rank).toBeLessThan(h.rank);
+    expect(orderImpressionLines([HERNIATION_IMPRESSION, STENOSIS_IMPRESSION])).toEqual([
+      STENOSIS_IMPRESSION,
+      HERNIATION_IMPRESSION,
+    ]);
+    // A hand-ordered Impression is never reshuffled by any of this.
+    expect(
+      orderImpressionLines([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION], { frozen: true }),
+    ).toEqual([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION]);
   });
 
-  it("says the same clinical things in every click order, in six possible sequences", () => {
+  describe("the owner's 2026-10-18 ranking ruling, both clauses", () => {
+    const SLIP = "Grade 1 spondylolisthesis at L4-L5.";
+    const NON_COMPRESSIVE_HERNIATION = "Disc herniation at L4-L5.";
+
+    it("clause 1: significant neural compression outranks an uncomplicated spondylolisthesis", () => {
+      const compressive = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
+      const slip = rankImpressionLine(SLIP, 0, { spineSegment: "lumbar" });
+      expect(compressive.rank).toBeLessThan(slip.rank);
+      // Either click order, either input order: the compressive statement leads.
+      expect(orderImpressionLines([SLIP, HERNIATION_IMPRESSION])).toEqual([HERNIATION_IMPRESSION, SLIP]);
+      expect(orderImpressionLines([HERNIATION_IMPRESSION, SLIP])).toEqual([HERNIATION_IMPRESSION, SLIP]);
+      // A root compressed by the same disc is the same compressive statement, not a
+      // structural one: it leaves tier 8, which is where it used to tie the slip.
+      expect(
+        rankImpressionLine("Disc herniation at L4-L5 compresses the traversing left L5 root.", 0, {
+          spineSegment: "lumbar",
+        }).ruleId,
+      ).toBe("disc-compressing-neural-elements");
+    });
+
+    it("clause 2: a non-compressive herniation does not automatically outrank the slip", () => {
+      const h = rankImpressionLine(NON_COMPRESSIVE_HERNIATION, 0, { spineSegment: "lumbar" });
+      const slip = rankImpressionLine(SLIP, 0, { spineSegment: "lumbar" });
+      expect(h.ruleId).toBe("disc-protrusion-herniation");
+      expect(h.rank, "tied with the slip, exactly as the owner ruled — not promoted").toBe(slip.rank);
+      // Tied tier, same level, so the stable concept term decides, and it decides the
+      // same way whichever end the radiologist clicked first.
+      expect(orderImpressionLines([SLIP, NON_COMPRESSIVE_HERNIATION]))
+        .toEqual(orderImpressionLines([NON_COMPRESSIVE_HERNIATION, SLIP]));
+    });
+
+    it("does not promote a disc that names no compression target", () => {
+      // "…with thecal sac contact" carries no compression verb; a bare sac word must not
+      // move a structural statement up a tier.
+      expect(rankImpressionLine("Disc bulge at L4-L5.", 0, { spineSegment: "lumbar" }).ruleId)
+        .toBe("disc-bulge");
+      expect(rankImpressionLine("Disc protrusion at L4-L5 abuts the thecal sac without compression.", 0, {
+        spineSegment: "lumbar",
+      }).rank, "the ruling is about documented compression, not proximity").toBe(8);
+    });
+  });
+
+  it("says the same clinical things in the same order, whatever the click order", () => {
     const sets = new Map<string, string>();
     const sequences = new Map<string, string[]>();
     for (const order of permutations()) {
@@ -302,10 +362,12 @@ describe("Stage C Phase 4 · the measured residual: three unclassified lines kee
       sets.set(JSON.stringify([...seq].sort()), seq.join("\n"));
     }
     expect(sets.size, "click order changed WHICH Impression statements exist").toBe(1);
-    expect(
-      [...sequences.keys()],
-      "fewer than six sequences means one of the three lumbar boxes has been ranked — that is the owner decision, and this block should be replaced with the ranked assertion",
-    ).toHaveLength(6);
+    // And the order is now part of the same guarantee. Measured before the
+    // 2026-10-18 ruling was wired in: TWO sequences for these three boxes, the
+    // herniation and the stenosis trading places depending on which was clicked
+    // first. The composition ends with the one clinical-priority sorter, so a
+    // press of "Refresh" answers with the same numbered Conclusion every time.
+    expect([...sequences.keys()]).toHaveLength(1);
   });
 });
 

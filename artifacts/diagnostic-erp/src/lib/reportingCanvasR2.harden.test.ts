@@ -205,7 +205,7 @@ describe("R2 report format + narrative Empty semantics", () => {
     expect(d.label).not.toBe("Empty");
   });
 
-  it("10+13. applying whole report format marks prior ledger stale (does not delete)", () => {
+  it("10+13. applying a whole report format keeps the abnormality he already recorded (#168)", () => {
     const { observations, bundleId } = buildLumbarLevelApplyBundle({
       level: "L3-L4",
       sel: { morphology: "extrusion", canal: "moderate" },
@@ -213,6 +213,10 @@ describe("R2 report format + narrative Empty semantics", () => {
     });
     useWorkspace.getState().applyMacroBundle({ bundleId, observations });
     expect(useWorkspace.getState().appliedPathologyPatches.length).toBeGreaterThan(0);
+    const before = useWorkspace.getState().appliedPathologyPatches.filter(
+      (p) => p.observation?.role !== "baseline",
+    );
+    expect(before.length, "the bundle must have recorded something to preserve").toBeGreaterThan(0);
 
     const fmt = DEFAULT_REPORT_FORMATS.find((f) => f.name === "MRI LS Spine — Normal")!;
     useWorkspace.setState({
@@ -222,8 +226,23 @@ describe("R2 report format + narrative Empty semantics", () => {
     });
     useWorkspace.getState().confirmOverwriteAndApply();
     const patches = useWorkspace.getState().appliedPathologyPatches;
-    expect(patches.length).toBeGreaterThan(0);
-    expect(patches.every((p) => p.stale)).toBe(true);
+
+    // What this test used to require — every prior patch stale — is the defect:
+    // a stale patch is dropped by the next rebuild, so applying a Normal format over
+    // an L3-L4 extrusion deleted the extrusion's Conclusion and printed
+    // "Normal MRI of the lumbosacral spine." in its place, silently, because a
+    // Quick Select sentence classifies as `generated` provenance and `generated`
+    // needs no confirmation. The owner's ruling is that a normal template may never
+    // do that, so the observations stay live and the format's normal Conclusion is
+    // suspended instead of written. The guarantee the title names — nothing is
+    // deleted — still holds, and is asserted here.
+    expect(patches.length).toBe(before.length);
+    for (const p of before) {
+      const after = patches.find((x) => x.id === p.id);
+      expect(after, `the report lost ${p.id}`).toBeTruthy();
+      expect(after!.stale, `${p.id} was marked stale, so the next rebuild drops it`).toBeFalsy();
+    }
+    expect(useWorkspace.getState().impressionText).not.toContain(fmt.impression);
     expect(useWorkspace.getState().appliedFormatName).toBe("MRI LS Spine — Normal");
     expect(useWorkspace.getState().appliedFormatReportTitle).toBe("MRI LUMBOSACRAL SPINE");
   });

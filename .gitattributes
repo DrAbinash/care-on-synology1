@@ -22,3 +22,11 @@ ziEPQe8Y filter=lfs diff=lfs merge=lfs -text
 *.sh text eol=lf
 docker-compose.yml text eol=lf
 **/__fixtures__/renderer/*.body.txt text eol=lf
+
+# ── Clinical AI knowledge assets are stored byte-exact ───────────────────────
+# `ai-knowledge/care-radiologist/` holds third-party exports and the SHA256SUMS
+# that records hashes of those exact bytes. Normalizing a line ending would
+# rewrite the content and silently invalidate both the checksums and the claim
+# that the master prompt and the two knowledge modules are verbatim. The ZIPs are
+# binary anyway; this is about the .md and .json.
+ai-knowledge/care-radiologist/** -text

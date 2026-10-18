@@ -484,6 +484,23 @@ describe("removal re-evaluates the dependency, in the session and not just after
     expect(live.needsRefresh).toBe(false);
   });
 
+  it("a deselection on a report that never carried a system normal invents no normal", () => {
+    // CAT-P5's restore is a RESTORE, not a generator. Widening the trigger to boxes
+    // whose concept the registry does not flag (this tile's `fracture` is one) made
+    // `seedSystemNormalImpression` reach its fall-through on a hand-written cervical
+    // cord report that had never had a system normal row, and "Normal study." landed
+    // under a C2 fracture. Measured here as the guard's own failure mode.
+    approvedCordReport();
+    addFractureTile();
+    expect(useWorkspace.getState().removeObservation("qs-c2-fracture")).toBe("removed");
+    expect(useWorkspace.getState().impressionText).toBe(OWNED_IMPRESSION);
+    expect(useWorkspace.getState().impressionText).not.toContain("Normal study.");
+    expect(
+      useWorkspace.getState().appliedPathologyPatches.some((p) => p.id === "system-normal-study"),
+    ).toBe(false);
+    expect(useWorkspace.getState().impressionNeedsRefresh).toBe(false);
+  });
+
   it("a removal that a radiologist's own summary has outranked is refused, and the contradiction stays armed", () => {
     approvedCordReport();
     addFractureTile();

@@ -221,25 +221,24 @@ describe("one click writes the conclusion, and un-clicking takes it back", () =>
     }
   });
 
-  it("restores the normal conclusion when the last abnormal box comes off, split into two lines", () => {
-    // CAT-P4 (defect, pinned not accepted): a box that supersedes no normal
-    // sentence of its own (`Facet arthropathy` has no matching normal in the LS
-    // baseline) comes back through the rebuild branch, which rejoins the
-    // suspended conclusion sentence by sentence — so the report prints
-    // "Normal MRI of the lumbosacral spine." and "No significant disc, canal,
-    // foraminal or neural compressive abnormality." as two Impression lines where
-    // the format holds one line. No clinical statement is gained or lost, and the
-    // next finding clears it anyway, but the Impression of a report he clicked
-    // and un-clicked is not byte-identical to the one the Normal format opened.
-    // The box test above proves this is the restore path, not this wording.
+  it("restores the normal conclusion when the last abnormal box comes off, as one line", () => {
+    // CAT-P4 was a defect and is fixed: a box that supersedes no normal sentence of its
+    // own (`Facet arthropathy` has no matching normal in the LS baseline) came back
+    // through the rebuild branch, which rejoined the suspended conclusion sentence by
+    // sentence, so the report printed "Normal MRI of the lumbosacral spine." and
+    // "No significant disc, canal, foraminal or neural compressive abnormality." as two
+    // Impression lines where the Normal format holds one. A report he clicked and
+    // un-clicked therefore did not match, byte for byte, the report he opened. This is
+    // the guard that it stays the format's own single line.
     const b = box("Facet arthropathy L4-L5", 903);
     const patch = quickFindingPatch(b, CTX);
     useWorkspace.getState().applyPathologyOverlay(patch);
     expect(useWorkspace.getState().impressionText).not.toContain(LS_NORMAL.impression);
     useWorkspace.getState().removeObservation(patch.id!);
     const restored = useWorkspace.getState().impressionText;
-    expect(restored.replace(/\n/g, " ")).toBe(LS_NORMAL.impression);
-    expect(restored.split("\n")).toHaveLength(2);
+    expect(restored, "verbatim, one line, exactly what the Normal format holds")
+      .toBe(LS_NORMAL.impression);
+    expect(restored.split("\n")).toHaveLength(1);
   });
 
   it("every approved box lands its own line, one at a time, on a fresh report", () => {

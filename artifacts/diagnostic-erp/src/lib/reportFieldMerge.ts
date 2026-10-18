@@ -486,6 +486,40 @@ export function mergeSentences(existing: string, incoming: string): string {
   return mergeSentencesWithProvenance(existing, incoming, {}, "manual").text;
 }
 
+/**
+ * Put one authored statement back on the single line it was written as.
+ *
+ * The merge above reads a field sentence by sentence, because provenance is keyed
+ * per sentence, and writes it back one sentence per line. A baseline Impression
+ * authored as ONE statement therefore comes back from a click as TWO: the shipped
+ * lumbar normal — "Normal MRI of the lumbosacral spine. No significant disc,
+ * canal, foraminal or neural compressive abnormality." — printed as two numbered
+ * Impression items (CAT-P4). Nothing about the clinical content moved; only its
+ * line structure did, and on the page the clinic numbers the Impression, that is
+ * the difference between one conclusion and two.
+ *
+ * This rejoins a block's own sentences when, and only when, every sentence of the
+ * authored block is still on the page and stands next to the others in the order
+ * it was written. So it can never fuse two statements the report got from
+ * different producers, and never resurrects a sentence the radiologist deleted.
+ */
+export function rejoinAuthoredStatement(fieldText: string, authored: string): string {
+  const block = (authored ?? "").trim();
+  // A block authored across lines keeps its own layout; this repairs only a
+  // statement that was written as one line and split by a merge.
+  if (!block || block.includes("\n")) return fieldText;
+  const parts = splitToSentences(block);
+  if (parts.length < 2) return fieldText;
+  const keys = parts.map((s) => normalizeForDedupe(s));
+  const lines = (fieldText ?? "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
+  for (let i = 0; i + keys.length <= lines.length; i++) {
+    if (keys.every((key, j) => normalizeForDedupe(lines[i + j]!) === key)) {
+      return [...lines.slice(0, i), block, ...lines.slice(i + keys.length)].join("\n");
+    }
+  }
+  return fieldText;
+}
+
 /** Provenance-aware canonical entry point. */
 export function mergeReportFieldContentWithProvenance(opts: MergeOptions): MergeWithProvenanceResult {
   const { field, existing, incoming, source = "manual", existingProvenance = {} } = opts;
