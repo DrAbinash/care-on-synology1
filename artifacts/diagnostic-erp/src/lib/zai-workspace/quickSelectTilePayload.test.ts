@@ -18,6 +18,7 @@ import {
   quickFindingRowId,
 } from "./quickSelectTilePayload";
 import { quickSelectTilePatch } from "./quickSelectTileFixture";
+import { splitToSentences } from "../reportFieldMerge";
 import { selectedQuickFindingIds } from "@/lib/observationSlot";
 import { DEFAULT_QUICK_SELECT_TILES, lookupTilesForContext } from "./quick-select-library";
 import { DEFAULT_REPORT_FORMATS } from "./report-formats-library";
@@ -79,7 +80,19 @@ describe("one click on a normal report", () => {
 
     expect(s.findingsText).toContain("Broad-based disc bulge at L4-L5");
     expect(s.impressionText).toContain("Disc herniation at L4-L5");
-    expect(s.impressionText).not.toContain("Normal MRI");
+    // Sentence-level, because a substring on the first half of the normal proves
+    // nothing: withdrawing only "Normal MRI of the lumbosacral spine." would keep
+    // this test green while the report still told the referring clinician there
+    // was no compressive abnormality at all. Measured with that half-withdrawal
+    // installed on purpose: this block fails and `not.toContain("Normal MRI")`
+    // passed.
+    const remaining = splitToSentences(s.impressionText);
+    for (const normalSentence of splitToSentences(LS_NORMAL.impression)) {
+      expect(remaining, `the normal's "${normalSentence}" survived the click`).not.toContain(
+        normalSentence,
+      );
+    }
+    expect(remaining).toEqual([String(tile("Disc herniation L4-L5").impressionSentence)]);
     expect(s.recommendationText).toContain(
       "Conservative management with NSAIDs and physiotherapy",
     );
