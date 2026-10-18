@@ -563,8 +563,13 @@ describe("T8 — census over every shipped Quick Select template", () => {
         + ((t.impressionSentence ?? "").match(/\{severity\}/g) ?? []).length
         + ((t.recommendationSentence ?? "").match(/\{severity\}/g) ?? []).length;
     }
-    expect(side).toBe(40);
-    expect(severity).toBe(1);
+    // 41 / 2 since the owner's 2026-10-18 lumbar approval: "Foraminal stenosis L4-L5"
+    // now repeats its own `{severity} {side}` in the Impression it was approved to
+    // write, so one more of each token ships. The strip already offered both controls
+    // for this box, and quickSelectLsSpineImpressions.test.ts proves both are
+    // substituted in the Impression before it reaches the page — not printed as braces.
+    expect(side).toBe(41);
+    expect(severity).toBe(2);
   });
 
   it("ships no tile that asks for a parameter the contract cannot resolve", () => {
