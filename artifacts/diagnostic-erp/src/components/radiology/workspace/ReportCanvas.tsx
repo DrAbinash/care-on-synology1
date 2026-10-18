@@ -271,6 +271,9 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     handleSaveTeachingCase,
     handleShare,
     handleStartReport,
+    instantReportHold,
+    instantReportOn,
+    setInstantReportEnabled,
     handleUndoLastAbnormal,
     handleVerifyReport,
     headerToggleTimerRef,
@@ -673,6 +676,27 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                           <FileCheck size={11} className="mr-1" />
                           Generate Professional Report
                         </Button>
+                        {instantReportOn && instantReportHold ? (
+                          <span
+                            className="shrink-0 text-[9px] leading-tight text-amber-800 max-w-[15rem]"
+                            data-testid="instant-report-hold"
+                            title="The report is not rebuilding itself automatically."
+                          >
+                            {instantReportHold.message}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setInstantReportEnabled(!instantReportOn)}
+                          data-testid="instant-report-toggle"
+                          aria-pressed={instantReportOn}
+                          title={instantReportOn
+                            ? "The report builds itself from your findings as you work, with no AI. Click to stop it rebuilding on its own — press Generate when you want it rebuilt."
+                            : "Click to let the report rebuild itself as your findings change. No AI, no provider, no network."}
+                          className="h-6 shrink-0 rounded-full border border-sky-300 bg-white px-1.5 text-[9px] text-sky-800 hover:bg-sky-50"
+                        >
+                          Instant report: {instantReportOn ? "On" : "Off"}
+                        </button>
                         <Button
                           type="button"
                           size="sm"

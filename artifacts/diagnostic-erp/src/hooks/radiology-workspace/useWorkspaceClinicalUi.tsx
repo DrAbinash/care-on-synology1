@@ -411,6 +411,11 @@ import { daysAgoISO, todayISO } from "@/lib/dateRangePresets";
 // ─── New Z.ai workspace components ─────────────────────────────────────────────
 import { useWorkspace, formatSignOff, lookupProfile, EMPTY_FIELD_PROVENANCE, type WorkspaceStore } from "@/lib/zai-workspace/store";
 import {
+  INSTANT_REPORT_DEBOUNCE_MS,
+  readInstantReportEnabled,
+  writeInstantReportEnabled,
+} from "@/lib/zai-workspace/instantReport";
+import {
   useDebouncedWorkspaceClinicalTexts,
 } from "@/lib/zai-workspace/workspaceClinicalTexts";
 import { getFindingsCompletionPct, runLintRules, shouldPreloadNext } from "@/lib/zai-workspace/types";
@@ -518,6 +523,18 @@ import {
 
 /** Stable empty catalog — avoid `?? []` props that retrigger anatomy effects every render. */
 const EMPTY_QUICK_FINDINGS: QuickFinding[] = [];
+
+/**
+ * What the instant report watches: the Findings the radiologist sees and the ledger
+ * rows behind them. Deliberately not the Impression or the Technique — a hand-written
+ * Conclusion must not be the thing that triggers a rebuild, and the store already
+ * holds for exactly that case, so watching it would only make the banner flicker.
+ */
+function instantReportSignature(s: WorkspaceStore): string {
+  return `${s.findingsText}\u0000${s.appliedPathologyPatches
+    .map((p) => `${p.id}:${p.stale ? 1 : 0}:${p.templates.findings ?? ""}`)
+    .join("\u0001")}`;
+}
 
 
 export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
@@ -1925,6 +1942,70 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     }
     toast({ title: bootstrapAppliedThisOpen ? "Normal bootstrap undone" : "Start report undone" });
   }, [studySetup, toast, bootstrapAppliedThisOpen]);
+
+  /**
+   * MODE A — the instant report.
+   *
+   * `reportComposerAutoCompose` was stored by the AI settings page and read by no
+   * behaviour at all, so the deterministic whole-report build waited on a button.
+   * This runs that same engine once the inputs settle. The decision itself is not
+   * here: it is `composeInstantReport` in the store, which refuses to build over a
+   * hand-written Conclusion, over a normal the clinic has not approved for this
+   * examination, or at all on a locked report. No provider, no request, no model.
+   *
+   * The signature is what makes the debounce a settle rather than a keystroke
+   * trigger: "L4-L5" is four changes, and the report should be written after the
+   * last one. It is re-stamped AFTER the call, not before, because the engine's own
+   * write moves the signature — stamping it beforehand would leave every composition
+   * scheduling the next one forever.
+   *
+   * Deliberately placed after `undoStartReport` rather than beside `handleStartReport`:
+   * `regionTransitionReload.test.ts` windows the source between those two definitions
+   * to prove the press computes ONE study context for both its checks and its write.
+   * A second `billedStudyContextForNormal` inside that window would satisfy this
+   * effect and break that contract — and the contract is the one that matters.
+   */
+  const instantReportHold = useWorkspace((s: WorkspaceStore) => s.instantReportHold);
+  const [instantReportOn, setInstantReportOn] = useState(readInstantReportEnabled);
+  const instantReportSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!instantReportOn) return;
+    const state = useWorkspace.getState();
+    // Nothing to compose onto before a study is open, and nothing honest to decide
+    // with while the format library is still arriving: composing then would refuse
+    // for "no normal format", and the canvas would show a reason that is a lie.
+    if (!state.activeStudyId || state.reportFormats.length === 0) return;
+    const signature = instantReportSignature(state);
+    if (instantReportSignatureRef.current === signature) return;
+    const timer = setTimeout(() => {
+      const live = useWorkspace.getState();
+      if (instantReportSignature(live) !== signature) return;
+      const ctx = billedStudyContextForNormal(
+        studySetup.studyContext,
+        billedNameFromWorklistRow(workflow.currentRow),
+      );
+      live.composeInstantReport(ctx, contentLocked);
+      instantReportSignatureRef.current = instantReportSignature(useWorkspace.getState());
+    }, INSTANT_REPORT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [
+    instantReportOn, appliedPathologyPatches, findingsText, contentLocked,
+    studySetup, workflow.currentRow, reportFormatCount, isFinalized,
+  ]);
+
+  const setInstantReportEnabled = useCallback((next: boolean) => {
+    writeInstantReportEnabled(next);
+    setInstantReportOn(next);
+    if (next) {
+      // Switching it back on is a fresh request to build the report, so it answers
+      // itself now instead of waiting for the radiologist's next keystroke.
+      instantReportSignatureRef.current = null;
+    } else {
+      // And switching it off retires the reason it gave last time: a banner about an
+      // engine that is no longer running is a defect wearing a diagnostic's clothes.
+      useWorkspace.getState().setInstantReportHold(null);
+    }
+  }, []);
 
   const studyReadyStatus = useMemo(() => {
     if (!studyId || draftHydratedStudyId !== studyId) {
@@ -3431,6 +3512,9 @@ export function useWorkspaceClinicalUi({ studyId }: { studyId?: number }) {
     handleSaveTeachingCase,
     handleShare,
     handleStartReport,
+    instantReportHold,
+    instantReportOn,
+    setInstantReportEnabled,
     handleUndoLastAbnormal,
     handleVerifyReport,
     headerToggleTimerRef,

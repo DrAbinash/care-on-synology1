@@ -7,7 +7,7 @@ import { isQuickSelectSource } from "../zai-workspace/quickSelectParameterContra
 import { buildReportingStudyContext } from "../reportingStudyContext";
 import { normalizeForDedupe } from "../reportFieldMerge";
 import { assertsNormalStatement } from "../generateLocalImpression";
-import { rankImpressionLine } from "../impressionPriority";
+import { orderImpressionLines, rankImpressionLine } from "../impressionPriority";
 import { stripContribution } from "../observationLedger";
 
 /**
@@ -256,38 +256,57 @@ describe("Stage C Phase 4 · two live boxes that say the same thing", () => {
   });
 });
 
-describe("Stage C Phase 4 · the measured residual: two unclassified lines keep the click order", () => {
+describe("Stage C Phase 4 · the shipped lumbar boxes are ranked, so the click order decides nothing", () => {
   /**
-   * Tripwire, not an endorsement.
+   * MEASURED on this branch: with the shipped lumbar boxes on the shipped "MRI LS Spine —
+   * Standard Normal" document, all six click orders produce ONE set of Impression statements
+   * and ONE sequence. Before the 2026-10-18 priority ruling was wired in, the same six orders
+   * gave two sequences — herniation leading in HSP/HPS/PHS, stenosis leading in SHP/SPH/PSH —
+   * because `orderImpressionLines` sorted by (rank, index) and these statements sat on
+   * UNCLASSIFIED_RANK, so the index was the order the boxes were clicked. Measured on the
+   * integration tree with the approved spondylolisthesis conclusion added (#1067): six
+   * sequences without the sorter, one with it.
    *
-   * MEASURED: with the three shipped lumbar boxes on the shipped "MRI LS Spine — Standard
-   * Normal" document, all six click orders produce ONE set of Impression statements and TWO
-   * Impression sequences — herniation leads in orders HSP/HPS/PHS, stenosis leads in
-   * SHP/SPH/PSH. Findings has the same split. The content is deterministic; the sequence is not.
+   * The herniation and the slip both rank 8. Their order inside that tier comes from the
+   * comparator's stable-rule-id term, not from the mouse, which is what makes one sequence
+   * rather than two.
    *
-   * The cause is a gap in the shipped category table, not in the composer: `orderImpressionLines`
-   * sorts by (rank, index) and documents "stable for equal ranks", and both of these statements
-   * classify as UNCLASSIFIED_RANK, so their index — the order the boxes were clicked — decides.
-   * These assertions hold while that is true and fail the moment anyone ranks one of them.
-   *
-   * WHY NO ORDER WAS CHOSEN HERE: which of a disc herniation and a moderate canal stenosis leads
-   * a lumbar Impression is a clinical judgement, and the clinic's own lumbar library disagrees
-   * with the shipped table on the neighbouring case (docs/clinical-libraries/
-   * mri-lumbar-clinical-content-library.md:204 ranks spondylolisthesis ABOVE severe foraminal
-   * stenosis and exiting-root compression, while `IMPRESSION_PRIORITY` ranks stenosis 5 and
-   * spondylolisthesis 8). Guessing a second row of ranks would be inventing clinical policy and
-   * would silently re-sequence every lumbar report. This is an owner decision; when it is ruled
-   * on, replace this block with the ranked assertion.
+   * OPEN OWNER DECISION, recorded rather than assumed: the clinic's own lumbar library ranks
+   * spondylolisthesis ABOVE severe foraminal stenosis and exiting-root compression
+   * (docs/clinical-libraries/mri-lumbar-clinical-content-library.md:204), while
+   * `IMPRESSION_PRIORITY` ranks stenosis 5 and spondylolisthesis 8. The approved order names
+   * spondylolisthesis and "significant protrusions" as separate rungs; the protrusion rule was
+   * placed in the slip's existing tier rather than shifting a rank the shipped table already
+   * uses. If the ruling means the slip leads a herniation, that is a rank change and needs the
+   * owner's word.
    */
-  it("leaves both shipped lumbar compressive statements unclassified, which is what lets the mouse decide", () => {
+  it("ranks both shipped lumbar compressive statements, which is what takes the order off the mouse", () => {
+    // The owner ruled the clinical priority order on 2026-10-18, so the two
+    // sentences this block used to leave unclassified now carry a rank: a
+    // moderate central stenosis is a compressive statement (tier 5) and a
+    // herniation that reaches the thecal sac is a significant protrusion (tier 8,
+    // with spondylolisthesis). `orderImpressionLines` therefore resolves this
+    // pair to one sequence instead of two.
     const h = rankImpressionLine(HERNIATION_IMPRESSION, 0, { spineSegment: "lumbar" });
     const s = rankImpressionLine(STENOSIS_IMPRESSION, 0, { spineSegment: "lumbar" });
-    expect(h.ruleId, `"${h.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(s.ruleId, `"${s.label}" is now ranked — the owner decision has been made`).toBeNull();
-    expect(h.rank).toBe(s.rank);
+    expect(h.ruleId, "the herniation line is unclassified again — the tier table moved").toBe(
+      "disc-protrusion-herniation",
+    );
+    expect(s.ruleId, "the stenosis line is unclassified again — the tier table moved").toBe(
+      "moderate-canal-stenosis",
+    );
+    expect(s.rank).toBeLessThan(h.rank);
+    expect(orderImpressionLines([HERNIATION_IMPRESSION, STENOSIS_IMPRESSION])).toEqual([
+      STENOSIS_IMPRESSION,
+      HERNIATION_IMPRESSION,
+    ]);
+    // A hand-ordered Impression is never reshuffled by any of this.
+    expect(
+      orderImpressionLines([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION], { frozen: true }),
+    ).toEqual([STENOSIS_IMPRESSION, HERNIATION_IMPRESSION]);
   });
 
-  it("says the same clinical things in every click order, in two possible sequences", () => {
+  it("says the same clinical things in the same order, whatever the click order", () => {
     const sets = new Map<string, string>();
     const sequences = new Map<string, string[]>();
     for (const order of permutations()) {
@@ -299,7 +318,12 @@ describe("Stage C Phase 4 · the measured residual: two unclassified lines keep 
       sets.set(JSON.stringify([...seq].sort()), seq.join("\n"));
     }
     expect(sets.size, "click order changed WHICH Impression statements exist").toBe(1);
-    expect([...sequences.keys()]).toHaveLength(2);
+    // And the order is now part of the same guarantee. Measured before the
+    // 2026-10-18 ruling was wired in: TWO sequences for these three boxes, the
+    // herniation and the stenosis trading places depending on which was clicked
+    // first. The composition ends with the one clinical-priority sorter, so a
+    // press of "Refresh" answers with the same numbered Conclusion every time.
+    expect([...sequences.keys()]).toHaveLength(1);
   });
 });
 
