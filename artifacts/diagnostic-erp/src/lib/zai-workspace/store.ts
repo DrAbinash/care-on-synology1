@@ -58,6 +58,7 @@ import {
   reconcileProvenanceAfterManualEdit,
   rejoinAuthoredStatement,
   normalizeForDedupe,
+  splitToSentences,
   type FieldProvenanceMap,
   type InsertSource,
   type ReportFieldKey,
@@ -2933,6 +2934,56 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       };
     }
     const replaced = splitReplacedByField(result.replacedSentences, narrative);
+    // A row can never be the baseline it replaced.
+    //
+    // Mode A's automatic pass replays the ledger through this same writer 700 ms after
+    // a click. By then the tile's own sentence is on the page, and the ownership walk in
+    // `overlayPathology` counts every sentence this tile owns — including the one it
+    // wrote — as replaced. The re-apply therefore recorded the tile's own wording as the
+    // normal it superseded and dropped the real claim, so the next deselection deleted
+    // the sentence and put it straight back: a Quick Select box that comes off the
+    // ledger but never comes off the report, in Findings and in the Impression (#167,
+    // measured on study 17 in the browser and reproduced against the store).
+    // The claim an earlier click recorded is carried forward instead, because a replay
+    // replaces nothing that the first click did not already replace.
+    const priorRow = get().appliedPathologyPatches.find((p) => p.id === stableId);
+    const ownWording = new Set<string>();
+    for (const text of [
+      incoming.findings, incoming.impression, incoming.technique, incoming.recommendation,
+      templates.findings, templates.impression, templates.technique, templates.recommendation,
+      priorRow?.lastRendered.findings, priorRow?.lastRendered.impression,
+      priorRow?.lastRendered.technique, priorRow?.lastRendered.recommendation,
+    ]) {
+      const trimmed = (text ?? "").trim();
+      if (!trimmed) continue;
+      for (const s of splitToSentences(trimmed)) {
+        const key = normalizeForDedupe(s);
+        if (key) ownWording.add(key);
+      }
+    }
+    const isNotItsOwnWording = (sentence: string): boolean => {
+      const key = normalizeForDedupe(sentence);
+      if (!key) return false;
+      // The probe may carry its line's level prefix ("L4-L5: …"), which the tile's own
+      // contribution does not, so both forms are compared before one is called self.
+      const unprefixed = key.replace(/^[a-z0-9]+(?:-[a-z0-9]+)?:\s+/, "");
+      return !ownWording.has(key) && !ownWording.has(unprefixed);
+    };
+    const claimBaseline = (carried: string[], fresh: string[]): string[] => {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const s of [...carried, ...fresh.filter(isNotItsOwnWording)]) {
+        const key = normalizeForDedupe(s);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(s);
+      }
+      return out;
+    };
+    const replacedBaseline = {
+      findings: claimBaseline(priorRow?.replacedBaseline?.findings ?? [], replaced.findings),
+      impression: claimBaseline(priorRow?.replacedBaseline?.impression ?? [], replaced.impression),
+    };
     const lastRendered: PathologyIncoming = {
       findings: renderedInField(incoming.findings, result.narrative.findings) || incoming.findings,
       impression: renderedInField(incoming.impression, result.narrative.impression) || incoming.impression,
@@ -2946,7 +2997,7 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
       lastRendered,
       source: opts.source,
       observation: { ...observation, id: stableId },
-      replacedBaseline: replaced,
+      replacedBaseline,
       // Same-slot auto-update clears prior protected flag; confirm path may restore via undo.
       protected: false,
     };
