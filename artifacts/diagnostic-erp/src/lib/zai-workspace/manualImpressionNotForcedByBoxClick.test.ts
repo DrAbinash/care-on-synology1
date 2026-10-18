@@ -19,6 +19,8 @@
  * because a warning that describes only the colliding slot is not a warning.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_QUICK_SELECT_TILES as TILES } from "./quick-select-tiles.data";
+import { clinicalBoxForTile } from "./quickSelectTileFixture";
 import {
   quickFindingPatch,
   type ClinicalQuickFindingBox,
@@ -66,6 +68,20 @@ function click(tile: ClinicalQuickFindingBox) {
   const patch = quickFindingPatch(tile, CLICK_CTX);
   return useWorkspace.getState().applyPathologyOverlay(patch);
 }
+
+/**
+ * The box production actually sends, read off the shipped catalogue through the one
+ * adapter the overlay suites use. A fixture that files its own sentences could describe
+ * a collision the clinic never has, so the two tests below are the proof on real prose.
+ */
+function shippedBox(label: string): ClinicalQuickFindingBox {
+  const tile = TILES.find((t) => t.label === label);
+  expect(tile, `the catalogue no longer ships ${label}`).toBeTruthy();
+  return clinicalBoxForTile(tile!);
+}
+
+const shippedTileSentence = (label: string) =>
+  TILES.find((t) => t.label === label)!.impressionSentence ?? "";
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
@@ -155,6 +171,31 @@ describe("#180 · a box click may not force over what he wrote", () => {
       concept: "spinal_stenosis",
       findingText: "Moderate hypertrophy of ligamentum flavum at L4-L5." })).toBe("applied");
     expect(impression(), "the sentence this tile does not describe is kept").toContain(HIS_UNRELATED);
+  });
+
+  it("asks about the collision on the box the catalogue actually ships", () => {
+    const tileSentence = shippedTileSentence("Disc herniation L4-L5");
+    const HIS_PARAPHRASE = "Disc herniation at L4-L5 indenting the thecal sac.";
+    expect(tileSentence, "the shipped tile writes its own conclusion").toBeTruthy();
+    expect(HIS_PARAPHRASE, "and it is not the wording he chose").not.toBe(tileSentence);
+
+    type(HIS_PARAPHRASE);
+    expect(saysNormalStudy(), "ruling 1 withdrew the normal").toBe(false);
+
+    expect(click(shippedBox("Disc herniation L4-L5")), "so the click asks").toBe("pending");
+    expect(impression(), "his wording is not silently traded for the tile's")
+      .toContain(HIS_PARAPHRASE);
+    expect(pending()?.manualKept?.impression, "and the dialog is told which line")
+      .toContain(HIS_PARAPHRASE);
+  });
+
+  it("does not interrupt him when his sentence is the tile's own wording", () => {
+    const tileSentence = shippedTileSentence("Disc herniation L4-L5");
+
+    type(tileSentence);
+    expect(click(shippedBox("Disc herniation L4-L5")), "the same words are not a loss").toBe("applied");
+    expect(lines(impression()), "one line, not his sentence twice").toEqual([tileSentence]);
+    expect(useWorkspace.getState().confirmOverwriteOpen, "and no dialog").toBe(false);
   });
 
   it("keeps his sentence when he declines", () => {
