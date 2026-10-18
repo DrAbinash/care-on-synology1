@@ -36,6 +36,7 @@ import ViewerMeasurementsBanner from "@/components/radiology/ViewerMeasurementsB
 import { requestOhifNavigateToAnchor } from "@/lib/ohifViewerBridge";
 import { isMriLumbarReportingContext } from "@/lib/mriLumbarRegions";
 import { criticalCommsEnabled } from "@/lib/criticalResultCommsFlag";
+import { finalizeActionLabel } from "@/lib/radiologyReportLifecycle";
 import {
   isMriCervicalReportingContext,
   isMriDorsalReportingContext,
@@ -493,6 +494,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
     showEmbeddedViewer,
     showFatigue,
     showLetterpadHeader,
+    signedReport,
     signOffProfiles,
     signerLine,
     stageAiProposal,
@@ -1680,6 +1682,7 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                             externalSearch={qsExternalSearch}
                             selectedStudyTabId={studySetup.selectedStudyTabId}
                             selectedStudyTabName={studySetup.matchedStudyRegion}
+                            clinicalHistoryText={clinicalHistoryText}
                           />
                         </div>
                       </FindingsToolDrawer>
@@ -2119,7 +2122,12 @@ export function ReportCanvas({ vm }: { vm: RadiologyWorkspaceVm }) {
                     onFinalize={finalizeReport}
                     onNextStudy={goNextStudy}
                     finalizeDisabled={!studyId || isLocked || (!allowEditSigned && (isFinalized || workflow.currentRow?.status === "REPORT_FINAL"))}
-                    finalizeLabel={isFinalized && !allowEditSigned ? "Signed" : allowEditSigned ? "Re-finalize" : "Confirm & Sign"}
+                    finalizeLabel={finalizeActionLabel({
+                      allowEditSigned,
+                      isFinalized,
+                      studyFinal: signedReport.studyFinal,
+                      signatureState: signedReport.state,
+                    })}
                     saveDisabled={!isOnline || isLocked || (isFinalized && !allowEditSigned)}
                   />
                 </div>

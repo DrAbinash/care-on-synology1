@@ -19,10 +19,14 @@ import {
   canalSegmentForLevel,
   canonicalizeCanalLevel,
   canonicalizeCanalMap,
+  canalPrintPlan,
   displayCanalLevel,
+  findCanalApTables,
   flagRenumberedCanalLevels,
+  hasRenderedCanalApTable,
   isCanalLevelInSegment,
   parseCanalApMeasurement,
+  stripUnmeasuredCanalScaffold,
 } from "./index";
 
 describe("routine canal level sets", () => {
@@ -223,6 +227,101 @@ describe("legacy drafts that spelled one level two ways", () => {
     expect(values).toHaveLength(2);
     expect(values).toContain(9.4);
     expect(values).toContain(8.2);
+  });
+});
+
+describe("canalPrintPlan — every segment the study measured is printed", () => {
+  it("combines dorsal and lumbar levels into one table", () => {
+    const plan = canalPrintPlan(["D8-D9", "L1-L2", "L4-L5"]);
+    expect(plan).not.toBeNull();
+    expect(plan!.segments).toEqual(["dorsal", "lumbar"]);
+    expect(plan!.title).toBe("DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS");
+    // The measured dorsal disc is present, in head-to-tail order before every
+    // lumbar column — picking the most-filled segment used to drop it.
+    expect(plan!.levels.indexOf("D8-D9")).toBeGreaterThanOrEqual(0);
+    expect(plan!.levels.indexOf("D8-D9")).toBeLessThan(plan!.levels.indexOf("L1-L2"));
+    expect(plan!.levels).toEqual([...DORSAL_CANAL_LEVELS, ...LUMBAR_CANAL_LEVELS]);
+  });
+
+  it("adds the thoracolumbar junction only when it was measured", () => {
+    expect(canalPrintPlan(["D11-D12"])!.levels).not.toContain(DORSAL_JUNCTION_LEVEL);
+    const withJunction = canalPrintPlan(["D11-D12", "D12-L1", "L1-L2"])!;
+    expect(withJunction.levels).toContain(DORSAL_JUNCTION_LEVEL);
+    expect(withJunction.title).toBe("DORSO-LUMBAR CANAL AP DIAMETER AT D1-D2 TO L5-S1 LEVELS");
+  });
+
+  it("puts the junction's own table first in the body", () => {
+    const plan = canalPrintPlan(["L4-L5", "C5-C6", "D6-D7"])!;
+    expect(plan.segments).toEqual(["cervical", "dorsal", "lumbar"]);
+    expect(plan.title).toBe("SPINAL CANAL AP DIAMETER AT C2-C3 TO L5-S1 LEVELS");
+    expect(plan.levels.indexOf("C5-C6")).toBeLessThan(plan.levels.indexOf("D6-D7"));
+    expect(plan.levels.indexOf("D6-D7")).toBeLessThan(plan.levels.indexOf("L4-L5"));
+  });
+
+  it("keeps a single-segment table exactly as it is", () => {
+    expect(canalPrintPlan(["L4-L5"])!.title).toBe("LUMBAR CANAL AP DIAMETER AT L1-L2 TO L5-S1 LEVELS");
+    expect(canalPrintPlan(["C5-C6"])!.title).toBe("CERVICAL CANAL AP DIAMETER AT C2-C3 TO C7-T1 LEVELS");
+  });
+
+  it("prints a transitional level after the routine ones, in anatomical order", () => {
+    const plan = canalPrintPlan(["L4-L5", "L5-T", "D8-D9"])!;
+    const columns = plan.levels;
+    expect(columns).toContain("L5-T");
+    expect(columns.indexOf("L5-S1")).toBeLessThan(columns.indexOf("L5-T"));
+    expect(columns.indexOf("D8-D9")).toBeLessThan(columns.indexOf("L5-T"));
+    expect(plan.title).toContain("TO L5-T LEVELS");
+  });
+
+  it("answers null when there is nothing measured", () => {
+    expect(canalPrintPlan([])).toBeNull();
+    expect(canalPrintPlan(["", "  "])).toBeNull();
+  });
+});
+
+describe("canalPrintTitle / rendered-table identity — a mention is not a table", () => {
+  it("recognises the printed HTML table and the printed plain-text block", () => {
+    const plan = canalPrintPlan(["L4-L5"])!;
+    expect(hasRenderedCanalApTable(`<p>x</p><div class="section-heading">${plan.title}</div><table><tr><td>a</td></tr></table>`)).toBe(true);
+    expect(hasRenderedCanalApTable(`FINDINGS:\n${plan.title}\nL1-L2: —   L4-L5: 8.5 (mm)`)).toBe(true);
+  });
+
+  it("does NOT treat a sentence about the canal diameter as a table", () => {
+    // This is the DECISION 2 defect: the phrase guard suppressed the table here.
+    const prose = "FINDINGS:\nCanal AP diameter 8 mm at the narrowest level.\nIMPRESSION:\n1. Stenosis.";
+    expect(hasRenderedCanalApTable(prose)).toBe(false);
+    expect(findCanalApTables(prose)).toEqual([]);
+  });
+
+  it("treats the clinic's blank template grid as a placeholder, not as a printed measurement", () => {
+    // Verbatim from structuredReportTemplates.ts:188 — a real row of this clinic's
+    // own LS-Spine normal. A report carrying it must still print its measurements.
+    const scaffold =
+      "Canal Diameter:\n| Level | AP Canal (mm) |\n| L1-L2 | — |\n| L2-L3 | — |\n| L3-L4 | — |\n| L4-L5 | — |\n| L5-S1 | — |";
+    const tables = findCanalApTables(scaffold);
+    expect(tables).toHaveLength(1);
+    expect(tables[0].valued).toBe(false);
+    expect(hasRenderedCanalApTable(scaffold)).toBe(false);
+    expect(stripUnmeasuredCanalScaffold(scaffold)).toBe("");
+  });
+
+  it("leaves a grid that carries a number exactly as it is", () => {
+    const filled = "Canal Diameter:\n| Level | AP Canal (mm) |\n| L4-L5 | 9.8 |";
+    expect(findCanalApTables(filled)[0].valued).toBe(true);
+    expect(stripUnmeasuredCanalScaffold(filled)).toBe(filled);
+  });
+
+  it("separates the level names from the measurement in an HTML grid", () => {
+    // `L1-L2` is full of digits and must not count as a measurement on its own.
+    const blankHtml =
+      "<table><tr><th>Level</th><th>Canal AP (mm)</th></tr><tr><td>L1-L2</td><td>—</td></tr></table>";
+    expect(findCanalApTables(blankHtml)[0].valued).toBe(false);
+    const measuredHtml =
+      "<table><tr><th>Level</th><th>Canal AP (mm)</th></tr><tr><td>L1-L2</td><td>11.4</td></tr></table>";
+    expect(findCanalApTables(measuredHtml)[0].valued).toBe(true);
+  });
+
+  it("ignores a table that is not about the canal", () => {
+    expect(findCanalApTables("<table><tr><th>Level</th><th>Disc height</th></tr></table>")).toEqual([]);
   });
 });
 
