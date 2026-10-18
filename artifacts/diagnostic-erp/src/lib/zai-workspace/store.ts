@@ -1974,7 +1974,22 @@ const createWorkspaceStore: StateCreator<WorkspaceStore> = (set, get) => ({
     // to write the approved normal underneath it, including "C5-C6: No significant
     // disc bulge or protrusion is seen." — one report, both statements, nothing on
     // the page to say which the examination showed.
-    const contradictedLevels = levelsContradictedByUnexplainedLines(freeTextBefore);
+    //
+    // What is NOT the radiologist's own words: a sentence this workspace inserted from
+    // a structured tool. The canal AP grid merges a prose line naming the measured
+    // levels, and reading that as a clinical description retired those levels' normals
+    // — a number is a measurement, and "L3-L4: 11 mm" makes no claim about a disc.
+    // `mergeField` has already attributed every sentence it wrote, so this reads the
+    // provenance instead of guessing from the text.
+    const companionLines = new Set(
+      Object.entries(get().fieldProvenance.findings ?? {})
+        .filter(([, sources]) => sources.includes("companion"))
+        .map(([key]) => key),
+    );
+    const ownWordsBefore = freeTextBefore.filter(
+      (line) => !companionLines.has(normalizeForDedupe(line)),
+    );
+    const contradictedLevels = levelsContradictedByUnexplainedLines(ownWordsBefore);
     const supersededNormalSentences = supersededBaselineTexts(
       format.baselineManifest?.observations ?? [],
       contradictedLevels,

@@ -190,6 +190,13 @@ export function levelsContradictedByUnexplainedLines(
 ): Set<string> {
   const out = new Set<string>();
   for (const line of lines) {
+    // A tab is table markup, not a sentence. The canal grid's header line names every
+    // level in the segment at once and `extractLevel` returns the FIRST of them, so
+    // before this rule a report that merely held the grid read as though the
+    // radiologist had described L1-L2 in their own words — and the engine deleted that
+    // level's normal. Measured: twelve sentences of the approved normal vanished from
+    // an LS Spine report on the pass after the grid was inserted.
+    if (line.includes("\t")) continue;
     if (!assertsAbnormality(line)) continue;
     const level = extractLevel(line);
     if (level) out.add(level.toLowerCase());

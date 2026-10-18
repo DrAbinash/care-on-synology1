@@ -11,7 +11,7 @@
  * undo frame, may not rebuild a hand-written Conclusion, and must never bring back a
  * normal the report already disowned.
  *
- * A1–A11 are that contract. Every one of them fails on a build where the automatic
+ * A1–A7 are that contract. Every one of them fails on a build where the automatic
  * flag is deleted or inverted — see the mutation notes in the commit message.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ import { useWorkspace } from "./store";
 import { DEFAULT_QUICK_SELECT_TILES } from "./quick-select-library";
 import { quickSelectTilePatch } from "./quickSelectTileFixture";
 import { impressionProvenanceIsRadiologistManual } from "@/lib/impressionProvenance";
+import { formatCanalApTableText } from "@/lib/spineCanalAp";
 import { buildReportingStudyContext } from "@/lib/reportingStudyContext";
 import {
   decideInstantReport,
@@ -633,5 +634,111 @@ describe("A6 — a normal the radiologist deleted stays deleted", () => {
     const otherNormal = useWorkspace.getState().findingsText
       .split(NL).find((l) => l.trim() && l !== victim)!;
     expect(suppressed).not.toContain(otherNormal);
+  });
+});
+
+describe("A7 — a measurement stays a number: not summarised, not removable", () => {
+  // The canal AP grid is the one clinical value in a report that is NOT prose. Its
+  // authority is `canalApProvenance`, and the printed table is drawn from that record
+  // by the renderer at print time — so the automatic pass must neither invent a
+  // Conclusion out of the block the box pastes into Findings, nor clean that block away
+  // as if it were scaffold. Both halves are the same rule seen from either side: the
+  // number is not this engine's to write, and not its to delete.
+  const lsCtx = buildReportingStudyContext({
+    modality: "MR", studyDescription: "MRI LS Spine", regions: ["LS Spine"], source: "auto",
+  });
+  const NL = String.fromCharCode(10);
+  // Exactly what `SpineCanalApBox` merges (`formatCanalApTableText` → mergeField with
+  // source "companion"): a title, a tab-separated header, a tab-separated row, and a
+  // prose sentence carrying the numbers.
+  const canalBlock = formatCanalApTableText("lumbar", { "L3-L4": "11", "L4-L5": "8" });
+
+  beforeEach(() => {
+    resetWorkspace(lsCtx);
+    networkSpy();
+  });
+
+  function withMeasurementBlock() {
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    useWorkspace.getState().mergeField("findings", canalBlock, "companion");
+  }
+
+  it("the pasted grid is not summarised into the Impression", () => {
+    withMeasurementBlock();
+    const before = useWorkspace.getState().findingsText;
+    expect(before).toContain("AP (mm)");
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const st = useWorkspace.getState();
+    // The pass ran — the approved normal is on the page — and it changed nothing.
+    expect(st.findingsText).toContain("lumbar lordosis");
+    expect(st.findingsText).toBe(before);
+    // A conclusion is a claim about the study, not a reading of a table.
+    expect(st.impressionText).not.toMatch(/\d/);
+    expect(st.impressionText).not.toMatch(/\bmm\b/i);
+  });
+
+  it("and a later pass still leaves the grid where the radiologist put it", () => {
+    withMeasurementBlock();
+    for (let i = 0; i < 3; i += 1) useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const lines = useWorkspace.getState().findingsText.split(NL);
+    for (const line of canalBlock.split(NL)) {
+      expect(lines, `the pass dropped "${line}"`).toContain(line);
+    }
+    // It is not remembered as a deleted normal either: it was never the engine's line.
+    expect(useWorkspace.getState().normalLinesRemovedByRadiologist).toEqual([]);
+  });
+
+  it("a canonical record with no sentence of its own puts no number in the Conclusion", () => {
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    // The measurement exists, structured and attributed, with nothing typed anywhere.
+    expect(useWorkspace.getState().recordCanalApManualValue("L4-L5", "8", "lumbar")).toBe("L4-L5");
+    const decision = useWorkspace.getState().composeInstantReport(lsCtx, false);
+    expect(decision.action).toBe("compose");
+    expect(useWorkspace.getState().canalApProvenance["L4-L5"]).toBeTruthy();
+    expect(useWorkspace.getState().impressionText).not.toMatch(/\d/);
+  });
+
+  it("the block is foreign text, so a report that began as dictation is not merged into", () => {
+    // No engine-owned canvas, and a pasted grid: the decision must hold and say so,
+    // rather than writing the whole approved normal underneath someone's own report.
+    useWorkspace.getState().setField("findings", canalBlock, { source: "manual-typed" });
+    const decision = useWorkspace.getState().composeInstantReport(lsCtx, false);
+    expect(decision.action === "hold" && decision.code).toBe("starts-from-dictation");
+    expect(useWorkspace.getState().findingsText).toBe(canalBlock);
+  });
+
+  it("a level the radiologist DID describe in prose still retires its normal", () => {
+    // The control for both rules above. Excluding table markup and companion text must
+    // not turn into "the scaffold never stands aside" — this is the case the rule was
+    // written for, and the report must not say both things about one level.
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const before = useWorkspace.getState().findingsText;
+    expect(before).toContain("L4-L5: No significant disc bulge or protrusion is seen.");
+    useWorkspace.getState().setField(
+      "findings", `${before}${NL}L4-L5: Disc extrusion with thecal sac compression.`,
+      { source: "manual-typed" },
+    );
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const after = useWorkspace.getState().findingsText;
+    expect(after).toContain("L4-L5: Disc extrusion with thecal sac compression.");
+    expect(after).not.toContain("L4-L5: No significant disc bulge or protrusion is seen.");
+  });
+
+  it("a PASTED grid is still not a claim about the first level it names", () => {
+    // The same table markup reaching the page as someone's own text rather than through
+    // the companion tool, where provenance cannot vouch for it and the shape has to.
+    // `extractLevel` returns the FIRST level in a line, so a header row reads as a
+    // description of L1-L2 — and without this rule that level's normal disappears from
+    // a report in which nobody ever said anything about L1-L2.
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const before = useWorkspace.getState().findingsText;
+    useWorkspace.getState().setField(
+      "findings", `${before}${NL}${canalBlock}`, { source: "manual-typed" },
+    );
+    useWorkspace.getState().composeInstantReport(lsCtx, false);
+    const after = useWorkspace.getState().findingsText.split(NL);
+    expect(after).toContain("L1-L2: No significant disc bulge or protrusion is seen.");
+    expect(after).toContain("L2-L3: No significant disc bulge or protrusion is seen.");
+    expect(after.some((l) => l.startsWith("LEVEL\t"))).toBe(true);
   });
 });
