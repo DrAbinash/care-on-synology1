@@ -8,13 +8,17 @@
  * every output shares it (screen Preview, Word export, live print body, letter-pad
  * PDF) so a line is bold in all four or in none.
  *
- * Two rules, both learned from measuring the shipped libraries:
+ * Three rules, all learned from measuring the shipped libraries:
  *
  *  1. A denial anywhere earlier in the SAME SENTENCE cancels the cue. A fixed
  *     character window was not enough: "No gross disc herniation, canal stenosis
  *     or cord compression" put "stenosis" outside the window and bolded a normal
  *     cervical-screening impression.
- *  2. This vocabulary is NOT the impression vocabulary. Impression synthesis
+ *  2. A cue only counts inside its own WORD. "compressible" is the normal venous
+ *     Doppler finding and "non-compressible" is the thrombosed one, so the denial
+ *     has to match whole words and the stem has to be exempted inside the bare
+ *     normality word — see NORMALITY_LOOKALIKES.
+ *  3. This vocabulary is NOT the impression vocabulary. Impression synthesis
  *     trades precision for recall and counts "grade II" or "seen in" as points;
  *     bolding those printed "Single live intrauterine gestation… Placenta is
  *     posterior, fundal, grade II" — a normal obstetric report in bold. A false
@@ -65,12 +69,28 @@ const PATHOLOGY_TERMS = [
   "suspicious", "abnormal",
 ];
 
-/** Denials that cancel a cue appearing after them, within one sentence. */
+/** Denials that cancel a cue appearing after them, within one sentence.
+ *  Matched as whole words at both ends. A prefix match cancelled the DVT sign:
+ *  "the popliteal vein is non-compressible and shows no colour flow" carries `no`
+ *  only inside "non-compressible", the word that states the pathology itself, so
+ *  every compression sentence in a venous Doppler was cancelled by its own prefix.
+ *  The shipped normals this rule must keep cancelling all spell the denial as its
+ *  own word ("No gross cord compression is seen."), and that reading is unchanged. */
 const DENIAL_TERMS = [
   "no", "not", "without", "absence", "unremarkable", "normal", "negative",
   "intact", "free", "clear", "preserved", "maintained", "adequate", "patent",
   "unlikely", "excluded",
 ];
+
+/**
+ * Whole words that carry a pathology stem yet state the opposite. `compress` exists
+ * for cord compression, and it also reads inside "compressible" — in a venous
+ * Doppler the NORMAL finding, so the uninvolved limb printed bold beside the
+ * involved one and the page lost the only cue that says which leg is diseased.
+ * Only the bare word is exempt: "non-compressible" keeps its cue, because the
+ * negative prefix is what makes that word pathological.
+ */
+const NORMALITY_LOOKALIKES = ["compressible", "compressibility"];
 
 /** Stem-only cues that live inside a longer word, so they cannot carry a leading
  *  word boundary: "spondylolisthesis" is one word, and `\blisthesis` never matches. */
@@ -91,7 +111,7 @@ const NORMALITY_PREDICATE =
 /** Clause boundaries inside a sentence — a predicate only speaks for its own clause. */
 const CLAUSE_SPLIT_CHARS = [",", ";"];
 
-const termRe = (terms: string[]) => new RegExp(`\\b(${terms.join("|")})`, "i");
+const termRe = (terms: string[]) => new RegExp(`\\b(${terms.join("|")})\\b`, "i");
 
 const PATHOLOGY_RE = new RegExp(
   `\\b(${PATHOLOGY_TERMS.join("|")})|\\w*(${PATHOLOGY_SUFFIX_STEMS.join("|")})`,
@@ -126,12 +146,24 @@ export function isAbnormalFindingsLine(line: string | null | undefined): boolean
     const re = new RegExp(PATHOLOGY_RE.source, "gi");
     let m: RegExpExecArray | null;
     while ((m = re.exec(lower)) !== null) {
+      if (NORMALITY_LOOKALIKES.includes(cueWord(lower, m.index, m[0].length))) continue;
       if (DENIAL_RE.test(lower.slice(0, m.index))) continue;
       if (NORMALITY_PREDICATE.test(clauseFromCue(lower, m.index, m[0].length))) continue;
       return true;
     }
   }
   return false;
+}
+
+/** The hyphen-joined word the cue sits in. "non-compressible" has to read as one
+ *  token, so the negative prefix that makes it pathological survives the lookalike
+ *  exemption that bare "compressible" needs. */
+function cueWord(lower: string, at: number, length: number): string {
+  let start = at;
+  let end = at + length;
+  while (start > 0 && /[a-z-]/.test(lower[start - 1]!)) start--;
+  while (end < lower.length && /[a-z-]/.test(lower[end]!)) end++;
+  return lower.slice(start, end).replace(/^-+|-+$/g, "");
 }
 
 /** From the cue to the end of its own clause: a normality predicate in a

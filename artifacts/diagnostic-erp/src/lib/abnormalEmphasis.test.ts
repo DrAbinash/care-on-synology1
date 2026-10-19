@@ -159,4 +159,29 @@ describe("abnormal print emphasis — the reading itself", () => {
     expect(isAbnormalFindingsLine("Both kidneys are normal in size and cortical thickness.")).toBe(false);
     expect(isAbnormalFindingsLine("Placenta is posterior, fundal, grade II.")).toBe(false);
   });
+
+  it("reads a venous Doppler limb by limb", () => {
+    // Found by the bilateral lower-limb case added to the preview harness. A Doppler
+    // report is a study of two limbs in one page, and the emphasis is the only thing
+    // that tells the referring doctor which limb is diseased, so both directions of
+    // this error are visible on paper:
+    //   - `compress` fired inside "compressible", the NORMAL venous statement, so the
+    //     uninvolved limb printed bold next to the involved one.
+    //   - the denial `no` fired inside the word "non-compressible" — prefix-matched,
+    //     because the denial regex had no trailing boundary — so the actual DVT sign
+    //     printed plain.
+    expect(isAbnormalFindingsLine(
+      "RIGHT LOWER LIMB: Common femoral, femoral and popliteal veins are compressible with spontaneous flow. No intraluminal echogenic thrombus.",
+    )).toBe(false);
+    expect(isAbnormalFindingsLine(
+      "LEFT LOWER LIMB: The popliteal vein is non-compressible and shows no colour flow or spontaneous signal. The remaining deep veins are compressible.",
+    )).toBe(true);
+    // The compressed form of the same claim, and the wording the shipped normal
+    // catalogue uses for an unremarkable study, must read the same way.
+    expect(isAbnormalFindingsLine("The popliteal vein is non-compressible.")).toBe(true);
+    expect(isAbnormalFindingsLine("Deep femoral veins are compressible throughout.")).toBe(false);
+    expect(isAbnormalFindingsLine(
+      "Both common femoral veins are compressible with normal spontaneous phasic flow.",
+    )).toBe(false);
+  });
 });
