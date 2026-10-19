@@ -9,9 +9,20 @@
 /** Section headers like "White Matter" / "Basal Ganglia and Thalami" (no sentence). */
 const SECTION_HEADER_RE = /^[A-Z][A-Za-z0-9 /&()-]{2,40}$/;
 
-/** Pathology / abnormality cues worth promoting to impression. */
+/**
+ * Pathology / abnormality cues worth promoting to impression.
+ *
+ * `straighten\w*` is a cue for a measured reason, not preference: the owner's
+ * neutral lumbar-alignment wording "Straightening/loss of normal lumbar
+ * lordosis." (PR #1077 review, 2026-10-19) carries the word "normal", which
+ * `NORMAL_PREDICATE_RE` matches — without a positive cue the sentence would
+ * classify as a retireable normal, the alignment tile would lose its seat as
+ * judge, and a normal clicked after it could re-assert the alignment claim the
+ * finding had retired. Every authored normal that mentions straightening denies
+ * it ("no straightening"), and the negation guard reads the denial.
+ */
 const ABNORMAL_CUE_RE =
-  /\b(infarct|atrophy|fazekas|hyperintense|hypointense|lesion|stenosis|edema|ha?emorrhage|fracture|compression|desiccation|bulge|herniation|displacement|mass effect|midline shift|hydrocephalus|grade\s*[ivx\d]+|ischemic|lacunar|changes are consistent|noted in|seen in)\b/i;
+  /\b(infarct|atrophy|fazekas|hyperintense|hypointense|lesion|stenosis|edema|ha?emorrhage|fracture|compression|desiccation|bulge|herniation|displacement|mass effect|midline shift|hydrocephalus|grade\s*[ivx\d]+|ischemic|lacunar|straighten\w*|changes are consistent|noted in|seen in)\b/i;
 
 /**
  * Normal wording, recognised anywhere in the sentence rather than only at its
@@ -89,6 +100,30 @@ function denied(s: string, at: number, end: number): boolean {
  * says "unremarkable / preserved / maintained / patent / not …ed" anywhere in it
  * is a normal, not a finding.
  */
+/**
+ * True only when a cue word survives its own negation test — the POSITIVE half
+ * of `assertsAbnormality`, without the conservative fallback that reads wording
+ * the lists do not name as a finding.
+ *
+ * The fallback is right for every caller that DELETES sentences: an unrecognised
+ * sentence must never be mistaken for a normal. It inverts for the caller that
+ * asks the other question — "is this whole claim a normal claim, whose owned
+ * sentences may be withheld?" — because a normal word the lists do not carry
+ * ("...is symmetric.") then reads as a finding, and the gate refuses to retire
+ * the very contradiction it exists for (measured: the MG Normal breast tile
+ * beside a selected Spiculated mass, 2026-10-19). A claim positively asserts a
+ * finding only when one of its sentences names one.
+ */
+export function positivelyAssertsAbnormality(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  const scan = new RegExp(ABNORMAL_CUE_RE.source, "gi");
+  for (let m = scan.exec(s); m !== null; m = scan.exec(s)) {
+    if (!denied(s, m.index, m.index + m[0].length)) return true;
+  }
+  return false;
+}
+
 export function assertsAbnormality(line: string): boolean {
   const s = line.trim();
   if (!s) return false;

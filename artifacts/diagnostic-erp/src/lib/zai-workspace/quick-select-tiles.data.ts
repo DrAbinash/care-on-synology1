@@ -132,6 +132,13 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectOwnershipTile[] = [
   // These clinically distinct concepts coexist at the same level and must
   // NOT be collapsed into generic "degenerative changes" (PR crosswalk §12).
   t("findings","LF hypertrophy L4-L5","Ligamentum flavum hypertrophy at L4-L5.",{mnemonic:"lf45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"ligamentum_flavum",conflictGroup:"ligamentum_flavum",impressionSentence:"Ligamentum flavum hypertrophy at L4-L5."}),
+  // The lumbar alignment box the cervical strip has had since #1067. The wording
+  // is the owner's ruling of 2026-10-19: professional and neutral —
+  // "Straightening/loss of normal lumbar lordosis." — never attributed to muscle
+  // spasm (the same descriptive-not-diagnostic rule the X-ray cervical and LS
+  // sub-masters carry as spec §6), and carrying no routine physiotherapy
+  // recommendation: the Recommendation field stays the doctor's to write.
+  t("findings","Loss of lumbar lordosis","Straightening/loss of normal lumbar lordosis.",{mnemonic:"lll",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"alignment",conflictGroup:"alignment",impressionSentence:"Loss of lumbar lordosis."}), // owner ruling 2026-10-19 (review of PR #1077)
   t("findings","Foraminal stenosis L4-L5","{severity} {side} neural foraminal stenosis at L4-L5.",{mnemonic:"fs45",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"foraminal_stenosis",conflictGroup:"foraminal_stenosis",properties:"severity,side",impressionSentence:"{severity} {side} neural foraminal stenosis at L4-L5."}),
   t("findings","Schmorl node L1","Schmorl node at L1 vertebral endplate.",{mnemonic:"sn1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"abnormal",concept:"schmorl",conflictGroup:"schmorl",impressionSentence:"Schmorl node at the L1 endplate."}),
   t("findings","Vertebral hemangioma L1","Vertebral hemangioma at L1 — typical T1/T2 hyperintense signal.",{mnemonic:"vh1",scopeModality:"MR",scopeBodyPart:"LS Spine",category:"normal",concept:"hemangioma",conflictGroup:"hemangioma",impressionSentence:"Typical vertebral hemangioma at L1."}),
@@ -198,7 +205,7 @@ export const DEFAULT_QUICK_SELECT_TILES: QuickSelectOwnershipTile[] = [
   t("findings","Gallstones","Multiple echogenic foci with acoustic shadowing in the gallbladder lumen, largest measuring ___ mm, suggestive of cholelithiasis. Gallbladder wall thickness normal.",{mnemonic:"gs",scopeModality:"US",scopeBodyPart:"Abdomen",category:"abnormal",favorite:true,concept:"cholelithiasis",conflictGroup:"cholelithiasis"}),
   t("findings","Renal calculus","Echogenic renal calculus in the {side} kidney with posterior acoustic shadowing.",{mnemonic:"rk",scopeModality:"US",scopeBodyPart:"Abdomen",category:"abnormal",concept:"renal",conflictGroup:"renal",properties:"side"}),
   t("findings","Normal breast","No suspicious masses or calcifications. Bilateral breast parenchyma is symmetric.",{mnemonic:"nb",scopeModality:"MG",scopeBodyPart:"Breast",favorite:true,concept:"birads"}),
-  t("findings","Spiculated mass","Spiculated mass in the right upper outer quadrant measuring ___ × ___ cm with associated skin retraction. Highly suspicious for malignancy.",{mnemonic:"sm",scopeModality:"MG",scopeBodyPart:"Breast",category:"critical",concept:"birads",conflictGroup:"spiculated mass"}),
+  t("findings","Spiculated mass","Spiculated mass in the right upper outer quadrant measuring ___ × ___ cm with associated skin retraction. Highly suspicious for malignancy.",{mnemonic:"sm",scopeModality:"MG",scopeBodyPart:"Breast",category:"critical",concept:"birads",conflictGroup:"spiculated mass",baselineReplaces:"No suspicious masses or calcifications."}),
   t("findings","Meniscus tear","Oblique tear of the {side} meniscus.",{mnemonic:"mt",scopeModality:"MR",scopeBodyPart:"Knee",category:"abnormal",concept:"meniscus",conflictGroup:"meniscus",properties:"side"}),
   t("findings","Rotator cuff tear","Full-thickness tear of the {side} rotator cuff.",{mnemonic:"rc",scopeModality:"MR",scopeBodyPart:"Shoulder",category:"abnormal",concept:"rotator_cuff",conflictGroup:"rotator cuff",properties:"side"}),
   t("findings","Hip effusion","Moderate effusion in the {side} hip joint.",{mnemonic:"he",scopeModality:"MR",scopeBodyPart:"Pelvis",category:"abnormal",concept:"hip",conflictGroup:"hip",properties:"side"}),

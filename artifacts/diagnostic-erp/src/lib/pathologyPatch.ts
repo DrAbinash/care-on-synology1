@@ -408,6 +408,34 @@ function moveIncomingIntoSection(
   return { lines: [...lines.slice(0, at), ...inserted, ...lines.slice(at)], inserted };
 }
 
+/**
+ * The canonical position for a partially-withheld normal claim's survivors: immediately
+ * after the last line carrying the owning abnormal observation's contribution. The
+ * other click order puts them there — the abnormal replaced the normal's sentence in
+ * place, so the shared anatomical slot is that position — and matching it is what makes
+ * the two orders print the same page rather than the same sentences in a different
+ * order. Returns null when the anchor contribution is not on the page, so the caller
+ * falls back to the established generic merge instead of guessing a position.
+ */
+function placeAfterRenderedContribution(
+  lines: string[],
+  incoming: string | undefined,
+  anchorContribution: string,
+  existingText: string,
+): { lines: string[]; inserted: string[] } | null {
+  const anchorUnits = splitToSentences(anchorContribution)
+    .map((s) => normalizeForDedupe(s))
+    .filter(Boolean);
+  if (anchorUnits.length === 0) return null;
+  let slot = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const lineUnits = splitToSentences(lines[i] ?? "").map((s) => normalizeForDedupe(s));
+    if (lineUnits.some((u) => anchorUnits.includes(u))) slot = i + 1;
+  }
+  if (slot < 0) return null;
+  return moveIncomingIntoSection(lines, incoming ?? "", slot, existingText);
+}
+
 export function applyPathologyPatch(opts: {
   existing: ReportNarrative;
   incoming: PathologyIncoming;
@@ -424,6 +452,23 @@ export function applyPathologyPatch(opts: {
    * single-patch tests honest.
    */
   liveRows?: readonly ContributionRow[];
+  /**
+   * Where a partially-withheld normal claim's surviving sentences go: after the last
+   * line carrying this contribution (the owning abnormal observation's rendered
+   * findings). Only consulted when nothing was replaced and the field is findings;
+   * an anchor absent from the page falls back to the generic merge.
+   */
+  placeIncomingAfter?: string;
+  /**
+   * Sentences of this claim that a live abnormal observation owns (normalized), and
+   * which the caller therefore removed from the incoming. The walk must not treat
+   * them as owned either: the identical wording can legitimately be on the page as
+   * ANOTHER region's own claim (two screening regions share sentence templates),
+   * and a claim that no longer carries a sentence has no authority to evict it —
+   * evicting without re-adding is deletion, which is the one thing this engine
+   * never does. Pass nothing and the patch behaves exactly as it was tested.
+   */
+  withheldIncoming?: string[];
 }): PathologyPatchResult {
   const source: InsertSource = opts.source ?? "quick-findings";
   const incomingHay = [
@@ -434,6 +479,13 @@ export function applyPathologyPatch(opts: {
   // rendered; `owns` below refuses to evict them. Null when the caller passes no
   // ledger, which keeps every single-patch caller exactly as it was tested.
   const protectedKeys = opts.liveRows ? liveContributionKeys(opts.liveRows) : null;
+  // The withheld half of this claim owns nothing: the caller removed these
+  // sentences from the incoming because a live abnormal owns them, so the walk
+  // may not evict a page copy in their name either — there is nothing coming
+  // back to replace it.
+  const withheldKeys = opts.withheldIncoming && opts.withheldIncoming.length > 0
+    ? new Set(opts.withheldIncoming)
+    : null;
   const slotObs = buildCanonicalObservation({
     concept: opts.ownership.concept,
     conflictGroup: opts.ownership.conflictGroup,
@@ -495,6 +547,10 @@ export function applyPathologyPatch(opts: {
       // because the ledger still says the finding was reported.
       if (protectedKeys?.has(normalizeForDedupe(unit))
         || protectedKeys?.has(normalizeForDedupe(probe))) return false;
+      // A withheld sentence is not this claim's to take: the incoming no longer
+      // carries it, so owning a page copy here would delete it with no replacement.
+      if (withheldKeys?.has(normalizeForDedupe(unit))
+        || withheldKeys?.has(normalizeForDedupe(probe))) return false;
       return structured
         ? supersedesClaim(probe)
         : Boolean(
@@ -576,6 +632,20 @@ export function applyPathologyPatch(opts: {
     // merge rules (dedupe, light-edit folding, subsequence handling).
     const isDocument = lines.some((l) => HEADING_LINE.test(l.trim()))
       || lines.some((l) => LINE_LEVEL_PREFIX.test(l.trim()));
+    // A partially-withheld normal claim keeps the page's line structure and puts its
+    // survivors in the shared anatomical slot — after the owning abnormal's wording —
+    // instead of letting the generic merge re-cut the whole field. That is the position
+    // the other click order produces, so the two orders print the same page.
+    if (field === "findings" && replacementSlot < 0 && (opts.placeIncomingAfter ?? "").trim()) {
+      const placed = placeAfterRenderedContribution(
+        keptLines, incoming, opts.placeIncomingAfter!, keptText,
+      );
+      if (placed) {
+        const mergedProv = { ...keptProv, ...provenanceFromText(placed.inserted.join("\n"), source) };
+        return { text: placed.lines.join("\n"), provenance: mergedProv };
+      }
+      // The anchor contribution is not on this page — no honest position to claim.
+    }
     if (replacementSlot < 0 && (field !== "findings" || !isDocument)) {
       return mergeReportFieldContentWithProvenance({
         field,
